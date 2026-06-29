@@ -1,0 +1,20 @@
+{{/* KnowledgeBase for pentest findings - populated dynamically */}}
+{{- if .Values.components.knowledgeBase }}
+---
+apiVersion: agentorc.agentorc.io/v1alpha1
+kind: KnowledgeBase
+metadata:
+  name: pentest-findings-kb
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "demo.labels" . | nindent 4 }}
+spec:
+  description: "Persistent storage of penetration testing findings and exploit validation results"
+  allowedAgents:
+    - pentest-orchestrator
+  embedding:
+    modelSelectorRef: embeddings
+  vectorStore:
+    provider: qdrant
+    storageSize: "2Gi"
+{{- end }}

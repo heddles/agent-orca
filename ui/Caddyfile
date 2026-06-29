@@ -1,0 +1,21 @@
+:8080 {
+	# Proxy API requests to the UI API server
+	handle /api/* {
+		reverse_proxy localhost:8083 {
+			# Disable timeouts for SSE streaming endpoints.
+			transport http {
+				response_header_timeout 0
+				read_timeout             0
+				write_timeout            0
+			}
+			flush_interval -1
+		}
+	}
+
+	# Serve static files with SPA fallback
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+}

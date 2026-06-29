@@ -1,0 +1,42 @@
+# Default values for demo-pen-test.
+# This is a penetration testing demonstration agent.
+# ONLY scan systems you have explicit authorization for.
+
+# Target configuration - change these to scan your authorized targets
+target:
+  hostname: "web-victim.example.com"
+  subnet: "192.168.1.0/24"
+
+# Scan scope
+scope:
+  ports: "22,80,443,8080,8443"
+  scanType: "quick"  # quick, full, or web
+  rateLimit: 10
+
+# Model provider configuration
+modelProvider:
+  name: "pentest-llm"
+  litellmModel: "openai/gpt-4o"
+
+# Namespace for all resources (default: agent-orc-system)
+namespace: "agent-orc-system"
+
+# Enable/disable components
+components:
+  cveMcpServer: true
+  networkMcpServer: true
+  vulnMcpServer: true
+  exploitMcpServer: true
+  reportMcpServer: true
+  knowledgeBase: true
+  agent: true
+  workflow: true
+
+# Resource limits
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi

@@ -1,0 +1,1940 @@
+# model-providers chart values
+#
+# Quick-start:
+#   1. Set enabled: true + apiKey on each providerSecrets entry you want.
+#   2. Set enabled: true on each modelProviders entry you want active.
+#   3. Set enabled: true on the modelSelectors you want, updating the
+#      providers list to match the models you enabled.
+#
+# Existing secrets: if you manage secrets externally (e.g. via ESO or Vault),
+# set existingSecret: "<secret-name>" on a providerSecrets entry and leave
+# apiKey empty.  The secret must have a key named "api-key".
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Additional Namespaces
+# ModelSelector CRs are always created in .Release.Namespace (typically
+# agent-orc-system).  List any extra namespaces here that also need the
+# selectors — for example, the `default` namespace so that agents deployed
+# there can reference `modelSelectorRef: default` without a namespace hop.
+# ─────────────────────────────────────────────────────────────────────────────
+additionalNamespaces:
+  - default
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Provider Secrets
+# One Secret per provider API key.  Set enabled: true and fill in apiKey.
+# ─────────────────────────────────────────────────────────────────────────────
+providerSecrets:
+  # ── OpenAI ─────────────────────────────────────────────────────────────────
+  - name: openai-api-key
+    enabled: true
+    apiKey: ""            # sk-...
+    existingSecret: ""    # leave empty to auto-create the secret
+
+  # ── Anthropic ──────────────────────────────────────────────────────────────
+  - name: anthropic-api-key
+    enabled: true
+    apiKey: ""            # sk-ant-...
+    existingSecret: ""
+
+  # ── Google Gemini (API key auth) ───────────────────────────────────────────
+  # Obtain from https://aistudio.google.com/app/apikey
+  - name: google-api-key
+    enabled: true
+    apiKey: ""            # AIza...
+    existingSecret: ""
+  
+  # ── Poolside ───────────────────────────────────────────────────────────────
+  - name: poolside-api-key
+    enabled: true
+    apiKey: ""            # ps-...
+    existingSecret: ""
+
+  # ── Mistral AI ─────────────────────────────────────────────────────────────
+  - name: mistral-api-key
+    enabled: false
+    apiKey: ""
+    existingSecret: ""
+
+  # ── Cohere ─────────────────────────────────────────────────────────────────
+  - name: cohere-api-key
+    enabled: false
+    apiKey: ""
+    existingSecret: ""
+
+  # ── xAI (Grok) ─────────────────────────────────────────────────────────────
+  - name: xai-api-key
+    enabled: false
+    apiKey: ""            # xai-...
+    existingSecret: ""
+
+  # ── Groq (ultra-fast hosted inference) ────────────────────────────────────
+  - name: groq-api-key
+    enabled: false
+    apiKey: ""            # gsk_...
+    existingSecret: ""
+
+  # ── Together AI ────────────────────────────────────────────────────────────
+  - name: together-api-key
+    enabled: false
+    apiKey: ""
+    existingSecret: ""
+
+  # ── DeepSeek ───────────────────────────────────────────────────────────────
+  - name: deepseek-api-key
+    enabled: false
+    apiKey: ""
+    existingSecret: ""
+
+  # ── Azure OpenAI ───────────────────────────────────────────────────────────
+  # Also set AZURE_API_BASE and AZURE_API_VERSION via operator env if needed.
+  - name: azure-openai-api-key
+    enabled: false
+    apiKey: ""
+    existingSecret: ""
+
+  # ── Ollama (in-cluster embedding) ───────────────────────────────────────────
+  # Used when Ollama is deployed inside the cluster for local embeddings.
+  # No real API key required - the service is unauthenticated within the cluster.
+  - name: ollama-embed-credentials
+    enabled: false
+    apiKey: ""
+    existingSecret: ""
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Model Providers
+# One entry per model.  Set enabled: true to create the ModelProvider CR.
+# credentialsRef.existingSecret must match one of the providerSecrets names
+# (or any pre-existing Secret in the namespace).
+#
+# baseURL: optional — omit for hosted cloud providers (LiteLLM resolves the
+#   endpoint from the litellmModel prefix).  Set explicitly for self-hosted or
+#   proxied endpoints, e.g.:
+#     baseURL: "http://vllm-service.inference.svc:8000/v1"
+#   Azure OpenAI requires baseURL to be set to your resource endpoint, e.g.:
+#     baseURL: "https://my-resource.openai.azure.com/"
+#
+# maxRequestTokens: optional — set when your account's per-request or TPM limit
+#   is lower than the model's contextWindow.  The router will skip this provider
+#   for requests whose estimated token count exceeds this value.  0 = no limit.
+# ─────────────────────────────────────────────────────────────────────────────
+modelProviders:
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # Poolside
+  # https://api.poolsi.de/openai/v1
+  # agent-orc appends /v1 to the baseURL, so we put https://api.poolsi.de/openai as the modelProvider baseURL.
+  # ════════════════════════════════════════════════════════════════════════════
+
+  # laguna-m-e0419-polaris-t3-mh-s700-ctx256k — Laguna M.1 ctx256k with 262k context
+  - name: poolside-laguna-m-ctx256k
+    enabled: true
+    litellmModel: "laguna-m-e0419-polaris-t3-mh-s700-ctx256k"
+    baseURL: "https://api.poolsi.de/openai"
+    credentialsRef:
+      existingSecret: "poolside-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+      - long-context
+    latencyProfile: medium
+    constraints:
+      contextWindow: 262144
+      maxOutputTokens: 262144
+      maxRequestTokens: 0
+
+  # laguna-xs3-rc2 — Laguna XS3 RC2
+  - name: poolside-laguna-xs3-rc2
+    enabled: true
+    litellmModel: "laguna-xs3-rc2"
+    baseURL: "https://api.poolsi.de/openai"
+    credentialsRef:
+      existingSecret: "poolside-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+    latencyProfile: medium
+    constraints:
+      contextWindow: 131072
+      maxOutputTokens: 16384
+      maxRequestTokens: 0
+
+  # laguna-xs3-rc1 — Laguna XS3 RC1
+  - name: poolside-laguna-xs3-rc1
+    enabled: true
+    litellmModel: "laguna-xs3-rc1"
+    baseURL: "https://api.poolsi.de/openai"
+    credentialsRef:
+      existingSecret: "poolside-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+    latencyProfile: medium
+    constraints:
+      contextWindow: 131072
+      maxOutputTokens: 16384
+      maxRequestTokens: 0
+
+  # openrouter/fusion — Fusion via OpenRouter
+  - name: poolside-fusion
+    enabled: true
+    litellmModel: "openrouter/fusion"
+    baseURL: "https://api.poolsi.de/openai"
+    credentialsRef:
+      existingSecret: "poolside-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+    latencyProfile: medium
+    constraints:
+      contextWindow: 131072
+      maxOutputTokens: 16384
+      maxRequestTokens: 0
+
+  # moonshotai/kimi-k2.7-code — Kimi K2.7 Code
+  - name: poolside-kimi-k2-7-code
+    enabled: true
+    litellmModel: "moonshotai/kimi-k2.7-code"
+    baseURL: "https://api.poolsi.de/openai"
+    credentialsRef:
+      existingSecret: "poolside-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+    latencyProfile: medium
+    constraints:
+      contextWindow: 131072
+      maxOutputTokens: 16384
+      maxRequestTokens: 0
+
+  # anthropic/claude-fable-5 — Claude Fable 5
+  - name: poolside-claude-fable-5
+    enabled: true
+    litellmModel: "anthropic/claude-fable-5"
+    baseURL: "https://api.poolsi.de/openai"
+    credentialsRef:
+      existingSecret: "poolside-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+    latencyProfile: slow
+    constraints:
+      contextWindow: 200000
+      maxOutputTokens: 100000
+      maxRequestTokens: 0
+
+  # anthropic/claude-opus-4.8-fast — Claude Opus 4.8 Fast
+  - name: poolside-claude-opus-4-8-fast
+    enabled: true
+    litellmModel: "anthropic/claude-opus-4.8-fast"
+    baseURL: "https://api.poolsi.de/openai"
+    credentialsRef:
+      existingSecret: "poolside-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+    latencyProfile: medium
+    constraints:
+      contextWindow: 200000
+      maxOutputTokens: 100000
+      maxRequestTokens: 0
+
+  # deepseek/deepseek-v4-flash — DeepSeek V4 Flash
+  - name: poolside-deepseek-v4-flash
+    enabled: true
+    litellmModel: "deepseek/deepseek-v4-flash"
+    baseURL: "https://api.poolsi.de/openai"
+    credentialsRef:
+      existingSecret: "poolside-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+      - fast
+    latencyProfile: fast
+    constraints:
+      contextWindow: 131072
+      maxOutputTokens: 16384
+      maxRequestTokens: 0
+
+  # anthropic/claude-opus-4.8 — Claude Opus 4.8
+  - name: poolside-claude-opus-4-8
+    enabled: true
+    litellmModel: "anthropic/claude-opus-4.8"
+    baseURL: "https://api.poolsi.de/openai"
+    credentialsRef:
+      existingSecret: "poolside-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+    latencyProfile: slow
+    constraints:
+      contextWindow: 200000
+      maxOutputTokens: 100000
+      maxRequestTokens: 0
+
+  # laguna-m-nvfp4-mlp-fp8kv — Laguna M nvfp4 mlp fp8kv
+  - name: poolside-laguna-m-nvfp4
+    enabled: true
+    litellmModel: "laguna-m-nvfp4-mlp-fp8kv"
+    baseURL: "https://api.poolsi.de/openai"
+    credentialsRef:
+      existingSecret: "poolside-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+      - long-context
+    latencyProfile: medium
+    constraints:
+      contextWindow: 262144
+      maxOutputTokens: 262144
+      maxRequestTokens: 0
+
+  # deepseek/deepseek-v4-pro — DeepSeek V4 Pro
+  - name: poolside-deepseek-v4-pro
+    enabled: true
+    litellmModel: "deepseek/deepseek-v4-pro"
+    baseURL: "https://api.poolsi.de/openai"
+    credentialsRef:
+      existingSecret: "poolside-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+    latencyProfile: slow
+    constraints:
+      contextWindow: 131072
+      maxOutputTokens: 16384
+      maxRequestTokens: 0
+
+  # production-e2e — Production E2E
+  - name: poolside-production-e2e
+    enabled: true
+    litellmModel: "production-e2e"
+    baseURL: "https://api.poolsi.de/openai"
+    credentialsRef:
+      existingSecret: "poolside-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+    latencyProfile: medium
+    constraints:
+      contextWindow: 131072
+      maxOutputTokens: 16384
+      maxRequestTokens: 0
+
+  # laguna-xs-polaris-base-bs256-s600-ctx256k — Laguna XS Polaris Base
+  - name: poolside-laguna-xs-polaris
+    enabled: true
+    litellmModel: "laguna-xs-polaris-base-bs256-s600-ctx256k"
+    baseURL: "https://api.poolsi.de/openai"
+    credentialsRef:
+      existingSecret: "poolside-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+      - long-context
+    latencyProfile: medium
+    constraints:
+      contextWindow: 262144
+      maxOutputTokens: 262144
+      maxRequestTokens: 0
+
+  # openai/gpt-5.5 — GPT 5.5
+  - name: poolside-gpt-5-5
+    enabled: true
+    litellmModel: "openai/gpt-5.5"
+    baseURL: "https://api.poolsi.de/openai"
+    credentialsRef:
+      existingSecret: "poolside-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+    latencyProfile: slow
+    constraints:
+      contextWindow: 128000
+      maxOutputTokens: 16384
+      maxRequestTokens: 0
+
+  # Qwen-3.6-27B — Qwen 3.6 27B
+  - name: poolside-qwen-3-6-27b
+    enabled: true
+    litellmModel: "Qwen-3.6-27B"
+    baseURL: "https://api.poolsi.de/openai"
+    credentialsRef:
+      existingSecret: "poolside-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+    latencyProfile: medium
+    constraints:
+      contextWindow: 131072
+      maxOutputTokens: 16384
+      maxRequestTokens: 0
+
+  # moonshotai/kimi-k2.6 — Kimi K2.6
+  - name: poolside-kimi-k2-6
+    enabled: true
+    litellmModel: "moonshotai/kimi-k2.6"
+    baseURL: "https://api.poolsi.de/openai"
+    credentialsRef:
+      existingSecret: "poolside-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+    latencyProfile: medium
+    constraints:
+      contextWindow: 131072
+      maxOutputTokens: 16384
+      maxRequestTokens: 0
+
+  # z-ai/glm-5.1 — GLM 5.1
+  - name: poolside-glm-5-1
+    enabled: true
+    litellmModel: "z-ai/glm-5.1"
+    baseURL: "https://api.poolsi.de/openai"
+    credentialsRef:
+      existingSecret: "poolside-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+    latencyProfile: medium
+    constraints:
+      contextWindow: 131072
+      maxOutputTokens: 16384
+      maxRequestTokens: 0
+
+  # minimax/minimax-m2.7:nitro — Minimax M2.7 Nitro
+  - name: poolside-minimax-m2-7
+    enabled: true
+    litellmModel: "minimax/minimax-m2.7:nitro"
+    baseURL: "https://api.poolsi.de/openai"
+    credentialsRef:
+      existingSecret: "poolside-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+    latencyProfile: medium
+    constraints:
+      contextWindow: 131072
+      maxOutputTokens: 16384
+      maxRequestTokens: 0
+
+  # anthropic/claude-opus-4.7 — Claude Opus 4.7
+  - name: poolside-claude-opus-4-7
+    enabled: true
+    litellmModel: "anthropic/claude-opus-4.7"
+    baseURL: "https://api.poolsi.de/openai"
+    credentialsRef:
+      existingSecret: "poolside-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+    latencyProfile: slow
+    constraints:
+      contextWindow: 200000
+      maxOutputTokens: 100000
+      maxRequestTokens: 0
+
+  # nvidia/nemotron-3-super-120b-a12b:nitro — Nemotron 3 120B Nitro
+  - name: poolside-nemotron-3-120b
+    enabled: true
+    litellmModel: "nvidia/nemotron-3-super-120b-a12b:nitro"
+    baseURL: "https://api.poolsi.de/openai"
+    credentialsRef:
+      existingSecret: "poolside-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+    latencyProfile: slow
+    constraints:
+      contextWindow: 131072
+      maxOutputTokens: 16384
+      maxRequestTokens: 0
+
+  # fireworks/kimi-k2p5-turbo — Kimi K2.5 Turbo
+  - name: poolside-kimi-k2-5-turbo
+    enabled: true
+    litellmModel: "fireworks/kimi-k2p5-turbo"
+    baseURL: "https://api.poolsi.de/openai"
+    credentialsRef:
+      existingSecret: "poolside-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+      - fast
+    latencyProfile: fast
+    constraints:
+      contextWindow: 131072
+      maxOutputTokens: 16384
+      maxRequestTokens: 0
+
+  # moonshotai/kimi-k2.5:nitro — Kimi K2.5 Nitro
+  - name: poolside-kimi-k2-5-nitro
+    enabled: true
+    litellmModel: "moonshotai/kimi-k2.5:nitro"
+    baseURL: "https://api.poolsi.de/openai"
+    credentialsRef:
+      existingSecret: "poolside-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+    latencyProfile: medium
+    constraints:
+      contextWindow: 131072
+      maxOutputTokens: 16384
+      maxRequestTokens: 0
+
+  # openai-direct/gpt-5.4-mini — GPT 5.4 Mini
+  - name: poolside-gpt-5-4-mini
+    enabled: true
+    litellmModel: "openai-direct/gpt-5.4-mini"
+    baseURL: "https://api.poolsi.de/openai"
+    credentialsRef:
+      existingSecret: "poolside-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+    latencyProfile: medium
+    constraints:
+      contextWindow: 128000
+      maxOutputTokens: 16384
+      maxRequestTokens: 0
+
+  # anthropic/claude-haiku-4.5 — Claude Haiku 4.5
+  - name: poolside-claude-haiku-4-5
+    enabled: true
+    litellmModel: "anthropic/claude-haiku-4.5"
+    baseURL: "https://api.poolsi.de/openai"
+    credentialsRef:
+      existingSecret: "poolside-api-key"
+      key: "api-key"
+    capabilities:
+      - fast
+      - cheap
+      - vision
+    latencyProfile: fast
+    constraints:
+      contextWindow: 200000
+      maxOutputTokens: 8192
+      maxRequestTokens: 0
+
+  # vertex/gemini-3-flash-preview — Gemini 3 Flash Preview
+  - name: poolside-gemini-3-flash
+    enabled: true
+    litellmModel: "vertex/gemini-3-flash-preview"
+    baseURL: "https://api.poolsi.de/openai"
+    credentialsRef:
+      existingSecret: "poolside-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+      - vision
+      - long-context
+    latencyProfile: fast
+    constraints:
+      contextWindow: 1048576
+      maxOutputTokens: 65536
+      maxRequestTokens: 0
+
+  # azurefoundry/grok-4-fast-non-reasoning — Grok 4 Fast Non-Reasoning
+  - name: poolside-grok-4-fast
+    enabled: true
+    litellmModel: "azurefoundry/grok-4-fast-non-reasoning"
+    baseURL: "https://api.poolsi.de/openai"
+    credentialsRef:
+      existingSecret: "poolside-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+    latencyProfile: medium
+    constraints:
+      contextWindow: 131072
+      maxOutputTokens: 16384
+      maxRequestTokens: 0
+
+  # azurefoundry/deepseek-v3.2 — DeepSeek V3.2
+  - name: poolside-deepseek-v3-2
+    enabled: true
+    litellmModel: "azurefoundry/deepseek-v3.2"
+    baseURL: "https://api.poolsi.de/openai"
+    credentialsRef:
+      existingSecret: "poolside-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+      - cheap
+    latencyProfile: medium
+    constraints:
+      contextWindow: 65536
+      maxOutputTokens: 8192
+      maxRequestTokens: 0
+
+  # openai/gpt-oss-120b — GPT OSS 120B
+  - name: poolside-gpt-oss-120b
+    enabled: true
+    litellmModel: "openai/gpt-oss-120b"
+    baseURL: "https://api.poolsi.de/openai"
+    credentialsRef:
+      existingSecret: "poolside-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+    latencyProfile: medium
+    constraints:
+      contextWindow: 131072
+      maxOutputTokens: 16384
+      maxRequestTokens: 0
+
+  # openai/gpt-5.4 — GPT 5.4
+  - name: poolside-gpt-5-4
+    enabled: true
+    litellmModel: "openai/gpt-5.4"
+    baseURL: "https://api.poolsi.de/openai"
+    credentialsRef:
+      existingSecret: "poolside-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+    latencyProfile: slow
+    constraints:
+      contextWindow: 128000
+      maxOutputTokens: 16384
+      maxRequestTokens: 0
+
+  # qwen3-coder-next:cloud — Qwen3 Coder Next Cloud
+  - name: poolside-qwen3-coder-next-cloud
+    enabled: true
+    litellmModel: "qwen3-coder-next:cloud"
+    baseURL: "https://api.poolsi.de/openai"
+    credentialsRef:
+      existingSecret: "poolside-api-key"
+      key: "api-key"
+    capabilities:
+      - code
+      - fast
+    latencyProfile: fast
+    constraints:
+      contextWindow: 131072
+      maxOutputTokens: 16384
+      maxRequestTokens: 0
+
+  # qwen/qwen3.5-35b-a3b — Qwen 3.5 35B A3B
+  - name: poolside-qwen-3-5-35b
+    enabled: true
+    litellmModel: "qwen/qwen3.5-35b-a3b"
+    baseURL: "https://api.poolsi.de/openai"
+    credentialsRef:
+      existingSecret: "poolside-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+    latencyProfile: medium
+    constraints:
+      contextWindow: 131072
+      maxOutputTokens: 16384
+      maxRequestTokens: 0
+
+  # openai/gpt-5.3-codex — GPT 5.3 Codex
+  - name: poolside-gpt-5-3-codex
+    enabled: true
+    litellmModel: "openai/gpt-5.3-codex"
+    baseURL: "https://api.poolsi.de/openai"
+    credentialsRef:
+      existingSecret: "poolside-api-key"
+      key: "api-key"
+    capabilities:
+      - code
+    latencyProfile: medium
+    constraints:
+      contextWindow: 128000
+      maxOutputTokens: 16384
+      maxRequestTokens: 0
+
+  # arcee-ai/trinity-large-preview:free — Trinity Large Preview
+  - name: poolside-trinity-preview
+    enabled: true
+    litellmModel: "arcee-ai/trinity-large-preview:free"
+    baseURL: "https://api.poolsi.de/openai"
+    credentialsRef:
+      existingSecret: "poolside-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+    latencyProfile: medium
+    constraints:
+      contextWindow: 131072
+      maxOutputTokens: 16384
+      maxRequestTokens: 0
+
+  # mistralai/devstral-2512:free — Devstral 2512
+  - name: poolside-devstral
+    enabled: true
+    litellmModel: "mistralai/devstral-2512:free"
+    baseURL: "https://api.poolsi.de/openai"
+    credentialsRef:
+      existingSecret: "poolside-api-key"
+      key: "api-key"
+    capabilities:
+      - code
+    latencyProfile: fast
+    constraints:
+      contextWindow: 32768
+      maxOutputTokens: 4096
+      maxRequestTokens: 0
+
+  # xiaomi/mimo-v2-flash:free — Mimo V2 Flash
+  - name: poolside-mimo-v2
+    enabled: true
+    litellmModel: "xiaomi/mimo-v2-flash:free"
+    baseURL: "https://api.poolsi.de/openai"
+    credentialsRef:
+      existingSecret: "poolside-api-key"
+      key: "api-key"
+    capabilities:
+      - fast
+      - cheap
+    latencyProfile: fast
+    constraints:
+      contextWindow: 32768
+      maxOutputTokens: 4096
+      maxRequestTokens: 0
+
+  # minimax/minimax-m2.1 — Minimax M2.1
+  - name: poolside-minimax-m2-1
+    enabled: true
+    litellmModel: "minimax/minimax-m2.1"
+    baseURL: "https://api.poolsi.de/openai"
+    credentialsRef:
+      existingSecret: "poolside-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+    latencyProfile: medium
+    constraints:
+      contextWindow: 131072
+      maxOutputTokens: 16384
+      maxRequestTokens: 0
+
+  # anthropic/claude-opus-4.5 — Claude Opus 4.5
+  - name: poolside-claude-opus-4-5
+    enabled: true
+    litellmModel: "anthropic/claude-opus-4.5"
+    baseURL: "https://api.poolsi.de/openai"
+    credentialsRef:
+      existingSecret: "poolside-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+    latencyProfile: slow
+    constraints:
+      contextWindow: 200000
+      maxOutputTokens: 100000
+      maxRequestTokens: 0
+
+  # google/gemini-3-pro-preview — Gemini 3 Pro Preview
+  - name: poolside-gemini-3-pro
+    enabled: true
+    litellmModel: "google/gemini-3-pro-preview"
+    baseURL: "https://api.poolsi.de/openai"
+    credentialsRef:
+      existingSecret: "poolside-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+      - vision
+      - long-context
+    latencyProfile: medium
+    constraints:
+      contextWindow: 1048576
+      maxOutputTokens: 65536
+      maxRequestTokens: 0
+
+  # z-ai/glm-4.7 — GLM 4.7
+  - name: poolside-glm-4-7
+    enabled: true
+    litellmModel: "z-ai/glm-4.7"
+    baseURL: "https://api.poolsi.de/openai"
+    credentialsRef:
+      existingSecret: "poolside-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+    latencyProfile: medium
+    constraints:
+      contextWindow: 131072
+      maxOutputTokens: 16384
+      maxRequestTokens: 0
+
+  # x-ai/grok-code-fast-1 — Grok Code Fast 1
+  - name: poolside-grok-code-fast
+    enabled: true
+    litellmModel: "x-ai/grok-code-fast-1"
+    baseURL: "https://api.poolsi.de/openai"
+    credentialsRef:
+      existingSecret: "poolside-api-key"
+      key: "api-key"
+    capabilities:
+      - code
+    latencyProfile: fast
+    constraints:
+      contextWindow: 32768
+      maxOutputTokens: 4096
+      maxRequestTokens: 0
+
+  # qwen/qwen3-235b-a22b-2507 — Qwen 3 235B A22B
+  - name: poolside-qwen3-235b
+    enabled: true
+    litellmModel: "qwen/qwen3-235b-a22b-2507"
+    baseURL: "https://api.poolsi.de/openai"
+    credentialsRef:
+      existingSecret: "poolside-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+    latencyProfile: slow
+    constraints:
+      contextWindow: 131072
+      maxOutputTokens: 8192
+      maxRequestTokens: 0
+
+  # anthropic/claude-4.5-sonnet — Claude 4.5 Sonnet
+  - name: poolside-claude-4-5-sonnet
+    enabled: true
+    litellmModel: "anthropic/claude-4.5-sonnet"
+    baseURL: "https://api.poolsi.de/openai"
+    credentialsRef:
+      existingSecret: "poolside-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+      - vision
+    latencyProfile: medium
+    constraints:
+      contextWindow: 200000
+      maxOutputTokens: 16384
+      maxRequestTokens: 0
+
+  # anthropic/claude-sonnet-4.6 — Claude Sonnet 4.6
+  - name: poolside-claude-sonnet-4-6
+    enabled: true
+    litellmModel: "anthropic/claude-sonnet-4.6"
+    baseURL: "https://api.poolsi.de/openai"
+    credentialsRef:
+      existingSecret: "poolside-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+      - vision
+      - fast
+      - long-context
+    latencyProfile: medium
+    constraints:
+      contextWindow: 200000
+      maxOutputTokens: 16384
+      maxRequestTokens: 0
+
+  # minimax/minimax-m2.5:nitro — Minimax M2.5 Nitro
+  - name: poolside-minimax-m2-5-nitro
+    enabled: true
+    litellmModel: "minimax/minimax-m2.5:nitro"
+    baseURL: "https://api.poolsi.de/openai"
+    credentialsRef:
+      existingSecret: "poolside-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+    latencyProfile: medium
+    constraints:
+      contextWindow: 131072
+      maxOutputTokens: 16384
+      maxRequestTokens: 0
+
+  # nvidia/nemotron-3-nano-30b-a3b — Nemotron 3 Nano 30B A3B
+  - name: poolside-nemotron-3-nano
+    enabled: true
+    litellmModel: "nvidia/nemotron-3-nano-30b-a3b"
+    baseURL: "https://api.poolsi.de/openai"
+    credentialsRef:
+      existingSecret: "poolside-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+      - fast
+    latencyProfile: fast
+    constraints:
+      contextWindow: 32768
+      maxOutputTokens: 4096
+      maxRequestTokens: 0
+
+  # google/gemini-2.5-flash — Gemini 2.5 Flash
+  - name: poolside-gemini-2-5-flash
+    enabled: true
+    litellmModel: "google/gemini-2.5-flash"
+    baseURL: "https://api.poolsi.de/openai"
+    credentialsRef:
+      existingSecret: "poolside-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+      - vision
+      - fast
+      - long-context
+    latencyProfile: fast
+    constraints:
+      contextWindow: 1048576
+      maxOutputTokens: 65536
+      maxRequestTokens: 0
+
+  # anthropic/claude-opus-4.6 — Claude Opus 4.6
+  - name: poolside-claude-opus-4-6
+    enabled: true
+    litellmModel: "anthropic/claude-opus-4.6"
+    baseURL: "https://api.poolsi.de/openai"
+    credentialsRef:
+      existingSecret: "poolside-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+      - vision
+      - long-context
+    latencyProfile: slow
+    constraints:
+      contextWindow: 200000
+      maxOutputTokens: 32000
+      maxRequestTokens: 0
+
+  # qwen/qwen3-coder-next — Qwen3 Coder Next
+  - name: poolside-qwen3-coder-next
+    enabled: true
+    litellmModel: "qwen/qwen3-coder-next"
+    baseURL: "https://api.poolsi.de/openai"
+    credentialsRef:
+      existingSecret: "poolside-api-key"
+      key: "api-key"
+    capabilities:
+      - code
+    latencyProfile: fast
+    constraints:
+      contextWindow: 32768
+      maxOutputTokens: 4096
+      maxRequestTokens: 0
+
+  # openai/gpt-5.2-codex — GPT 5.2 Codex
+  - name: poolside-gpt-5-2-codex
+    enabled: true
+    litellmModel: "openai/gpt-5.2-codex"
+    baseURL: "https://api.poolsi.de/openai"
+    credentialsRef:
+      existingSecret: "poolside-api-key"
+      key: "api-key"
+    capabilities:
+      - code
+    latencyProfile: medium
+    constraints:
+      contextWindow: 128000
+      maxOutputTokens: 16384
+      maxRequestTokens: 0
+
+  # z-ai/glm-4.7-flash — GLM 4.7 Flash
+  - name: poolside-glm-4-7-flash
+    enabled: true
+    litellmModel: "z-ai/glm-4.7-flash"
+    baseURL: "https://api.poolsi.de/openai"
+    credentialsRef:
+      existingSecret: "poolside-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+    latencyProfile: medium
+    constraints:
+      contextWindow: 131072
+      maxOutputTokens: 16384
+      maxRequestTokens: 0
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # OpenAI
+  # https://platform.openai.com/docs/models
+  # ════════════════════════════════════════════════════════════════════════════
+
+  # gpt-4o — flagship multimodal model, vision + function calling
+    enabled: true
+    litellmModel: "openai/gpt-4o"
+    credentialsRef:
+      existingSecret: "openai-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+      - vision
+      - fast
+    latencyProfile: medium
+    constraints:
+      contextWindow: 128000
+      maxOutputTokens: 16384
+      maxRequestTokens: 0
+      costPerMillionInputTokens: "2.50"
+      costPerMillionOutputTokens: "10.00"
+
+  # gpt-4o-mini — fast and cheap, still vision-capable
+  - name: openai-gpt-4o-mini
+    enabled: true
+    litellmModel: "openai/gpt-4o-mini"
+    credentialsRef:
+      existingSecret: "openai-api-key"
+      key: "api-key"
+    capabilities:
+      - fast
+      - cheap
+      - vision
+    latencyProfile: fast
+    constraints:
+      contextWindow: 128000
+      maxOutputTokens: 16384
+      maxRequestTokens: 0
+      costPerMillionInputTokens: "0.15"
+      costPerMillionOutputTokens: "0.60"
+
+  # o1 — advanced reasoning (chain-of-thought)
+  - name: openai-o1
+    enabled: true
+    litellmModel: "openai/o1"
+    credentialsRef:
+      existingSecret: "openai-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+    latencyProfile: slow
+    constraints:
+      contextWindow: 200000
+      maxOutputTokens: 100000
+      maxRequestTokens: 0
+      costPerMillionInputTokens: "15.00"
+      costPerMillionOutputTokens: "60.00"
+
+  # o1-mini — fast reasoning, lower cost than o1
+  - name: openai-o1-mini
+    enabled: true
+    litellmModel: "openai/o1-mini"
+    credentialsRef:
+      existingSecret: "openai-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+      - fast
+    latencyProfile: medium
+    constraints:
+      contextWindow: 128000
+      maxOutputTokens: 65536
+      maxRequestTokens: 0
+      costPerMillionInputTokens: "1.10"
+      costPerMillionOutputTokens: "4.40"
+
+  # o3-mini — latest fast reasoning model
+  - name: openai-o3-mini
+    enabled: true
+    litellmModel: "openai/o3-mini"
+    credentialsRef:
+      existingSecret: "openai-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+      - fast
+    latencyProfile: medium
+    constraints:
+      contextWindow: 200000
+      maxOutputTokens: 100000
+      maxRequestTokens: 0
+      costPerMillionInputTokens: "1.10"
+      costPerMillionOutputTokens: "4.40"
+
+  # text-embedding-3-large — best OpenAI embedding model (3072-dim)
+  - name: openai-text-embedding-3-large
+    enabled: true
+    litellmModel: "openai/text-embedding-3-large"
+    credentialsRef:
+      existingSecret: "openai-api-key"
+      key: "api-key"
+    capabilities:
+      - embeddings
+    latencyProfile: fast
+    constraints:
+      contextWindow: 8191
+      costPerMillionInputTokens: "0.13"
+      costPerMillionOutputTokens: "0.00"
+
+  # text-embedding-3-small — cheaper OpenAI embedding model (1536-dim)
+  - name: openai-text-embedding-3-small
+    enabled: true
+    litellmModel: "openai/text-embedding-3-small"
+    credentialsRef:
+      existingSecret: "openai-api-key"
+      key: "api-key"
+    capabilities:
+      - embeddings
+      - cheap
+    latencyProfile: fast
+    constraints:
+      contextWindow: 8191
+      costPerMillionInputTokens: "0.02"
+      costPerMillionOutputTokens: "0.00"
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # Anthropic
+  # https://docs.anthropic.com/en/docs/about-claude/models
+  # ════════════════════════════════════════════════════════════════════════════
+
+  # claude-opus-4-6 — frontier model, exceptional reasoning and writing
+  - name: anthropic-claude-opus-4-6
+    enabled: true
+    litellmModel: "anthropic/claude-opus-4-6"
+    credentialsRef:
+      existingSecret: "anthropic-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+      - vision
+      - long-context
+    latencyProfile: slow
+    constraints:
+      contextWindow: 200000
+      maxOutputTokens: 32000
+      maxRequestTokens: 0
+      costPerMillionInputTokens: "5.00"
+      costPerMillionOutputTokens: "25.00"
+
+  # claude-sonnet-4-6 — best balance of intelligence and speed
+  - name: anthropic-claude-sonnet-4-6
+    enabled: true
+    litellmModel: "anthropic/claude-sonnet-4-6"
+    credentialsRef:
+      existingSecret: "anthropic-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+      - vision
+      - fast
+      - long-context
+    latencyProfile: medium
+    constraints:
+      contextWindow: 200000
+      maxOutputTokens: 64000
+      maxRequestTokens: 0
+      costPerMillionInputTokens: "3.00"
+      costPerMillionOutputTokens: "15.00"
+
+  # claude-haiku-4-5 — fastest and most compact Claude model
+  - name: anthropic-claude-haiku-4-5
+    enabled: true
+    litellmModel: "anthropic/claude-haiku-4-5-20251001"
+    credentialsRef:
+      existingSecret: "anthropic-api-key"
+      key: "api-key"
+    capabilities:
+      - fast
+      - cheap
+      - vision
+    latencyProfile: fast
+    constraints:
+      contextWindow: 200000
+      maxOutputTokens: 8096
+      maxRequestTokens: 0
+      costPerMillionInputTokens: "1.00"
+      costPerMillionOutputTokens: "5.00"
+
+  # claude-3-5-sonnet — previous flagship, still highly capable
+  - name: anthropic-claude-3-5-sonnet
+    enabled: true
+    litellmModel: "anthropic/claude-3-5-sonnet-20241022"
+    credentialsRef:
+      existingSecret: "anthropic-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+      - vision
+      - fast
+    latencyProfile: medium
+    constraints:
+      contextWindow: 200000
+      maxOutputTokens: 8096
+      maxRequestTokens: 0
+      costPerMillionInputTokens: "3.00"
+      costPerMillionOutputTokens: "15.00"
+
+  # claude-3-5-haiku — previous fast model
+  - name: anthropic-claude-3-5-haiku
+    enabled: true
+    litellmModel: "anthropic/claude-3-5-haiku-20241022"
+    credentialsRef:
+      existingSecret: "anthropic-api-key"
+      key: "api-key"
+    capabilities:
+      - fast
+      - cheap
+      - vision
+    latencyProfile: fast
+    constraints:
+      contextWindow: 200000
+      maxOutputTokens: 8096
+      maxRequestTokens: 0
+      costPerMillionInputTokens: "0.80"
+      costPerMillionOutputTokens: "4.00"
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # Google Gemini (direct API key, not Vertex AI)
+  # https://ai.google.dev/gemini-api/docs/models/gemini
+  # ════════════════════════════════════════════════════════════════════════════
+
+  # gemini-2.5-pro — strongest Gemini model, 1M context
+  - name: google-gemini-2-5-pro
+    enabled: true
+    litellmModel: "gemini/gemini-2.5-pro"
+    credentialsRef:
+      existingSecret: "google-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+      - vision
+      - long-context
+    latencyProfile: medium
+    constraints:
+      contextWindow: 1048576
+      maxOutputTokens: 65536
+      maxRequestTokens: 0
+      costPerMillionInputTokens: "1.25"
+      costPerMillionOutputTokens: "10.00"
+
+  # gemini-2.5-flash — fast multimodal model, 1M context
+  - name: google-gemini-2-5-flash
+    enabled: true
+    litellmModel: "gemini/gemini-2.5-flash"
+    credentialsRef:
+      existingSecret: "google-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+      - vision
+      - fast
+      - long-context
+    latencyProfile: fast
+    constraints:
+      contextWindow: 1048576
+      maxOutputTokens: 65536
+      maxRequestTokens: 0
+      costPerMillionInputTokens: "0.30"
+      costPerMillionOutputTokens: "2.50"
+
+  # gemini-2.5-flash-lite — cheapest Gemini, great for high-volume tasks
+  - name: google-gemini-2-5-flash-lite
+    enabled: true
+    litellmModel: "gemini/gemini-2.5-flash-lite"
+    credentialsRef:
+      existingSecret: "google-api-key"
+      key: "api-key"
+    capabilities:
+      - fast
+      - cheap
+      - vision
+    latencyProfile: fast
+    constraints:
+      contextWindow: 1048576
+      maxOutputTokens: 65536
+      maxRequestTokens: 0
+      costPerMillionInputTokens: "0.10"
+      costPerMillionOutputTokens: "0.40"
+
+  # gemini-embedding-001 — Google's text embedding model
+  - name: google-gemini-embedding-001
+    enabled: true
+    litellmModel: "gemini/gemini-embedding-001"
+    credentialsRef:
+      existingSecret: "google-api-key"
+      key: "api-key"
+    capabilities:
+      - embeddings
+    latencyProfile: fast
+    constraints:
+      contextWindow: 2048
+      costPerMillionInputTokens: "0.15"
+      costPerMillionOutputTokens: "0.00"
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # Mistral AI
+  # https://docs.mistral.ai/getting-started/models/models_overview/
+  # ════════════════════════════════════════════════════════════════════════════
+
+  # mistral-large — flagship, best reasoning + function calling (Mistral Large 3 2512)
+  - name: mistral-large
+    enabled: false
+    litellmModel: "mistral/mistral-large-latest"
+    credentialsRef:
+      existingSecret: "mistral-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+    latencyProfile: medium
+    constraints:
+      contextWindow: 131072
+      maxOutputTokens: 4096
+      maxRequestTokens: 0
+      costPerMillionInputTokens: "0.50"
+      costPerMillionOutputTokens: "1.50"
+
+  # mistral-small — cheap and efficient for simpler tasks (Mistral Small 3.1 24B)
+  - name: mistral-small
+    enabled: false
+    litellmModel: "mistral/mistral-small-latest"
+    credentialsRef:
+      existingSecret: "mistral-api-key"
+      key: "api-key"
+    capabilities:
+      - fast
+      - cheap
+    latencyProfile: fast
+    constraints:
+      contextWindow: 32768
+      maxOutputTokens: 4096
+      maxRequestTokens: 0
+      costPerMillionInputTokens: "0.03"
+      costPerMillionOutputTokens: "0.11"
+
+  # codestral — specialized for code generation and completion
+  - name: mistral-codestral
+    enabled: false
+    litellmModel: "mistral/codestral-latest"
+    credentialsRef:
+      existingSecret: "mistral-api-key"
+      key: "api-key"
+    capabilities:
+      - code
+      - fast
+    latencyProfile: fast
+    constraints:
+      contextWindow: 262144
+      maxOutputTokens: 4096
+      maxRequestTokens: 0
+      costPerMillionInputTokens: "0.30"
+      costPerMillionOutputTokens: "0.90"
+
+  # mistral-embed — text embeddings (1024-dim)
+  - name: mistral-embed
+    enabled: false
+    litellmModel: "mistral/mistral-embed"
+    credentialsRef:
+      existingSecret: "mistral-api-key"
+      key: "api-key"
+    capabilities:
+      - embeddings
+    latencyProfile: fast
+    constraints:
+      contextWindow: 8192
+      costPerMillionInputTokens: "0.10"
+      costPerMillionOutputTokens: "0.00"
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # Cohere
+  # https://docs.cohere.com/docs/models
+  # ════════════════════════════════════════════════════════════════════════════
+
+  # command-r-plus — best Cohere model, optimised for RAG and tool use
+  - name: cohere-command-r-plus
+    enabled: false
+    litellmModel: "cohere/command-r-plus"
+    credentialsRef:
+      existingSecret: "cohere-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+    latencyProfile: medium
+    constraints:
+      contextWindow: 128000
+      maxOutputTokens: 4096
+      maxRequestTokens: 0
+      costPerMillionInputTokens: "2.50"
+      costPerMillionOutputTokens: "10.00"
+
+  # command-r — balanced RAG model
+  - name: cohere-command-r
+    enabled: false
+    litellmModel: "cohere/command-r"
+    credentialsRef:
+      existingSecret: "cohere-api-key"
+      key: "api-key"
+    capabilities:
+      - fast
+    latencyProfile: medium
+    constraints:
+      contextWindow: 128000
+      maxOutputTokens: 4096
+      maxRequestTokens: 0
+      costPerMillionInputTokens: "0.15"
+      costPerMillionOutputTokens: "0.60"
+
+  # embed-english-v3 — state-of-the-art English embeddings (1024-dim)
+  - name: cohere-embed-english-v3
+    enabled: false
+    litellmModel: "cohere/embed-english-v3.0"
+    credentialsRef:
+      existingSecret: "cohere-api-key"
+      key: "api-key"
+    capabilities:
+      - embeddings
+    latencyProfile: fast
+    constraints:
+      contextWindow: 512
+      costPerMillionInputTokens: "0.10"
+      costPerMillionOutputTokens: "0.00"
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # xAI (Grok)
+  # https://docs.x.ai/docs/models
+  # ════════════════════════════════════════════════════════════════════════════
+
+  # grok-2 — flagship, excels at reasoning and real-time knowledge
+  - name: xai-grok-2
+    enabled: false
+    litellmModel: "xai/grok-2"
+    credentialsRef:
+      existingSecret: "xai-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+    latencyProfile: medium
+    constraints:
+      contextWindow: 131072
+      maxOutputTokens: 8192
+      maxRequestTokens: 0
+      costPerMillionInputTokens: "2.00"
+      costPerMillionOutputTokens: "10.00"
+
+  # grok-2-vision — multimodal variant with image understanding
+  - name: xai-grok-2-vision
+    enabled: false
+    litellmModel: "xai/grok-2-vision"
+    credentialsRef:
+      existingSecret: "xai-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - vision
+    latencyProfile: medium
+    constraints:
+      contextWindow: 32768
+      maxOutputTokens: 8192
+      maxRequestTokens: 0
+      costPerMillionInputTokens: "2.00"
+      costPerMillionOutputTokens: "10.00"
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # Groq (ultra-fast hosted inference — open-source models)
+  # https://console.groq.com/docs/models
+  # ════════════════════════════════════════════════════════════════════════════
+
+  # llama-3.3-70b — Meta Llama 3.3 70B, best open-source quality on Groq
+  - name: groq-llama-3-3-70b
+    enabled: false
+    litellmModel: "groq/llama-3.3-70b-versatile"
+    credentialsRef:
+      existingSecret: "groq-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+      - fast
+    latencyProfile: fast
+    constraints:
+      contextWindow: 128000
+      maxOutputTokens: 32768
+      maxRequestTokens: 0
+      costPerMillionInputTokens: "0.59"
+      costPerMillionOutputTokens: "0.79"
+
+  # llama-3.1-8b — tiny, extremely fast for simple classification/extraction
+  - name: groq-llama-3-1-8b
+    enabled: false
+    litellmModel: "groq/llama-3.1-8b-instant"
+    credentialsRef:
+      existingSecret: "groq-api-key"
+      key: "api-key"
+    capabilities:
+      - fast
+      - cheap
+    latencyProfile: fast
+    constraints:
+      contextWindow: 131072
+      maxOutputTokens: 8000
+      maxRequestTokens: 0
+      costPerMillionInputTokens: "0.05"
+      costPerMillionOutputTokens: "0.08"
+
+  # mixtral-8x7b — DEPRECATED by Groq on 2025-03-05; kept for reference only
+  - name: groq-mixtral-8x7b
+    enabled: false
+    litellmModel: "groq/mixtral-8x7b-32768"
+    credentialsRef:
+      existingSecret: "groq-api-key"
+      key: "api-key"
+    capabilities:
+      - fast
+      - code
+    latencyProfile: fast
+    constraints:
+      contextWindow: 32768
+      maxOutputTokens: 8192
+      maxRequestTokens: 0
+      costPerMillionInputTokens: "0.24"
+      costPerMillionOutputTokens: "0.24"
+
+  # deepseek-r1-distill-llama-70b — DEPRECATED by Groq on 2025-09-02; kept for reference only
+  - name: groq-deepseek-r1-distill-llama-70b
+    enabled: false
+    litellmModel: "groq/deepseek-r1-distill-llama-70b"
+    credentialsRef:
+      existingSecret: "groq-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+      - fast
+    latencyProfile: fast
+    constraints:
+      contextWindow: 128000
+      maxOutputTokens: 32768
+      maxRequestTokens: 0
+      costPerMillionInputTokens: "0.75"
+      costPerMillionOutputTokens: "0.99"
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # Together AI (open-source models via hosted API)
+  # https://docs.together.ai/docs/inference-models
+  # ════════════════════════════════════════════════════════════════════════════
+
+  # Meta Llama 3.3 70B Instruct Turbo
+  - name: together-llama-3-3-70b
+    enabled: false
+    litellmModel: "together_ai/meta-llama/Meta-Llama-3.3-70B-Instruct-Turbo"
+    credentialsRef:
+      existingSecret: "together-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+      - fast
+    latencyProfile: fast
+    constraints:
+      contextWindow: 131072
+      maxOutputTokens: 8192
+      maxRequestTokens: 0
+      costPerMillionInputTokens: "0.88"
+      costPerMillionOutputTokens: "0.88"
+
+  # Meta Llama 3.1 405B — largest open-source model available
+  - name: together-llama-3-1-405b
+    enabled: false
+    litellmModel: "together_ai/meta-llama/Meta-Llama-3.1-405B-Instruct-Turbo"
+    credentialsRef:
+      existingSecret: "together-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+    latencyProfile: medium
+    constraints:
+      contextWindow: 130815
+      maxOutputTokens: 4096
+      maxRequestTokens: 0
+      costPerMillionInputTokens: "3.50"
+      costPerMillionOutputTokens: "3.50"
+
+  # DeepSeek R1 — full reasoning model via Together AI
+  - name: together-deepseek-r1
+    enabled: false
+    litellmModel: "together_ai/deepseek-ai/DeepSeek-R1"
+    credentialsRef:
+      existingSecret: "together-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+    latencyProfile: slow
+    constraints:
+      contextWindow: 163840
+      maxOutputTokens: 8192
+      maxRequestTokens: 0
+      costPerMillionInputTokens: "7.00"
+      costPerMillionOutputTokens: "7.00"
+
+  # Qwen 2.5 72B Instruct Turbo
+  - name: together-qwen-2-5-72b
+    enabled: false
+    litellmModel: "together_ai/Qwen/Qwen2.5-72B-Instruct-Turbo"
+    credentialsRef:
+      existingSecret: "together-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+      - fast
+    latencyProfile: fast
+    constraints:
+      contextWindow: 32768
+      maxOutputTokens: 8192
+      maxRequestTokens: 0
+      costPerMillionInputTokens: "1.20"
+      costPerMillionOutputTokens: "1.20"
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # DeepSeek (direct API)
+  # https://platform.deepseek.com/api-docs/
+  # ════════════════════════════════════════════════════════════════════════════
+
+  # DeepSeek-V3 — top-tier open-source model at very low cost (V3.2)
+  - name: deepseek-v3
+    enabled: false
+    litellmModel: "deepseek/deepseek-chat"
+    credentialsRef:
+      existingSecret: "deepseek-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+      - cheap
+    latencyProfile: medium
+    constraints:
+      contextWindow: 65536
+      maxOutputTokens: 8192
+      maxRequestTokens: 0
+      costPerMillionInputTokens: "0.28"
+      costPerMillionOutputTokens: "0.42"
+
+  # DeepSeek-R1 — advanced reasoning via chain-of-thought
+  - name: deepseek-r1
+    enabled: false
+    litellmModel: "deepseek/deepseek-reasoner"
+    credentialsRef:
+      existingSecret: "deepseek-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+    latencyProfile: slow
+    constraints:
+      contextWindow: 65536
+      maxOutputTokens: 8192
+      maxRequestTokens: 0
+      costPerMillionInputTokens: "0.55"
+      costPerMillionOutputTokens: "2.19"
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # Azure OpenAI
+  # Requires: AZURE_API_BASE and AZURE_API_VERSION set in the operator env.
+  # The litellmModel value corresponds to the deployment name in Azure.
+  # https://learn.microsoft.com/en-us/azure/ai-services/openai/concepts/models
+  # ════════════════════════════════════════════════════════════════════════════
+
+  # azure-gpt-4o — GPT-4o deployed via Azure OpenAI
+  - name: azure-gpt-4o
+    enabled: false
+    litellmModel: "azure/gpt-4o"     # must match the Azure deployment name
+    baseURL: ""                       # e.g. https://my-resource.openai.azure.com/
+    credentialsRef:
+      existingSecret: "azure-openai-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+      - vision
+      - fast
+    latencyProfile: medium
+    constraints:
+      contextWindow: 128000
+      maxOutputTokens: 16384
+      maxRequestTokens: 0
+      costPerMillionInputTokens: "2.50"
+      costPerMillionOutputTokens: "10.00"
+
+  # azure-gpt-4o-mini — GPT-4o-mini deployed via Azure OpenAI
+  - name: azure-gpt-4o-mini
+    enabled: false
+    litellmModel: "azure/gpt-4o-mini" # must match the Azure deployment name
+    baseURL: ""                        # e.g. https://my-resource.openai.azure.com/
+    credentialsRef:
+      existingSecret: "azure-openai-api-key"
+      key: "api-key"
+    capabilities:
+      - fast
+      - cheap
+      - vision
+    latencyProfile: fast
+    constraints:
+      contextWindow: 128000
+      maxOutputTokens: 16384
+      maxRequestTokens: 0
+      costPerMillionInputTokens: "0.15"
+      costPerMillionOutputTokens: "0.60"
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # Ollama (in-cluster)
+  # Deploy ollama-embedding-cluster.yaml first to run Ollama in the cluster.
+  # Best for local development and testing without external API costs.
+  # https://ollama.com/library
+  # ════════════════════════════════════════════════════════════════════════════
+
+  # nomic-embed-text — local embedding model (768-dim)
+  # Model is pre-pulled by the ollama-pull-model Job when you deploy
+  # ollama-embedding-cluster.yaml
+  - name: ollama-nomic-embed-text
+    enabled: true
+    litellmModel: "ollama/nomic-embed-text"
+    baseURL: "http://ollama-embed.agent-orc-system.svc:11434"
+    credentialsRef:
+      existingSecret: "ollama-embed-credentials"
+      key: "api-key"
+    capabilities:
+      - embeddings
+    latencyProfile: fast
+    constraints:
+      contextWindow: 8192
+      costPerMillionInputTokens: "0"
+      costPerMillionOutputTokens: "0"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Model Selectors
+# Pre-built routing policies.  Enable those that match the model providers
+# you have activated above.
+#
+# providers[].name must match a ModelProvider .name value above.
+# ─────────────────────────────────────────────────────────────────────────────
+modelSelectors:
+
+  # default — balanced quality/cost, multi-provider fallback
+  # Enable if you have at least one of: claude-sonnet-4-6, gpt-4o, gemini-2.0-flash
+  - name: default
+    enabled: true
+    strategy: rule-based
+    providers:
+      - name: anthropic-claude-sonnet-4-6
+        weight: 60
+      - name: openai-gpt-4o
+        weight: 40
+    fallbackChain:
+      - google-gemini-2-5-flash
+      - anthropic-claude-haiku-4-5
+      - groq-llama-3-3-70b
+
+  # fast — lowest latency, optimised for interactive / high-volume workloads
+  - name: fast
+    enabled: true
+    strategy: rule-based
+    providers:
+      - name: openai-gpt-4o-mini
+        weight: 40
+      - name: anthropic-claude-haiku-4-5
+        weight: 40
+      - name: google-gemini-2-5-flash-lite
+        weight: 20
+    fallbackChain:
+      - groq-llama-3-1-8b
+
+  # reasoning — deep analytical tasks, math, multi-step problem solving
+  - name: reasoning
+    enabled: true
+    strategy: rule-based
+    providers:
+      - name: openai-o3-mini
+        weight: 50
+      - name: anthropic-claude-opus-4-6
+        weight: 30
+      - name: deepseek-r1
+        weight: 20
+    fallbackChain:
+      - openai-o1
+      - groq-deepseek-r1-distill-llama-70b
+
+  # coding — code generation, review, and debugging
+  - name: coding
+    enabled: true
+    strategy: rule-based
+    providers:
+      - name: anthropic-claude-sonnet-4-6
+        weight: 40
+      - name: openai-gpt-4o
+        weight: 30
+    fallbackChain:
+      - deepseek-v3
+      - groq-deepseek-r1-distill-llama-70b
+
+  # vision — multimodal tasks requiring image or document understanding
+  - name: vision
+    enabled: true
+    strategy: rule-based
+    providers:
+      - name: anthropic-claude-sonnet-4-6
+        weight: 40
+      - name: openai-gpt-4o
+        weight: 40
+      - name: google-gemini-2-5-flash
+        weight: 20
+    fallbackChain:
+      - xai-grok-2-vision
+
+  # long-context — processing large documents (>100k tokens)
+  - name: long-context
+    enabled: true
+    strategy: rule-based
+    providers:
+      - name: google-gemini-2-5-pro
+        weight: 50
+      - name: anthropic-claude-sonnet-4-6
+        weight: 30
+      - name: google-gemini-2-5-flash
+        weight: 20
+    fallbackChain:
+      - google-gemini-2-5-flash-lite
+
+  # embeddings — vector embedding generation for RAG / semantic search
+  - name: embeddings
+    enabled: true
+    strategy: rule-based
+    providers:
+      - name: openai-text-embedding-3-large
+        weight: 40
+      - name: google-gemini-embedding-001
+        weight: 60
+    fallbackChain:
+      - mistral-embed
+      - openai-text-embedding-3-small
+
+  # ollama-embeddings — local in-cluster Ollama for embeddings
+  # Used when running Ollama inside the cluster (no external API costs)
+  - name: ollama-embeddings
+    enabled: true
+    strategy: rule-based
+    providers:
+      - name: ollama-nomic-embed-text
+        weight: 100
+
+  # cheap — cost-optimised for batch / background workloads
+  - name: cheap
+    enabled: true
+    strategy: rule-based
+    providers:
+      - name: deepseek-v3
+        weight: 40
+      - name: google-gemini-2-5-flash-lite
+        weight: 30
+      - name: groq-llama-3-1-8b
+        weight: 30
+    fallbackChain:
+      - openai-gpt-4o-mini
+      - mistral-small
+
+  # poolside — all poolside API models
+  - name: poolside
+    enabled: true
+    strategy: rule-based
+    providers:
+      - name: poolside-laguna-m-ctx256k
+      - name: poolside-laguna-xs3-rc2
+      - name: poolside-laguna-xs3-rc1
+      - name: poolside-fusion
+      - name: poolside-kimi-k2-7-code
+      - name: poolside-claude-fable-5
+      - name: poolside-claude-opus-4-8-fast
+      - name: poolside-deepseek-v4-flash
+      - name: poolside-claude-opus-4-8
+      - name: poolside-laguna-m-nvfp4
+      - name: poolside-deepseek-v4-pro
+      - name: poolside-production-e2e
+      - name: poolside-laguna-xs-polaris
+      - name: poolside-gpt-5-5
+      - name: poolside-qwen-3-6-27b
+      - name: poolside-kimi-k2-6
+      - name: poolside-glm-5-1
+      - name: poolside-minimax-m2-7
+      - name: poolside-claude-opus-4-7
+      - name: poolside-nemotron-3-120b
+      - name: poolside-kimi-k2-5-turbo
+      - name: poolside-kimi-k2-5-nitro
+      - name: poolside-gpt-5-4-mini
+      - name: poolside-claude-haiku-4-5
+      - name: poolside-gemini-3-flash
+      - name: poolside-grok-4-fast
+      - name: poolside-deepseek-v3-2
+      - name: poolside-gpt-oss-120b
+      - name: poolside-gpt-5-4
+      - name: poolside-qwen3-coder-next-cloud
+      - name: poolside-qwen-3-5-35b
+      - name: poolside-gpt-5-3-codex
+      - name: poolside-trinity-preview
+      - name: poolside-devstral
+      - name: poolside-mimo-v2
+      - name: poolside-minimax-m2-1
+      - name: poolside-claude-opus-4-5
+      - name: poolside-gemini-3-pro
+      - name: poolside-glm-4-7
+      - name: poolside-grok-code-fast
+      - name: poolside-qwen3-235b
+      - name: poolside-claude-4-5-sonnet
+      - name: poolside-claude-sonnet-4-6
+      - name: poolside-minimax-m2-5-nitro
+      - name: poolside-nemotron-3-nano
+      - name: poolside-gemini-2-5-flash
+      - name: poolside-claude-opus-4-6
+      - name: poolside-qwen3-coder-next
+      - name: poolside-gpt-5-2-codex
+      - name: poolside-glm-4-7-flash
+    fallbackChain:
+      - poolside-laguna-m-ctx256k
+      - poolside-laguna-xs-polaris

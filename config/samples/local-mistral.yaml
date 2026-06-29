@@ -1,0 +1,52 @@
+---
+# Secret with dummy API key (local Ollama doesn't need auth)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ollama-credentials
+  namespace: default
+type: Opaque
+stringData:
+  api-key: "dummy-key"  # Local Ollama doesn't require auth
+
+---
+# ModelProvider for local Ollama Mistral
+apiVersion: agentorc.agentorc.io/v1alpha1
+kind: ModelProvider
+metadata:
+  name: mistral-local
+  namespace: default
+  labels:
+    app.kubernetes.io/name: agent-orc
+spec:
+  litellmModel: "ollama/mistral"
+  credentialsRef:
+    name: ollama-credentials
+    key: api-key
+  latencyProfile: "fast"
+  capabilities:
+    - fast
+    - cheap
+  constraints:
+    contextWindow: 32768
+    maxOutputTokens: 8000
+    costPerMillionInputTokens: "0"
+    costPerMillionOutputTokens: "0"
+
+---
+# ModelSelector using the local provider
+apiVersion: agentorc.agentorc.io/v1alpha1
+kind: ModelSelector
+metadata:
+  name: local-mistral
+  namespace: default
+  labels:
+    app.kubernetes.io/name: agent-orc
+spec:
+  strategy: rule-based
+  providers:
+    - name: mistral-local
+      weight: 100
+  capabilityRouting:
+    fast: mistral-local
+    cheap: mistral-local

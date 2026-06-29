@@ -1,0 +1,9 @@
+# Tell kustomize to propagate namePrefix/nameSuffix to Certificate.spec.issuerRef.name
+# when the referent is an Issuer resource.
+nameReference:
+- kind: Issuer
+  group: cert-manager.io
+  version: v1
+  fieldSpecs:
+  - kind: Certificate
+    path: spec/issuerRef/name

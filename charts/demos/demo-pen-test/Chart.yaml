@@ -1,0 +1,14 @@
+apiVersion: v2
+name: demo-pen-test
+description: A Kubernetes-native penetration testing agent with CVE correlation and executive reporting
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - security
+  - pentest
+  - cve
+  - vulnerability
+home: https://github.com/agent-orc/agent-orc
+sources:
+  - https://github.com/agent-orc/agent-orc

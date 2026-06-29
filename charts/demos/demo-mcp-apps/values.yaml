@@ -1,0 +1,213 @@
+nameOverride: ""
+
+agent-orc-resources:
+
+  # ── MCPServer ─────────────────────────────────────────────────────────────────
+  #
+  # health-mcp: points to the in-cluster health-mcp-server Deployment (HTTP transport).
+  # allowApps: true tells agent-orc to honour _meta.ui.resourceUri on tools/list and
+  # render the fetched HTML as a sandboxed iframe in the UI.
+
+  mcpServers:
+    - name: health-mcp
+      transport: http
+      url: "http://health-mcp-server.agent-orc-system.svc.cluster.local:8080"
+      allowApps: true
+      tools:
+        - name: check-service-health
+          description: >
+            Return the current health status of all services (or a specific service).
+            Shows uptime percentage, requests per second, p99 latency, and error rate.
+        - name: list-incidents
+          description: >
+            List all currently open incidents, optionally filtered by severity (P1–P4).
+            Each incident includes its service, age, status, and description.
+      allowedAgents:
+        - ops-advisor
+      networkEgress:
+        - host: health-mcp-server.agent-orc-system.svc.cluster.local
+          port: 8080
+          protocol: TCP
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+
+    - name: system-monitor
+      transport: http
+      url: "http://system-monitor-server.agent-orc-system.svc.cluster.local:8080"
+      allowApps: true
+      tools:
+        - name: get-system-info
+          description: >
+            Return static configuration for all cluster nodes (or a specific node).
+            Shows hostname, role, zone, CPU model, core count, memory, and disk capacity.
+        - name: get-system-stats
+          description: >
+            Return current resource usage for all cluster nodes (or a specific node).
+            Shows CPU usage, memory used/total, disk used/total, and uptime.
+      allowedAgents:
+        - ops-advisor
+      networkEgress:
+        - host: system-monitor-server.agent-orc-system.svc.cluster.local
+          port: 8080
+          protocol: TCP
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+
+  # ── Agents ────────────────────────────────────────────────────────────────────
+
+  agents:
+    - name: ops-advisor
+      modelSelectorRef: default
+      systemPrompt: |
+        You are a site-reliability assistant with access to real-time service health and
+        cluster resource monitoring data. You have four tools:
+
+          health-mcp-check-service-health       —  current health metrics for all or one service
+          health-mcp-list-incidents             —  open incidents, optionally filtered by severity
+          system-monitor-get-system-info        —  static node configuration (CPU, memory, disk)
+          system-monitor-get-system-stats       —  live resource usage per node (CPU%, memory, disk)
+
+        BEHAVIOUR
+        - Always call at least one tool before answering questions about service health or system resources.
+        - When asked for an overview or "status", call check-service-health with no filter.
+        - When asked about incidents or alerts, call list-incidents (optionally filtered).
+        - When asked about a specific service, call check-service-health with that service name.
+        - When asked about system resources, CPU, memory, or disk, call get-system-stats.
+        - When asked about node configuration or hardware, call get-system-info.
+        - When asked about a specific node, pass the node name as a filter.
+        - After calling a tool, summarise the key findings in 2-4 bullet points.
+        - Highlight degraded services, P1 incidents, and high-CPU nodes prominently.
+        - Use Markdown formatting for your response (bold for service names, code for metrics).
+        - Do not repeat verbatim data already shown in the tool result — add insight instead.
+
+        EXAMPLE QUESTIONS
+          "What's the current system status?"
+          "Any P1 incidents right now?"
+          "How is the payment service doing?"
+          "Show me everything that's on fire"
+          "What's the cluster resource usage?"
+          "Is any node running hot on CPU?"
+          "How much disk space is left?"
+      tools:
+        - health-mcp-check-service-health
+        - health-mcp-list-incidents
+        - system-monitor-get-system-info
+        - system-monitor-get-system-stats
+      runtime:
+        inputMode: http
+        ociRef: "python:3.12-slim"
+        framework: openai-compatible
+        command: ["python3", "-c"]
+        args:
+          - |
+            import json, os, urllib.request
+            from http.server import BaseHTTPRequestHandler, HTTPServer
+
+            base_url = os.environ.get("OPENAI_BASE_URL", "http://localhost:8080")
+            api_key   = os.environ.get("OPENAI_API_KEY", "unused")
+
+            class Handler(BaseHTTPRequestHandler):
+                def log_message(self, *a): pass
+                def do_GET(self):
+                    if self.path == "/healthz":
+                        self.send_response(200); self.end_headers(); self.wfile.write(b"ok")
+                    else:
+                        self.send_response(404); self.end_headers()
+                def do_POST(self):
+                    if self.path != "/invoke":
+                        self.send_response(404); self.end_headers(); return
+                    body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+                    inp = body.get("input", "")
+                    req_body = json.dumps({"model": "default", "stream": True,
+                        "messages": [{"role": "user", "content": inp}]}).encode()
+                    req = urllib.request.Request(f"{base_url}/chat/completions",
+                        data=req_body, headers={"Content-Type": "application/json",
+                        "Authorization": f"Bearer {api_key}"})
+                    output = ""
+                    with urllib.request.urlopen(req, timeout=300) as r:
+                        for line in r:
+                            line = line.decode().strip()
+                            if not line.startswith("data: "): continue
+                            data = line[6:]
+                            if data == "[DONE]": break
+                            try:
+                                chunk = json.loads(data)
+                            except json.JSONDecodeError:
+                                continue
+                            choices = chunk.get("choices", [])
+                            if not choices: continue
+                            content = choices[0].get("delta", {}).get("content") or ""
+                            output += content
+                    payload = json.dumps({"output": output}).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+
+            port = int(os.environ.get("PORT", "8000"))
+            print(f"ops-advisor listening on :{port}", flush=True)
+            HTTPServer(("", port), Handler).serve_forever()
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+
+  # ── AgentDeployments ──────────────────────────────────────────────────────────
+
+  agentDeployments:
+    # Chat with the ops-advisor at:
+    #   POST /api/deployments/agent-orc-system/ops-advisor-chat/execute
+    # Try: "What's the current system status?"
+    #      "Any P1 incidents right now?"
+    #      "How is the payment service doing?"
+    - name: ops-advisor-chat
+      agentRef: ops-advisor
+      inputSource:
+        type: chat
+      replicas: 1
+      warmPoolSize: 1
+      restartPolicy:
+        minBackoffSeconds: 5
+        maxBackoffSeconds: 300
+        maxConsecutiveFailures: 5
+
+  # ── MCP Server Deployments ──────────────────────────────────────────────────
+
+  mcpServerDeployments:
+    - name: health-mcp-server
+      fileName: server.py
+      image: "python:3.12-slim"
+      port: 8080
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+
+    - name: system-monitor-server
+      fileName: system-monitor-server.py
+      image: "python:3.12-slim"
+      port: 8080
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi

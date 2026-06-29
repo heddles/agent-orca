@@ -1,0 +1,344 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: guardrailpolicies.agentorc.agentorc.io
+spec:
+  group: agentorc.agentorc.io
+  names:
+    kind: GuardrailPolicy
+    listKind: GuardrailPolicyList
+    plural: guardrailpolicies
+    singular: guardrailpolicy
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.ready
+      name: Ready
+      type: boolean
+    - jsonPath: .status.inputFilterCount
+      name: InputFilters
+      priority: 1
+      type: integer
+    - jsonPath: .status.outputFilterCount
+      name: OutputFilters
+      priority: 1
+      type: integer
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          GuardrailPolicy defines content filtering and validation rules for agent inputs and outputs.
+          Referenced by Agents via spec.guardrailPolicyRef, or by TenantConfig as a namespace default.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              GuardrailPolicySpec defines content filtering and validation rules applied to
+              agent inputs and outputs by the model-router sidecar.
+            properties:
+              formatValidation:
+                description: FormatValidation enforces structural constraints on the
+                  final agent output.
+                properties:
+                  jsonSchema:
+                    description: JSONSchema is a JSON Schema document that the agent's
+                      final output must conform to.
+                    type: string
+                  maxTokens:
+                    description: MaxTokens limits the maximum output token count.
+                    type: integer
+                type: object
+              inputFilters:
+                description: InputFilters are applied to user messages before they
+                  reach the LLM.
+                items:
+                  description: GuardrailFilter is a single content filter rule.
+                  properties:
+                    action:
+                      description: |-
+                        Action determines what happens when the filter matches.
+                        "redact" replaces matched content with the replacement string.
+                        "block" rejects the entire message and returns blockMessage to the caller.
+                        "warn" logs a warning event but allows the message through.
+                      enum:
+                      - redact
+                      - block
+                      - warn
+                      type: string
+                    allowedTopics:
+                      description: AllowedTopics restricts responses to these topics.
+                        Used when Type is "topic-validation".
+                      items:
+                        type: string
+                      type: array
+                    blockMessage:
+                      description: BlockMessage is the message returned to the caller
+                        when Action is "block".
+                      type: string
+                    keywords:
+                      description: Keywords configures keyword blocklist matching.
+                        Used when Type is "keyword-blocklist".
+                      properties:
+                        inline:
+                          description: Inline is a list of keywords to block.
+                          items:
+                            type: string
+                          type: array
+                        secretRef:
+                          description: SecretRef references a Secret containing a
+                            newline-delimited keyword list.
+                          properties:
+                            key:
+                              description: Key within the Secret.
+                              type: string
+                            name:
+                              description: Name of the Secret.
+                              type: string
+                            namespace:
+                              description: Namespace of the Secret. Defaults to the
+                                same namespace as the referencing resource.
+                              type: string
+                          required:
+                          - key
+                          - name
+                          type: object
+                      type: object
+                    name:
+                      description: Name is a human-readable identifier for this filter
+                        (used in logs and events).
+                      minLength: 1
+                      type: string
+                    patterns:
+                      description: Patterns are regex-based match rules. Used when
+                        Type is "regex".
+                      items:
+                        description: RegexPattern defines a named regex match/replace
+                          rule.
+                        properties:
+                          name:
+                            description: Name identifies this pattern (e.g. "ssn",
+                              "email", "credit-card").
+                            type: string
+                          pattern:
+                            description: Pattern is a Go-compatible regular expression.
+                            minLength: 1
+                            type: string
+                          replacement:
+                            description: Replacement is the string that replaces matched
+                              content when action is "redact".
+                            type: string
+                        required:
+                        - name
+                        - pattern
+                        type: object
+                      type: array
+                    type:
+                      description: Type selects the filter implementation.
+                      enum:
+                      - regex
+                      - keyword-blocklist
+                      - topic-validation
+                      type: string
+                  required:
+                  - action
+                  - name
+                  - type
+                  type: object
+                type: array
+              outputFilters:
+                description: |-
+                  OutputFilters are applied to LLM responses before they reach the agent/caller.
+                  Filters are evaluated in order; the first "block" action stops processing.
+                items:
+                  description: GuardrailFilter is a single content filter rule.
+                  properties:
+                    action:
+                      description: |-
+                        Action determines what happens when the filter matches.
+                        "redact" replaces matched content with the replacement string.
+                        "block" rejects the entire message and returns blockMessage to the caller.
+                        "warn" logs a warning event but allows the message through.
+                      enum:
+                      - redact
+                      - block
+                      - warn
+                      type: string
+                    allowedTopics:
+                      description: AllowedTopics restricts responses to these topics.
+                        Used when Type is "topic-validation".
+                      items:
+                        type: string
+                      type: array
+                    blockMessage:
+                      description: BlockMessage is the message returned to the caller
+                        when Action is "block".
+                      type: string
+                    keywords:
+                      description: Keywords configures keyword blocklist matching.
+                        Used when Type is "keyword-blocklist".
+                      properties:
+                        inline:
+                          description: Inline is a list of keywords to block.
+                          items:
+                            type: string
+                          type: array
+                        secretRef:
+                          description: SecretRef references a Secret containing a
+                            newline-delimited keyword list.
+                          properties:
+                            key:
+                              description: Key within the Secret.
+                              type: string
+                            name:
+                              description: Name of the Secret.
+                              type: string
+                            namespace:
+                              description: Namespace of the Secret. Defaults to the
+                                same namespace as the referencing resource.
+                              type: string
+                          required:
+                          - key
+                          - name
+                          type: object
+                      type: object
+                    name:
+                      description: Name is a human-readable identifier for this filter
+                        (used in logs and events).
+                      minLength: 1
+                      type: string
+                    patterns:
+                      description: Patterns are regex-based match rules. Used when
+                        Type is "regex".
+                      items:
+                        description: RegexPattern defines a named regex match/replace
+                          rule.
+                        properties:
+                          name:
+                            description: Name identifies this pattern (e.g. "ssn",
+                              "email", "credit-card").
+                            type: string
+                          pattern:
+                            description: Pattern is a Go-compatible regular expression.
+                            minLength: 1
+                            type: string
+                          replacement:
+                            description: Replacement is the string that replaces matched
+                              content when action is "redact".
+                            type: string
+                        required:
+                        - name
+                        - pattern
+                        type: object
+                      type: array
+                    type:
+                      description: Type selects the filter implementation.
+                      enum:
+                      - regex
+                      - keyword-blocklist
+                      - topic-validation
+                      type: string
+                  required:
+                  - action
+                  - name
+                  - type
+                  type: object
+                type: array
+            type: object
+          status:
+            description: GuardrailPolicyStatus holds the observed state of a GuardrailPolicy.
+            properties:
+              conditions:
+                description: Conditions holds standard Kubernetes conditions.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              message:
+                description: Message contains a human-readable status message.
+                type: string
+              ready:
+                description: Ready indicates the policy has been validated and can
+                  be enforced.
+                type: boolean
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

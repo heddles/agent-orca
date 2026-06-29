@@ -1,0 +1,20 @@
+{{/* Report MCP Server CRD */}}
+{{- if .Values.components.reportMcpServer }}
+---
+apiVersion: agentorc.agentorc.io/v1alpha1
+kind: MCPServer
+metadata:
+  name: report-mcp
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "demo.labels" . | nindent 4 }}
+spec:
+  transport: http
+  url: http://report-mcp-server.{{ .Release.Namespace }}.svc:8080
+  allowApps: true
+  tools:
+    - name: render-executive-summary
+      description: "Render interactive executive security report dashboard"
+  allowedAgents:
+    - pentest-orchestrator
+{{- end }}

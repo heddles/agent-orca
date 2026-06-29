@@ -1,0 +1,322 @@
+nameOverride: ""
+
+# ── GitHub credentials ──────────────────────────────────────────────────────
+# Set via: helm install ... --set githubToken=ghp_...
+# Required scopes: repo (read access to eunomia-513/agent-orc)
+githubToken: ""
+
+# ── GitHub repo coordinates ─────────────────────────────────────────────────
+githubOwner: "ci-agent-orc"
+githubRepo: "agent-orc"
+githubBranch: "main"
+
+# ── Library chart values ────────────────────────────────────────────────────
+# All CRD resources are rendered by the agent-orc-resources library chart.
+# Keys below are passed through as subchart values.
+
+agent-orc-resources:
+
+  # ── MCP Servers ──────────────────────────────────────────────────────────────
+  #
+  # github-mcp: runs the official GitHub MCP server as a stdio sidecar in agent
+  # pods. The operator auto-creates child Tool CRs from the declared tools list.
+  # The KnowledgeBase controller also uses this MCPServer for automated ingestion
+  # (via the _controller principal in allowedAgents).
+
+  mcpServers:
+    - name: github-mcp
+      transport: stdio
+      ociRef: "ghcr.io/github/github-mcp-server:latest"
+      args: ["/server/github-mcp-server", "stdio", "--toolsets", "all", "--read-only"]
+      envFrom:
+        - name: GITHUB_PERSONAL_ACCESS_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: github-mcp-token
+              key: token
+      allowedAgents:
+        - codebase-expert-agent
+        - _controller
+      networkEgress:
+        - host: "api.github.com"
+          port: 443
+          protocol: TCP
+        - host: "raw.githubusercontent.com"
+          port: 443
+          protocol: TCP
+        - host: "github.com"
+          port: 443
+          protocol: TCP
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+      tools:
+        - name: get-file-contents
+          description: "Get the contents of a file from a GitHub repository"
+        - name: search-code
+          description: "Search for code in GitHub repositories"
+        - name: list-commits
+          description: "List commits in a GitHub repository"
+        - name: get-issue
+          description: "Get details of a GitHub issue"
+        - name: list-issues
+          description: "List issues in a GitHub repository"
+        - name: get-pull-request
+          description: "Get details of a GitHub pull request"
+        - name: list-pull-requests
+          description: "List pull requests in a GitHub repository"
+        - name: list-pull-request-files
+          description: "List files changed in a pull request"
+
+  # ── Knowledge Bases ──────────────────────────────────────────────────────────
+  #
+  # agent-orc-codebase: automatically populated via MCP ingestion using the
+  # GitHub MCP server. The controller launches a Job that discovers repository
+  # files and fetches their contents. Re-synced hourly. The agent also back-fills
+  # via _rag_ingest when it reads files through GitHub MCP that are not yet in
+  # the KB.
+
+  knowledgeBases:
+    - name: agent-orc-codebase
+      description: >
+        Vector store containing documentation, CRD definitions, controller source,
+        and architecture docs for the agent-orc Kubernetes-native agent platform.
+      allowedAgents:
+        - codebase-expert-agent
+      embedding:
+        modelSelectorRef: codebase-expert-embeddings
+        chunkSize: 512
+        chunkOverlap: 64
+      vectorStore:
+        provider: qdrant
+        storageSize: "10Gi"
+      ingestion:
+        syncIntervalSeconds: 3600
+        mcp:
+          - mcpServerRef: github-mcp
+            discover:
+              tool: get_file_contents
+              arguments:
+                owner: ci-agent-orc
+                repo: agent-orc
+                path: "{{item}}"
+                branch: main
+            discoverRecursive: true
+            itemExtractor: jsonObjects
+            itemField: path
+            itemFilter:
+              key: type
+              value: file
+            directoryFilter:
+              key: type
+              value: dir
+            excludePatterns:
+              - "vendor/**"
+              - "**/*_test.go"
+              - "config/crd/**"
+              - "**/*.png"
+              - "**/*.svg"
+            fetch:
+              tool: get_file_contents
+              arguments:
+                owner: ci-agent-orc
+                repo: agent-orc
+                path: "{{item}}"
+            maxItems: 500
+
+  # ── ModelSelectors ─────────────────────────────────────────────────────────
+  #
+  # ModelProviders are provided by the model-providers chart.
+  # Deploy that chart first; this demo uses providers from it.
+
+  modelSelectors:
+    # codebase-expert — multi-provider selector for the codebase expert agent.
+    # Favours strong coding/reasoning models with fallback breadth.
+    - name: codebase-expert
+      strategy: rule-based
+      providers:
+        - name: anthropic-claude-opus-4-6
+          weight: 35
+        - name: anthropic-claude-sonnet-4-6
+          weight: 35
+        - name: google-gemini-2-5-pro
+          weight: 35
+        - name: openai-gpt-4o
+          weight: 25
+        - name: google-gemini-2-5-flash-lite
+          weight: 20
+        - name: google-gemini-2-5-flash
+          weight: 20
+        - name: anthropic-claude-haiku-4-5
+          weight: 10
+        - name: openai-gpt-4o-mini
+          weight: 10
+      fallbackChain:
+        - anthropic-claude-opus-4-6
+        - openai-o3-mini
+
+    # embeddings — used by the agent-orc-codebase KnowledgeBase.
+    - name: codebase-expert-embeddings
+      strategy: rule-based
+      providers:
+        - name: openai-text-embedding-3-large
+          weight: 60
+        - name: google-gemini-embedding-001
+          weight: 40
+      fallbackChain:
+        - openai-text-embedding-3-small
+
+  # ── Agents ───────────────────────────────────────────────────────────────────
+
+  agents:
+    - name: codebase-expert-agent
+      modelSelectorRef: codebase-expert
+      systemPrompt: |
+        You are the agent-orc Codebase Expert — the authoritative source of knowledge
+        about the agent-orc Kubernetes-native agent orchestration platform hosted at
+        github.com/eunomia-513/agent-orc.
+
+        YOUR SCOPE:
+        You answer questions about the agent-orc system: its architecture, CRDs, controllers,
+        model-router sidecar, MCP integration, RAG pipeline, executor, API server, Helm charts,
+        demos, configuration, and usage. Tangentially related questions (e.g. Kubernetes concepts
+        as they apply to agent-orc, or LLM patterns used by the system) are welcome as long as
+        they pertain to agent-orc.
+
+        You MUST refuse requests that are not about the agent-orc system. Politely redirect:
+        "I'm scoped to the agent-orc platform. I can help with architecture, CRDs, controllers,
+        configuration, demos, and anything else about agent-orc."
+
+        YOUR TOOLS (call these directly — do NOT use _spawn):
+        1. _rag_search — query the agent-orc-codebase KnowledgeBase. Always try this FIRST.
+           Call: _rag_search({"knowledgeBase": "agent-orc-codebase", "query": "your question"})
+        2. _rag_ingest — ingest content you read via MCP into the KB for future queries.
+           Call: _rag_ingest({"knowledgeBase": "agent-orc-codebase", "documents": [{"id": "path/to/file", "content": "...", "metadata": {"source": "github-mcp", "repo": "eunomia-513/agent-orc", "path": "path/to/file"}}]})
+        3. GitHub MCP tools — auto-discovered from the github-mcp sidecar. Key tools include:
+           - get_file_contents({"owner": "ci-agent-orc", "repo": "agent-orc", "path": "path/to/file"})
+           - search_code({"q": "your query repo:eunomia-513/agent-orc"})
+           - list_commits({"owner": "ci-agent-orc", "repo": "agent-orc"})
+           - get_issue / list_issues({"owner": "ci-agent-orc", "repo": "agent-orc", ...})
+           - get_pull_request / list_pull_requests({"owner": "ci-agent-orc", "repo": "agent-orc", ...})
+           - list_pull_request_files({"owner": "ci-agent-orc", "repo": "agent-orc", "pull_number": N})
+
+        CRITICAL: You MUST call these tools directly by name. NEVER use _spawn to delegate
+        to another agent. You have direct access to all the tools listed above. Call them yourself.
+
+        WORKFLOW:
+        1. For conceptual questions ("how does X work?"), start with _rag_search.
+        2. If RAG results are insufficient or the user asks about specific code, call
+           github-mcp-get-file-contents or github-mcp-search-code directly.
+        3. After reading a file via MCP, ingest it into the KB via _rag_ingest so the knowledge
+           stays fresh.
+        4. Synthesize your answer from both RAG context and live code. Cite file paths when
+           referencing specific implementations.
+
+        RESPONSE STYLE:
+        - Be precise and cite file paths (e.g. internal/router/router.go:142).
+        - Use code snippets when they clarify the answer.
+        - For architecture questions, describe the component relationships.
+        - For "how do I" questions, provide concrete YAML examples.
+
+        IMPORTANT CONTEXT:
+        - The repo is eunomia-513/agent-orc on GitHub.
+        - Key CRDs: ModelProvider, ModelSelector, Agent, AgentRun, AgentDeployment,
+          AgentWorkflow, Tool, MCPServer, KnowledgeBase.
+        - The model-router runs as a sidecar in every agent pod, intercepting
+          /v1/chat/completions and injecting tools.
+        - Agents run in pods with framework-specific env injection (openai-compatible,
+          autogen, langgraph, semantic-kernel, shim).
+      tools:
+        - github-mcp-get-file-contents
+        - github-mcp-search-code
+        - github-mcp-list-commits
+        - github-mcp-get-issue
+        - github-mcp-list-issues
+        - github-mcp-get-pull-request
+        - github-mcp-list-pull-requests
+        - github-mcp-list-pull-request-files
+      knowledgeBases:
+        - agent-orc-codebase
+      runtime:
+        inputMode: http
+        ociRef: "python:3.12-slim"
+        framework: openai-compatible
+        command: ["python3", "-c"]
+        args:
+          - |
+            import json, os, urllib.request
+            from http.server import BaseHTTPRequestHandler, HTTPServer
+
+            base_url = os.environ.get("OPENAI_BASE_URL", "http://localhost:8080")
+            api_key   = os.environ.get("OPENAI_API_KEY", "unused")
+
+            class Handler(BaseHTTPRequestHandler):
+                def log_message(self, *a): pass
+                def do_GET(self):
+                    if self.path == "/healthz":
+                        self.send_response(200); self.end_headers(); self.wfile.write(b"ok")
+                    else:
+                        self.send_response(404); self.end_headers()
+                def do_POST(self):
+                    if self.path != "/invoke":
+                        self.send_response(404); self.end_headers(); return
+                    body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+                    inp = body.get("input", "")
+                    req_body = json.dumps({"model": "default", "stream": True,
+                        "messages": [{"role": "user", "content": inp}]}).encode()
+                    req = urllib.request.Request(f"{base_url}/chat/completions",
+                        data=req_body, headers={"Content-Type": "application/json",
+                        "Authorization": f"Bearer {api_key}"})
+                    output = ""
+                    with urllib.request.urlopen(req, timeout=600) as r:
+                        for line in r:
+                            line = line.decode().strip()
+                            if not line.startswith("data: "): continue
+                            data = line[6:]
+                            if data == "[DONE]": break
+                            try:
+                                chunk = json.loads(data)
+                            except json.JSONDecodeError:
+                                continue
+                            choices = chunk.get("choices", [])
+                            if not choices: continue
+                            content = choices[0].get("delta", {}).get("content") or ""
+                            output += content
+                    payload = json.dumps({"output": output}).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+
+            port = int(os.environ.get("PORT", "8000"))
+            print(f"codebase-expert listening on :{port}", flush=True)
+            HTTPServer(("", port), Handler).serve_forever()
+      memory:
+        checkpointEvery: 1
+        resumeWindowSeconds: 3600
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+
+  # ── AgentDeployments ─────────────────────────────────────────────────────────
+
+  agentDeployments:
+    - name: codebase-expert
+      agentRef: codebase-expert-agent
+      inputSource:
+        type: chat
+      replicas: 1
+      warmPoolSize: 1
+      restartPolicy:
+        minBackoffSeconds: 5
+        maxBackoffSeconds: 300
+        maxConsecutiveFailures: 5

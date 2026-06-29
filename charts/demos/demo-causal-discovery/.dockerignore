@@ -1,0 +1,7 @@
+**
+!ui
+!ui/**
+!proxy
+!proxy/Caddyfile
+!files
+!files/**

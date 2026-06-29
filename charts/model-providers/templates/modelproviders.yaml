@@ -1,0 +1,35 @@
+{{- $labels := include "model-providers.labels" . }}
+{{- $namespaces := prepend (.Values.additionalNamespaces | default list) .Release.Namespace | uniq }}
+{{- range $ns := $namespaces }}
+{{- range $.Values.modelProviders }}
+{{- if .enabled }}
+---
+apiVersion: agentorc.agentorc.io/v1alpha1
+kind: ModelProvider
+metadata:
+  name: {{ .name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- $labels | nindent 4 }}
+spec:
+  litellmModel: {{ .litellmModel | quote }}
+  {{- if .baseURL }}
+  baseURL: {{ .baseURL | quote }}
+  {{- end }}
+  credentialsRef:
+    name: {{ dig "credentialsRef" "existingSecret" (printf "%s-api-key" .name) . }}
+    key: {{ dig "credentialsRef" "key" "api-key" . }}
+  {{- if .capabilities }}
+  capabilities:
+    {{- toYaml .capabilities | nindent 4 }}
+  {{- end }}
+  {{- if .latencyProfile }}
+  latencyProfile: {{ .latencyProfile }}
+  {{- end }}
+  {{- if .constraints }}
+  constraints:
+    {{- toYaml .constraints | nindent 4 }}
+  {{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

@@ -1,0 +1,183 @@
+---
+# Financial planning knowledge base content — ingested into the financial-planning-kb
+# KnowledgeBase via Qdrant RAG. The financial-analyst agent searches this at query time
+# using _rag_search to gather correlations, historical precedents, and macro factors.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: financial-planning-kb-content
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "demo.labels" . | nindent 4 }}
+data:
+  commodity-correlations.txt: |
+    REFERENCE: Commodity Price Correlation Matrix (2015-2025 average)
+
+    Agricultural grains are highly correlated:
+    - Wheat-Corn: 0.85 (shared inputs: land, water, fertilizer; substitution in animal feed)
+    - Wheat-Soybeans: 0.65 (crop rotation competition for acreage)
+    - Corn-Soybeans: 0.72 (competing for Midwest acreage; shared supply chain)
+
+    Energy-agriculture linkages:
+    - Crude Oil-Wheat: 0.45 (diesel for farming machinery, transportation costs, fertilizer input cost)
+    - Crude Oil-Corn: 0.55 (ethanol mandate creates direct demand linkage in the US)
+    - Natural Gas-Wheat: 0.40 (nitrogen fertilizer production uses natural gas as feedstock)
+
+    Safe-haven dynamics:
+    - Gold-USD Index: -0.65 (inverse relationship; dollar weakness drives gold demand as alternative store of value)
+    - Gold-US 10Y Yield: -0.55 (opportunity cost of holding non-yielding gold; higher real rates suppress gold)
+    - Gold-Wheat: 0.35 (food inflation drives general inflation hedge demand, which flows into gold)
+    - Gold-Crude Oil: 0.40 (energy inflation raises inflation expectations, increasing gold's appeal)
+    - Silver-Gold: 0.88 (silver tracks gold with higher beta; industrial demand adds volatility)
+
+    Transmission mechanisms for agricultural supply shocks:
+    1. Direct price impact on affected commodity (immediate, 0-3 months)
+    2. Substitution effects on related commodities (1-6 months)
+    3. Input cost pass-through to food processors and retailers (3-12 months)
+    4. CPI food component inflation (6-18 months)
+    5. Central bank reaction function to headline inflation (12-24 months)
+    6. Second-round wage-price spiral effects (18-36 months)
+    7. Portfolio rebalancing into inflation hedges like gold (6-24 months)
+
+    Key insight: The full cascade from agricultural supply shock to gold price impact
+    typically takes 6-24 months, with the central bank response being the critical
+    swing factor. If central banks stay dovish, gold rallies strongly. If they turn
+    hawkish, gold may decline despite higher food inflation.
+
+  historical-supply-shocks.txt: |
+    CASE STUDY: 2010-2011 Russian Wheat Export Ban
+
+    Trigger: Severe drought and wildfires destroyed approximately 30% of Russia's wheat
+    crop in summer 2010. Russia imposed a wheat export ban from August 2010 to July 2011.
+    Russia was the world's third-largest wheat exporter at the time.
+
+    Price impacts:
+    - Wheat: +80% in 6 months (from $4.50 to $8.10/bushel, peaked at $9.40)
+    - Corn: +73% (substitution demand + concurrent drought in Argentina)
+    - Soybeans: +40% (acreage competition, feed substitution)
+    - Rice: +25% (food security panic buying in Asia)
+    - Gold: +35% over same period (inflation fears + Middle East unrest partly triggered by food prices)
+    - Crude Oil: +30% (Arab Spring partly fueled by food price inflation in North Africa)
+
+    Timeline:
+    - Month 0: Drought reports emerge, wheat futures begin rising
+    - Month 2: Export ban announced, prices spike 30% in two weeks
+    - Month 4: Peak panic, food riots in Tunisia, Egypt, Libya
+    - Month 6: Northern hemisphere winter wheat planting expands in response, futures stabilize
+    - Month 12: Export ban lifted, prices begin normalizing but remain 30% above pre-crisis
+    - Month 24: Prices return to within 10% of pre-crisis levels
+    - Gold remained elevated for 2 more years due to ongoing QE and low real rates
+
+    Key lesson: Agricultural supply shocks cascade through food to inflation to monetary
+    policy to financial assets with a 12-24 month lag. The geopolitical amplification
+    (Arab Spring) was largely unforeseen and dramatically increased the impact on energy
+    and safe-haven assets.
+
+    ---
+    CASE STUDY: 2022 Ukraine Conflict Grain Disruption
+
+    Trigger: Russia-Ukraine conflict disrupted grain exports from two of the world's
+    largest exporters. Ukraine and Russia together account for approximately 30% of
+    global wheat exports and 20% of corn exports. Black Sea shipping routes were blocked.
+
+    Price impacts:
+    - Wheat: +60% in first month (March 2022 peak: $13.60/bushel, highest since 2008)
+    - Corn: +30% (Ukrainian corn exports disrupted, US corn diverted to fill gap)
+    - Fertilizer: +100-200% (Russia is top potash and nitrogen fertilizer exporter;
+      Belarus sanctions compounded potash shortage)
+    - Gold: initially +8% on risk aversion, then fell as Fed hiked rates aggressively
+    - Crude Oil: +40% (concurrent energy supply disruption from sanctions)
+    - USD Index: +12% (flight to safety strengthened dollar, which pressured gold)
+
+    Key lesson: When a supply shock coincides with energy disruption, fertilizer costs
+    amplify the next planting season's impact (costs remain elevated even after the
+    initial shock fades). Central bank hawkishness can override gold's inflation-hedge
+    behavior — the 2022 Fed tightening cycle reversed gold's initial rally within 3 months.
+    The dollar's safe-haven bid created a dual headwind for gold (stronger dollar + higher rates).
+
+    ---
+    CASE STUDY: 2012 US Drought (worst since 1956)
+
+    Trigger: Exceptional drought across the US Midwest corn belt during the critical
+    pollination period (June-August 2012). USDA declared disaster areas in 32 states.
+
+    Price impacts:
+    - Corn: +60% June-August 2012 (peaked at $8.49/bushel, all-time record)
+    - Soybeans: +35% (simultaneous drought stress on soybean crops)
+    - Wheat: +50% (sympathetic rally despite adequate global wheat supply)
+    - Gold: +5% (Fed already in QE3, limited additional safe-haven bid because loose
+      policy was already priced in)
+    - Cattle/Hogs: initially fell (herd liquidation due to feed costs), then rose
+      30-50% over next 2 years as supply contracted
+    - Ethanol: +20% (corn-based ethanol production costs surged)
+
+    Key lesson: The livestock sector acts as a delayed amplifier of grain price shocks.
+    Feed cost increases cause herd liquidation (short-term meat price decline) followed
+    by supply shortage and protein price spikes 12-24 months later. When monetary policy
+    is already loose, the incremental gold impact of a food supply shock is muted because
+    the inflation hedge demand is already priced in.
+
+  macroeconomic-factors.txt: |
+    REFERENCE: Macroeconomic Factor Relationships for Commodity Analysis
+
+    INFLATION TRANSMISSION
+    Agricultural supply shocks transmit to headline CPI through:
+    1. Food-at-home CPI component (weight: approximately 8% in US CPI basket)
+    2. Food-away-from-home (weight: approximately 6%, responds with 3-6 month lag due to
+       menu repricing cycles and supplier contracts)
+    3. Transportation cost pass-through if energy prices co-move (adds 1-3% to food costs)
+    4. Fertilizer cost pass-through to next planting season (6-12 month lag)
+    Expected CPI impact of a 50% wheat price increase: +0.3-0.5% to headline CPI over 12 months.
+    Expected CPI impact of simultaneous 50% wheat + 30% energy increase: +0.8-1.2% to headline CPI.
+
+    CENTRAL BANK REACTION FUNCTION
+    - Dovish stance: Tolerates temporary commodity-driven inflation, maintains or cuts rates.
+      Rationale: supply shocks are transitory; tightening would compound the demand hit.
+      Effect: Weak dollar, gold positive (+10-20%), real rates negative, supports commodity prices.
+      Historical precedent: 2010-2011 Fed under Bernanke held rates at zero through food/energy spike.
+
+    - Neutral stance: Acknowledges inflation but waits for second-round effects before acting.
+      Effect: Moderate dollar impact, gold neutral to slightly positive, yield curve stable.
+      Historical precedent: ECB in 2011 initially held, then made premature hike followed by reversal.
+
+    - Hawkish stance: Preemptive rate hikes to anchor inflation expectations.
+      Rationale: headline inflation risks un-anchoring long-term expectations; act early.
+      Effect: Strong dollar, gold negative (-5-15%), higher real yields, suppresses commodity prices.
+      Historical precedent: 2022 Fed tightening (+525bp in 16 months) reversed gold's rally within
+      3 months and strengthened USD by 12%.
+
+    GEOPOLITICAL RISK PREMIUM
+    - Low (0-25): Markets price fundamentals; supply/demand balance drives prices.
+      Typical environment: stable trade routes, no sanctions, cooperative international relations.
+    - Moderate (25-50): 5-15% risk premium on energy and grains; gold sees modest safe-haven inflows.
+      Typical environment: trade tensions, regional conflicts not affecting key shipping lanes.
+    - High (50-75): 15-30% risk premium; shipping and trade route disruptions; gold breakout possible.
+      Typical environment: sanctions on major commodity exporters, naval tensions in key straits.
+    - Extreme (75-100): 30-50%+ premium; war involving major producers, embargo scenarios.
+      Gold and USD both strengthen (dual safe haven). Equities sell off. Flight to quality dominates.
+
+    DEMAND GROWTH SCENARIOS
+    - Below-trend (0-1%): Demand destruction partially offsets supply shock; recession risk.
+      Net effect: limits the upside on commodity prices, gold may benefit from rate cut expectations.
+    - Trend (1.5-2.5%): Normal absorptive capacity; supply shock fully priced into futures curve.
+    - Above-trend (2.5-4%): Amplifies supply shortage; inventories draw down faster than expected.
+      Net effect: commodity supercycle risk; gold benefits from both inflation and growth momentum.
+    - Boom (4%+): Overheating economy with supply constraints creates multi-year price elevation.
+      Central banks forced to respond aggressively, creating eventual gold headwind.
+
+    GOLD-SPECIFIC FACTORS
+    Gold responds to agricultural supply shocks through three channels:
+    1. Inflation expectations channel (positive, 6-18 month lag): higher food prices raise
+       breakeven inflation rates, increasing demand for inflation hedges.
+    2. Real interest rate channel (direction depends on central bank): if rates stay low while
+       inflation rises, negative real rates strongly support gold. If rates rise faster than
+       inflation, positive real rates suppress gold.
+    3. Risk aversion / safe-haven channel (positive in crisis, fades as crisis normalizes):
+       geopolitical spillovers from food insecurity (civil unrest, trade restrictions) drive
+       safe-haven flows into gold. This channel is strongest in the first 3-6 months.
+
+    Net gold impact of an agricultural supply shock depends critically on the central bank response:
+    - If central banks stay dovish: gold can rally 15-30% over 12-18 months.
+    - If central banks turn hawkish: gold may be flat or decline 5-10% despite higher food inflation.
+    - The 2010 vs 2022 episodes illustrate this perfectly: similar food supply shocks, opposite
+      gold outcomes, driven entirely by divergent monetary policy responses.

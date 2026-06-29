@@ -1,0 +1,921 @@
+nameOverride: ""
+
+agent-orc-resources:
+
+  # ── MCPServer ────────────────────────────────────────────────────────────────
+  #
+  # research-tools: HTTP transport MCP server providing web fetching, PDF extraction,
+  # and arXiv search tools. The _controller is included in allowedAgents to enable
+  # periodic KnowledgeBase ingestion via CronJobs.
+  #
+  # Network egress allows the agent to reach:
+  #   - export.arxiv.org for arXiv API
+  #   - Research sites (openreview.net, semanticscholar.org, github.com)
+  #   - PDF documents
+
+  mcpServers:
+    - name: research-tools
+      transport: http
+      url: "http://research-tools-server.agent-orc-system.svc.cluster.local:8080"
+      allowedAgents:
+        - llm-research-agent
+        - _controller
+      networkEgress:
+        - host: research-tools-server.agent-orc-system.svc.cluster.local
+          port: 8080
+          protocol: TCP
+        - host: export.arxiv.org
+          port: 443
+          protocol: TCP
+        - host: arxiv.org
+          port: 443
+          protocol: TCP
+        - host: api.openreview.net
+          port: 443
+          protocol: TCP
+        - host: www.semanticscholar.org
+          port: 443
+          protocol: TCP
+        - host: github.com
+          port: 443
+          protocol: TCP
+      tools:
+        - name: web-fetch
+          description: "Fetch web page content from a URL. Returns text content and metadata for research ingestion."
+        - name: web-search
+          description: "Search the web for academic papers and articles using DuckDuckGo (no API key required)."
+        - name: pdf-extract
+          description: "Download and extract text content from PDF research documents."
+        - name: arxiv-search
+          description: "Search arXiv.org for papers on LLM architecture, interpretability, and reasoning."
+        - name: arxiv-fetch
+          description: "Fetch full-text content from an arXiv paper by ID."
+        - name: semaphore
+          description: "Signal that research on a topic is complete and ready for synthesis."
+      resources:
+        requests:
+          cpu: 500m
+          memory: 2048Mi
+        limits:
+          cpu: 500m
+          memory: 2048Mi
+
+  # ── KnowledgeBase ──────────────────────────────────────────────────────────
+  #
+  # llm-research-kb: 25Gi vector store for LLM research documents.
+  # Uses ollama-embeddings ModelSelector from model-providers chart.
+  # syncIntervalSeconds creates a CronJob that runs every 6 hours to fetch
+  # new arXiv papers. The _controller principal is required for ingestion Jobs.
+
+  knowledgeBases:
+    - name: llm-research-kb
+      description: "Research corpus on LLM architecture, layer interpretation, interpretability, and capabilities analysis"
+      allowedAgents:
+        - llm-research-agent
+      embedding:
+        modelSelectorRef: ollama-embeddings
+        chunkSize: 512
+        chunkOverlap: 64
+      vectorStore:
+        storageSize: "25Gi"
+      ingestion:
+        syncIntervalSeconds: 21600  # Every 6 hours
+        mcp:
+          - mcpServerRef: research-tools
+            discover:
+              tool: arxiv-search
+              arguments:
+                query: "(cat:cs.LG OR cat:cs.AI OR cat:cs.CL) AND (LLM OR transformer OR attention OR interpretability)"
+                max_results: 100
+            discoverRecursive: false
+            itemExtractor: jsonObjects
+            itemField: id
+            fetch:
+              tool: arxiv-fetch
+              arguments:
+                paper_id: "{{item}}"
+            maxItems: 20  # Reduced for safer incremental ingestion
+            # Resources for the MCP ingestion Job (periodic arXiv fetcher)
+            resources:
+              requests:
+                cpu: 500m
+                memory: 2048Mi
+              limits:
+                cpu: 500m
+                memory: 2048Mi
+
+    # evaluation-metrics-kb: Persistent storage for LLM code generation evaluation results
+    - name: evaluation-metrics-kb
+      description: "Structured metrics from LLM code generation evaluations comparing Laguna XS.2 and M.1 models"
+      allowedAgents:
+        - llm-research-agent
+        - eval-python-xs2-agent
+        - eval-go-xs2-agent
+        - eval-fortran-xs2-agent
+        - eval-javascript-xs2-agent
+        - eval-python-m1-agent
+        - eval-go-m1-agent
+        - eval-fortran-m1-agent
+        - eval-javascript-m1-agent
+      embedding:
+        modelSelectorRef: ollama-embeddings
+        chunkSize: 512
+        chunkOverlap: 64
+      vectorStore:
+        storageSize: "10Gi"
+
+  # ── ModelSelector ───────────────────────────────────────────────────────────
+  #
+  # research-primary: Routing policy for Poolside Laguna models.
+  # Uses only laguna-m and laguna-xs series as specified.
+
+  modelSelectors:
+    - name: research-primary
+      strategy: rule-based
+      providers:
+        - name: poolside-laguna-m-ctx256k
+          weight: 50
+        - name: poolside-laguna-xs-polaris
+          weight: 50
+      fallbackChain:
+        - poolside-laguna-m-nvfp4
+        - poolside-laguna-xs3-rc2
+
+    # Evaluation-specific selectors for deterministic model routing
+    - name: evaluation-xs2
+      strategy: rule-based
+      providers:
+        - name: poolside-laguna-xs-polaris
+          weight: 100
+
+    - name: evaluation-m1
+      strategy: rule-based
+      providers:
+        - name: poolside-laguna-m-ctx256k
+          weight: 100
+
+  # ── Agent ───────────────────────────────────────────────────────────────────
+
+  agents:
+    - name: llm-research-agent
+      modelSelectorRef: research-primary
+      systemPrompt: |
+        You are an autonomous LLM research agent. Your mission is to build a comprehensive
+        knowledge base about how LLMs work internally — from attention mechanisms to layer
+        interpretation, from feed-forward networks to reasoning capabilities.
+
+        YOUR RESEARCH AREAS:
+        - Transformer architecture fundamentals
+        - Attention mechanism analysis and visualization
+        - Layer-wise interpretability techniques
+        - Activation patterns and what they reveal
+        - Chain-of-thought and reasoning emergence
+        - Embedding spaces and semantic geometry
+        - Model scaling laws and capability thresholds
+        - Mechanistic interpretability research
+
+        YOUR TOOLS:
+        1. _rag_search — query the llm-research-kb for existing knowledge
+        2. _rag_ingest — store documents in the knowledge base for future retrieval
+        3. research-tools-web-fetch — fetch web page content by URL
+        4. research-tools-web-search — search for research papers and articles via DuckDuckGo
+        5. research-tools-pdf-extract — extract text from PDF research papers
+        6. research-tools-arxiv-search — search arXiv.org for papers on LLM topics
+        7. research-tools-arxiv-fetch — fetch full arXiv paper content
+        8. research-tools-semaphore — signal research completion on a topic
+
+        YOUR PROCESS:
+        1. Start by searching your knowledge base for existing information
+        2. Identify gaps that need external research
+        3. Use web_search/arxiv_search to find relevant papers
+        4. Fetch and extract content from promising sources
+        5. Ingest key findings into the knowledge base with source attribution
+        6. When research on a sub-topic is complete, call semaphore to signal
+        7. Continue iterative research, expanding to related topics
+
+        KEY SOURCES TO MONITOR:
+        - arXiv.org (cs.LG, cs.AI, cs.CL categories)
+        - OpenReview (ICLR, NeurIPS proceedings)
+        - Semantic Scholar
+        - Papers With Code
+        - GitHub repositories with interpretability tools
+
+        OUTPUT FORMAT for findings:
+        - **Source**: [URL or citation]
+        - **Key Insight**: [concise finding]
+        - **Implications**: [what this tells us about LLM cognition]
+        - **Relevance**: [connection to interpretation systems]
+      tools:
+        - research-tools-web-fetch
+        - research-tools-web-search
+        - research-tools-pdf-extract
+        - research-tools-arxiv-search
+        - research-tools-arxiv-fetch
+        - research-tools-semaphore
+      knowledgeBases:
+        - llm-research-kb
+        - evaluation-metrics-kb
+      runtime:
+        inputMode: http
+        ociRef: "python:3.12-slim"
+        framework: openai-compatible
+        command: ["python3", "-c"]
+        args:
+          - |
+            import json, os, urllib.request
+            from http.server import BaseHTTPRequestHandler, HTTPServer
+
+            base_url = os.environ.get("OPENAI_BASE_URL", "http://localhost:8080")
+            api_key   = os.environ.get("OPENAI_API_KEY", "unused")
+
+            class Handler(BaseHTTPRequestHandler):
+                def log_message(self, *a): pass
+                def do_GET(self):
+                    if self.path == "/healthz":
+                        self.send_response(200); self.end_headers(); self.wfile.write(b"ok")
+                    else:
+                        self.send_response(404); self.end_headers()
+                def do_POST(self):
+                    if self.path != "/invoke":
+                        self.send_response(404); self.end_headers(); return
+                    body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+                    inp = body.get("input", "")
+                    req_body = json.dumps({"model": "default", "stream": True,
+                        "messages": [{"role": "user", "content": inp}],
+                        "tools": []}).encode()
+                    req = urllib.request.Request(f"{base_url}/chat/completions",
+                        data=req_body, headers={"Content-Type": "application/json",
+                        "Authorization": f"Bearer {api_key}"})
+                    output = ""
+                    with urllib.request.urlopen(req, timeout=600) as r:
+                        for line in r:
+                            line = line.decode().strip()
+                            if not line.startswith("data: "): continue
+                            data = line[6:]
+                            if data == "[DONE]": break
+                            try:
+                                chunk = json.loads(data)
+                            except json.JSONDecodeError:
+                                continue
+                            choices = chunk.get("choices", [])
+                            if not choices: continue
+                            content = choices[0].get("delta", {}).get("content") or ""
+                            output += content
+                    payload = json.dumps({"output": output}).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+
+            port = int(os.environ.get("PORT", "8000"))
+            print(f"llm-research-agent listening on :{port}", flush=True)
+            HTTPServer(("", port), Handler).serve_forever()
+      memory:
+        checkpointEvery: 5
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 1000m
+          memory: 2Gi
+
+    # ── Evaluation Agents (XS.2) ─────────────────────────────────────────────
+
+    # Python evaluation with Laguna XS.2
+    - name: eval-python-xs2-agent
+      modelSelectorRef: evaluation-xs2
+      systemPrompt: |
+        You are a Python code evaluation agent. Generate working Python code, test it iteratively, and report metrics.
+
+        INPUT JSON format: {"task": "Build a Flask REST API endpoint for a todo list with CRUD operations", "task_id": "python-xs2", "max_attempts": 5}
+
+        ITERATIVE REFINEMENT LOOP:
+        while attempts < max_attempts:
+          1. Generate code for the task
+          2. Execute the code
+          3. If success: record results, exit loop
+          4. If failure: analyze error, generate corrected code, increment attempts
+
+        OUTPUT ONLY valid JSON with task_id, language, model, attempts array, final_result, correctness.
+      runtime:
+        inputMode: env
+        ociRef: "agent-orc/eval-runtime:latest"
+        framework: openai-compatible
+        command: ["python3", "-c"]
+        args:
+          - |
+            import json, os, subprocess, time, urllib.request, sys
+            inp = json.loads(os.environ.get("AGENTORC_INPUT", "{}"))
+            base_url = os.environ.get("OPENAI_BASE_URL", "http://localhost:8080")
+            api_key = os.environ.get("OPENAI_API_KEY", "unused")
+            task = inp.get("task", "")
+            task_id = inp.get("task_id", "unknown")
+            max_attempts = inp.get("max_attempts", 5)
+            attempts, total_tokens, start = [], 0, time.time()
+            success, output, error = False, "", ""
+
+            for attempt in range(1, max_attempts + 1):
+                if len(attempts) > 0:
+                    last_error = attempts[-1]["error"]
+                    prompt = f"Generate working Python code for: {task}. Previous attempt failed: {last_error}. Fix and output ONLY code with no markdown fences."
+                else:
+                    prompt = f"Generate working Python code for: {task}. Output ONLY code with no markdown fences."
+                try:
+                    resp = urllib.request.urlopen(urllib.request.Request(
+                      f"{base_url}/chat/completions",
+                      json.dumps({"model": "default", "messages": [{"role": "user", "content": prompt}]}).encode(),
+                      headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}))
+                    data = json.loads(resp.read().decode())
+                    code = data["choices"][0]["message"]["content"].strip()
+                    if code.startswith("```"): code = "\n".join(code.split("\n")[1:-1])
+                    tok = data.get("usage", {}).get("total_tokens", 0)
+                except Exception as e:
+                    print(json.dumps({"task_id": task_id, "error": f"LLM call failed: {e}"})); sys.exit(1)
+
+                try:
+                    result = subprocess.run(["python3", "-c", code], capture_output=True, text=True, timeout=30)
+                    success = result.returncode == 0
+                    output, error = result.stdout, result.stderr
+                except Exception as e:
+                    success, output, error = False, "", str(e)
+
+                attempts.append({"attempt_number": attempt, "code": code, "success": success, "error": error[:500], "tokens": tok})
+                total_tokens += tok
+                if success: break
+
+            print(json.dumps({
+                "task_id": task_id, "language": "python", "model": "xs2",
+                "task_description": task, "attempts": attempts,
+                "final_result": {"success": success, "total_attempts": len(attempts), "total_tokens": total_tokens},
+                "execution_output": output[:2000], "execution_error": "" if success else error,
+                "duration_ms": int((time.time()-start)*1000),
+                "correctness": "pass" if success else "fail",
+                "pass@k": {"k": 5, "value": 1.0 if success else 0.0},
+                "pass@1": 1.0 if len(attempts) == 1 and success else (0.0 if len(attempts) == 1 else "N/A"),
+                "first_success_attempt": next((a["attempt_number"] for a in attempts if a["success"]), None),
+                "total_prompt_tokens": total_tokens,
+                "total_generated_tokens": sum(a.get("tokens", 0) for a in attempts),
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            }))
+      resources:
+        requests:
+          cpu: 500m
+          memory: 512Mi
+        limits:
+          cpu: 1000m
+          memory: 1Gi
+
+    # Go evaluation with Laguna XS.2
+    - name: eval-go-xs2-agent
+      modelSelectorRef: evaluation-xs2
+      systemPrompt: |
+        You are a Go code evaluation agent. Generate working Go code, test it iteratively, and report metrics.
+
+        IMPORTANT: Write complete Go programs with package main, import fmt, and main function.
+        Execute by writing to /tmp/main.go and running: go run /tmp/main.go
+
+        INPUT JSON: {"task": "concurrent worker pool with graceful shutdown", "task_id": "go-xs2", "max_attempts": 5}
+        OUTPUT ONLY JSON with task_id, language, model, attempts array, final_result.
+      runtime:
+        inputMode: env
+        ociRef: "agent-orc/eval-runtime:latest"
+        framework: openai-compatible
+        command: ["python3", "-c"]
+        args:
+          - |
+            import json, os, subprocess, time, urllib.request, sys
+            inp = json.loads(os.environ.get("AGENTORC_INPUT", "{}"))
+            base_url, api_key = os.environ.get("OPENAI_BASE_URL", "http://localhost:8080"), os.environ.get("OPENAI_API_KEY", "unused")
+            task, task_id, max_attempts = inp.get("task", ""), inp.get("task_id", "unknown"), inp.get("max_attempts", 5)
+            attempts, total_tokens, start = [], 0, time.time()
+            success, output, error = False, "", ""
+
+            for attempt in range(1, max_attempts + 1):
+                if len(attempts) > 0:
+                    last_error = attempts[-1]["error"]
+                    prompt = f"Generate working Go code for: {task}. Previous attempt failed: {last_error}. Fix and output ONLY complete Go code with package main, no markdown."
+                else:
+                    prompt = f"Generate working Go code for: {task}. Output ONLY complete Go code with package main, no markdown."
+                try:
+                    resp = urllib.request.urlopen(urllib.request.Request(
+                      f"{base_url}/chat/completions",
+                      json.dumps({"model": "default", "messages": [{"role": "user", "content": prompt}]}).encode(),
+                      headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}))
+                    data = json.loads(resp.read().decode())
+                    code = data["choices"][0]["message"]["content"].strip()
+                    if code.startswith("```"): code = "\n".join(code.split("\n")[1:-1])
+                    tok = data.get("usage", {}).get("total_tokens", 0)
+                except Exception as e:
+                    print(json.dumps({"task_id": task_id, "error": f"LLM failed: {e}"})); sys.exit(1)
+
+                try:
+                    with open("/tmp/main.go", "w") as f: f.write(code)
+                    result = subprocess.run(["go", "run", "/tmp/main.go"], capture_output=True, text=True, timeout=60)
+                    success = result.returncode == 0
+                    output, error = result.stdout, result.stderr
+                except Exception as e:
+                    success, output, error = False, "", str(e)
+
+                attempts.append({"attempt_number": attempt, "code": code, "success": success, "error": error[:500], "tokens": tok})
+                total_tokens += tok
+                if success: break
+
+            print(json.dumps({
+                "task_id": task_id, "language": "go", "model": "xs2",
+                "task_description": task, "attempts": attempts,
+                "final_result": {"success": success, "total_attempts": len(attempts), "total_tokens": total_tokens},
+                "execution_output": output[:2000], "execution_error": "" if success else error,
+                "duration_ms": int((time.time()-start)*1000),
+                "correctness": "pass" if success else "fail",
+                "pass@k": {"k": 5, "value": 1.0 if success else 0.0},
+                "first_success_attempt": next((a["attempt_number"] for a in attempts if a["success"]), None),
+                "total_prompt_tokens": total_tokens,
+                "total_generated_tokens": sum(a.get("tokens", 0) for a in attempts),
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            }))
+      resources:
+        requests:
+          cpu: 500m
+          memory: 512Mi
+        limits:
+          cpu: 1000m
+          memory: 1Gi
+
+    # Fortran evaluation with Laguna XS.2
+    - name: eval-fortran-xs2-agent
+      modelSelectorRef: evaluation-xs2
+      systemPrompt: |
+        You are a Fortran code evaluation agent. Generate working Fortran code, compile and run it iteratively, and report metrics.
+
+        IMPORTANT: Use "implicit none", include "program main" and "end program main".
+        Compile: gfortran -o /tmp/main /tmp/main.f90 && /tmp/main
+      runtime:
+        inputMode: env
+        ociRef: "agent-orc/eval-runtime:latest"
+        framework: openai-compatible
+        command: ["python3", "-c"]
+        args:
+          - |
+            import json, os, subprocess, time, urllib.request, sys
+            inp = json.loads(os.environ.get("AGENTORC_INPUT", "{}"))
+            base_url, api_key = os.environ.get("OPENAI_BASE_URL", "http://localhost:8080"), os.environ.get("OPENAI_API_KEY", "unused")
+            task, task_id, max_attempts = inp.get("task", ""), inp.get("task_id", "unknown"), inp.get("max_attempts", 5)
+            attempts, total_tokens, start = [], 0, time.time()
+            success, output, error = False, "", ""
+
+            for attempt in range(1, max_attempts + 1):
+                if len(attempts) > 0:
+                    last_error = attempts[-1]["error"]
+                    prompt = f"Generate working Fortran code for: {task}. Previous attempt failed: {last_error}. Fix and output ONLY complete Fortran code with implicit none, program main block, no markdown."
+                else:
+                    prompt = f"Generate working Fortran code for: {task}. Output ONLY complete Fortran code with implicit none, program main block, no markdown."
+                try:
+                    resp = urllib.request.urlopen(urllib.request.Request(
+                      f"{base_url}/chat/completions",
+                      json.dumps({"model": "default", "messages": [{"role": "user", "content": prompt}]}).encode(),
+                      headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}))
+                    data = json.loads(resp.read().decode())
+                    code = data["choices"][0]["message"]["content"].strip()
+                    if code.startswith("```"): code = "\n".join(code.split("\n")[1:-1])
+                    tok = data.get("usage", {}).get("total_tokens", 0)
+                except Exception as e:
+                    print(json.dumps({"task_id": task_id, "error": f"LLM failed: {e}"})); sys.exit(1)
+
+                try:
+                    with open("/tmp/main.f90", "w") as f: f.write(code)
+                    comp = subprocess.run(["gfortran", "-o", "/tmp/fmain", "/tmp/main.f90"], capture_output=True, text=True, timeout=60)
+                    if comp.returncode == 0:
+                        result = subprocess.run(["/tmp/fmain"], capture_output=True, text=True, timeout=30)
+                        success = result.returncode == 0
+                        output, error = result.stdout, result.stderr
+                    else:
+                        success, output, error = False, "", comp.stderr
+                except Exception as e:
+                    success, output, error = False, "", str(e)
+
+                attempts.append({"attempt_number": attempt, "code": code, "success": success, "error": error[:500], "tokens": tok})
+                total_tokens += tok
+                if success: break
+
+            print(json.dumps({
+                "task_id": task_id, "language": "fortran", "model": "xs2",
+                "task_description": task, "attempts": attempts,
+                "final_result": {"success": success, "total_attempts": len(attempts), "total_tokens": total_tokens},
+                "execution_output": output[:2000], "execution_error": "" if success else error,
+                "duration_ms": int((time.time()-start)*1000),
+                "correctness": "pass" if success else "fail",
+                "pass@k": {"k": 5, "value": 1.0 if success else 0.0},
+                "first_success_attempt": next((a["attempt_number"] for a in attempts if a["success"]), None),
+                "total_prompt_tokens": total_tokens,
+                "total_generated_tokens": sum(a.get("tokens", 0) for a in attempts),
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            }))
+      resources:
+        requests:
+          cpu: 500m
+          memory: 512Mi
+        limits:
+          cpu: 1000m
+          memory: 1Gi
+
+    # JavaScript evaluation with Laguna XS.2
+    - name: eval-javascript-xs2-agent
+      modelSelectorRef: evaluation-xs2
+      systemPrompt: |
+        You are a JavaScript code evaluation agent. Generate working JavaScript code, test it iteratively with Node.js, and report metrics.
+
+        Execute with: node -e "<code>"
+      runtime:
+        inputMode: env
+        ociRef: "agent-orc/eval-runtime:latest"
+        framework: openai-compatible
+        command: ["python3", "-c"]
+        args:
+          - |
+            import json, os, subprocess, time, urllib.request, sys
+            inp = json.loads(os.environ.get("AGENTORC_INPUT", "{}"))
+            base_url, api_key = os.environ.get("OPENAI_BASE_URL", "http://localhost:8080"), os.environ.get("OPENAI_API_KEY", "unused")
+            task, task_id, max_attempts = inp.get("task", ""), inp.get("task_id", "unknown"), inp.get("max_attempts", 5)
+            attempts, total_tokens, start = [], 0, time.time()
+            success, output, error = False, "", ""
+
+            for attempt in range(1, max_attempts + 1):
+                if len(attempts) > 0:
+                    last_error = attempts[-1]["error"]
+                    prompt = f"Generate working JavaScript code for: {task}. Previous attempt failed: {last_error}. Fix and output ONLY code, no markdown fences."
+                else:
+                    prompt = f"Generate working JavaScript code for: {task}. Output ONLY code, no markdown fences."
+                try:
+                    resp = urllib.request.urlopen(urllib.request.Request(
+                      f"{base_url}/chat/completions",
+                      json.dumps({"model": "default", "messages": [{"role": "user", "content": prompt}]}).encode(),
+                      headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}))
+                    data = json.loads(resp.read().decode())
+                    code = data["choices"][0]["message"]["content"].strip()
+                    if code.startswith("```"): code = "\n".join(code.split("\n")[1:-1])
+                    tok = data.get("usage", {}).get("total_tokens", 0)
+                except Exception as e:
+                    print(json.dumps({"task_id": task_id, "error": f"LLM failed: {e}"})); sys.exit(1)
+
+                try:
+                    result = subprocess.run(["node", "-e", code], capture_output=True, text=True, timeout=30)
+                    success = result.returncode == 0
+                    output, error = result.stdout, result.stderr
+                except Exception as e:
+                    success, output, error = False, "", str(e)
+
+                attempts.append({"attempt_number": attempt, "code": code, "success": success, "error": error[:500], "tokens": tok})
+                total_tokens += tok
+                if success: break
+
+            print(json.dumps({
+                "task_id": task_id, "language": "javascript", "model": "xs2",
+                "task_description": task, "attempts": attempts,
+                "final_result": {"success": success, "total_attempts": len(attempts), "total_tokens": total_tokens},
+                "execution_output": output[:2000], "execution_error": "" if success else error,
+                "duration_ms": int((time.time()-start)*1000),
+                "correctness": "pass" if success else "fail",
+                "pass@k": {"k": 5, "value": 1.0 if success else 0.0},
+                "first_success_attempt": next((a["attempt_number"] for a in attempts if a["success"]), None),
+                "total_prompt_tokens": total_tokens,
+                "total_generated_tokens": sum(a.get("tokens", 0) for a in attempts),
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            }))
+      resources:
+        requests:
+          cpu: 500m
+          memory: 512Mi
+        limits:
+          cpu: 1000m
+          memory: 1Gi
+
+    # ── Evaluation Agents (M.1) ─────────────────────────────────────────────
+
+    # Python evaluation with Laguna M.1
+    - name: eval-python-m1-agent
+      modelSelectorRef: evaluation-m1
+      systemPrompt: |
+        You are a Python code evaluation agent. Generate working Python code, test it iteratively, and report metrics.
+
+        INPUT JSON format: {"task": "...", "task_id": "python-m1", "max_attempts": 5}
+        OUTPUT ONLY valid JSON with task_id, language, model, attempts array, final_result, correctness.
+      runtime:
+        inputMode: env
+        ociRef: "agent-orc/eval-runtime:latest"
+        framework: openai-compatible
+        command: ["python3", "-c"]
+        args:
+          - |
+            import json, os, subprocess, time, urllib.request, sys
+            inp = json.loads(os.environ.get("AGENTORC_INPUT", "{}"))
+            base_url = os.environ.get("OPENAI_BASE_URL", "http://localhost:8080")
+            api_key = os.environ.get("OPENAI_API_KEY", "unused")
+            task = inp.get("task", "")
+            task_id = inp.get("task_id", "unknown")
+            max_attempts = inp.get("max_attempts", 5)
+            attempts, total_tokens, start = [], 0, time.time()
+            success, output, error = False, "", ""
+
+            for attempt in range(1, max_attempts + 1):
+                if len(attempts) > 0:
+                    last_error = attempts[-1]["error"]
+                    prompt = f"Generate working Python code for: {task}. Previous attempt failed: {last_error}. Fix and output ONLY code with no markdown fences."
+                else:
+                    prompt = f"Generate working Python code for: {task}. Output ONLY code with no markdown fences."
+                try:
+                    resp = urllib.request.urlopen(urllib.request.Request(
+                      f"{base_url}/chat/completions",
+                      json.dumps({"model": "default", "messages": [{"role": "user", "content": prompt}]}).encode(),
+                      headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}))
+                    data = json.loads(resp.read().decode())
+                    code = data["choices"][0]["message"]["content"].strip()
+                    if code.startswith("```"): code = "\n".join(code.split("\n")[1:-1])
+                    tok = data.get("usage", {}).get("total_tokens", 0)
+                except Exception as e:
+                    print(json.dumps({"task_id": task_id, "error": f"LLM call failed: {e}"})); sys.exit(1)
+
+                try:
+                    result = subprocess.run(["python3", "-c", code], capture_output=True, text=True, timeout=30)
+                    success = result.returncode == 0
+                    output, error = result.stdout, result.stderr
+                except Exception as e:
+                    success, output, error = False, "", str(e)
+
+                attempts.append({"attempt_number": attempt, "code": code, "success": success, "error": error[:500], "tokens": tok})
+                total_tokens += tok
+                if success: break
+
+            print(json.dumps({
+                "task_id": task_id, "language": "python", "model": "m1",
+                "task_description": task, "attempts": attempts,
+                "final_result": {"success": success, "total_attempts": len(attempts), "total_tokens": total_tokens},
+                "execution_output": output[:2000], "execution_error": "" if success else error,
+                "duration_ms": int((time.time()-start)*1000),
+                "correctness": "pass" if success else "fail",
+                "pass@k": {"k": 5, "value": 1.0 if success else 0.0},
+                "first_success_attempt": next((a["attempt_number"] for a in attempts if a["success"]), None),
+                "total_prompt_tokens": total_tokens,
+                "total_generated_tokens": sum(a.get("tokens", 0) for a in attempts),
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            }))
+      resources:
+        requests:
+          cpu: 500m
+          memory: 512Mi
+        limits:
+          cpu: 1000m
+          memory: 1Gi
+
+    # Go evaluation with Laguna M.1
+    - name: eval-go-m1-agent
+      modelSelectorRef: evaluation-m1
+      systemPrompt: |
+        You are a Go code evaluation agent. Generate complete Go programs with package main.
+
+        INPUT JSON: {"task": "...", "task_id": "go-m1", "max_attempts": 5}
+        OUTPUT ONLY JSON with task_id, language, model, attempts, final_result.
+      runtime:
+        inputMode: env
+        ociRef: "agent-orc/eval-runtime:latest"
+        framework: openai-compatible
+        command: ["python3", "-c"]
+        args:
+          - |
+            import json, os, subprocess, time, urllib.request, sys
+            inp = json.loads(os.environ.get("AGENTORC_INPUT", "{}"))
+            base_url, api_key = os.environ.get("OPENAI_BASE_URL", "http://localhost:8080"), os.environ.get("OPENAI_API_KEY", "unused")
+            task, task_id, max_attempts = inp.get("task", ""), inp.get("task_id", "unknown"), inp.get("max_attempts", 5)
+            attempts, total_tokens, start = [], 0, time.time()
+            success, output, error = False, "", ""
+
+            for attempt in range(1, max_attempts + 1):
+                if len(attempts) > 0:
+                    last_error = attempts[-1]["error"]
+                    prompt = f"Generate working Go code for: {task}. Previous attempt failed: {last_error}. Fix and output ONLY complete Go code, no markdown."
+                else:
+                    prompt = f"Generate working Go code for: {task}. Output ONLY complete Go code, no markdown."
+                try:
+                    resp = urllib.request.urlopen(urllib.request.Request(
+                      f"{base_url}/chat/completions",
+                      json.dumps({"model": "default", "messages": [{"role": "user", "content": prompt}]}).encode(),
+                      headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}))
+                    data = json.loads(resp.read().decode())
+                    code = data["choices"][0]["message"]["content"].strip()
+                    if code.startswith("```"): code = "\n".join(code.split("\n")[1:-1])
+                    tok = data.get("usage", {}).get("total_tokens", 0)
+                except Exception as e:
+                    print(json.dumps({"task_id": task_id, "error": f"LLM failed: {e}"})); sys.exit(1)
+
+                try:
+                    with open("/tmp/main.go", "w") as f: f.write(code)
+                    result = subprocess.run(["go", "run", "/tmp/main.go"], capture_output=True, text=True, timeout=60)
+                    success = result.returncode == 0
+                    output, error = result.stdout, result.stderr
+                except Exception as e:
+                    success, output, error = False, "", str(e)
+
+                attempts.append({"attempt_number": attempt, "code": code, "success": success, "error": error[:500], "tokens": tok})
+                total_tokens += tok
+                if success: break
+
+            print(json.dumps({
+                "task_id": task_id, "language": "go", "model": "m1",
+                "task_description": task, "attempts": attempts,
+                "final_result": {"success": success, "total_attempts": len(attempts), "total_tokens": total_tokens},
+                "execution_output": output[:2000], "execution_error": "" if success else error,
+                "duration_ms": int((time.time()-start)*1000),
+                "correctness": "pass" if success else "fail",
+                "pass@k": {"k": 5, "value": 1.0 if success else 0.0},
+                "first_success_attempt": next((a["attempt_number"] for a in attempts if a["success"]), None),
+                "total_prompt_tokens": total_tokens,
+                "total_generated_tokens": sum(a.get("tokens", 0) for a in attempts),
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            }))
+      resources:
+        requests:
+          cpu: 500m
+          memory: 512Mi
+        limits:
+          cpu: 1000m
+          memory: 1Gi
+
+    # Fortran evaluation with Laguna M.1
+    - name: eval-fortran-m1-agent
+      modelSelectorRef: evaluation-m1
+      systemPrompt: |
+        You are a Fortran code evaluation agent. Use implicit none and program main block.
+
+        INPUT JSON: {"task": "numerical integration using Simpson's rule", "task_id": "fortran-m1", "max_attempts": 5}
+        OUTPUT ONLY JSON with task_id, language, model, attempts, final_result.
+      runtime:
+        inputMode: env
+        ociRef: "agent-orc/eval-runtime:latest"
+        framework: openai-compatible
+        command: ["python3", "-c"]
+        args:
+          - |
+            import json, os, subprocess, time, urllib.request, sys
+            inp = json.loads(os.environ.get("AGENTORC_INPUT", "{}"))
+            base_url, api_key = os.environ.get("OPENAI_BASE_URL", "http://localhost:8080"), os.environ.get("OPENAI_API_KEY", "unused")
+            task, task_id, max_attempts = inp.get("task", ""), inp.get("task_id", "unknown"), inp.get("max_attempts", 5)
+            attempts, total_tokens, start = [], 0, time.time()
+            success, output, error = False, "", ""
+
+            for attempt in range(1, max_attempts + 1):
+                if len(attempts) > 0:
+                    last_error = attempts[-1]["error"]
+                    prompt = f"Generate working Fortran code for: {task}. Previous attempt failed: {last_error}. Fix and output ONLY complete Fortran code with implicit none, program main block, no markdown."
+                else:
+                    prompt = f"Generate working Fortran code for: {task}. Output ONLY complete Fortran code with implicit none, program main block, no markdown."
+                try:
+                    resp = urllib.request.urlopen(urllib.request.Request(
+                      f"{base_url}/chat/completions",
+                      json.dumps({"model": "default", "messages": [{"role": "user", "content": prompt}]}).encode(),
+                      headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}))
+                    data = json.loads(resp.read().decode())
+                    code = data["choices"][0]["message"]["content"].strip()
+                    if code.startswith("```"): code = "\n".join(code.split("\n")[1:-1])
+                    tok = data.get("usage", {}).get("total_tokens", 0)
+                except Exception as e:
+                    print(json.dumps({"task_id": task_id, "error": f"LLM failed: {e}"})); sys.exit(1)
+
+                try:
+                    with open("/tmp/main.f90", "w") as f: f.write(code)
+                    comp = subprocess.run(["gfortran", "-o", "/tmp/fmain", "/tmp/main.f90"], capture_output=True, text=True, timeout=60)
+                    if comp.returncode == 0:
+                        result = subprocess.run(["/tmp/fmain"], capture_output=True, text=True, timeout=30)
+                        success = result.returncode == 0
+                        output, error = result.stdout, result.stderr
+                    else:
+                        success, output, error = False, "", comp.stderr
+                except Exception as e:
+                    success, output, error = False, "", str(e)
+
+                attempts.append({"attempt_number": attempt, "code": code, "success": success, "error": error[:500], "tokens": tok})
+                total_tokens += tok
+                if success: break
+
+            print(json.dumps({
+                "task_id": task_id, "language": "fortran", "model": "m1",
+                "task_description": task, "attempts": attempts,
+                "final_result": {"success": success, "total_attempts": len(attempts), "total_tokens": total_tokens},
+                "execution_output": output[:2000], "execution_error": "" if success else error,
+                "duration_ms": int((time.time()-start)*1000),
+                "correctness": "pass" if success else "fail",
+                "pass@k": {"k": 5, "value": 1.0 if success else 0.0},
+                "first_success_attempt": next((a["attempt_number"] for a in attempts if a["success"]), None),
+                "total_prompt_tokens": total_tokens,
+                "total_generated_tokens": sum(a.get("tokens", 0) for a in attempts),
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            }))
+      resources:
+        requests:
+          cpu: 500m
+          memory: 512Mi
+        limits:
+          cpu: 1000m
+          memory: 1Gi
+
+    # JavaScript evaluation with Laguna M.1
+    - name: eval-javascript-m1-agent
+      modelSelectorRef: evaluation-m1
+      systemPrompt: |
+        You are a JavaScript code evaluation agent. Generate working Node.js code.
+
+        INPUT JSON: {"task": "JSON schema validation module", "task_id": "javascript-m1", "max_attempts": 5}
+        OUTPUT ONLY JSON with task_id, language, model, attempts, final_result.
+      runtime:
+        inputMode: env
+        ociRef: "agent-orc/eval-runtime:latest"
+        framework: openai-compatible
+        command: ["python3", "-c"]
+        args:
+          - |
+            import json, os, subprocess, time, urllib.request, sys
+            inp = json.loads(os.environ.get("AGENTORC_INPUT", "{}"))
+            base_url, api_key = os.environ.get("OPENAI_BASE_URL", "http://localhost:8080"), os.environ.get("OPENAI_API_KEY", "unused")
+            task, task_id, max_attempts = inp.get("task", ""), inp.get("task_id", "unknown"), inp.get("max_attempts", 5)
+            attempts, total_tokens, start = [], 0, time.time()
+            success, output, error = False, "", ""
+
+            for attempt in range(1, max_attempts + 1):
+                if len(attempts) > 0:
+                    last_error = attempts[-1]["error"]
+                    prompt = f"Generate working JavaScript code for: {task}. Previous attempt failed: {last_error}. Fix and output ONLY code, no markdown."
+                else:
+                    prompt = f"Generate working JavaScript code for: {task}. Output ONLY code, no markdown."
+                try:
+                    resp = urllib.request.urlopen(urllib.request.Request(
+                      f"{base_url}/chat/completions",
+                      json.dumps({"model": "default", "messages": [{"role": "user", "content": prompt}]}).encode(),
+                      headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}))
+                    data = json.loads(resp.read().decode())
+                    code = data["choices"][0]["message"]["content"].strip()
+                    if code.startswith("```"): code = "\n".join(code.split("\n")[1:-1])
+                    tok = data.get("usage", {}).get("total_tokens", 0)
+                except Exception as e:
+                    print(json.dumps({"task_id": task_id, "error": f"LLM failed: {e}"})); sys.exit(1)
+
+                try:
+                    result = subprocess.run(["node", "-e", code], capture_output=True, text=True, timeout=30)
+                    success = result.returncode == 0
+                    output, error = result.stdout, result.stderr
+                except Exception as e:
+                    success, output, error = False, "", str(e)
+
+                attempts.append({"attempt_number": attempt, "code": code, "success": success, "error": error[:500], "tokens": tok})
+                total_tokens += tok
+                if success: break
+
+            print(json.dumps({
+                "task_id": task_id, "language": "javascript", "model": "m1",
+                "task_description": task, "attempts": attempts,
+                "final_result": {"success": success, "total_attempts": len(attempts), "total_tokens": total_tokens},
+                "execution_output": output[:2000], "execution_error": "" if success else error,
+                "duration_ms": int((time.time()-start)*1000),
+                "correctness": "pass" if success else "fail",
+                "pass@k": {"k": 5, "value": 1.0 if success else 0.0},
+                "first_success_attempt": next((a["attempt_number"] for a in attempts if a["success"]), None),
+                "total_prompt_tokens": total_tokens,
+                "total_generated_tokens": sum(a.get("tokens", 0) for a in attempts),
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            }))
+      resources:
+        requests:
+          cpu: 500m
+          memory: 512Mi
+        limits:
+          cpu: 1000m
+          memory: 1Gi
+
+  # ── AgentDeployment ───────────────────────────────────────────────────────
+
+  agentDeployments:
+    - name: llm-research
+      agentRef: llm-research-agent
+      inputSource:
+        type: chat
+      replicas: 1
+      warmPoolSize: 1
+      restartPolicy:
+        minBackoffSeconds: 10
+        maxBackoffSeconds: 600
+        maxConsecutiveFailures: 10
+
+
+  # ── MCP Server Deployments ──────────────────────────────────────────────────
+
+  mcpServerDeployments:
+    - name: research-tools-server
+      fileName: server.py
+      image: "python:3.12-slim"
+      port: 8080
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi

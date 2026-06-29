@@ -1,0 +1,473 @@
+# Tool deployment tests: MCP server (stdio) and agent-as-tool.
+#
+# Requires shared.yaml to be applied first (ModelProvider + ModelSelector).
+#
+# Tests covered:
+#   1. MCP calculator tool — stdio transport, inline Python MCP server
+#   2. Agent-as-tool — sub-agent exposed as a callable tool
+#   3. Orchestrator runs exercising each tool type
+#
+# Apply:
+#   kubectl apply -f testdata/agents/shared.yaml
+#   kubectl apply -f testdata/agents/tools.yaml
+
+# ============================================================
+# 1. MCP Calculator Tool (stdio transport)
+#
+# The model-router sidecar spawns this Python process over stdin/stdout
+# using the JSON-RPC 2.0 MCP protocol (protocolVersion: 2024-11-05).
+# The server exposes two tools: add and multiply.
+# ============================================================
+---
+apiVersion: agentorc.agentorc.io/v1alpha1
+kind: Tool
+metadata:
+  name: test-mcp-calculator
+  namespace: default
+spec:
+  type: mcp
+  ociRef: "python:3.12-slim"
+  executionMode: sidecar
+  mcpConfig:
+    transport: stdio
+    args:
+      - python3
+      - -c
+      - |
+        import sys, json
+
+        def send(obj):
+            sys.stdout.write(json.dumps(obj) + "\n")
+            sys.stdout.flush()
+
+        for raw in sys.stdin:
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                req = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            method = req.get("method", "")
+            id_ = req.get("id")
+            if method == "initialize":
+                send({"jsonrpc": "2.0", "id": id_, "result": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {"tools": {}},
+                    "serverInfo": {"name": "test-calculator", "version": "1.0.0"},
+                }})
+            elif method == "notifications/initialized":
+                pass
+            elif method == "tools/list":
+                send({"jsonrpc": "2.0", "id": id_, "result": {"tools": [
+                    {
+                        "name": "add",
+                        "description": "Add two numbers and return their sum.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "a": {"type": "number", "description": "First operand"},
+                                "b": {"type": "number", "description": "Second operand"},
+                            },
+                            "required": ["a", "b"],
+                        },
+                    },
+                    {
+                        "name": "multiply",
+                        "description": "Multiply two numbers and return their product.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "a": {"type": "number", "description": "First operand"},
+                                "b": {"type": "number", "description": "Second operand"},
+                            },
+                            "required": ["a", "b"],
+                        },
+                    },
+                ]}})
+            elif method == "tools/call":
+                params = req.get("params", {})
+                name = params.get("name", "")
+                args = params.get("arguments", {})
+                if name == "add":
+                    result = args.get("a", 0) + args.get("b", 0)
+                    send({"jsonrpc": "2.0", "id": id_, "result": {
+                        "content": [{"type": "text", "text": str(result)}],
+                    }})
+                elif name == "multiply":
+                    result = args.get("a", 0) * args.get("b", 0)
+                    send({"jsonrpc": "2.0", "id": id_, "result": {
+                        "content": [{"type": "text", "text": str(result)}],
+                    }})
+                else:
+                    send({"jsonrpc": "2.0", "id": id_, "error": {
+                        "code": -32601, "message": "Unknown tool: " + name,
+                    }})
+            elif id_ is not None:
+                send({"jsonrpc": "2.0", "id": id_, "error": {
+                    "code": -32601, "message": "Method not found: " + method,
+                }})
+  schema:
+    description: "Calculator MCP server providing add and multiply operations."
+  resources:
+    requests:
+      cpu: 25m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi
+
+# ============================================================
+# 2. Sub-agent used as a tool (agent-as-tool pattern)
+#
+# This agent summarizes text in one sentence. It is not invoked
+# directly — it is exposed to the orchestrator via the Tool CRD below.
+# ============================================================
+---
+apiVersion: agentorc.agentorc.io/v1alpha1
+kind: Agent
+metadata:
+  name: test-summarizer-agent
+  namespace: default
+spec:
+  modelSelectorRef: test-router
+  systemPrompt: >
+    You are a precise text summarizer. When given a passage, respond with
+    exactly one concise sentence that captures the main idea. Output only
+    the sentence — no preamble, no quotes, no punctuation beyond the sentence itself.
+  runtime:
+    ociRef: "python:3.12-slim"
+    framework: openai-compatible
+    command: ["python3", "-c"]
+    args:
+      - |
+        import json, os, urllib.request
+        inp = os.environ.get("AGENTORC_INPUT", "Summarize: hello world.")
+        base_url = os.environ.get("OPENAI_BASE_URL", "http://localhost:8080")
+        api_key  = os.environ.get("OPENAI_API_KEY", "unused")
+        timeout = int(os.environ.get("AGENTORC_TIMEOUT_SEC", "120"))
+        body = json.dumps({
+          "model": "default",
+          "stream": True,
+          "messages": [{"role": "user", "content": inp}],
+        }).encode()
+        req = urllib.request.Request(
+          f"{base_url}/v1/chat/completions",
+          data=body,
+          headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+          for line in r:
+            line = line.decode().strip()
+            if not line.startswith("data: "):
+              continue
+            data = line[len("data: "):]
+            if data == "[DONE]":
+              break
+            chunk = json.loads(data)
+            choices = chunk.get("choices", [])
+            if not choices:
+              continue
+            content = choices[0].get("delta", {}).get("content", "")
+            if content:
+              print(content, end="", flush=True)
+        print()
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+# ============================================================
+# 3. Tool wrapping the summarizer agent
+#
+# type: agent causes the executor to spawn a child AgentRun targeting
+# test-summarizer-agent. The LLM calls this tool with {"task": "<text>"}.
+# ============================================================
+---
+apiVersion: agentorc.agentorc.io/v1alpha1
+kind: Tool
+metadata:
+  name: test-summarizer-tool
+  namespace: default
+spec:
+  type: agent
+  agentRef: test-summarizer-agent
+  schema:
+    description: >
+      Summarizes a passage of text into a single concise sentence.
+      Use this when you need to condense a long block of text.
+    input:
+      type: object
+      properties:
+        task:
+          type: string
+          description: "The text passage to summarize."
+      required: ["task"]
+
+# ============================================================
+# 4. Orchestrator agent with both tools registered
+#
+# The model-router injects both tool definitions into every chat completion.
+# Tool dispatch is transparent: the agent script is identical to the
+# openai-compatible baseline; the model-router handles call/response loops.
+# ============================================================
+---
+apiVersion: agentorc.agentorc.io/v1alpha1
+kind: Agent
+metadata:
+  name: test-tools-orchestrator
+  namespace: default
+spec:
+  modelSelectorRef: test-router
+  tools:
+    - test-mcp-calculator
+    - test-summarizer-tool
+  systemPrompt: >
+    You are a helpful orchestrator. You have access to a calculator (add, multiply)
+    and a text summarizer. Always use the appropriate tool when the user asks for
+    arithmetic or summarization. After receiving a tool result, output only the
+    tool result text with no additional commentary, elaboration, or preamble.
+  runtime:
+    ociRef: "python:3.12-slim"
+    framework: openai-compatible
+    command: ["python3", "-c"]
+    args:
+      - |
+        import json, os, urllib.request
+        inp = os.environ.get("AGENTORC_INPUT", "What is 6 times 7?")
+        base_url = os.environ.get("OPENAI_BASE_URL", "http://localhost:8080")
+        api_key  = os.environ.get("OPENAI_API_KEY", "unused")
+        timeout = int(os.environ.get("AGENTORC_TIMEOUT_SEC", "300"))
+        body = json.dumps({
+          "model": "default",
+          "stream": True,
+          "messages": [{"role": "user", "content": inp}],
+        }).encode()
+        req = urllib.request.Request(
+          f"{base_url}/v1/chat/completions",
+          data=body,
+          headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+          for line in r:
+            line = line.decode().strip()
+            if not line.startswith("data: "):
+              continue
+            data = line[len("data: "):]
+            if data == "[DONE]":
+              break
+            chunk = json.loads(data)
+            choices = chunk.get("choices", [])
+            if not choices:
+              continue
+            content = choices[0].get("delta", {}).get("content", "")
+            if content:
+              print(content, end="", flush=True)
+        print()
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+# ============================================================
+# 5. AgentRun: exercise the MCP calculator tool
+#
+# The LLM must call the MCP add tool or multiply tool to answer.
+# Expected: the run succeeds and output contains "294" (42 * 7).
+# ============================================================
+---
+apiVersion: agentorc.agentorc.io/v1alpha1
+kind: AgentRun
+metadata:
+  name: test-mcp-run
+  namespace: default
+spec:
+  agentRef: test-tools-orchestrator
+  input: "Use the calculator to compute 42 multiplied by 7. Show the result."
+  timeout: 5m
+
+# ============================================================
+# 6. AgentRun: exercise the agent-as-tool (child AgentRun pattern)
+#
+# The orchestrator must invoke test-summarizer-tool which creates a
+# child AgentRun targeting test-summarizer-agent. The child run's
+# output is returned to the orchestrator as the tool result.
+# Expected: the run succeeds and output is a one-sentence summary.
+# ============================================================
+---
+apiVersion: agentorc.agentorc.io/v1alpha1
+kind: AgentRun
+metadata:
+  name: test-agent-tool-run
+  namespace: default
+spec:
+  agentRef: test-tools-orchestrator
+  input: >
+    Use the summarizer tool to summarize the following passage:
+    "The Kubernetes operator pattern extends the Kubernetes API to manage complex
+    stateful applications. Operators encode domain-specific operational knowledge
+    as reconciliation loops that continuously drive the cluster toward a desired
+    state. They are built using Custom Resource Definitions and controller-runtime,
+    and run as standard pods inside the cluster."
+  timeout: 10m
+
+# ============================================================
+# 7. MCP Tool with secret-backed env vars (Feature 1)
+#
+# Demonstrates MCPConfig.envFrom: the SF_API_KEY env var is
+# sourced from a Kubernetes Secret rather than inline plaintext.
+# The Secret is mounted as a file on the model-router sidecar
+# and read at MCP subprocess startup.
+# ============================================================
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: salesforce-credentials
+  namespace: default
+type: Opaque
+stringData:
+  api-key: "sf-test-key-placeholder"
+---
+apiVersion: agentorc.agentorc.io/v1alpha1
+kind: Tool
+metadata:
+  name: test-mcp-secret-env
+  namespace: default
+spec:
+  type: mcp
+  ociRef: "python:3.12-slim"
+  executionMode: sidecar
+  mcpConfig:
+    transport: stdio
+    args:
+      - python3
+      - -c
+      - |
+        import sys, json, os
+        api_key = os.environ.get("SF_API_KEY", "NOT_SET")
+        for raw in sys.stdin:
+            raw = raw.strip()
+            if not raw: continue
+            req = json.loads(raw)
+            method = req.get("method", "")
+            id_ = req.get("id")
+            if method == "initialize":
+                sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": id_, "result": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {"tools": {}},
+                    "serverInfo": {"name": "secret-env-test", "version": "1.0.0"},
+                }}) + "\n"); sys.stdout.flush()
+            elif method == "notifications/initialized":
+                pass
+            elif method == "tools/list":
+                sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": id_, "result": {"tools": [
+                    {"name": "check_key", "description": "Returns whether the API key was injected.", "inputSchema": {"type": "object", "properties": {}}},
+                ]}}) + "\n"); sys.stdout.flush()
+            elif method == "tools/call":
+                result = "key_present" if api_key != "NOT_SET" else "key_missing"
+                sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": id_, "result": {
+                    "content": [{"type": "text", "text": result}],
+                }}) + "\n"); sys.stdout.flush()
+    envFrom:
+      - name: SF_API_KEY
+        valueFrom:
+          secretKeyRef:
+            name: salesforce-credentials
+            key: api-key
+  schema:
+    description: "Test MCP server that verifies secret-backed env var injection."
+
+# ============================================================
+# 8. MCP Tool with HTTP bearer token auth (Feature 3)
+#
+# Demonstrates MCPConfig.auth.bearerToken: the model-router
+# reads the token from a mounted Secret file and injects an
+# Authorization header on every HTTP request to the remote
+# MCP server.
+# ============================================================
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: remote-mcp-token
+  namespace: default
+type: Opaque
+stringData:
+  token: "test-bearer-token-placeholder"
+---
+apiVersion: agentorc.agentorc.io/v1alpha1
+kind: Tool
+metadata:
+  name: test-mcp-http-auth
+  namespace: default
+spec:
+  type: mcp
+  mcpConfig:
+    transport: http
+    url: "https://mcp.example.com/v1"
+    auth:
+      bearerToken:
+        name: remote-mcp-token
+        key: token
+  networkEgress:
+    - host: mcp.example.com
+      port: 443
+  schema:
+    description: "Remote MCP server with bearer token authentication."
+
+# ============================================================
+# 9. Pod tool with secret mounts (Feature 2)
+#
+# Demonstrates ToolSpec.secretRefs: a regular (pod) tool that
+# receives database credentials via a mounted Secret volume
+# and cache credentials via env var injection.
+# ============================================================
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-credentials
+  namespace: default
+type: Opaque
+stringData:
+  PGHOST: "postgres.example.com"
+  PGUSER: "agent"
+  PGPASSWORD: "test-password-placeholder"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: redis-credentials
+  namespace: default
+type: Opaque
+stringData:
+  REDIS_URL: "redis://redis.example.com:6379"
+---
+apiVersion: agentorc.agentorc.io/v1alpha1
+kind: Tool
+metadata:
+  name: test-db-query-tool
+  namespace: default
+spec:
+  type: regular
+  ociRef: "python:3.12-slim"
+  secretRefs:
+    - name: postgres-credentials
+      mountPath: /etc/secrets/postgres
+    - name: redis-credentials
+  schema:
+    description: "Database query tool with mounted and env-injected credentials."
+    input:
+      type: object
+      properties:
+        query:
+          type: string
+          description: "SQL query to execute."
+      required: ["query"]

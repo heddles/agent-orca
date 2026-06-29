@@ -1,0 +1,34 @@
+apiVersion: v2
+name: demo-mcp-apps
+description: |
+  MCP Apps demo — interactive service-health dashboard rendered as a sandboxed iframe.
+
+  An MCP server exposes two tools: check_service_health and list_incidents.
+  Each tool declares _meta.ui.resourceUri so the agent-orc UI renders a rich HTML
+  dashboard below the plain-text tool result — a live status page showing uptime,
+  latency trends, and colour-coded incident badges, all computed client-side with
+  no external requests.
+
+  This demo shows the complete MCP Apps pipeline end-to-end:
+    1. MCPServer with spec.allowApps: true
+    2. tools/list response carries _meta.ui.resourceUri per tool
+    3. Router fetches the HTML via resources/read and caches it in Redis
+    4. UI renders a sandboxed iframe (sandbox="allow-scripts", CSP connect-src 'none')
+
+  Requires: agent-orc operator + 'default' ModelSelector already deployed.
+  No external API keys needed — the MCP server generates realistic synthetic data.
+
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - demo
+  - mcp
+  - mcp-apps
+  - iframe
+  - sandboxed-ui
+  - service-health
+dependencies:
+  - name: agent-orc-resources
+    version: "0.2.0"
+    repository: "file://../../agent-orc-resources"

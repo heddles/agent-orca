@@ -1,0 +1,84 @@
+# Framework: langgraph (Tier 2 — init container config injection)
+#
+# The operator injects OPENAI_API_BASE (LangChain legacy env var) so ChatOpenAI
+# points at the model-router. Optionally LANGGRAPH_CHECKPOINT_URL is set for
+# Postgres-backed conversation persistence; without it LangGraph uses in-memory.
+#
+# Image: python:3.12-slim (public Docker Hub)
+# Agent: LangGraph StateGraph with a single model node
+#        (https://github.com/langchain-ai/langgraph)
+---
+apiVersion: agentorc.agentorc.io/v1alpha1
+kind: Agent
+metadata:
+  name: test-langgraph
+  namespace: default
+spec:
+  modelSelectorRef: test-router
+  systemPrompt: "You are a helpful assistant. Answer concisely in one sentence."
+  runtime:
+    ociRef: "python:3.12-slim"
+    framework: langgraph
+    command: ["/bin/sh", "-c"]
+    args:
+      - |
+        pip install -q --target=/tmp/site-packages "langgraph>=0.2" "langchain-openai>=0.2"
+        export PYTHONPATH=/tmp/site-packages
+        python3 << 'PYEOF'
+        import os
+        from typing import Annotated, TypedDict
+        import operator
+        from langchain_openai import ChatOpenAI
+        from langchain_core.messages import HumanMessage, SystemMessage
+        from langgraph.graph import StateGraph, END
+
+        # OPENAI_API_BASE is injected by the framework layer (LangChain legacy var).
+        # The operator sets it to http://localhost:8080 (no /v1); the openai SDK
+        # needs /v1 appended so it constructs the correct chat completions path.
+        base_url = os.environ.get(
+            "OPENAI_API_BASE",
+            os.environ.get("OPENAI_BASE_URL", "http://localhost:8080"),
+        ).rstrip("/") + "/v1"
+        api_key = os.environ.get("OPENAI_API_KEY", "unused")
+
+        llm = ChatOpenAI(model="gpt-4o", base_url=base_url, api_key=api_key)
+
+        class State(TypedDict):
+            messages: Annotated[list, operator.add]
+
+        def call_model(state: State) -> State:
+            response = llm.invoke(state["messages"])
+            return {"messages": [response]}
+
+        builder = StateGraph(State)
+        builder.add_node("model", call_model)
+        builder.set_entry_point("model")
+        builder.add_edge("model", END)
+        graph = builder.compile()
+
+        inp = os.environ.get("AGENTORC_INPUT", "What is 2+2?")
+        result = graph.invoke({
+            "messages": [
+                SystemMessage(content="You are a helpful assistant. Answer concisely in one sentence."),
+                HumanMessage(content=inp),
+            ]
+        })
+        print(result["messages"][-1].content)
+        PYEOF
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+---
+apiVersion: agentorc.agentorc.io/v1alpha1
+kind: AgentRun
+metadata:
+  name: test-langgraph-run
+  namespace: default
+spec:
+  agentRef: test-langgraph
+  input: "What is the capital of Japan? Answer in one sentence."
+  timeout: 5m

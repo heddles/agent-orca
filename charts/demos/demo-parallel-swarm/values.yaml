@@ -1,0 +1,447 @@
+nameOverride: ""
+
+agent-orc-resources:
+
+  # ── Tools ────────────────────────────────────────────────────────────────────
+
+  tools:
+    # Inline CVE lookup MCP — hardcoded vulnerability database for demo reproducibility.
+    # Returns CVE records for jwt, paseto, oauth2, and other security topics.
+    - name: cve-lookup
+      type: mcp
+      ociRef: "python:3.12-slim"
+      executionMode: sidecar
+      mcpConfig:
+        transport: stdio
+        args:
+          - python3
+          - -c
+          - |
+            import sys, json
+
+            CVES = {
+              "jwt": [
+                {"id": "CVE-2022-21449", "severity": "HIGH", "cvss": 7.5,
+                 "description": "ECDSA signature bypass (Psychic Signatures) in Java SE <= 15.0.6. JWT libraries using Java's ECDSA verifier accept signatures with r=0,s=0.",
+                 "affected": "Java JWT libraries (e.g. jjwt, java-jwt) on JDK 15 and earlier"},
+                {"id": "CVE-2015-9235", "severity": "CRITICAL", "cvss": 9.8,
+                 "description": "JWT 'none' algorithm: libraries that accept 'none' as a valid signature algorithm allow attackers to forge tokens with no signature.",
+                 "affected": "Multiple JWT libraries that do not reject alg:none"},
+                {"id": "CVE-2018-0114", "severity": "CRITICAL", "cvss": 9.8,
+                 "description": "JWT key confusion: RSA public key used as HMAC secret. Attacker changes alg to HS256 and signs with the server's public key.",
+                 "affected": "Libraries that allow algorithm switching between asymmetric and symmetric"},
+              ],
+              "paseto": [
+                {"id": "PASETO-NOTE", "severity": "INFO", "cvss": 0.0,
+                 "description": "No CVEs registered for PASETO as of 2026. PASETO v2/v4 uses libsodium (XChaCha20-Poly1305, Ed25519) with no algorithm negotiation — the three JWT CVEs above are structurally impossible.",
+                 "affected": "None"},
+              ],
+              "oauth2": [
+                {"id": "CVE-2023-28107", "severity": "MEDIUM", "cvss": 5.3,
+                 "description": "Open redirect via unvalidated redirect_uri in OAuth2 authorization flow.",
+                 "affected": "Implementations that do not strictly validate redirect_uri"},
+              ],
+              "session": [
+                {"id": "CVE-2011-2107", "severity": "MEDIUM", "cvss": 5.8,
+                 "description": "Session fixation: server accepts attacker-supplied session ID before authentication.",
+                 "affected": "Web frameworks that do not regenerate session ID on authentication"},
+              ],
+            }
+
+            TOOLS = [
+              {"name": "cve_lookup",
+               "description": "Search the CVE database for known vulnerabilities related to a technology, library, or concept. Returns a list of CVE records with severity, CVSS score, and description.",
+               "inputSchema": {"type": "object", "properties": {"query": {"type": "string", "description": "Technology or concept to search for (e.g. 'jwt', 'paseto', 'oauth2')", "minLength": 1}}, "required": ["query"]}},
+            ]
+
+            def send(id_, result=None, error=None):
+              msg = {"jsonrpc": "2.0", "id": id_}
+              if error: msg["error"] = error
+              else: msg["result"] = result
+              sys.stdout.write(json.dumps(msg) + "\n"); sys.stdout.flush()
+
+            for raw in sys.stdin:
+              raw = raw.strip()
+              if not raw: continue
+              try:
+                req = json.loads(raw)
+                m, id_ = req.get("method",""), req.get("id")
+                if m == "initialize":
+                  send(id_, {"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"cve-db","version":"1.0.0"}})
+                elif m == "notifications/initialized": pass
+                elif m == "tools/list": send(id_, {"tools": TOOLS})
+                elif m == "tools/call":
+                  p = req.get("params",{}); name = p.get("name",""); args = p.get("arguments",{})
+                  if name == "cve_lookup":
+                    q = args.get("query","").lower().strip()
+                    results = []
+                    for key, cves in CVES.items():
+                      if key in q or q in key:
+                        results.extend(cves)
+                    if not results:
+                      results = [{"id": "NOT-FOUND", "severity": "INFO", "cvss": 0.0, "description": f"No CVEs found for query: {q!r}", "affected": "N/A"}]
+                    send(id_, {"content":[{"type":"text","text":json.dumps(results,indent=2)}]})
+                  else: send(id_, error={"code":-32601,"message":f"Unknown tool: {name}"})
+                elif id_ is not None: send(id_, error={"code":-32601,"message":f"Method not found: {m}"})
+              except Exception as e: sys.stderr.write(str(e)+"\n")
+      schema:
+        description: "CVE database lookup — search for known vulnerabilities by technology or concept."
+      resources:
+        requests:
+          cpu: 25m
+          memory: 32Mi
+        limits:
+          cpu: 100m
+          memory: 64Mi
+
+    # Agent-as-tool wrappers — orchestrator calls these; executor spawns child AgentRuns.
+    - name: security-researcher-tool
+      type: agent
+      agentRef: security-researcher-agent
+      schema:
+        description: >
+          Research the security implications of a technology decision or migration.
+          Returns a structured analysis covering threat model, known attack vectors,
+          and recommended mitigations.
+        input:
+          type: object
+          properties:
+            task:
+              type: string
+              description: "The research question or technology migration to analyze."
+          required: [task]
+
+    - name: cve-checker-tool
+      type: agent
+      agentRef: cve-checker-agent
+      schema:
+        description: >
+          Look up known CVEs for the technologies mentioned in a task.
+          Returns a list of CVE records with severity and description.
+        input:
+          type: object
+          properties:
+            task:
+              type: string
+              description: "The technologies to check for CVEs (e.g. 'JWT to PASETO migration')."
+          required: [task]
+
+    - name: codebase-analyst-tool
+      type: agent
+      agentRef: codebase-analyst-agent
+      schema:
+        description: >
+          Analyze the engineering effort and risk of a code migration or refactor.
+          Returns a structured assessment of migration complexity, breaking changes,
+          and rollout strategy recommendations.
+        input:
+          type: object
+          properties:
+            task:
+              type: string
+              description: "The migration or refactor to analyze."
+          required: [task]
+
+  # ── Agents ───────────────────────────────────────────────────────────────────
+
+  agents:
+    # Child agent 1: security domain expert — pure LLM reasoning.
+    - name: security-researcher-agent
+      modelSelectorRef: default
+      systemPrompt: |
+        You are a senior application security researcher. You analyze technology decisions
+        and migrations for security implications.
+
+        When given a research question, produce a structured JSON analysis:
+
+        {
+          "topic": "<technology or migration being analyzed>",
+          "threat_model": ["<threat 1>", "<threat 2>", ...],
+          "attack_vectors": [{"vector": "...", "likelihood": "low|medium|high", "impact": "low|medium|high"}],
+          "mitigations": ["<mitigation 1>", "<mitigation 2>", ...],
+          "overall_risk": "LOW|MEDIUM|HIGH|CRITICAL",
+          "recommendation": "<one-sentence recommendation>"
+        }
+
+        Output ONLY valid JSON. No preamble, no markdown fences.
+      runtime:
+        ociRef: "python:3.12-slim"
+        framework: openai-compatible
+        command: ["python3", "-c"]
+        args:
+          - |
+            import json, os, urllib.request
+            inp = os.environ.get("AGENTORC_INPUT", "")
+            base_url = os.environ.get("OPENAI_BASE_URL", "http://localhost:8080")
+            api_key = os.environ.get("OPENAI_API_KEY", "unused")
+            timeout = int(os.environ.get("AGENTORC_TIMEOUT_SEC", "300"))
+            body = json.dumps({"model": "default", "stream": True,
+              "messages": [{"role": "user", "content": inp}]}).encode()
+            req = urllib.request.Request(f"{base_url}/chat/completions", data=body,
+              headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"})
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+              for line in r:
+                line = line.decode().strip()
+                if not line.startswith("data: "): continue
+                data = line[6:]
+                if data == "[DONE]": break
+                chunk = json.loads(data)
+                choices = chunk.get("choices", [])
+                if not choices: continue
+                content = choices[0].get("delta", {}).get("content", "")
+                if content: print(content, end="", flush=True)
+            print()
+      memory:
+        checkpointEvery: 1
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+
+    # Child agent 2: CVE checker — calls the cve-lookup MCP tool.
+    - name: cve-checker-agent
+      modelSelectorRef: default
+      systemPrompt: |
+        You are a vulnerability researcher. You look up CVEs for technologies mentioned in a task.
+
+        1. Extract every technology, library, or concept from the task (e.g. JWT, PASETO, OAuth2).
+        2. Call cve_lookup for each one.
+        3. Output a structured JSON report:
+
+        {
+          "technologies_checked": ["<tech 1>", ...],
+          "cves": [
+            {"id": "...", "severity": "...", "cvss": 0.0, "description": "...", "affected": "..."},
+            ...
+          ],
+          "summary": "<one paragraph summarizing the CVE landscape>"
+        }
+
+        Output ONLY valid JSON. No preamble, no markdown fences.
+      tools:
+        - cve-lookup
+      runtime:
+        ociRef: "python:3.12-slim"
+        framework: openai-compatible
+        command: ["python3", "-c"]
+        args:
+          - |
+            import json, os, urllib.request
+            inp = os.environ.get("AGENTORC_INPUT", "")
+            base_url = os.environ.get("OPENAI_BASE_URL", "http://localhost:8080")
+            api_key = os.environ.get("OPENAI_API_KEY", "unused")
+            timeout = int(os.environ.get("AGENTORC_TIMEOUT_SEC", "300"))
+            body = json.dumps({"model": "default", "stream": True,
+              "messages": [{"role": "user", "content": inp}]}).encode()
+            req = urllib.request.Request(f"{base_url}/chat/completions", data=body,
+              headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"})
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+              for line in r:
+                line = line.decode().strip()
+                if not line.startswith("data: "): continue
+                data = line[6:]
+                if data == "[DONE]": break
+                chunk = json.loads(data)
+                choices = chunk.get("choices", [])
+                if not choices: continue
+                content = choices[0].get("delta", {}).get("content", "")
+                if content: print(content, end="", flush=True)
+            print()
+      memory:
+        checkpointEvery: 1
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+
+    # Child agent 3: codebase analyst — pure LLM reasoning about migration effort.
+    - name: codebase-analyst-agent
+      modelSelectorRef: default
+      systemPrompt: |
+        You are a software engineer specializing in large-scale code migrations.
+        You assess migration complexity, breaking changes, and rollout risk.
+
+        Output a structured JSON analysis:
+
+        {
+          "migration": "<brief description of what is changing>",
+          "effort_estimate": "low|medium|high|very-high",
+          "breaking_changes": ["<change 1>", "<change 2>", ...],
+          "migration_steps": ["1. ...", "2. ...", ...],
+          "rollback_risk": "low|medium|high",
+          "parallel_run_possible": true|false,
+          "estimated_timeline_weeks": 0,
+          "recommendation": "<one-sentence recommendation>"
+        }
+
+        Output ONLY valid JSON. No preamble, no markdown fences.
+      runtime:
+        ociRef: "python:3.12-slim"
+        framework: openai-compatible
+        command: ["python3", "-c"]
+        args:
+          - |
+            import json, os, urllib.request
+            inp = os.environ.get("AGENTORC_INPUT", "")
+            base_url = os.environ.get("OPENAI_BASE_URL", "http://localhost:8080")
+            api_key = os.environ.get("OPENAI_API_KEY", "unused")
+            timeout = int(os.environ.get("AGENTORC_TIMEOUT_SEC", "300"))
+            body = json.dumps({"model": "default", "stream": True,
+              "messages": [{"role": "user", "content": inp}]}).encode()
+            req = urllib.request.Request(f"{base_url}/chat/completions", data=body,
+              headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"})
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+              for line in r:
+                line = line.decode().strip()
+                if not line.startswith("data: "): continue
+                data = line[6:]
+                if data == "[DONE]": break
+                chunk = json.loads(data)
+                choices = chunk.get("choices", [])
+                if not choices: continue
+                content = choices[0].get("delta", {}).get("content", "")
+                if content: print(content, end="", flush=True)
+            print()
+      memory:
+        checkpointEvery: 1
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+
+    # Orchestrator: calls all three child agents as tools in a SINGLE LLM turn,
+    # which causes the executor to spawn them as parallel child AgentRuns.
+    - name: research-orchestrator-agent
+      modelSelectorRef: default
+      systemPrompt: |
+        You are a research orchestrator. For every question you receive, you MUST gather
+        input from all three of your specialized research agents in parallel.
+
+        WORKFLOW — follow EXACTLY for every request:
+
+        1. In your VERY FIRST response, call ALL THREE tools simultaneously:
+           - security-researcher-tool  with the full research question as "task"
+           - cve-checker-tool          with the full research question as "task"
+           - codebase-analyst-tool     with the full research question as "task"
+
+           CRITICAL: Issue all three tool calls in a SINGLE response. Do not call
+           them one at a time. Do not say anything before calling the tools.
+
+        2. Once all three tools have responded, synthesize their findings into a
+           comprehensive research report:
+
+        ## Research Report: <topic>
+
+        ### Security Analysis
+        <key findings from security-researcher-tool: threat model, attack vectors, mitigations>
+
+        ### CVE Landscape
+        <CVEs found by cve-checker-tool: list with severity and impact>
+
+        ### Migration Complexity
+        <assessment from codebase-analyst-tool: effort, breaking changes, timeline>
+
+        ### Summary & Recommendation
+        <3-5 sentences synthesizing all three perspectives with a clear recommendation>
+
+        ### Audit Trail
+        - Security researcher: <overall_risk from JSON>
+        - CVE severity: <highest CVSS score found>
+        - Migration effort: <effort_estimate from JSON>
+        - Child runs: visible in `kubectl get agentrun -n agent-orc-system`
+      tools:
+        - security-researcher-tool
+        - cve-checker-tool
+        - codebase-analyst-tool
+      runtime:
+        inputMode: http
+        ociRef: "python:3.12-slim"
+        framework: openai-compatible
+        command: ["python3", "-c"]
+        args:
+          - |
+            import json, os, urllib.request
+            from http.server import BaseHTTPRequestHandler, HTTPServer
+
+            base_url = os.environ.get("OPENAI_BASE_URL", "http://localhost:8080")
+            api_key   = os.environ.get("OPENAI_API_KEY", "unused")
+
+            class Handler(BaseHTTPRequestHandler):
+                def log_message(self, *a): pass
+                def do_GET(self):
+                    if self.path == "/healthz":
+                        self.send_response(200); self.end_headers(); self.wfile.write(b"ok")
+                    else:
+                        self.send_response(404); self.end_headers()
+                def do_POST(self):
+                    if self.path != "/invoke":
+                        self.send_response(404); self.end_headers(); return
+                    body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+                    inp = body.get("input", "")
+                    req_body = json.dumps({"model": "default", "stream": True,
+                        "messages": [{"role": "user", "content": inp}]}).encode()
+                    req = urllib.request.Request(f"{base_url}/chat/completions",
+                        data=req_body, headers={"Content-Type": "application/json",
+                        "Authorization": f"Bearer {api_key}"})
+                    output = ""
+                    with urllib.request.urlopen(req, timeout=300) as r:
+                        for line in r:
+                            line = line.decode().strip()
+                            if not line.startswith("data: "): continue
+                            data = line[6:]
+                            if data == "[DONE]": break
+                            try:
+                                chunk = json.loads(data)
+                            except json.JSONDecodeError:
+                                continue
+                            choices = chunk.get("choices", [])
+                            if not choices: continue
+                            content = choices[0].get("delta", {}).get("content") or ""
+                            output += content
+                    payload = json.dumps({"output": output}).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+
+            port = int(os.environ.get("PORT", "8000"))
+            print(f"research-orchestrator listening on :{port}", flush=True)
+            HTTPServer(("", port), Handler).serve_forever()
+      memory:
+        checkpointEvery: 1
+        resumeWindowSeconds: 3600
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+
+  # ── AgentDeployments ─────────────────────────────────────────────────────────
+
+  agentDeployments:
+    # Chat with the research orchestrator at:
+    #   POST /api/deployments/agent-orc-system/research-swarm/execute
+    #
+    # Demo question: "What are the risks of migrating our auth service from JWT to PASETO tokens?"
+    - name: research-swarm
+      agentRef: research-orchestrator-agent
+      inputSource:
+        type: chat
+      replicas: 1
+      warmPoolSize: 1
+      restartPolicy:
+        minBackoffSeconds: 5
+        maxBackoffSeconds: 300
+        maxConsecutiveFailures: 5

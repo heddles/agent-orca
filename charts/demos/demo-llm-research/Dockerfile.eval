@@ -1,0 +1,16 @@
+# Multi-language evaluation runtime for LLM code generation benchmarks
+# Used by spawned evaluation agents to generate and execute code in Python, Go, Fortran, and JavaScript
+
+FROM python:3.12-slim
+
+# Install all language runtimes for code evaluation
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    nodejs npm \
+    golang-go \
+    gfortran \
+    && rm -rf /var/lib/apt/lists/*
+
+# No additional packages needed - urllib.request is stdlib, used for HTTP calls to model-router
+
+WORKDIR /workspace
+CMD ["python3"]

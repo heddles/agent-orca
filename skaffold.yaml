@@ -1,0 +1,316 @@
+apiVersion: skaffold/v4beta11
+kind: Config
+metadata:
+  name: agent-orc
+build:
+  local:
+    push: false
+  hooks:
+    before: &ensure_kind_build_before
+      - command: ["bash", "hack/ensure-kind-cluster.sh"]
+        os: [darwin, linux]
+  artifacts:
+    - image: agent-orc/operator
+      context: .
+      docker:
+        dockerfile: Dockerfile
+    - image: agent-orc/model-router
+      context: .
+      docker:
+        dockerfile: cmd/model-router/Dockerfile
+    - image: agent-orc/ui
+      context: .
+      docker:
+        dockerfile: Dockerfile.ui-proxy
+    - image: agent-orc/mcp-ingester
+      context: .
+      docker:
+        dockerfile: Dockerfile.mcp-ingester
+    - image: agent-orc/demo-agent
+      context: .
+      docker:
+        dockerfile: Dockerfile.demo-agent
+      hooks:
+        after:
+          - command: ["sh", "-c", "kind load docker-image ${IMAGE:-$SKAFFOLD_IMAGE} --name agent-orc-dev"]
+            os: [darwin, linux]
+deploy:
+  helm:
+    hooks: &ensure_kind_deploy_hooks
+      before:
+        - host:
+            command: ["bash", "hack/ensure-kind-cluster.sh"]
+            os: [darwin, linux]
+    releases:
+      - name: agent-orc
+        chartPath: charts/agent-orc
+        namespace: agent-orc-system
+        createNamespace: true
+        setValues:
+          operator.image.pullPolicy: Never
+          modelRouter.image.pullPolicy: Never
+          ui.image.pullPolicy: Never
+          operator.leaderElection: false
+          webhook.certManager: true
+        setValueTemplates:
+          operator.image.repository: "{{.IMAGE_REPO_agent_orc_operator}}"
+          operator.image.tag: "{{.IMAGE_TAG_agent_orc_operator}}"
+          mcpIngester.image.repository: "{{.IMAGE_REPO_agent_orc_mcp_ingester}}"
+          mcpIngester.image.tag: "{{.IMAGE_TAG_agent_orc_mcp_ingester}}"
+          modelRouter.image.repository: "{{.IMAGE_REPO_agent_orc_model_router}}"
+          modelRouter.image.tag: "{{.IMAGE_TAG_agent_orc_model_router}}"
+          ui.image.repository: "{{.IMAGE_REPO_agent_orc_ui}}"
+          ui.image.tag: "{{.IMAGE_TAG_agent_orc_ui}}"
+portForward:
+  - resourceType: service
+    resourceName: agent-orc-ui
+    namespace: agent-orc-system
+    port: 80
+    localPort: 8080
+  - resourceType: service
+    resourceName: agent-orc-internal-api
+    namespace: agent-orc-system
+    port: 8000
+    localPort: 8000
+profiles:
+  # demo-mcp-apps: deploys the MCP Apps demo (interactive sandboxed iframe dashboards).
+  # Requires: agent-orc + 'default' ModelSelector already deployed.
+  # Deploy: skaffold run -p demo-mcp-apps
+  # Remove:  helm uninstall demo-mcp-apps -n agent-orc-system
+  - name: demo-mcp-apps
+    build:
+      artifacts: []
+      hooks:
+        before: *ensure_kind_build_before
+    deploy:
+      helm:
+        hooks: *ensure_kind_deploy_hooks
+        releases:
+          - name: demo-mcp-apps
+            chartPath: charts/demos/demo-mcp-apps
+            namespace: agent-orc-system
+
+  # demo-soc-triage: deploys the SOC Triage demo.
+  # Requires: agent-orc + model-providers already deployed (skaffold dev -p dev).
+  # Deploy: skaffold run -p demo-soc-triage
+  # Remove:  helm uninstall demo-soc-triage -n agent-orc-system
+  - name: demo-soc-triage
+    build:
+      artifacts: []
+      hooks:
+        before: *ensure_kind_build_before
+    deploy:
+      helm:
+        hooks: *ensure_kind_deploy_hooks
+        releases:
+          - name: demo-soc-triage
+            chartPath: charts/demos/demo-soc-triage
+            namespace: agent-orc-system
+
+  # demo-escalation-chain: deploys the Escalation Chain demo.
+  # Requires: agent-orc + model-providers (with 'coding' selector) already deployed.
+  # Deploy: skaffold run -p demo-escalation-chain
+  # Remove:  helm uninstall demo-escalation-chain -n agent-orc-system
+  - name: demo-escalation-chain
+    build:
+      artifacts: []
+      hooks:
+        before: *ensure_kind_build_before
+    deploy:
+      helm:
+        hooks: *ensure_kind_deploy_hooks
+        releases:
+          - name: demo-escalation-chain
+            chartPath: charts/demos/demo-escalation-chain
+            namespace: agent-orc-system
+
+  # demo-parallel-swarm: deploys the Parallel Research Swarm demo.
+  # Requires: agent-orc + model-providers already deployed (skaffold dev -p dev).
+  # Deploy: skaffold run -p demo-parallel-swarm
+  # Remove:  helm uninstall demo-parallel-swarm -n agent-orc-system
+  - name: demo-parallel-swarm
+    build:
+      artifacts: []
+      hooks:
+        before: *ensure_kind_build_before
+    deploy:
+      helm:
+        hooks: *ensure_kind_deploy_hooks
+        releases:
+          - name: demo-parallel-swarm
+            chartPath: charts/demos/demo-parallel-swarm
+            namespace: agent-orc-system
+
+  # demo-codebase-expert: deploys the Codebase Expert agent.
+  # Requires: agent-orc + model-providers (with 'default' and 'embedding' selectors) already deployed.
+  # Also requires: GitHub PAT with repo read scope, set via GITHUB_TOKEN env var.
+  # Deploy: skaffold run -p demo-codebase-expert
+  # Remove:  helm uninstall demo-codebase-expert -n agent-orc-system
+  - name: demo-codebase-expert
+    build:
+      artifacts: []
+      hooks:
+        before: *ensure_kind_build_before
+    deploy:
+      helm:
+        hooks: *ensure_kind_deploy_hooks
+        releases:
+          - name: demo-codebase-expert
+            chartPath: charts/demos/demo-codebase-expert
+            namespace: agent-orc-system
+            setValueTemplates:
+              githubToken: "{{.AGENT_ORC_GITHUB_TOKEN}}"
+
+  # demo-financial-analysis: deploys the Financial Impact Analysis demo.
+  # Requires: agent-orc + 'default' ModelSelector + 'embeddings' ModelSelector already deployed.
+  # Deploy: skaffold run -p demo-financial-analysis
+  # Remove:  helm uninstall demo-financial-analysis -n agent-orc-system
+  - name: demo-financial-analysis
+    build:
+      artifacts: []
+      hooks:
+        before: *ensure_kind_build_before
+    deploy:
+      helm:
+        hooks: *ensure_kind_deploy_hooks
+        releases:
+          - name: demo-financial-analysis
+            chartPath: charts/demos/demo-financial-analysis
+            namespace: agent-orc-system
+
+  - name: demo-experiment-evals
+    build:
+      artifacts:
+        - image: agent-orc/eval-runtime
+          context: charts/demos/demo-llm-research
+          docker:
+            dockerfile: Dockerfile.eval
+          hooks:
+            after:
+              - command: ["sh", "-c", "kind load docker-image ${IMAGE:-$SKAFFOLD_IMAGE} --name agent-orc-dev"]
+                os: [darwin, linux]
+      hooks:
+        before: *ensure_kind_build_before
+    deploy:
+      helm:
+        hooks: *ensure_kind_deploy_hooks
+        releases:
+          - name: demo-experiment-evals
+            chartPath: charts/demos/demo-experiment-evals
+            namespace: agent-orc-system
+
+  # demo-llm-research: deploys the LLM Research Agent demo. By default uses
+  # ghcr.io/agentorc/eval-runtime:latest image. For local development, use
+  # --set evalRuntime.image.repository=agent-orc/eval-runtime.
+  # Requires: agent-orc + model-providers already deployed (skaffold dev -p dev).
+  # The model-providers chart must have ollama-embeddings enabled for local embeddings.
+  # Deploy: skaffold run -p demo-llm-research
+  # Remove:  helm uninstall demo-llm-research -n agent-orc-system
+  - name: demo-llm-research
+    build:
+      artifacts:
+        - image: agent-orc/eval-runtime
+          context: charts/demos/demo-llm-research
+          docker:
+            dockerfile: Dockerfile.eval
+          hooks:
+            after:
+              - command: ["sh", "-c", "kind load docker-image ${IMAGE:-$SKAFFOLD_IMAGE} --name agent-orc-dev"]
+                os: [darwin, linux]
+      hooks:
+        before: *ensure_kind_build_before
+    deploy:
+      helm:
+        hooks: *ensure_kind_deploy_hooks
+        releases:
+          - name: demo-llm-research
+            chartPath: charts/demos/demo-llm-research
+            namespace: agent-orc-system
+
+  # demo-pen-test: deploys the Penetration Testing demo.
+  # Demonstrates autonomous security assessment with CVE correlation and executive reporting.
+  # Requires: agent-orc + model-providers already deployed (skaffold dev -p dev).
+  # Deploy: skaffold run -p demo-pen-test
+  # Remove:  helm uninstall demo-pen-test -n agent-orc-system
+  - name: demo-pen-test
+    build:
+      artifacts: []
+      hooks:
+        before: *ensure_kind_build_before
+    deploy:
+      helm:
+        hooks: *ensure_kind_deploy_hooks
+        releases:
+          - name: demo-pen-test
+            chartPath: charts/demos/demo-pen-test
+            namespace: agent-orc-system
+
+  # demo-causal-discovery: deploys the Causal Discovery Microscope demo.
+  # Interactive AI for causal hypothesis generation and testing.
+  # Requires: agent-orc + model-providers already deployed (skaffold dev -p dev).
+  # Deploy: skaffold run -p demo-causal-discovery
+  # Remove:  helm uninstall demo-causal-discovery -n agent-orc-system
+  - name: demo-causal-discovery
+    build:
+      artifacts:
+        - image: agent-orc/causal-discovery-ui
+          context: charts/demos/demo-causal-discovery
+          docker:
+            dockerfile: Dockerfile
+          hooks:
+            after:
+              - command: ["sh", "-c", "kind load docker-image ${IMAGE:-$SKAFFOLD_IMAGE} --name agent-orc-dev"]
+                os: [darwin, linux]
+      hooks:
+        before: *ensure_kind_build_before
+    deploy:
+      helm:
+        hooks: *ensure_kind_deploy_hooks
+        releases:
+          - name: demo-causal-discovery
+            chartPath: charts/demos/demo-causal-discovery
+            namespace: agent-orc-system
+
+  # dev: inference runs natively on macOS with Metal GPU acceleration.
+  # Start the native servers before deploying:
+  #   scripts/start-llama-native.sh
+  - name: dev
+    activation:
+      - kubeContext: kind-agent-orc-dev
+        command: dev
+    deploy:
+      helm:
+        hooks: *ensure_kind_deploy_hooks
+        releases:
+          - name: agent-orc
+            chartPath: charts/agent-orc
+            namespace: agent-orc-system
+            createNamespace: true
+            wait: true
+            setValues:
+              operator.image.pullPolicy: Never
+              modelRouter.image.pullPolicy: Never
+              ui.image.pullPolicy: Never
+              operator.leaderElection: false
+              webhook.certManager: false
+              webhook.failurePolicy: Ignore
+            setValueTemplates:
+              operator.image.repository: "{{.IMAGE_REPO_agent_orc_operator}}"
+              operator.image.tag: "{{.IMAGE_TAG_agent_orc_operator}}"
+              mcpIngester.image.repository: "{{.IMAGE_REPO_agent_orc_mcp_ingester}}"
+              mcpIngester.image.tag: "{{.IMAGE_TAG_agent_orc_mcp_ingester}}"
+              modelRouter.image.repository: "{{.IMAGE_REPO_agent_orc_model_router}}"
+              modelRouter.image.tag: "{{.IMAGE_TAG_agent_orc_model_router}}"
+              ui.image.repository: "{{.IMAGE_REPO_agent_orc_ui}}"
+              ui.image.tag: "{{.IMAGE_TAG_agent_orc_ui}}"
+          - name: model-providers
+            chartPath: charts/model-providers
+            namespace: agent-orc-system
+            createNamespace: true
+            valuesFiles:
+              - charts/model-providers/values.yaml
+            setValueTemplates:
+              providerSecrets[0].apiKey: "{{.OPENAI_API_KEY}}"
+              providerSecrets[1].apiKey: "{{.ANTHROPIC_API_KEY}}"
+              providerSecrets[2].apiKey: "{{.GOOGLE_API_KEY}}"
+              providerSecrets[3].apiKey: "{{.POOLSIDE_API_KEY}}"

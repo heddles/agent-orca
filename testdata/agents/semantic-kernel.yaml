@@ -1,0 +1,92 @@
+# Framework: semantic-kernel (Tier 2 — init container config injection)
+#
+# The operator writes appsettings.json to /etc/agentorc-framework/ via an init
+# container, then sets APPSETTINGS_PATH, AZURE_OPENAI_ENDPOINT, and OPENAI_ENDPOINT
+# env vars. Semantic Kernel reads the endpoint from OPENAI_ENDPOINT so requests
+# flow through the model-router sidecar.
+#
+# Image: python:3.12-slim (public Docker Hub)
+# Agent: Semantic Kernel Python 1.x ChatCompletion
+#        (https://github.com/microsoft/semantic-kernel)
+---
+apiVersion: agentorc.agentorc.io/v1alpha1
+kind: Agent
+metadata:
+  name: test-semantic-kernel
+  namespace: default
+spec:
+  modelSelectorRef: test-router
+  systemPrompt: "You are a helpful assistant. Answer concisely in one sentence."
+  runtime:
+    ociRef: "python:3.12-slim"
+    framework: semantic-kernel
+    command: ["/bin/sh", "-c"]
+    args:
+      - |
+        pip install -q --target=/tmp/site-packages "semantic-kernel>=1.0"
+        export PYTHONPATH=/tmp/site-packages
+        python3 << 'PYEOF'
+        import asyncio, json, os
+
+        async def main():
+            from semantic_kernel import Kernel
+            from semantic_kernel.connectors.ai.open_ai import OpenAIChatCompletion
+            from semantic_kernel.contents import ChatHistory
+            from semantic_kernel.connectors.ai.open_ai import OpenAIChatPromptExecutionSettings
+
+            # APPSETTINGS_PATH and OPENAI_ENDPOINT are injected by the framework layer.
+            appsettings_path = os.environ.get("APPSETTINGS_PATH", "")
+            if appsettings_path:
+                with open(appsettings_path) as f:
+                    config = json.load(f)
+                endpoint = config["OpenAI"]["Endpoint"]
+            else:
+                endpoint = os.environ.get("OPENAI_ENDPOINT", "http://localhost:8080")
+
+            api_key = os.environ.get("OPENAI_API_KEY", "unused")
+
+            # SK 1.x does not accept `endpoint` directly; configure via async_client.
+            # The openai SDK base_url must include /v1; the operator injects the base
+            # without it, so append it here.
+            from openai import AsyncOpenAI
+            openai_client = AsyncOpenAI(
+                api_key=api_key,
+                base_url=endpoint.rstrip("/") + "/v1",
+            )
+            kernel = Kernel()
+            kernel.add_service(OpenAIChatCompletion(
+                ai_model_id="gpt-4o",
+                async_client=openai_client,
+            ))
+
+            history = ChatHistory()
+            history.add_system_message("You are a helpful assistant. Answer concisely in one sentence.")
+            history.add_user_message(os.environ.get("AGENTORC_INPUT", "What is 2+2?"))
+
+            svc = kernel.get_service(type=OpenAIChatCompletion)
+            result = await svc.get_chat_message_content(
+                chat_history=history,
+                settings=OpenAIChatPromptExecutionSettings(),
+                kernel=kernel,
+            )
+            print(result.content)
+
+        asyncio.run(main())
+        PYEOF
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+---
+apiVersion: agentorc.agentorc.io/v1alpha1
+kind: AgentRun
+metadata:
+  name: test-semantic-kernel-run
+  namespace: default
+spec:
+  agentRef: test-semantic-kernel
+  input: "What is the capital of Japan? Answer in one sentence."
+  timeout: 5m

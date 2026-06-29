@@ -1,0 +1,216 @@
+# MCPServer CRD test: a real MCP server running in-cluster with auto-generated Tool CRs.
+#
+# These tools return live data the LLM cannot fabricate (current time, random
+# numbers, DNS lookups), proving end-to-end MCP invocation.
+#
+# Requires:
+#   1. shared.yaml applied first (ModelProvider + ModelSelector)
+#   2. The demo MCP server image built and loaded into the cluster:
+#        docker build -t demo-mcp-server:latest testdata/mcp-server/
+#        kind load docker-image demo-mcp-server:latest
+#
+# Apply:
+#   kubectl apply -f testdata/agents/shared.yaml
+#   kubectl apply -f testdata/agents/mcpserver.yaml
+#
+# Verify:
+#   kubectl get pods -l app=demo-mcp-server       # Running
+#   kubectl get mcpservers                         # Ready=true, Tools=4
+#   kubectl get tools -l agentorc.io/managed-by=mcpserver
+#   kubectl logs -l app=demo-mcp-server            # tools/call logs
+
+# ============================================================
+# 1. Deployment + Service: the actual MCP server process
+#
+# A minimal Python HTTP server implementing MCP JSON-RPC 2.0.
+# Source: testdata/mcp-server/server.py
+# Tools: current_time, random_number, dns_lookup, reverse
+# ============================================================
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-mcp-server
+  namespace: default
+  labels:
+    app: demo-mcp-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: demo-mcp-server
+  template:
+    metadata:
+      labels:
+        app: demo-mcp-server
+    spec:
+      containers:
+        - name: mcp-server
+          image: demo-mcp-server:latest
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 3000
+          readinessProbe:
+            tcpSocket:
+              port: 3000
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo-mcp-server
+  namespace: default
+spec:
+  selector:
+    app: demo-mcp-server
+  ports:
+    - port: 3000
+      targetPort: 3000
+
+# ============================================================
+# 2. MCPServer CRD: declares the tools the MCP server provides
+#
+# The controller creates four child Tool CRs:
+#   demo-mcp-current-time, demo-mcp-random-number,
+#   demo-mcp-dns-lookup, demo-mcp-reverse
+# ============================================================
+---
+apiVersion: agentorc.agentorc.io/v1alpha1
+kind: MCPServer
+metadata:
+  name: demo-mcp
+  namespace: default
+spec:
+  transport: http
+  url: http://demo-mcp-server.default.svc:3000
+  tools:
+    - name: current-time
+      description: "Return the current date and time in UTC. The LLM cannot know the real time without calling this tool."
+      inputSchema:
+        type: object
+        properties: {}
+    - name: random-number
+      description: "Generate a cryptographically unpredictable random integer between min and max (inclusive). The LLM cannot produce truly random numbers without calling this tool."
+      inputSchema:
+        type: object
+        properties:
+          min:
+            type: integer
+            description: "Lower bound (inclusive)"
+            default: 1
+          max:
+            type: integer
+            description: "Upper bound (inclusive)"
+            default: 100
+    - name: dns-lookup
+      description: "Resolve a hostname to its IP addresses using the cluster DNS. The LLM cannot perform live DNS resolution without calling this tool."
+      inputSchema:
+        type: object
+        properties:
+          hostname:
+            type: string
+            description: "The hostname to resolve"
+        required: ["hostname"]
+    - name: reverse
+      description: "Reverse a string and return it. Useful for verifying the tool was actually called since LLMs often struggle with character-level string manipulation."
+      inputSchema:
+        type: object
+        properties:
+          text:
+            type: string
+            description: "The string to reverse"
+        required: ["text"]
+  networkEgress:
+    - host: demo-mcp-server.default.svc
+      port: 3000
+
+# ============================================================
+# 3. Agent referencing MCPServer-generated tools
+# ============================================================
+---
+apiVersion: agentorc.agentorc.io/v1alpha1
+kind: Agent
+metadata:
+  name: test-mcpserver-agent
+  namespace: default
+spec:
+  modelSelectorRef: test-router
+  tools:
+    - demo-mcp-current-time
+    - demo-mcp-random-number
+    - demo-mcp-reverse
+  systemPrompt: >
+    You have access to three tools: current_time, random_number, and reverse.
+    You MUST call the appropriate tool for every request. Never guess or
+    fabricate answers. If asked for the time, call current_time. If asked for
+    a random number, call random_number. If asked to reverse text, call reverse.
+    Reply with only the tool result.
+  runtime:
+    ociRef: "python:3.12-slim"
+    framework: openai-compatible
+    command: ["python3", "-c"]
+    args:
+      - |
+        import json, os, urllib.request
+        inp = os.environ.get("AGENTORC_INPUT", "What time is it?")
+        base_url = os.environ.get("OPENAI_BASE_URL", "http://localhost:8080")
+        api_key  = os.environ.get("OPENAI_API_KEY", "unused")
+        timeout = int(os.environ.get("AGENTORC_TIMEOUT_SEC", "300"))
+        body = json.dumps({
+          "model": "default",
+          "stream": True,
+          "messages": [{"role": "user", "content": inp}],
+        }).encode()
+        req = urllib.request.Request(
+          f"{base_url}/v1/chat/completions",
+          data=body,
+          headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+          for line in r:
+            line = line.decode().strip()
+            if not line.startswith("data: "):
+              continue
+            data = line[len("data: "):]
+            if data == "[DONE]":
+              break
+            chunk = json.loads(data)
+            choices = chunk.get("choices", [])
+            if not choices:
+              continue
+            content = choices[0].get("delta", {}).get("content", "")
+            if content:
+              print(content, end="", flush=True)
+        print()
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+# ============================================================
+# 4. AgentRun: exercise the MCP tools
+#
+# Asks for the current time — the LLM literally cannot answer
+# without calling the tool, proving end-to-end MCP invocation.
+# ============================================================
+---
+apiVersion: agentorc.agentorc.io/v1alpha1
+kind: AgentRun
+metadata:
+  name: test-mcpserver-run
+  namespace: default
+spec:
+  agentRef: test-mcpserver-agent
+  input: "What is the current UTC time?"
+  timeout: 5m

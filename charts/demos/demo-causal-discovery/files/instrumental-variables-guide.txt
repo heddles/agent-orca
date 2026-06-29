@@ -1,0 +1,54 @@
+# Instrumental Variables Guide
+
+## What is an Instrumental Variable?
+
+An instrumental variable (IV) is used in causal inference when the treatment variable is correlated with unmeasured confounders. It helps identify causal effects in observational data.
+
+## IV Conditions
+
+For Z to be a valid instrument for X → Y:
+
+1. **Relevance**: Z is associated with X (the treatment)
+2. **Exclusion**: Z affects Y only through X (no direct effect)
+3. **Unconfoundedness**: Z is independent of unmeasured confounders
+
+## Finding Good Instruments
+
+### Natural Experiments
+- Policy changes that affect some regions but not others
+- Lottery assignments for treatment programs
+- Weather shocks affecting agricultural yields
+
+### Genetic Instruments
+- Mendelian randomization uses genetic variants
+- Genes randomly assigned at conception
+- Affect risk factors (cholesterol, BMI) but not outcomes directly
+
+### Geographic Instruments
+- Distance to college affecting education
+- Distance to hospital affecting treatment
+- Local policy variation
+
+## Two-Stage Least Squares (2SLS)
+
+1. First stage: X = α₀ + α₁Z + ε
+2. Second stage: Y = β₀ + β₁X̂ + η (where X̂ is fitted values from stage 1)
+
+## Common Violations
+
+### Weak Instruments
+- Correlation between Z and X is small
+- Leads to imprecise estimates
+- Test: F-statistic > 10 in first stage
+
+### Invalid Exclusion
+- Z affects Y through pathways other than X
+- Example: Distance to college affects income through local labor market, not just education
+
+### Confounding of Z
+- Z is associated with unmeasured confounders
+- Example: IV for education that's correlated with family background
+
+## LATE Interpretation
+
+Local Average Treatment Effect (LATE): IV estimates the effect only for "compliers" - those whose treatment status changes with the instrument.

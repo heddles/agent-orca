@@ -1,0 +1,31 @@
+apiVersion: v2
+name: demo-codebase-expert
+description: |
+  Codebase Expert Agent — a subject-matter expert on the agent-orc system.
+
+  Combines a GitHub MCP server (for live repo browsing via get_file_contents,
+  search_code, list_commits, etc.) with a RAG KnowledgeBase (auto-synced from
+  key source files) to answer questions about architecture, CRDs, controllers,
+  and usage of the agent-orc platform.
+
+  The KnowledgeBase is seeded from raw GitHub URLs and re-synced hourly.
+  The agent also back-fills the KB via _rag_ingest when it reads new files
+  through the GitHub MCP tools.
+
+  Requires: agent-orc operator with 'default' ModelSelector and an embedding-
+  capable ModelSelector ('embedding') already deployed.
+  Bring your own GitHub Personal Access Token.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - demo
+  - agents
+  - github
+  - mcp
+  - rag
+  - codebase-expert
+dependencies:
+  - name: agent-orc-resources
+    version: "0.2.0"
+    repository: "file://../../agent-orc-resources"

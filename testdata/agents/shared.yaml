@@ -1,0 +1,63 @@
+# Shared infrastructure for framework test agents.
+# Apply this before any of the per-framework agent files.
+#
+# Assumes credentials secrets already exist in the namespace:
+#   kubectl create secret generic anthropic-dev-key --from-literal=api-key=<KEY>
+#   kubectl create secret generic openai-dev-key   --from-literal=api-key=<KEY>
+---
+apiVersion: agentorc.agentorc.io/v1alpha1
+kind: ModelProvider
+metadata:
+  name: test-claude-sonnet
+  namespace: default
+spec:
+  litellmModel: "anthropic/claude-sonnet-4-6"
+  credentialsRef:
+    name: anthropic-dev-key
+    key: api-key
+  capabilities:
+    - reasoning
+    - code
+  latencyProfile: medium
+  constraints:
+    contextWindow: 200000
+    maxOutputTokens: 8192
+    costPerMillionInputTokens: "3.00"
+    costPerMillionOutputTokens: "15.00"
+---
+apiVersion: agentorc.agentorc.io/v1alpha1
+kind: ModelProvider
+metadata:
+  name: test-openai-gpt4
+  namespace: default
+spec:
+  litellmModel: "openai/gpt-4.1"
+  credentialsRef:
+    name: openai-dev-key
+    key: api-key
+  capabilities:
+    - reasoning
+    - code
+    - fast
+  latencyProfile: fast
+  constraints:
+    contextWindow: 1047576
+    maxOutputTokens: 32768
+    costPerMillionInputTokens: "2.00"
+    costPerMillionOutputTokens: "8.00"
+---
+apiVersion: agentorc.agentorc.io/v1alpha1
+kind: ModelSelector
+metadata:
+  name: test-router
+  namespace: default
+spec:
+  strategy: rule-based
+  providers:
+    - name: test-openai-gpt4
+      weight: 80
+    - name: test-claude-sonnet
+      weight: 20
+  fallbackChain:
+    - test-openai-gpt4
+    - test-claude-sonnet

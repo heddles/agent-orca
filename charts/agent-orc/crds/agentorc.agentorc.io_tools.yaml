@@ -1,0 +1,502 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: tools.agentorc.agentorc.io
+spec:
+  group: agentorc.agentorc.io
+  names:
+    kind: Tool
+    listKind: ToolList
+    plural: tools
+    singular: tool
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.type
+      name: Type
+      type: string
+    - jsonPath: .spec.executionMode
+      name: ExecMode
+      type: string
+    - jsonPath: .status.ready
+      name: Ready
+      type: boolean
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Tool defines a capability available to agents.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: ToolSpec defines a capability available to agents.
+            properties:
+              agentRef:
+                description: |-
+                  AgentRef names the Agent CRD to expose as a tool.
+                  Only used when Type is "agent".
+                type: string
+              args:
+                description: Args overrides the container command arguments for pod-type
+                  tools.
+                items:
+                  type: string
+                type: array
+              cloudAuth:
+                description: |-
+                  CloudAuth configures cloud-provider identity for tool pods.
+                  Overrides Agent-level cloudAuth for this tool.
+                properties:
+                  aws:
+                    description: AWS configures EKS IRSA (IAM Roles for Service Accounts).
+                    properties:
+                      roleArn:
+                        description: |-
+                          RoleARN is the AWS IAM Role ARN to assume.
+                          Example: "arn:aws:iam::123456789012:role/my-agent-role"
+                        type: string
+                    required:
+                    - roleArn
+                    type: object
+                  azure:
+                    description: Azure configures AKS Azure Workload Identity.
+                    properties:
+                      clientId:
+                        description: ClientID is the Azure Managed Identity client
+                          ID.
+                        type: string
+                    required:
+                    - clientId
+                    type: object
+                  gcp:
+                    description: GCP configures GKE Workload Identity.
+                    properties:
+                      serviceAccount:
+                        description: |-
+                          ServiceAccount is the GCP Service Account email to impersonate.
+                          Example: "my-agent@myproject.iam.gserviceaccount.com"
+                        type: string
+                    required:
+                    - serviceAccount
+                    type: object
+                type: object
+              command:
+                description: Command overrides the container entrypoint for pod-type
+                  tools.
+                items:
+                  type: string
+                type: array
+              executionMode:
+                description: |-
+                  ExecutionMode controls how the tool runs.
+                  Defaults to "pod" for regular tools, "sidecar" for mcp tools, "wasm" for wasm tools.
+                enum:
+                - pod
+                - sidecar
+                - wasm
+                type: string
+              mcpConfig:
+                description: MCPConfig configures an MCP server. Only used when Type
+                  is "mcp".
+                properties:
+                  args:
+                    description: |-
+                      Args are the command-line arguments passed to the MCP server process.
+                      Only used for stdio transport.
+                    items:
+                      type: string
+                    type: array
+                  auth:
+                    description: |-
+                      Auth configures authentication for HTTP/SSE transports.
+                      Not supported for stdio transport (use EnvFrom instead).
+                    properties:
+                      apiKey:
+                        description: APIKey sets a custom header with a key read from
+                          a Secret.
+                        properties:
+                          headerName:
+                            default: X-API-Key
+                            description: HeaderName is the HTTP header name. Defaults
+                              to "X-API-Key".
+                            type: string
+                          secretKeyRef:
+                            description: SecretKeyRef references the Secret containing
+                              the API key.
+                            properties:
+                              key:
+                                description: Key within the Secret.
+                                type: string
+                              name:
+                                description: Name of the Secret.
+                                type: string
+                              namespace:
+                                description: Namespace of the Secret. Defaults to
+                                  the same namespace as the referencing resource.
+                                type: string
+                            required:
+                            - key
+                            - name
+                            type: object
+                        required:
+                        - secretKeyRef
+                        type: object
+                      bearerToken:
+                        description: |-
+                          BearerToken sets the Authorization header to "Bearer <token>".
+                          The token value is read from a Kubernetes Secret.
+                        properties:
+                          key:
+                            description: Key within the Secret.
+                            type: string
+                          name:
+                            description: Name of the Secret.
+                            type: string
+                          namespace:
+                            description: Namespace of the Secret. Defaults to the
+                              same namespace as the referencing resource.
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      headers:
+                        description: |-
+                          Headers sets custom HTTP headers from Secrets.
+                          Use this for non-standard auth schemes.
+                        items:
+                          description: AuthHeader maps an HTTP header name to a Secret
+                            key reference.
+                          properties:
+                            name:
+                              description: Name is the HTTP header name (e.g., "Authorization",
+                                "X-Custom-Token").
+                              type: string
+                            secretKeyRef:
+                              description: SecretKeyRef references the Secret containing
+                                the header value.
+                              properties:
+                                key:
+                                  description: Key within the Secret.
+                                  type: string
+                                name:
+                                  description: Name of the Secret.
+                                  type: string
+                                namespace:
+                                  description: Namespace of the Secret. Defaults to
+                                    the same namespace as the referencing resource.
+                                  type: string
+                              required:
+                              - key
+                              - name
+                              type: object
+                          required:
+                          - name
+                          - secretKeyRef
+                          type: object
+                        type: array
+                    type: object
+                  env:
+                    additionalProperties:
+                      type: string
+                    description: Env sets environment variables for the MCP server
+                      process.
+                    type: object
+                  envFrom:
+                    description: |-
+                      EnvFrom sets environment variables sourced from Kubernetes Secrets.
+                      These are merged with (and override) Env entries of the same name.
+                    items:
+                      description: |-
+                        EnvVar represents an environment variable with either a literal value or an indirect
+                        reference to a Kubernetes Secret key. If ValueFrom is set, Value is ignored.
+                      properties:
+                        name:
+                          description: Name of the environment variable.
+                          type: string
+                        value:
+                          description: Value is a literal value. Ignored if ValueFrom
+                            is set.
+                          type: string
+                        valueFrom:
+                          description: ValueFrom references an indirect source for
+                            the value.
+                          properties:
+                            secretKeyRef:
+                              description: SecretKeyRef selects a key from a Kubernetes
+                                Secret.
+                              properties:
+                                key:
+                                  description: Key within the Secret.
+                                  type: string
+                                name:
+                                  description: Name of the Secret.
+                                  type: string
+                                namespace:
+                                  description: Namespace of the Secret. Defaults to
+                                    the same namespace as the referencing resource.
+                                  type: string
+                              required:
+                              - key
+                              - name
+                              type: object
+                          type: object
+                      required:
+                      - name
+                      type: object
+                    type: array
+                  transport:
+                    default: stdio
+                    description: Transport is the MCP transport protocol.
+                    enum:
+                    - stdio
+                    - http
+                    - sse
+                    type: string
+                  url:
+                    description: |-
+                      URL is the MCP server URL for http and sse transports.
+                      If set, the server runs externally and no sidecar is injected.
+                    type: string
+                type: object
+              networkEgress:
+                description: |-
+                  NetworkEgress defines additional outbound network rules for tool pods.
+                  Added to the per-run NetworkPolicy allowlist.
+                items:
+                  description: EgressRule defines an allowed outbound network target
+                    for a tool or agent pod.
+                  properties:
+                    host:
+                      description: Host is the target hostname. Wildcards like "*.example.com"
+                        are supported.
+                      type: string
+                    port:
+                      description: Port is the target port.
+                      format: int32
+                      type: integer
+                    protocol:
+                      default: TCP
+                      description: Protocol defaults to TCP.
+                      type: string
+                  required:
+                  - host
+                  - port
+                  type: object
+                type: array
+              ociRef:
+                description: |-
+                  OCIRef is the OCI image reference for regular, agent-type (ignored), and wasm tools.
+                  Must be signed with Cosign unless imageVerification.skip is true.
+                  Not required for mcp tools that use a static URL.
+                type: string
+              resources:
+                description: Resources sets CPU/memory limits for the tool pod or
+                  sidecar.
+                properties:
+                  claims:
+                    description: |-
+                      Claims lists the names of resources, defined in spec.resourceClaims,
+                      that are used by this container.
+
+                      This field depends on the
+                      DynamicResourceAllocation feature gate.
+
+                      This field is immutable. It can only be set for containers.
+                    items:
+                      description: ResourceClaim references one entry in PodSpec.ResourceClaims.
+                      properties:
+                        name:
+                          description: |-
+                            Name must match the name of one entry in pod.spec.resourceClaims of
+                            the Pod where this field is used. It makes that resource available
+                            inside a container.
+                          type: string
+                        request:
+                          description: |-
+                            Request is the name chosen for a request in the referenced claim.
+                            If empty, everything from the claim is made available, otherwise
+                            only the result of this request.
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
+                  limits:
+                    additionalProperties:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
+                    description: |-
+                      Limits describes the maximum amount of compute resources allowed.
+                      More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                    type: object
+                  requests:
+                    additionalProperties:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
+                    description: |-
+                      Requests describes the minimum amount of compute resources required.
+                      If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                      otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                      More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                    type: object
+                type: object
+              schema:
+                description: |-
+                  Schema is the JSON Schema for the tool's input and output.
+                  Exposed to agents as an OpenAI function definition.
+                properties:
+                  description:
+                    description: Description is a human-readable description shown
+                      to the LLM.
+                    type: string
+                  input:
+                    description: Input is a JSON Schema object for the tool's input
+                      parameters.
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
+                  output:
+                    description: Output is a JSON Schema object for the tool's output.
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
+                type: object
+              secretRefs:
+                description: |-
+                  SecretRefs lists Kubernetes Secrets to inject into tool pods or MCP sidecars.
+                  For pod-type tools: mounted as volumes or env vars in the tool pod.
+                  For MCP sidecar tools: mounted into the model-router sidecar container.
+                items:
+                  description: SecretMount references a Kubernetes Secret to mount
+                    into a tool pod or sidecar.
+                  properties:
+                    mountPath:
+                      description: |-
+                        MountPath is the filesystem path where the Secret should be mounted.
+                        If empty, the Secret's keys are injected as environment variables instead.
+                      type: string
+                    name:
+                      description: Name of the Secret in the same namespace.
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+              type:
+                default: regular
+                description: Type declares the tool implementation kind.
+                enum:
+                - regular
+                - agent
+                - mcp
+                - wasm
+                type: string
+            type: object
+          status:
+            description: ToolStatus defines the observed state of a Tool.
+            properties:
+              conditions:
+                description: Conditions holds standard Kubernetes conditions.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              message:
+                description: Message contains a human-readable status message.
+                type: string
+              ready:
+                description: Ready indicates the tool is validated and available.
+                type: boolean
+              signatureVerified:
+                description: SignatureVerified indicates the OCI artifact signature
+                  was verified by Cosign.
+                type: boolean
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

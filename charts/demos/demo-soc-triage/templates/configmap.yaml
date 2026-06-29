@@ -1,0 +1,123 @@
+---
+# Security operations runbooks — ingested into the soc-runbooks KnowledgeBase
+# via Qdrant RAG. The soc-enricher-agent searches this at query time.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: soc-runbooks-content
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "demo.labels" . | nindent 4 }}
+data:
+  data-exfiltration.txt: |
+    RUNBOOK: Data Exfiltration via API
+    Severity: P1
+    Tags: exfiltration, bulk-export, data-loss
+
+    DETECTION TRIGGERS
+    - User downloads >1000 records via export API in under 10 minutes
+    - Source IP is outside all known corporate IP ranges (10.0.0.0/8, 192.168.0.0/16)
+    - Source IP classified as TOR exit node, anonymous proxy, or residential ISP
+    - Access occurs outside normal business hours (before 07:00 or after 22:00 local)
+    - User has no documented business need for bulk exports
+
+    IMMEDIATE RESPONSE (within 15 minutes)
+    1. Confirm the alert is not a false positive: verify the user's role and whether
+       bulk export is part of their normal workflow (check CMDB).
+    2. Geolocate the source IP. If TOR, VPN, or foreign country: escalate to P1 immediately.
+    3. Suspend the user account (do not delete — preserve audit trail).
+    4. Revoke all active sessions and API tokens for the user.
+    5. Preserve evidence: capture API access logs, database query logs, session tokens.
+    6. Open a P1 incident ticket. Assign to: on-call Security Engineer + CISO.
+
+    ESCALATION CRITERIA
+    - Escalate to CISO + Legal if: record count >10,000, IP is TOR/foreign, or user
+      account is privileged (admin, DevOps, engineer with prod access).
+    - Escalate to Law Enforcement liaison if customer PII or financial data is involved.
+
+    POST-INCIDENT
+    - Forensic image of user workstation if corporate-owned.
+    - Data classification review of exported records (was it PII, financial, IP?).
+    - Notify affected customers if regulated data (GDPR Art. 33: 72-hour window).
+
+  brute-force.txt: |
+    RUNBOOK: Authentication Brute Force / Credential Stuffing
+    Severity: P2 (P1 if successful login follows failures)
+    Tags: brute-force, credential-stuffing, account-takeover
+
+    DETECTION TRIGGERS
+    - >10 failed login attempts in 5 minutes for the same account
+    - Failed attempts from multiple IPs targeting same account (distributed stuffing)
+    - Successful login immediately following a burst of failures from a different IP
+    - Attempts against service accounts or admin accounts
+
+    IMMEDIATE RESPONSE
+    1. Lock the account after threshold breach (auto-lock should already be in place).
+    2. Block the source IP(s) at WAF and perimeter firewall.
+    3. Check if any attempt succeeded: query auth logs for success events in the window.
+    4. If a successful login is found: treat as account compromise (see ATO runbook).
+    5. Notify the account owner via a secondary channel (phone or Slack DM, not email).
+
+    INVESTIGATION
+    - Determine if this is targeted (one account) or opportunistic (many accounts).
+    - Check HaveIBeenPwned or internal credential breach feeds for the email/username.
+    - If password reuse is suspected: force password reset + MFA re-enrollment.
+
+    ESCALATION CRITERIA
+    - Escalate to P1 if: a privileged account is targeted, or any attempt succeeded.
+
+  privilege-escalation.txt: |
+    RUNBOOK: Privilege Escalation Anomaly
+    Severity: P1
+    Tags: privilege-escalation, lateral-movement, insider-threat
+
+    DETECTION TRIGGERS
+    - User assumes an IAM role they do not normally use (first-time assumption)
+    - sudo to root from a non-privileged account on a production server
+    - kubectl exec into a privileged pod by a non-DevOps user
+    - User granted themselves new permissions (self-service IAM modification)
+    - Service account used to perform actions beyond its declared scope
+
+    IMMEDIATE RESPONSE
+    1. Capture a snapshot of current IAM state (who has what) before revoking anything.
+    2. Revoke the escalated permissions or session credentials immediately.
+    3. Determine what the user/process did with the elevated privileges:
+       - Check CloudTrail / audit logs for the window of elevated access.
+       - Look for: data reads, new IAM entities created, S3 operations, secrets access.
+    4. Isolate the affected host or workload if a production system was touched.
+    5. Open P1 incident. Assign to: on-call DevOps Lead + Security Engineer.
+
+    ESCALATION CRITERIA
+    - Always escalate to CISO if production data was accessed under elevated privileges.
+    - Escalate to Legal if the account belongs to a recently terminated employee.
+
+  service-account-anomaly.txt: |
+    RUNBOOK: Service Account Interactive Login / Anomalous Use
+    Severity: P1
+    Tags: service-account, credential-theft, ci-cd, supply-chain
+
+    DETECTION TRIGGERS
+    - Service account used to authenticate interactively (browser, SSH, API with user-agent)
+    - Service account login from an IP outside the declared CI/CD IP ranges
+    - Service account performing actions not in its documented purpose
+      (e.g., CI deployer reading secrets it does not need for deployment)
+    - Service account credentials used simultaneously from two distinct IPs
+
+    CONTEXT
+    Service accounts are non-human identities. Interactive use almost always indicates
+    the credentials have been exfiltrated and are being used by a threat actor, OR an
+    engineer has embedded service account credentials in a personal workflow (a policy
+    violation regardless of intent).
+
+    IMMEDIATE RESPONSE
+    1. Suspend the service account and rotate all credentials immediately.
+    2. Audit every action the service account took in the past 24 hours.
+    3. Identify where the credentials are stored: CI/CD secret store, .env files,
+       hardcoded in source code (check git history). Revoke all copies.
+    4. If the login IP is external/unknown: assume credential theft, open P1 incident.
+    5. Notify the service account owner (check CMDB for manager field).
+    6. Scan codebase and pipeline configs for hardcoded credentials (truffleHog / gitleaks).
+
+    ESCALATION CRITERIA
+    - Always P1. Escalate to Engineering Lead + CISO.
+    - If credentials found in git history: notify all repo contributors and legal.

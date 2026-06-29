@@ -1,0 +1,180 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: manager-role
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  - secrets
+  - serviceaccounts
+  - services
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+- apiGroups:
+  - ""
+  resources:
+  - nodes
+  verbs:
+  - list
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - pods/log
+  verbs:
+  - get
+- apiGroups:
+  - ""
+  resources:
+  - serviceaccounts/token
+  verbs:
+  - create
+- apiGroups:
+  - agentorc.agentorc.io
+  resources:
+  - agentdeployments
+  - agentruns
+  - agents
+  - agentworkflows
+  - knowledgebases
+  - mcpservers
+  - modelproviders
+  - modelselectors
+  - tenantconfigs
+  - tools
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - agentorc.agentorc.io
+  resources:
+  - agentdeployments/finalizers
+  - agentruns/finalizers
+  - agents/finalizers
+  - agentworkflows/finalizers
+  - knowledgebases/finalizers
+  - mcpservers/finalizers
+  - modelproviders/finalizers
+  - modelselectors/finalizers
+  - tenantconfigs/finalizers
+  - tools/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - agentorc.agentorc.io
+  resources:
+  - agentdeployments/status
+  - agentruns/status
+  - agents/status
+  - agentworkflows/status
+  - knowledgebases/status
+  - mcpservers/status
+  - modelproviders/status
+  - modelselectors/status
+  - tenantconfigs/status
+  - tools/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - apps
+  resources:
+  - deployments
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - apps
+  resources:
+  - statefulsets
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - batch
+  resources:
+  - jobs
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - watch
+- apiGroups:
+  - cilium.io
+  resources:
+  - tracingpoliciesnamespaced
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - networking.k8s.io
+  resources:
+  - networkpolicies
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - clusterrolebindings
+  - rolebindings
+  - roles
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch

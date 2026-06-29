@@ -1,0 +1,307 @@
+/*
+Copyright 2026.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+*/
+
+package controller
+
+import (
+	"context"
+	"testing"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+
+	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
+)
+
+// fallbackFixture builds the fake client objects shared by both controller tests:
+// one primary provider, one fallback-only provider, one ModelSelector, one Agent.
+func fallbackFixture(scheme *runtime.Scheme) (
+	primary *agentorcv1alpha1.ModelProvider,
+	fallback *agentorcv1alpha1.ModelProvider,
+	selector *agentorcv1alpha1.ModelSelector,
+	agent *agentorcv1alpha1.Agent,
+) {
+	primary = &agentorcv1alpha1.ModelProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "primary-provider", Namespace: "default"},
+		Spec: agentorcv1alpha1.ModelProviderSpec{
+			LiteLLMModel: "openai/gpt-4o",
+			CredentialsRef: agentorcv1alpha1.SecretKeyRef{
+				Name: "primary-secret",
+				Key:  "api-key",
+			},
+		},
+	}
+	fallback = &agentorcv1alpha1.ModelProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "fallback-provider", Namespace: "default"},
+		Spec: agentorcv1alpha1.ModelProviderSpec{
+			LiteLLMModel: "anthropic/claude-haiku-4-5-20251001",
+			CredentialsRef: agentorcv1alpha1.SecretKeyRef{
+				Name: "fallback-secret",
+				Key:  "api-key",
+			},
+		},
+	}
+	selector = &agentorcv1alpha1.ModelSelector{
+		ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: "default"},
+		Spec: agentorcv1alpha1.ModelSelectorSpec{
+			Strategy:      "rule-based",
+			Providers:     []agentorcv1alpha1.ProviderWeight{{Name: "primary-provider", Weight: 100}},
+			FallbackChain: []string{"fallback-provider"},
+		},
+	}
+	agent = &agentorcv1alpha1.Agent{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "default"},
+		Spec: agentorcv1alpha1.AgentSpec{
+			ModelSelectorRef: "default",
+		},
+	}
+	return
+}
+
+// TestBuildRouterConfig_FallbackProvidersLoadedWithZeroWeight verifies that
+// buildRouterConfig includes fallback chain providers in cfg.Providers with
+// Weight=0 so tryFallback can find them when the primary call fails.
+func TestBuildRouterConfig_FallbackProvidersLoadedWithZeroWeight(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := agentorcv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+
+	primary, fallback, selector, agent := fallbackFixture(scheme)
+
+	run := &agentorcv1alpha1.AgentRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-run", Namespace: "default"},
+		Spec:       agentorcv1alpha1.AgentRunSpec{AgentRef: "test-agent", Input: "ping"},
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(primary, fallback, selector, agent, run).
+		Build()
+
+	r := &AgentRunReconciler{Client: cl, Scheme: scheme}
+	cfg, _, _, err := r.buildRouterConfig(context.Background(), run, agent, "test-sa", nil)
+	if err != nil {
+		t.Fatalf("buildRouterConfig: %v", err)
+	}
+
+	byName := make(map[string]int) // name → Weight
+	for _, p := range cfg.Providers {
+		byName[p.Name] = p.Weight
+	}
+
+	if w, ok := byName["primary-provider"]; !ok || w != 100 {
+		t.Errorf("primary-provider: want Weight=100, got Weight=%d (present=%v)", w, ok)
+	}
+	if w, ok := byName["fallback-provider"]; !ok {
+		t.Errorf("fallback-provider missing from cfg.Providers: tryFallback cannot reach it")
+	} else if w != 0 {
+		t.Errorf("fallback-provider: want Weight=0 to exclude from primary selection, got Weight=%d", w)
+	}
+}
+
+// TestBuildRouterConfig_FallbackChainOrderPreserved verifies that
+// cfg.FallbackChain retains the order defined in the ModelSelector so
+// tryFallback tries providers in the intended priority sequence.
+func TestBuildRouterConfig_FallbackChainOrderPreserved(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := agentorcv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+
+	mkProvider := func(name string) *agentorcv1alpha1.ModelProvider {
+		return &agentorcv1alpha1.ModelProvider{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+			Spec: agentorcv1alpha1.ModelProviderSpec{
+				LiteLLMModel:   "openai/gpt-4o-mini",
+				CredentialsRef: agentorcv1alpha1.SecretKeyRef{Name: name + "-secret", Key: "api-key"},
+			},
+		}
+	}
+
+	p1, p2, p3 := mkProvider("primary"), mkProvider("fallback-a"), mkProvider("fallback-b")
+	selector := &agentorcv1alpha1.ModelSelector{
+		ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: "default"},
+		Spec: agentorcv1alpha1.ModelSelectorSpec{
+			Strategy:      "rule-based",
+			Providers:     []agentorcv1alpha1.ProviderWeight{{Name: "primary", Weight: 100}},
+			FallbackChain: []string{"fallback-a", "fallback-b"},
+		},
+	}
+	agent := &agentorcv1alpha1.Agent{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "default"},
+		Spec:       agentorcv1alpha1.AgentSpec{ModelSelectorRef: "default"},
+	}
+	run := &agentorcv1alpha1.AgentRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-run", Namespace: "default"},
+		Spec:       agentorcv1alpha1.AgentRunSpec{AgentRef: "test-agent", Input: "ping"},
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(p1, p2, p3, selector, agent, run).
+		Build()
+
+	r := &AgentRunReconciler{Client: cl, Scheme: scheme}
+	cfg, _, _, err := r.buildRouterConfig(context.Background(), run, agent, "test-sa", nil)
+	if err != nil {
+		t.Fatalf("buildRouterConfig: %v", err)
+	}
+
+	if len(cfg.FallbackChain) != 2 || cfg.FallbackChain[0] != "fallback-a" || cfg.FallbackChain[1] != "fallback-b" {
+		t.Errorf("FallbackChain order mangled: %v", cfg.FallbackChain)
+	}
+}
+
+// TestBuildDeploymentRouterConfig_FallbackProvidersLoadedWithZeroWeight mirrors
+// TestBuildRouterConfig_FallbackProvidersLoadedWithZeroWeight for AgentDeployment.
+func TestBuildDeploymentRouterConfig_FallbackProvidersLoadedWithZeroWeight(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := agentorcv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+
+	primary, fallback, selector, agent := fallbackFixture(scheme)
+
+	deploy := &agentorcv1alpha1.AgentDeployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-deploy", Namespace: "default"},
+		Spec: agentorcv1alpha1.AgentDeploymentSpec{
+			AgentRef: "test-agent",
+		},
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(primary, fallback, selector, agent, deploy).
+		Build()
+
+	r := &AgentDeploymentReconciler{Client: cl, Scheme: scheme}
+	cfg, err := r.buildDeploymentRouterConfig(context.Background(), deploy, agent, "test-sa", nil)
+	if err != nil {
+		t.Fatalf("buildDeploymentRouterConfig: %v", err)
+	}
+
+	byName := make(map[string]int)
+	for _, p := range cfg.Providers {
+		byName[p.Name] = p.Weight
+	}
+
+	if w, ok := byName["primary-provider"]; !ok || w != 100 {
+		t.Errorf("primary-provider: want Weight=100, got Weight=%d (present=%v)", w, ok)
+	}
+	if w, ok := byName["fallback-provider"]; !ok {
+		t.Errorf("fallback-provider missing from cfg.Providers: tryFallback cannot reach it")
+	} else if w != 0 {
+		t.Errorf("fallback-provider: want Weight=0 to exclude from primary selection, got Weight=%d", w)
+	}
+}
+
+// TestBuildRouterConfig_FallbackProviderNotDeployed_Skipped verifies that a
+// fallback provider whose ModelProvider CR does not exist (e.g. disabled in the
+// model-providers chart) is silently skipped rather than blocking the run.
+// This is the exact scenario that caused "dependency not ready" log spam.
+func TestBuildRouterConfig_FallbackProviderNotDeployed_Skipped(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := agentorcv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+
+	primary := &agentorcv1alpha1.ModelProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "primary-provider", Namespace: "default"},
+		Spec: agentorcv1alpha1.ModelProviderSpec{
+			LiteLLMModel:   "openai/gpt-4o",
+			CredentialsRef: agentorcv1alpha1.SecretKeyRef{Name: "primary-secret", Key: "api-key"},
+		},
+	}
+	selector := &agentorcv1alpha1.ModelSelector{
+		ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: "default"},
+		Spec: agentorcv1alpha1.ModelSelectorSpec{
+			Strategy:      "rule-based",
+			Providers:     []agentorcv1alpha1.ProviderWeight{{Name: "primary-provider", Weight: 100}},
+			FallbackChain: []string{"disabled-provider"}, // no CR in cluster
+		},
+	}
+	agent := &agentorcv1alpha1.Agent{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "default"},
+		Spec:       agentorcv1alpha1.AgentSpec{ModelSelectorRef: "default"},
+	}
+	run := &agentorcv1alpha1.AgentRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-run", Namespace: "default"},
+		Spec:       agentorcv1alpha1.AgentRunSpec{AgentRef: "test-agent", Input: "ping"},
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(primary, selector, agent, run). // no disabled-provider object
+		Build()
+
+	r := &AgentRunReconciler{Client: cl, Scheme: scheme}
+	cfg, _, _, err := r.buildRouterConfig(context.Background(), run, agent, "test-sa", nil)
+	if err != nil {
+		t.Fatalf("expected no error for missing fallback provider CR, got: %v", err)
+	}
+
+	// Only the primary provider should be in cfg.Providers.
+	if len(cfg.Providers) != 1 || cfg.Providers[0].Name != "primary-provider" {
+		t.Errorf("cfg.Providers = %v; want only [primary-provider]", cfg.Providers)
+	}
+}
+
+// TestBuildRouterConfig_PrimaryAlsoInFallback_NotDuplicated verifies that a
+// provider listed in both Providers and FallbackChain appears exactly once in
+// cfg.Providers (de-duplicated by seenProviders).
+func TestBuildRouterConfig_PrimaryAlsoInFallback_NotDuplicated(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := agentorcv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+
+	provider := &agentorcv1alpha1.ModelProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "shared-provider", Namespace: "default"},
+		Spec: agentorcv1alpha1.ModelProviderSpec{
+			LiteLLMModel:   "openai/gpt-4o",
+			CredentialsRef: agentorcv1alpha1.SecretKeyRef{Name: "shared-secret", Key: "api-key"},
+		},
+	}
+	selector := &agentorcv1alpha1.ModelSelector{
+		ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: "default"},
+		Spec: agentorcv1alpha1.ModelSelectorSpec{
+			Strategy:      "rule-based",
+			Providers:     []agentorcv1alpha1.ProviderWeight{{Name: "shared-provider", Weight: 80}},
+			FallbackChain: []string{"shared-provider"},
+		},
+	}
+	agent := &agentorcv1alpha1.Agent{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "default"},
+		Spec:       agentorcv1alpha1.AgentSpec{ModelSelectorRef: "default"},
+	}
+	run := &agentorcv1alpha1.AgentRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-run", Namespace: "default"},
+		Spec:       agentorcv1alpha1.AgentRunSpec{AgentRef: "test-agent", Input: "ping"},
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(provider, selector, agent, run).
+		Build()
+
+	r := &AgentRunReconciler{Client: cl, Scheme: scheme}
+	cfg, _, _, err := r.buildRouterConfig(context.Background(), run, agent, "test-sa", nil)
+	if err != nil {
+		t.Fatalf("buildRouterConfig: %v", err)
+	}
+
+	count := 0
+	for _, p := range cfg.Providers {
+		if p.Name == "shared-provider" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("shared-provider appears %d times in cfg.Providers, want exactly 1", count)
+	}
+}

@@ -1,0 +1,26 @@
+apiVersion: v2
+name: demo-parallel-swarm
+description: |
+  Parallel Research Swarm demo — concurrent child agents with individual spend.
+
+  One research question spawns three specialized child AgentRuns simultaneously:
+  a security researcher, a CVE checker (MCP), and a codebase analyst. The
+  orchestrator waits for all three, then synthesizes a report. Total wall time
+  is far less than running them in sequence. Each child's cost is tracked
+  independently in its AgentRun status.
+
+  Requires: agent-orc operator with 'default' ModelSelector already deployed
+  (provided by model-providers chart).
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - demo
+  - agents
+  - parallel
+  - swarm
+  - multi-agent
+dependencies:
+  - name: agent-orc-resources
+    version: "0.2.0"
+    repository: "file://../../agent-orc-resources"

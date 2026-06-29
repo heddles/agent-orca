@@ -1,0 +1,23 @@
+# Ignore everything, re-include only what the Dockerfiles explicitly COPY.
+**
+
+# Go source (excluding tests)
+!cmd
+!cmd/**
+!internal
+!internal/**
+!api
+!api/**
+!go.mod
+!go.sum
+**/*_test.go
+
+# React UI source (Dockerfile.ui-proxy Stage 1)
+!ui
+!ui/package.json
+!ui/package-lock.json*
+!ui/tsconfig.json
+!ui/vite.config.ts
+!ui/index.html
+!ui/src
+!ui/src/**

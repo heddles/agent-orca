@@ -1,0 +1,37 @@
+{{- if .Values.webhook.certManager }}
+---
+# Self-signed issuer scoped to this namespace — issues the webhook serving cert.
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: {{ include "agent-orc.fullname" . }}-selfsigned
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agent-orc.labels" . | nindent 4 }}
+spec:
+  selfSigned: {}
+---
+# Certificate for the webhook server. cert-manager writes the TLS key+cert into
+# the Secret named below; the Deployment mounts it at the path the controller-
+# runtime webhook server expects.
+#
+# The ValidatingWebhookConfiguration carries the annotation
+#   cert-manager.io/inject-ca-from: <namespace>/<name>
+# which tells cert-manager to also patch the webhook's caBundle field so the
+# API server trusts the self-signed cert.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "agent-orc.fullname" . }}-webhook-cert
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agent-orc.labels" . | nindent 4 }}
+spec:
+  secretName: {{ .Values.webhook.tlsSecretName | default (printf "%s-webhook-tls" (include "agent-orc.fullname" .)) }}
+  dnsNames:
+    - {{ include "agent-orc.fullname" . }}-webhook.{{ .Release.Namespace }}.svc
+    - {{ include "agent-orc.fullname" . }}-webhook.{{ .Release.Namespace }}.svc.cluster.local
+  issuerRef:
+    name: {{ include "agent-orc.fullname" . }}-selfsigned
+    kind: Issuer
+{{- end }}

@@ -1,0 +1,42 @@
+{{/*
+Code Generation Evaluation Workflow
+All 8 evaluation steps run in parallel - no dependencies between them.
+*/}}
+---
+apiVersion: agentorc.agentorc.io/v1alpha1
+kind: AgentWorkflow
+metadata:
+  name: laguna-code-eval
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "demo-experiment-evals.labels" . | nindent 4 }}
+spec:
+  description: "Code generation evaluation for Laguna models - parallel benchmark across languages and model sizes"
+  budgetCap:
+    total: "1.00"
+  timeout: 30m
+  steps:
+    - name: python-xs2
+      agentRef: eval-python-xs2-agent
+      input: '{"task": "Build a Python Flask REST API endpoint for a todo list with CRUD operations", "task_id": "python-xs2", "max_attempts": 5}'
+    - name: go-xs2
+      agentRef: eval-go-xs2-agent
+      input: '{"task": "Implement a Go concurrent worker pool with graceful shutdown", "task_id": "go-xs2", "max_attempts": 5}'
+    - name: fortran-xs2
+      agentRef: eval-fortran-xs2-agent
+      input: '{"task": "Calculate numerical integration using Simpsons rule in Fortran", "task_id": "fortran-xs2", "max_attempts": 5}'
+    - name: javascript-xs2
+      agentRef: eval-javascript-xs2-agent
+      input: '{"task": "Create a Node.js module for parsing and validating JSON schemas", "task_id": "javascript-xs2", "max_attempts": 5}'
+    - name: python-m1
+      agentRef: eval-python-m1-agent
+      input: '{"task": "Build a Python Flask REST API endpoint for a todo list with CRUD operations", "task_id": "python-m1", "max_attempts": 5}'
+    - name: go-m1
+      agentRef: eval-go-m1-agent
+      input: '{"task": "Implement a Go concurrent worker pool with graceful shutdown", "task_id": "go-m1", "max_attempts": 5}'
+    - name: fortran-m1
+      agentRef: eval-fortran-m1-agent
+      input: '{"task": "Calculate numerical integration using Simpsons rule in Fortran", "task_id": "fortran-m1", "max_attempts": 5}'
+    - name: javascript-m1
+      agentRef: eval-javascript-m1-agent
+      input: '{"task": "Create a Node.js module for parsing and validating JSON schemas", "task_id": "javascript-m1", "max_attempts": 5}'

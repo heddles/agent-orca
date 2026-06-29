@@ -1,0 +1,72 @@
+# Framework: openai-compatible (Tier 1)
+#
+# The operator injects OPENAI_BASE_URL=http://localhost:8080/v1 and OPENAI_API_KEY
+# automatically — no init container needed. This is the default framework tier and
+# covers agents written with the OpenAI Python SDK, LangChain, CrewAI, etc.
+#
+# Image: python:3.12-slim (public Docker Hub)
+# Agent: minimal stdlib urllib script — no pip install required.
+---
+apiVersion: agentorc.agentorc.io/v1alpha1
+kind: Agent
+metadata:
+  name: test-openai-compat
+  namespace: default
+spec:
+  modelSelectorRef: test-router
+  systemPrompt: "You are a helpful assistant. Answer concisely in one sentence."
+  runtime:
+    ociRef: "python:3.12-slim"
+    framework: openai-compatible
+    # Reads AGENTORC_INPUT, calls the model-router at localhost:8080, prints reply.
+    # Uses only stdlib — no pip install required.
+    command: ["python3", "-c"]
+    args:
+      - |
+        import json, os, urllib.request
+        inp = os.environ.get("AGENTORC_INPUT", "What is 2+2?")
+        base_url = os.environ.get("OPENAI_BASE_URL", "http://localhost:8080")
+        api_key = os.environ.get("OPENAI_API_KEY", "unused")
+        body = json.dumps({
+          "model": "default",
+          "stream": True,
+          "messages": [{"role": "user", "content": inp}],
+        }).encode()
+        req = urllib.request.Request(
+          f"{base_url}/v1/chat/completions",
+          data=body,
+          headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+        )
+        with urllib.request.urlopen(req, timeout=120) as r:
+          for line in r:
+            line = line.decode().strip()
+            if not line.startswith("data: "):
+              continue
+            data = line[len("data: "):]
+            if data == "[DONE]":
+              break
+            chunk = json.loads(data)
+            choices = chunk.get("choices", [])
+            if not choices:
+              continue
+            content = choices[0].get("delta", {}).get("content", "")
+            if content:
+              print(content, end="", flush=True)
+        print()
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+---
+apiVersion: agentorc.agentorc.io/v1alpha1
+kind: AgentRun
+metadata:
+  name: test-openai-compat-run
+  namespace: default
+spec:
+  agentRef: test-openai-compat
+  input: "What is the capital of Japan? Answer in one sentence."
+  timeout: 3m

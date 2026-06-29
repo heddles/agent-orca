@@ -1,0 +1,60 @@
+# Confounding Variable Detection
+
+## What Are Confounding Variables?
+
+Confounding variables are associated with both the independent variable (cause) and dependent variable (effect), but are not on the causal path between them. They can create spurious associations or mask true causal relationships.
+
+## Detection Methods
+
+### 1. Directed Acyclic Graph (DAG) Analysis
+Draw your causal assumptions before looking at data. Then:
+- Identify all paths between cause and effect
+- Look for "backdoor paths" that start with an arrow into the cause
+- Find a set of variables that blocks all backdoor paths
+
+### 2. Statistical Methods
+
+**Change-in-Estimate Method**:
+1. Fit model with exposure as predictor of outcome
+2. Add potential confounder to model
+3. If coefficient changes by >10%, the variable is a confounder
+
+**Directed Acyclic Graph with p-values**:
+1. Check if potential confounder is associated with exposure (p < 0.05)
+2. Check if potential confounder is associated with outcome (p < 0.05)
+3. If both true and not on causal pathway, likely a confounder
+
+### 3. Causal Discovery Algorithms
+
+**PC Algorithm**:
+- Uses conditional independence tests
+- Can detect both directed and bidirected edges
+- Assumes causal sufficiency (no unmeasured confounders)
+
+**FCI Algorithm**:
+- Faster version of PC
+- Handles latent confounding explicitly
+
+## Common Confounders by Domain
+
+### Epidemiology
+- Age, sex, socioeconomic status
+- Genetic predisposition
+- Lifestyle factors (smoking, diet, exercise)
+
+### Economics
+- Time trends
+- Seasonal effects
+- Policy changes at same time as outcome
+
+### Neuroscience
+- Individual differences in baseline activity
+- Scanner drift
+- Task difficulty confounding neural activity
+
+## Sensitivity Analysis
+
+After identifying confounders, assess robustness:
+1. **E-value**: Minimum strength of association an unmeasured confounder would need to explain away the effect
+2. **Bias formulas**: Calculate how much bias would be introduced by residual confounding
+3. **Bounds analysis**: Determine range of true effect given plausible confounding scenarios

@@ -1,0 +1,6 @@
+dependencies:
+- name: agent-orc-resources
+  repository: file://../../agent-orc-resources
+  version: 0.2.0
+digest: sha256:4ddb35ddd298b2bc862ffcf9ff689b97c4b40df1b1874320a6fcaae6eeadf960
+generated: "2026-06-22T11:00:42.874257-07:00"

@@ -1,0 +1,51 @@
+# Effective Connectivity in Neuroscience
+
+## What is Effective Connectivity?
+
+Effective connectivity refers to the influence one neural system exerts over another. Unlike structural connectivity (physical connections) or functional connectivity (correlations), effective connectivity implies causation.
+
+## Causal Modeling Approaches
+
+### 1. Dynamic Causal Modeling (DCM)
+- Biophysical models of neural dynamics
+- Bayesian model comparison
+- Assumes known network structure
+
+### 2. Granger Causality for Neural Signals
+- Time series of neural activity (fMRI, EEG, LFP)
+- Predicts which regions drive activity in others
+- Assumes stationary Gaussian processes
+
+### 3. Structural Equation Modeling (SEM)
+- Path analysis with latent variables
+- Can incorporate anatomical constraints
+- Requires strong parametric assumptions
+
+## Challenges in Neural Causal Inference
+
+### Hemodynamic Lag
+fMRI BOLD signal lags neural activity by 2-6 seconds, complicating temporal ordering.
+
+### Sampling Rate Effects
+- fMRI: 1-3 TRs per second (slow)
+- EEG: 1000 Hz (fast but indirect)
+- LFP: 1000+ Hz (fast, direct)
+
+### Volume Conduction
+Electrical signals spread through tissue, creating spurious correlations between electrodes.
+
+## Intervention Studies
+
+### Optogenetics
+- Use light to activate/inhibit specific cell types
+- Gold standard for establishing causation
+- Requires genetic modification
+
+### Pharmacological Interventions
+- Drug administration affects neural activity
+- Must account for systemic effects
+
+### Brain Stimulation
+- TMS, tDCS for non-invasive modulation
+- Effects spread beyond target region
+- Individual differences in stimulation efficacy

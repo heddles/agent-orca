@@ -1,0 +1,27 @@
+apiVersion: v2
+name: demo-llm-research
+description: |
+  LLM Research Agent — autonomously collects and analyzes data about LLM architecture,
+  layer interpretation, and model capabilities. Scrapes public websites, parses PDFs,
+  and queries arXiv to build a comprehensive 25Gi knowledge base for designing systems
+  that understand how LLMs think.
+
+  The KnowledgeBase uses periodic MCP ingestion (syncIntervalSeconds) to automatically
+  fetch new arXiv papers every 6 hours. Agents can also ingest additional documents
+  via the _rag_ingest tool.
+
+  Requires: agent-orc operator with poolside models deployed (via model-providers chart)
+  and ollama-embeddings ModelSelector available.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - demo
+  - agents
+  - research
+  - llm
+  - rag
+dependencies:
+  - name: agent-orc-resources
+    version: "0.2.0"
+    repository: "file://../../agent-orc-resources"

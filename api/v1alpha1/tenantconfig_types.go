@@ -1,0 +1,153 @@
+/*
+Copyright 2026.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package v1alpha1
+
+import (
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
+
+// TenantConfigSpec defines authentication and authorization for an enterprise tenant.
+type TenantConfigSpec struct {
+	// AuthMode selects the authentication strategy for this tenant.
+	// "issued" — agent-orc issues OAuth2 tokens via client_credentials grant.
+	// "federated" — agent-orc trusts JWTs from the tenant's external IdP.
+	// +kubebuilder:validation:Enum=issued;federated
+	AuthMode string `json:"authMode"`
+
+	// Issued configures agent-orc-issued OAuth2 client credentials.
+	// Required when AuthMode is "issued".
+	// +optional
+	Issued *IssuedAuthConfig `json:"issued,omitempty"`
+
+	// Federated configures trust for an external OIDC identity provider.
+	// Required when AuthMode is "federated".
+	// +optional
+	Federated *FederatedAuthConfig `json:"federated,omitempty"`
+
+	// TargetNamespace is the Kubernetes namespace where this tenant's agents
+	// and resources live. All API requests from this tenant are scoped to this namespace.
+	// +kubebuilder:validation:MinLength=1
+	TargetNamespace string `json:"targetNamespace"`
+
+	// AllowedAgents restricts which agents this tenant may invoke.
+	// An empty list means no agents are allowed; omitting the field allows all agents
+	// in the target namespace.
+	// +optional
+	AllowedAgents []string `json:"allowedAgents,omitempty"`
+
+	// RateLimit configures request rate limiting for this tenant.
+	// +optional
+	RateLimit *TenantRateLimit `json:"rateLimit,omitempty"`
+
+	// BudgetPerDayUSD is the maximum daily spend in USD for this tenant.
+	// Enforced across all runs in the target namespace attributed to this tenant.
+	// +optional
+	BudgetPerDayUSD string `json:"budgetPerDayUSD,omitempty"`
+}
+
+// IssuedAuthConfig configures agent-orc as the OAuth2 token issuer.
+// Enterprise customers use the client_credentials grant to obtain short-lived JWTs.
+type IssuedAuthConfig struct {
+	// ClientID is the OAuth2 client identifier for this tenant.
+	// +kubebuilder:validation:MinLength=1
+	ClientID string `json:"clientID"`
+
+	// ClientSecretRef references the Kubernetes Secret containing the client secret.
+	// The operator reads this to validate client_credentials requests.
+	ClientSecretRef SecretKeyRef `json:"clientSecretRef"`
+}
+
+// FederatedAuthConfig configures trust for an external OIDC identity provider.
+// agent-orc validates JWTs issued by the tenant's IdP and maps claims to tenant identity.
+type FederatedAuthConfig struct {
+	// IssuerURL is the OIDC issuer URL (e.g. "https://acme.okta.com/oauth2/default").
+	// agent-orc fetches the JWKS from this issuer to verify token signatures.
+	// +kubebuilder:validation:MinLength=1
+	IssuerURL string `json:"issuerURL"`
+
+	// ClientID is the expected "aud" (audience) claim in the JWT.
+	// +kubebuilder:validation:MinLength=1
+	ClientID string `json:"clientID"`
+
+	// MatchClaim is the JWT claim used to identify this tenant (e.g. "org_id", "tenant").
+	// +kubebuilder:validation:MinLength=1
+	MatchClaim string `json:"matchClaim"`
+
+	// MatchValue is the expected value of MatchClaim that maps to this tenant.
+	// +kubebuilder:validation:MinLength=1
+	MatchValue string `json:"matchValue"`
+}
+
+// TenantRateLimit configures request rate limiting.
+type TenantRateLimit struct {
+	// RequestsPerMinute is the maximum number of task submissions per minute.
+	// +optional
+	RequestsPerMinute int `json:"requestsPerMinute,omitempty"`
+
+	// ConcurrentRuns is the maximum number of simultaneously running AgentRuns.
+	// +optional
+	ConcurrentRuns int `json:"concurrentRuns,omitempty"`
+}
+
+// TenantConfigStatus holds the observed state of a TenantConfig.
+type TenantConfigStatus struct {
+	// Ready indicates the tenant configuration has been validated and is active.
+	// +optional
+	Ready bool `json:"ready,omitempty"`
+
+	// Message contains a human-readable status message.
+	// +optional
+	Message string `json:"message,omitempty"`
+
+	// Conditions holds standard Kubernetes conditions.
+	// +listType=map
+	// +listMapKey=type
+	// +optional
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="AuthMode",type=string,JSONPath=`.spec.authMode`
+// +kubebuilder:printcolumn:name="Namespace",type=string,JSONPath=`.spec.targetNamespace`
+// +kubebuilder:printcolumn:name="Ready",type=boolean,JSONPath=`.status.ready`
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
+
+// TenantConfig defines authentication and authorization for an enterprise tenant
+// accessing agent-orc's external API.
+type TenantConfig struct {
+	metav1.TypeMeta `json:",inline"`
+
+	// +optional
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	Spec   TenantConfigSpec   `json:"spec,omitempty"`
+	Status TenantConfigStatus `json:"status,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+
+// TenantConfigList contains a list of TenantConfig.
+type TenantConfigList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []TenantConfig `json:"items"`
+}
+
+func init() {
+	SchemeBuilder.Register(&TenantConfig{}, &TenantConfigList{})
+}

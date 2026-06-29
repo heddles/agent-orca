@@ -1,0 +1,43 @@
+apiVersion: v2
+name: demo-financial-analysis
+description: |
+  Financial impact analysis demo — interactive multi-factor forecasting rendered
+  as a sandboxed iframe with live-recalculation sliders.
+
+  An MCP server exposes two tools: forecast-impact and fetch-market-context.
+  forecast-impact declares _meta.ui.resourceUri so the agent-orc UI renders an
+  interactive Canvas-based dashboard below the plain-text tool result — showing
+  projected price trajectories for correlated assets over 10 years with confidence
+  bands, a factor sensitivity heatmap, and adjustable assumption sliders.
+
+  The agent gathers context from a KnowledgeBase (commodity correlations, historical
+  supply shocks, macro factors) and current market baselines before running the
+  forecast, demonstrating RAG + MCP tools + MCP Apps in a single workflow.
+
+  This demo shows the complete pipeline end-to-end:
+    1. _rag_search for historical context and correlations
+    2. fetch-market-context for current baseline data
+    3. forecast-impact with enriched scenario → interactive iframe dashboard
+    4. User adjusts sliders to explore alternative assumptions in real time
+
+  Requires: agent-orc operator + 'default' ModelSelector + 'embeddings' ModelSelector.
+  No external API keys needed — the MCP server generates realistic synthetic data.
+
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+dependencies:
+  - name: agent-orc-resources
+    version: "0.2.0"
+    repository: "file://../../agent-orc-resources"
+keywords:
+  - demo
+  - mcp
+  - mcp-apps
+  - iframe
+  - sandboxed-ui
+  - financial
+  - forecast
+  - interactive
+  - rag
+  - knowledgebase

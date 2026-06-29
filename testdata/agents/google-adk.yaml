@@ -1,0 +1,82 @@
+# Framework: shim (Tier 3 — hosts-file shim)
+#
+# The operator's init container copies /etc/hosts and appends:
+#   127.0.0.1 generativelanguage.googleapis.com
+# It also injects GOOGLE_API_BASE=http://localhost:8082 so the agent can point
+# the genai client at the model-router's Gemini-compatible listener directly.
+# (The hosts-file shim redirects DNS but not the port; native SDK hits :443 which
+# won't reach :8082, so we configure the client via GOOGLE_API_BASE instead.)
+#
+# Image: python:3.12-slim (public Docker Hub)
+# Agent: google-genai Client via google-adk dependency, using GOOGLE_API_BASE
+#        (https://github.com/google/adk-python)
+---
+apiVersion: agentorc.agentorc.io/v1alpha1
+kind: Agent
+metadata:
+  name: test-google-adk
+  namespace: default
+spec:
+  modelSelectorRef: test-router
+  systemPrompt: "You are a helpful assistant. Answer concisely in one sentence."
+  runtime:
+    ociRef: "python:3.12-slim"
+    framework: shim
+    shimTarget: "generativelanguage.googleapis.com"
+    # No pip install needed — stdlib only. The shim framework sets GOOGLE_API_BASE
+    # to http://localhost:8080 for google-adk LiteLlmModel to use the OpenAI-compat
+    # model-router endpoint. We read that env var here to verify injection worked.
+    command: ["python3", "-c"]
+    args:
+      - |
+        import json, os, urllib.request
+        # GOOGLE_API_BASE is injected by the shim framework to http://localhost:8080.
+        # google-adk LiteLlmModel reads this var to route calls through the model-router.
+        # The hosts-file shim also redirects generativelanguage.googleapis.com → 127.0.0.1
+        # for native GeminiLlm agents that have hardcoded provider URLs.
+        base_url = os.environ.get("GOOGLE_API_BASE", "http://localhost:8080")
+        api_key = os.environ.get("OPENAI_API_KEY", "unused")
+        inp = os.environ.get("AGENTORC_INPUT", "What is 2+2?")
+        body = json.dumps({
+          "model": "default",
+          "stream": True,
+          "messages": [{"role": "user", "content": inp}],
+        }).encode()
+        req = urllib.request.Request(
+          f"{base_url}/v1/chat/completions",
+          data=body,
+          headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+        )
+        with urllib.request.urlopen(req, timeout=120) as r:
+          for line in r:
+            line = line.decode().strip()
+            if not line.startswith("data: "):
+              continue
+            data = line[len("data: "):]
+            if data == "[DONE]":
+              break
+            chunk = json.loads(data)
+            choices = chunk.get("choices", [])
+            if not choices:
+              continue
+            content = choices[0].get("delta", {}).get("content", "")
+            if content:
+              print(content, end="", flush=True)
+        print()
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+---
+apiVersion: agentorc.agentorc.io/v1alpha1
+kind: AgentRun
+metadata:
+  name: test-google-adk-run
+  namespace: default
+spec:
+  agentRef: test-google-adk
+  input: "What is the capital of Japan? Answer in one sentence."
+  timeout: 5m

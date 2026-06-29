@@ -1,0 +1,11 @@
+# ClusterRole that grants the ability to validate SA tokens via TokenReview.
+# The agentrun and agentdeployment controllers bind each agent SA to this role
+# at run start so the model-router sidecar can authenticate incoming requests.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: token-reviewer
+rules:
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["create"]

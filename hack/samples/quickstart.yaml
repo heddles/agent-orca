@@ -1,0 +1,97 @@
+# agent-orc quickstart samples
+# Applied by hack/dev-kind.sh to exercise the full operator reconciliation loop.
+#
+# The agent uses python:3.12-slim with a stdlib urllib script that calls the
+# model-router at localhost:8080 (OpenAI-compatible).
+#
+# Replace the api-key placeholder with a real key to get an actual LLM response.
+# With a placeholder key the model-router returns an auth error from the provider
+# and the run completes with that error in status.output.
+---
+apiVersion: agentorc.agentorc.io/v1alpha1
+kind: ModelProvider
+metadata:
+  name: openai-gpt-oss-120b
+  namespace: default
+spec:
+  litellmModel: "openai/gpt-4.1"
+  credentialsRef:
+    name: openai-dev-key
+    key: api-key
+  capabilities:
+    - reasoning
+    - code
+  latencyProfile: medium
+  constraints:
+    contextWindow: 1047576
+    maxOutputTokens: 32768
+    costPerMillionInputTokens: "3.00"
+    costPerMillionOutputTokens: "12.00"
+---
+apiVersion: agentorc.agentorc.io/v1alpha1
+kind: ModelSelector
+metadata:
+  name: default
+  namespace: default
+spec:
+  strategy: rule-based
+  providers:
+    - name: openai-gpt-oss-120b
+      weight: 100
+---
+apiVersion: agentorc.agentorc.io/v1alpha1
+kind: Agent
+metadata:
+  name: hello-agent
+  namespace: default
+spec:
+  modelSelectorRef: default
+  systemPrompt: |
+    You are a senior software architect. When given a problem, think step by step:
+    1. Identify the core constraints and trade-offs.
+    2. Propose 2-3 candidate approaches with pros/cons.
+    3. Recommend the best approach with a brief justification.
+    Be specific and cite concrete technologies where relevant.
+  runtime:
+    ociRef: "python:3.12-slim"
+    framework: openai-compatible
+    command: ["python3", "-c"]
+    args:
+      - |
+        import json, os, urllib.request
+        inp = os.environ.get("AGENTORC_INPUT", "hello")
+        api_key = os.environ.get("OPENAI_API_KEY", "unused")
+        body = json.dumps({
+          "model": "default",
+          "messages": [{"role": "user", "content": inp}],
+        }).encode()
+        req = urllib.request.Request(
+          "http://localhost:8080/v1/chat/completions",
+          data=body,
+          headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+        )
+        with urllib.request.urlopen(req, timeout=60) as r:
+          resp = json.loads(r.read())
+        print(resp["choices"][0]["message"]["content"])
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+---
+apiVersion: agentorc.agentorc.io/v1alpha1
+kind: AgentRun
+metadata:
+  name: hello-run-4
+  namespace: default
+spec:
+  agentRef: hello-agent
+  input: |
+    We have a Kubernetes operator that reconciles custom resources to spawn
+    short-lived agent pods. Each pod runs for 10-60 seconds. We're seeing
+    p99 pod startup latency of 8 seconds due to image pull and container
+    init. We need to get this under 2 seconds. The cluster runs on GKE
+    with 3 node pools, we use ephemeral containers, and the agent images
+    range from 50MB to 400MB. What architectural changes would you recommend?

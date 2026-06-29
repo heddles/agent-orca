@@ -1,0 +1,16 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ollama
+  namespace: default
+  labels:
+    app.kubernetes.io/name: ollama
+spec:
+  type: ExternalName
+  externalName: ollama-mistral
+  ports:
+    - name: api
+      port: 11434
+      targetPort: 11434
+      protocol: TCP

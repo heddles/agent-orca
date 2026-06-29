@@ -1,0 +1,151 @@
+---
+# Ollama deployment for embedding models in-cluster
+# Deploy this to make embeddings available without host networking
+# Usage: kubectl apply -f config/samples/ollama-embedding-cluster.yaml
+
+# First, create a PVC for Ollama models
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ollama-models
+  namespace: agent-orc-system
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+
+---
+# Job to pre-pull the embedding model
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ollama-pull-model
+  namespace: agent-orc-system
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: ollama
+          image: ollama/ollama:latest
+          command:
+            - /bin/sh
+            - -c
+            - |
+              ollama serve &
+              sleep 5
+              echo "Pulling nomic-embed-text model..."
+              ollama pull nomic-embed-text
+              echo "Model pulled successfully"
+          env:
+            - name: OLLAMA_HOST
+              value: "0.0.0.0"
+          volumeMounts:
+            - name: models
+              mountPath: /root/.ollama
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: ollama-models
+
+---
+# Ollama deployment for embedding models
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ollama-embed
+  namespace: agent-orc-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ollama-embed
+  template:
+    metadata:
+      labels:
+        app: ollama-embed
+    spec:
+      containers:
+        - name: ollama
+          image: ollama/ollama:latest
+          ports:
+            - containerPort: 11434
+          env:
+            - name: OLLAMA_HOST
+              value: "0.0.0.0"
+          volumeMounts:
+            - name: models
+              mountPath: /root/.ollama
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: 1000m
+              memory: 2Gi
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: ollama-models
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ollama-embed
+  namespace: agent-orc-system
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 11434
+      targetPort: 11434
+  selector:
+    app: ollama-embed
+
+---
+# Dummy secret for Ollama (no auth required)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ollama-embed-credentials
+  namespace: agent-orc-system
+type: Opaque
+stringData:
+  api-key: "dummy-key"
+
+---
+# ModelProvider for Ollama embedding model
+apiVersion: agentorc.agentorc.io/v1alpha1
+kind: ModelProvider
+metadata:
+  name: ollama-embed
+  namespace: agent-orc-system
+spec:
+  litellmModel: "ollama/nomic-embed-text"
+  baseURL: "http://ollama-embed.agent-orc-system.svc:11434"
+  credentialsRef:
+    name: ollama-embed-credentials
+    key: api-key
+  latencyProfile: "fast"
+  capabilities:
+    - embeddings
+  constraints:
+    contextWindow: 8192
+    costPerMillionInputTokens: "0"
+    costPerMillionOutputTokens: "0"
+
+---
+# ModelSelector for embedding calls
+apiVersion: agentorc.agentorc.io/v1alpha1
+kind: ModelSelector
+metadata:
+  name: ollama-embeddings
+  namespace: agent-orc-system
+spec:
+  strategy: rule-based
+  providers:
+    - name: ollama-embed
+      weight: 100

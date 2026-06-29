@@ -1,0 +1,6 @@
+{{- $ctx := dict "Values" (index .Values "agent-orc-resources") "Release" .Release "Chart" .Chart "Files" .Files "Template" .Template "Capabilities" .Capabilities }}
+{{ include "agent-orc-resources.agents" $ctx }}
+{{ include "agent-orc-resources.agentdeployments" $ctx }}
+{{ include "agent-orc-resources.mcpservers" $ctx }}
+{{ include "agent-orc-resources.knowledgebases" $ctx }}
+{{ include "agent-orc-resources.modelselectors" $ctx }}

@@ -1,0 +1,62 @@
+{{/* Pentest Workflow - deterministic pipeline for security assessment */}}
+{{- if .Values.components.workflow }}
+---
+apiVersion: agentorc.agentorc.io/v1alpha1
+kind: AgentWorkflow
+metadata:
+  name: pen-test-workflow
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "demo.labels" . | nindent 4 }}
+spec:
+  description: "Automated penetration testing pipeline with CVE correlation and executive reporting"
+  budgetCap:
+    total: "5.00"
+  timeout: 60m
+  onStepFailure: continue
+  steps:
+    - name: reconnaissance
+      agentRef: pentest-orchestrator
+      input: |
+        Perform initial reconnaissance on the target system.
+        Target: {{ .Values.target.hostname }}
+        Scan common ports: {{ .Values.scope.ports }}
+        Use network-mcp tools to discover open ports and identify running services.
+        Report all discovered services with version information.
+
+    - name: vulnerability-scan
+      agentRef: pentest-orchestrator
+      dependsOn: [reconnaissance]
+      input: |
+        Run vulnerability scans on the discovered target: {{ .Values.target.hostname }}
+        Scan type: {{ .Values.scope.scanType }}
+        Use the findings from reconnaissance to guide this scan.
+        Identify potential vulnerabilities in the discovered services.
+
+    - name: cve-correlation
+      agentRef: pentest-orchestrator
+      dependsOn: [vulnerability-scan]
+      input: |
+        Correlate discovered vulnerabilities with known CVEs.
+        Use _rag_search on cve-knowledge-kb for additional context.
+        Use the findings from vulnerability-scan to identify CVE matches.
+        For each finding, search for matching CVEs and retrieve details.
+
+    - name: exploit-validation
+      agentRef: pentest-orchestrator
+      dependsOn: [cve-correlation]
+      condition: 'steps["cve-correlation"].phase == "Succeeded"'
+      input: |
+        Safely validate the top critical/high CVEs identified in the previous step.
+        Use exploit-mcp-validate-vuln with evidence_only: true.
+        Only perform read-only checks to confirm exploitability.
+
+    - name: report-generation
+      agentRef: pentest-orchestrator
+      dependsOn: [exploit-validation]
+      input: |
+        Generate an executive summary report with all findings.
+        Include risk score, prioritized remediation, and evidence.
+        Use report-mcp-render-executive-summary to create the interactive dashboard.
+        Ingest final findings to pentest-findings-kb using _rag_ingest.
+{{- end }}

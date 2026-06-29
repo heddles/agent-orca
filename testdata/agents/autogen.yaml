@@ -1,0 +1,85 @@
+# Framework: autogen (Tier 2 — init container config injection)
+#
+# The operator writes OAI_CONFIG_LIST.json to /etc/agentorc-framework/ via an
+# init container before the agent starts, then sets OAI_CONFIG_LIST env var to
+# point at that file. The config list contains the model-router base_url so
+# AutoGen's LLM backend transparently routes through the operator.
+#
+# Image: python:3.12-slim (public Docker Hub)
+# Agent: AutoGen v0.4 AssistantAgent via autogen-agentchat + autogen-ext[openai]
+#        (https://github.com/microsoft/autogen)
+---
+apiVersion: agentorc.agentorc.io/v1alpha1
+kind: Agent
+metadata:
+  name: test-autogen
+  namespace: default
+spec:
+  modelSelectorRef: test-router
+  systemPrompt: "You are a helpful assistant. Answer concisely in one sentence."
+  runtime:
+    ociRef: "python:3.12-slim"
+    framework: autogen
+    command: ["/bin/sh", "-c"]
+    args:
+      - |
+        pip install -q --target=/tmp/site-packages "autogen-agentchat>=0.4" "autogen-ext[openai]>=0.4"
+        export PYTHONPATH=/tmp/site-packages
+        python3 << 'PYEOF'
+        import asyncio, json, os
+
+        async def main():
+            from autogen_agentchat.agents import AssistantAgent
+            from autogen_ext.models.openai import OpenAIChatCompletionClient
+
+            # OAI_CONFIG_LIST env var is injected by the framework layer pointing
+            # to the config file written by the init container.
+            config_path = os.environ.get("OAI_CONFIG_LIST", "")
+            # OAI_CONFIG_LIST is used for base_url/model only; the api_key field in
+            # the file is the literal string "$(OPENAI_API_KEY)" (k8s env syntax that
+            # only expands in env[], not in files). Always read the key from env.
+            api_key = os.environ.get("OPENAI_API_KEY", "unused")
+            if config_path:
+                with open(config_path) as f:
+                    cfg = json.load(f)[0]
+                # The framework layer writes base_url as http://localhost:8080 (no /v1).
+                # The openai SDK requires the /v1 prefix to be part of the base_url.
+                base_url = cfg["base_url"].rstrip("/") + "/v1"
+            else:
+                base_url = "http://localhost:8080/v1"
+
+            model_client = OpenAIChatCompletionClient(
+                model="gpt-4o",
+                base_url=base_url,
+                api_key=api_key,
+            )
+
+            agent = AssistantAgent(
+                name="assistant",
+                model_client=model_client,
+                system_message="You are a helpful assistant. Answer concisely in one sentence.",
+            )
+
+            inp = os.environ.get("AGENTORC_INPUT", "What is 2+2?")
+            result = await agent.run(task=inp)
+            print(result.messages[-1].content)
+
+        asyncio.run(main())
+        PYEOF
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+---
+apiVersion: agentorc.agentorc.io/v1alpha1
+kind: AgentRun
+metadata:
+  name: test-autogen-run
+  namespace: default
+spec:
+  agentRef: test-autogen
+  input: "What is the capital of Japan? Answer in one sentence."
+  timeout: 5m

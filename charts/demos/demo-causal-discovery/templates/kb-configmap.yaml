@@ -1,0 +1,62 @@
+---
+# Causal inference knowledge base content — ingested into the causal-inference-kb
+# KnowledgeBase via Qdrant RAG.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: causal-inference-kb-content
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "demo.labels" . | nindent 4 }}
+data:
+  causal-inference-primer.txt: |
+{{ $.Files.Get "files/causal-inference-primer.txt" | indent 4 }}
+  bidirected-graphs-explained.txt: |
+{{ $.Files.Get "files/bidirected-graphs-explained.txt" | indent 4 }}
+  confounding-variable-detection.txt: |
+{{ $.Files.Get "files/confounding-variable-detection.txt" | indent 4 }}
+
+---
+# Epidemiology knowledge base content
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: epidemiology-kb-content
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "demo.labels" . | nindent 4 }}
+data:
+  epidemiology-causal-patterns.txt: |
+{{ $.Files.Get "files/epidemiology-causal-patterns.txt" | indent 4 }}
+  study-design-basics.txt: |
+{{ $.Files.Get "files/study-design-basics.txt" | indent 4 }}
+
+---
+# Economics knowledge base content
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: economics-kb-content
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "demo.labels" . | nindent 4 }}
+data:
+  granger-causality-101.txt: |
+{{ $.Files.Get "files/granger-causality-101.txt" | indent 4 }}
+  instrumental-variables-guide.txt: |
+{{ $.Files.Get "files/instrumental-variables-guide.txt" | indent 4 }}
+
+---
+# Neuroscience knowledge base content
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: neuroscience-kb-content
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "demo.labels" . | nindent 4 }}
+data:
+  effective-connectivity.txt: |
+{{ $.Files.Get "files/effective-connectivity.txt" | indent 4 }}
+  neural-intervention-design.txt: |
+{{ $.Files.Get "files/neural-intervention-design.txt" | indent 4 }}

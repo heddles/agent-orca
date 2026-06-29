@@ -1,0 +1,38 @@
+{{- $labels := include "model-providers.labels" . }}
+{{- $namespaces := prepend (.Values.additionalNamespaces | default list) .Release.Namespace | uniq }}
+{{- range $ns := $namespaces }}
+{{- range $.Values.modelSelectors }}
+{{- if .enabled }}
+---
+apiVersion: agentorc.agentorc.io/v1alpha1
+kind: ModelSelector
+metadata:
+  name: {{ .name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- $labels | nindent 4 }}
+spec:
+  {{- if .strategy }}
+  strategy: {{ .strategy }}
+  {{- end }}
+  providers:
+    {{- toYaml .providers | nindent 4 }}
+  {{- if .fallbackChain }}
+  fallbackChain:
+    {{- toYaml .fallbackChain | nindent 4 }}
+  {{- end }}
+  {{- if .budgetCap }}
+  budgetCap:
+    {{- toYaml .budgetCap | nindent 4 }}
+  {{- end }}
+  {{- if .capabilityRouting }}
+  capabilityRouting:
+    {{- toYaml .capabilityRouting | nindent 4 }}
+  {{- end }}
+  {{- if .metaRouter }}
+  metaRouter:
+    {{- toYaml .metaRouter | nindent 4 }}
+  {{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

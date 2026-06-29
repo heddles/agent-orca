@@ -1,0 +1,28 @@
+apiVersion: v2
+name: demo-soc-triage
+description: |
+  SOC Triage demo — multi-agent security operations with human-in-the-loop.
+
+  A three-tier agent pipeline: an enricher calls the CMDB MCP server and
+  searches security runbooks via RAG, a risk assessor scores the enriched
+  context, and an orchestrator coordinates both and uses _clarify to get
+  human approval before acting on HIGH/CRITICAL findings.
+
+  Requires: agent-orc operator deployed with 'default' and 'embeddings'
+  ModelSelectors (provided by model-providers chart).
+  No custom images — uses python:3.12-slim for all agent runtimes.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+dependencies:
+  - name: agent-orc-resources
+    version: "0.2.0"
+    repository: "file://../../agent-orc-resources"
+keywords:
+  - demo
+  - agents
+  - soc
+  - security
+  - human-in-the-loop
+  - mcp
+  - rag

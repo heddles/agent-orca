@@ -1,0 +1,20 @@
+{{/* Vulnerability MCP Server CRD */}}
+{{- if .Values.components.vulnMcpServer }}
+---
+apiVersion: agentorc.agentorc.io/v1alpha1
+kind: MCPServer
+metadata:
+  name: vuln-mcp
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "demo.labels" . | nindent 4 }}
+spec:
+  transport: http
+  url: http://vuln-mcp-server.{{ .Release.Namespace }}.svc:8080
+  allowApps: true
+  tools:
+    - name: scan-host
+      description: "Run non-destructive vulnerability checks against a host"
+  allowedAgents:
+    - pentest-orchestrator
+{{- end }}
