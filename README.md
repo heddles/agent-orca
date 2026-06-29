@@ -7,106 +7,34 @@ Agent Orchestrator is a Kubernetes-native platform for deploying, managing, and 
 ### Component Relationships
 
 ```mermaid
-erDiagram
-    AGENT ||--|| MODELSELECTOR : references
-    AGENT ||--o{ TOOL : "has/exposes"
-    AGENT ||--o{ AGENTRUN : "instantiated-by"
-    AGENT ||--o{ AGENTDEPLOYMENT : "manages"
+graph TD
+    MP[ModelProvider<br/>Registers and authenticates into an LLM endpoint] --> MS[ModelSelector<br/>Routes across providers]
+    T[Tool<br/>Capability unit] --> A[Agent<br/>Reusable template]
+    MS --> A
+    KB[KnowledgeBase<br/>RAG vector store + ingestion] --> A
+    GP[GuardrailPolicy<br/>Content filtering] --> A
+    A --> AR[AgentRun<br/>One-time execution]
+    A --> AD[AgentDeployment<br/>Long-running service]
+    A --> AW[AgentWorkflow<br/>Declarative DAG of steps]
 
-    MODELSELECTOR ||--o{ MODELPROVIDER : "routes-to"
+    AD -->|each input message spawns| AR
+    AR -->|agent-type tool spawns child| AR
+    AW -->|controller creates one per step| AR
 
-    AGENTRUN ||--|| CHECKPOINT : "uses"
-    AGENTDEPLOYMENT ||--o{ CHECKPOINT : "persists"
+    AR -->|spawns| Pod1[Pod<br/>agent + model-router sidecar]
+    AD -->|manages| Dep[Deployment<br/>agent + model-router replicas]
 
-    CHECKPOINT ||--o{ CONVERSATIONMESSAGE : "contains"
-    CHECKPOINT ||--|| CHECKPOINTMETADATA : "tracks"
+    Pod1 -->|checkpoints state| CS[(Checkpoint Store)]
+    Dep -->|checkpoints state| CS
+    KB -->|auto-deploys| QD[(Qdrant)]
 
-    AGENTDEPLOYMENT ||--|| INPUTSOURCE : "reads-from"
-
-    TOOL ||--o{ EXECUTION : "invoked-by"
-
-    UISERVER ||--|| CHECKPOINTSTORE : "reads/writes"
-    CHECKPOINTSTORE ||--o{ CHECKPOINT : "persists"
-
-    AGENTDEPLOYMENTCONTROLLER ||--o{ AGENTDEPLOYMENT : "reconciles"
-    AGENTRUNCONTROLLER ||--o{ AGENTRUN : "reconciles"
-
-    AGENTRUN {
-        string agentRef
-        string input
-        string output
-        duration timeout
-        int restartCount
-        string checkpointRef
-    }
-
-    AGENTDEPLOYMENT {
-        string agentRef
-        int replicas
-        enum phase "Creating|Running|Failed|Paused"
-        enum inputSourceType "chat|queue|pubsub|loop"
-        int consecutiveFailures
-    }
-
-    AGENT {
-        string modelSelectorRef
-        string systemPrompt
-        string[] tools
-        AgentRuntime runtime
-    }
-
-    MODELSELECTOR {
-        string strategy "rule-based|llm-meta|hybrid"
-        ProviderWeight[] providers
-        map capabilityRouting
-    }
-
-    MODELPROVIDER {
-        string litellmModel
-        string[] capabilities
-        ModelConstraints constraints
-    }
-
-    TOOL {
-        enum type "regular|agent|mcp|wasm"
-        enum executionMode "pod|sidecar|wasm"
-        ToolSchema schema
-    }
-
-    CHECKPOINT {
-        string sessionId
-        int version
-        ConversationMessage[] conversationHistory
-        CheckpointMetadata metadata
-    }
-
-    CONVERSATIONMESSAGE {
-        string role "user|assistant"
-        string content
-    }
-
-    CHECKPOINTMETADATA {
-        int totalMessages
-        int totalTokens
-        string totalCostUSD
-        timestamp startTime
-        timestamp lastMessageTime
-    }
-
-    INPUTSOURCE {
-        enum type "chat|queue|pubsub|loop"
-        map config
-    }
-
-    EXECUTION {
-        string executionId
-        string sessionId
-        string input
-        string output
-        timestamp startTime
-        timestamp completionTime
-    }
+    classDef crd fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
+    classDef infra fill:#f3f4f6,stroke:#6b7280,color:#374151
+    class MP,MS,T,A,AR,AD,AW,KB,GP crd
+    class Pod1,Dep,CS,QD infra
 ```
+
+See [docs/crds.md](docs/crds.md) for detailed CRD documentation.
 
 ## Core Concepts
 
@@ -149,6 +77,36 @@ erDiagram
 - JSON schema for input/output
 - Network egress rules, resource limits, cloud identity
 
+**KnowledgeBase** - Vector store-backed RAG (Retrieval-Augmented Generation)
+- Auto-deploys a Qdrant instance per namespace
+- Embedding + chunking pipeline for documents
+- Built-in `_rag_search` and `_rag_ingest` tools injected into agents
+- Supports ConfigMaps, URLs, and S3 as document sources
+
+**GuardrailPolicy** - Content filtering rules for agent inputs/outputs
+- Input filters: validate user messages before reaching the LLM
+- Output filters: validate LLM responses before reaching the caller
+- Filter types: regex (redact/pattern match), keyword-blocklist, topic-validation
+- Actions: redact, block, warn
+
+**MCPServer** - Model Context Protocol server integration
+- Declares tools from external MCP servers
+- Auto-creates child Tool resources for each declared tool
+- Supports stdio (sidecar), http, and sse transports
+- Built-in access control via `allowedAgents` list
+
+**TenantConfig** - Enterprise authentication and authorization
+- OAuth2 client credentials or federated OIDC (Auth0, Okta, etc.)
+- Namespace-scoped resource access control
+- Rate limiting and daily budget caps
+- Used by the ACP API for external integrations
+
+**AgentWorkflow** - Declarative DAG orchestration
+- Steps with dependencies (CEL conditions)
+- Budget caps across all steps
+- Adaptive step proposals from agents
+- Creates AgentRuns for each step
+
 ### Checkpoint-Based State Management
 
 Conversation state is stored as compressed **Checkpoints**:
@@ -172,15 +130,18 @@ This enables:
 
 ## API Endpoints
 
+The UI proxy listens on `localhost:8080` and forwards requests to the operator's UI API. Use port 8080 for all API calls.
+
 ### Deployment Execution (Chat-style API)
 
 ```bash
 # Send input to deployment, get response
-POST /api/deployments/{namespace}/{name}/execute
-{
-  "input": "user message",
-  "sessionId": "optional-session-id"
-}
+curl -X POST http://localhost:8080/api/deployments/{namespace}/{name}/execute \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "input": "user message",
+    "sessionId": "optional-session-id"
+  }'
 
 # Response
 {
@@ -197,7 +158,7 @@ POST /api/deployments/{namespace}/{name}/execute
 ### Get Deployment Status
 
 ```bash
-GET /api/deployments/{namespace}/{name}
+curl http://localhost:8080/api/deployments/{namespace}/{name}
 
 # Response
 {
@@ -212,7 +173,7 @@ GET /api/deployments/{namespace}/{name}
 ### Stream Deployment Events (Server-Sent Events)
 
 ```bash
-GET /api/deployments/{namespace}/{name}/stream
+curl http://localhost:8080/api/deployments/{namespace}/{name}/stream
 ```
 
 ## Example: Long-Running Support Bot
@@ -288,7 +249,8 @@ Now users can chat with the agent:
 
 ```bash
 # User message 1
-curl -X POST http://localhost:8083/api/deployments/default/support-bot/execute \
+curl -X POST http://localhost:8080/api/deployments/default/support-bot/execute \
+  -H 'Content-Type: application/json' \
   -d '{
     "input": "Hi, I have a problem with my order",
     "sessionId": "customer-12345"
@@ -302,7 +264,8 @@ curl -X POST http://localhost:8083/api/deployments/default/support-bot/execute \
 }
 
 # User message 2 (same session, agent remembers context)
-curl -X POST http://localhost:8083/api/deployments/default/support-bot/execute \
+curl -X POST http://localhost:8080/api/deployments/default/support-bot/execute \
+  -H 'Content-Type: application/json' \
   -d '{
     "input": "Order #ORD-789",
     "sessionId": "customer-12345"
@@ -320,106 +283,58 @@ The agent pod can crash and restart—checkpoints survive. When the pod comes ba
 
 ## Quick Start
 
-Get from zero to a running AI agent in under five minutes using a local [kind](https://kind.sigs.k8s.io/) cluster and an OpenAI API key.
+Get from zero to a running AI agent in under five minutes using a local [kind](https://kind.sigs.k8s.io/) cluster.
 
 ### Prerequisites
 
 - [kind](https://kind.sigs.k8s.io/docs/user/quick-start/#installation) and [kubectl](https://kubernetes.io/docs/tasks/tools/) installed
 - [Skaffold](https://skaffold.dev/docs/install/) installed
 - [Docker](https://docs.docker.com/get-docker/) running locally
-- An OpenAI API key (or swap in any [LiteLLM-compatible](https://docs.litellm.ai/docs/providers) provider)
+- An OpenAI API key (or Anthropic, Google, etc. with [LiteLLM-compatible](https://docs.litellm.ai/docs/providers) provider)
 
-### 1. Create a local cluster and deploy the operator
+### 1. Create a local cluster
 
 ```bash
 kind create cluster --name agent-orc-dev
-skaffold dev
 ```
 
-`skaffold dev` builds all images (operator, model-router, UI), deploys the full stack via Helm, and port-forwards the UI to http://localhost:8080. Run the remaining steps in a second terminal — leave this one running. It typically takes about two minutes on first run.
-
-### 2. Store your API key
+### 2. Start development
 
 ```bash
-kubectl create secret generic openai-dev-key \
-  --from-literal=api-key=sk-...your-key-here...
+export OPENAI_API_KEY=sk-...your-key-here...
+skaffold dev -p dev
 ```
 
-### 3. Apply the quickstart manifests
+The `dev` profile builds all images and deploys agent-orc with the model-providers chart via Helm. It automatically:
+- Builds operator, model-router, and UI images
+- Deploys the full stack to `agent-orc-system` namespace
+- Port-forwards the UI to http://localhost:8080
+- Deploys ModelProviders for OpenAI, Anthropic, Google, and local Ollama (if available)
+
+Leave this terminal running — it watches for file changes and rebuilds automatically. First run takes about two minutes.
+
+### 3. Test agent execution
+
+Use the test script to quickly create and run an agent:
 
 ```bash
-kubectl apply -f config/samples/openai-agents.yaml
+./hack/test-agents.sh run --watch
 ```
 
-This single file wires together the full stack in one shot:
+This creates a test agent that routes through the default ModelSelector and answers a question. The `--watch` flag monitors status until completion.
 
-| Resource | Name | What it does |
-|---|---|---|
-| `ModelProvider` | `openai-gpt-oss-120b` | Registers GPT-4.1 with cost & capability metadata |
-| `ModelSelector` | `default` | Routes requests across registered providers by weight |
-| `Agent` | `hello-agent` | Template: system prompt + runtime + model selector |
-| `AgentRun` | `hello-run-4` | One-shot execution with a real engineering question |
-
-### 4. Watch the agent run
+### 4. Run the SOC Triage demo (optional)
 
 ```bash
-kubectl get agentrun hello-run-4 -w
+skaffold run -p demo-soc-triage
 ```
 
-```
-NAME          PHASE     AGE
-hello-run-4   Pending   1s
-hello-run-4   Running   3s
-hello-run-4   Succeeded 18s
-```
+This deploys a pre-built security operations demo that showcases:
+- Multi-agent workflows with tool usage
+- RAG-based knowledge retrieval
+- Long-running deployments with chat input
 
-Behind the scenes the operator created a Pod with a `model-router` sidecar that handled credential injection, LLM routing, and conversation checkpointing — all transparent to the agent code.
-
-### 5. Read the output
-
-```bash
-kubectl get agentrun hello-run-4 -o jsonpath='{.status.output}'
-```
-
-```
-To reduce pod startup p99 from 8s to under 2s on GKE I'd evaluate three approaches:
-
-1. **Pre-pulled image cache** — Use a DaemonSet to warm the image cache on every node...
-```
-
-### 6. Deploy a long-running chat agent (optional)
-
-Run the agent as a persistent service that accepts chat messages over HTTP:
-
-```bash
-kubectl apply -f config/samples/agentdeployment-demo.yaml
-
-# Wait for the deployment to be ready
-kubectl get agentdeployment demo-chat-deployment -w
-```
-
-```
-NAME                   PHASE     READY   AGE
-demo-chat-deployment   Running   1/1     12s
-```
-
-Send a message and get a response (conversation state is checkpointed automatically):
-
-```bash
-# Turn 1
-curl -s -X POST http://localhost:8083/api/deployments/default/demo-chat-deployment/execute \
-  -H 'Content-Type: application/json' \
-  -d '{"input": "What is the capital of France?", "sessionId": "user-1"}' | jq .
-
-# Turn 2 — the agent remembers the previous exchange
-curl -s -X POST http://localhost:8083/api/deployments/default/demo-chat-deployment/execute \
-  -H 'Content-Type: application/json' \
-  -d '{"input": "What is its population?", "sessionId": "user-1"}' | jq .
-```
-
-The agent pod can crash and restart — checkpoints survive. On restart it loads the checkpoint and picks up the conversation exactly where it left off.
-
-### 7. Clean up
+### 5. Clean up
 
 ```bash
 kind delete cluster
@@ -524,6 +439,6 @@ make test
 # Generate CRD manifests
 make manifests
 
-# Generate code
+# Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
 make generate
 ```
