@@ -25,6 +25,8 @@ interface Props {
   namespace?: string
   /** Ancestor navigation stack — entries before the current run. */
   breadcrumbs?: ResourceSelection[]
+  /** Whether this run was navigated to from the home dashboard. */
+  cameFromHome?: boolean
   /** Jump back to breadcrumb at the given index. */
   onNavigateUp?: (index: number) => void
   /** Navigate into a child run. */
@@ -37,6 +39,7 @@ export function RunView({
   runId,
   namespace = 'default',
   breadcrumbs = [],
+  cameFromHome = false,
   onNavigateUp,
   onNavigateToRun,
 }: Props) {
@@ -159,7 +162,16 @@ export function RunView({
   return (
     <div style={s.root}>
       {/* Breadcrumb trail */}
-      {breadcrumbs.length > 0 && (
+      {cameFromHome && (
+        <div style={s.breadcrumb}>
+          <button style={s.breadcrumbBtn} onClick={() => onNavigateUp?.(0)}>
+            🏠 Home
+          </button>
+          <span style={s.breadcrumbSep}>/</span>
+          <span style={s.breadcrumbCurrent}>{runId}</span>
+        </div>
+      )}
+      {!cameFromHome && breadcrumbs.length > 0 && (
         <div style={s.breadcrumb}>
           {breadcrumbs.map((crumb, i) => (
             <span key={i} style={s.breadcrumbItem}>

@@ -73,7 +73,7 @@ agent-orc-resources:
       allowedAgents:
         - llm-research-agent
       embedding:
-        modelSelectorRef: ollama-embeddings
+        modelSelectorRef: ollama-embed
         chunkSize: 512
         chunkOverlap: 64
       vectorStore:
@@ -118,7 +118,7 @@ agent-orc-resources:
         - eval-fortran-m1-agent
         - eval-javascript-m1-agent
       embedding:
-        modelSelectorRef: ollama-embeddings
+        modelSelectorRef: ollama-embed
         chunkSize: 512
         chunkOverlap: 64
       vectorStore:

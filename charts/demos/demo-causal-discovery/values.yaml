@@ -54,7 +54,7 @@ agent-orc-resources:
         - economics-expert
         - neuroscience-expert
       embedding:
-        modelSelectorRef: ollama-embeddings
+        modelSelectorRef: ollama-embed
         chunkSize: 512
         chunkOverlap: 64
       vectorStore:
@@ -69,7 +69,7 @@ agent-orc-resources:
       allowedAgents:
         - epidemiology-expert
       embedding:
-        modelSelectorRef: ollama-embeddings
+        modelSelectorRef: ollama-embed
         chunkSize: 512
         chunkOverlap: 64
       vectorStore:
@@ -84,7 +84,7 @@ agent-orc-resources:
       allowedAgents:
         - economics-expert
       embedding:
-        modelSelectorRef: ollama-embeddings
+        modelSelectorRef: ollama-embed
         chunkSize: 512
         chunkOverlap: 64
       vectorStore:
@@ -99,7 +99,7 @@ agent-orc-resources:
       allowedAgents:
         - neuroscience-expert
       embedding:
-        modelSelectorRef: ollama-embeddings
+        modelSelectorRef: ollama-embed
         chunkSize: 512
         chunkOverlap: 64
       vectorStore:

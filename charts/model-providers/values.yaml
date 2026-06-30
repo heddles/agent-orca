@@ -97,8 +97,8 @@ providerSecrets:
   # Used when Ollama is deployed inside the cluster for local embeddings.
   # No real API key required - the service is unauthenticated within the cluster.
   - name: ollama-embed-credentials
-    enabled: false
-    apiKey: ""
+    enabled: true
+    apiKey: "password"
     existingSecret: ""
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1858,7 +1858,7 @@ modelSelectors:
 
   # ollama-embeddings — local in-cluster Ollama for embeddings
   # Used when running Ollama inside the cluster (no external API costs)
-  - name: ollama-embeddings
+  - name: ollama-embed
     enabled: true
     strategy: rule-based
     providers:
@@ -1888,53 +1888,53 @@ modelSelectors:
       - name: poolside-laguna-m-ctx256k
       - name: poolside-laguna-xs3-rc2
       - name: poolside-laguna-xs3-rc1
-      - name: poolside-fusion
-      - name: poolside-kimi-k2-7-code
-      - name: poolside-claude-fable-5
-      - name: poolside-claude-opus-4-8-fast
-      - name: poolside-deepseek-v4-flash
-      - name: poolside-claude-opus-4-8
-      - name: poolside-laguna-m-nvfp4
-      - name: poolside-deepseek-v4-pro
-      - name: poolside-production-e2e
-      - name: poolside-laguna-xs-polaris
-      - name: poolside-gpt-5-5
-      - name: poolside-qwen-3-6-27b
-      - name: poolside-kimi-k2-6
-      - name: poolside-glm-5-1
-      - name: poolside-minimax-m2-7
-      - name: poolside-claude-opus-4-7
-      - name: poolside-nemotron-3-120b
-      - name: poolside-kimi-k2-5-turbo
-      - name: poolside-kimi-k2-5-nitro
-      - name: poolside-gpt-5-4-mini
-      - name: poolside-claude-haiku-4-5
-      - name: poolside-gemini-3-flash
-      - name: poolside-grok-4-fast
-      - name: poolside-deepseek-v3-2
-      - name: poolside-gpt-oss-120b
-      - name: poolside-gpt-5-4
-      - name: poolside-qwen3-coder-next-cloud
-      - name: poolside-qwen-3-5-35b
-      - name: poolside-gpt-5-3-codex
-      - name: poolside-trinity-preview
-      - name: poolside-devstral
-      - name: poolside-mimo-v2
-      - name: poolside-minimax-m2-1
-      - name: poolside-claude-opus-4-5
-      - name: poolside-gemini-3-pro
-      - name: poolside-glm-4-7
-      - name: poolside-grok-code-fast
-      - name: poolside-qwen3-235b
-      - name: poolside-claude-4-5-sonnet
-      - name: poolside-claude-sonnet-4-6
-      - name: poolside-minimax-m2-5-nitro
-      - name: poolside-nemotron-3-nano
-      - name: poolside-gemini-2-5-flash
-      - name: poolside-claude-opus-4-6
-      - name: poolside-qwen3-coder-next
-      - name: poolside-gpt-5-2-codex
-      - name: poolside-glm-4-7-flash
+      # - name: poolside-fusion
+      # - name: poolside-kimi-k2-7-code
+      # - name: poolside-claude-fable-5
+      # - name: poolside-claude-opus-4-8-fast
+      # - name: poolside-deepseek-v4-flash
+      # - name: poolside-claude-opus-4-8
+      # - name: poolside-laguna-m-nvfp4
+      # - name: poolside-deepseek-v4-pro
+      # - name: poolside-production-e2e
+      # - name: poolside-laguna-xs-polaris
+      # - name: poolside-gpt-5-5
+      # - name: poolside-qwen-3-6-27b
+      # - name: poolside-kimi-k2-6
+      # - name: poolside-glm-5-1
+      # - name: poolside-minimax-m2-7
+      # - name: poolside-claude-opus-4-7
+      # - name: poolside-nemotron-3-120b
+      # - name: poolside-kimi-k2-5-turbo
+      # - name: poolside-kimi-k2-5-nitro
+      # - name: poolside-gpt-5-4-mini
+      # - name: poolside-claude-haiku-4-5
+      # - name: poolside-gemini-3-flash
+      # - name: poolside-grok-4-fast
+      # - name: poolside-deepseek-v3-2
+      # - name: poolside-gpt-oss-120b
+      # - name: poolside-gpt-5-4
+      # - name: poolside-qwen3-coder-next-cloud
+      # - name: poolside-qwen-3-5-35b
+      # - name: poolside-gpt-5-3-codex
+      # - name: poolside-trinity-preview
+      # - name: poolside-devstral
+      # - name: poolside-mimo-v2
+      # - name: poolside-minimax-m2-1
+      # - name: poolside-claude-opus-4-5
+      # - name: poolside-gemini-3-pro
+      # - name: poolside-glm-4-7
+      # - name: poolside-grok-code-fast
+      # - name: poolside-qwen3-235b
+      # - name: poolside-claude-4-5-sonnet
+      # - name: poolside-claude-sonnet-4-6
+      # - name: poolside-minimax-m2-5-nitro
+      # - name: poolside-nemotron-3-nano
+      # - name: poolside-gemini-2-5-flash
+      # - name: poolside-claude-opus-4-6
+      # - name: poolside-qwen3-coder-next
+      # - name: poolside-gpt-5-2-codex
+      # - name: poolside-glm-4-7-flash
     fallbackChain:
       - poolside-laguna-m-ctx256k
       - poolside-laguna-xs-polaris

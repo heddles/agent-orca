@@ -118,6 +118,8 @@ test.describe('Navigation', () => {
 
   test('cost dashboard toggle works', async ({ page }) => {
     await page.goto('/')
+    // Go to runs tab first since cost dashboard needs a resource context
+    await page.getByRole('button', { name: /runs/i }).click()
     await page.getByTitle('Cost Dashboard').click()
     await expect(page.getByText(/cost/i)).toBeVisible({ timeout: 10_000 })
     await page.getByTitle('Cost Dashboard').click()
@@ -145,5 +147,33 @@ test.describe('API health', () => {
     expect(res.ok()).toBeTruthy()
     const body = await res.json()
     expect(Array.isArray(body)).toBeTruthy()
+  })
+})
+
+test.describe('Home Dashboard', () => {
+  test('home tab shows system dashboard with cards', async ({ page }) => {
+    await page.goto('/')
+    await expect(page.getByRole('button', { name: 'Home' })).toBeVisible()
+    // Home is default, so dashboard should be visible
+    await expect(page.getByText('agent-orc')).toBeVisible()
+    await expect(page.getByText('AI Agent Orchestration Platform')).toBeVisible()
+    // Cards should be visible
+    await expect(page.getByText('Agents')).toBeVisible()
+    await expect(page.getByText('Agent Runs')).toBeVisible()
+    await expect(page.getByText('Deployments')).toBeVisible()
+  })
+
+  test('marketplace tab shows placeholder', async ({ page }) => {
+    await page.goto('/')
+    await page.getByRole('button', { name: 'Marketplace' }).click()
+    await expect(page.getByText('Marketplace')).toBeVisible()
+    await expect(page.getByText('Coming soon')).toBeVisible()
+  })
+
+  test('clicking Create Agent from nav bar opens agent panel', async ({ page }) => {
+    await page.goto('/')
+    await page.getByTitle('Create Agent').click()
+    // CreateAgentPanel should appear (has template tabs)
+    await expect(page.getByRole('button', { name: /templates/i })).toBeVisible()
   })
 })

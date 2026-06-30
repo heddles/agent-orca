@@ -61,3 +61,7 @@ charts/**/*.tgz
 *.pyo
 *.pyd
 __pycache__/
+
+# zip files
+*.zip
+ui/test-results/.last-run.json

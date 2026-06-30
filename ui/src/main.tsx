@@ -9,6 +9,10 @@ import { DeploymentView } from './components/DeploymentView'
 import { WorkflowView } from './components/WorkflowView'
 import { CostDashboard } from './components/CostDashboard'
 import { CreateAgentPanel } from './components/CreateAgentPanel'
+import { SystemDashboard } from './components/SystemDashboard'
+import { MarketplaceView } from './components/MarketplaceView'
+
+type TopLevelTab = ResourceTab | 'home' | 'marketplace'
 
 // Inject global keyframe animations (used by StatusBadge, OutputCard pulse cursors).
 const styleEl = document.createElement('style')
@@ -93,11 +97,18 @@ function isConfigTab(tab: ResourceTab): tab is 'agents' | 'tools' | 'mcpservers'
   return CONFIG_TABS.includes(tab)
 }
 
+const HOME_TABS: { key: 'home' | 'marketplace'; label: string }[] = [
+  { key: 'home', label: 'Home' },
+  { key: 'marketplace', label: 'Marketplace' },
+]
+
 function App() {
-  const [tab, setTab] = useState<ResourceTab>('runs')
+  const [tab, setTab] = useState<TopLevelTab>('home')
   const [selection, setSelection] = useState<ResourceSelection | null>(null)
   // breadcrumbs holds the navigation stack of ancestors above the current selection.
   const [breadcrumbs, setBreadcrumbs] = useState<ResourceSelection[]>([])
+  // Track if we navigated from home so breadcrumbs show Home origin
+  const [navigationOrigin, setNavigationOrigin] = useState<'sidebar' | 'home' | 'marketplace'>('sidebar')
   const [showCosts, setShowCosts] = useState(false)
   const [showCreateAgent, setShowCreateAgent] = useState(false)
   const [showRedisBanner, setShowRedisBanner] = useState(false)
@@ -130,10 +141,20 @@ function App() {
     setShowCosts(false)
   }
 
-  // Direct sidebar selection — clears the breadcrumb stack.
+  // Direct sidebar selection — clears breadcrumbs and sets origin to sidebar.
   const handleSelect = (sel: ResourceSelection) => {
     setSelection(sel)
     setBreadcrumbs([])
+    setNavigationOrigin('sidebar')
+    setShowCosts(false)
+  }
+
+  // Navigate to a resource tab from home cards (no selection).
+  const handleNavigateToTab = (t: ResourceTab) => {
+    setTab(t)
+    setSelection(null)
+    setBreadcrumbs([])
+    setNavigationOrigin('home')
     setShowCosts(false)
   }
 
@@ -147,10 +168,18 @@ function App() {
 
   // Jump back to a specific breadcrumb by index, discarding deeper levels.
   const handleNavigateUp = (index: number) => {
-    const target = breadcrumbs[index]
-    setBreadcrumbs((prev) => prev.slice(0, index))
-    setTab(tabFor(target))
-    setSelection(target)
+    if ((navigationOrigin === 'home' || navigationOrigin === 'marketplace') && index === 0) {
+      // Navigate back to home/marketplace tab
+      setTab(navigationOrigin)
+      setSelection(null)
+      setBreadcrumbs([])
+      setNavigationOrigin('sidebar')
+    } else {
+      const target = breadcrumbs[index]
+      setBreadcrumbs((prev) => prev.slice(0, index))
+      setTab(tabFor(target))
+      setSelection(target)
+    }
     setShowCosts(false)
   }
 
@@ -165,6 +194,16 @@ function App() {
           agent-orc
         </div>
         <nav style={layout.nav}>
+          {HOME_TABS.map((t) => (
+            <button
+              key={t.key}
+              style={{ ...layout.navTab, ...(tab === t.key && !showCosts ? layout.navTabActive : {}) }}
+              onClick={() => setTab(t.key)}
+            >
+              {t.label}
+            </button>
+          ))}
+          <span style={layout.navDivider} />
           {OPS_TABS.map((t) => (
             <button
               key={t}
@@ -208,32 +247,37 @@ function App() {
 
       {/* ── Body ── */}
       <div style={layout.body}>
-        {/* Left list panel */}
-        <aside style={layout.leftPanel}>
-          <div style={layout.listHeader}>
-            <span style={layout.listTitle}>{TAB_LABELS[tab]}</span>
-          </div>
-          <div style={layout.listScroll}>
-            {isConfigTab(tab) ? (
-              <ConfigList
-                tab={tab}
-                namespace={namespace}
-                selection={selection}
-                onSelect={handleSelect}
-              />
-            ) : (
-              <ResourceList
-                tab={tab}
-                namespace={namespace}
-                selection={selection}
-                onSelect={handleSelect}
-              />
-            )}
-          </div>
-        </aside>
+        {/* Left list panel - hidden on home/marketplace tabs */}
+        {tab !== 'home' && tab !== 'marketplace' && (
+          <aside style={layout.leftPanel}>
+            <div style={layout.listHeader}>
+              <span style={layout.listTitle}>{TAB_LABELS[tab as ResourceTab]}</span>
+            </div>
+            <div style={layout.listScroll}>
+              {isConfigTab(tab) ? (
+                <ConfigList
+                  tab={tab}
+                  namespace={namespace}
+                  selection={selection}
+                  onSelect={handleSelect}
+                />
+              ) : (
+                <ResourceList
+                  tab={tab}
+                  namespace={namespace}
+                  selection={selection}
+                  onSelect={handleSelect}
+                />
+              )}
+            </div>
+          </aside>
+        )}
 
         {/* Main content */}
-        <main style={layout.main}>
+        <main style={{
+            ...layout.main,
+            ...(tab === 'home' || tab === 'marketplace' ? { padding: 0 } : {}),
+          }}>
           {showCosts ? (
             // CostDashboard expects the old SidebarSelection type — adapt.
             <CostDashboard
@@ -245,11 +289,16 @@ function App() {
                   : null
               }
             />
+          ) : tab === 'home' ? (
+            <SystemDashboard navigateToTab={handleNavigateToTab} />
+          ) : tab === 'marketplace' ? (
+            <MarketplaceView />
           ) : selection?.kind === 'run' ? (
             <RunView
               runId={selection.name}
               namespace={selection.namespace}
               breadcrumbs={breadcrumbs}
+              cameFromHome={navigationOrigin === 'home'}
               onNavigateUp={handleNavigateUp}
               onNavigateToRun={(runName, ns) =>
                 handleNavigateInto({ kind: 'run', name: runName, namespace: ns })
@@ -268,7 +317,7 @@ function App() {
           ) : selection && (selection.kind === 'agent' || selection.kind === 'tool' || selection.kind === 'mcpserver' || selection.kind === 'modelprovider' || selection.kind === 'knowledgebase' || selection.kind === 'modelselector') ? (
             <ConfigDetailView selection={selection} />
           ) : (
-            <EmptyState tab={tab} />
+            <EmptyState tab={tab as ResourceTab} />
           )}
         </main>
       </div>

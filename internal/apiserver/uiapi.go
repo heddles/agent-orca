@@ -723,12 +723,16 @@ func (s *UIServer) handleListAgents(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]summary, 0, len(list.Items))
 	for _, a := range list.Items {
+		tools := a.Spec.Tools
+		if tools == nil {
+			tools = []string{}
+		}
 		out = append(out, summary{
 			Name:               a.Name,
 			Namespace:          a.Namespace,
 			ModelSelectorRef:   a.Spec.ModelSelectorRef,
 			Framework:          a.Spec.Runtime.Framework,
-			Tools:              a.Spec.Tools,
+			Tools:              tools,
 			SystemPrompt:       a.Spec.SystemPrompt,
 			ServiceAccountName: a.Status.ServiceAccountName,
 		})

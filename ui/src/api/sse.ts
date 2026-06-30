@@ -42,8 +42,8 @@ export async function getRun(runId: string, namespace: string): Promise<AgentRun
   return res.json()
 }
 
-/** Fetch all Agents. */
-export async function listAgents(namespace = 'default'): Promise<AgentSummary[]> {
+/** Fetch all Agents across all namespaces. */
+export async function listAgents(namespace = ''): Promise<AgentSummary[]> {
   const res = await apiFetch(`/api/agents?namespace=${namespace}`)
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json()
@@ -60,36 +60,36 @@ export async function createAgent(agent: CreateAgentRequest): Promise<{ name: st
   return res.json()
 }
 
-/** Fetch all ModelSelectors (for form dropdowns). */
-export async function listModelSelectors(namespace = 'default'): Promise<ModelSelectorSummary[]> {
+/** Fetch all ModelSelectors across all namespaces. */
+export async function listModelSelectors(namespace = ''): Promise<ModelSelectorSummary[]> {
   const res = await apiFetch(`/api/modelselectors?namespace=${namespace}`)
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json()
 }
 
-/** Fetch all Tools. */
-export async function listTools(namespace = 'default'): Promise<ToolSummary[]> {
+/** Fetch all Tools across all namespaces. */
+export async function listTools(namespace = ''): Promise<ToolSummary[]> {
   const res = await apiFetch(`/api/tools?namespace=${namespace}`)
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json()
 }
 
-/** Fetch all MCPServers. */
-export async function listMCPServers(namespace = 'default'): Promise<MCPServerSummary[]> {
+/** Fetch all MCPServers across all namespaces. */
+export async function listMCPServers(namespace = ''): Promise<MCPServerSummary[]> {
   const res = await apiFetch(`/api/mcpservers?namespace=${namespace}`)
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json()
 }
 
-/** Fetch all ModelProviders. */
-export async function listModelProviders(namespace = 'default'): Promise<ModelProviderSummary[]> {
+/** Fetch all ModelProviders across all namespaces. */
+export async function listModelProviders(namespace = ''): Promise<ModelProviderSummary[]> {
   const res = await apiFetch(`/api/modelproviders?namespace=${namespace}`)
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json()
 }
 
-/** Fetch a paginated list of AgentDeployments. */
-export async function listDeployments(namespace = 'default'): Promise<AgentDeploymentSummary[]> {
+/** Fetch a paginated list of AgentDeployments across all namespaces. */
+export async function listDeployments(namespace = ''): Promise<AgentDeploymentSummary[]> {
   const res = await apiFetch(`/api/deployments?namespace=${namespace}`)
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json()
@@ -108,9 +108,9 @@ export async function deleteDeployment(namespace: string, name: string): Promise
   if (!res.ok) throw new Error(await res.text())
 }
 
-/** Fetch cost data, optionally scoped to a single run or deployment. */
+/** Fetch cost data across all namespaces. */
 export async function getCosts(
-  namespace = 'default',
+  namespace = '',
   opts?: { run?: string; deployment?: string },
 ): Promise<CostData> {
   let url = `/api/costs?namespace=${namespace}`
@@ -127,7 +127,7 @@ export interface AgentRunSummary {
   name: string
   namespace: string
   agentRef: string
-  phase: 'Pending' | 'Running' | 'Succeeded' | 'Failed' | 'HandedOff' | 'WaitingForInput'
+  phase: string
   spendUSD: string
   restartCount: number
   startTime?: string
@@ -139,7 +139,7 @@ export interface AgentSummary {
   namespace: string
   modelSelectorRef: string
   framework: string
-  tools: string[]
+  tools: string[] | null
   systemPrompt?: string
   serviceAccountName: string
 }
@@ -215,7 +215,7 @@ export interface AgentDeploymentSummary {
   name: string
   namespace: string
   agentRef: string
-  phase: 'Creating' | 'Running' | 'Failed' | 'Paused'
+  phase: string
   readyReplicas: number
   inputSourceType?: string
   lastUpdateTime?: string
@@ -317,8 +317,8 @@ export interface AgentWorkflowDetail extends AgentWorkflowSummary {
   steps: WorkflowStepSummary[]
 }
 
-/** Fetch all AgentWorkflows in a namespace. */
-export async function listWorkflows(namespace = 'default'): Promise<AgentWorkflowSummary[]> {
+/** Fetch all AgentWorkflows across all namespaces. */
+export async function listWorkflows(namespace = ''): Promise<AgentWorkflowSummary[]> {
   const res = await apiFetch(`/api/workflows?namespace=${namespace}`)
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json()
@@ -407,8 +407,8 @@ export interface KnowledgeBaseSummary {
   lastSyncTime?: string
 }
 
-/** Fetch all KnowledgeBases in a namespace. */
-export async function listKnowledgeBases(namespace = 'default'): Promise<KnowledgeBaseSummary[]> {
+/** Fetch all KnowledgeBases across all namespaces. */
+export async function listKnowledgeBases(namespace = ''): Promise<KnowledgeBaseSummary[]> {
   const res = await apiFetch(`/api/knowledgebases?namespace=${namespace}`)
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json()

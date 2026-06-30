@@ -47,8 +47,8 @@ agent-orc-resources:
 
   # ── KnowledgeBases ──────────────────────────────────────────────────────────
   #
-  # ollama-embeddings: local in-cluster Ollama for embeddings.
-  # Requires: 'ollama-embeddings' ModelSelector already deployed (agent-orc-resources).
+  # ollama-embed: local in-cluster Ollama for embeddings.
+  # Requires: 'ollama-embed' ModelSelector already deployed (agent-orc-resources).
   # The runbooks ConfigMap is created by configmap.yaml in this chart.
 
   knowledgeBases:
@@ -57,7 +57,7 @@ agent-orc-resources:
       allowedAgents:
         - soc-enricher-agent
       embedding:
-        modelSelectorRef: ollama-embeddings
+        modelSelectorRef: ollama-embed
         chunkSize: 512
         chunkOverlap: 64
       vectorStore:

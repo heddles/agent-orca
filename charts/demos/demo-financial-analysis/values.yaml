@@ -50,7 +50,7 @@ agent-orc-resources:
       allowedAgents:
         - financial-analyst
       embedding:
-        modelSelectorRef: ollama-embeddings
+        modelSelectorRef: ollama-embed
         chunkSize: 512
         chunkOverlap: 64
       vectorStore:
