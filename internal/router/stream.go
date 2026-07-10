@@ -130,7 +130,7 @@ func (r *Router) forwardToProviderStream(ctx context.Context, provider *Provider
 	// explicitly via Router.Cancel() when the run is stopped.
 	llmCtx, cancel := context.WithTimeout(r.cancelCtx, llmRequestTimeout)
 
-	if strings.HasPrefix(provider.LiteLLMModel, "anthropic/") {
+	if strings.HasPrefix(provider.LiteLLMModel, "anthropic/") && provider.BaseURL == "" {
 		resp, err := r.forwardToAnthropicStream(llmCtx, provider, chatReq)
 		if err != nil {
 			cancel()

@@ -1040,7 +1040,9 @@ func (r *Router) forwardToProvider(ctx context.Context, provider *ProviderConfig
 	defer cancel()
 
 	// Anthropic requires its own wire format — handle separately before any generic logic.
-	if strings.HasPrefix(provider.LiteLLMModel, "anthropic/") {
+	// Skip when a custom BaseURL is set (e.g., Poolside proxy) since the proxy is
+	// OpenAI-compatible and expects the standard format regardless of model prefix.
+	if strings.HasPrefix(provider.LiteLLMModel, "anthropic/") && provider.BaseURL == "" {
 		apiKey, err := os.ReadFile(provider.APIKeyFile)
 		if err != nil {
 			return nil, fmt.Errorf("reading API key for %s: %w", provider.Name, err)
