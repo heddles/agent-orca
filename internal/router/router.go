@@ -79,6 +79,10 @@ type Router struct {
 	// Safeguard tracking state (all protected by mu).
 	consecutiveNoops int            // turns with no tool calls and < MinSubstantiveTokens tokens
 	toolCallCounts   map[string]int // tool name → total invocations this run
+
+	// toolTimeout is the maximum duration for a single tool call before it is
+	// cancelled and a structured timeout error is returned to the LLM.
+	toolTimeout time.Duration
 	toolCallSigs     map[string]int // sha256(toolName+":"+args) → invocation count
 	loopDetected     bool           // set when a safeguard trips; blocks further LLM calls
 
@@ -188,6 +192,7 @@ func New(cfg *Config, store state.Store, initialMessages []json.RawMessage, exec
 		toolCallCounts:    make(map[string]int),
 		toolCallSigs:      make(map[string]int),
 		guardrails:        NewGuardrailPipeline(cfg.Guardrails),
+		toolTimeout:       time.Duration(cfg.Safeguards.ToolExecutionTimeoutSec) * time.Second,
 		cancelCtx:         cancelCtx,
 		cancelFunc:        cancelFunc,
 		exec:              exec,
@@ -472,6 +477,14 @@ func truncateToolResult(result string, maxTokens int) string {
 	return result[:maxChars] + "\n\n[... truncated — original was " +
 		strconv.Itoa(len(result)) + " chars, capped to " +
 		strconv.Itoa(maxChars) + " chars]"
+}
+
+// truncateStr truncates a string to maxLen characters, appending "…" if truncated.
+func truncateStr(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "…"
 }
 
 // InitMCPServers connects to all configured MCP servers and merges their tool
@@ -1789,6 +1802,8 @@ func (r *Router) handleToolCalls(w http.ResponseWriter, req *http.Request,
 	toolResults := make([]Message, len(assistantMsg.ToolCalls))
 	for i, tc := range assistantMsg.ToolCalls {
 		result := r.dispatchToolCall(req.Context(), tc)
+		r.emitTraceEvent(fmt.Sprintf(`{"type":"toolResult","name":%q,"result":"%s"}`,
+			tc.Function.Name, truncateStr(result, 500)))
 		toolResults[i] = Message{
 			Role:       "tool",
 			ToolCallID: tc.ID,
@@ -1870,6 +1885,14 @@ func (r *Router) dispatchToolCall(ctx context.Context, tc ToolCall) string {
 		r.emitTraceEvent(string(callJSON))
 	}
 
+	// Wrap tool execution in a per-tool timeout context so that a hanging
+	// tool (e.g. blocking HTTP handler, deadlock, infinite loop) does not
+	// block the entire run indefinitely. The timeout error is surfaced as
+	// a structured tool result so the LLM can recover.
+	toolCtx, cancel := context.WithTimeout(ctx, r.toolTimeout)
+	defer cancel()
+
+	startTime := time.Now()
 	var result string
 	var appUrl string
 
@@ -1878,43 +1901,43 @@ func (r *Router) dispatchToolCall(ctx context.Context, tc ToolCall) string {
 	// Accept both underscore-prefixed and non-prefixed forms for backwards compatibility.
 	switch tc.Function.Name {
 	case "_handoff", "handoff":
-		result = r.executeHandoff(ctx, tc.Function.Arguments)
+		result = r.executeHandoff(toolCtx, tc.Function.Arguments)
 	case "_clarify", "clarify":
-		result = r.executeClarify(ctx, tc.Function.Arguments)
+		result = r.executeClarify(toolCtx, tc.Function.Arguments)
 	case "_done", "done":
-		result = r.executeDone(ctx, tc.Function.Arguments)
+		result = r.executeDone(toolCtx, tc.Function.Arguments)
 	case "_fail", "fail":
-		result = r.executeFail(ctx, tc.Function.Arguments)
+		result = r.executeFail(toolCtx, tc.Function.Arguments)
 	case "_spawn", "spawn":
-		result = r.executeSpawn(ctx, tc.Function.Arguments)
+		result = r.executeSpawn(toolCtx, tc.Function.Arguments)
 	case "_create_workflow", "create_workflow":
-		result = r.executeCreateWorkflow(ctx, tc.Function.Arguments)
+		result = r.executeCreateWorkflow(toolCtx, tc.Function.Arguments)
 	case "_emit_event", "emit_event":
-		result = r.executeEmitEvent(ctx, tc.Function.Arguments)
+		result = r.executeEmitEvent(toolCtx, tc.Function.Arguments)
 	case "_mcp_read_resource", "mcp_read_resource":
-		result = r.executeMCPResource(ctx, tc.Function.Arguments)
+		result = r.executeMCPResource(toolCtx, tc.Function.Arguments)
 	case "_propose_step", "propose_step":
-		result = r.executeProposeStep(ctx, tc.Function.Arguments)
+		result = r.executeProposeStep(toolCtx, tc.Function.Arguments)
 	case "_write_state", "write_state":
-		result = r.executeWriteState(ctx, tc.Function.Arguments)
+		result = r.executeWriteState(toolCtx, tc.Function.Arguments)
 	case "_read_state", "read_state":
-		result = r.executeReadState(ctx, tc.Function.Arguments)
+		result = r.executeReadState(toolCtx, tc.Function.Arguments)
 	case "_list_state", "list_state":
-		result = r.executeListState(ctx, tc.Function.Arguments)
+		result = r.executeListState(toolCtx, tc.Function.Arguments)
 	case "_delete_state", "delete_state":
-		result = r.executeDeleteState(ctx, tc.Function.Arguments)
+		result = r.executeDeleteState(toolCtx, tc.Function.Arguments)
 	case "_rag_search", "rag_search":
-		result = r.executeRAGSearch(ctx, tc.Function.Arguments)
+		result = r.executeRAGSearch(toolCtx, tc.Function.Arguments)
 	case "_rag_ingest", "rag_ingest":
-		result = r.executeRAGIngest(ctx, tc.Function.Arguments)
+		result = r.executeRAGIngest(toolCtx, tc.Function.Arguments)
 	case "_memory_store", "memory_store":
-		result = r.executeMemoryStore(ctx, tc.Function.Arguments)
+		result = r.executeMemoryStore(toolCtx, tc.Function.Arguments)
 	case "_propose_fix", "propose_fix":
-		result = r.executeProposeFix(ctx, tc.Function.Arguments)
+		result = r.executeProposeFix(toolCtx, tc.Function.Arguments)
 	case "_confirm_fix", "confirm_fix":
-		result = r.executeConfirmFix(ctx, tc.Function.Arguments)
+		result = r.executeConfirmFix(toolCtx, tc.Function.Arguments)
 	case "_list_resources", "list_resources":
-		result = r.executeListResources(ctx, tc.Function.Arguments)
+		result = r.executeListResources(toolCtx, tc.Function.Arguments)
 	default:
 		// Find the tool definition.
 		found := false
@@ -1922,9 +1945,9 @@ func (r *Router) dispatchToolCall(ctx context.Context, tc ToolCall) string {
 			if td.Name == tc.Function.Name {
 				found = true
 				if td.BackendType == "mcp" {
-					result, appUrl = r.callMCPTool(ctx, td, tc.Function.Arguments)
+					result, appUrl = r.callMCPTool(toolCtx, td, tc.Function.Arguments)
 				} else {
-					result = r.executeToolBackend(ctx, td, tc.Function.Arguments)
+					result = r.executeToolBackend(toolCtx, td, tc.Function.Arguments)
 				}
 				break
 			}
@@ -1932,6 +1955,20 @@ func (r *Router) dispatchToolCall(ctx context.Context, tc ToolCall) string {
 		if !found {
 			result = fmt.Sprintf(`{"error": "unknown tool %q"}`, tc.Function.Name)
 		}
+	}
+
+	// Check if the tool execution timed out and surface a structured error.
+	if toolCtx.Err() == context.DeadlineExceeded {
+		slog.Warn("tool execution timed out", "tool", tc.Function.Name,
+			"timeoutSec", r.cfg.Safeguards.ToolExecutionTimeoutSec,
+			"duration", time.Since(startTime).String())
+		result = fmt.Sprintf(
+			`{"error": "tool '%s' did not respond within %ds and was timed out. `+
+				`The deployed tool code may be hanging (e.g. infinite loop, blocking I/O, `+
+				`or a single-threaded server). Consider simplifying the tool's logic, `+
+				`adding ThreadingHTTPServer, or increasing toolExecutionTimeoutSec. `+
+				`Original error: context deadline exceeded"}`,
+			tc.Function.Name, r.cfg.Safeguards.ToolExecutionTimeoutSec)
 	}
 
 

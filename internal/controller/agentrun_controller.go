@@ -931,10 +931,11 @@ func (r *AgentRunReconciler) buildRouterConfig(
 	if run.Spec.Safeguards != nil {
 		s := run.Spec.Safeguards
 		safeguards = router.RouterSafeguards{
-			MaxConsecutiveNoopTurns: s.MaxConsecutiveNoopTurns,
-			MinSubstantiveTokens:    s.MinSubstantiveTokens,
-			MaxRepeatedToolCalls:    s.MaxRepeatedToolCalls,
-			ToolFrequencyCap:        s.ToolFrequencyCap,
+			MaxConsecutiveNoopTurns:   s.MaxConsecutiveNoopTurns,
+			MinSubstantiveTokens:      s.MinSubstantiveTokens,
+			MaxRepeatedToolCalls:      s.MaxRepeatedToolCalls,
+			ToolFrequencyCap:          s.ToolFrequencyCap,
+			ToolExecutionTimeoutSec:   s.ToolExecutionTimeoutSec,
 		}
 	}
 

@@ -57,6 +57,14 @@ type AgentRunSafeguards struct {
 	// times in total across the run. 0 disables the check.
 	// +optional
 	ToolFrequencyCap int `json:"toolFrequencyCap,omitempty"`
+
+	// ToolExecutionTimeoutSec is the maximum number of seconds a single tool call may
+	// take before it is cancelled and a structured error is returned to the LLM.
+	// This prevents a hanging tool (e.g. blocking I/O, deadlock) from stalling the
+	// entire run. Defaults to 60. 0 means use the default.
+	// +kubebuilder:default=60
+	// +optional
+	ToolExecutionTimeoutSec int `json:"toolExecutionTimeoutSec,omitempty"`
 }
 
 // LoopDetectedInfo describes a safeguard trip that caused a run to fail.

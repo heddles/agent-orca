@@ -263,6 +263,10 @@ type RouterSafeguards struct {
 	// ToolFrequencyCap halts the run if any single tool is called this many times total.
 	// 0 disables the check.
 	ToolFrequencyCap int `json:"toolFrequencyCap,omitempty"`
+	// ToolExecutionTimeoutSec is the maximum seconds a single tool call may take
+	// before being cancelled and returning a structured error to the LLM.
+	// 0 means use the default (60s).
+	ToolExecutionTimeoutSec int `json:"toolExecutionTimeoutSec,omitempty"`
 }
 
 // EpisodicMemoryConfig enables periodic summarization of the conversation to keep the
@@ -390,6 +394,9 @@ func ConfigFromEnv() (*Config, error) {
 	}
 	if cfg.Safeguards.MaxConsecutiveNoopTurns > 0 && cfg.Safeguards.MinSubstantiveTokens <= 0 {
 		cfg.Safeguards.MinSubstantiveTokens = 20
+	}
+	if cfg.Safeguards.ToolExecutionTimeoutSec <= 0 {
+		cfg.Safeguards.ToolExecutionTimeoutSec = 60
 	}
 	if cfg.LongTermMemory.Enabled && cfg.LongTermMemory.TopK <= 0 {
 		cfg.LongTermMemory.TopK = 5

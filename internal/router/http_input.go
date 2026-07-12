@@ -32,6 +32,10 @@ import (
 // RunHTTPInput implements http input mode: waits for the agent HTTP server to
 // become available, POSTs the run input, reads the response, and saves it to
 // the state store for the controller to pick up.
+//
+// If the HTTP call fails (e.g. timeout because the agent's handler is hanging),
+// the error message is saved as the run's output so the user can see what went
+// wrong in the UI, rather than the run silently timing out.
 func RunHTTPInput(ctx context.Context, cfg HTTPInputConfig, store state.Store) error {
 	addr := fmt.Sprintf("localhost:%d", cfg.Port)
 
@@ -48,7 +52,11 @@ func RunHTTPInput(ctx context.Context, cfg HTTPInputConfig, store state.Store) e
 		case <-time.After(time.Second):
 		}
 		if i == 119 {
-			return fmt.Errorf("agent HTTP server at %s did not become available after 120s", addr)
+			errMsg := fmt.Sprintf("agent HTTP server at %s did not become available after 120s", addr)
+			if store != nil {
+				_ = store.SaveHTTPOutput(ctx, cfg.RunName, errMsg)
+			}
+			return fmt.Errorf("%s", errMsg)
 		}
 	}
 
@@ -67,9 +75,20 @@ func RunHTTPInput(ctx context.Context, cfg HTTPInputConfig, store state.Store) e
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	// Use a dedicated HTTP client with a timeout so that a hanging agent HTTP
+	// handler does not block the run indefinitely. The timeout covers the full
+	// request-response cycle (connection + sending + reading).
+	client := &http.Client{
+		Timeout: 60 * time.Second,
+	}
+
+	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("posting http input: %w", err)
+		errMsg := fmt.Sprintf("ERROR: Agent HTTP handler did not respond within 60s and was timed out.\n\nThis usually means the agent's HTTP handler code is hanging (e.g. infinite loop, blocking I/O, deadlock, or a single-threaded HTTP server).\n\nDebug with: kubectl logs <agent-pod-name> -n <namespace>\n\nOriginal error: %v", err)
+		if store != nil {
+			_ = store.SaveHTTPOutput(ctx, cfg.RunName, errMsg)
+		}
+		return fmt.Errorf("posting http input (agent HTTP handler may be hanging): %w", err)
 	}
 	defer resp.Body.Close()
 
