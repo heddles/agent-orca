@@ -1,74 +1,66 @@
-# Agent SDK Template
+# Reference agent image (`ghcr.io/agentorc/agent-orc/openai-reference`)
 
-A reference agent that demonstrates the agent-orc Python SDK.
+A minimal, **generic** OpenAI-compatible agent image for agent-orc. It is a thin
+transport that streams a chat request to the model-router and returns the tokens —
+the model-router injects the system prompt, tools, conversation history, guardrails,
+built-in tool resolution (`_done`, `_fail`, `_clarify`, `_handoff`, `_spawn`,
+`_rag_search`, …), spend accounting, and checkpointing. See
+[docs/agent-images.md](../docs/agent-images.md) for the full contract.
 
-## What it shows
+This is the image published alongside releases as
+`ghcr.io/agentorc/agent-orc/openai-reference:<version>` (plus `:latest`).
 
-- **OpenAI-compatible integration**: The `Agent` class wraps an OpenAI-compatible
-  client pointed at the model-router sidecar (`http://localhost:8080`).
-- **Custom tools**: `@agent.tool` decorator registers tools for the LLM.
-- **Built-in lifecycle tools**: `agent.done()`, `agent.fail()`, `agent.ask()`,
-  `agent.handoff()`, `agent.spawn()` — Pythonic wrappers for the `_done`, `_fail`,
-  `_clarify`, `_handoff`, `_spawn` built-in tools.
-- **Checkpoint helpers**: `agent.load_checkpoint()` and `agent.save_checkpoint()`
-  for explicit state management.
+## Input modes
 
-## Quick start
+- **env** (default): set `AGENTORC_INPUT` (the operator does this for `inputMode: env`);
+  the image runs one turn and exits.
+- **http**: when `AGENTORC_INPUT` is unset (i.e. `inputMode: http`), the image serves:
+  - `GET  /healthz` → `200 ok`
+  - `POST /invoke` `{"input": "..."}` → `200 {"output": "..."}`
+  on `PORT` (default `8000`).
 
-```bash
-pip install agentorc
-python examples/agent-sdk-template/agent.py
-```
-
-## Deploy on agent-orc
-
-1. Build and push the agent image:
+## Quick start (local)
 
 ```bash
-docker build -t ghcr.io/myorg/agent-sdk-template:latest \
-  -f examples/agent-sdk-template/Dockerfile .
-docker push ghcr.io/myorg/agent-sdk-template:latest
+docker build -t ghcr.io/agentorc/agent-orc/openai-reference:latest -f examples/agent-sdk-template/Dockerfile .
 ```
 
-2. Create an `Agent` CR:
+Deploy it:
 
 ```yaml
 apiVersion: agentorc.agentorc.io/v1alpha1
 kind: Agent
 metadata:
-  name: sdk-template-agent
+  name: my-agent
 spec:
   modelSelectorRef: default
-  tools: [web-search]
-  systemPrompt: "You are a helpful research assistant."
+  systemPrompt: "You are a helpful assistant."
   runtime:
-    ociRef: ghcr.io/myorg/agent-sdk-template:latest
+    ociRef: ghcr.io/agentorc/agent-orc/openai-reference:latest
     framework: openai-compatible
-  memory:
-    checkpointEvery: 5
-    resumeWindowSeconds: 3600
-    archiveOnCompletion: true
 ```
 
-3. Submit a task:
+The image has no baked persona or custom tools — set `systemPrompt` and `tools` on the
+`Agent` CR; the model-router injects them into the request it serves.
 
-```bash
-aoctl tasks submit --agent sdk-template-agent --input "What are the latest developments in LLMs?"
+## Custom persona / custom tools
+
+The `agentorc` Python SDK (installed in this image) lets you write a richer agent with a
+custom system prompt, `@agent.tool` registration, and lifecycle helpers. Replace
+`agent.py` with your own and rebuild:
+
+```python
+from agentorc import Agent
+
+agent = Agent(system_prompt="You are a domain expert. ...")
+
+@agent.tool
+def lookup_order(order_id: str) -> str:
+    ...
+
+result = agent.run(input=os.environ["AGENTORC_INPUT"])
+print(result.output)
 ```
 
-## How it works
-
-The model-router sidecar injects the following environment variables into the
-agent container:
-
-| Variable | Value |
-|---|---|
-| `OPENAI_BASE_URL` | `http://localhost:8080` |
-| `OPENAI_API_KEY` | (empty — model-router handles auth) |
-| `AGENTORC_INPUT` | The run input text (env mode) |
-
-The SDK's `Agent.run()` method handles the full chat completion loop:
-1. Sends messages to `/v1/chat/completions` on the model-router
-2. Executes any tool calls (custom or built-in)
-3. Checks for terminal states (`_done`, `_fail`, `_clarify`, `_handoff`)
-4. Returns a `RunResult` with the final output and phase
+For the complete integration path (CLI, SDKs, ACP API), see
+[docs/integrating.md](../docs/integrating.md).

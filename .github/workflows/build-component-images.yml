@@ -1,0 +1,87 @@
+name: Build & Publish Component Images
+
+# Builds and publishes the agent-orc component container images (operator,
+# model-router, mcp-ingester, ui-proxy) alongside GitHub Releases.
+# Release Drafter drafts a release on push to main; a maintainer publishes it,
+# which fires `release: published` -> this workflow builds each component image
+# (from the paths in skaffold.yaml) for that tag.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Tag name to publish (e.g. v0.4.0)"
+        required: false
+        default: ""
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_REPO: ghcr.io/agentorc/agent-orc
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: operator
+            dockerfile: Dockerfile
+          - name: model-router
+            dockerfile: cmd/model-router/Dockerfile
+          - name: mcp-ingester
+            dockerfile: Dockerfile.mcp-ingester
+          - name: ui-proxy
+            dockerfile: Dockerfile.ui-proxy
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Determine publish tag
+        id: meta
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "release" ]; then
+            TAG="${GITHUB_REF_NAME#refs/tags/}"
+          elif [ -n "${{ inputs.ref }}" ]; then
+            TAG="${{ inputs.ref }}"
+          else
+            echo "::error::No tag available (trigger a Release or pass 'ref' via workflow_dispatch)"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "tags=${{ env.IMAGE_REPO }}/${{ matrix.name }}:$TAG
+          ${{ env.IMAGE_REPO }}/${{ matrix.name }}:latest" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push multi-arch ${{ matrix.name }} image
+        # Build context is the repository root (each Dockerfile is structured to copy
+        # from the repo root, matching skaffold.yaml's artifacts).
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+          attestation: false
+
+      - name: Image digest
+        run: echo "Published ${{ env.IMAGE_REPO }}/${{ matrix.name }}:${{ steps.meta.outputs.tag }} (+ :latest)"

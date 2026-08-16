@@ -1,10 +1,18 @@
-# Reference agent using the agent-orc Python SDK.
+# Reference OpenAI-compatible agent image for agent-orc:
+#   ghcr.io/agentorc/agent-orc/openai-reference:<version>
 #
-# This Dockerfile builds an agent image that uses the `agentorc` Python SDK
-# to communicate with the model-router sidecar (http://localhost:8080).
+# A minimal, framework-agnostic transport: it streams a chat request to the
+# model-router (OPENAI_BASE_URL) and prints/returns the tokens. The model-router
+# injects systemPrompt, tools, prior history, guardrails, built-in tool
+# resolution (_done/_clarify/_spawn/_rag_search/...), spend, and checkpoints,
+# so this image only ships input -> model-router -> output. Either env mode
+# (AGENTORC_INPUT set -> run one turn and exit) or http mode (serve
+# /healthz + POST /invoke on PORT, default 8000).
 #
-# Deploy as an Agent with framework: openai-compatible.
-# The model-router injects OPENAI_BASE_URL=http://localhost:8080 automatically.
+# Deploy an Agent with framework: openai-compatible. The operator injects
+# OPENAI_BASE_URL=http://localhost:8080/v1 and OPENAI_API_KEY automatically.
+# The `agentorc` SDK is installed for customization — replace /app/agent.py
+# with your own SDK-based agent to bring a custom persona/system prompt.
 
 # syntax=docker/dockerfile:1
 FROM python:3.12-alpine

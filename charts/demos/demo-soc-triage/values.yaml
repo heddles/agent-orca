@@ -1,5 +1,4 @@
 nameOverride: ""
-
 agent-orc-resources:
   # ── MCPServers ────────────────────────────────────────────────────────────────
   #
@@ -10,7 +9,6 @@ agent-orc-resources:
   #   cmdb-user-lookup       → soc://cmdb         personnel directory cards
   #   cmdb-ip-lookup         → soc://threat-intel  IP classification panel
   #   render-incident-report → soc://incident      styled incident report card
-
   mcpServers:
     - name: soc-apps
       transport: http
@@ -26,17 +24,16 @@ agent-orc-resources:
       tools:
         - name: cmdb-user-lookup
           description: >
-            Look up an employee or service account in the corporate CMDB.
-            Returns role, department, privilege level, known IP ranges, and account notes.
+            Look up an employee or service account in the corporate CMDB. Returns role, department, privilege level, known IP ranges, and account notes.
+
         - name: cmdb-ip-lookup
           description: >
-            Classify an IP address against the corporate IP registry and threat intelligence feeds.
-            Returns classification, origin org, country, and threat intel flags.
+            Classify an IP address against the corporate IP registry and threat intelligence feeds. Returns classification, origin org, country, and threat intel flags.
+
         - name: render-incident-report
           description: >
-            Submit a completed SOC incident report for visual rendering in the UI.
-            Call this exactly once at the end of triage with the structured findings.
-            The UI will display a styled incident card alongside your text report.
+            Submit a completed SOC incident report for visual rendering in the UI. Call this exactly once at the end of triage with the structured findings. The UI will display a styled incident card alongside your text report.
+
       resources:
         requests:
           cpu: 50m
@@ -44,13 +41,11 @@ agent-orc-resources:
         limits:
           cpu: 200m
           memory: 128Mi
-
   # ── KnowledgeBases ──────────────────────────────────────────────────────────
   #
   # ollama-embed: local in-cluster Ollama for embeddings.
   # Requires: 'ollama-embed' ModelSelector already deployed (agent-orc-resources).
   # The runbooks ConfigMap is created by configmap.yaml in this chart.
-
   knowledgeBases:
     - name: soc-runbooks
       description: "Security operations runbooks and incident response procedures"
@@ -66,14 +61,12 @@ agent-orc-resources:
         configMapRefs:
           - name: soc-runbooks-content
         syncIntervalSeconds: 0
-
   # ── Tools ────────────────────────────────────────────────────────────────────
   #
   # cmdb-user-lookup, cmdb-ip-lookup, and render-incident-report are provided by
   # the soc-apps MCPServer above (auto-created as Tool CRs named
   # soc-apps-cmdb-user-lookup, soc-apps-cmdb-ip-lookup, soc-apps-render-incident-report).
   # Only the agent-as-tool wrappers for the sub-agents are declared here.
-
   tools:
     # Sub-agent tools for the SOC orchestrator (agent-as-tool pattern).
     # The orchestrator calls these and the executor spawns child AgentRuns.
@@ -82,9 +75,8 @@ agent-orc-resources:
       agentRef: soc-enricher-agent
       schema:
         description: >
-          Enrich a raw security alert. Looks up every user and IP mentioned in the alert
-          against the CMDB and cross-references the alert pattern against security runbooks.
-          Returns a structured JSON summary of findings.
+          Enrich a raw security alert. Looks up every user and IP mentioned in the alert against the CMDB and cross-references the alert pattern against security runbooks. Returns a structured JSON summary of findings.
+
         input:
           type: object
           properties:
@@ -92,15 +84,13 @@ agent-orc-resources:
               type: string
               description: "The raw security alert text to enrich."
           required: [task]
-
     - name: soc-risk-assessor
       type: agent
       agentRef: soc-risk-assessor-agent
       schema:
         description: >
-          Assess the risk level of an enriched security alert. Returns a structured JSON
-          object with risk_level (LOW/MEDIUM/HIGH/CRITICAL), confidence, key indicators,
-          and a recommended_action.
+          Assess the risk level of an enriched security alert. Returns a structured JSON object with risk_level (LOW/MEDIUM/HIGH/CRITICAL), confidence, key indicators, and a recommended_action.
+
         input:
           type: object
           properties:
@@ -108,9 +98,7 @@ agent-orc-resources:
               type: string
               description: "The enriched alert context JSON produced by soc-enricher."
           required: [task]
-
   # ── Agents ───────────────────────────────────────────────────────────────────
-
   agents:
     # Step 1 sub-agent: given a raw alert, calls cmdb-user-lookup + cmdb-ip-lookup
     # for every entity mentioned, searches the soc-runbooks KB for matching procedures,
@@ -146,32 +134,8 @@ agent-orc-resources:
       knowledgeBases:
         - soc-runbooks
       runtime:
-        ociRef: "python:3.12-slim"
+        ociRef: "ghcr.io/agentorc/agent-orc/openai-reference:latest"
         framework: openai-compatible
-        command: ["python3", "-c"]
-        args:
-          - |
-            import json, os, urllib.request
-            inp = os.environ.get("AGENTORC_INPUT", "")
-            base_url = os.environ.get("OPENAI_BASE_URL", "http://localhost:8080")
-            api_key = os.environ.get("OPENAI_API_KEY", "unused")
-            timeout = int(os.environ.get("AGENTORC_TIMEOUT_SEC", "300"))
-            body = json.dumps({"model": "default", "stream": True,
-              "messages": [{"role": "user", "content": inp}]}).encode()
-            req = urllib.request.Request(f"{base_url}/chat/completions", data=body,
-              headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"})
-            with urllib.request.urlopen(req, timeout=timeout) as r:
-              for line in r:
-                line = line.decode().strip()
-                if not line.startswith("data: "): continue
-                data = line[6:]
-                if data == "[DONE]": break
-                chunk = json.loads(data)
-                choices = chunk.get("choices", [])
-                if not choices: continue
-                content = choices[0].get("delta", {}).get("content", "")
-                if content: print(content, end="", flush=True)
-            print()
       memory:
         checkpointEvery: 1
       resources:
@@ -181,7 +145,6 @@ agent-orc-resources:
         limits:
           cpu: 200m
           memory: 128Mi
-
     # Step 2 sub-agent: given the enriched context JSON, scores the risk and
     # recommends an action. No tools needed — pure LLM reasoning.
     - name: soc-risk-assessor-agent
@@ -209,32 +172,8 @@ agent-orc-resources:
 
         Output ONLY valid JSON. No preamble, no markdown fences.
       runtime:
-        ociRef: "python:3.12-slim"
+        ociRef: "ghcr.io/agentorc/agent-orc/openai-reference:latest"
         framework: openai-compatible
-        command: ["python3", "-c"]
-        args:
-          - |
-            import json, os, urllib.request
-            inp = os.environ.get("AGENTORC_INPUT", "")
-            base_url = os.environ.get("OPENAI_BASE_URL", "http://localhost:8080")
-            api_key = os.environ.get("OPENAI_API_KEY", "unused")
-            timeout = int(os.environ.get("AGENTORC_TIMEOUT_SEC", "300"))
-            body = json.dumps({"model": "default", "stream": True,
-              "messages": [{"role": "user", "content": inp}]}).encode()
-            req = urllib.request.Request(f"{base_url}/chat/completions", data=body,
-              headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"})
-            with urllib.request.urlopen(req, timeout=timeout) as r:
-              for line in r:
-                line = line.decode().strip()
-                if not line.startswith("data: "): continue
-                data = line[6:]
-                if data == "[DONE]": break
-                chunk = json.loads(data)
-                choices = chunk.get("choices", [])
-                if not choices: continue
-                content = choices[0].get("delta", {}).get("content", "")
-                if content: print(content, end="", flush=True)
-            print()
       memory:
         checkpointEvery: 1
       resources:
@@ -244,7 +183,6 @@ agent-orc-resources:
         limits:
           cpu: 200m
           memory: 128Mi
-
     # Orchestrator: the user-facing chat agent. Receives the raw alert, calls
     # soc-enricher and soc-risk-assessor as tools, uses _clarify to get human
     # approval on HIGH/CRITICAL actions, then outputs the final incident report.
@@ -308,62 +246,8 @@ agent-orc-resources:
         - soc-apps-render-incident-report
       runtime:
         inputMode: http
-        ociRef: "python:3.12-slim"
+        ociRef: "ghcr.io/agentorc/agent-orc/openai-reference:latest"
         framework: openai-compatible
-        command: ["python3", "-c"]
-        args:
-          - |
-            import json, os, urllib.request
-            from http.server import BaseHTTPRequestHandler, HTTPServer
-
-            base_url = os.environ.get("OPENAI_BASE_URL", "http://localhost:8080")
-            api_key   = os.environ.get("OPENAI_API_KEY", "unused")
-
-            class Handler(BaseHTTPRequestHandler):
-                def log_message(self, *a): pass
-                def do_GET(self):
-                    if self.path == "/healthz":
-                        self.send_response(200); self.end_headers(); self.wfile.write(b"ok")
-                    else:
-                        self.send_response(404); self.end_headers()
-                def do_POST(self):
-                    if self.path != "/invoke":
-                        self.send_response(404); self.end_headers(); return
-                    body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
-                    inp = body.get("input", "")
-                    # Use streaming so the socket stays alive during multi-agent tool calls.
-                    # The model-router proxies SSE chunks in real-time; the only silent windows
-                    # are individual tool executions (~60-90s each), well under the 300s idle timeout.
-                    req_body = json.dumps({"model": "default", "stream": True,
-                        "messages": [{"role": "user", "content": inp}]}).encode()
-                    req = urllib.request.Request(f"{base_url}/chat/completions",
-                        data=req_body, headers={"Content-Type": "application/json",
-                        "Authorization": f"Bearer {api_key}"})
-                    output = ""
-                    with urllib.request.urlopen(req, timeout=300) as r:
-                        for line in r:
-                            line = line.decode().strip()
-                            if not line.startswith("data: "): continue
-                            data = line[6:]
-                            if data == "[DONE]": break
-                            try:
-                                chunk = json.loads(data)
-                            except json.JSONDecodeError:
-                                continue
-                            choices = chunk.get("choices", [])
-                            if not choices: continue
-                            content = choices[0].get("delta", {}).get("content") or ""
-                            output += content
-                    payload = json.dumps({"output": output}).encode()
-                    self.send_response(200)
-                    self.send_header("Content-Type", "application/json")
-                    self.send_header("Content-Length", str(len(payload)))
-                    self.end_headers()
-                    self.wfile.write(payload)
-
-            port = int(os.environ.get("PORT", "8000"))
-            print(f"soc-orchestrator listening on :{port}", flush=True)
-            HTTPServer(("", port), Handler).serve_forever()
       memory:
         checkpointEvery: 1
         resumeWindowSeconds: 3600
@@ -374,9 +258,7 @@ agent-orc-resources:
         limits:
           cpu: 200m
           memory: 128Mi
-
   # ── AgentDeployments ─────────────────────────────────────────────────────────
-
   agentDeployments:
     # Chat with the SOC orchestrator at:
     #   POST /api/deployments/agent-orc-system/soc-triage/execute
@@ -390,9 +272,7 @@ agent-orc-resources:
         minBackoffSeconds: 5
         maxBackoffSeconds: 300
         maxConsecutiveFailures: 5
-
   # ── MCP Server Deployments ──────────────────────────────────────────────────
-
   mcpServerDeployments:
     - name: soc-apps-server
       fileName: server.py

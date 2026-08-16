@@ -9,6 +9,27 @@ build:
     before: &ensure_kind_build_before
       - command: ["bash", "hack/ensure-kind-cluster.sh"]
         os: [darwin, linux]
+    # Build the reference agent image (ghcr.io/agentorc/agent-orc/openai-reference)
+    # and load it into the kind cluster as `:latest`, so the demos and
+    # hack/test-agents.sh (which pin ociRef => …/openai-reference:latest) resolve
+    # locally — just like the operator/router/ui images, minus the global SHA tag.
+    # Skip-if-present keeps the dev loop fast; non-fatal so a docker/kind hiccup
+    # never breaks `skaffold dev`. Delete the local `:latest` tag to force a rebuild
+    # after changing examples/agent-sdk-template/agent.py.
+    after:
+      - command:
+          - bash
+          - -c
+          - |
+            if command -v kind >/dev/null 2>&1 && ! docker image inspect ghcr.io/agentorc/agent-orc/openai-reference:latest >/dev/null 2>&1; then
+              echo "building reference agent image (openai-reference:latest)…"
+              docker build -t ghcr.io/agentorc/agent-orc/openai-reference:latest -f examples/agent-sdk-template/Dockerfile . \
+                && kind load docker-image ghcr.io/agentorc/agent-orc/openai-reference:latest --name agent-orc-dev \
+                || echo "warning: reference agent image build/load failed (non-fatal); demos will pull :latest from GHCR if online"
+            else
+              echo "reference agent image present locally (openai-reference:latest) — skipping build"
+            fi
+        os: [darwin, linux]
   artifacts:
     - image: agent-orc/operator
       context: .
@@ -26,6 +47,12 @@ build:
       context: .
       docker:
         dockerfile: Dockerfile.mcp-ingester
+    # NOTE: the reference agent image (ghcr.io/agentorc/agent-orc/openai-reference)
+    # is NOT built here because skaffold's tagPolicy is global (sha256) and the
+    # demo charts / hack/test-agents.sh pin it to `:latest`. Build it locally and
+    # load into kind once (see docs/development.md), or `skaffold run -p dev` will
+    # pull `:latest` from ghcr (public). This keeps the operator/router/ui tagging
+    # scheme unchanged.
     # - image: agent-orc/demo-agent
     #   context: .
     #   docker:

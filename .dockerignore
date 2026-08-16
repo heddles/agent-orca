@@ -21,3 +21,10 @@
 !ui/index.html
 !ui/src
 !ui/src/**
+
+# Reference agent image (examples/agent-sdk-template/Dockerfile) needs the Python SDK
+# and the template entrypoint. Selectively re-include them (base context is `**`).
+!pkg/python/agentorc
+!pkg/python/agentorc/**
+!examples/agent-sdk-template
+!examples/agent-sdk-template/**

@@ -14,7 +14,6 @@
 #   AGENT_ORC_POOLSIDE_API_KEY, AGENT_ORC_HTB_OVPN_CONFIG, AGENT_ORC_HTB_OVPN_ENDPOINT
 
 nameOverride: ""
-
 # pwnbox image (the privileged MCP-toolbelt host). Built by the skaffold profile.
 # Default = slim (python:3.12-slim + openvpn/nmap/impacket/nuclei, ~1.5GB, kind-friendly).
 # Full blackcart toolbelt: build files/Dockerfile.pwnbox.blackcart and set tag: blackcart.
@@ -29,7 +28,6 @@ pwnbox:
   # EXPLOIT_DIR is fixed at /tmp/exploits (seeded by entrypoint.sh). EXPLOIT_FETCH_ALLOWLIST
   # is driven by pwnboxEgress.exploitFetchAllowlist (see below) — single source of truth.
   env: []
-
   # Persistent exploit workspace. When enabled, a PVC is mounted at EXPLOIT_DIR
   # (/tmp/exploits) so downloaded payloads, Sliver implants, enum/searchsploit
   # caches, and authored exploit code survive pwnbox pod restarts instead of being
@@ -40,19 +38,16 @@ pwnbox:
     size: 8Gi
     # storageClassName to use for the PVC; empty = cluster default.
     storageClass: ""
-
 namespace:
   name: red-team
-  create: false   # chart creates the namespace with the privilege opt-in label
-
+  create: false # chart creates the namespace with the privilege opt-in label
 agent-orc-resources:
   # ── ModelProviders / ModelSelectors (Poolside) ───────────────────────────────
   providerSecrets:
     - name: poolside-api-key
       enabled: true
-      apiKey: ""            # ps-... ; set via AGENT_ORC_POOLSIDE_API_KEY
+      apiKey: "" # ps-... ; set via AGENT_ORC_POOLSIDE_API_KEY
       existingSecret: ""
-
   modelProviders:
     - name: poolside-pwnbox
       enabled: true
@@ -67,13 +62,11 @@ agent-orc-resources:
         contextWindow: 262144
         maxOutputTokens: 131072
         maxRequestTokens: 0
-
   modelSelectors:
     - name: poolside-strategist
       strategy: rule-based
       providers: [{name: poolside-pwnbox, weight: 100}]
-      budgetCap: { perRun: "1.00", perDay: "25.00" }
-
+      budgetCap: {perRun: "1.00", perDay: "25.00"}
   # ── GuardrailPolicy: bounds on the red-commander agent ────────────────────────
   # The agent stays restricted; this guardrail keeps its LLM output in-bounds (no real
   # cloud endpoints / secret leakage). The pwnbox pod itself is network-isolated by its NP.
@@ -85,19 +78,18 @@ agent-orc-resources:
             type: regex
             action: redact
             patterns:
-              - { name: aws,  pattern: '(?i)https?://[a-z0-9.-]*\.amazonaws\.com/.*', replacement: "[REDACTED-ENDPOINT]" }
-              - { name: gcp,  pattern: '(?i)https?://[a-z0-9.-]*\.googleapis\.com/.*', replacement: "[REDACTED-ENDPOINT]" }
-              - { name: azure, pattern: '(?i)https?://[a-z0-9.-]*\.azure-api\.com/.*', replacement: "[REDACTED-ENDPOINT]" }
+              - {name: aws, pattern: '(?i)https?://[a-z0-9.-]*\.amazonaws\.com/.*', replacement: "[REDACTED-ENDPOINT]"}
+              - {name: gcp, pattern: '(?i)https?://[a-z0-9.-]*\.googleapis\.com/.*', replacement: "[REDACTED-ENDPOINT]"}
+              - {name: azure, pattern: '(?i)https?://[a-z0-9.-]*\.azure-api\.com/.*', replacement: "[REDACTED-ENDPOINT]"}
           - name: block-secret-leak
             type: regex
             action: block
             patterns:
-              - { name: aws-key,      pattern: '(?i)AKIA[0-9A-Z]{16}' }
-              - { name: poolside-key, pattern: '(?i)ps-[a-z0-9]{32}' }
-              - { name: openai-key,   pattern: '(?i)sk-[a-zA-Z0-9]{20,}' }
+              - {name: aws-key, pattern: '(?i)AKIA[0-9A-Z]{16}'}
+              - {name: poolside-key, pattern: '(?i)ps-[a-z0-9]{32}'}
+              - {name: openai-key, pattern: '(?i)sk-[a-zA-Z0-9]{20,}'}
         formatValidation:
           maxTokens: 4096
-
   # ── MCPServer: exposes the red-pwnbox toolbelt to the agent ────────────────────
   # The controller auto-creates child Tool CRs named red-pwnbox-mcp-<tool>.
   mcpServers:
@@ -108,60 +100,59 @@ agent-orc-resources:
       # networkEgress is applied to AGENTRUN pods (the deployment's egress is covered by
       # templates/agent-egress-networkpolicy.yaml).
       networkEgress:
-        - { host: red-pwnbox, port: 8080, protocol: TCP }
+        - {host: red-pwnbox, port: 8080, protocol: TCP}
       tools:
         # ── original 4 (recon/scan/enum/submit) ─────────────────────────────
-        - { name: probe-target,    description: "nmap service/version scan of an HTB lab target over tun0." }
-        - { name: enum-shares,     description: "enum4linux-ng enumeration of an HTB target (SMB/users/shares)." }
-        - { name: shell-exploit,   description: "Run an nmap NSE exploit script against an HTB target." }
-        - { name: submit-findings, description: "Record a captured flag/finding to stdout (+ Redis if configured)." }
+        - {name: probe-target, description: "nmap service/version scan of an HTB lab target over tun0."}
+        - {name: enum-shares, description: "enum4linux-ng enumeration of an HTB target (SMB/users/shares)."}
+        - {name: shell-exploit, description: "Run an nmap NSE exploit script against an HTB target."}
+        - {name: submit-findings, description: "Record a captured flag/finding to stdout (+ Redis if configured)."}
         # ── RECON / OSINT ──────────────────────────────────────────────────
-        - { name: masscan-scan,      description: "High-speed SYN port scan of an HTB target subnet (`--rate` kept low)." }
-        - { name: rustscan-fast,     description: "Fast recon: quick port grab then nmap -sV on a single host." }
-        - { name: subfinder-enum,    description: "Subdomain discovery for a target domain (needs DNS egress)." }
-        - { name: httpx-probe,       description: "Probe hosts/domains for live HTTP servers, titles, tech." }
-        - { name: nuclei-scan,       description: "Template-based vuln scan (cves/misconfig/exposures) of a URL/CIDR." }
-        - { name: amass-enum,        description: "OSINT subdomain enumeration (passive) for a domain." }
-        - { name: feroxbuster,       description: "Force-directed directory/file fuzzing against a URL." }
-        - { name: whatweb-fingerprint, description: "Web technology fingerprint of a URL (CMS/plugins/headers)." }
+        - {name: masscan-scan, description: "High-speed SYN port scan of an HTB target subnet (`--rate` kept low)."}
+        - {name: rustscan-fast, description: "Fast recon: quick port grab then nmap -sV on a single host."}
+        - {name: subfinder-enum, description: "Subdomain discovery for a target domain (needs DNS egress)."}
+        - {name: httpx-probe, description: "Probe hosts/domains for live HTTP servers, titles, tech."}
+        - {name: nuclei-scan, description: "Template-based vuln scan (cves/misconfig/exposures) of a URL/CIDR."}
+        - {name: amass-enum, description: "OSINT subdomain enumeration (passive) for a domain."}
+        - {name: feroxbuster, description: "Force-directed directory/file fuzzing against a URL."}
+        - {name: whatweb-fingerprint, description: "Web technology fingerprint of a URL (CMS/plugins/headers)."}
         # ── WEB VULN ───────────────────────────────────────────────────────
-        - { name: ffuf-fuzz,        description: "Web fuzzing (dirs/params/vhosts) with a FUZZ placeholder URL." }
-        - { name: sqlmap-inject,    description: "SQLi detection & light exploitation (--batch, level 3 capped)." }
-        - { name: nikto-scan,       description: "Web server scanner for common misconfigs/CGI/plugins." }
-        - { name: wpscan-analyze,   description: "WordPress security scan (users/plugins/themes/config leaks)." }
-        - { name: commix-inject,    description: "Automated command-injection detection/exploitation (OWASP commix)." }
-        - { name: xsstrike-scan,    description: "XSS detection & payload analysis (XSStrike)." }
+        - {name: ffuf-fuzz, description: "Web fuzzing (dirs/params/vhosts) with a FUZZ placeholder URL."}
+        - {name: sqlmap-inject, description: "SQLi detection & light exploitation (--batch, level 3 capped)."}
+        - {name: nikto-scan, description: "Web server scanner for common misconfigs/CGI/plugins."}
+        - {name: wpscan-analyze, description: "WordPress security scan (users/plugins/themes/config leaks)."}
+        - {name: commix-inject, description: "Automated command-injection detection/exploitation (OWASP commix)."}
+        - {name: xsstrike-scan, description: "XSS detection & payload analysis (XSStrike)."}
         # ── EXPLOITATION ───────────────────────────────────────────────────
-        - { name: searchsploit-lookup, description: "Search the local ExploitDB for a product/CVE term." }
-        - { name: fetch-exploit, description: "Download an exploit by Exploit-DB query or allowlisted URL into the /tmp/exploits sandbox; returns its path." }
-        - { name: run-exploit, description: "Execute agent-authored Python/Bash/Ruby/Perl exploit code in the /tmp/exploits sandbox against a lab target (default 300s, cap 3600s)." }
-        - { name: msfvenom-payload,   description: "Generate a payload with msfvenom (meterpreter/reverse shell)." }
-        - { name: metasploit-exploit, description: "Run an msfconsole exploit module via a generated resource script." }
-        - { name: hydra-brute,        description: "Hydra brute-force (newline user/pass lists, low rate)." }
-        - { name: john-crack,         description: "Crack hashes with john the ripper using a wordlist." }
+        - {name: searchsploit-lookup, description: "Search the local ExploitDB for a product/CVE term."}
+        - {name: fetch-exploit, description: "Download an exploit by Exploit-DB query or allowlisted URL into the /tmp/exploits sandbox; returns its path."}
+        - {name: run-exploit, description: "Execute agent-authored Python/Bash/Ruby/Perl exploit code in the /tmp/exploits sandbox against a lab target (default 300s, cap 3600s)."}
+        - {name: msfvenom-payload, description: "Generate a payload with msfvenom (meterpreter/reverse shell)."}
+        - {name: metasploit-exploit, description: "Run an msfconsole exploit module via a generated resource script."}
+        - {name: hydra-brute, description: "Hydra brute-force (newline user/pass lists, low rate)."}
+        - {name: john-crack, description: "Crack hashes with john the ripper using a wordlist."}
         # ── NETWORK / AD ───────────────────────────────────────────────────
-        - { name: netexec-scan,       description: "NetExec enumeration of a protocol/target (pass module names)." }
-        - { name: rpcclient-enum,     description: "rpcclient null-session enumeration (users/shares)." }
-        - { name: smbmap-scan,        description: "smbmap share/permission enumeration of a target." }
-        - { name: bloodhound-collect, description: "Collect AD data (SharpHound/bloodhound-python) for graph analysis." }
+        - {name: netexec-scan, description: "NetExec enumeration of a protocol/target (pass module names)."}
+        - {name: rpcclient-enum, description: "rpcclient null-session enumeration (users/shares)."}
+        - {name: smbmap-scan, description: "smbmap share/permission enumeration of a target."}
+        - {name: bloodhound-collect, description: "Collect AD data (SharpHound/bloodhound-python) for graph analysis."}
         # ── CLOUD / IaC ────────────────────────────────────────────────────
-        - { name: trivy-scan,         description: "Trivy vuln/misconfig scan of a filesystem path or OCI image ref." }
-        - { name: checkov-iac,        description: "Checkov IaC scan for cloud misconfigurations." }
+        - {name: trivy-scan, description: "Trivy vuln/misconfig scan of a filesystem path or OCI image ref."}
+        - {name: checkov-iac, description: "Checkov IaC scan for cloud misconfigurations."}
         # ── FORENSICS / SECRETS ────────────────────────────────────────────
-        - { name: gitleaks-scan,      description: "gitleaks scan for secrets/creds in a repo path." }
-        - { name: volatility-analyze, description: "Volatility3 plugin run against a memory image (e.g. pslist)." }
-        - { name: yara-scan,          description: "YARA rule scan of a file/dir." }
-        - { name: binwalk-analyze,    description: "binwalk firmware signature scan (+ optional extraction)." }
+        - {name: gitleaks-scan, description: "gitleaks scan for secrets/creds in a repo path."}
+        - {name: volatility-analyze, description: "Volatility3 plugin run against a memory image (e.g. pslist)."}
+        - {name: yara-scan, description: "YARA rule scan of a file/dir."}
+        - {name: binwalk-analyze, description: "binwalk firmware signature scan (+ optional extraction)."}
         # ── SESSION / TCP ─────────────────────────────────────────────────
-        - { name: tcp-connect, description: "One-shot raw TCP (or TLS) connect/send/read/close. For C2 probes / custom protocols with no HTTP wrapper; tun0 not required." }
-        - { name: tmux-new,    description: "Create a detached persistent session (shell by default) that survives across MCP calls — for Sliver TUI, ncat C2 relays, interactive shells." }
-        - { name: tmux-send,   description: "Inject keystrokes into a tmux session created by tmux-new." }
-        - { name: tmux-recv,   description: "Return recent scrollback of a tmux session as a string (default 50 lines)." }
-        - { name: tmux-kill,   description: "Terminate a persistent tmux session (idempotent)." }
+        - {name: tcp-connect, description: "One-shot raw TCP (or TLS) connect/send/read/close. For C2 probes / custom protocols with no HTTP wrapper; tun0 not required."}
+        - {name: tmux-new, description: "Create a detached persistent session (shell by default) that survives across MCP calls — for Sliver TUI, ncat C2 relays, interactive shells."}
+        - {name: tmux-send, description: "Inject keystrokes into a tmux session created by tmux-new."}
+        - {name: tmux-recv, description: "Return recent scrollback of a tmux session as a string (default 50 lines)."}
+        - {name: tmux-kill, description: "Terminate a persistent tmux session (idempotent)."}
       resources:
-        requests: { cpu: "250m", memory: 128Mi }
-        limits:   { cpu: "1", memory: 512Mi }
-
+        requests: {cpu: "250m", memory: 128Mi}
+        limits: {cpu: "1", memory: 512Mi}
   # ── KnowledgeBase: offensive TTP runbooks (RAG) ──────────────────────────────
   # knowledgeBases:
   #   - name: red-tactics
@@ -184,7 +175,7 @@ agent-orc-resources:
     - name: red-commander-agent
       modelSelectorRef: poolside-strategist
       guardrailPolicyRef: red-pwnbox-guard
-      disableClarify: true            # fully autonomous — never blocks on a human
+      disableClarify: true # fully autonomous — never blocks on a human
       # knowledgeBases: [red-tactics]
       tools:
         # ── Original (scan / enum / NSE exploit / submit) ──
@@ -299,57 +290,17 @@ agent-orc-resources:
             ⇒ searchsploit/ExploitDB only). run-exploit writes only to /tmp/exploits.
           - Do NOT brute-force real internet services; keep wordlists small and rates low.
       runtime:
-        ociRef: "python:3.12-slim"
+        ociRef: "ghcr.io/agentorc/agent-orc/openai-reference:latest"
         framework: openai-compatible
         inputMode: http
-        command: ["python3", "-c"]
-        args:
-          - |
-            import json,os,urllib.request
-            from http.server import BaseHTTPRequestHandler,HTTPServer
-            base=os.environ.get("OPENAI_BASE_URL","http://localhost:8080")
-            key=os.environ.get("OPENAI_API_KEY","unused"); port=int(os.environ.get("PORT","8000"))
-            class H(BaseHTTPRequestHandler):
-                def log_message(self,*a): pass
-                def do_GET(self):
-                    if self.path=="/healthz":
-                        self.send_response(200);self.end_headers();self.wfile.write(b"ok")
-                    else: self.send_response(404);self.end_headers()
-                def do_POST(self):
-                    if self.path!="/invoke":
-                        self.send_response(404);self.end_headers();return
-                    b=json.loads(self.rfile.read(int(self.headers.get("Content-Length",0))))
-                    msgs=[{"role":"user","content":b.get("input","")}]
-                    body=json.dumps({"model":"default","stream":True,"messages":msgs}).encode()
-                    req=urllib.request.Request(f"{base}/chat/completions",data=body,headers={"Content-Type":"application/json","Authorization":f"Bearer {key}"})
-                    out=""
-                    with urllib.request.urlopen(req,timeout=300) as r:
-                        for line in r:
-                            line=line.decode().strip()
-                            if not line.startswith("data: "): continue
-                            d=line[6:]
-                            if d=="[DONE]": break
-                            try: c=json.loads(d)
-                            except: continue
-                            ch=c.get("choices",[])
-                            if not ch: continue
-                            t=ch[0].get("delta",{}).get("content","")
-                            if t: out+=t; print(t,end="",flush=True)
-                        print()
-                    p=json.dumps({"output":out}).encode()
-                    self.send_response(200);self.send_header("Content-Type","application/json")
-                    self.send_header("Content-Length",str(len(p)));self.end_headers();self.wfile.write(p)
-            print(f"red-commander listening on :{port}",flush=True)
-            HTTPServer(("",port),H).serve_forever()
       resources:
-        requests: { cpu: 50m, memory: 64Mi }
-        limits:   { cpu: 200m, memory: 128Mi }
-
+        requests: {cpu: 50m, memory: 64Mi}
+        limits: {cpu: 200m, memory: 128Mi}
   # ── Long-running deployment (chat: warm pool, stays up) ───────────────────────
   agentDeployments:
     - name: red-commander
       agentRef: red-commander-agent
-      inputSource: { type: chat }
+      inputSource: {type: chat}
       replicas: 1
       warmPoolSize: 1
       warmPodMaxAge: 0
@@ -364,26 +315,23 @@ agent-orc-resources:
       # Sliver sessions / interactive shells hold for minutes. The 60s model-router
       # tool cap kills them mid-session; give this red-team deployment a 1h ceiling.
       toolExecutionTimeoutSec: 3600
-      restartPolicy: { minBackoffSeconds: 5, maxBackoffSeconds: 300, maxConsecutiveFailures: 5 }
-
+      restartPolicy: {minBackoffSeconds: 5, maxBackoffSeconds: 300, maxConsecutiveFailures: 5}
 # ── HTB OpenVPN (consumed by the pwnbox Deployment) ────────────────────────────
 openvpn:
-  fileName: htbea.ovpn       # key in Secret htb-ovpn; mounted at /etc/htb by the pwnbox pod
-  endpoint: ""               # e.g. "nl.free.hackthebox.com:1194" — drives the pwnbox egress NP
+  fileName: htbea.ovpn # key in Secret htb-ovpn; mounted at /etc/htb by the pwnbox pod
+  endpoint: "" # e.g. "nl.free.hackthebox.com:1194" — drives the pwnbox egress NP
   protocol: udp
   port: 1194
-  createSecret: true         # set false and `kubectl create secret htb-ovpn --from-file=...`
-  ovpnConfig: ""             # set via AGENT_ORC_HTB_OVPN_CONFIG, or create the secret yourself
-
+  createSecret: true # set false and `kubectl create secret htb-ovpn --from-file=...`
+  ovpnConfig: "" # set via AGENT_ORC_HTB_OVPN_CONFIG, or create the secret yourself
 # ── Pwnbox egress toggles (deny-by-default) ────────────────────────────────────
 # The pwnbox egress NetworkPolicy is deny-by-default except for: DNS, the HTB VPN
 # endpoint, and TCP 443. Enabling internetRecon.internetRecon opens explicit external
 # hosts used by TI/template/wordlist tooling — NEVER scopes to real infra, only OTX/VT/
 # Shodan/etc. Set via AGENT_ORC_* env in the skaffold profile; default false.
 pwnboxEgress:
-  internetRecon: false        # true -> allow Shodan/OTX/VT/Censys:443 + nuclei templates defrag
-  exploitFetchAllowlist: ""   # hosts fetch-exploit may curl (see pwnbox.env.EXPLOIT_FETCH_ALLOWLIST)
-
+  internetRecon: false # true -> allow Shodan/OTX/VT/Censys:443 + nuclei templates defrag
+  exploitFetchAllowlist: "" # hosts fetch-exploit may curl (see pwnbox.env.EXPLOIT_FETCH_ALLOWLIST)
 # ── Redis (checkpoint state + pwnbox findings stream) ─────────────────────────
 # The operator chart deploys Redis as a Service named "<release>-redis-master"
 # (release "agent-orc" => "agent-orc-redis-master") in the system namespace.
@@ -401,7 +349,6 @@ redis:
   # skaffold profile (sets both redis.auth.password on agent-orc and redis.password
   # here). Provide it via env, never commit a real one.
   password: ""
-
 # ── Cluster / operator reference (for egress NetworkPolicies) ──────────────────
 cluster:
   systemNamespace: agent-orc-system

@@ -1,14 +1,11 @@
 nameOverride: ""
-
 agent-orc-resources:
-
   # ── MCPServers ────────────────────────────────────────────────────────────────
   #
   # financial-mcp: in-cluster HTTP MCP server with allowApps: true.
   # Exposes forecast-impact and fetch-market-context. forecast-impact declares
   # _meta.ui.resourceUri so the agent-orc UI renders an interactive Canvas-based
   # dashboard with sliders for adjusting assumptions and live recalculation.
-
   mcpServers:
     - name: financial-mcp
       transport: http
@@ -23,14 +20,12 @@ agent-orc-resources:
       tools:
         - name: forecast-impact
           description: >
-            Run a multi-factor financial impact forecast for a scenario. Returns projected
-            price trajectories with confidence intervals for correlated assets over 1-10 years,
-            plus factor sensitivity data. The UI renders an interactive dashboard with sliders
-            to adjust assumptions and see live recalculations.
+            Run a multi-factor financial impact forecast for a scenario. Returns projected price trajectories with confidence intervals for correlated assets over 1-10 years, plus factor sensitivity data. The UI renders an interactive dashboard with sliders to adjust assumptions and see live recalculations.
+
         - name: fetch-market-context
           description: >
-            Fetch current market baseline data (price, 52-week range, volatility, trend) for
-            a list of commodities or assets. Use this before forecast-impact to establish baselines.
+            Fetch current market baseline data (price, 52-week range, volatility, trend) for a list of commodities or assets. Use this before forecast-impact to establish baselines.
+
       resources:
         requests:
           cpu: 50m
@@ -38,12 +33,10 @@ agent-orc-resources:
         limits:
           cpu: 200m
           memory: 128Mi
-
   # ── KnowledgeBases ──────────────────────────────────────────────────────────
   #
   # Requires: 'embeddings' ModelSelector already deployed (agent-orc-resources).
   # The financial planning content ConfigMap is created by kb-configmap.yaml.
-
   knowledgeBases:
     - name: financial-planning-kb
       description: "Commodity correlations, historical supply shock case studies, and macroeconomic factor relationships for long-range financial planning"
@@ -59,9 +52,7 @@ agent-orc-resources:
         configMapRefs:
           - name: financial-planning-kb-content
         syncIntervalSeconds: 3600
-
   # ── Agents ───────────────────────────────────────────────────────────────────
-
   agents:
     - name: financial-analyst
       modelSelectorRef: poolside
@@ -119,32 +110,8 @@ agent-orc-resources:
       knowledgeBases:
         - financial-planning-kb
       runtime:
-        ociRef: "python:3.12-slim"
+        ociRef: "ghcr.io/agentorc/agent-orc/openai-reference:latest"
         framework: openai-compatible
-        command: ["python3", "-c"]
-        args:
-          - |
-            import json, os, urllib.request
-            inp = os.environ.get("AGENTORC_INPUT", "")
-            base_url = os.environ.get("OPENAI_BASE_URL", "http://localhost:8080")
-            api_key = os.environ.get("OPENAI_API_KEY", "unused")
-            timeout = int(os.environ.get("AGENTORC_TIMEOUT_SEC", "300"))
-            body = json.dumps({"model": "default", "stream": True,
-              "messages": [{"role": "user", "content": inp}]}).encode()
-            req = urllib.request.Request(f"{base_url}/chat/completions", data=body,
-              headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"})
-            with urllib.request.urlopen(req, timeout=timeout) as r:
-              for line in r:
-                line = line.decode().strip()
-                if not line.startswith("data: "): continue
-                data = line[6:]
-                if data == "[DONE]": break
-                chunk = json.loads(data)
-                choices = chunk.get("choices", [])
-                if not choices: continue
-                content = choices[0].get("delta", {}).get("content", "")
-                if content: print(content, end="", flush=True)
-            print()
       memory:
         checkpointEvery: 1
       resources:
@@ -154,21 +121,17 @@ agent-orc-resources:
         limits:
           cpu: 200m
           memory: 128Mi
-
   # ── AgentDeployments ─────────────────────────────────────────────────────────
-
   agentDeployments:
     - name: financial-analysis-chat
       agentRef: financial-analyst
       inputSource:
         type: chat
-
   # ── MCP Server Deployments ──────────────────────────────────────────────────
   #
   # The financial MCP server is deployed as a standalone pod with the Python
   # script mounted from a ConfigMap. The library chart handles the Deployment,
   # Service, and ConfigMap creation.
-
   mcpServerDeployments:
     - name: financial-mcp-server
       fileName: server.py

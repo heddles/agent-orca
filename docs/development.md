@@ -250,6 +250,31 @@ helm uninstall demo-soc-triage -n agent-orc-system
 
 Each demo profile is documented in `skaffold.yaml` with its prerequisites.
 
+#### The reference agent image
+
+Demos and `hack/test-agents.sh` run agents from the openai reference image
+`ghcr.io/agentorc/agent-orc/openai-reference:latest` — a minimal OpenAI-compatible
+agent (the model-router injects the system prompt, tools, prior context, and built-in
+tool resolution, so the image itself is persona-free). `skaffold dev` builds and kind-loads
+this image as `:latest` automatically (a non-fatal build hook; Skaffold's tag policy is
+global SHA-256, so the reference image is built separately as `:latest` to match the demos'
+pin). It is also **published to GHCR (public, no credentials needed)** on every release, so
+`skaffold run -p demo-*` on its own, or production clusters, can pull it directly.
+
+To run demos offline, or before the image has been published to a release, build and load
+it into Kind once (this is also the command to force a rebuild after editing `agent.py`):
+
+```bash
+docker build -t ghcr.io/agentorc/agent-orc/openai-reference:latest \
+  -f examples/agent-sdk-template/Dockerfile .
+kind load docker-image ghcr.io/agentorc/agent-orc/openai-reference:latest --name agent-orc-dev
+```
+
+To run your own agent image instead, replace `ociRef` in the `Agent` manifest and set
+`systemPrompt`/`tools` on the `Agent` CR — see [agent-images.md](agent-images.md) for the
+full contract (framework tiers, injected env vars, built-in tools).
+
+
 ### Debugging
 
 ```bash

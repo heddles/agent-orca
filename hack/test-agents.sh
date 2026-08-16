@@ -106,26 +106,8 @@ spec:
   modelSelectorRef: default
   systemPrompt: "You are a helpful assistant. Answer concisely."
   runtime:
-    ociRef: "python:3.12-slim"
+    ociRef: "ghcr.io/agentorc/agent-orc/openai-reference:latest"
     framework: openai-compatible
-    command: ["python3", "-c"]
-    args:
-      - |
-        import json, os, urllib.request, sys
-        inp = os.environ.get("AGENTORC_INPUT", "hello")
-        api_key = os.environ.get("OPENAI_API_KEY", "unused")
-        try:
-          body = json.dumps({"model": "default", "messages": [{"role": "user", "content": inp}]}).encode()
-          req = urllib.request.Request("http://localhost:8080/v1/chat/completions", data=body, headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"})
-          with urllib.request.urlopen(req, timeout=5) as r:
-            resp = json.loads(r.read())
-          print(resp["choices"][0]["message"]["content"])
-        except urllib.error.HTTPError as e:
-          print(f"HTTP Error {e.code}: {e.reason}", file=sys.stderr)
-          sys.exit(1)
-        except Exception as e:
-          print(f"Error: {e}", file=sys.stderr)
-          sys.exit(1)
   resources:
     requests:
       cpu: 50m
