@@ -1,0 +1,386 @@
+/*
+Copyright 2026.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package apiserver
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+
+	"log/slog"
+
+	corev1 "k8s.io/api/core/v1"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
+)
+
+// tenantAuthModeIssued is the TenantConfig authMode value for issued JWTs.
+const tenantAuthModeIssued = "issued"
+
+// Admin API types (port 8084, /admin/*).
+
+// AdminRateLimit mirrors TenantRateLimit for the create request.
+type AdminRateLimit struct {
+	RequestsPerMinute int `json:"requestsPerMinute,omitempty"`
+	ConcurrentRuns    int `json:"concurrentRuns,omitempty"`
+}
+
+// AdminTenantCreateRequest is the body for POST /admin/tenants.
+type AdminTenantCreateRequest struct {
+	Name            string          `json:"name"`
+	TargetNamespace string          `json:"targetNamespace"`
+	ClientID        string          `json:"clientID"`
+	ClientSecret    string          `json:"clientSecret,omitempty"`
+	AllowedAgents   []string        `json:"allowedAgents,omitempty"`
+	RateLimit       *AdminRateLimit `json:"rateLimit,omitempty"`
+	BudgetPerDayUSD string          `json:"budgetPerDayUSD,omitempty"`
+}
+
+// AdminTenantResponse is the tenant representation returned to callers.
+// ClientSecret is included ONLY at create time (one-time disclosure).
+type AdminTenantResponse struct {
+	Name            string          `json:"name"`
+	Namespace       string          `json:"namespace"`
+	ClientID        string          `json:"clientID"`
+	ClientSecret    string          `json:"clientSecret,omitempty"`
+	TargetNamespace string          `json:"targetNamespace"`
+	AllowedAgents   []string        `json:"allowedAgents,omitempty"`
+	RateLimit       *AdminRateLimit `json:"rateLimit,omitempty"`
+	BudgetPerDayUSD string          `json:"budgetPerDayUSD,omitempty"`
+}
+
+// requireAdminAuth gates the /admin/* surface: the caller must present a valid
+// Kubernetes ServiceAccount token whose SA carries the
+// `agentorc.io/admin: "true"` label.
+func (s *ExternalAPIServer) requireAdminAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token := extractBearer(r)
+		if token == "" {
+			writeAuthFailureJSON(w, "missing Authorization header")
+			return
+		}
+		username, ok, err := s.reviewSAToken(r.Context(), token)
+		if err != nil {
+			slog.Warn("admin token review failed", "path", r.URL.Path, "err", err)
+			writeAuthFailureJSON(w, "unauthorized")
+			return
+		}
+		if !ok {
+			writeAuthFailureJSON(w, "unauthorized")
+			return
+		}
+		parts := strings.Split(username, ":")
+		if len(parts) != 4 || parts[0] != "system" || parts[1] != "serviceaccount" {
+			slog.Warn("admin SA username has unexpected shape", "username", username)
+			writeAuthFailureJSON(w, "unauthorized")
+			return
+		}
+		ns, saName := parts[2], parts[3]
+		allowed, err := s.isAdminSA(r.Context(), ns, saName)
+		if err != nil {
+			slog.Warn("admin SA check failed", "namespace", ns, "sa", saName, "err", err)
+			writeAuthFailureJSON(w, "unauthorized")
+			return
+		}
+		if !allowed {
+			http.Error(w, `{"error":"forbidden: ServiceAccount must carry the agentorc.io/admin=true label"}`, http.StatusForbidden)
+			return
+		}
+		// Stash the admin identity for downstream handlers (audit/logging).
+		r = r.WithContext(withAdminIdentity(r.Context(), adminIdentity{Namespace: ns, Name: saName}))
+		next.ServeHTTP(w, r)
+	})
+}
+
+// --- admin identity context ---
+
+type adminIdentity struct{ Namespace, Name string }
+
+type adminCtxKey struct{}
+
+func withAdminIdentity(ctx context.Context, id adminIdentity) context.Context {
+	return context.WithValue(ctx, adminCtxKey{}, id)
+}
+
+// AdminFromContext returns the authenticated admin SA identity, if any.
+func AdminFromContext(ctx context.Context) (adminIdentity, bool) {
+	id, ok := ctx.Value(adminCtxKey{}).(adminIdentity)
+	return id, ok
+}
+
+// --- route dispatch ---
+
+// handleAdminTenants dispatches GET (list) and POST (create) for /admin/tenants.
+func (s *ExternalAPIServer) handleAdminTenants(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.listTenants(w, r)
+	case http.MethodPost:
+		s.createTenant(w, r)
+	default:
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+	}
+}
+
+// handleAdminTenantByID dispatches /admin/tenants/{name} (GET/DELETE) and
+// /admin/tenants/{name}/rotate-secret (POST).
+func (s *ExternalAPIServer) handleAdminTenantByID(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/admin/tenants/")
+	name := path
+	action := ""
+	if before, after, ok := strings.Cut(path, "/"); ok {
+		name, action = before, after
+	}
+	if name == "" {
+		http.Error(w, `{"error":"tenant name required"}`, http.StatusBadRequest)
+		return
+	}
+
+	switch {
+	case r.Method == http.MethodGet && action == "":
+		s.getTenant(w, r, name)
+	case r.Method == http.MethodDelete && action == "":
+		s.deleteTenant(w, r, name)
+	case r.Method == http.MethodPost && action == "rotate-secret":
+		s.rotateTenantSecret(w, r, name)
+	default:
+		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+	}
+}
+
+// --- handlers ---
+
+func (s *ExternalAPIServer) listTenants(w http.ResponseWriter, _ *http.Request) {
+	var list agentorcv1alpha1.TenantConfigList
+	if err := s.crdClient.List(context.Background(), &list); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"listing tenants: %s"}`, err), http.StatusInternalServerError)
+		return
+	}
+	out := make([]AdminTenantResponse, 0, len(list.Items))
+	for i := range list.Items {
+		out = append(out, tenantToResponse(&list.Items[i], ""))
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"tenants": out, "count": len(out)})
+}
+
+func (s *ExternalAPIServer) getTenant(w http.ResponseWriter, _ *http.Request, name string) {
+	var tc agentorcv1alpha1.TenantConfig
+	if err := s.crdClient.Get(context.Background(), client.ObjectKey{Name: name, Namespace: s.adminNamespace()}, &tc); err != nil {
+		code := http.StatusInternalServerError
+		if k8serrors.IsNotFound(err) {
+			code = http.StatusNotFound
+		}
+		http.Error(w, fmt.Sprintf(`{"error":"tenant %q not found: %s"}`, name, err), code)
+		return
+	}
+	writeJSON(w, http.StatusOK, tenantToResponse(&tc, ""))
+}
+
+func (s *ExternalAPIServer) createTenant(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		http.Error(w, `{"error":"reading body"}`, http.StatusBadRequest)
+		return
+	}
+	var req AdminTenantCreateRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"invalid JSON: %s"}`, err), http.StatusBadRequest)
+		return
+	}
+	if req.Name == "" || req.TargetNamespace == "" || req.ClientID == "" {
+		http.Error(w, `{"error":"name, targetNamespace, and clientID are required"}`, http.StatusBadRequest)
+		return
+	}
+
+	ns := s.adminNamespace()
+
+	// Ensure the client secret exists (create or update).
+	// Convention: <tenant-name>-client-secret in the admin namespace.
+	secretName := req.Name + "-client-secret"
+	secretVal := req.ClientSecret
+	if secretVal == "" {
+		secretVal, err = generateSecret()
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"generating secret: %s"}`, err), http.StatusInternalServerError)
+			return
+		}
+	}
+	if err := s.upsertSecret(r.Context(), ns, secretName, secretVal); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"persisting secret: %s"}`, err), http.StatusInternalServerError)
+		return
+	}
+
+	// Create the TenantConfig (idempotent: re-GET and report if it already exists).
+	tc := &agentorcv1alpha1.TenantConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: req.Name, Namespace: ns},
+		Spec: agentorcv1alpha1.TenantConfigSpec{
+			AuthMode: tenantAuthModeIssued,
+			Issued: &agentorcv1alpha1.IssuedAuthConfig{
+				ClientID: req.ClientID,
+				ClientSecretRef: agentorcv1alpha1.SecretKeyRef{
+					Name: secretName,
+					Key:  "client-secret",
+				},
+			},
+			TargetNamespace: req.TargetNamespace,
+			AllowedAgents:   req.AllowedAgents,
+			RateLimit:       toSpecRateLimit(req.RateLimit),
+			BudgetPerDayUSD: req.BudgetPerDayUSD,
+		},
+	}
+	if err := s.crdClient.Create(r.Context(), tc); err != nil && !k8serrors.IsAlreadyExists(err) {
+		http.Error(w, fmt.Sprintf(`{"error":"creating tenant: %s"}`, err), http.StatusInternalServerError)
+		return
+	}
+
+	slog.Info("admin created tenant", "name", req.Name, "namespace", ns,
+		"clientID", req.ClientID, "generatedSecret", req.ClientSecret == "")
+	writeJSON(w, http.StatusCreated, tenantToResponse(tc, secretVal))
+}
+
+func (s *ExternalAPIServer) rotateTenantSecret(w http.ResponseWriter, r *http.Request, name string) {
+	ctx := r.Context()
+	var tc agentorcv1alpha1.TenantConfig
+	if err := s.crdClient.Get(ctx, client.ObjectKey{Name: name, Namespace: s.adminNamespace()}, &tc); err != nil {
+		code := http.StatusInternalServerError
+		if k8serrors.IsNotFound(err) {
+			code = http.StatusNotFound
+		}
+		http.Error(w, fmt.Sprintf(`{"error":"tenant %q not found: %s"}`, name, err), code)
+		return
+	}
+	secretName := tc.Spec.Issued.ClientSecretRef.Name
+	if secretName == "" {
+		http.Error(w, `{"error":"tenant has no client secret to rotate"}`, http.StatusBadRequest)
+		return
+	}
+	newVal, err := generateSecret()
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"generating secret: %s"}`, err), http.StatusInternalServerError)
+		return
+	}
+	if err := s.upsertSecret(ctx, s.adminNamespace(), secretName, newVal); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"persisting secret: %s"}`, err), http.StatusInternalServerError)
+		return
+	}
+	slog.Info("admin rotated client secret", "tenant", name, "secret", secretName)
+	writeJSON(w, http.StatusOK, map[string]string{"clientSecret": newVal})
+}
+
+func (s *ExternalAPIServer) deleteTenant(w http.ResponseWriter, r *http.Request, name string) {
+	ctx := r.Context()
+	var tc agentorcv1alpha1.TenantConfig
+	if err := s.crdClient.Get(ctx, client.ObjectKey{Name: name, Namespace: s.adminNamespace()}, &tc); err != nil {
+		code := http.StatusInternalServerError
+		if k8serrors.IsNotFound(err) {
+			code = http.StatusNotFound
+		}
+		http.Error(w, fmt.Sprintf(`{"error":"tenant %q not found: %s"}`, name, err), code)
+		return
+	}
+	// Delete the client secret if it is managed by this tenant.
+	if tc.Spec.Issued != nil && tc.Spec.Issued.ClientSecretRef.Name != "" {
+		secKey := client.ObjectKey{Name: tc.Spec.Issued.ClientSecretRef.Name, Namespace: s.adminNamespace()}
+		_ = s.crdClient.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: secKey.Name, Namespace: secKey.Namespace}})
+	}
+	if err := s.crdClient.Delete(ctx, &tc); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"deleting tenant: %s"}`, err), http.StatusInternalServerError)
+		return
+	}
+	slog.Info("admin deleted tenant", "name", name)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// upsertSecret creates or updates the described client-secret value.
+func (s *ExternalAPIServer) upsertSecret(ctx context.Context, namespace, name, value string) error {
+	sec := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Data:       map[string][]byte{"client-secret": []byte(value)},
+	}
+	if err := s.crdClient.Create(ctx, sec); err != nil {
+		if !k8serrors.IsAlreadyExists(err) {
+			return err
+		}
+		// Update the existing secret's data.
+		existing := &corev1.Secret{}
+		if err := s.crdClient.Get(ctx, client.ObjectKey{Name: name, Namespace: namespace}, existing); err != nil {
+			return err
+		}
+		patch := client.MergeFrom(existing.DeepCopy())
+		existing.Data = map[string][]byte{"client-secret": []byte(value)}
+		return s.crdClient.Patch(ctx, existing, patch)
+	}
+	return nil
+}
+
+// tenantToResponse converts a TenantConfig into the admin response. If secret is
+// non-empty it is included (create/rotate); otherwise it is omitted.
+func tenantToResponse(tc *agentorcv1alpha1.TenantConfig, secret string) AdminTenantResponse {
+	resp := AdminTenantResponse{
+		Name:            tc.Name,
+		Namespace:       tc.Namespace,
+		TargetNamespace: tc.Spec.TargetNamespace,
+		AllowedAgents:   tc.Spec.AllowedAgents,
+		BudgetPerDayUSD: tc.Spec.BudgetPerDayUSD,
+	}
+	if tc.Spec.Issued != nil {
+		resp.ClientID = tc.Spec.Issued.ClientID
+	}
+	if rl := tc.Spec.RateLimit; rl != nil {
+		resp.RateLimit = &AdminRateLimit{RequestsPerMinute: rl.RequestsPerMinute, ConcurrentRuns: rl.ConcurrentRuns}
+	}
+	if secret != "" {
+		resp.ClientSecret = secret
+	}
+	return resp
+}
+
+// toSpecRateLimit nil-maps to nil (omitted).
+func toSpecRateLimit(rl *AdminRateLimit) *agentorcv1alpha1.TenantRateLimit {
+	if rl == nil {
+		return nil
+	}
+	return &agentorcv1alpha1.TenantRateLimit{RequestsPerMinute: rl.RequestsPerMinute, ConcurrentRuns: rl.ConcurrentRuns}
+}
+
+// generateSecret returns a URL-safe random secret (32 bytes of entropy).
+func generateSecret() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+// writeJSON encodes v as JSON with the given status.
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+// Compile-time guard: the author assumed authv1 is needed for the documented
+// audience; keep the import referenced via a type alias check.

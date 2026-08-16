@@ -1,0 +1,39 @@
+apiVersion: v2
+name: demo-htb-pwn
+description: |
+  Hack The Box (HTB) autonomous pwnbox demo for agent-orc.
+
+  A single long-running red-team AgentDeployment (inputSource: loop) runs HTB's
+  OpenVPN client inside the agent container (granted NET_ADMIN + /dev/net/tun via
+  an opt-in PodSecurityOverride) and executes real pentest tooling (nmap/impacket)
+  over the tunnel. The agent is orchestrated by a Poolside LLM through the
+  model-router sidecar and publishes captured findings to the scoreboard Redis
+  stream via a local `submit_findings` tool.
+
+  SAFETY: this is offensive testing AGAINST HTB's authorised labs ONLY. The pod
+  runs with privileged=true and is scoped by:
+    - namespace label agentorc.io/enable-privileged-pods=true (gated by the Agent
+      admission webhook, fail-closed),
+    - a GuardrailPolicyRef on the Agent (content filtering),
+    - a dedicated egress NetworkPolicy allowing ONLY the HTB VPN endpoint,
+      api.poolsi.de, cluster DNS/Redis/K8s-API (deny-by-default elsewhere).
+
+  Requires: agent-orc operator + a Poolside API key (from the model-providers
+  chart or a pre-existing `poolside-api-key` Secret). See README.md.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - demo
+  - agents
+  - security
+  - pentest
+  - hack-the-box
+  - red-team
+  - privileged
+  - openvpn
+  - ctf
+dependencies:
+  - name: agent-orc-resources
+    version: "0.2.0"
+    repository: "file://../../agent-orc-resources"

@@ -1,3 +1,19 @@
+/*
+Copyright 2026.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package executor
 
 import (
@@ -53,7 +69,8 @@ func newFakeStore() *fakeStore {
 
 // setChildChan registers the channel that TailTokens returns for a given key prefix.
 // Tests call this before triggering the executor to inject tokens into the child stream.
-func (f *fakeStore) setChildChan(key string, ch chan string) {
+func (f *fakeStore) setChildChan(key string, ch chan string) { //nolint:unused
+
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.tailChans[key] = ch
@@ -139,11 +156,15 @@ func (f *fakeStore) SaveKV(_ context.Context, _, _ string, _ []byte, _ time.Dura
 func (f *fakeStore) LoadKV(_ context.Context, _, _ string) ([]byte, error) { return nil, nil }
 func (f *fakeStore) DeleteKV(_ context.Context, _, _ string) error         { return nil }
 func (f *fakeStore) ListKV(_ context.Context, _ string) ([]string, error)  { return nil, nil }
-func (f *fakeStore) SignalCancel(_ context.Context, _, _ string) error     { return nil }
+func (f *fakeStore) ListMessageKeys(_ context.Context, _ string) ([]string, error) {
+	return nil, nil
+}
+func (f *fakeStore) SignalCancel(_ context.Context, _, _ string) error { return nil }
 func (f *fakeStore) IsCancelled(_ context.Context, _, _ string) (bool, error) {
 	return false, nil
 }
-func (f *fakeStore) Close() error { return nil }
+func (f *fakeStore) Ping(_ context.Context) error { return nil }
+func (f *fakeStore) Close() error                 { return nil }
 
 var _ state.Store = (*fakeStore)(nil) // compile-time interface check
 
@@ -192,7 +213,7 @@ func tempSAToken(t GinkgoTInterface, token string) string {
 	_, err = f.WriteString(token)
 	Expect(err).NotTo(HaveOccurred())
 	_ = f.Close()
-	t.Cleanup(func() { os.Remove(f.Name()) })
+	t.Cleanup(func() { _ = os.Remove(f.Name()) })
 	return f.Name()
 }
 

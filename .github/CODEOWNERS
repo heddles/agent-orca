@@ -1,0 +1,42 @@
+# @floppyfish14 and @matthew-fisher are the owners of agent-orc.
+# More owners/helpers are added here as the maintainer team grows.
+
+* @floppyfish14
+
+# Default owners for files under api/ (CRD schemas) — reviewed by a maintainer.
+api/             @floppyfish14
+
+# internal/ controller + webhook logic.
+internal/controller/ @floppyfish14
+internal/webhook/    @floppyfish14
+
+# apiserver + routers (External Task API / ACP API).
+internal/apiserver/  @floppyfish14
+internal/router/     @floppyfish14
+
+# security + pod building.
+internal/security/   @floppyfish14
+internal/podbuilder/ @floppyfish14
+
+# CLI.
+cmd/aoctl/           @floppyfish14
+
+# Python SDK.
+pkg/python/          @floppyfish14
+
+# UI.
+ui/                  @floppyfish14
+
+# Charts / kustomize manifests.
+charts/              @floppyfish14
+config/              @floppyfish14
+
+# Docs + examples + hack scripts.
+docs/                @floppyfish14
+examples/            @floppyfish14
+hack/                @floppyfish14
+
+# Generated files (don't hand-edit; touch the source that generates them).
+api/*/zz_generated.*   @floppyfish14
+config/crd/bases/      @floppyfish14
+config/rbac/role.yaml  @floppyfish14

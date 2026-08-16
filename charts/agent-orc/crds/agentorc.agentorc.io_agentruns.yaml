@@ -75,6 +75,77 @@ spec:
                       fails.
                     type: string
                 type: object
+              egress:
+                description: |-
+                  Egress configures durable result delivery to an external message bus
+                  (Kafka, Pub/Sub, or Redis stream) on terminal phase. When set, the
+                  controller publishes the final TaskResponse to the configured sink.
+                  Independent of webhook callbacks — both can be configured simultaneously.
+                properties:
+                  address:
+                    description: |-
+                      Address is the Redis connection address (redis only).
+                      Example: "redis-master:6379"
+                    type: string
+                  brokers:
+                    description: |-
+                      Brokers is the list of broker addresses (kafka only).
+                      Example: ["kafka:9092"]
+                    items:
+                      type: string
+                    type: array
+                  key:
+                    description: |-
+                      Key is the partition key for the published message (kafka only).
+                      If empty, the run ID is used as the key.
+                    type: string
+                  projectID:
+                    description: ProjectID is the GCP project ID (pubsub only).
+                    type: string
+                  secretRef:
+                    description: |-
+                      SecretRef references a Secret containing connection credentials.
+                      The Secret must be in the same namespace as the AgentRun.
+                      For Kafka: key "sasl-username" and "sasl-password" (or "tls-cert"/"tls-key").
+                      For Pub/Sub: key "credentials" containing a service-account JSON blob.
+                      For Redis: key "password".
+                    properties:
+                      key:
+                        description: Key within the Secret.
+                        type: string
+                      name:
+                        description: Name of the Secret.
+                        type: string
+                      namespace:
+                        description: Namespace of the Secret. Defaults to the same
+                          namespace as the referencing resource.
+                        type: string
+                    required:
+                    - key
+                    - name
+                    type: object
+                  topic:
+                    description: |-
+                      Topic is the destination topic/queue/stream name.
+                      For Kafka: the topic name. For Pub/Sub: the topic name. For Redis: the stream name.
+                    minLength: 1
+                    type: string
+                  type:
+                    allOf:
+                    - enum:
+                      - kafka
+                      - pubsub
+                      - redis
+                    - enum:
+                      - kafka
+                      - pubsub
+                      - redis
+                    description: 'Type is the sink type: kafka, pubsub, or redis.'
+                    type: string
+                required:
+                - topic
+                - type
+                type: object
               input:
                 description: Input is the user task passed to the agent process via
                   the AGENTORC_INPUT env var.
@@ -123,6 +194,14 @@ spec:
                     description: |-
                       MinSubstantiveTokens is the minimum number of output tokens required for a turn
                       to count as substantive. Only evaluated when MaxConsecutiveNoopTurns > 0.
+                    type: integer
+                  toolExecutionTimeoutSec:
+                    default: 60
+                    description: |-
+                      ToolExecutionTimeoutSec is the maximum number of seconds a single tool call may
+                      take before it is cancelled and a structured error is returned to the LLM.
+                      This prevents a hanging tool (e.g. blocking I/O, deadlock) from stalling the
+                      entire run. Defaults to 60. 0 means use the default.
                     type: integer
                   toolFrequencyCap:
                     description: |-

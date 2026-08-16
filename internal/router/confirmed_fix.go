@@ -127,7 +127,7 @@ func (r *Router) executeConfirmFix(ctx context.Context, args string) string {
 	}
 
 	// Convert staged documents to the format expected by _rag_ingest.
-	ingestArgs := map[string]interface{}{
+	ingestArgs := map[string]any{
 		"knowledgeBase": fix.KnowledgeBase,
 		"documents":     fix.Documents,
 	}
@@ -149,7 +149,7 @@ func (r *Router) executeConfirmFix(ctx context.Context, args string) string {
 
 // isErrorResult checks if a tool result JSON contains an error.
 func isErrorResult(result string) bool {
-	var m map[string]interface{}
+	var m map[string]any
 	if err := json.Unmarshal([]byte(result), &m); err != nil {
 		return true
 	}

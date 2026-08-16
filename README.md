@@ -1,6 +1,38 @@
 # Agent Orchestrator (agent-orc)
 
+[![Go](https://img.shields.io/badge/go-1.25-00ADD8?logo=go)](https://go.dev/)
+[![Tests](https://github.com/floppyfish14/agent-orc/actions/workflows/test.yml/badge.svg)](https://github.com/floppyfish14/agent-orc/actions/workflows/test.yml)
+[![Lint](https://github.com/floppyfish14/agent-orc/actions/workflows/lint.yml/badge.svg)](https://github.com/floppyfish14/agent-orc/actions/workflows/lint.yml)
+[![E2E](https://github.com/floppyfish14/agent-orc/actions/workflows/test-e2e.yml/badge.svg)](https://github.com/floppyfish14/agent-orc/actions/workflows/test-e2e.yml)
+[![License: Apache 2.0](https://img.shields.io/github/license/floppyfish14/agent-orc)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/floppyfish14/agent-orc?display_name=tag)](https://github.com/floppyfish14/agent-orc/releases)
+
 Agent Orchestrator is a Kubernetes-native platform for deploying, managing, and running AI agents at scale. It provides a declarative way to define agents, route them to appropriate LLM models, equip them with tools, and execute them either as one-time jobs or as long-running services.
+
+> **Open source, Apache 2.0.** See [CONTRIBUTING.md](CONTRIBUTING.md) to get started,
+> [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for the community standard, and
+> [SECURITY.md](SECURITY.md) for how to report vulnerabilities.
+
+## Documentation
+
+| Doc | Audience | What it covers |
+|---|---|---|
+| [Development Guide](docs/development.md) | Developers | Project structure, build/test commands, critical rules |
+| [Integrating with agent-orc](docs/integrating.md) | Developers / integrators | End-to-end integration guide (CLI, SDKs, ACP API, observability) |
+| [ACP API](docs/acp-api.md) | Developers | Agent discovery, manifest introspection, self-service run execution |
+| [aoctl CLI Reference](docs/aoctl-reference.md) | Developers | Complete `aoctl` command reference |
+| [OpenAPI Spec](docs/openapi-spec.md) | Developers | External Task API + ACP API machine-readable contracts |
+| [Admin API](docs/admin-api.md) | Operators | Tenant lifecycle management (create, list, rotate-secret, delete) |
+| [Rate Limiting](docs/rate-limiting.md) | Operators | Per-tenant quotas, budget enforcement, HTTP 429/402 responses |
+| [Observability](docs/observability.md) | Operators | Health probes, Prometheus metrics, audit logging |
+| [Egress Sinks](docs/egress-sinks.md) | Operators | Kafka/PubSub/Redis result delivery, AgentDeployment input sources |
+| [CRDs](docs/crds.md) | Operators | All CRD definitions and field references |
+| [Authentication](docs/auth.md) | Operators | OAuth2, OIDC, ServiceAccount, trust model |
+| [Enterprise Integration](docs/enterprise-integration.md) | Enterprise | End-to-end enterprise setup (tenants, webhooks, guardrails, KBs) |
+| [RAG / KnowledgeBase](docs/rag.md) | Developers | Vector store integration and built-in tools |
+| [Redis Setup](docs/redis.md) | Operators | Redis configuration |
+| [MCP Access Control](docs/mcp-access-control.md) | Operators | MCP server security |
+| [AgentWorkflow](docs/agentworkflow.md) | Developers | Declarative DAG orchestration |
 
 ## Architecture
 
@@ -130,9 +162,85 @@ This enables:
 
 ## API Endpoints
 
-The UI proxy listens on `localhost:8080` and forwards requests to the operator's UI API. Use port 8080 for all API calls.
+agent-orc exposes three HTTP surfaces. Pick the right one for your integration:
 
-### Deployment Execution (Chat-style API)
+| Surface | Port | Purpose | Auth |
+|---------|------|---------|------|
+| **External Task API** | **8084** | Programmatic task submit/poll/stream/cancel | OAuth2 JWT / federated OIDC / K8s SA (`POST /oauth/token`) |
+| **ACP API** | **8000** | ACP-compatible agent discovery + run execution | Same bearer token as 8084 |
+| UI API (dev) | 8080 | Local chat proxy via the UIProxy (React SPA) | session token (cluster-internal) |
+
+For production, expose 8084 (and optionally 8000) behind an Ingress/Gateway.
+The UI API (8083) stays cluster-internal behind the UIProxy Backend-for-Frontend
+(see [docs/auth.md](docs/auth.md) and [docs/ui-proxy.md](docs/ui-proxy.md)).
+
+### Observability endpoints (all surfaces)
+
+Every external server exposes standard probes plus Prometheus metrics:
+
+```bash
+curl http://localhost:8084/healthz
+curl http://localhost:8084/readyz
+curl http://localhost:8084/version
+curl http://localhost:8084/metrics   # Prometheus format: requests_total, auth_failures_total, ...
+```
+
+### External Task API (recommended for integrations)
+
+The External Task API ([docs/enterprise-integration.md](docs/enterprise-integration.md),
+contract: `GET /openapi.json`) lets external systems submit tasks, poll/stream
+results, answer clarification questions, and receive webhook callbacks — without
+managing Kubernetes resources.
+
+```bash
+# 1. Obtain an access token (client_credentials grant)
+TOKEN=$(curl -s -X POST http://localhost:8084/oauth/token \
+  -d "grant_type=client_credentials&client_id=acme-client&client_secret=secret123" \
+  | jq -r .access_token)
+
+# 2. Submit a task
+curl -s -X POST http://localhost:8084/v1/tasks \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{ "agent": "support-bot", "input": "How do I reset my password?" }'
+
+# 3. Stream tokens + events (SSE)
+curl -N http://localhost:8084/v1/tasks/task-support-bot-abc123/stream \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+A CLI and Python/Go SDKs are available — see [docs/integrating.md](docs/integrating.md)
+(`aoctl`, `pip install agentorc`, or use the generated client from the OpenAPI spec).
+
+### ACP API — Agent discovery & self-service run
+
+The ACP API (port 8000) lets callers discover which agents are available to
+their tenant, inspect each agent's input/output schema and tools, and launch
+runs — all without writing YAML or touching `kubectl`.
+
+```bash
+# 1. Discover available agents
+curl -s http://localhost:8000/agents \
+  -H "Authorization: Bearer $TOKEN"
+
+# 2. Inspect an agent's manifest (schema, tools, knowledge bases, guardrails)
+curl -s http://localhost:8000/agents/support-bot \
+  -H "Authorization: Bearer $TOKEN"
+
+# 3. Launch a run with schema-validated input
+curl -s -X POST http://localhost:8000/agents/support-bot/run \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{ "input": [{"role":"user","parts":[{"content_type":"text/plain","content":"How do I reset my password?"}]}] }'
+
+# Or use the CLI:
+aoctl agents list
+aoctl agents describe support-bot
+aoctl agents run support-bot --input "How do I reset my password?"
+```
+
+### Deployment Execution (Chat-style API, dev only)
+
+The UI proxy on port 8080 exposes a chat-style execution endpoint for local
+development and the React UI.
 
 ```bash
 # Send input to deployment, get response
@@ -442,3 +550,20 @@ make manifests
 # Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
 make generate
 ```
+
+## Contributing
+
+Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for the
+development workflow, toolchain requirements, and the all-important code-generation
+step (`make manifests && make generate`) that keeps the committed CRDs in sync.
+
+By participating you agree to abide by the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+- **Found a bug or have a question?** Open a [GitHub issue](https://github.com/floppyfish14/agent-orc/issues/new/choose).
+  For security vulnerabilities, see [SECURITY.md](SECURITY.md) — do **not** file a public issue.
+- **Want to help but don't know where to start?** Look for issues labeled
+  [`good first issue`](https://github.com/floppyfish14/agent-orc/issues?q=is%3Aopen+is%3Aissue+label%3A%22good+first+issue%22).
+- **Toolchain:** Go 1.25+, Node 20+, kind, kubectl, helm, skaffold. The `Makefile`
+  auto-downloads `controller-gen`, `kustomize`, and `golangci-lint` into `./bin/`
+  on first use — no manual tool install required. See
+  [Development Guide](docs/development.md) for the local Skaffold loop.

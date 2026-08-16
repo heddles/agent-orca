@@ -32,7 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
-// makeWarmPod creates a warm pool pod with the given name, creation time, and readiness state.
+// makeWarmPod creates an IDLE warm pool pod with the given name, creation time, and readiness.
 func makeWarmPod(name, deployName, configHash string, createdAt time.Time, modelRouterReady bool) *corev1.Pod {
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -60,6 +60,36 @@ func makeWarmPod(name, deployName, configHash string, createdAt time.Time, model
 	return pod
 }
 
+// makeClaimedWarmPod builds a warm pod currently bound to a run (must not be deleted by scale-down).
+func makeClaimedWarmPod(name, deployName, configHash string, createdAt time.Time, ready bool) *corev1.Pod {
+	p := makeWarmPod(name, deployName, configHash, createdAt, ready)
+	p.Labels[labelWarmStatus] = warmStatusClaimed
+	return p
+}
+
+// makeTerminatingWarmPod builds a warm pod already receiving a deletion (must be ignored, not recounted).
+func makeTerminatingWarmPod(name, deployName, configHash string, createdAt time.Time, ready bool) *corev1.Pod {
+	p := makeWarmPod(name, deployName, configHash, createdAt, ready)
+	p.DeletionTimestamp = &metav1.Time{Time: createdAt}
+	p.Finalizers = []string{"test.agentorc.io/warm-pool"} // required for a terminating object to be admitted by the fake client
+	return p
+}
+
+// warmPodModelRouterReady mirrors the readiness check in reconcileWarmPool.
+func warmPodModelRouterReady(p *corev1.Pod) bool {
+	for _, cs := range p.Status.InitContainerStatuses {
+		if cs.Name == "model-router" && cs.Ready { //nolint:goconst
+			return true
+		}
+	}
+	return false
+}
+
+// TestScaleDownWarmPool exercises the scale-down portion of reconcileWarmPool using the
+// SAME partitioning accounting (warmPoolSize = total idle + in-use; claimed pods count
+// toward the total and are never deleted; terminating pods are ignored). It is a
+// faithful mirror, not the real reconciler, because reconcileWarmPool requires the full
+// AgentDeploymentReconciler wiring (SA tokens, buildWarmPod, etc.).
 func TestScaleDownWarmPool(t *testing.T) {
 	now := time.Now()
 
@@ -67,9 +97,9 @@ func TestScaleDownWarmPool(t *testing.T) {
 		name            string
 		warmPoolSize    int
 		pods            []*corev1.Pod
-		wantRemaining   int
-		wantReadyCount  int
-		wantDeletedPods []string // names of pods that should be deleted
+		wantRemaining   int // pods left in the fake client after scale-down
+		wantReadyCount  int // idle-ready pods remaining after scale-down
+		wantDeletedPods []string
 	}{
 		{
 			name:         "no excess pods",
@@ -106,7 +136,7 @@ func TestScaleDownWarmPool(t *testing.T) {
 			wantDeletedPods: []string{"oldest", "middle"},
 		},
 		{
-			name:         "excess mixed - ready deleted before starting",
+			name:         "excess mixed - not-yet-ready starting pods deleted first",
 			warmPoolSize: 2,
 			pods: []*corev1.Pod{
 				makeWarmPod("ready-old", "deploy-a", "hash1", now.Add(-20*time.Minute), true),
@@ -115,8 +145,8 @@ func TestScaleDownWarmPool(t *testing.T) {
 				makeWarmPod("starting-2", "deploy-a", "hash1", now.Add(-1*time.Minute), false),
 			},
 			wantRemaining:   2,
-			wantReadyCount:  0, // both ready pods deleted to reach desired=2, leaving 2 starting
-			wantDeletedPods: []string{"ready-old", "ready-new"},
+			wantReadyCount:  2, // both ready pods kept; starting ones pruned
+			wantDeletedPods: []string{"starting-1", "starting-2"},
 		},
 		{
 			name:         "all starting pods - excess deleted",
@@ -132,7 +162,7 @@ func TestScaleDownWarmPool(t *testing.T) {
 			wantDeletedPods: []string{"starting-1", "starting-2"},
 		},
 		{
-			name:         "scale to zero deletes all",
+			name:         "scale to zero deletes all idle pods",
 			warmPoolSize: 0,
 			pods: []*corev1.Pod{
 				makeWarmPod("ready-1", "deploy-a", "hash1", now.Add(-10*time.Minute), true),
@@ -142,6 +172,36 @@ func TestScaleDownWarmPool(t *testing.T) {
 			wantReadyCount:  0,
 			wantDeletedPods: []string{"ready-1", "ready-2"},
 		},
+		{
+			// Regression: a claimed (in-use) warm pod must count toward the desired
+			// total and must NOT be deleted. Under the old idle-only accounting this
+			// case deleted nothing (claimed pods were invisible); the pool instead
+			// over-provisioned and deleted the just-returned pod. Here total=3 vs
+			// desired=2 => one excess IDLE pod is pruned, the claimed pod survives.
+			name:         "claimed pod counts toward total and survives scale-down",
+			warmPoolSize: 2,
+			pods: []*corev1.Pod{
+				makeWarmPod("idle-1", "deploy-a", "hash1", now.Add(-10*time.Minute), true),
+				makeWarmPod("idle-2", "deploy-a", "hash1", now.Add(-5*time.Minute), true),
+				makeClaimedWarmPod("claimed", "deploy-a", "hash1", now.Add(-2*time.Minute), true),
+			},
+			wantRemaining:   2,
+			wantReadyCount:  1,
+			wantDeletedPods: []string{"idle-1"},
+		},
+		{
+			// Regression: a pod already being terminated must be ignored by the
+			// count (not recounted as excess and re-deleted on every reconcile).
+			name:         "terminating pod is ignored, not recounted",
+			warmPoolSize: 2,
+			pods: []*corev1.Pod{
+				makeWarmPod("idle-1", "deploy-a", "hash1", now.Add(-10*time.Minute), true),
+				makeTerminatingWarmPod("terminating", "deploy-a", "hash1", now.Add(-5*time.Minute), true),
+			},
+			wantRemaining:   2,
+			wantReadyCount:  1,
+			wantDeletedPods: nil,
+		},
 	}
 
 	for _, tt := range tests {
@@ -150,7 +210,6 @@ func TestScaleDownWarmPool(t *testing.T) {
 			_ = corev1.AddToScheme(scheme)
 			_ = agentorcv1alpha1.AddToScheme(scheme)
 
-			// Track deleted pod names via interceptor.
 			var deletedPods []string
 			objs := make([]client.Object, len(tt.pods))
 			for i, p := range tt.pods {
@@ -170,68 +229,60 @@ func TestScaleDownWarmPool(t *testing.T) {
 				}).
 				Build()
 
-			// Simulate the scale-down portion of reconcileWarmPool.
-			// List idle warm pods (same query as the real reconciler).
+			// Mirror the scale-down accounting of reconcileWarmPool.
 			var pods corev1.PodList
 			if err := fakeClient.List(context.Background(), &pods,
 				client.InNamespace("default"),
-				client.MatchingLabels{
-					labelWarmPool:   "deploy-a",
-					labelWarmStatus: warmStatusIdle,
-				},
+				client.MatchingLabels{labelWarmPool: "deploy-a"},
 			); err != nil {
 				t.Fatalf("listing pods: %v", err)
 			}
 
-			// Run the same cleanup + counting logic (skip token/config checks for unit test).
-			var readyPods, startingPods []*corev1.Pod
+			var idleReady, idleStarting, claimed []*corev1.Pod
 			for i := range pods.Items {
 				p := &pods.Items[i]
-				modelRouterReady := false
-				for _, cs := range p.Status.InitContainerStatuses {
-					if cs.Name == "model-router" && cs.Ready {
-						modelRouterReady = true
-						break
-					}
+				if p.DeletionTimestamp != nil {
+					continue // terminating pods are ignored
 				}
-				if modelRouterReady {
-					readyPods = append(readyPods, p)
+				if p.Labels[labelWarmStatus] == warmStatusClaimed {
+					claimed = append(claimed, p)
+					continue
+				}
+				if warmPodModelRouterReady(p) {
+					idleReady = append(idleReady, p)
 				} else {
-					startingPods = append(startingPods, p)
+					idleStarting = append(idleStarting, p)
 				}
 			}
 
-			// Run scale-down logic (mirrors the production code).
 			desired := tt.warmPoolSize
-			readyCount := len(readyPods)
-			startingCount := len(startingPods)
-			totalExisting := readyCount + startingCount
+			readyCount := len(idleReady)
+			startingCount := len(idleStarting)
+			totalExisting := readyCount + startingCount + len(claimed)
 
 			if excess := totalExisting - desired; excess > 0 {
-				slices.SortFunc(readyPods, func(a, b *corev1.Pod) int {
-					return a.CreationTimestamp.Time.Compare(b.CreationTimestamp.Time)
+				slices.SortFunc(idleStarting, func(a, b *corev1.Pod) int {
+					return a.CreationTimestamp.Compare(b.CreationTimestamp.Time)
+				})
+				slices.SortFunc(idleReady, func(a, b *corev1.Pod) int {
+					return a.CreationTimestamp.Compare(b.CreationTimestamp.Time)
 				})
 				deleted := 0
-				for deleted < excess && len(readyPods) > 0 {
-					p := readyPods[0]
-					readyPods = readyPods[1:]
-					if err := fakeClient.Delete(context.Background(), p); err != nil {
-						t.Fatalf("deleting excess ready pod: %v", err)
-					}
+				for deleted < excess && len(idleStarting) > 0 {
+					p := idleStarting[0]
+					idleStarting = idleStarting[1:]
+					_ = fakeClient.Delete(context.Background(), p)
 					deleted++
 				}
-				for deleted < excess && len(startingPods) > 0 {
-					p := startingPods[0]
-					startingPods = startingPods[1:]
-					if err := fakeClient.Delete(context.Background(), p); err != nil {
-						t.Fatalf("deleting excess starting pod: %v", err)
-					}
+				for deleted < excess && len(idleReady) > 0 {
+					p := idleReady[0]
+					idleReady = idleReady[1:]
+					_ = fakeClient.Delete(context.Background(), p)
 					deleted++
 				}
-				readyCount = len(readyPods)
+				readyCount = len(idleReady)
 			}
 
-			// Verify remaining pod count.
 			var remaining corev1.PodList
 			if err := fakeClient.List(context.Background(), &remaining, client.InNamespace("default")); err != nil {
 				t.Fatalf("listing remaining pods: %v", err)
@@ -242,8 +293,6 @@ func TestScaleDownWarmPool(t *testing.T) {
 			if readyCount != tt.wantReadyCount {
 				t.Errorf("readyCount: got %d, want %d", readyCount, tt.wantReadyCount)
 			}
-
-			// Verify correct pods were deleted.
 			if tt.wantDeletedPods != nil {
 				slices.Sort(deletedPods)
 				wantSorted := slices.Clone(tt.wantDeletedPods)

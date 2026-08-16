@@ -48,7 +48,7 @@ func readSecretFile(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("opening MCP secret root: %w", err)
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 	data, err := root.ReadFile(filepath.ToSlash(rel))
 	if err != nil {
 		return "", fmt.Errorf("reading %s: %w", path, err)

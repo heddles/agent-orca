@@ -1,6 +1,4 @@
 resources:
-- local-mistral.yaml
-- ollama-service.yaml
 - ollama-embedding-cluster.yaml
 - dev-tenant.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

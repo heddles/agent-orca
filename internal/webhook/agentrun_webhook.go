@@ -33,12 +33,14 @@ import (
 	"net/http"
 	"strings"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
+	"github.com/floppyfish14/agent-orc/internal/security"
 )
 
 // AgentRunValidator validates AgentRun resources on admission.
@@ -115,16 +117,71 @@ func (v *AgentValidator) Handle(ctx context.Context, req admission.Request) admi
 	return admission.Allowed("ok")
 }
 
-func (v *AgentValidator) validate(_ context.Context, agent *agentorcv1alpha1.Agent) error {
+func (v *AgentValidator) validate(ctx context.Context, agent *agentorcv1alpha1.Agent) error {
 	if agent.Spec.Runtime.OCIRef == "" {
 		return fmt.Errorf("%s", "spec.runtime.ociRef is required")
 	}
 	if agent.Spec.ModelSelectorRef == "" {
-		return fmt.Errorf("%s", "spec.modelSelectorRef is required")
+		return fmt.Errorf("%s", "spec.runtime.modelSelectorRef is required")
 	}
 	if err := v.checkRegistry(agent.Spec.Runtime.OCIRef); err != nil {
 		return fmt.Errorf("%s", fmt.Sprintf("agent runtime image rejected: %v", err))
 	}
+
+	// Enforce the PodSecurityOverride safety contract before the pod is ever
+	// scheduled. An override (e.g. for a VPN pwnbox) grants the agent container
+	// capabilities the restricted baseline forbids, so it is gated on:
+	//  1. the namespace carrying the opt-in label agentorc.io/enable-privileged-pods=true
+	//  2. the Agent referencing a GuardrailPolicyRef (defense in depth), and
+	//  3. a small set of internal consistency rules on the override itself.
+	// Admission uses failurePolicy=Fail, so these check the role at admission time.
+	if agent.Spec.Runtime.SecurityContextOverride != nil {
+		if err := v.validateSecurityContextOverride(ctx, agent); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateSecurityContextOverride enforces the gating + consistency rules for a
+// PodSecurityOverride on an Agent. See validate() for the full rationale.
+func (v *AgentValidator) validateSecurityContextOverride(ctx context.Context, agent *agentorcv1alpha1.Agent) error {
+	override := agent.Spec.Runtime.SecurityContextOverride
+
+	// Require a GuardrailPolicyRef so privileged/elevated agents always run with
+	// content filtering (redact/block real endpoints & secret material) applied
+	// by the model-router sidecar on every LLM call.
+	if agent.Spec.GuardrailPolicyRef == "" {
+		return fmt.Errorf(
+			"spec.runtime.securityContextOverride is set but spec.guardrailPolicyRef is empty: " +
+				"a GuardrailPolicyRef is required when escalating pod privileges")
+	}
+
+	// Require the namespace opt-in label.
+	var ns corev1.Namespace
+	if err := v.Client.Get(ctx, client.ObjectKey{Name: agent.Namespace}, &ns); err != nil {
+		return fmt.Errorf("looking up namespace %q for securityContextOverride validation: %w", agent.Namespace, err)
+	}
+	if ns.Labels[security.LabelEnablePrivilegedPods] != security.PrivilegedPodsAllowedValue {
+		return fmt.Errorf(
+			"spec.runtime.securityContextOverride is set, but namespace %q is not opted in: "+
+				"add label %s=%s to the namespace",
+			agent.Namespace, security.LabelEnablePrivilegedPods, security.PrivilegedPodsAllowedValue)
+	}
+
+	// Consistency: privileged and addCapabilities are mutually exclusive.
+	if override.Privileged && len(override.AddCapabilities) > 0 {
+		return fmt.Errorf(
+			"spec.runtime.securityContextOverride.privileged and addCapabilities are mutually exclusive")
+	}
+
+	// Root (uid 0) is only permitted when fully privileged.
+	if override.RunAsUser != nil && *override.RunAsUser == 0 && !override.Privileged {
+		return fmt.Errorf(
+			"spec.runtime.securityContextOverride.runAsUser=0 requires privileged=true " +
+				"(root is not permitted with a granular capability add)")
+	}
+
 	return nil
 }
 

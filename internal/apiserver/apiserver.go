@@ -68,7 +68,8 @@ func (s *Server) Handler() http.Handler {
 }
 
 // handleAgentRun dispatches POST (create) and GET (status) for AgentRun resources.
-func (s *Server) handleAgentRun(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleAgentRun(w http.ResponseWriter, r *http.Request) { //nolint:gocyclo
+
 	// Authenticate the caller via Kubernetes TokenReview.
 	token := extractBearer(r)
 	if token == "" {
@@ -671,7 +672,7 @@ func (s *Server) proposeWorkflowStep(w http.ResponseWriter, r *http.Request, nam
 		wf.Status.ProposalLog = append(wf.Status.ProposalLog, entry)
 		_ = s.crdClient.Status().Update(r.Context(), &wf)
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{"approved": false, "reason": entry.Reason})
+		_ = json.NewEncoder(w).Encode(map[string]any{"approved": false, "reason": entry.Reason})
 		return
 	}
 
@@ -681,7 +682,7 @@ func (s *Server) proposeWorkflowStep(w http.ResponseWriter, r *http.Request, nam
 		wf.Status.ProposalLog = append(wf.Status.ProposalLog, entry)
 		_ = s.crdClient.Status().Update(r.Context(), &wf)
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{"approved": false, "reason": entry.Reason})
+		_ = json.NewEncoder(w).Encode(map[string]any{"approved": false, "reason": entry.Reason})
 		return
 	}
 
@@ -691,7 +692,7 @@ func (s *Server) proposeWorkflowStep(w http.ResponseWriter, r *http.Request, nam
 		wf.Status.ProposalLog = append(wf.Status.ProposalLog, entry)
 		_ = s.crdClient.Status().Update(r.Context(), &wf)
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{"approved": false, "reason": entry.Reason})
+		_ = json.NewEncoder(w).Encode(map[string]any{"approved": false, "reason": entry.Reason})
 		return
 	}
 
@@ -708,7 +709,7 @@ func (s *Server) proposeWorkflowStep(w http.ResponseWriter, r *http.Request, nam
 			wf.Status.ProposalLog = append(wf.Status.ProposalLog, entry)
 			_ = s.crdClient.Status().Update(r.Context(), &wf)
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]interface{}{"approved": false, "reason": entry.Reason})
+			_ = json.NewEncoder(w).Encode(map[string]any{"approved": false, "reason": entry.Reason})
 			return
 		}
 		// Rename the step to encode loop iteration.
@@ -719,11 +720,8 @@ func (s *Server) proposeWorkflowStep(w http.ResponseWriter, r *http.Request, nam
 
 	// Check allowlist.
 	agentAllowed := len(policy.AllowedAgentRefs) == 0
-	for _, allowed := range policy.AllowedAgentRefs {
-		if allowed == proposal.AgentRef {
-			agentAllowed = true
-			break
-		}
+	if slices.Contains(policy.AllowedAgentRefs, proposal.AgentRef) {
+		agentAllowed = true
 	}
 
 	if !agentAllowed {
@@ -736,7 +734,7 @@ func (s *Server) proposeWorkflowStep(w http.ResponseWriter, r *http.Request, nam
 			slog.Info("workflow step proposal pending human approval",
 				"workflow", workflowName, "step", proposal.Name, "agent", proposal.AgentRef)
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]interface{}{
+			_ = json.NewEncoder(w).Encode(map[string]any{
 				"approved":             false,
 				"pendingHumanApproval": true,
 				"reason":               entry.Reason,
@@ -747,7 +745,7 @@ func (s *Server) proposeWorkflowStep(w http.ResponseWriter, r *http.Request, nam
 		wf.Status.ProposalLog = append(wf.Status.ProposalLog, entry)
 		_ = s.crdClient.Status().Update(r.Context(), &wf)
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{"approved": false, "reason": entry.Reason})
+		_ = json.NewEncoder(w).Encode(map[string]any{"approved": false, "reason": entry.Reason})
 		return
 	}
 
@@ -770,7 +768,7 @@ func (s *Server) proposeWorkflowStep(w http.ResponseWriter, r *http.Request, nam
 	slog.Info("workflow step proposal approved",
 		"workflow", workflowName, "step", proposedStep.Name, "agent", proposal.AgentRef)
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"approved": true, "stepName": proposedStep.Name})
+	_ = json.NewEncoder(w).Encode(map[string]any{"approved": true, "stepName": proposedStep.Name})
 }
 
 // approveWorkflowProposal handles POST /workflow/{namespace}/{name}/approve-proposal.
@@ -954,7 +952,7 @@ func (s *Server) ragSearch(w http.ResponseWriter, r *http.Request, namespace, na
 		http.Error(w, fmt.Sprintf("connecting to qdrant: %v", err), http.StatusInternalServerError)
 		return
 	}
-	defer qClient.Close()
+	defer func() { _ = qClient.Close() }()
 
 	topK := req.TopK
 	if topK <= 0 {
@@ -970,7 +968,7 @@ func (s *Server) ragSearch(w http.ResponseWriter, r *http.Request, namespace, na
 	slog.Info("RAG search completed", "kb", name, "query", req.Query, "results", len(results))
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	_ = json.NewEncoder(w).Encode(map[string]any{
 		"results": results,
 	})
 }
@@ -1016,7 +1014,7 @@ func (s *Server) ragIngest(w http.ResponseWriter, r *http.Request, namespace, na
 	// Build documents.
 	docs := make([]rag.Document, len(req.Documents))
 	for i, d := range req.Documents {
-		meta := make(map[string]interface{}, len(d.Metadata))
+		meta := make(map[string]any, len(d.Metadata))
 		for k, v := range d.Metadata {
 			meta[k] = v
 		}
@@ -1054,7 +1052,7 @@ func (s *Server) ragIngest(w http.ResponseWriter, r *http.Request, namespace, na
 	slog.Info("RAG ingest completed", "kb", name, "docs", result.DocumentCount, "chunks", result.ChunkCount)
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	_ = json.NewEncoder(w).Encode(map[string]any{
 		"ingested": result.DocumentCount,
 		"chunks":   result.ChunkCount,
 	})
@@ -1158,8 +1156,8 @@ func (s *Server) validateToken(ctx context.Context, token string) (string, error
 // extractBearer extracts the Bearer token from the Authorization header.
 func extractBearer(r *http.Request) string {
 	h := r.Header.Get("Authorization")
-	if strings.HasPrefix(h, "Bearer ") {
-		return strings.TrimPrefix(h, "Bearer ")
+	if after, ok := strings.CutPrefix(h, "Bearer "); ok {
+		return after
 	}
 	return ""
 }

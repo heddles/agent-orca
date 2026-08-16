@@ -230,6 +230,54 @@ spec:
 | `parentRunRef` | Parent AgentRun when this is spawned as a sub-agent tool |
 | `priorRunRef` | Previous AgentRun in a chat session; loads its conversation checkpoint for continuation |
 | `safeguards` | Loop detection limits (`maxConsecutiveNoopTurns`, `maxRepeatedToolCalls`) |
+| `egress` | Result egress sink configuration (optional) |
+
+**Egress configuration (optional):**
+
+When `spec.egress` is set, the controller publishes the final `EgressResult` to the specified sink when the AgentRun reaches a terminal phase (`Succeeded`, `Failed`, or `HandedOff`). This is useful for streaming results to downstream systems (e.g., a chat backend, analytics pipeline, or event bus).
+
+| Field | Description |
+|---|---|
+| `type` | `kafka`, `pubsub`, or `redis` |
+| `topic` | Topic/stream name (Kafka topic, Pub/Sub topic, or Redis stream key) |
+| `projectID` | GCP project ID (Pub/Sub only) |
+| `brokers` | Kafka broker addresses (Kafka only) |
+| `address` | Redis address (Redis only) |
+| `secretRef` | SecretKeyRef pointing to sink credentials |
+
+**Secret key conventions:**
+
+| Sink | Secret keys |
+|---|---|
+| Kafka | `sasl-username`, `sasl-password`, `sasl-mechanism`, `tls-cert`, `tls-key`, `tls-ca` |
+| Pub/Sub | `credentials` (service account JSON blob) |
+| Redis | `password` |
+
+```yaml
+apiVersion: agentorc.agentorc.io/v1alpha1
+kind: AgentRun
+metadata:
+  name: hello-run
+spec:
+  agentRef: hello-agent
+  input: "Say hello to the world"
+  egress:
+    type: kafka
+    topic: agent-results
+    brokers:
+      - kafka-cluster-kafka-bootstrap.kafka:9092
+    secretRef:
+      name: kafka-creds
+      key: sasl-password
+      namespace: default
+```
+
+**Metrics:**
+
+| Metric | Description |
+|---|---|
+| `agentorc_egress_published_total` | Counter of successfully published results |
+| `agentorc_egress_failed_total` | Counter of failed publishes |
 
 **Phase lifecycle:**
 
@@ -301,6 +349,9 @@ graph LR
 | `restartPolicy.maxConsecutiveFailures` | Pause threshold (default: 10, 0=unlimited) |
 | `checkpointTTL` | Checkpoint retention (default: 30 days) |
 | `warmPoolSize` | Pre-warmed idle pods to keep ready (default: 1, set to 0 to disable) |
+| `maxRequestsPerPod` | Request cap before a warm pod is recycled (default: 0 = reuse indefinitely) |
+| `warmPodMaxAge` | Max age of a warm pod before recycle (default: 0 / indefinite; set to a positive duration to opt into age recycling — pods are recycled once they exceed this age) |
+| `recycleOnConfigDrift` | Recycle warm pods when the router config changes (default: true; set false to keep pods alive across config changes) |
 
 **Phase lifecycle:**
 
@@ -313,6 +364,25 @@ stateDiagram-v2
     Running --> Paused: consecutiveFailures > threshold
     Paused --> Running: Manual intervention
 ```
+
+**Warm pod recycling (observability):**
+A warm pod is recycled — and the reason emitted as a `WarmPodRecycled` Kubernetes Event on the deployment (`kubectl describe deployment <name>`), plus recorded in `status.warmPoolLastRecycleReason` / `status.warmPoolLastRecycleAt`) — when any of the following fires:
+
+- `terminal-phase` — the pod's process exited (`PodSucceeded`/`PodFailed`).
+- `token-age-expired` — the pod exceeded `warmPodMaxAge` (only fires when a positive `warmPodMaxAge` is set; default is indefinite, so this never fires unless the user opts in).
+- `stale-config` — the router config hash changed (agent/providers/tools/KBs/guardrails); skip by setting `recycleOnConfigDrift: false`.
+- `request-cap-<N>` — the pod served `maxRequestsPerPod` runs.
+
+**Note on HTTP/chat-mode warm pods:** when the agent's HTTP handler responds, the run is
+marked complete and the pod is **returned to the idle pool for reuse** (not destroyed), so
+warm pods survive across chat turns. The model-router waits up to 30 minutes (configurable
+via `httpInput.timeoutSeconds`) for the agent's HTTP handler to respond — the previous 60s
+hard-cap was too short for long-trajectory tasks and could kill an in-progress session.
+
+Warm pods run **indefinitely by default** (no age recycle). To keep a warm pod truly
+independent of config changes too, set `recycleOnConfigDrift: false` (with the default
+`maxRequestsPerPod: 0`). The pod is then only recycled if its agent process exits, it hits
+the request cap, you delete it, or you opt into age recycling via a positive `warmPodMaxAge`.
 
 ---
 

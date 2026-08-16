@@ -33,7 +33,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"sync"
 	"syscall"
 	"time"
 
@@ -45,7 +44,7 @@ import (
 	"github.com/floppyfish14/agent-orc/internal/state"
 )
 
-func main() {
+func main() { //nolint:gocyclo
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
 
@@ -61,7 +60,26 @@ func main() {
 		slog.Error("failed to connect to state store", "err", err)
 		os.Exit(1)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
+
+	// Warm pods: layer a local-disk L1 cache (the disk-backed emptyDir mounted by
+	// the operator) on top of the durable Redis store so checkpoint reads are
+	// local-first (faster warm resume, no Redis round-trip) and the pod can still
+	// resume a conversation if Redis is transiently unavailable. The local cache
+	// is only meaningful alongside a durable backend; skip it for the no-op store.
+	cacheDir := cfg.WarmLocalCacheDir
+	if cacheDir == "" {
+		cacheDir = os.Getenv(state.LocalCacheDirEnv) // fallback for manually-wired envs
+	}
+	if cacheDir != "" {
+		if cfg.StateConfig.Backend == "redis" {
+			store = state.NewLocalCacheStore(store, cacheDir)
+			slog.Info("warm local cache activated", "dir", cacheDir, "sizeMi", cfg.WarmLocalCacheSizeMi)
+		} else {
+			slog.Warn("warm local cache requested but state backend is not redis; local cache disabled",
+				"backend", cfg.StateConfig.Backend, "dir", cacheDir)
+		}
+	}
 
 	// Load checkpoint if resuming a failed run.
 	var initialMessages []json.RawMessage
@@ -107,10 +125,20 @@ func main() {
 
 	// In warm mode, expose a dedicated management server on :9090 for the claim-run handshake.
 	// This server is separate from the agent-facing API so it is never accidentally exposed
-	// to the agent workload and can be shut down after the run is claimed.
+	// to the agent workload.
+	//
+	// warmClaimCh signals the http-input goroutine to process a claimed run. It is
+	// BUFFERED (size 1) and SEND-based rather than close-Once-based: a warm pod is
+	// reused across many runs, so the signal must re-arm on every claim. The old
+	// sync.Once + close(warmReadyCh) fired exactly once, after which the goroutine
+	// exited and subsequent claims never triggered RunHTTPInput — the warm pod
+	// accepted claims but stopped being driven, so the agent never received new run
+	// input after the first run's done sentinel. In the normal sequential model
+	// (the warm-pool controller claims only idle pods and returns them to idle on
+	// completion) the goroutine is always back in the select between claims, so the
+	// buffer is drained before the next send and no signal is ever dropped.
 	var warmServer *http.Server
-	var warmOnce sync.Once
-	warmReadyCh := make(chan struct{}) // closed when /v1/claim-run is received
+	warmClaimCh := make(chan struct{}, 1)
 	if cfg.WarmMode {
 		warmMux := http.NewServeMux()
 		warmMux.HandleFunc("/v1/claim-run", func(w http.ResponseWriter, req *http.Request) {
@@ -131,8 +159,15 @@ func main() {
 			bindExecutor(input.RunName)
 			w.WriteHeader(http.StatusOK)
 			slog.Info("warm pod claimed", "run", input.RunName, "priorRun", input.PriorRunRef)
-			// Signal the http-input goroutine to start, but only once.
-			warmOnce.Do(func() { close(warmReadyCh) })
+			// Signal the http-input goroutine to process this run. Non-blocking: if the
+			// goroutine is still driving a previous claim (only possible if the
+			// warm-pool controller mis-labels a busy pod as idle), drop the signal and
+			// let the controller fall back to claiming another pod afterwards.
+			select {
+			case warmClaimCh <- struct{}{}:
+			default:
+				slog.Warn("warm pod still busy; claim signal dropped", "run", input.RunName)
+			}
 		})
 		warmMux.HandleFunc("/healthz", handleHealthz)
 		warmServer = &http.Server{Addr: ":9090", Handler: warmMux, ReadHeaderTimeout: 10 * time.Second}
@@ -186,15 +221,25 @@ func main() {
 
 	if cfg.HTTPInput.Enabled {
 		if cfg.WarmMode {
-			// In warm mode, defer http-input processing and executor startup until the pod is claimed.
+			// In warm mode, defer http-input processing until the pod is claimed,
+			// and keep going for every subsequent claim so a warm pod is REUSED
+			// across chat turns / long-trajectory runs. Each claim calls
+			// ClaimRun (which resets per-run router state and repoints
+			// cfg.HTTPInput at the new run) and then sends on warmClaimCh; this
+			// goroutine wakes and runs RunHTTPInput for that run. The loop +
+			// buffered signal replaces the old once-close gate, which terminated
+			// the goroutine after the first run and left later claims un-driven.
 			go func() {
-				select {
-				case <-warmReadyCh:
-					// Run config was injected via /v1/claim-run; executor was bound in claim handler.
-					if err := router.RunHTTPInput(ctx, cfg.HTTPInput, store); err != nil {
-						slog.Error("http input failed", "err", err)
+				for {
+					select {
+					case <-warmClaimCh:
+						// Run config was injected via /v1/claim-run; executor was bound in claim handler.
+						if err := router.RunHTTPInput(ctx, cfg.HTTPInput, store); err != nil {
+							slog.Error("http input failed", "err", err)
+						}
+					case <-ctx.Done():
+						return
 					}
-				case <-ctx.Done():
 				}
 			}()
 		} else {
@@ -228,5 +273,5 @@ func main() {
 }
 
 func handleHealthz(w http.ResponseWriter, _ *http.Request) {
-	fmt.Fprint(w, "ok")
+	_, _ = fmt.Fprint(w, "ok")
 }

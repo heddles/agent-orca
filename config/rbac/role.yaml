@@ -29,6 +29,13 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - namespaces
+  - pods/log
+  verbs:
+  - get
+- apiGroups:
+  - ""
+  resources:
   - nodes
   verbs:
   - list
@@ -42,12 +49,6 @@ rules:
   - get
   - list
   - watch
-- apiGroups:
-  - ""
-  resources:
-  - pods/log
-  verbs:
-  - get
 - apiGroups:
   - ""
   resources:

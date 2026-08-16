@@ -119,6 +119,13 @@ type AgentRunSpec struct {
 	// appears stuck in a loop or making no progress.
 	// +optional
 	Safeguards *AgentRunSafeguards `json:"safeguards,omitempty"`
+
+	// Egress configures durable result delivery to an external message bus
+	// (Kafka, Pub/Sub, or Redis stream) on terminal phase. When set, the
+	// controller publishes the final TaskResponse to the configured sink.
+	// Independent of webhook callbacks — both can be configured simultaneously.
+	// +optional
+	Egress *EgressConfig `json:"egress,omitempty"`
 }
 
 // CallbackConfig defines webhooks triggered on AgentRun completion.

@@ -1,0 +1,40 @@
+version: 2
+updates:
+  # Go module dependencies (go.mod / go.sum at the repo root).
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      go-packages:
+        patterns:
+          - "*"
+
+  # UI dependencies (ui/package.json).
+  - package-ecosystem: npm
+    directory: /ui
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+
+  # Python SDK dependencies (pkg/python/agentorc/pyproject.toml).
+  - package-ecosystem: pip
+    directory: /pkg/python/agentorc
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # GitHub Actions.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+
+  # Helm chart dependencies (Chart.yaml dependencies entries).
+  - package-ecosystem: helm
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5

@@ -1,0 +1,349 @@
+openapi: 3.1.0
+info:
+  title: agent-orc External Task API
+  description: |
+    Programmable interface for submitting tasks to agent-orc from external systems.
+    Each task creates an `AgentRun` in the caller's tenant namespace and returns a
+    task id that can be polled, streamed, answered (for clarification), or cancelled.
+
+    Authentication: every endpoint except `/oauth/token` requires
+    `Authorization: Bearer <token>`, where the token is either an agent-orc-issued
+    JWT (from the `client_credentials` exchange below), a federated OIDC JWT, or a
+    Kubernetes ServiceAccount token. See docs/auth.md for the full model.
+  version: "1.0.0"
+  contact:
+    name: agent-orc
+  license:
+    name: Apache-2.0
+servers:
+  - url: http://localhost:8084
+    description: local dev / cluster-internal
+  - url: https://agent-orc.example.com:8084
+    description: production (exposed via Ingress/Gateway + UIProxy BFF)
+tags:
+  - name: authentication
+    description: OAuth2 client_credentials token exchange
+  - name: tasks
+    description: Submit, poll, stream, answer, and cancel agent tasks
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT-or-K8s-SA-token
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          description: Human-readable error message.
+    TokenRequest:
+      description: form-encoded body for the client_credentials grant.
+      type: object
+      properties:
+        grant_type:
+          type: string
+          enum: [client_credentials]
+          description: Must be `client_credentials`.
+        client_id:
+          type: string
+        client_secret:
+          type: string
+    TokenResponse:
+      type: object
+      required: [access_token, token_type, expires_in]
+      properties:
+        access_token:
+          type: string
+        token_type:
+          type: string
+          enum: [Bearer]
+        expires_in:
+          type: integer
+          description: Seconds until expiry (default 3600).
+    TaskCallback:
+      type: object
+      description: Webhook to deliver the terminal result to.
+      required: [url]
+      properties:
+        url:
+          type: string
+          format: uri
+          description: URL POSTed on task completion (Succeeded) or failure.
+        secretRef:
+          type: string
+          description: |
+            Optional name of a Kubernetes Secret in the tenant namespace holding the
+            shared `hmac-key`. When set, agent-orc signs each callback delivery with
+            `X-Agentorc-Signature: sha256=<hex>` (HMAC-SHA256 over the raw body) and
+            `X-Agentorc-Timestamp`; receivers verify with the same key. When absent,
+            the callback is delivered unsigned (backward compatible).
+    TaskSubmission:
+      type: object
+      required: [agent, input]
+      description: |
+        Body for `POST /v1/tasks`. `agent` is the Agent name in the tenant namespace
+        (must be in the tenant's `allowedAgents` list). `metadata` is echoed back and
+        stored as annotations; `correlationId` is promoted to a label for tracing.
+      properties:
+        agent:
+          type: string
+          description: Name of the Agent CRD to invoke.
+        input:
+          type: string
+          description: Task description passed to the agent.
+        timeout:
+          type: string
+          description: Duration string, e.g. "5m". Defaults to the AgentRun default.
+          example: "5m"
+        callback:
+          $ref: '#/components/schemas/TaskCallback'
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+          description: Arbitrary key/value pairs echoed in the response and stored as annotations.
+    TaskLinks:
+      type: object
+      properties:
+        self:
+          type: string
+          description: "GET /v1/tasks/{id} — poll this task."
+        stream:
+          type: string
+          description: "GET /v1/tasks/{id}/stream — SSE token stream."
+    TaskStatus:
+      type: string
+      enum: [Pending, Running, Succeeded, Failed, HandedOff, WaitingForInput]
+      description: Mirrors AgentRun.status.phase.
+    TaskResponse:
+      type: object
+      required: [id, agent, status]
+      properties:
+        id:
+          type: string
+          description: Task id (== the underlying AgentRun name).
+        agent:
+          type: string
+        status:
+          $ref: '#/components/schemas/TaskStatus'
+        output:
+          type: string
+          description: Agent output (present once succeeded/terminated).
+        spendUSD:
+          type: string
+          description: Cumulative USD spend for the run.
+          example: "0.0242"
+        createdAt:
+          type: string
+          format: date-time
+        completedAt:
+          type: string
+          format: date-time
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+        links:
+          $ref: '#/components/schemas/TaskLinks'
+    TaskListResponse:
+      type: object
+      properties:
+        tasks:
+          type: array
+          items:
+            $ref: '#/components/schemas/TaskResponse'
+        count:
+          type: integer
+    ClarifyAnswer:
+      type: object
+      required: [answer]
+      properties:
+        answer:
+          type: string
+          description: The human's response to a clarification question.
+    AnswerResponse:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [accepted]
+    SSEEvent:
+      description: |-
+        Server-Sent Events are plain text. The `event:` field names one of:
+        `status` (data: {"phase": "<phase>"}),
+        `token` (data: {"content": "<text>"}),
+        `complete` (data: a TaskResponse),
+        `error` (data: {"error": "<message>"}).
+      type: object
+      properties:
+        event:
+          type: string
+        data:
+          type: string
+paths:
+  /oauth/token:
+    post:
+      tags: [authentication]
+      summary: Exchange client credentials for a bearer token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/TokenRequest'
+      responses:
+        '200':
+          description: Access token issued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '400':
+          description: Unsupported grant type or malformed body.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+        '401':
+          description: Invalid client id or secret.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+  /v1/tasks:
+    get:
+      tags: [tasks]
+      summary: List tasks for the authenticated tenant
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: query
+          name: agent
+          schema: { type: string }
+          description: Filter by agent name.
+        - in: query
+          name: status
+          schema: { type: string }
+          description: Filter by phase (see TaskStatus).
+      responses:
+        '200':
+          description: A page of tasks.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskListResponse'
+        '401':
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    post:
+      tags: [tasks]
+      summary: Submit a task (creates an AgentRun)
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TaskSubmission'
+      responses:
+        '201':
+          description: Task created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskResponse'
+        '400':
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+        '402':
+          description: Tenant daily budget exceeded.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+        '403':
+          description: Agent not in tenant allowedAgents, or rate/quota exceeded.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+        '429':
+          description: Rate limit or concurrent-run cap exceeded.
+          headers:
+            Retry-After:
+              schema: { type: integer }
+              description: Seconds to wait before retrying.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+  /v1/tasks/{taskID}:
+    get:
+      tags: [tasks]
+      summary: Get task status and result
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: taskID
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          content: { application/json: { schema: { $ref: '#/components/schemas/TaskResponse' } } }
+        '404':
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    delete:
+      tags: [tasks]
+      summary: Cancel a running/pending/waiting task
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: taskID
+          required: true
+          schema: { type: string }
+      responses:
+        '204':
+          description: Task cancelled.
+        '404':
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+        '409':
+          description: Task already in a terminal state.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+  /v1/tasks/{taskID}/stream:
+    get:
+      tags: [tasks]
+      summary: Stream tokens and lifecycle events via SSE
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: taskID
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Event stream (text/event-stream).
+          content:
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/SSEEvent'
+        '404':
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+        '503':
+          description: Streaming unavailable (no state store configured).
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+  /v1/tasks/{taskID}/answer:
+    post:
+      tags: [tasks]
+      summary: Submit a clarification answer to a WaitingForInput task
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: taskID
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClarifyAnswer'
+      responses:
+        '200':
+          description: Answer accepted and forwarded to the agent.
+          content: { application/json: { schema: { $ref: '#/components/schemas/AnswerResponse' } } }
+        '409':
+          description: Task is not currently waiting for input.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }

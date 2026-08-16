@@ -55,7 +55,8 @@ func testProviderVolumes() ([]corev1.Volume, []corev1.VolumeMount) {
 		}
 }
 
-func TestBuild_AgentRunPod(t *testing.T) {
+func TestBuild_AgentRunPod(t *testing.T) { //nolint:gocyclo
+
 	agent := testAgent()
 	pvols, pmounts := testProviderVolumes()
 
@@ -144,15 +145,18 @@ func TestBuild_AgentRunPod(t *testing.T) {
 	// Find the model-router — it may not be first if framework.Inject added an init container.
 	var routerC *corev1.Container
 	for i := range pod.Spec.InitContainers {
-		if pod.Spec.InitContainers[i].Name == "model-router" {
+		if pod.Spec.InitContainers[i].Name == "model-router" { //nolint:goconst
+
 			routerC = &pod.Spec.InitContainers[i]
 			break
 		}
 	}
-	if routerC == nil {
+	if routerC == nil { //nolint:staticcheck
+
 		t.Fatal("model-router init container not found")
 	}
-	if routerC.Image != "registry.example.com/model-router:v1" {
+	if routerC.Image != "registry.example.com/model-router:v1" { //nolint:staticcheck
+
 		t.Errorf("expected model-router image, got %q", routerC.Image)
 	}
 	if routerC.RestartPolicy == nil || *routerC.RestartPolicy != corev1.ContainerRestartPolicyAlways {
@@ -249,10 +253,12 @@ func TestBuild_DeploymentPod(t *testing.T) {
 			break
 		}
 	}
-	if routerC == nil {
+	if routerC == nil { //nolint:staticcheck
+
 		t.Fatal("model-router not found")
 	}
-	if routerC.Resources.Limits.Memory().String() != "256Mi" {
+	if routerC.Resources.Limits.Memory().String() != "256Mi" { //nolint:staticcheck
+
 		t.Errorf("expected router memory limit 256Mi, got %s", routerC.Resources.Limits.Memory().String())
 	}
 }
@@ -303,10 +309,12 @@ func TestBuild_WarmPod(t *testing.T) {
 			break
 		}
 	}
-	if routerC == nil {
+	if routerC == nil { //nolint:staticcheck
+
 		t.Fatal("model-router not found")
 	}
-	if len(routerC.Ports) != 3 {
+	if len(routerC.Ports) != 3 { //nolint:staticcheck
+
 		t.Errorf("expected 3 ports on warm model-router, got %d", len(routerC.Ports))
 	}
 	foundWarmMgmt := false
@@ -328,6 +336,110 @@ func TestBuild_WarmPod(t *testing.T) {
 	if pod.Spec.SecurityContext == nil || pod.Spec.SecurityContext.RunAsNonRoot == nil || !*pod.Spec.SecurityContext.RunAsNonRoot {
 		t.Error("expected security hardening on warm pod")
 	}
+}
+
+// TestBuild_WarmPodLocalCache verifies the disk-backed emptyDir that supplements
+// Redis is attached to the model-router sidecar ONLY when WarmLocalCacheEnabled,
+// and that it is absent (and one-shot pods are unaffected) otherwise.
+func TestBuild_WarmPodLocalCache(t *testing.T) {
+	agent := testAgent()
+	sizeLimit := resource.MustParse("256Mi")
+
+	base := PodConfig{
+		GenerateName:     "warm-dep-",
+		Namespace:        "default",
+		Agent:            agent,
+		TokenSecretName:  "token",
+		ServiceAccount:   "sa",
+		RestartPolicy:    corev1.RestartPolicyNever,
+		ModelRouterImage: "router:v1",
+		RouterConfigName: "cfg",
+		RouterProbePort:  9090,
+	}
+
+	t.Run("enabled attaches volume + mount + env to model-router", func(t *testing.T) {
+		cfg := base
+		cfg.WarmLocalCacheEnabled = true
+		cfg.WarmLocalCacheSizeLimit = &sizeLimit
+		pod := Build(cfg)
+
+		var routerC *corev1.Container
+		for i := range pod.Spec.InitContainers {
+			if pod.Spec.InitContainers[i].Name == "model-router" {
+				routerC = &pod.Spec.InitContainers[i]
+			}
+		}
+		if routerC == nil { //nolint:staticcheck
+
+			t.Fatal("model-router sidecar not found")
+		}
+		hasMount := false
+		for _, m := range routerC.VolumeMounts { //nolint:staticcheck
+
+			if m.Name == WarmCacheVolName && m.MountPath == WarmCacheMountDir {
+				hasMount = true
+			}
+		}
+		if !hasMount {
+			t.Errorf("expected warm cache mount on model-router; mounts=%v", routerC.VolumeMounts)
+		}
+		hasEnv := false
+		for _, e := range routerC.Env {
+			if e.Name == "AGENTORC_WARM_CACHE_DIR" && e.Value == WarmCacheMountDir {
+				hasEnv = true
+			}
+		}
+		if !hasEnv {
+			t.Errorf("expected AGENTORC_WARM_CACHE_DIR env on model-router; env=%v", routerC.Env)
+		}
+		hasVol := false
+		var vol corev1.Volume
+		for _, v := range pod.Spec.Volumes {
+			if v.Name == WarmCacheVolName {
+				hasVol = true
+				vol = v
+			}
+		}
+		if !hasVol {
+			t.Fatal("expected warm cache volume at pod level")
+		}
+		if vol.EmptyDir == nil {
+			t.Fatal("expected EmptyDir volume source")
+		}
+		if vol.EmptyDir.Medium != corev1.StorageMediumDefault {
+			t.Errorf("expected disk-backed (default medium) emptyDir, got %s", vol.EmptyDir.Medium)
+		}
+		if vol.EmptyDir.SizeLimit == nil || vol.EmptyDir.SizeLimit.Cmp(sizeLimit) != 0 {
+			t.Errorf("expected SizeLimit 256Mi, got %v", vol.EmptyDir.SizeLimit)
+		}
+
+		// The agent container must NOT receive the cache mount/env (it reaches
+		// the router over localhost).
+		agentC := pod.Spec.Containers[0]
+		if agentC.Name != "agent" {
+			t.Fatalf("expected first container to be 'agent', got %q", agentC.Name)
+		}
+		for _, m := range agentC.VolumeMounts {
+			if m.Name == WarmCacheVolName {
+				t.Error("agent container must not mount the warm cache volume")
+			}
+		}
+		for _, e := range agentC.Env {
+			if e.Name == "AGENTORC_WARM_CACHE_DIR" {
+				t.Error("agent container must not receive AGENTORC_WARM_CACHE_DIR")
+			}
+		}
+	})
+
+	t.Run("disabled leaves pod unchanged", func(t *testing.T) {
+		cfg := base // WarmLocalCacheEnabled defaults to false
+		pod := Build(cfg)
+		for _, v := range pod.Spec.Volumes {
+			if v.Name == WarmCacheVolName {
+				t.Error("warm cache volume should be absent when disabled")
+			}
+		}
+	})
 }
 
 func TestBuild_HTTPModeReadinessProbe(t *testing.T) {
@@ -426,10 +538,12 @@ func TestBuild_CustomRouterResources(t *testing.T) {
 			break
 		}
 	}
-	if routerC == nil {
+	if routerC == nil { //nolint:staticcheck
+
 		t.Fatal("model-router not found")
 	}
-	if routerC.Resources.Requests.Cpu().String() != "200m" {
+	if routerC.Resources.Requests.Cpu().String() != "200m" { //nolint:staticcheck
+
 		t.Errorf("expected custom CPU request 200m, got %s", routerC.Resources.Requests.Cpu().String())
 	}
 }

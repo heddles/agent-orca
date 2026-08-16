@@ -17,15 +17,19 @@ limitations under the License.
 package apiserver
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
+	authv1 "k8s.io/api/authentication/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -43,22 +47,84 @@ type ExternalAPIServer struct {
 	auth      *ExternalAuth
 	store     state.Store
 	hasStore  bool
+
+	// rateLimiter enforces per-tenant submission rate limits. nil disables it.
+	rateLimiter *RateLimiter
+
+	// Admin surface (under /admin/*) authenticates via Kubernetes SA token +
+	// the `agentorc.io/admin` label, separately from the tenant JWT auth above.
+	// Both fields are injectable so requireAdminAuth is fully unit-testable.
+	reviewSAToken func(ctx context.Context, token string) (username string, ok bool, err error)
+	isAdminSA     func(ctx context.Context, namespace, name string) (bool, error)
 }
 
 // NewExternalAPIServer creates a new external API server.
 func NewExternalAPIServer(k8s kubernetes.Interface, crdClient client.Client, auth *ExternalAuth, hasStore bool, store state.Store) *ExternalAPIServer {
-	return &ExternalAPIServer{
-		k8s:       k8s,
-		crdClient: crdClient,
-		auth:      auth,
-		store:     store,
-		hasStore:  hasStore,
+	s := &ExternalAPIServer{
+		k8s:         k8s,
+		crdClient:   crdClient,
+		auth:        auth,
+		store:       store,
+		hasStore:    hasStore,
+		rateLimiter: auth.rateLimiter,
 	}
+	s.reviewSAToken = s.defaultReviewSAToken
+	s.isAdminSA = s.defaultIsAdminSA
+	return s
+}
+
+// adminNamespace is the namespace where TenantConfig CRs and their client
+// secrets live (defaults to the operator's own namespace).
+func (s *ExternalAPIServer) adminNamespace() string {
+	if ns := os.Getenv("POD_NAMESPACE"); ns != "" {
+		return ns
+	}
+	return "agent-orc-system" //nolint:goconst
+}
+
+// defaultReviewSAToken authenticates a Kubernetes SA token via TokenReview
+// (no audience restriction — the SA token may be a long-lived TokenRequest).
+func (s *ExternalAPIServer) defaultReviewSAToken(ctx context.Context, token string) (string, bool, error) {
+	if s.k8s == nil {
+		return "", false, fmt.Errorf("no kubernetes client configured for admin auth")
+	}
+	tr := &authv1.TokenReview{
+		Spec: authv1.TokenReviewSpec{Token: token},
+	}
+	res, err := s.k8s.AuthenticationV1().TokenReviews().Create(ctx, tr, metav1.CreateOptions{})
+	if err != nil {
+		return "", false, fmt.Errorf("token review: %w", err)
+	}
+	if !res.Status.Authenticated {
+		return "", false, nil
+	}
+	return res.Status.User.Username, true, nil
+}
+
+// defaultIsAdminSA returns true iff the ServiceAccount has the admin label.
+func (s *ExternalAPIServer) defaultIsAdminSA(ctx context.Context, namespace, name string) (bool, error) {
+	if s.k8s == nil {
+		return false, fmt.Errorf("no kubernetes client configured for admin auth")
+	}
+	sa, err := s.k8s.CoreV1().ServiceAccounts(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return false, err
+	}
+	return sa.Labels["agentorc.io/admin"] == "true", nil
 }
 
 // Handler returns an http.Handler for the external API.
 func (s *ExternalAPIServer) Handler() http.Handler {
 	mux := http.NewServeMux()
+
+	// Observability (public — for scrapers/probes).
+	mux.HandleFunc("/healthz", healthzHandler)
+	mux.HandleFunc("/readyz", readyzHandlerBuilder(k8sReady(s.k8s), s.hasStore, s.store))
+	mux.HandleFunc("/version", versionHandler)
+	mux.Handle("/metrics", metricsHandler())
+
+	// OpenAPI contract (unauthenticated — for SDK / tooling discovery).
+	mux.HandleFunc("/openapi.json", s.handleExternalOpenAPI)
 
 	// Token endpoint (unauthenticated).
 	mux.HandleFunc("/oauth/token", s.auth.HandleTokenRequest)
@@ -67,7 +133,23 @@ func (s *ExternalAPIServer) Handler() http.Handler {
 	mux.HandleFunc("/v1/tasks", s.handleTasks)
 	mux.HandleFunc("/v1/tasks/", s.handleTaskByID)
 
-	return corsMiddleware(s.auth.Middleware(mux))
+	// /admin/* is a separate surface: authenticated by Kubernetes ServiceAccount
+	// token + the `agentorc.io/admin` label (requireAdminAuth), NOT by the tenant
+	// JWT middleware above.
+	adminMux := http.NewServeMux()
+	adminMux.HandleFunc("/admin/tenants", s.handleAdminTenants)
+	adminMux.HandleFunc("/admin/tenants/", s.handleAdminTenantByID)
+
+	// instrument sits INSIDE the auth middleware so authenticated requests carry
+	// the tenant identity into the audit log. /admin/* is wrapped by the admin
+	// SA auth layer instead.
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/admin/") {
+			corsMiddleware(instrument("admin", s.requireAdminAuth(adminMux))).ServeHTTP(w, r)
+			return
+		}
+		corsMiddleware(s.auth.Middleware(instrument("external", mux))).ServeHTTP(w, r)
+	})
 }
 
 // TaskSubmission is the request body for POST /v1/tasks.
@@ -77,11 +159,20 @@ type TaskSubmission struct {
 	Timeout  string            `json:"timeout,omitempty"`
 	Callback *TaskCallback     `json:"callback,omitempty"`
 	Metadata map[string]string `json:"metadata,omitempty"`
+	// Egress configures durable result delivery to an external message bus.
+	// +optional
+	Egress *agentorcv1alpha1.EgressConfig `json:"egress,omitempty"`
 }
 
 // TaskCallback configures webhook delivery on task completion.
 type TaskCallback struct {
-	URL       string `json:"url"`
+	URL string `json:"url"`
+	// SecretRef is the name of a Kubernetes Secret in the tenant namespace.
+	// When set, the controller reads its `hmac-key` value and signs each
+	// delivery with an `X-Agentorc-Signature: sha256=<hex>` header (HMAC-SHA256
+	// over the raw JSON body) plus an `X-Agentorc-Timestamp`. Receivers verify
+	// the signature with the same shared key. When absent, the callback is
+	// delivered unsigned (backward compatible).
 	SecretRef string `json:"secretRef,omitempty"`
 }
 
@@ -134,7 +225,8 @@ func (s *ExternalAPIServer) handleTaskByID(w http.ResponseWriter, r *http.Reques
 	switch {
 	case r.Method == http.MethodGet && action == "":
 		s.getTask(w, r, taskID)
-	case r.Method == http.MethodGet && action == "stream":
+	case r.Method == http.MethodGet && action == "stream": //nolint:goconst
+
 		s.streamTask(w, r, taskID)
 	case r.Method == http.MethodPost && action == "answer":
 		s.answerTask(w, r, taskID)
@@ -182,6 +274,22 @@ func (s *ExternalAPIServer) createTask(w http.ResponseWriter, r *http.Request) {
 		Name: req.Agent, Namespace: tenant.Namespace,
 	}, &agent); err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"agent %q not found in namespace %q"}`, req.Agent, tenant.Namespace), http.StatusNotFound)
+		return
+	}
+
+	// Enforce tenant quotas (rate limit, concurrent runs, daily budget) before
+	// allocating a pod. This is what stops a runaway or compromised client from
+	// burning a tenant's daily budget in a burst.
+	quotaErr := enforceQuotas(r.Context(), s.crdClient, s.rateLimiter, tenant)
+	if qerr, ok := quotaErr.(*QuotaError); ok && qerr != nil {
+		if qerr.RetryAfter > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(int(qerr.RetryAfter.Seconds())))
+		}
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, qerr.Message), qerr.Code)
+		return
+	}
+	if quotaErr != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"admission failed: %s"}`, quotaErr), http.StatusInternalServerError)
 		return
 	}
 
@@ -238,6 +346,11 @@ func (s *ExternalAPIServer) createTask(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Set egress.
+	if req.Egress != nil {
+		run.Spec.Egress = req.Egress
+	}
+
 	if err := s.crdClient.Create(r.Context(), run); err != nil {
 		slog.Error("creating task AgentRun", "err", err)
 		http.Error(w, fmt.Sprintf(`{"error":"creating task: %s"}`, err), http.StatusInternalServerError)
@@ -260,7 +373,7 @@ func (s *ExternalAPIServer) createTask(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 // getTask handles GET /v1/tasks/{id}.
@@ -287,7 +400,7 @@ func (s *ExternalAPIServer) getTask(w http.ResponseWriter, r *http.Request, task
 
 	resp := s.runToTaskResponse(&run)
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 // listTasks handles GET /v1/tasks?agent=X&status=Y.
@@ -327,7 +440,7 @@ func (s *ExternalAPIServer) listTasks(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	_ = json.NewEncoder(w).Encode(map[string]any{
 		"tasks": tasks,
 		"count": len(tasks),
 	})
@@ -372,7 +485,7 @@ func (s *ExternalAPIServer) streamTask(w http.ResponseWriter, r *http.Request, t
 	}
 
 	// Emit initial status event.
-	fmt.Fprintf(w, "event: status\ndata: %s\n\n", mustJSON(map[string]string{
+	_, _ = fmt.Fprintf(w, "event: status\ndata: %s\n\n", mustJSON(map[string]string{
 		"phase": string(run.Status.Phase),
 	}))
 	flusher.Flush()
@@ -381,7 +494,7 @@ func (s *ExternalAPIServer) streamTask(w http.ResponseWriter, r *http.Request, t
 	streamKey := fmt.Sprintf("tokens:%s:%s", tenant.Namespace, taskID)
 	tokenCh, err := s.store.TailTokens(r.Context(), streamKey)
 	if err != nil {
-		fmt.Fprintf(w, "event: error\ndata: %s\n\n", mustJSON(map[string]string{
+		_, _ = fmt.Fprintf(w, "event: error\ndata: %s\n\n", mustJSON(map[string]string{
 			"error": "failed to subscribe to token stream",
 		}))
 		flusher.Flush()
@@ -393,7 +506,7 @@ func (s *ExternalAPIServer) streamTask(w http.ResponseWriter, r *http.Request, t
 			// Empty token is the done sentinel.
 			break
 		}
-		fmt.Fprintf(w, "event: token\ndata: %s\n\n", mustJSON(map[string]string{
+		_, _ = fmt.Fprintf(w, "event: token\ndata: %s\n\n", mustJSON(map[string]string{
 			"content": token,
 		}))
 		flusher.Flush()
@@ -404,7 +517,7 @@ func (s *ExternalAPIServer) streamTask(w http.ResponseWriter, r *http.Request, t
 		Name: taskID, Namespace: tenant.Namespace,
 	}, &run); err == nil {
 		resp := s.runToTaskResponse(&run)
-		fmt.Fprintf(w, "event: complete\ndata: %s\n\n", mustJSON(resp))
+		_, _ = fmt.Fprintf(w, "event: complete\ndata: %s\n\n", mustJSON(resp))
 		flusher.Flush()
 	}
 }
@@ -467,7 +580,7 @@ func (s *ExternalAPIServer) answerTask(w http.ResponseWriter, r *http.Request, t
 
 	slog.Info("Clarification answer submitted", "task", taskID, "tenant", tenant.TenantName)
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "accepted"})
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "accepted"})
 }
 
 // cancelTask handles DELETE /v1/tasks/{id}.
@@ -542,8 +655,8 @@ func (s *ExternalAPIServer) runToTaskResponse(run *agentorcv1alpha1.AgentRun) Ta
 	// Reconstruct metadata from annotations.
 	meta := make(map[string]string)
 	for k, v := range run.Annotations {
-		if strings.HasPrefix(k, "agentorc.io/meta-") {
-			meta[strings.TrimPrefix(k, "agentorc.io/meta-")] = v
+		if after, ok := strings.CutPrefix(k, "agentorc.io/meta-"); ok {
+			meta[after] = v
 		}
 	}
 	if len(meta) > 0 {
@@ -553,7 +666,7 @@ func (s *ExternalAPIServer) runToTaskResponse(run *agentorcv1alpha1.AgentRun) Ta
 }
 
 // mustJSON marshals v to JSON, returning "{}" on error.
-func mustJSON(v interface{}) string {
+func mustJSON(v any) string {
 	b, err := json.Marshal(v)
 	if err != nil {
 		return "{}"

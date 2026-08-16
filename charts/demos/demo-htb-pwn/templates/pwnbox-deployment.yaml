@@ -1,0 +1,190 @@
+---
+# Privileged pwnbox pod: HTB OpenVPN tunnel + MCP toolbelt server.
+#
+# This is a PLAIN Kubernetes Deployment (not an agent-orc Agent), so its security
+# posture is declared directly in the pod spec — it does NOT use the operator's
+# PodSecurityOverride. The companion agent (red-commander) stays fully restricted
+# and calls these tools over the cluster network via the MCPServer CR.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: red-pwnbox
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "demo.labels" . | nindent 4 }}
+    app: red-pwnbox
+spec:
+  selector:
+    app: red-pwnbox
+  ports:
+    - port: 8080
+      targetPort: 8080
+      protocol: TCP
+      name: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: red-pwnbox
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "demo.labels" . | nindent 4 }}
+    app: red-pwnbox
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: red-pwnbox
+  template:
+    metadata:
+      labels:
+        {{- include "demo.labels" . | nindent 8 }}
+        app: red-pwnbox
+    spec:
+      # red-pwnbox needs root + NET_ADMIN + /dev/net/tun to bring up the OpenVPN tunnel.
+      securityContext:
+        runAsUser: 0
+        runAsGroup: 0
+        fsGroup: 0
+      hostIPC: false
+      containers:
+        - name: pwnbox
+          image: "{{ .Values.pwnbox.image.repository }}:{{ .Values.pwnbox.image.tag }}"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: PORT
+              value: "8080"
+            - name: OVPN_FILE_NAME
+              value: "{{ .Values.openvpn.fileName }}"
+            # EXPLOIT_FETCH_ALLOWLIST gates fetch-exploit's remote-URL path (application-layer).
+            # Even when internetRecon opens 443 in the egress NP, the MCP server only curls
+            # hosts listed here; empty => ExploitDB/searchsploit only.
+            {{- if .Values.pwnboxEgress.exploitFetchAllowlist }}
+            - name: EXPLOIT_FETCH_ALLOWLIST
+              value: "{{ .Values.pwnboxEgress.exploitFetchAllowlist }}"
+            {{- else }}
+            - name: EXPLOIT_FETCH_ALLOWLIST
+              value: ""
+            {{- end }}
+            {{- range .Values.pwnbox.env }}
+            - name: {{ .name }}
+              value: {{ .value | quote }}
+            {{- end }}
+            {{- if and .Values.redis.serviceName (ne .Values.redis.serviceName "") }}
+            - name: REDIS_ADDRESS
+              value: "{{ .Values.redis.serviceName }}.{{ .Values.cluster.systemNamespace }}.svc.cluster.local:{{ .Values.redis.port }}"
+            {{- end }}
+            {{- if .Values.redis.password }}
+            - name: REDIS_PASSWORD
+              value: "{{ .Values.redis.password }}"
+            {{- end }}
+          securityContext:
+            privileged: true
+            capabilities:
+              add: ["NET_ADMIN"]
+              drop: ["ALL"]
+            # NET_ADMIN alone (non-root) can create the tun device; we also grant root
+            # since openvpn traditionally runs as root for route configuration.
+            runAsUser: 0
+            readOnlyRootFilesystem: false
+          volumeMounts:
+            - name: htb-ovpn
+              mountPath: /etc/htb
+              readOnly: true
+            - name: tun
+              mountPath: /dev/net/tun
+              readOnly: false
+            {{- if .Values.pwnbox.exploitWorkspace.enabled }}
+            # Persistent exploit workspace (see pwnbox-pvc.yaml). Mounts over
+            # EXPLOIT_DIR so payloads/implants survive pod restarts.
+            - name: exploit-workspace
+              mountPath: /tmp/exploits
+              readOnly: false
+            {{- end }}
+          ports:
+            - containerPort: 8080
+              name: http
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 15
+          resources:
+            requests: { cpu: "250m", memory: 256Mi }
+            limits:   { cpu: "2", memory: 2Gi }
+      volumes:
+        - name: htb-ovpn
+          secret:
+            secretName: htb-ovpn
+        - name: tun
+          hostPath:
+            path: /dev/net/tun
+            type: CharDevice
+        {{- if .Values.pwnbox.exploitWorkspace.enabled }}
+        - name: exploit-workspace
+          persistentVolumeClaim:
+            claimName: red-pwnbox-exploits
+        {{- end }}
+      # Restrict to the red-team namespace; no hostPath/network abuse beyond.
+      restartPolicy: Always
+---
+# Egress NetworkPolicy for the pwnbox pod (deny-by-default).
+# Allowed egress: HTB OpenVPN endpoint + DNS + K8s API (none needed for TokenReview
+# since the MCP server does not verify callers — allowedAgents gates admission).
+# Allowed ingress: from the red-commander agent pods (in this namespace) on :8080.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: red-pwnbox-egress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "demo.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: red-pwnbox
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Only the red-commander agent pods may call the MCP toolbelt.
+    - ports:
+        - protocol: TCP
+          port: 8080
+      from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.namespace.name }}
+  egress:
+    # Kubernetes DNS (the openvpn config hostname must resolve).
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # HTB OpenVPN tunnel endpoint. Allow both UDP (default) and TCP 443 (openvpn-over-tls).
+    - ports:
+        - protocol: {{ .Values.openvpn.protocol | upper | default "UDP" }}
+          port: {{ .Values.openvpn.port | default 1194 }}
+        - protocol: TCP
+          port: 443
+    # ── OPTIONAL external TI/template/wordlist egress (default: DENY) ───────────
+    # Gated by pwnboxEgress.internetRecon (default false = deny-by-default). When true,
+    # opens TCP 443 outbound for Threat-Intelligence feeds, nuclei templates (defrag),
+    # and wordlist repos the expanded toolbelt needs (Shodan, OTX, VT, Censys, GitHub
+    # raw). k8s NetworkPolicy has no native FQDN allowlisting, so the hard boundary for
+    # fetch-exploit remains the application-layer EXPLOIT_FETCH_ALLOWLIST; internetRecon
+    # just opens the network plane for the TI/template tools.
+    {{- if .Values.pwnboxEgress.internetRecon }}
+    - ports:
+        - protocol: TCP
+          port: 443
+{{- end }}

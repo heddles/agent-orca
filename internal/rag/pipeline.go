@@ -21,13 +21,14 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"log/slog"
+	"maps"
 )
 
 // Document is a single document to ingest.
 type Document struct {
 	ID       string
 	Content  string
-	Metadata map[string]interface{}
+	Metadata map[string]any
 }
 
 // IngestResult contains counts from an ingestion operation.
@@ -57,7 +58,7 @@ func IngestDocuments(
 	if err != nil {
 		return nil, fmt.Errorf("connecting to qdrant: %w", err)
 	}
-	defer qClient.Close()
+	defer func() { _ = qClient.Close() }()
 
 	// Ensure collection exists.
 	if err := qClient.EnsureCollection(ctx, collection, dimensions); err != nil {
@@ -93,14 +94,12 @@ func IngestDocuments(
 		// Build Qdrant points for this document.
 		points := make([]Point, len(chunks))
 		for i, chunk := range chunks {
-			payload := map[string]interface{}{
+			payload := map[string]any{
 				"text":        chunk.Text,
 				"doc_id":      chunk.DocID,
 				"chunk_index": chunk.Index,
 			}
-			for k, v := range chunk.Metadata {
-				payload[k] = v
-			}
+			maps.Copy(payload, chunk.Metadata)
 			points[i] = Point{
 				ID:      pointID(chunk.DocID, chunk.Index),
 				Vector:  vectors[i],
@@ -123,6 +122,6 @@ func IngestDocuments(
 
 // pointID generates a deterministic ID from doc ID and chunk index.
 func pointID(docID string, chunkIndex int) string {
-	h := sha256.Sum256([]byte(fmt.Sprintf("%s:%d", docID, chunkIndex)))
+	h := sha256.Sum256(fmt.Appendf(nil, "%s:%d", docID, chunkIndex))
 	return fmt.Sprintf("%x", h[:16])
 }

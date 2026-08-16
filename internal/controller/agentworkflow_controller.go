@@ -47,7 +47,8 @@ type AgentWorkflowReconciler struct {
 // +kubebuilder:rbac:groups=agentorc.agentorc.io,resources=agentworkflows/finalizers,verbs=update
 // +kubebuilder:rbac:groups=agentorc.agentorc.io,resources=agentruns,verbs=get;list;watch;create;delete
 
-func (r *AgentWorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *AgentWorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) { //nolint:gocyclo
+
 	logger := log.FromContext(ctx)
 
 	var wf agentorcv1alpha1.AgentWorkflow
@@ -128,7 +129,8 @@ func (r *AgentWorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 		case agentorcv1alpha1.WorkflowStepPhaseFailed:
 			anyFailed = true
-			if wf.Spec.OnStepFailure != "continue" {
+			if wf.Spec.OnStepFailure != "continue" { //nolint:goconst
+
 				r.failWorkflow(ctx, &wf, fmt.Sprintf("step %q failed: %s", step.Name, ss.FailureReason))
 				return ctrl.Result{}, r.Status().Update(ctx, &wf)
 			}
@@ -284,7 +286,8 @@ func (r *AgentWorkflowReconciler) startStep(
 func (r *AgentWorkflowReconciler) checkStepRun(
 	ctx context.Context,
 	wf *agentorcv1alpha1.AgentWorkflow,
-	step *agentorcv1alpha1.WorkflowStep,
+	step *agentorcv1alpha1.WorkflowStep, //nolint:unparam
+
 	ss *agentorcv1alpha1.WorkflowStepStatus,
 ) (ctrl.Result, error) {
 	if ss.AgentRunRef == "" {

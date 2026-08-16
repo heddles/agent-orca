@@ -40,10 +40,10 @@ func RunHTTPInput(ctx context.Context, cfg HTTPInputConfig, store state.Store) e
 	addr := fmt.Sprintf("localhost:%d", cfg.Port)
 
 	// Poll until the agent's TCP port is open.
-	for i := 0; i < 120; i++ {
+	for i := range 120 {
 		conn, err := net.DialTimeout("tcp", addr, time.Second)
 		if err == nil {
-			conn.Close()
+			_ = conn.Close()
 			break
 		}
 		select {
@@ -77,20 +77,24 @@ func RunHTTPInput(ctx context.Context, cfg HTTPInputConfig, store state.Store) e
 
 	// Use a dedicated HTTP client with a timeout so that a hanging agent HTTP
 	// handler does not block the run indefinitely. The timeout covers the full
-	// request-response cycle (connection + sending + reading).
+	// request-response cycle (connection + sending + reading). The previous
+	// hard-coded 60s was far too short for LLM agents that perform many
+	// sequential reasoning/tool calls and routinely caused in-progress sessions
+	// to be killed; default to 30m (overridable via HTTPInputConfig.TimeoutSeconds).
+	timeout := httpInputTimeout(cfg)
 	client := &http.Client{
-		Timeout: 60 * time.Second,
+		Timeout: timeout,
 	}
 
 	resp, err := client.Do(req)
 	if err != nil {
-		errMsg := fmt.Sprintf("ERROR: Agent HTTP handler did not respond within 60s and was timed out.\n\nThis usually means the agent's HTTP handler code is hanging (e.g. infinite loop, blocking I/O, deadlock, or a single-threaded HTTP server).\n\nDebug with: kubectl logs <agent-pod-name> -n <namespace>\n\nOriginal error: %v", err)
+		errMsg := fmt.Sprintf("ERROR: Agent HTTP handler did not respond within %s and was timed out.\n\nThis usually means the agent's HTTP handler code is hanging (e.g. infinite loop, blocking I/O, deadlock, or a single-threaded HTTP server).\n\nIf this is a long-trajectory task, raise the timeout via HTTPInputConfig.TimeoutSeconds (default 30m).\n\nDebug with: kubectl logs <agent-pod-name> -n <namespace>\n\nOriginal error: %v", timeout, err)
 		if store != nil {
 			_ = store.SaveHTTPOutput(ctx, cfg.RunName, errMsg)
 		}
 		return fmt.Errorf("posting http input (agent HTTP handler may be hanging): %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -113,4 +117,16 @@ func RunHTTPInput(ctx context.Context, cfg HTTPInputConfig, store state.Store) e
 	}
 
 	return nil
+}
+
+// httpInputTimeout returns the deadline the model-router imposes when waiting for an
+// agent's HTTP handler to respond to a run. The previous hard-coded 60s was far too
+// short for LLM agents performing many sequential reasoning/tool calls and routinely
+// killed in-progress (long-trajectory) sessions mid-task. It now defaults to 30m and
+// is overridable per HTTPInputConfig so long chats can complete.
+func httpInputTimeout(cfg HTTPInputConfig) time.Duration {
+	if cfg.TimeoutSeconds > 0 {
+		return time.Duration(cfg.TimeoutSeconds) * time.Second
+	}
+	return 30 * time.Minute
 }

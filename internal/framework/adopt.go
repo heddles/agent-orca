@@ -73,7 +73,7 @@ func Inject(pod *corev1.Pod, runtime agentorcv1alpha1.AgentRuntime, routerBaseUR
 // injectAutogen injects an init container that writes OAI_CONFIG_LIST for AutoGen v0.4.
 // AutoGen reads this JSON file to configure its LLM backend.
 func injectAutogen(pod *corev1.Pod, routerBaseURL string) {
-	configList := []map[string]interface{}{
+	configList := []map[string]any{
 		{
 			"model":    "gpt-4o", // AutoGen uses this as a label; model selection is in the router
 			"base_url": routerBaseURL + "/v1",
@@ -117,13 +117,13 @@ func injectAutogen(pod *corev1.Pod, routerBaseURL string) {
 
 // injectSemanticKernel writes an appsettings.json fragment for Semantic Kernel (C#/Python).
 func injectSemanticKernel(pod *corev1.Pod, routerBaseURL string) {
-	appsettings := map[string]interface{}{
-		"OpenAI": map[string]interface{}{
+	appsettings := map[string]any{
+		"OpenAI": map[string]any{
 			"ChatModelId": "gpt-4o",
 			"Endpoint":    routerBaseURL,
 			"ApiKey":      "$(OPENAI_API_KEY)",
 		},
-		"AzureOpenAI": map[string]interface{}{
+		"AzureOpenAI": map[string]any{
 			"Endpoint": routerBaseURL,
 			"ApiKey":   "$(OPENAI_API_KEY)",
 		},

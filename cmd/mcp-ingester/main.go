@@ -145,7 +145,7 @@ func run(ctx context.Context) error {
 		chunkCfg = rag.DefaultChunkConfig()
 	}
 
-	result, err := rag.IngestDocuments(ctx, docs, cfg.QdrantURL, cfg.CollectionName, uint64(cfg.EmbeddingDims), embedder, chunkCfg)
+	result, err := rag.IngestDocuments(ctx, docs, cfg.QdrantURL, cfg.CollectionName, uint64(cfg.EmbeddingDims), embedder, chunkCfg) //nolint:lll
 	if err != nil {
 		return fmt.Errorf("ingesting documents: %w", err)
 	}
@@ -222,7 +222,7 @@ func runWorkflow(ctx context.Context, client *mcp.Client, cfg *IngestConfig) ([]
 		docs = append(docs, rag.Document{
 			ID:      idBuf.String(),
 			Content: result,
-			Metadata: map[string]interface{}{
+			Metadata: map[string]any{
 				"source":    "mcp",
 				"mcpServer": cfg.MCPServerName,
 				"tool":      cfg.FetchTool,
@@ -250,7 +250,7 @@ func extractItems(result string, cfg *IngestConfig) ([]string, error) {
 		if cfg.ItemField == "" {
 			return nil, fmt.Errorf("itemField is required when itemExtractor is \"jsonObjects\"")
 		}
-		var arr []map[string]interface{}
+		var arr []map[string]any
 		if err := json.Unmarshal([]byte(result), &arr); err != nil {
 			return nil, fmt.Errorf("parsing JSON array of objects: %w", err)
 		}
@@ -269,7 +269,7 @@ func extractItems(result string, cfg *IngestConfig) ([]string, error) {
 		return items, nil
 	case "lines", "":
 		var items []string
-		for _, line := range strings.Split(result, "\n") {
+		for line := range strings.SplitSeq(result, "\n") {
 			line = strings.TrimSpace(line)
 			if line != "" {
 				items = append(items, line)
@@ -328,7 +328,7 @@ func discoverRecursive(ctx context.Context, client *mcp.Client, cfg *IngestConfi
 			continue
 		}
 
-		var arr []map[string]interface{}
+		var arr []map[string]any
 		if err := json.Unmarshal([]byte(result), &arr); err != nil {
 			slog.Warn("Could not parse discover result as JSON array", "path", dir, "err", err)
 			continue

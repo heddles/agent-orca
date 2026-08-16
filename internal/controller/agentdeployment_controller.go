@@ -32,6 +32,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -66,6 +67,9 @@ type AgentDeploymentReconciler struct {
 	// OperatorAPIURL is the base URL of the operator's internal API server.
 	// Injected into the router config so the model-router can call RAG, handoff, etc.
 	OperatorAPIURL string
+	// LLMRequestTimeout is the per-LLM-request timeout written into every router
+	// config (default 1h). Injected from the LLM_REQUEST_TIMEOUT env var.
+	LLMRequestTimeout time.Duration
 }
 
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
@@ -75,6 +79,7 @@ type AgentDeploymentReconciler struct {
 // +kubebuilder:rbac:groups=agentorc.agentorc.io,resources=agents,verbs=get;list
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=serviceaccounts,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get
 
 // Reconcile implements the reconciliation loop for AgentDeployment.
 func (r *AgentDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -292,26 +297,30 @@ func (r *AgentDeploymentReconciler) reconcileDeployment(
 		{Name: "AGENTORC_INPUT_SOURCE", Value: string(inputSourceType)},
 	}
 
+	agentSecretVolumes, agentSecretMounts := podbuilder.ResolveAgentSecretRefs(agent)
+
 	pod := podbuilder.Build(podbuilder.PodConfig{
 		Namespace: namespace,
 		Labels:    labels,
 		Annotations: map[string]string{
 			"agentorc.io/router-config-hash": routerConfigHash,
 		},
-		Agent:             agent,
-		AgentEnv:          agentEnv,
-		TokenSecretName:   tokenSecretName,
-		ServiceAccount:    saName,
-		RestartPolicy:     corev1.RestartPolicyAlways,
-		ModelRouterImage:  r.ModelRouterImage,
-		RouterConfigName:  "agentorc-deploy-" + agentDeploy.Name,
-		ProviderVolumes:   providerVolumes,
-		ProviderMounts:    providerMounts,
-		ToolSecretVolumes: toolSecretVolumes,
-		ToolSecretMounts:  toolSecretMounts,
-		MCPBinVolumes:     mcpBinVolumes,
-		MCPBinMounts:      mcpBinMounts,
-		CloudProvider:     r.CloudProvider,
+		Agent:              agent,
+		AgentEnv:           agentEnv,
+		TokenSecretName:    tokenSecretName,
+		ServiceAccount:     saName,
+		RestartPolicy:      corev1.RestartPolicyAlways,
+		ModelRouterImage:   r.ModelRouterImage,
+		RouterConfigName:   "agentorc-deploy-" + agentDeploy.Name,
+		ProviderVolumes:    providerVolumes,
+		ProviderMounts:     providerMounts,
+		ToolSecretVolumes:  toolSecretVolumes,
+		ToolSecretMounts:   toolSecretMounts,
+		MCPBinVolumes:      mcpBinVolumes,
+		MCPBinMounts:       mcpBinMounts,
+		AgentSecretVolumes: agentSecretVolumes,
+		AgentSecretMounts:  agentSecretMounts,
+		CloudProvider:      r.CloudProvider,
 	})
 
 	if isNew {
@@ -344,8 +353,8 @@ func (r *AgentDeploymentReconciler) reconcileDeployment(
 		// the Deployment controller modifies the object concurrently.
 		deployBase := k8sDeploy.DeepCopy()
 		k8sDeploy.Spec.Replicas = replicas
-		k8sDeploy.Spec.Template.ObjectMeta.Labels = pod.Labels
-		k8sDeploy.Spec.Template.ObjectMeta.Annotations = pod.Annotations
+		k8sDeploy.Spec.Template.Labels = pod.Labels
+		k8sDeploy.Spec.Template.Annotations = pod.Annotations
 		k8sDeploy.Spec.Template.Spec = pod.Spec
 		if err := r.Patch(ctx, &k8sDeploy, client.MergeFrom(deployBase)); err != nil {
 			return fmt.Errorf("updating Deployment: %w", err)
@@ -405,7 +414,8 @@ func (r *AgentDeploymentReconciler) syncPodStatus(
 }
 
 // buildDeploymentRouterConfig resolves ModelSelector + Tools for an AgentDeployment.
-func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig(
+func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig( //nolint:gocyclo
+
 	ctx context.Context,
 	deploy *agentorcv1alpha1.AgentDeployment,
 	agent *agentorcv1alpha1.Agent,
@@ -487,6 +497,7 @@ func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig(
 		"_write_state": true, "_read_state": true, "_list_state": true, "_delete_state": true,
 		"_memory_store": true, "_mcp_read_resource": true, "_propose_step": true,
 		"_propose_fix": true, "_confirm_fix": true, "_create_workflow": true,
+		"_search_history": true,
 	}
 	for _, toolName := range agent.Spec.Tools {
 		// Skip builtin tools - they're injected separately in the router
@@ -531,7 +542,8 @@ func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig(
 					}
 				}
 				args := tool.Spec.MCPConfig.Args
-				if tool.Spec.MCPConfig.Transport == "stdio" && len(args) > 0 {
+				if tool.Spec.MCPConfig.Transport == "stdio" && len(args) > 0 { //nolint:goconst
+
 					mcpCfg.Cmd = args[0]
 					mcpCfg.Args = args[1:]
 					// Rewrite absolute paths to point into the image volume mount.
@@ -622,6 +634,12 @@ func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig(
 		Name:        "_create_workflow",
 		Description: "Create and execute a deterministic AgentWorkflow with multiple steps. The workflow controller handles sequencing and you receive all step outputs when complete. Use for evaluation pipelines or multi-step tasks requiring guaranteed execution order.",
 		Parameters:  []byte(`{"type":"object","properties":{"name":{"type":"string","description":"Unique workflow name"},"description":{"type":"string"},"steps":{"type":"array","description":"Array of step objects with name, agentRef, input, dependsOn","items":{"type":"object","properties":{"name":{"type":"string"},"agentRef":{"type":"string"},"input":{"type":"string"},"dependsOn":{"type":"array","items":{"type":"string"}},"condition":{"type":"string"},"timeout":{"type":"object"}},"required":["name","agentRef","input"]}},"budgetCap":{"type":"object","properties":{"total":{"type":"string"}}},"timeout":{"type":"object"},"onStepFailure":{"type":"string","enum":["stop","continue"]}},"required":["name","steps"]}`),
+		BackendType: "builtin",
+	})
+	toolDefs = append(toolDefs, router.ToolDefinition{
+		Name:        "_search_history",
+		Description: "Search prior chat turns for this deployment when the information you need is not in your current context. The model-router looks through the local warm-pod cache (an emptyDir mirroring checkpoints) first, then the shared Redis store, scoped to this deployment's prior runs. Use this BEFORE asking the human via _clarify when the answer may already exist in a previous conversation. If found=false, the human must be asked.",
+		Parameters:  []byte(`{"type":"object","properties":{"query":{"type":"string","minLength":1,"description":"The specific facts or topics to search prior conversation turns for. Use concrete terms, not vague phrases."},"topK":{"type":"integer","default":3,"description":"Maximum number of matching turn snippets to return"}},"required":["query"]}`),
 		BackendType: "builtin",
 	})
 
@@ -742,10 +760,42 @@ func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig(
 		checkpointEvery = agent.Spec.Memory.CheckpointEvery
 	}
 
+	// Resolve episodic memory config from the Agent spec (mirrors the per-run wiring
+	// in agentrun_controller.buildRouterConfig). Enabling summarization on warm pools
+	// means long red-team sessions compact (the summarized turns are replaced by a
+	// summary in the live buffer and the checkpoint) instead of being re-truncated
+	// from a giant history every turn.
+	var episodicMemory router.EpisodicMemoryConfig
+	if agent.Spec.Memory != nil && agent.Spec.Memory.EpisodicSummaryEvery > 0 {
+		summaryMSRef := agent.Spec.Memory.SummaryModelSelectorRef
+		if summaryMSRef == "" {
+			summaryMSRef = agent.Spec.ModelSelectorRef
+		}
+		var summaryMS agentorcv1alpha1.ModelSelector
+		if summaryMSRef == agent.Spec.ModelSelectorRef {
+			summaryMS = selector // already loaded as the agent's ModelSelector
+		} else if err := r.Get(ctx, client.ObjectKey{Name: summaryMSRef, Namespace: deploy.Namespace}, &summaryMS); err != nil {
+			slog.Warn("episodic summary ModelSelector not found; summarization disabled",
+				"selector", summaryMSRef, "deployment", deploy.Name)
+		}
+		if len(summaryMS.Spec.Providers) > 0 {
+			sumPW := summaryMS.Spec.Providers[0]
+			var sumMP agentorcv1alpha1.ModelProvider
+			if err := r.Get(ctx, client.ObjectKey{Name: sumPW.Name, Namespace: deploy.Namespace}, &sumMP); err == nil {
+				episodicMemory = router.EpisodicMemoryConfig{
+					SummaryEvery:        agent.Spec.Memory.EpisodicSummaryEvery,
+					SummaryProviderName: sumPW.Name,
+					SummaryModel:        sumMP.Spec.LiteLLMModel,
+				}
+			}
+		}
+	}
+
 	cfg := &router.Config{
 		RunName:                deploy.Name,
 		RunNamespace:           deploy.Namespace,
 		AgentSAName:            saName,
+		DeploymentName:         deploy.Name,
 		DisableClarify:         agent.Spec.DisableClarify,
 		Providers:              providers,
 		Strategy:               selector.Spec.Strategy,
@@ -759,14 +809,22 @@ func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig(
 		CheckpointEvery:        checkpointEvery,
 		CheckpointKey:          fmt.Sprintf("agentorc/deployments/%s/state", deploy.Name),
 		StateConfig:            r.StateConfig,
+		EpisodicMemory:         episodicMemory,
 		KubeAPIURL:             "https://kubernetes.default.svc",
 		OperatorAPIURL:         r.OperatorAPIURL,
+		LLMRequestTimeout:      r.LLMRequestTimeout,
 		SystemPrompt:           agent.Spec.SystemPrompt,
 		KnowledgeBases:         kbConfigs,
 		LongTermMemory:         longTermMemory,
 	}
 
-
+	// Deployment-level tool timeout: long-holding tooling (Sliver sessions, shells)
+	// exceeds the 60s default and would be killed by the model-router's per-tool
+	// safeguard. Propagate the deployment's setting into the warm router config so
+	// claimed warm pods use the same window. 0 → left to ConfigFromEnv's 60s default.
+	if deploy.Spec.ToolExecutionTimeoutSec > 0 {
+		cfg.Safeguards.ToolExecutionTimeoutSec = deploy.Spec.ToolExecutionTimeoutSec
+	}
 
 	// GuardrailPolicy CR: wire agent's guardrailPolicyRef into cfg.Guardrails.
 	if agent.Spec.GuardrailPolicyRef != "" {
@@ -912,7 +970,156 @@ const (
 	labelWarmStatus   = "agentorc.io/warm-status"
 	warmStatusIdle    = "idle"
 	warmStatusClaimed = "claimed"
+	// labelWarmRequests records how many runs a warm pod has served. Incremented on
+	// each claim; when it reaches AgentDeployment.spec.maxRequestsPerPod the pod is
+	// recycled (else it is reused — returned to idle) after the run completes.
+	labelWarmRequests = "agentorc.io/warm-requests"
+
+	// Defaults/caps for warm-pod lifecycle recycling (see effectiveWarmPodMaxAge
+	// and warmPodTokenExpirySeconds).
+	// defaultWarmPodTokenFloor is the minimum SA token lifetime we mint for a
+	// warm pod, even when WarmPodMaxAge is set very low.
+	defaultWarmPodTokenFloor = 1 * time.Hour
+	minTokenExpiry           = 10 * time.Minute
+	// maxTokenExpiry is the Kubernetes TokenRequest API hard ceiling (8760h).
+	// Minted when age-based recycling is disabled (WarmPodMaxAge == 0 / nil) so
+	// an indefinitely-lived warm pod can keep authenticating claim-run POSTs.
+	maxTokenExpiry = 8760 * time.Hour
 )
+
+// effectiveWarmPodMaxAge returns the configured maximum warm-pod age. A nil spec
+// value (the default) returns 0, which DISABLES age-based recycling: warm pods
+// then persist until manually deleted, the agent process exits, config-drift
+// recycle fires (see RecycleOnConfigDrift), or the MaxRequestsPerPod cap is hit.
+// This is the desired default for chat/long-trajectory workloads — pods should
+// not be torn down mid-session. A user opts into age recycling by setting a
+// positive warmPodMaxAge explicitly.
+func effectiveWarmPodMaxAge(deploy *agentorcv1alpha1.AgentDeployment) time.Duration {
+	if deploy == nil || deploy.Spec.WarmPodMaxAge == nil {
+		return 0
+	}
+	return deploy.Spec.WarmPodMaxAge.Duration
+}
+
+// recycleOnConfigDrift returns whether warm pods should be replaced when the
+// router config hash drifts from the snapshot the pod was created with.
+// Defaults to true (preserves existing behavior; a config change rolls the pool).
+func recycleOnConfigDrift(deploy *agentorcv1alpha1.AgentDeployment) bool {
+	if deploy == nil || deploy.Spec.RecycleOnConfigDrift == nil {
+		return true
+	}
+	return *deploy.Spec.RecycleOnConfigDrift
+}
+
+// effectiveWarmLocalCache returns whether the per-warm-pod local disk cache (an
+// emptyDir that supplements Redis) should be attached. Defaults to true when a
+// warm pool is configured (WarmPoolSize > 0), false for one-shot deployments.
+func effectiveWarmLocalCache(deploy *agentorcv1alpha1.AgentDeployment) bool {
+	if deploy != nil && deploy.Spec.WarmLocalCache != nil {
+		return *deploy.Spec.WarmLocalCache
+	}
+	return deploy != nil && deploy.Spec.WarmPoolSize > 0
+}
+
+// warmLocalCacheSizeMi returns the emptyDir SizeLimit for the warm local cache.
+// Defaults to 256Mi when the field is zero.
+func warmLocalCacheSizeMi(deploy *agentorcv1alpha1.AgentDeployment) int { //nolint:unused
+
+	if deploy != nil && deploy.Spec.WarmLocalCacheSizeMi > 0 {
+		return deploy.Spec.WarmLocalCacheSizeMi
+	}
+	return 256
+}
+
+// warmPodTokenExpirySeconds derives the SA token expiry for a warm pod from the
+// configured pod max age, guaranteeing the token outlives the age at which the
+// pod would be recycled. When age recycling is disabled (max age == 0) a
+// long-lived token (the K8s cluster maximum) is minted so an indefinitely-lived
+// pod can keep authenticating claim-run POSTs until it is manually deleted.
+func warmPodTokenExpirySeconds(deploy *agentorcv1alpha1.AgentDeployment) int64 {
+	maxAge := effectiveWarmPodMaxAge(deploy)
+	want := maxAge
+	if want <= 0 {
+		// Age recycling is disabled: mint the longest-lived token K8s allows so the
+		// pod can serve for its entire (manual) lifetime.
+		want = maxTokenExpiry
+	}
+	if want < defaultWarmPodTokenFloor {
+		want = defaultWarmPodTokenFloor
+	}
+	// Clamp to the Kubernetes TokenRequest bounds [minTokenExpiry, maxTokenExpiry].
+	if want > maxTokenExpiry {
+		want = maxTokenExpiry
+	}
+	if want < minTokenExpiry {
+		want = minTokenExpiry
+	}
+	return int64(want / time.Second)
+}
+
+// warmPodDisposition is the fate assigned to a warm pod by classifyWarmPod.
+type warmPodDisposition string
+
+const (
+	// warmDisposeRecycle means the pod is deleted on this reconcile.
+	warmDisposeRecycle warmPodDisposition = "recycle"
+	// warmDisposeClaimed means the pod is in-use and counts toward the pool total;
+	// it is never deleted by the warm-pool reconciler.
+	warmDisposeClaimed warmPodDisposition = "claimed"
+	// warmDisposeIdle means the pod is reusable (ready or still starting).
+	warmDisposeIdle warmPodDisposition = "idle"
+)
+
+// classifyWarmPod decides the fate of a single warm pod during reconciliation.
+// reason is non-empty only when disp == warmDisposeRecycle and explains WHY the
+// pod was recycled; it is surfaced in Kubernetes Events and deployment status so
+// operators can tell why a warm pod disappeared.
+//
+// Ordering mirrors the original inline logic: a terminal pod is reaped first,
+// in-use (claimed) pods are never recycled, then age / config-drift /
+// request-cap checks decide whether an idle pod is rotated.
+func classifyWarmPod(p *corev1.Pod, deploy *agentorcv1alpha1.AgentDeployment, routerConfigHash string, now time.Time) (disp warmPodDisposition, reason string) {
+	if p.Status.Phase == corev1.PodSucceeded || p.Status.Phase == corev1.PodFailed {
+		return warmDisposeRecycle, "terminal-phase"
+	}
+	// In-use (claimed) pods are never recycled here — wait for the run to return
+	// them to idle, then apply the idle-cycle checks below.
+	if p.Labels[labelWarmStatus] == warmStatusClaimed {
+		return warmDisposeClaimed, ""
+	}
+	if maxAge := effectiveWarmPodMaxAge(deploy); maxAge > 0 && now.Sub(p.CreationTimestamp.Time) > maxAge {
+		return warmDisposeRecycle, "token-age-expired"
+	}
+	// Recycle warm pods whose config is stale (e.g. agent spec, router config, or
+	// provider weights changed) so a Deployment rollout refreshes the warm pool.
+	// Pods without the annotation are treated as stale (they predate this feature).
+	// Gated by RecycleOnConfigDrift so users can keep pods alive across drift.
+	if recycleOnConfigDrift(deploy) {
+		if podHash := p.Annotations["agentorc.io/router-config-hash"]; podHash != routerConfigHash {
+			return warmDisposeRecycle, "stale-config"
+		}
+	}
+	// Defensive: recycle idle warm pods that have served their maxRequestsPerPod cap.
+	// The run controller returns pods to idle on completion; this catches any pod
+	// that slipped through (e.g. a run that crashed mid-flight).
+	if maxReq := deploy.Spec.MaxRequestsPerPod; warmPodOverCap(p, maxReq) {
+		return warmDisposeRecycle, fmt.Sprintf("request-cap-%d", maxReq)
+	}
+	return warmDisposeIdle, ""
+}
+
+// recordWarmRecycle emits a Kubernetes Event on the AgentDeployment recording
+// that a warm pod was recycled and why, and stashes the reason/timestamp in
+// status (the caller's status patch persists these in-memory writes).
+func (r *AgentDeploymentReconciler) recordWarmRecycle(deploy *agentorcv1alpha1.AgentDeployment, p *corev1.Pod, reason string) {
+	now := metav1.Now()
+	deploy.Status.WarmPoolLastRecycleReason = reason
+	deploy.Status.WarmPoolLastRecycleAt = &now
+	if r.Recorder != nil {
+		r.Recorder.Eventf(deploy, corev1.EventTypeNormal, "WarmPodRecycled",
+			"warm pod %s recycled for deployment %s (reason: %s)", p.Name, deploy.Name, reason)
+	}
+}
 
 // reconcileWarmPool ensures the pre-warmed pod pool is at the desired size.
 func (r *AgentDeploymentReconciler) reconcileWarmPool(
@@ -961,87 +1168,85 @@ func (r *AgentDeploymentReconciler) reconcileWarmPool(
 		}
 	}
 
-	// List idle warm pods.
+	// List ALL warm pods for this deployment (any warm-status) so in-use (claimed)
+	// pods count toward the desired pool size and are never killed mid-run.
+	// Only idle pods are recycled; only excess IDLE pods are deleted. This prevents
+	// the old over-provision bug where a replacement was spawned while a pod was
+	// busy, causing the just-returned pod to be deleted as "excess" (defeating reuse).
 	var pods corev1.PodList
 	if err := r.List(ctx, &pods,
 		client.InNamespace(deploy.Namespace),
 		client.MatchingLabels{
-			labelWarmPool:   deploy.Name,
-			labelWarmStatus: warmStatusIdle,
+			labelWarmPool: deploy.Name,
 		},
 	); err != nil {
 		return fmt.Errorf("listing warm pods: %w", err)
 	}
 
-	// Delete any warm pods that have completed, failed, or whose SA token has expired.
-	// The token is minted at warm pod creation with a 1-hour expiry; pods older than
-	// that will fail authentication when claimed, so replace them proactively.
-	// Track ready pods (model-router startup probe passed) separately from starting pods.
-	// Only ready pods can be claimed; starting pods still count toward the total to avoid
-	// creating more pods than necessary while a replacement warms up.
-	const warmTokenMaxAge = 50 * time.Minute // recycle before the 1h token expires
-	var readyPods, startingPods []*corev1.Pod
+	// Delete warm pods that have completed/failed, are aging out, have stale
+	// config, or have hit their request cap. In-use (claimed) pods are never
+	// recycled here. The SA token is minted at creation with an expiry derived
+	// from WarmPodMaxAge (warmPodTokenExpirySeconds), so pods are recycled
+	// before authentication would fail when claimed. classifyWarmPod encodes
+	// the decision + reason so recycled pods are observable via Events/Status.
+	now := time.Now()
+	var idleReady, idleStarting, claimed []*corev1.Pod
 	for i := range pods.Items {
 		p := &pods.Items[i]
-		if p.Status.Phase == corev1.PodSucceeded || p.Status.Phase == corev1.PodFailed {
-			_ = r.Delete(ctx, p)
+		// Ignore pods already being torn down — they're not pool capacity and
+		// recounting them caused the repeated "deleting excess" log spam.
+		if p.DeletionTimestamp != nil {
 			continue
 		}
-		if time.Since(p.CreationTimestamp.Time) > warmTokenMaxAge {
-			slog.Info("recycling warm pod with expiring token",
-				"pod", p.Name, "age", time.Since(p.CreationTimestamp.Time).Round(time.Second))
+		disp, reason := classifyWarmPod(p, deploy, routerConfigHash, now)
+		switch disp {
+		case warmDisposeRecycle:
+			r.recordWarmRecycle(deploy, p, reason)
+			slog.Info("recycling warm pod",
+				"deployment", deploy.Name, "pod", p.Name, "reason", reason)
 			_ = r.Delete(ctx, p)
-			continue
-		}
-		// Delete warm pods whose config is stale (e.g. agent spec, router config,
-		// or provider weights changed). This ensures a Deployment rollout also
-		// refreshes the warm pool. Pods without the annotation are treated as stale
-		// (they predate this feature).
-		if podHash := p.Annotations["agentorc.io/router-config-hash"]; podHash != routerConfigHash {
-			slog.Info("recycling warm pod with stale config",
-				"pod", p.Name, "podHash", podHash, "currentHash", routerConfigHash)
-			_ = r.Delete(ctx, p)
-			continue
-		}
-		modelRouterReady := false
-		for _, cs := range p.Status.InitContainerStatuses {
-			if cs.Name == "model-router" && cs.Ready {
-				modelRouterReady = true
-				break
+		case warmDisposeClaimed:
+			// In-use pods count toward the desired total and are never deleted.
+			claimed = append(claimed, p)
+		case warmDisposeIdle:
+			modelRouterReady := false
+			for _, cs := range p.Status.InitContainerStatuses {
+				if cs.Name == "model-router" && cs.Ready { //nolint:goconst
+
+					modelRouterReady = true
+					break
+				}
 			}
-		}
-		if modelRouterReady {
-			readyPods = append(readyPods, p)
-		} else {
-			startingPods = append(startingPods, p)
+			if modelRouterReady {
+				idleReady = append(idleReady, p)
+			} else {
+				idleStarting = append(idleStarting, p)
+			}
 		}
 	}
 
-	// Scale down excess idle warm pods when the pool is larger than desired.
+	readyCount := len(idleReady)
+	startingCount := len(idleStarting)
+	// warmPoolSize is the TOTAL number of warm pods to keep for the deployment
+	// (idle + in-use). Counting in-use pods toward the total means we do NOT spawn
+	// a replacement while a pod is busy — so when the run finishes and the pod
+	// returns to idle, it is simply reused instead of being deleted as "excess".
 	desired := deploy.Spec.WarmPoolSize
-	readyCount := len(readyPods)
-	startingCount := len(startingPods)
-	totalExisting := readyCount + startingCount
+	totalExisting := readyCount + startingCount + len(claimed)
 
+	// Scale down excess IDLE/starting pods only. Never delete in-use (claimed) pods.
 	if excess := totalExisting - desired; excess > 0 {
-		// Delete oldest ready pods first (closest to token expiry, fungible).
-		slices.SortFunc(readyPods, func(a, b *corev1.Pod) int {
-			return a.CreationTimestamp.Time.Compare(b.CreationTimestamp.Time)
+		slices.SortFunc(idleReady, func(a, b *corev1.Pod) int {
+			return a.CreationTimestamp.Compare(b.CreationTimestamp.Time)
+		})
+		slices.SortFunc(idleStarting, func(a, b *corev1.Pod) int {
+			return a.CreationTimestamp.Compare(b.CreationTimestamp.Time)
 		})
 		deleted := 0
-		for deleted < excess && len(readyPods) > 0 {
-			p := readyPods[0]
-			readyPods = readyPods[1:]
-			slog.Info("scaling down warm pool: deleting excess pod",
-				"deployment", deploy.Name, "pod", p.Name, "desired", desired, "excess", excess)
-			if err := r.Delete(ctx, p); err != nil && !apierrors.IsNotFound(err) {
-				return fmt.Errorf("deleting excess warm pod %s: %w", p.Name, err)
-			}
-			deleted++
-		}
-		for deleted < excess && len(startingPods) > 0 {
-			p := startingPods[0]
-			startingPods = startingPods[1:]
+		// Delete not-yet-ready starting pods first; then oldest idle pods.
+		for deleted < excess && len(idleStarting) > 0 {
+			p := idleStarting[0]
+			idleStarting = idleStarting[1:]
 			slog.Info("scaling down warm pool: deleting excess starting pod",
 				"deployment", deploy.Name, "pod", p.Name, "desired", desired, "excess", excess)
 			if err := r.Delete(ctx, p); err != nil && !apierrors.IsNotFound(err) {
@@ -1049,14 +1254,24 @@ func (r *AgentDeploymentReconciler) reconcileWarmPool(
 			}
 			deleted++
 		}
-		readyCount = len(readyPods)
-		startingCount = len(startingPods)
+		for deleted < excess && len(idleReady) > 0 {
+			p := idleReady[0]
+			idleReady = idleReady[1:]
+			slog.Info("scaling down warm pool: deleting excess idle pod",
+				"deployment", deploy.Name, "pod", p.Name, "desired", desired, "excess", excess)
+			if err := r.Delete(ctx, p); err != nil && !apierrors.IsNotFound(err) {
+				return fmt.Errorf("deleting excess warm pod %s: %w", p.Name, err)
+			}
+			deleted++
+		}
+		readyCount = len(idleReady)
+		startingCount = len(idleStarting)
 	}
 
-	// Create warm pods up to the desired pool size.
-	// Each warm pod gets its own freshly-minted SA token so it is never blocked
-	// by the deployment-level secret's 15-minute expiry.
-	totalExisting = readyCount + startingCount
+	// Create warm pods up to the desired total pool size. Each warm pod gets its
+	// own freshly-minted SA token so it is never blocked by the deployment-level
+	// secret's 15-minute expiry.
+	totalExisting = readyCount + startingCount + len(claimed)
 	for i := totalExisting; i < desired; i++ {
 		warmTokenName, err := r.createWarmPodTokenSecret(ctx, deploy, saName)
 		if err != nil {
@@ -1112,6 +1327,13 @@ func (r *AgentDeploymentReconciler) ensureWarmRouterConfigMap(
 	warmCfg := *baseCfg
 	warmCfg.WarmMode = true
 	warmCfg.ChatMode = true
+	// Activate the warm-pod local L1 cache (disk-backed emptyDir mirror of
+	// checkpoints) when enabled on the deployment. The operator mounts the
+	// emptyDir at the same path the model-router reads here.
+	if effectiveWarmLocalCache(deploy) {
+		warmCfg.WarmLocalCacheDir = podbuilder.WarmCacheMountDir
+		warmCfg.WarmLocalCacheSizeMi = warmLocalCacheSizeMiValue(deploy)
+	}
 	// Set HTTPInput so it starts after claiming.
 	port := agent.Spec.Runtime.InputPort
 	if port == 0 {
@@ -1194,6 +1416,8 @@ func (r *AgentDeploymentReconciler) buildWarmPod(
 		{Name: "AGENTORC_INPUT_SOURCE", Value: string(inputSourceType)},
 	}
 
+	agentSecretVolumes, agentSecretMounts := podbuilder.ResolveAgentSecretRefs(agent)
+
 	return podbuilder.Build(podbuilder.PodConfig{
 		GenerateName: "warm-" + deploy.Name + "-",
 		Namespace:    deploy.Namespace,
@@ -1219,15 +1443,37 @@ func (r *AgentDeploymentReconciler) buildWarmPod(
 		RouterExtraPorts: []corev1.ContainerPort{
 			{Name: "warm-mgmt", ContainerPort: 9090, Protocol: corev1.ProtocolTCP},
 		},
-		RouterProbePort:   9090,
-		ProviderVolumes:   providerVolumes,
-		ProviderMounts:    providerMounts,
-		ToolSecretVolumes: toolSecretVolumes,
-		ToolSecretMounts:  toolSecretMounts,
-		MCPBinVolumes:     mcpBinVolumes,
-		MCPBinMounts:      mcpBinMounts,
-		CloudProvider:     r.CloudProvider,
+		RouterProbePort:    9090,
+		ProviderVolumes:    providerVolumes,
+		ProviderMounts:     providerMounts,
+		ToolSecretVolumes:  toolSecretVolumes,
+		ToolSecretMounts:   toolSecretMounts,
+		MCPBinVolumes:      mcpBinVolumes,
+		MCPBinMounts:       mcpBinMounts,
+		AgentSecretVolumes: agentSecretVolumes,
+		AgentSecretMounts:  agentSecretMounts,
+		CloudProvider:      r.CloudProvider,
+		// Warm-pod local L1 cache: a disk-backed emptyDir that mirrors checkpoints
+		// to Redis for faster resume + Redis-outage resilience. Only on warm pods.
+		WarmLocalCacheEnabled:   effectiveWarmLocalCache(deploy),
+		WarmLocalCacheSizeLimit: warmCacheSizeLimitQuantity(deploy),
 	})
+}
+
+// warmCacheSizeLimitQuantity builds the resource.Quantity SizeLimit for the warm
+// local cache emptyDir from the deployment spec (default 256Mi).
+func warmCacheSizeLimitQuantity(deploy *agentorcv1alpha1.AgentDeployment) *resource.Quantity {
+	mi := warmLocalCacheSizeMiValue(deploy)
+	q := resource.MustParse(fmt.Sprintf("%dMi", mi))
+	return &q
+}
+
+// warmCacheSizeLimitValue returns the raw MiB value for the warm local cache.
+func warmLocalCacheSizeMiValue(deploy *agentorcv1alpha1.AgentDeployment) int {
+	if deploy != nil && deploy.Spec.WarmLocalCacheSizeMi > 0 {
+		return deploy.Spec.WarmLocalCacheSizeMi
+	}
+	return 256
 }
 
 // createWarmPodTokenSecret mints a fresh SA token for a single warm pod.
@@ -1238,7 +1484,12 @@ func (r *AgentDeploymentReconciler) createWarmPodTokenSecret(
 	deploy *agentorcv1alpha1.AgentDeployment,
 	saName string,
 ) (string, error) {
-	expirySeconds := int64(3600) // 1 hour — warm pods are claimed and complete well within this
+	// Derive the token expiry from the pod's configured max age so the token
+	// outlives the age at which the pod would be recycled (e.g. 50m pod age ->
+	// 1h token). By default age recycling is disabled (WarmPodMaxAge nil -> 0),
+	// so a long-lived token (the K8s cluster maximum) is minted for an
+	// indefinitely-lived pod, letting it authenticate claim-run POSTs.
+	expirySeconds := warmPodTokenExpirySeconds(deploy)
 	tr := &authv1.TokenRequest{
 		Spec: authv1.TokenRequestSpec{
 			Audiences:         []string{security.ModelRouterTokenAudience},
@@ -1362,11 +1613,8 @@ func (r *AgentDeploymentReconciler) agentDeploymentsForTool(ctx context.Context,
 	}
 	affectedAgents := map[string]bool{}
 	for _, ag := range agentList.Items {
-		for _, t := range ag.Spec.Tools {
-			if t == tool.Name {
-				affectedAgents[ag.Name] = true
-				break
-			}
+		if slices.Contains(ag.Spec.Tools, tool.Name) {
+			affectedAgents[ag.Name] = true
 		}
 	}
 	if len(affectedAgents) == 0 {
@@ -1394,11 +1642,8 @@ func (r *AgentDeploymentReconciler) agentDeploymentsForKnowledgeBase(ctx context
 	}
 	affectedAgents := map[string]bool{}
 	for _, ag := range agentList.Items {
-		for _, k := range ag.Spec.KnowledgeBases {
-			if k == kb.Name {
-				affectedAgents[ag.Name] = true
-				break
-			}
+		if slices.Contains(ag.Spec.KnowledgeBases, kb.Name) {
+			affectedAgents[ag.Name] = true
 		}
 	}
 	if len(affectedAgents) == 0 {
@@ -1419,7 +1664,7 @@ func (r *AgentDeploymentReconciler) agentDeploymentsForKnowledgeBase(ctx context
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *AgentDeploymentReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	r.Recorder = mgr.GetEventRecorderFor("agentdeployment")
+	r.Recorder = mgr.GetEventRecorderFor("agentdeployment") //nolint:staticcheck
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&agentorcv1alpha1.AgentDeployment{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Owns(&appsv1.Deployment{}).

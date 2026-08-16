@@ -17,8 +17,10 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -29,6 +31,10 @@ import (
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	authv1 "k8s.io/api/authentication/v1"
+	corev1 "k8s.io/api/core/v1"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/dynamic"
@@ -93,13 +99,21 @@ func main() {
 	flag.StringVar(&internalAPICertPath, "internal-api-cert-path", "",
 		"The directory that contains the TLS certificate for internal API servers (ports 8082-8084). "+
 			"When empty, internal APIs serve plain HTTP.")
-	flag.StringVar(&internalAPICertName, "internal-api-cert-name", "tls.crt", "The name of the internal API certificate file.")
+	flag.StringVar(&internalAPICertName, "internal-api-cert-name", "tls.crt", "The name of the internal API certificate file.") //nolint:lll
+
 	flag.StringVar(&internalAPICertKey, "internal-api-cert-key", "tls.key", "The name of the internal API key file.")
 	var uiAuthEnabled bool
 	flag.BoolVar(&uiAuthEnabled, "ui-auth-enabled", false,
 		"Require a valid UIProxy Kubernetes SA token (audience 'agentorc/ui') on all UI API "+
 			"requests. Set to true in production deployments where the UIProxy pod provides the token. "+
 			"Leave false for local development (npm run dev + operator without the proxy).")
+	var adminBootstrapToken string
+	flag.StringVar(&adminBootstrapToken, "admin-bootstrap-token", "",
+		"One-time bootstrap: when set to a non-empty value, the operator creates a ServiceAccount "+
+			"named 'agentorc-admin' (with the agentorc.io/admin=true label) in the operator namespace "+
+			"and prints its long-lived bearer token to stdout once. Store this token like a kubeconfig "+
+			"credential; use it to call POST /admin/tenants and other admin endpoints. Ignored on "+
+			"subsequent restarts (the SA persists).")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -199,7 +213,6 @@ func main() {
 		os.Exit(1)
 	}
 
-
 	// Build raw Kubernetes clients for operations not supported by controller-runtime.
 	restCfg := ctrl.GetConfigOrDie()
 	k8sClient, err := kubernetes.NewForConfig(restCfg)
@@ -218,6 +231,12 @@ func main() {
 	// Detect the cloud provider from node labels.
 	cloudProvider := security.DetectCloudProvider(ctx, mgr.GetClient())
 	setupLog.Info("Detected cloud provider", "provider", cloudProvider)
+
+	// LLM request timeout (per provider chat/completion call). Defaults to 1h; set
+	// LLM_REQUEST_TIMEOUT (e.g. "5m", "30s", "2h") to override via the chart value
+	// modelRouter.llmRequestTimeout.
+	llmReqTimeout := parseLLMRequestTimeout()
+	setupLog.Info("LLM request timeout", "timeout", llmReqTimeout)
 
 	modelRouterImage := os.Getenv("MODEL_ROUTER_IMAGE")
 	if modelRouterImage == "" {
@@ -309,6 +328,7 @@ func main() {
 		CloudProvider:            cloudProvider,
 		TokenReviewerClusterRole: os.Getenv("TOKEN_REVIEWER_CLUSTER_ROLE"),
 		OperatorAPIURL:           os.Getenv("OPERATOR_API_URL"),
+		LLMRequestTimeout:        llmReqTimeout,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "AgentRun")
 		os.Exit(1)
@@ -322,6 +342,7 @@ func main() {
 		CloudProvider:            cloudProvider,
 		TokenReviewerClusterRole: os.Getenv("TOKEN_REVIEWER_CLUSTER_ROLE"),
 		OperatorAPIURL:           os.Getenv("OPERATOR_API_URL"),
+		LLMRequestTimeout:        llmReqTimeout,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "AgentDeployment")
 		os.Exit(1)
@@ -374,7 +395,6 @@ func main() {
 		os.Exit(1)
 	}
 
-
 	// Resolve internal API TLS cert/key paths (empty means plain HTTP).
 	var internalAPICert, internalAPIKey string
 	if internalAPICertPath != "" {
@@ -423,7 +443,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	externalAPI := apiserver.NewExternalAPIServer(k8sClient, mgr.GetClient(), externalAuth, stateConfig.Backend != "", stateStore)
+	externalAPI := apiserver.NewExternalAPIServer(k8sClient, mgr.GetClient(), externalAuth, stateConfig.Backend != "", stateStore) //nolint:lll
+
 	go func() {
 		srv := &http.Server{Addr: ":8084", Handler: externalAPI.Handler()}
 		setupLog.Info("Starting external API server", "addr", srv.Addr, "tls", internalAPICert != "")
@@ -431,6 +452,15 @@ func main() {
 			setupLog.Error(err, "External API server failed")
 		}
 	}()
+
+	// Bootstrap the first admin SA if requested. This runs once at startup;
+	// on subsequent restarts the SA already exists and the token is not re-issued.
+	if adminBootstrapToken != "" {
+		if err := bootstrapAdminSA(ctx, k8sClient); err != nil {
+			setupLog.Error(err, "Failed to bootstrap admin SA")
+			os.Exit(1)
+		}
+	}
 
 	// Start the ACP API server (port 8000) for ACP-compatible clients.
 	acpAPI := apiserver.NewACPServer(k8sClient, mgr.GetClient(), externalAuth, stateStore)
@@ -456,4 +486,69 @@ func listenAndServeOptionalTLS(srv *http.Server, certFile, keyFile string) error
 		return srv.ListenAndServeTLS(certFile, keyFile)
 	}
 	return srv.ListenAndServe()
+}
+
+// bootstrapAdminSA creates (or ensures) an admin ServiceAccount in the operator
+// namespace and prints a long-lived bearer token to stdout. The token is
+// issued via the TokenRequest API with a 365-day expiration so it can be stored
+// like a kubeconfig credential. On subsequent restarts the SA already exists;
+// we still issue a fresh token and print it (idempotent from the caller's
+// perspective — the SA label is what gates access, not the token itself).
+func bootstrapAdminSA(ctx context.Context, k8s kubernetes.Interface) error {
+	ns := os.Getenv("POD_NAMESPACE")
+	if ns == "" {
+		ns = "agent-orc-system"
+	}
+	saName := "agentorc-admin"
+
+	sa := &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      saName,
+			Namespace: ns,
+			Labels:    map[string]string{"agentorc.io/admin": "true"},
+		},
+	}
+	if _, err := k8s.CoreV1().ServiceAccounts(ns).Create(ctx, sa, metav1.CreateOptions{}); err != nil && !k8serrors.IsAlreadyExists(err) { //nolint:lll
+
+		return fmt.Errorf("creating admin SA: %w", err)
+	}
+
+	// Ensure the SA has the admin label even if it pre-existed.
+	if _, err := k8s.CoreV1().ServiceAccounts(ns).Get(ctx, saName, metav1.GetOptions{}); err != nil {
+		return fmt.Errorf("fetching admin SA: %w", err)
+	}
+
+	tokenReq, err := k8s.CoreV1().ServiceAccounts(ns).CreateToken(ctx, saName, &authv1.TokenRequest{
+		Spec: authv1.TokenRequestSpec{
+			ExpirationSeconds: ptrInt64(365 * 24 * 3600), // 365 days
+		},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		return fmt.Errorf("issuing admin token: %w", err)
+	}
+
+	setupLog.Info("Admin SA bootstrapped — store this token like a kubeconfig credential",
+		"serviceAccount", saName, "namespace", ns)
+	fmt.Println("=== agent-orc admin bootstrap token ===")
+	fmt.Println(tokenReq.Status.Token)
+	fmt.Println("=== end bootstrap token (store securely) ===")
+	return nil
+}
+
+// ptrInt64 returns a pointer to i.
+func ptrInt64(i int64) *int64 { return &i }
+
+// parseLLMRequestTimeout reads the LLM_REQUEST_TIMEOUT env var (a Go duration such as
+// "1h", "5m", "90s") and returns it. Defaults to 1 hour when unset or invalid, so the
+// model-router's outgoing LLM provider calls are not capped by the old 120s hard limit.
+func parseLLMRequestTimeout() time.Duration {
+	v := strings.TrimSpace(os.Getenv("LLM_REQUEST_TIMEOUT"))
+	if v == "" {
+		return time.Hour
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d <= 0 {
+		return time.Hour
+	}
+	return d
 }

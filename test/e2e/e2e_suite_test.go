@@ -80,10 +80,12 @@ var _ = BeforeSuite(func() {
 
 	setupCertManager()
 
-	By("creating manager namespace")
+	By("creating manager namespace (idempotent)")
 	cmd = exec.Command("kubectl", "create", "ns", namespace)
-	_, err = utils.Run(cmd)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to create namespace")
+	if _, err := utils.Run(cmd); err != nil {
+		// Namespace may already exist; that's fine.
+		By("namespace already exists, skipping creation")
+	}
 
 	By("labeling the namespace to enforce the restricted security policy")
 	cmd = exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
@@ -96,7 +98,7 @@ var _ = BeforeSuite(func() {
 	_, err = utils.Run(cmd)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to install CRDs")
 
-	By("deploying the controller-manager")
+	By("deploying the controller-manager (idempotent)")
 	cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", managerImage))
 	_, err = utils.Run(cmd)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")

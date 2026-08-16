@@ -1,0 +1,407 @@
+# demo-htb-pwn — values
+#
+# IMPORTANT (legal + safety):
+#   This demo performs REAL offensive testing against Hack The Box labs, which HTB's
+#   ToS authorises ONLY inside its own lab VMs. Two pods:
+#     - red-pwnbox     (privileged): runs HTB OpenVPN (tun0) + the MCP toolbelt.
+#     - red-commander  (restricted): the openai-compatible agent brain; calls tools
+#                                    via the model-router -> red-pwnbox MCP server.
+#   The agent itself is NEVER privileged — only the dedicated pwnbox pod is. Egress is
+#   deny-by-default via two NetworkPolicies (see templates/). See
+#   plans/blue-red-team-wargame.md §16.
+#
+# Secrets via env (never committed):
+#   AGENT_ORC_POOLSIDE_API_KEY, AGENT_ORC_HTB_OVPN_CONFIG, AGENT_ORC_HTB_OVPN_ENDPOINT
+
+nameOverride: ""
+
+# pwnbox image (the privileged MCP-toolbelt host). Built by the skaffold profile.
+# Default = slim (python:3.12-slim + openvpn/nmap/impacket/nuclei, ~1.5GB, kind-friendly).
+# Full blackcart toolbelt: build files/Dockerfile.pwnbox.blackcart and set tag: blackcart.
+pwnbox:
+  image:
+    repository: red-pwnbox
+    tag: latest
+    # slim: true -> skaffold builds files/Dockerfile.pwnbox (~1.5GB, kind-friendly).
+    # slim: false (default) -> files/Dockerfile.pwnbox.blackcart (~8GB, full toolbelt).
+    slim: false
+  # Optional extra env vars forwarded into the pwnbox container (operator-extensible).
+  # EXPLOIT_DIR is fixed at /tmp/exploits (seeded by entrypoint.sh). EXPLOIT_FETCH_ALLOWLIST
+  # is driven by pwnboxEgress.exploitFetchAllowlist (see below) — single source of truth.
+  env: []
+
+  # Persistent exploit workspace. When enabled, a PVC is mounted at EXPLOIT_DIR
+  # (/tmp/exploits) so downloaded payloads, Sliver implants, enum/searchsploit
+  # caches, and authored exploit code survive pwnbox pod restarts instead of being
+  # wiped (the container writable layer is ephemeral). Disable (default) to keep the
+  # ephemeral behaviour, e.g. for throwaway lab runs.
+  exploitWorkspace:
+    enabled: true
+    size: 8Gi
+    # storageClassName to use for the PVC; empty = cluster default.
+    storageClass: ""
+
+namespace:
+  name: red-team
+  create: false   # chart creates the namespace with the privilege opt-in label
+
+agent-orc-resources:
+  # ── ModelProviders / ModelSelectors (Poolside) ───────────────────────────────
+  providerSecrets:
+    - name: poolside-api-key
+      enabled: true
+      apiKey: ""            # ps-... ; set via AGENT_ORC_POOLSIDE_API_KEY
+      existingSecret: ""
+
+  modelProviders:
+    - name: poolside-pwnbox
+      enabled: true
+      litellmModel: "laguna-m-e0419-polaris-t3-mh-s700-ctx256k"
+      baseURL: "https://api.poolsi.de/openai"
+      credentialsRef:
+        existingSecret: "poolside-api-key"
+        key: "api-key"
+      capabilities: [reasoning, code, long-context]
+      latencyProfile: medium
+      constraints:
+        contextWindow: 262144
+        maxOutputTokens: 131072
+        maxRequestTokens: 0
+
+  modelSelectors:
+    - name: poolside-strategist
+      strategy: rule-based
+      providers: [{name: poolside-pwnbox, weight: 100}]
+      budgetCap: { perRun: "1.00", perDay: "25.00" }
+
+  # ── GuardrailPolicy: bounds on the red-commander agent ────────────────────────
+  # The agent stays restricted; this guardrail keeps its LLM output in-bounds (no real
+  # cloud endpoints / secret leakage). The pwnbox pod itself is network-isolated by its NP.
+  guardrailPolicies:
+    - name: red-pwnbox-guard
+      spec:
+        outputFilters:
+          - name: redact-real-endpoints
+            type: regex
+            action: redact
+            patterns:
+              - { name: aws,  pattern: '(?i)https?://[a-z0-9.-]*\.amazonaws\.com/.*', replacement: "[REDACTED-ENDPOINT]" }
+              - { name: gcp,  pattern: '(?i)https?://[a-z0-9.-]*\.googleapis\.com/.*', replacement: "[REDACTED-ENDPOINT]" }
+              - { name: azure, pattern: '(?i)https?://[a-z0-9.-]*\.azure-api\.com/.*', replacement: "[REDACTED-ENDPOINT]" }
+          - name: block-secret-leak
+            type: regex
+            action: block
+            patterns:
+              - { name: aws-key,      pattern: '(?i)AKIA[0-9A-Z]{16}' }
+              - { name: poolside-key, pattern: '(?i)ps-[a-z0-9]{32}' }
+              - { name: openai-key,   pattern: '(?i)sk-[a-zA-Z0-9]{20,}' }
+        formatValidation:
+          maxTokens: 4096
+
+  # ── MCPServer: exposes the red-pwnbox toolbelt to the agent ────────────────────
+  # The controller auto-creates child Tool CRs named red-pwnbox-mcp-<tool>.
+  mcpServers:
+    - name: red-pwnbox-mcp
+      transport: http
+      url: "http://red-pwnbox.{{ .Release.Namespace }}.svc.cluster.local:8080"
+      allowedAgents: [red-commander-agent]
+      # networkEgress is applied to AGENTRUN pods (the deployment's egress is covered by
+      # templates/agent-egress-networkpolicy.yaml).
+      networkEgress:
+        - { host: red-pwnbox, port: 8080, protocol: TCP }
+      tools:
+        # ── original 4 (recon/scan/enum/submit) ─────────────────────────────
+        - { name: probe-target,    description: "nmap service/version scan of an HTB lab target over tun0." }
+        - { name: enum-shares,     description: "enum4linux-ng enumeration of an HTB target (SMB/users/shares)." }
+        - { name: shell-exploit,   description: "Run an nmap NSE exploit script against an HTB target." }
+        - { name: submit-findings, description: "Record a captured flag/finding to stdout (+ Redis if configured)." }
+        # ── RECON / OSINT ──────────────────────────────────────────────────
+        - { name: masscan-scan,      description: "High-speed SYN port scan of an HTB target subnet (`--rate` kept low)." }
+        - { name: rustscan-fast,     description: "Fast recon: quick port grab then nmap -sV on a single host." }
+        - { name: subfinder-enum,    description: "Subdomain discovery for a target domain (needs DNS egress)." }
+        - { name: httpx-probe,       description: "Probe hosts/domains for live HTTP servers, titles, tech." }
+        - { name: nuclei-scan,       description: "Template-based vuln scan (cves/misconfig/exposures) of a URL/CIDR." }
+        - { name: amass-enum,        description: "OSINT subdomain enumeration (passive) for a domain." }
+        - { name: feroxbuster,       description: "Force-directed directory/file fuzzing against a URL." }
+        - { name: whatweb-fingerprint, description: "Web technology fingerprint of a URL (CMS/plugins/headers)." }
+        # ── WEB VULN ───────────────────────────────────────────────────────
+        - { name: ffuf-fuzz,        description: "Web fuzzing (dirs/params/vhosts) with a FUZZ placeholder URL." }
+        - { name: sqlmap-inject,    description: "SQLi detection & light exploitation (--batch, level 3 capped)." }
+        - { name: nikto-scan,       description: "Web server scanner for common misconfigs/CGI/plugins." }
+        - { name: wpscan-analyze,   description: "WordPress security scan (users/plugins/themes/config leaks)." }
+        - { name: commix-inject,    description: "Automated command-injection detection/exploitation (OWASP commix)." }
+        - { name: xsstrike-scan,    description: "XSS detection & payload analysis (XSStrike)." }
+        # ── EXPLOITATION ───────────────────────────────────────────────────
+        - { name: searchsploit-lookup, description: "Search the local ExploitDB for a product/CVE term." }
+        - { name: fetch-exploit, description: "Download an exploit by Exploit-DB query or allowlisted URL into the /tmp/exploits sandbox; returns its path." }
+        - { name: run-exploit, description: "Execute agent-authored Python/Bash/Ruby/Perl exploit code in the /tmp/exploits sandbox against a lab target (default 300s, cap 3600s)." }
+        - { name: msfvenom-payload,   description: "Generate a payload with msfvenom (meterpreter/reverse shell)." }
+        - { name: metasploit-exploit, description: "Run an msfconsole exploit module via a generated resource script." }
+        - { name: hydra-brute,        description: "Hydra brute-force (newline user/pass lists, low rate)." }
+        - { name: john-crack,         description: "Crack hashes with john the ripper using a wordlist." }
+        # ── NETWORK / AD ───────────────────────────────────────────────────
+        - { name: netexec-scan,       description: "NetExec enumeration of a protocol/target (pass module names)." }
+        - { name: rpcclient-enum,     description: "rpcclient null-session enumeration (users/shares)." }
+        - { name: smbmap-scan,        description: "smbmap share/permission enumeration of a target." }
+        - { name: bloodhound-collect, description: "Collect AD data (SharpHound/bloodhound-python) for graph analysis." }
+        # ── CLOUD / IaC ────────────────────────────────────────────────────
+        - { name: trivy-scan,         description: "Trivy vuln/misconfig scan of a filesystem path or OCI image ref." }
+        - { name: checkov-iac,        description: "Checkov IaC scan for cloud misconfigurations." }
+        # ── FORENSICS / SECRETS ────────────────────────────────────────────
+        - { name: gitleaks-scan,      description: "gitleaks scan for secrets/creds in a repo path." }
+        - { name: volatility-analyze, description: "Volatility3 plugin run against a memory image (e.g. pslist)." }
+        - { name: yara-scan,          description: "YARA rule scan of a file/dir." }
+        - { name: binwalk-analyze,    description: "binwalk firmware signature scan (+ optional extraction)." }
+        # ── SESSION / TCP ─────────────────────────────────────────────────
+        - { name: tcp-connect, description: "One-shot raw TCP (or TLS) connect/send/read/close. For C2 probes / custom protocols with no HTTP wrapper; tun0 not required." }
+        - { name: tmux-new,    description: "Create a detached persistent session (shell by default) that survives across MCP calls — for Sliver TUI, ncat C2 relays, interactive shells." }
+        - { name: tmux-send,   description: "Inject keystrokes into a tmux session created by tmux-new." }
+        - { name: tmux-recv,   description: "Return recent scrollback of a tmux session as a string (default 50 lines)." }
+        - { name: tmux-kill,   description: "Terminate a persistent tmux session (idempotent)." }
+      resources:
+        requests: { cpu: "250m", memory: 128Mi }
+        limits:   { cpu: "1", memory: 512Mi }
+
+  # ── KnowledgeBase: offensive TTP runbooks (RAG) ──────────────────────────────
+  # knowledgeBases:
+  #   - name: red-tactics
+  #     allowedAgents: [red-commander-agent]
+  #     embedding:
+  #       modelSelectorRef: ollama-embeddings
+  #       chunkSize: 512
+  #       chunkOverlap: 64
+  #     vectorStore:
+  #       storageSize: 1Gi
+  #     ingestion:
+  #       configMapRefs: [ { name: red-tactics-content } ]
+  #       syncIntervalSeconds: 86400
+
+  # ── The autonomous agent (BRAIN) — fully RESTRICTED, openai-compatible ───────
+  # Not privileged. Calls the pwnbox tools via the model-router -> red-pwnbox MCP.
+  # The model-router runs the tool-calling loop (probe/enum/exploit over tun0 in the
+  # pwnbox pod) and streams the result back; this shim just proxies /invoke.
+  agents:
+    - name: red-commander-agent
+      modelSelectorRef: poolside-strategist
+      guardrailPolicyRef: red-pwnbox-guard
+      disableClarify: true            # fully autonomous — never blocks on a human
+      # knowledgeBases: [red-tactics]
+      tools:
+        # ── Original (scan / enum / NSE exploit / submit) ──
+        - red-pwnbox-mcp-probe-target
+        - red-pwnbox-mcp-enum-shares
+        - red-pwnbox-mcp-shell-exploit
+        - red-pwnbox-mcp-submit-findings
+        # ── Recon / OSINT ──
+        - red-pwnbox-mcp-masscan-scan
+        - red-pwnbox-mcp-rustscan-fast
+        - red-pwnbox-mcp-subfinder-enum
+        - red-pwnbox-mcp-httpx-probe
+        - red-pwnbox-mcp-nuclei-scan
+        - red-pwnbox-mcp-amass-enum
+        - red-pwnbox-mcp-feroxbuster
+        - red-pwnbox-mcp-whatweb-fingerprint
+        # ── Web vuln ──
+        - red-pwnbox-mcp-ffuf-fuzz
+        - red-pwnbox-mcp-sqlmap-inject
+        - red-pwnbox-mcp-nikto-scan
+        - red-pwnbox-mcp-wpscan-analyze
+        - red-pwnbox-mcp-commix-inject
+        - red-pwnbox-mcp-xsstrike-scan
+        # ── Exploitation (incl. dynamic acquire + custom-code exec) ──
+        - red-pwnbox-mcp-searchsploit-lookup
+        - red-pwnbox-mcp-fetch-exploit
+        - red-pwnbox-mcp-run-exploit
+        - red-pwnbox-mcp-msfvenom-payload
+        - red-pwnbox-mcp-metasploit-exploit
+        - red-pwnbox-mcp-hydra-brute
+        - red-pwnbox-mcp-john-crack
+        # ── Network / AD ──
+        - red-pwnbox-mcp-netexec-scan
+        - red-pwnbox-mcp-rpcclient-enum
+        - red-pwnbox-mcp-smbmap-scan
+        - red-pwnbox-mcp-bloodhound-collect
+        # ── Cloud / IaC ──
+        - red-pwnbox-mcp-trivy-scan
+        - red-pwnbox-mcp-checkov-iac
+        # ── Forensics / secrets ──
+        - red-pwnbox-mcp-gitleaks-scan
+        - red-pwnbox-mcp-volatility-analyze
+        - red-pwnbox-mcp-yara-scan
+        - red-pwnbox-mcp-binwalk-analyze
+        # ── SESSION / TCP ── persistent tmux sessions + raw TCP (ncat) ──────────
+        - red-pwnbox-mcp-tcp-connect
+        - red-pwnbox-mcp-tmux-new
+        - red-pwnbox-mcp-tmux-send
+        - red-pwnbox-mcp-tmux-recv
+        - red-pwnbox-mcp-tmux-kill
+      memory:
+        # Compact long sessions: every N turns summarize the oldest turns into a
+        # durable summary (stored to Redis + loaded on resume), so the live
+        # context stops re-truncating a giant history every turn.
+        checkpointEvery: 1
+        episodicSummaryEvery: 6
+      systemPrompt: |
+        You are NIGHTFALL, an autonomous red-team operator for a controlled HTB
+        engagement. Your mission arrives as user messages. You MUST call tools to act.
+        All tools execute INSIDE the privileged pwnbox pod, which alone holds the HTB
+        OpenVPN tunnel (tun0); you do NOT have the tunnel yourself — operate ONLY
+        against HTB lab IPs reachable via tun0 (10.10.x.x / 10.10.xx.x ranges), never
+        real infrastructure. Run one focused step per turn; never fabricate findings.
+
+        TOOLBELT (call the matching red-pwnbox-mcp-* tool):
+        Recon:     probe-target (nmap -sS/-sV), masscan-scan (fast ports), rustscan-fast,
+                   subfinder-enum / amass-enum (subdomains), httpx-probe, whatweb-fingerprint,
+                   feroxbuster.
+        Enumerate: enum-shares (SMB/users).
+        Web vuln:  ffuf-fuzz, sqlmap-inject (batch, level≤3), nikto-scan, wpscan-analyze,
+                   commix-inject, xsstrike-scan.
+        Exploit:   shell-exploit (NSE), searchsploit-lookup, msfvenom-payload,
+                   metasploit-exploit, hydra-brute (low rate), john-crack.
+        AD/Lateral: netexec-scan, rpcclient-enum, smbmap-scan, bloodhound-collect.
+        Cloud/IaC: trivy-scan, checkov-iac.
+        Forensics: gitleaks-scan, volatility-analyze, yara-scan, binwalk-analyze.
+        Sessions:  tmux-new / tmux-send / tmux-recv / tmux-kill (persistent interactive
+                   sessions across calls — e.g. drive a Sliver TUI or ncat C2 relay),
+                   tcp-connect (one-shot raw TCP/TLS probe for custom protocols).
+        Output:    all tool output is returned inline as the tool result — NEVER rely
+                   on files for results (the pod fs is ephemeral); only payload
+                   artifacts persist under /tmp/exploits (backed by the PVC).
+
+        CONTEXT MANAGEMENT (important — read this):
+          - This environment compacts long conversations automatically: roughly every
+            6 turns the oldest turns are summarised into a durable summary and the
+            detailed history is dropped, so the context does NOT grow unbounded across
+            a long engagement. You will see "<Episodic summary>" system messages; treat
+            them as your retained memory of earlier turns.
+          - If you need a fact from an earlier turn that may have been compacted, use
+            _search_history(query) to retrieve it from the local cache/Redis before
+            re-deriving it. If nothing is found, _clarify (ask the human) is disabled
+            for this autonomous run, so make a reasonable, evidence-based assumption
+            and note it in your _done summary.
+
+        KILL CHAIN / AUTONOMOUS LOOP:
+          1. Recon the target host (masscan/rustscan/probe-target) — one host per call.
+          2. Fingerprint (whatweb/httpx) → vuln scan (nuclei/templates, ffuf dirs).
+          3. Exploit: searchsploit-lookup → fetch-exploit (copies the ExploitDB file
+             into the /tmp/exploits sandbox) → review its path → run-exploit to execute
+             an agent-authored Python/Bash/Ruby/Perl payload against the target.
+          4. AD escalation: bloodhound-collect → netexecSMB → hydra-john if hashes found.
+          5. Capture flags → submit-findings(flag, details) for each.
+          6. Call _done with the final engagement summary.
+
+        SAFETY GUARDRAILS (hard constraints — violating scope aborts the run):
+          - Scope = HTB lab only (tun0). Each tool returns "tun0 not up" if the tunnel
+            is down; never attempt off-tunnel hosts.
+          - Per-tool default timeout is 300s (cap 3600s = router default); keep scans
+            targeted (one host/range per call) so they finish well under the window.
+          - fetch-exploit only curls hosts in EXPLOIT_FETCH_ALLOWLIST (empty by default
+            ⇒ searchsploit/ExploitDB only). run-exploit writes only to /tmp/exploits.
+          - Do NOT brute-force real internet services; keep wordlists small and rates low.
+      runtime:
+        ociRef: "python:3.12-slim"
+        framework: openai-compatible
+        inputMode: http
+        command: ["python3", "-c"]
+        args:
+          - |
+            import json,os,urllib.request
+            from http.server import BaseHTTPRequestHandler,HTTPServer
+            base=os.environ.get("OPENAI_BASE_URL","http://localhost:8080")
+            key=os.environ.get("OPENAI_API_KEY","unused"); port=int(os.environ.get("PORT","8000"))
+            class H(BaseHTTPRequestHandler):
+                def log_message(self,*a): pass
+                def do_GET(self):
+                    if self.path=="/healthz":
+                        self.send_response(200);self.end_headers();self.wfile.write(b"ok")
+                    else: self.send_response(404);self.end_headers()
+                def do_POST(self):
+                    if self.path!="/invoke":
+                        self.send_response(404);self.end_headers();return
+                    b=json.loads(self.rfile.read(int(self.headers.get("Content-Length",0))))
+                    msgs=[{"role":"user","content":b.get("input","")}]
+                    body=json.dumps({"model":"default","stream":True,"messages":msgs}).encode()
+                    req=urllib.request.Request(f"{base}/chat/completions",data=body,headers={"Content-Type":"application/json","Authorization":f"Bearer {key}"})
+                    out=""
+                    with urllib.request.urlopen(req,timeout=300) as r:
+                        for line in r:
+                            line=line.decode().strip()
+                            if not line.startswith("data: "): continue
+                            d=line[6:]
+                            if d=="[DONE]": break
+                            try: c=json.loads(d)
+                            except: continue
+                            ch=c.get("choices",[])
+                            if not ch: continue
+                            t=ch[0].get("delta",{}).get("content","")
+                            if t: out+=t; print(t,end="",flush=True)
+                        print()
+                    p=json.dumps({"output":out}).encode()
+                    self.send_response(200);self.send_header("Content-Type","application/json")
+                    self.send_header("Content-Length",str(len(p)));self.end_headers();self.wfile.write(p)
+            print(f"red-commander listening on :{port}",flush=True)
+            HTTPServer(("",port),H).serve_forever()
+      resources:
+        requests: { cpu: 50m, memory: 64Mi }
+        limits:   { cpu: 200m, memory: 128Mi }
+
+  # ── Long-running deployment (chat: warm pool, stays up) ───────────────────────
+  agentDeployments:
+    - name: red-commander
+      agentRef: red-commander-agent
+      inputSource: { type: chat }
+      replicas: 1
+      warmPoolSize: 1
+      warmPodMaxAge: 0
+      maxRequestsPerPod: 0
+      # Surface the warm-pool local cache explicitly (defaults on when warmPoolSize>0,
+      # but we pin it here so the resilience feature is visible in the demo). Each
+      # warm pod mirrors conversation checkpoints to a disk-backed emptyDir and
+      # reads local-first on resume, falling back to Redis; together with the PVC
+      # below this keeps the agent's context + the pwnbox's /tmp/exploits across pod churn.
+      warmLocalCache: true
+      warmLocalCacheSizeMi: 256
+      # Sliver sessions / interactive shells hold for minutes. The 60s model-router
+      # tool cap kills them mid-session; give this red-team deployment a 1h ceiling.
+      toolExecutionTimeoutSec: 3600
+      restartPolicy: { minBackoffSeconds: 5, maxBackoffSeconds: 300, maxConsecutiveFailures: 5 }
+
+# ── HTB OpenVPN (consumed by the pwnbox Deployment) ────────────────────────────
+openvpn:
+  fileName: htbea.ovpn       # key in Secret htb-ovpn; mounted at /etc/htb by the pwnbox pod
+  endpoint: ""               # e.g. "nl.free.hackthebox.com:1194" — drives the pwnbox egress NP
+  protocol: udp
+  port: 1194
+  createSecret: true         # set false and `kubectl create secret htb-ovpn --from-file=...`
+  ovpnConfig: ""             # set via AGENT_ORC_HTB_OVPN_CONFIG, or create the secret yourself
+
+# ── Pwnbox egress toggles (deny-by-default) ────────────────────────────────────
+# The pwnbox egress NetworkPolicy is deny-by-default except for: DNS, the HTB VPN
+# endpoint, and TCP 443. Enabling internetRecon.internetRecon opens explicit external
+# hosts used by TI/template/wordlist tooling — NEVER scopes to real infra, only OTX/VT/
+# Shodan/etc. Set via AGENT_ORC_* env in the skaffold profile; default false.
+pwnboxEgress:
+  internetRecon: false        # true -> allow Shodan/OTX/VT/Censys:443 + nuclei templates defrag
+  exploitFetchAllowlist: ""   # hosts fetch-exploit may curl (see pwnbox.env.EXPLOIT_FETCH_ALLOWLIST)
+
+# ── Redis (checkpoint state + pwnbox findings stream) ─────────────────────────
+# The operator chart deploys Redis as a Service named "<release>-redis-master"
+# (release "agent-orc" => "agent-orc-redis-master") in the system namespace.
+# The model-router reaches it via the operator-propagated REDIS_URL (with the
+# random/static password); the pwnbox reaches it for the wargame `arena-events`
+# stream using the host below PLUS redis.password (see skaffold profile).
+redis:
+  serviceName: agent-orc-redis-master
+  port: 6379
+  # Password backing the operator's bundled Redis. Leave empty to use the
+  # operator's auto-generated random password (then the pwnbox arena-events
+  # publish is best-effort and will log AUTH failures — checkpointing still works
+  # via the model-router). For the pwnbox to publish findings, set this to the
+  # SAME value the operator uses: wire AGENT_ORC_REDIS_PASSWORD through the
+  # skaffold profile (sets both redis.auth.password on agent-orc and redis.password
+  # here). Provide it via env, never commit a real one.
+  password: ""
+
+# ── Cluster / operator reference (for egress NetworkPolicies) ──────────────────
+cluster:
+  systemNamespace: agent-orc-system

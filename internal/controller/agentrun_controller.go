@@ -19,6 +19,9 @@ package controller
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -49,6 +52,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
+	"github.com/floppyfish14/agent-orc/internal/egress"
 	"github.com/floppyfish14/agent-orc/internal/podbuilder"
 	"github.com/floppyfish14/agent-orc/internal/router"
 	"github.com/floppyfish14/agent-orc/internal/security"
@@ -80,6 +84,9 @@ type AgentRunReconciler struct {
 	// ConfigMap so sidecars can call /agentrun endpoints for handoff and child runs.
 	// Example: "http://agent-orc-internal-api.agent-orc-system.svc.cluster.local:8082"
 	OperatorAPIURL string
+	// LLMRequestTimeout is the per-LLM-request timeout written into every router
+	// config (default 1h). Injected from the LLM_REQUEST_TIMEOUT env var.
+	LLMRequestTimeout time.Duration
 }
 
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
@@ -151,7 +158,8 @@ func (r *AgentRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 }
 
 // startRun creates all per-run resources and spawns the agent pod.
-func (r *AgentRunReconciler) startRun(ctx context.Context, run *agentorcv1alpha1.AgentRun, agent *agentorcv1alpha1.Agent, saName string) (ctrl.Result, error) {
+func (r *AgentRunReconciler) startRun(ctx context.Context, run *agentorcv1alpha1.AgentRun, agent *agentorcv1alpha1.Agent, saName string) (ctrl.Result, error) { //nolint:gocyclo
+
 	logger := log.FromContext(ctx)
 	logger.Info("starting AgentRun", "run", run.Name)
 
@@ -244,6 +252,12 @@ func (r *AgentRunReconciler) startRun(ctx context.Context, run *agentorcv1alpha1
 
 	// 8. Build and create the agent pod (or claim a pre-warmed pod if available).
 	// In split-pod topology, also create the router Service and router pod.
+
+	// Record this run in its deployment's run index so the model-router (and the
+	// _search_history tool) can enumerate prior runs for THIS deployment without
+	// scanning the whole Redis keyspace. Best-effort and non-fatal: a missed index
+	// entry just narrows the recall of prior-turn search.
+	r.recordRunInDeploymentIndex(ctx, run)
 	var podName string
 	var routerPodName string
 
@@ -282,6 +296,16 @@ func (r *AgentRunReconciler) startRun(ctx context.Context, run *agentorcv1alpha1
 			podName = claimedPod
 		}
 
+		if podName == "" {
+			// A prior reconcile may have bound this run to a warm pod even though
+			// the claim POST response was lost (e.g. client-side timeout). Reuse
+			// that warm pod instead of spawning a second agent pod, which would
+			// create a split-brain two agents for one run.
+			if reuse := r.findClaimedWarmPod(ctx, run); reuse != "" {
+				podName = reuse
+				logger.Info("reusing warm pod already bound to run", "pod", podName, "run", run.Name)
+			}
+		}
 		if podName == "" {
 			pod := r.buildAgentPod(run, agent, saName, tokenSecretName, providerVolumes, providerMounts, toolSecretVolumes, toolSecretMounts, mcpBinVolumes, mcpBinMounts)
 			if err := ctrl.SetControllerReference(run, pod, r.Scheme); err != nil {
@@ -344,7 +368,8 @@ func (r *AgentRunReconciler) checkProgress(ctx context.Context, run *agentorcv1a
 		if errors.IsNotFound(err) {
 			// Pod was deleted externally. If this is an http-mode run that already
 			// succeeded (we deleted the pod ourselves), there's nothing to do.
-			if run.Status.InputMode == "http" && run.Status.Phase == agentorcv1alpha1.AgentRunPhaseSucceeded {
+			if run.Status.InputMode == "http" && run.Status.Phase == agentorcv1alpha1.AgentRunPhaseSucceeded { //nolint:goconst
+
 				return ctrl.Result{}, nil
 			}
 			// Otherwise treat as failure and possibly retry.
@@ -359,8 +384,14 @@ func (r *AgentRunReconciler) checkProgress(ctx context.Context, run *agentorcv1a
 		httpOut, err := r.StateStore.LoadHTTPOutput(ctx, run.Name)
 		if err == nil && httpOut != "" {
 			result, err := r.handlePodSuccess(ctx, run, &pod)
-			// Delete the pod so it doesn't linger as a Running pod after the run completes.
-			if err == nil {
+			// Only destroy ONE-SHOT pods here so they don't linger as Running.
+			// WARM pods must be left alive: ensureCleanup -> reconcileRunPodOnTerminal
+			// (run on the terminal reconcile) returns them to the idle pool so they
+			// survive across chat turns and long-trajectory tasks. Deleting warm
+			// pods here — as the old unconditional delete did — defeated reuse and
+			// could murder an in-progress session, since the pod is removed before
+			// the return-to-idle logic ever runs.
+			if err == nil && shouldDeletePodOnCompletion(&pod) {
 				_ = r.Delete(ctx, &pod)
 			}
 			return result, err
@@ -457,6 +488,9 @@ func (r *AgentRunReconciler) handlePodSuccess(ctx context.Context, run *agentorc
 	// Fire completion callback if configured.
 	r.fireCallback(ctx, run)
 
+	// Publish result to egress sink if configured.
+	r.fireEgress(ctx, run)
+
 	return ctrl.Result{}, nil
 }
 
@@ -504,7 +538,8 @@ func looksLikeClarifyQuestion(text string) bool {
 	return false
 }
 
-func (r *AgentRunReconciler) handlePodFailure(ctx context.Context, run *agentorcv1alpha1.AgentRun, agent *agentorcv1alpha1.Agent, reason string) (ctrl.Result, error) {
+func (r *AgentRunReconciler) handlePodFailure(ctx context.Context, run *agentorcv1alpha1.AgentRun, agent *agentorcv1alpha1.Agent, reason string) (ctrl.Result, error) { //nolint:unparam
+
 	// Enrich the failure reason with container logs before the pod is deleted.
 	if run.Status.PodName != "" {
 		reason = r.enrichFailureReason(ctx, run.Namespace, run.Status.PodName, reason)
@@ -537,7 +572,8 @@ func (r *AgentRunReconciler) handlePodFailure(ctx context.Context, run *agentorc
 }
 
 // buildRouterConfig resolves ModelSelector + Tools and returns a router.Config JSON.
-func (r *AgentRunReconciler) buildRouterConfig(
+func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
+
 	ctx context.Context,
 	run *agentorcv1alpha1.AgentRun,
 	agent *agentorcv1alpha1.Agent,
@@ -630,6 +666,7 @@ func (r *AgentRunReconciler) buildRouterConfig(
 		"_write_state": true, "_read_state": true, "_list_state": true, "_delete_state": true,
 		"_memory_store": true, "_mcp_read_resource": true, "_propose_step": true,
 		"_propose_fix": true, "_confirm_fix": true, "_create_workflow": true, "_list_resources": true,
+		"_search_history": true,
 	}
 	for _, toolName := range agent.Spec.Tools {
 		// Skip builtin tools - they're injected separately in the router
@@ -679,7 +716,8 @@ func (r *AgentRunReconciler) buildRouterConfig(
 					}
 				}
 				args := tool.Spec.MCPConfig.Args
-				if tool.Spec.MCPConfig.Transport == "stdio" && len(args) > 0 {
+				if tool.Spec.MCPConfig.Transport == "stdio" && len(args) > 0 { //nolint:goconst
+
 					mcpCfg.Cmd = args[0]
 					mcpCfg.Args = args[1:]
 					// Rewrite absolute paths to point into the image volume mount.
@@ -800,6 +838,12 @@ func (r *AgentRunReconciler) buildRouterConfig(
 			Name:        "_emit_event",
 			Description: "Publish a named event for observability and loose coupling. Events are visible in Kubernetes (kubectl describe) and the run trace stream. Use to signal milestones or state changes.",
 			Parameters:  []byte(`{"type":"object","properties":{"eventType":{"type":"string","description":"Short PascalCase event type name (e.g. DocumentProcessed, ValidationFailed)"},"message":{"type":"string","description":"Human-readable event message"}},"required":["eventType","message"]}`),
+			BackendType: "builtin",
+		})
+		toolDefs = append(toolDefs, router.ToolDefinition{
+			Name:        "_search_history",
+			Description: "Search prior chat turns for this deployment when the information you need is not in your current context. The model-router looks through the local warm-pod cache (an emptyDir mirroring checkpoints) first, then the shared Redis store, scoped to this deployment's prior runs. Use this BEFORE asking the human via _clarify when the answer may already exist in a previous conversation. If found=false, the human must be asked.",
+			Parameters:  []byte(`{"type":"object","properties":{"query":{"type":"string","minLength":1,"description":"The specific facts or topics to search prior conversation turns for. Use concrete terms, not vague phrases."},"topK":{"type":"integer","default":3,"description":"Maximum number of matching turn snippets to return"}},"required":["query"]}`),
 			BackendType: "builtin",
 		})
 	}
@@ -931,11 +975,11 @@ func (r *AgentRunReconciler) buildRouterConfig(
 	if run.Spec.Safeguards != nil {
 		s := run.Spec.Safeguards
 		safeguards = router.RouterSafeguards{
-			MaxConsecutiveNoopTurns:   s.MaxConsecutiveNoopTurns,
-			MinSubstantiveTokens:      s.MinSubstantiveTokens,
-			MaxRepeatedToolCalls:      s.MaxRepeatedToolCalls,
-			ToolFrequencyCap:          s.ToolFrequencyCap,
-			ToolExecutionTimeoutSec:   s.ToolExecutionTimeoutSec,
+			MaxConsecutiveNoopTurns: s.MaxConsecutiveNoopTurns,
+			MinSubstantiveTokens:    s.MinSubstantiveTokens,
+			MaxRepeatedToolCalls:    s.MaxRepeatedToolCalls,
+			ToolFrequencyCap:        s.ToolFrequencyCap,
+			ToolExecutionTimeoutSec: s.ToolExecutionTimeoutSec,
 		}
 	}
 
@@ -1027,6 +1071,7 @@ func (r *AgentRunReconciler) buildRouterConfig(
 		StateConfig:            r.StateConfig,
 		KubeAPIURL:             "https://kubernetes.default.svc",
 		OperatorAPIURL:         r.OperatorAPIURL,
+		LLMRequestTimeout:      r.LLMRequestTimeout,
 		SystemPrompt:           agent.Spec.SystemPrompt,
 		ChatMode:               agent.Spec.Runtime.InputMode == "http" || agent.Spec.Runtime.InputMode == "chat",
 		WorkflowName:           run.Labels["agentorc.io/workflow"],
@@ -1053,8 +1098,6 @@ func (r *AgentRunReconciler) buildRouterConfig(
 			RunName: run.Name,
 		}
 	}
-
-
 
 	// GuardrailPolicy CR: wire agent's guardrailPolicyRef into cfg.Guardrails.
 	if agent.Spec.GuardrailPolicyRef != "" {
@@ -1123,7 +1166,8 @@ func (r *AgentRunReconciler) ensureTokenReviewerBinding(ctx context.Context, run
 }
 
 // ensureNetworkPolicy creates the per-run NetworkPolicy if it doesn't exist.
-func (r *AgentRunReconciler) ensureNetworkPolicy(ctx context.Context, run *agentorcv1alpha1.AgentRun, toolEgressRules []agentorcv1alpha1.EgressRule, hasAgentTools bool, hasKnowledgeBases bool) error {
+func (r *AgentRunReconciler) ensureNetworkPolicy(ctx context.Context, run *agentorcv1alpha1.AgentRun, toolEgressRules []agentorcv1alpha1.EgressRule, hasAgentTools bool, hasKnowledgeBases bool) error { //nolint:unparam
+
 	np := security.BuildNetworkPolicy(run, run.Namespace, toolEgressRules, r.StateConfig.Backend == "redis")
 	if err := ctrl.SetControllerReference(run, np, r.Scheme); err != nil {
 		return fmt.Errorf("setting networkpolicy owner ref: %w", err)
@@ -1437,6 +1481,10 @@ func (r *AgentRunReconciler) buildAgentPod(
 		}
 	}
 
+	// Agent-runtime secret refs (e.g. HTB OpenVPN config): mounted into the agent
+	// container only. This is a pure transform of Agent.spec.runtime.secretRefs.
+	agentSecretVolumes, agentSecretMounts := podbuilder.ResolveAgentSecretRefs(agent)
+
 	return podbuilder.Build(podbuilder.PodConfig{
 		PodName:   "agentorc-run-" + run.Name,
 		Namespace: run.Namespace,
@@ -1459,6 +1507,8 @@ func (r *AgentRunReconciler) buildAgentPod(
 		ToolSecretMounts:    toolSecretMounts,
 		MCPBinVolumes:       mcpBinVolumes,
 		MCPBinMounts:        mcpBinMounts,
+		AgentSecretVolumes:  agentSecretVolumes,
+		AgentSecretMounts:   agentSecretMounts,
 		CloudProvider:       r.CloudProvider,
 	})
 }
@@ -1480,16 +1530,13 @@ func (r *AgentRunReconciler) ensureCleanup(ctx context.Context, run *agentorcv1a
 		crb.Name = "agentorc-run-" + run.Name
 		_ = r.Delete(ctx, crb)
 	}
-	// Explicitly delete the agent pod on terminal state. HTTP-mode pods are long-running
-	// servers that never exit on their own. Warm pods (regardless of InputMode) are owned
-	// by the AgentDeployment, not the AgentRun, so ownerReference GC will not fire when
-	// the run completes — they must be deleted here.
-	if run.Status.PodName != "" {
-		pod := &corev1.Pod{}
-		pod.Name = run.Status.PodName
-		pod.Namespace = run.Namespace
-		_ = r.Delete(ctx, pod)
-	}
+	// Reconcile the run's pod on terminal state. One-shot AgentRun pods are deleted
+	// (existing behavior). Warm pods — owned by an AgentDeployment, so ownerRef GC
+	// won't fire — are REUSED by default: returned to the idle pool so the next chat
+	// run can claim them, unless the deployment's maxRequestsPerPod cap has been
+	// reached, in which case the pod is recycled. (HTTP-mode warm pods are long-running
+	// servers that never exit on their own, so they must be handled explicitly here.)
+	r.reconcileRunPodOnTerminal(ctx, run)
 	// In split-pod topology, also delete the router pod explicitly.
 	// The router Service is owned by the AgentRun and GC'd automatically.
 	if run.Status.RouterPodName != "" {
@@ -1537,6 +1584,97 @@ func (r *AgentRunReconciler) ensureCleanup(ctx context.Context, run *agentorcv1a
 	return ctrl.Result{}, nil
 }
 
+// shouldDeletePodOnCompletion reports whether a pod should be destroyed when its
+// HTTP/chat run reaches completion (output detected by the controller). One-shot
+// pods (no warm-pool label) are torn down so they don't linger as Running.
+//
+// WARM pods are intentionally preserved: they are returned to the idle pool by
+// reconcileRunPodOnTerminal on the terminal reconcile so they survive across chat
+// turns and long-trajectory tasks. checkProgress must NOT delete them here, or the
+// pod is removed before the return-to-idle logic ever runs — which destroyed warm
+// pods on every completion and could murder an in-progress session.
+func shouldDeletePodOnCompletion(pod *corev1.Pod) bool {
+	return pod.Labels[labelWarmPool] == ""
+}
+
+// reconcileRunPodOnTerminal handles the AgentRun's pod when the run reaches a terminal
+// state. One-shot AgentRun pods are deleted (existing behavior). Warm pods — owned by
+// an AgentDeployment run, so ownerReference GC will not fire — are REUSED by default:
+// returned to the idle pool so the next chat run can claim them, unless the owning
+// deployment's maxRequestsPerPod cap has been reached, in which case the pod is recycled.
+// The model-router's ClaimRun is re-entrant (it resets per-run state on each claim), so a
+// returned idle pod is safe to re-claim.
+func (r *AgentRunReconciler) reconcileRunPodOnTerminal(ctx context.Context, run *agentorcv1alpha1.AgentRun) {
+	logger := log.FromContext(ctx)
+	if run.Status.PodName == "" {
+		return
+	}
+	var pod corev1.Pod
+	if err := r.Get(ctx, client.ObjectKey{Namespace: run.Namespace, Name: run.Status.PodName}, &pod); err != nil {
+		// Pod already gone — nothing to return; fall back to a best-effort delete of the
+		// (now missing) name to preserve prior behavior.
+		_ = r.Delete(ctx, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+			Name: run.Status.PodName, Namespace: run.Namespace,
+		}})
+		return
+	}
+	if shouldDeletePodOnCompletion(&pod) {
+		// One-shot AgentRun pod: delete as before.
+		_ = r.Delete(ctx, &pod)
+		return
+	}
+
+	// Warm pod: reuse it unless the owning deployment's request cap is reached.
+	maxRequests := 0
+	if deployName := run.Labels["agentorc.io/deployment"]; deployName != "" {
+		var dep agentorcv1alpha1.AgentDeployment
+		if err := r.Get(ctx, client.ObjectKey{Namespace: run.Namespace, Name: deployName}, &dep); err == nil {
+			maxRequests = dep.Spec.MaxRequestsPerPod
+		}
+	}
+	served := warmRequestCount(&pod)
+
+	if warmPodOverCap(&pod, maxRequests) {
+		logger.Info("recycling warm pod: request cap reached",
+			"pod", pod.Name, "served", served, "cap", maxRequests)
+		_ = r.Delete(ctx, &pod)
+		return
+	}
+
+	// Reuse: return the pod to the idle pool so it can be claimed by the next run.
+	patch := client.MergeFrom(pod.DeepCopy())
+	pod.Labels[labelWarmStatus] = warmStatusIdle
+	delete(pod.Labels, "agentorc.io/run")
+	if err := r.Patch(ctx, &pod, patch); err != nil {
+		logger.Error(err, "failed to return warm pod to idle; deleting as fallback", "pod", pod.Name)
+		_ = r.Delete(ctx, &pod)
+	}
+}
+
+// warmRequestCount parses the warm-requests label of a pod into an int (0 if absent or
+// unparseable).
+func warmRequestCount(pod *corev1.Pod) int {
+	n, ok := pod.Labels[labelWarmRequests]
+	if !ok {
+		return 0
+	}
+	cnt, err := strconv.Atoi(n)
+	if err != nil {
+		return 0
+	}
+	return cnt
+}
+
+// warmPodOverCap reports whether a warm pod has reached its owning deployment's
+// maxRequestsPerPod quota and should be recycled. maxRequests<=0 means "reuse
+// indefinitely" (no cap), so it returns false.
+func warmPodOverCap(pod *corev1.Pod, maxRequests int) bool {
+	if maxRequests <= 0 {
+		return false
+	}
+	return warmRequestCount(pod) >= maxRequests
+}
+
 // handleRunDeletion cleans up before removing the finalizer.
 func (r *AgentRunReconciler) handleRunDeletion(ctx context.Context, run *agentorcv1alpha1.AgentRun) (ctrl.Result, error) {
 	if _, err := r.ensureCleanup(ctx, run); err != nil {
@@ -1564,6 +1702,9 @@ func (r *AgentRunReconciler) failRun(ctx context.Context, run *agentorcv1alpha1.
 	// Fire failure callback if configured.
 	r.fireCallback(ctx, run)
 
+	// Publish result to egress sink if configured.
+	r.fireEgress(ctx, run)
+
 	return ctrl.Result{}, nil
 }
 
@@ -1588,7 +1729,7 @@ func (r *AgentRunReconciler) fireCallback(ctx context.Context, run *agentorcv1al
 		return
 	}
 
-	payload := map[string]interface{}{
+	payload := map[string]any{
 		"taskId":    run.Name,
 		"agent":     run.Spec.AgentRef,
 		"phase":     string(run.Status.Phase),
@@ -1614,28 +1755,77 @@ func (r *AgentRunReconciler) fireCallback(ctx context.Context, run *agentorcv1al
 		callbackCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		req, err := http.NewRequestWithContext(callbackCtx, http.MethodPost, callbackURL, bytes.NewReader(body))
-		if err != nil {
-			log.Log.Error(err, "building callback request", "run", run.Name, "url", callbackURL)
-			return
+		// Resolve the per-callback HMAC signing secret (if configured). The secret
+		// name is recorded by the external API at submission time under the
+		// `agentorc.io/callback-secret` annotation. The Secret must contain a
+		// `hmac-key` key whose value is the shared HMAC key. If absent or
+		// unreadable the callback is still delivered (unsigned) so existing
+		// customers are not broken — signing is opt-in via the shared secret.
+		var signingKey []byte
+		if secretName := run.Annotations["agentorc.io/callback-secret"]; secretName != "" {
+			signingKey = r.resolveCallbackKey(callbackCtx, run.Namespace, secretName, run.Name)
 		}
-		req.Header.Set("Content-Type", "application/json")
 
-		// TODO: Add HMAC-SHA256 signature using the callback secret from annotations.
-
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := r.deliverCallback(callbackCtx, callbackURL, body, signingKey)
 		if err != nil {
 			log.Log.Error(err, "callback delivery failed", "run", run.Name, "url", callbackURL)
 			return
 		}
-		resp.Body.Close()
-
-		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			log.Log.Info("callback delivered", "run", run.Name, "url", callbackURL, "status", resp.StatusCode)
-		} else {
-			log.Log.Error(nil, "callback returned non-2xx", "run", run.Name, "url", callbackURL, "status", resp.StatusCode)
+		if resp != nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+				log.Log.Info("callback delivered", "run", run.Name, "url", callbackURL, "status", resp.StatusCode)
+			} else {
+				log.Log.Error(nil, "callback returned non-2xx", "run", run.Name, "url", callbackURL, "status", resp.StatusCode)
+			}
 		}
 	}()
+}
+
+// resolveCallbackKey reads the shared HMAC key from the tenant's Secret. Returns
+// nil (and logs) when the secret is missing/unreadable so delivery proceeds
+// unsigned rather than failing the run. errors.IsNotFound is the expected
+// "not configured" case and is therefore logged at debug, not error.
+func (r *AgentRunReconciler) resolveCallbackKey(ctx context.Context, namespace, secretName, runName string) []byte {
+	secret, err := r.K8s.CoreV1().Secrets(namespace).Get(ctx, secretName, metav1.GetOptions{})
+	if err != nil {
+		if errors.IsNotFound(err) {
+			log.Log.V(1).Info("callback signing secret not found; delivering unsigned callback",
+				"run", runName, "secret", secretName)
+		} else {
+			log.Log.Error(err, "fetching callback signing secret; delivering unsigned callback",
+				"run", runName, "secret", secretName)
+		}
+		return nil
+	}
+	if data := secret.Data["hmac-key"]; len(data) > 0 {
+		return data
+	}
+	log.Log.Info("callback signing secret found but missing hmac-key key; delivering unsigned callback",
+		"run", runName, "secret", secretName)
+	return nil
+}
+
+// deliverCallback builds and sends a single callback POST. When signingKey is
+// non-empty the request is signed with HMAC-SHA256 over the body and carries an
+// X-Agentorc-Timestamp header so receivers can verify authenticity and guard
+// against replay. Returns the HTTP response (caller must close Body) and any
+// transport error.
+func (r *AgentRunReconciler) deliverCallback(ctx context.Context, callbackURL string, body []byte, signingKey []byte) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, callbackURL, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	if len(signingKey) > 0 {
+		mac := hmac.New(sha256.New, signingKey)
+		mac.Write(body)
+		req.Header.Set("X-Agentorc-Signature", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+		req.Header.Set("X-Agentorc-Timestamp", strconv.FormatInt(time.Now().Unix(), 10))
+	}
+
+	return http.DefaultClient.Do(req)
 }
 
 // patchPhase is a helper to patch only the phase field.
@@ -1709,6 +1899,26 @@ func (r *AgentRunReconciler) loadSpendFromStore(ctx context.Context, runName str
 	return fmt.Sprintf("%.6f", usd)
 }
 
+// recordRunInDeploymentIndex writes a marker KV entry under the deployment's run
+// index so the model-router can enumerate this deployment's prior runs
+// (agentorc/deployments/<dep>/runs:<runName>) for warm-pool history retrieval.
+// This is best-effort: if the state store is unavailable the run is simply not
+// indexed (search recall is narrowed), which is never a run-failure condition.
+func (r *AgentRunReconciler) recordRunInDeploymentIndex(ctx context.Context, run *agentorcv1alpha1.AgentRun) {
+	dep := run.Labels["agentorc.io/deployment"]
+	if dep == "" || r.StateStore == nil {
+		return
+	}
+	scope := fmt.Sprintf("agentorc/deployments/%s/runs", dep)
+	ttl := int64(21600) // 6h default beyond the run; mirrors run-checkpoint residency
+	if r.StateConfig.TTLSeconds > 0 {
+		ttl = int64(r.StateConfig.TTLSeconds)
+	}
+	if err := r.StateStore.SaveKV(ctx, scope, run.Name, []byte("1"), time.Duration(ttl)*time.Second); err != nil {
+		log.FromContext(ctx).V(1).Info("failed to record run in deployment index (non-fatal)", "run", run.Name, "deployment", dep, "err", err)
+	}
+}
+
 // podFailureReason extracts a human-readable failure reason from a failed pod.
 func podFailureReason(pod *corev1.Pod) string {
 	// Check the agent main container first.
@@ -1741,12 +1951,22 @@ func truncate(s string, n int) string {
 // to it, and returns the pod name. Returns ("", nil) if no warm pod is available (caller
 // should fall through to normal pod creation).
 func (r *AgentRunReconciler) claimWarmPod(ctx context.Context, run *agentorcv1alpha1.AgentRun, agent *agentorcv1alpha1.Agent) (podName string, err error) {
+	logger := log.FromContext(ctx)
+
+	// Bounding the claim POST prevents a hung/unreachable warm-mgmt port from
+	// stalling reconciliation long enough to race a fresh-pod fallback and cause
+	// split-brain (warm pod and fresh pod both serving one run).
+	const warmClaimTimeout = 15 * time.Second
+	claimClient := &http.Client{Timeout: warmClaimTimeout}
+
 	// Only applicable to http-mode agents backed by an AgentDeployment.
 	if agent.Spec.Runtime.InputMode != "http" {
+		logger.V(1).Info("warm pod claim skipped: agent is not http input mode", "agent", agent.Name)
 		return "", nil
 	}
 	deployName := run.Labels["agentorc.io/deployment"]
 	if deployName == "" {
+		logger.V(1).Info("warm pod claim skipped: run has no agentorc.io/deployment label (created outside a chat/deployment path)")
 		return "", nil
 	}
 
@@ -1761,22 +1981,30 @@ func (r *AgentRunReconciler) claimWarmPod(ctx context.Context, run *agentorcv1al
 	); err != nil {
 		return "", fmt.Errorf("listing warm pods: %w", err)
 	}
+	if len(pods.Items) == 0 {
+		logger.Info("warm pod claim skipped: no idle warm pods for deployment", "deployment", deployName)
+		return "", nil
+	}
 
 	// Find the first pod with a running model-router and a reachable IP.
 	for i := range pods.Items {
 		pod := &pods.Items[i]
 		if pod.Status.PodIP == "" || pod.DeletionTimestamp != nil {
+			logger.V(1).Info("warm pod claim skipped: pod not schedulable/being deleted", "pod", pod.Name)
 			continue
 		}
 		// Only claim pods whose init container (model-router) is running.
 		modelRouterReady := false
 		for _, cs := range pod.Status.InitContainerStatuses {
-			if cs.Name == "model-router" && cs.Ready {
+			if cs.Name == "model-router" && cs.Ready { //nolint:goconst
+
 				modelRouterReady = true
 				break
 			}
 		}
 		if !modelRouterReady {
+			logger.Info("warm pod claim skipped: model-router sidecar not ready",
+				"pod", pod.Name, "podIP", pod.Status.PodIP)
 			continue
 		}
 
@@ -1800,26 +2028,33 @@ func (r *AgentRunReconciler) claimWarmPod(ctx context.Context, run *agentorcv1al
 		}
 		req.Header.Set("Content-Type", "application/json")
 
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := claimClient.Do(req)
 		if err != nil {
 			// Pod may not be fully ready yet; try the next one.
+			logger.V(1).Info("warm pod claim: claim-run POST failed, trying next", "pod", pod.Name, "error", err)
 			continue
 		}
-		_, _ = io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
-
 		if resp.StatusCode != http.StatusOK {
+			logger.Info("warm pod claim: claim-run rejected by pod, trying next", "pod", pod.Name, "status", resp.StatusCode)
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
 			continue
 		}
 
-		// Mark the pod as claimed so other runs don't pick it up.
+		// Drain and close the success body before mutating the pod.
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+
+		// Mark the pod as claimed so other runs don't pick it up. Also bump the
+		// per-pod served-request counter used by maxRequestsPerPod recycling.
 		patch := client.MergeFrom(pod.DeepCopy())
 		pod.Labels[labelWarmStatus] = warmStatusClaimed
 		pod.Labels["agentorc.io/run"] = security.SafeLabelValue(run.Name)
+		pod.Labels[labelWarmRequests] = strconv.Itoa(warmRequestCount(pod) + 1)
 		if err := r.Patch(ctx, pod, patch); err != nil {
 			// Non-fatal — worst case another run also tries to claim this pod (the
 			// /v1/claim-run endpoint is idempotent for the same run name).
-			_ = err
+			logger.V(1).Info("warm pod claim: failed to mark pod claimed", "pod", pod.Name, "error", err)
 		}
 
 		return pod.Name, nil
@@ -1828,19 +2063,51 @@ func (r *AgentRunReconciler) claimWarmPod(ctx context.Context, run *agentorcv1al
 	return "", nil
 }
 
+// findClaimedWarmPod returns the name of a warm pod that has already bound this run
+// (via its agentorc.io/run label). This catches the race where /v1/claim-run succeeded
+// on the warm pod (so it is already serving the run) but the operator's claim POST
+// response was lost/retried — instead of spawning a second agent pod (split-brain),
+// we reuse the warm pod that owns the run.
+func (r *AgentRunReconciler) findClaimedWarmPod(ctx context.Context, run *agentorcv1alpha1.AgentRun) string {
+	deployName := run.Labels["agentorc.io/deployment"]
+	if deployName == "" {
+		return ""
+	}
+	var pods corev1.PodList
+	if err := r.List(ctx, &pods,
+		client.InNamespace(run.Namespace),
+		client.MatchingLabels{
+			labelWarmPool:     deployName,
+			"agentorc.io/run": security.SafeLabelValue(run.Name),
+		},
+	); err != nil {
+		return ""
+	}
+	for i := range pods.Items {
+		p := &pods.Items[i]
+		if p.DeletionTimestamp != nil {
+			continue
+		}
+		// A non-terminating warm pod carrying this run's label owns the run.
+		return p.Name
+	}
+	return ""
+}
+
 // parseFloat converts a USD decimal string to float64.
 func parseFloat(s string) float64 {
 	if s == "" {
 		return 0
 	}
 	var f float64
-	fmt.Sscanf(s, "%f", &f)
+	_, _ = fmt.Sscanf(s, "%f", &f)
 	return f
 }
 
 // providerPort extracts the port from a ModelProvider's baseURL. Falls back to 443
 // for HTTPS providers and 80 for HTTP. If baseURL is empty, returns 443 (cloud APIs).
-func providerPort(baseURL, litellmModel string) int {
+func providerPort(baseURL, litellmModel string) int { //nolint:unparam
+
 	if baseURL != "" {
 		if u, err := url.Parse(baseURL); err == nil && u.Port() != "" {
 			if p, err := strconv.Atoi(u.Port()); err == nil {
@@ -1900,7 +2167,7 @@ func (r *AgentRunReconciler) agentRunsForModelSelector(ctx context.Context, obj 
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *AgentRunReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	r.Recorder = mgr.GetEventRecorderFor("agentrun")
+	r.Recorder = mgr.GetEventRecorderFor("agentrun") //nolint:staticcheck
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&agentorcv1alpha1.AgentRun{}).
 		Owns(&corev1.Pod{}).
@@ -1913,4 +2180,46 @@ func (r *AgentRunReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&agentorcv1alpha1.ModelSelector{}, handler.EnqueueRequestsFromMapFunc(r.agentRunsForModelSelector)).
 		Named("agentrun").
 		Complete(r)
+}
+
+// fireEgress publishes the final run result to the configured egress sink.
+// This is fire-and-forget: the publisher is created, the result is published,
+// and any errors are logged + recorded as metrics. Egress is independent of
+// webhook callbacks — both can be configured simultaneously.
+func (r *AgentRunReconciler) fireEgress(ctx context.Context, run *agentorcv1alpha1.AgentRun) {
+	if run.Spec.Egress == nil {
+		return
+	}
+
+	// Build the egress result payload from the run's terminal status.
+	result := agentorcv1alpha1.EgressResult{
+		RunID:         run.Name,
+		Agent:         run.Spec.AgentRef,
+		Phase:         string(run.Status.Phase),
+		Output:        run.Status.Output,
+		SpendUSD:      run.Status.SpendUSD,
+		FailureReason: run.Status.FailureReason,
+		Tenant:        run.Labels["agentorc.io/tenant"],
+	}
+	if run.Status.CompletionTime != nil {
+		result.CompletedAt = run.Status.CompletionTime.Format(time.RFC3339)
+	}
+	// Include original metadata annotations as the result's metadata map.
+	for k, v := range run.Annotations {
+		if strings.HasPrefix(k, "agentorc.io/meta-") {
+			if result.Metadata == nil {
+				result.Metadata = make(map[string]string)
+			}
+			result.Metadata[strings.TrimPrefix(k, "agentorc.io/meta-")] = v
+		}
+	}
+
+	publisher, err := egress.NewPublisher(ctx, *run.Spec.Egress, r.Client, run.Namespace)
+	if err != nil {
+		log.Log.Error(err, "egress: failed to create publisher", "run", run.Name, "type", run.Spec.Egress.Type)
+		return
+	}
+	defer func() { _ = publisher.Close() }()
+
+	egress.PublishAndRecord(ctx, publisher, result)
 }

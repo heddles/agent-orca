@@ -31,6 +31,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -82,11 +83,9 @@ type Router struct {
 
 	// toolTimeout is the maximum duration for a single tool call before it is
 	// cancelled and a structured timeout error is returned to the LLM.
-	toolTimeout time.Duration
-	toolCallSigs     map[string]int // sha256(toolName+":"+args) → invocation count
-	loopDetected     bool           // set when a safeguard trips; blocks further LLM calls
-
-
+	toolTimeout  time.Duration
+	toolCallSigs map[string]int // sha256(toolName+":"+args) → invocation count
+	loopDetected bool           // set when a safeguard trips; blocks further LLM calls
 
 	// cancelCtx is a run-scoped context used as the parent for LLM requests.
 	// It is detached from HTTP request contexts (so agent disconnects don't cancel
@@ -148,13 +147,14 @@ func New(cfg *Config, store state.Store, initialMessages []json.RawMessage, exec
 			// Path 1: Find the last assistant message with a _clarify tool call.
 			for i := len(msgs) - 1; i >= 0; i-- {
 				for _, tc := range msgs[i].ToolCalls {
-					if tc.Function.Name == "_clarify" {
+					if tc.Function.Name == "_clarify" { //nolint:goconst
+
 						msgs = append(msgs, Message{
 							Role:       "tool",
 							ToolCallID: tc.ID,
 							Content:    fmt.Sprintf(`{"answer": %q}`, answer),
 						})
-						store.DeleteKey(context.Background(), answerKey)
+						_ = store.DeleteKey(context.Background(), answerKey)
 						slog.Info("injected clarify answer from human (tool result)", "run", cfg.RunName)
 						answerInjected = true
 						goto done
@@ -167,7 +167,7 @@ func New(cfg *Config, store state.Store, initialMessages []json.RawMessage, exec
 				Role:    "user",
 				Content: answer,
 			})
-			store.DeleteKey(context.Background(), answerKey)
+			_ = store.DeleteKey(context.Background(), answerKey)
 			slog.Info("injected clarify answer from human (user message)", "run", cfg.RunName)
 			answerInjected = true
 		done:
@@ -272,13 +272,13 @@ func sanitizeCheckpoint(msgs []Message) []Message {
 	// Collect all tool_result IDs present after the last assistant tool_use.
 	resultIDs := make(map[string]bool)
 	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role == "tool" && msgs[i].ToolCallID != "" {
+		if msgs[i].Role == "tool" && msgs[i].ToolCallID != "" { //nolint:goconst
 			resultIDs[msgs[i].ToolCallID] = true
 			continue
 		}
 		// Found a non-tool message. If it's an assistant with tool_calls,
 		// check whether all its calls have results.
-		if msgs[i].Role == "assistant" && len(msgs[i].ToolCalls) > 0 {
+		if msgs[i].Role == "assistant" && len(msgs[i].ToolCalls) > 0 { //nolint:goconst
 			allResolved := true
 			for _, tc := range msgs[i].ToolCalls {
 				if !resultIDs[tc.ID] {
@@ -396,7 +396,7 @@ func truncateHistory(msgs []Message, maxTokens int) []Message {
 	var systemPrefix []Message
 	bodyStart := 0
 	for i, m := range msgs {
-		if m.Role == "system" {
+		if m.Role == "system" { //nolint:goconst
 			systemPrefix = append(systemPrefix, m)
 			bodyStart = i + 1
 		} else {
@@ -538,7 +538,8 @@ func (r *Router) InitMCPServers() {
 func mergeMCPToolDefs(defs []ToolDefinition, discovered []mcp.Tool) []ToolDefinition {
 	result := make([]ToolDefinition, 0, len(defs))
 	for _, d := range defs {
-		if d.BackendType != "mcp" {
+		if d.BackendType != "mcp" { //nolint:goconst
+
 			result = append(result, d)
 		}
 	}
@@ -558,7 +559,8 @@ func mergeMCPToolDefs(defs []ToolDefinition, discovered []mcp.Tool) []ToolDefini
 
 // HandleChatCompletions handles POST /v1/chat/completions.
 // This is the primary endpoint called by all OpenAI-compatible agent frameworks.
-func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request) {
+func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request) { //nolint:gocyclo
+
 	if req.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -607,7 +609,6 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 		return
 	}
 
-
 	// Parse request body.
 	body, err := io.ReadAll(io.LimitReader(req.Body, 10<<20)) // 10MB limit
 	if err != nil {
@@ -621,9 +622,41 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 		return
 	}
 
+	// Determine if this is a continuation (recursive tool-call loop within the
+	// same LLM invocation) vs. a new top-level request from the agent framework.
+	isContinuation := req.Context().Value(continuationKey{}) != nil
+
+	// For new top-level requests, fold the accumulated in-memory conversation
+	// (r.messages) into r.priorMessages so the LLM has full multi-turn context.
+	// Without this, agents that don't maintain their own message history
+	// (e.g. HTTP/chat-mode) lose the conversation between turns. The Redis
+	// checkpoint is loaded once at startup; this fold keeps priorMessages
+	// fresh within a pod's lifetime, complementary to the per-turn checkpoint
+	// writes that persist to Redis for cross-restart recovery.
+	// Skip for continuations — r.messages is consumed directly by the recursive
+	// HandleChatCompletions call in handleToolCalls.
+	if !isContinuation {
+		r.mu.Lock()
+		if len(r.messages) > 0 {
+			r.priorMessages = append(r.priorMessages, r.messages...)
+			r.messages = nil
+		}
+		// Cap the live buffer (BY TOKENS, not message count — comparing the two lets
+		// a few-hundred-message-but-400k-token buffer slip through uncapped) to the same
+		// budget the per-turn checkpoint save uses, so priorMessages cannot grow
+		// unboundedly across turns. Each turn the fold appends the prior turn; without
+		// capping, checkpoint() and maybeRunEpisodicSummary re-scan an ever-growing
+		// history every turn — the "compaction runs every turn on a giant buffer"
+		// pathology. truncateHistory replaces dropped turns with a compaction summary,
+		// preserving key facts.
+		r.trimLiveBuffer()
+		r.mu.Unlock()
+	}
+
 	// Inject prior run's conversation history so the LLM has multi-turn context.
 	// Skip if the messages already start with the prior context (i.e., this is a
-	// tool-call continuation where handleToolCalls already built the full history).
+	// tool-call continuation where handleToolCalls already built the full history,
+	// or the agent framework sent the full conversation itself).
 	r.mu.Lock()
 	prior := r.priorMessages
 	resumed := r.resumedWithAnswer
@@ -652,11 +685,6 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 		chatReq = r.injectTools(chatReq)
 	}
 
-	// For continuation requests (recursive tool-call loops), the messages already contain
-	// all system messages (SystemPrompt, builtin hints, episodic/LTM context) because
-	// r.messages is passed directly. Skip re-injection to avoid duplication.
-	isContinuation := req.Context().Value(continuationKey{}) != nil
-
 	// Inject episodic memory summaries (if any) as a system message at the front.
 	// Skip for continuations - already in r.messages.
 	if !isContinuation {
@@ -678,17 +706,30 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 	// Inject the agent's SystemPrompt as a system message for all providers.
 	// This ensures the system prompt survives compaction and is always available.
 	// Skip for continuations - already in r.messages.
+	// Also skip when the system prompt is already present in the conversation
+	// (e.g. after folding r.messages into r.priorMessages), to avoid duplicates.
 	if !isContinuation && r.cfg.SystemPrompt != "" {
-		systemMsg := Message{Role: "system", Content: r.cfg.SystemPrompt}
-		// Find the last system message to insert after all existing system messages
-		// (episodic summaries, LTM context) so ordering is preserved.
-		insertIdx := 0
+		alreadyHasSystemPrompt := false
 		for _, msg := range chatReq.Messages {
 			if msg.Role == "system" {
-				insertIdx++
+				if s, ok := msg.Content.(string); ok && s == r.cfg.SystemPrompt {
+					alreadyHasSystemPrompt = true
+					break
+				}
 			}
 		}
-		chatReq.Messages = append(chatReq.Messages[:insertIdx], append([]Message{systemMsg}, chatReq.Messages[insertIdx:]...)...)
+		if !alreadyHasSystemPrompt {
+			systemMsg := Message{Role: "system", Content: r.cfg.SystemPrompt}
+			// Find the last system message to insert after all existing system messages
+			// (episodic summaries, LTM context) so ordering is preserved.
+			insertIdx := 0
+			for _, msg := range chatReq.Messages {
+				if msg.Role == "system" {
+					insertIdx++
+				}
+			}
+			chatReq.Messages = append(chatReq.Messages[:insertIdx], append([]Message{systemMsg}, chatReq.Messages[insertIdx:]...)...)
+		}
 	}
 
 	// Inject a system hint about the _clarify tool so the LLM knows it can
@@ -714,7 +755,7 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 						}},
 					}
 					w.Header().Set("Content-Type", "application/json")
-					json.NewEncoder(w).Encode(blockedResp)
+					_ = json.NewEncoder(w).Encode(blockedResp)
 					return
 				}
 
@@ -741,24 +782,37 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 		"run", r.cfg.RunName,
 	)
 
-
-
-	// Pre-send truncation: ensure messages fit the selected provider's context window.
-	// Uses the provider's actual ContextWindow rather than the global max because
-	// the router has already selected a specific provider for this request.
-	presendBudget := provider.ContextWindow
-	if presendBudget <= 0 {
-		presendBudget = maxContextWindow(r.cfg.Providers)
+	// Pre-send truncation: ensure the FULL request fits the selected provider's
+	// context window. The reserve (and an additional output + tool-defs margin)
+	// accounts for the fact that providers count `tools`, injected system prompt,
+	// and the response toward ContextWindow — not just `messages`. Previously the
+	// budget was messages-only, so tool-heavy agents (e.g. the pwnbox toolbelt with
+	// ~25 schema'd tools) overflowed the window immediately after message truncation
+	// landed at 0.8*CW (the reported "262145 input tokens" hard-400 by 1).
+	hardLimit := provider.ContextWindow
+	if hardLimit <= 0 {
+		hardLimit = maxContextWindow(r.cfg.Providers)
 	}
-	presendBudget = int(float64(presendBudget) * (1.0 - r.cfg.ContextWindowReserve))
-	if est := estimateTokens(chatReq.Messages); est > presendBudget {
+	// Tokens the serialized tool definitions consume toward the window.
+	toolTokens := estimateToolTokens(chatReq.Tools)
+	// Reserve headroom for the model's output tokens and a safety margin so we
+	// never land within a token of the hard limit despite estimation error.
+	const outputReserveTokens = 1024
+	budget := int(float64(hardLimit)*(1.0-r.cfg.ContextWindowReserve)) - toolTokens - outputReserveTokens
+	if budget <= 0 {
+		budget = int(float64(hardLimit) * 0.5) // last-resort floor: keep at least half the window for messages
+	}
+	if est := estimateTokens(chatReq.Messages); est > budget {
 		slog.Warn("pre-send truncation triggered",
-			"estimatedTokens", est,
-			"budget", presendBudget,
+			"estimatedMessageTokens", est,
+			"toolTokens", toolTokens,
+			"budget", budget,
+			"hardLimit", hardLimit,
+			"reserve", r.cfg.ContextWindowReserve,
 			"provider", provider.Name,
 			"run", r.cfg.RunName,
 		)
-		chatReq.Messages = truncateHistory(chatReq.Messages, presendBudget)
+		chatReq.Messages = truncateHistory(chatReq.Messages, budget)
 	}
 
 	// Streaming path: proxy SSE chunks directly from provider to client.
@@ -866,7 +920,7 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 		if r.store != nil {
 			tokenStreamKey := "tokens:" + r.cfg.RunNamespace + ":" + r.cfg.RunName
 			sentinelCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			r.store.SaveToken(sentinelCtx, tokenStreamKey, "")
+			_ = r.store.SaveToken(sentinelCtx, tokenStreamKey, "")
 			cancel()
 		}
 		// Return the real LLM response (which IS the question) so the agent
@@ -893,6 +947,9 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 		assistantMsg = completionResp.Choices[0].Message
 		r.messages = append(r.messages, assistantMsg)
 	}
+	// Fold the finished turn into priorMessages and cap the live buffer so it can't
+	// re-inflate to the agent's full re-sent history before the async checkpoint.
+	r.concludeTurn()
 	r.updateSpend(completionResp.Usage, provider)
 	r.ruleRouter.IncrementTurn()
 	r.mu.Unlock()
@@ -929,16 +986,16 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 // HandleModels handles GET /v1/models — returns the list of available providers.
 func (r *Router) HandleModels(w http.ResponseWriter, req *http.Request) {
 
-	models := make([]map[string]interface{}, 0, len(r.cfg.Providers))
+	models := make([]map[string]any, 0, len(r.cfg.Providers))
 	for _, p := range r.cfg.Providers {
-		models = append(models, map[string]interface{}{
+		models = append(models, map[string]any{
 			"id":       p.LiteLLMModel,
 			"object":   "model",
 			"created":  0,
 			"owned_by": p.Name,
 		})
 	}
-	resp := map[string]interface{}{"object": "list", "data": models}
+	resp := map[string]any{"object": "list", "data": models}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
 }
@@ -972,7 +1029,6 @@ func (r *Router) HandleGemini(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "no available provider", http.StatusServiceUnavailable)
 		return
 	}
-
 
 	respBody, err := r.forwardToProvider(req.Context(), provider, openAIReq)
 	if err != nil {
@@ -1038,18 +1094,16 @@ func (r *Router) selectProvider(ctx context.Context, messages []Message) (*Provi
 	return &r.cfg.Providers[0], result
 }
 
-// llmRequestTimeout is the maximum time the model-router waits for an LLM provider
-// to respond. This is intentionally decoupled from the incoming agent request context
-// so that a short agent-side timeout doesn't cancel an in-flight LLM call.
-const llmRequestTimeout = 120 * time.Second
-
 // forwardToProvider sends the chat completion request to the selected provider.
 // The provider's LiteLLM model string is used — the request is formatted for OpenAI API
 // and forwarded to the appropriate endpoint.
-func (r *Router) forwardToProvider(ctx context.Context, provider *ProviderConfig, chatReq ChatCompletionRequest) ([]byte, error) {
+func (r *Router) forwardToProvider(ctx context.Context, provider *ProviderConfig, chatReq ChatCompletionRequest) ([]byte, error) { //nolint:unparam
+
 	// Use a detached context with a generous timeout so the outgoing LLM call
-	// is not canceled when the agent's HTTP connection drops.
-	llmCtx, cancel := context.WithTimeout(context.Background(), llmRequestTimeout)
+	// is not canceled when the agent's HTTP connection drops. The timeout is
+	// config-driven (default 1h; see LLM_REQUEST_TIMEOUT), decoupled from the
+	// incoming agent request context.
+	llmCtx, cancel := context.WithTimeout(context.Background(), r.cfg.LLMRequestTimeout)
 	defer cancel()
 
 	// Anthropic requires its own wire format — handle separately before any generic logic.
@@ -1102,7 +1156,7 @@ func (r *Router) forwardToProvider(ctx context.Context, provider *ProviderConfig
 	if err != nil {
 		return nil, fmt.Errorf("provider %s: %w", provider.Name, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -1122,7 +1176,7 @@ func (r *Router) forwardToAnthropic(ctx context.Context, provider *ProviderConfi
 	// Note: SystemPrompt is now always injected into the messages array in HandleChatCompletions,
 	// so we don't need to add it from config separately.
 	var systemParts []string
-	var anthropicMessages []map[string]interface{}
+	var anthropicMessages []map[string]any
 
 	for _, msg := range chatReq.Messages {
 		if msg.Role == "system" {
@@ -1139,23 +1193,23 @@ func (r *Router) forwardToAnthropic(ctx context.Context, provider *ProviderConfi
 
 		// Convert assistant messages with tool_calls to Anthropic format.
 		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
-			var content []map[string]interface{}
+			var content []map[string]any
 			if text, ok := msg.Content.(string); ok && text != "" {
-				content = append(content, map[string]interface{}{"type": "text", "text": text})
+				content = append(content, map[string]any{"type": "text", "text": text})
 			}
 			for _, tc := range msg.ToolCalls {
 				args := tc.Function.Arguments
 				if args == "" {
 					args = "{}"
 				}
-				content = append(content, map[string]interface{}{
+				content = append(content, map[string]any{
 					"type":  "tool_use",
 					"id":    tc.ID,
 					"name":  tc.Function.Name,
 					"input": json.RawMessage(args),
 				})
 			}
-			anthropicMessages = append(anthropicMessages, map[string]interface{}{
+			anthropicMessages = append(anthropicMessages, map[string]any{
 				"role":    "assistant",
 				"content": content,
 			})
@@ -1165,9 +1219,9 @@ func (r *Router) forwardToAnthropic(ctx context.Context, provider *ProviderConfi
 		// Convert tool result messages to Anthropic tool_result blocks in a user message.
 		if msg.Role == "tool" {
 			resultContent, _ := msg.Content.(string)
-			anthropicMessages = append(anthropicMessages, map[string]interface{}{
+			anthropicMessages = append(anthropicMessages, map[string]any{
 				"role": "user",
-				"content": []map[string]interface{}{{
+				"content": []map[string]any{{
 					"type":        "tool_result",
 					"tool_use_id": msg.ToolCallID,
 					"content":     resultContent,
@@ -1176,7 +1230,7 @@ func (r *Router) forwardToAnthropic(ctx context.Context, provider *ProviderConfi
 			continue
 		}
 
-		anthropicMsg := map[string]interface{}{
+		anthropicMsg := map[string]any{
 			"role":    msg.Role,
 			"content": msg.Content,
 		}
@@ -1204,7 +1258,7 @@ func (r *Router) forwardToAnthropic(ctx context.Context, provider *ProviderConfi
 	// Extract model name after "anthropic/".
 	modelName := strings.TrimPrefix(provider.LiteLLMModel, "anthropic/")
 
-	reqBody := map[string]interface{}{
+	reqBody := map[string]any{
 		"model":      modelName,
 		"messages":   anthropicMessages,
 		"max_tokens": 4096,
@@ -1215,13 +1269,13 @@ func (r *Router) forwardToAnthropic(ctx context.Context, provider *ProviderConfi
 
 	// Convert OpenAI tool definitions to Anthropic format.
 	if len(chatReq.Tools) > 0 {
-		var anthropicTools []map[string]interface{}
+		var anthropicTools []map[string]any
 		for _, t := range chatReq.Tools {
-			fn, _ := t["function"].(map[string]interface{})
+			fn, _ := t["function"].(map[string]any)
 			if fn == nil {
 				continue
 			}
-			at := map[string]interface{}{
+			at := map[string]any{
 				"name": fn["name"],
 			}
 			if desc, ok := fn["description"]; ok {
@@ -1230,7 +1284,7 @@ func (r *Router) forwardToAnthropic(ctx context.Context, provider *ProviderConfi
 			if params, ok := fn["parameters"]; ok {
 				at["input_schema"] = params
 			} else {
-				at["input_schema"] = map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}
+				at["input_schema"] = map[string]any{"type": "object", "properties": map[string]any{}}
 			}
 			anthropicTools = append(anthropicTools, at)
 		}
@@ -1256,7 +1310,7 @@ func (r *Router) forwardToAnthropic(ctx context.Context, provider *ProviderConfi
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
@@ -1331,6 +1385,52 @@ func (r *Router) aggregateChildSpend(spendStr string) {
 	}
 }
 
+// trimLiveBuffer caps r.priorMessages to checkpointBudget() BY TOKENS (not message
+// count), preserving a compaction summary of dropped turns. Invoked right after the
+// per-turn fold so the in-memory buffer cannot grow unboundedly across turns — without
+// it, checkpoint() and maybeRunEpisodicSummary re-scan a giant history every turn and
+// compaction never sticks ("only get rid of some messages and resend a giant context").
+// Caller must hold r.mu; returns the (possibly replaced) priorMessages for testing.
+func (r *Router) trimLiveBuffer() {
+	if cap := r.checkpointBudget(); cap > 0 && estimateTokens(r.priorMessages) > cap {
+		r.priorMessages = truncateHistory(r.priorMessages, cap)
+	}
+}
+
+// concludeTurn folds the just-finished turn into priorMessages and caps the live
+// buffer to the checkpoint budget. For re-sending chat agents this is critical:
+// without it, retaining the full turn (the agent's entire conversation re-sent
+// each turn) leaves prior+messages ~2x the budget, so checkpoint() re-truncates a
+// giant buffer every turn and compaction never sticks ("only get rid of some
+// messages and resend a giant context"). truncateHistory keeps the most-recent
+// messages and replaces dropped oldest turns with a compaction summary.
+// Caller must hold r.mu. Invoked at the true turn-end (final, non-tool response)
+// in both the streaming and non-streaming paths — NOT mid tool-call loop.
+func (r *Router) concludeTurn() {
+	if budget := r.checkpointBudget(); budget > 0 {
+		combined := append(append([]Message{}, r.priorMessages...), r.messages...)
+		if estimateTokens(combined) > budget {
+			r.priorMessages = truncateHistory(combined, budget)
+		} else {
+			r.priorMessages = combined
+		}
+		r.messages = nil
+	}
+}
+
+// checkpointBudget is the in-memory cap for the conversation buffer: 80% of the
+// largest configured provider context window (matching the per-turn checkpoint
+// save at this function). Capping the live buffer — not just the persisted
+// checkpoint — stops unbounded growth so compaction is performed once and
+// re-consumed rather than re-derived from a giant history every turn.
+func (r *Router) checkpointBudget() int {
+	cw := maxContextWindow(r.cfg.Providers)
+	if cw <= 0 {
+		cw = 200000
+	}
+	return cw * 8 / 10
+}
+
 // checkpoint saves the current conversation history to the state store.
 func (r *Router) checkpoint(ctx context.Context) {
 	if r.store == nil || r.cfg.CheckpointKey == "" {
@@ -1344,7 +1444,7 @@ func (r *Router) checkpoint(ctx context.Context) {
 
 	// Truncate before persisting so the next continuation loads a right-sized checkpoint.
 	// Reserve 20% headroom for the next turn's system prompt injections, tool definitions, etc.
-	budget := maxContextWindow(r.cfg.Providers) * 80 / 100
+	budget := r.checkpointBudget()
 	msgs = truncateHistory(msgs, budget)
 
 	rawMsgs := make([]json.RawMessage, len(msgs))
@@ -1374,15 +1474,19 @@ func (r *Router) maybeRunEpisodicSummary(ctx context.Context) {
 		return
 	}
 
-	// Slice the last SummaryEvery turns from the current message list.
+	// Slice the last SummaryEvery turns from the full conversation.
+	// Combine priorMessages + messages because, after the per-turn fold in
+	// HandleChatCompletions, prior turns live in r.priorMessages and only the
+	// current turn is in r.messages.
 	r.mu.Lock()
-	allMsgs := append([]Message{}, r.messages...)
+	allMsgs := make([]Message, 0, len(r.priorMessages)+len(r.messages))
+	allMsgs = append(allMsgs, r.priorMessages...)
+	allMsgs = append(allMsgs, r.messages...)
 	r.mu.Unlock()
 
-	start := len(allMsgs) - em.SummaryEvery*2 // rough estimate: 2 messages per turn
-	if start < 0 {
-		start = 0
-	}
+	start := max(
+		// rough estimate: 2 messages per turn
+		len(allMsgs)-em.SummaryEvery*2, 0)
 	chunk := allMsgs[start:]
 
 	// Build summarization prompt.
@@ -1420,7 +1524,6 @@ func (r *Router) maybeRunEpisodicSummary(ctx context.Context) {
 		return
 	}
 
-
 	respBody, err := r.forwardToProvider(ctx, summaryProvider, summaryReq)
 	if err != nil {
 		slog.Warn("episodic summarization failed", "err", err, "run", r.cfg.RunName)
@@ -1447,6 +1550,51 @@ func (r *Router) maybeRunEpisodicSummary(ctx context.Context) {
 		return
 	}
 	slog.Info("episodic summary stored", "run", r.cfg.RunName, "chunk", chunkIdx)
+
+	// Compact the live buffer: replace the summarized chunk with a single summary
+	// message so the in-memory conversation actually shrinks across turns. Previously
+	// the summary was only persisted; the detailed turns stayed in priorMessages /
+	// messages, so the buffer never shrank — compaction didn't stick and the next
+	// turn re-truncated the same giant history ("only get rid of some messages and
+	// resend a giant context"). The detailed turns are now dropped, the summary
+	// retained, and the buffer re-capped; the persisted checkpoint below then saves
+	// the compacted state for resume.
+	summaryMsg := Message{
+		Role:    "system",
+		Content: fmt.Sprintf("[Episodic summary — last ~%d turns, chunk %d]\n%s", em.SummaryEvery, chunkIdx, summary),
+	}
+	r.mu.Lock()
+	before := len(r.priorMessages) + len(r.messages)
+	r.priorMessages = compactEpisodic(r.priorMessages, r.messages, summaryMsg, start, r.checkpointBudget())
+	r.messages = nil
+	r.mu.Unlock()
+	slog.Info("episodic summary compacted live buffer",
+		"run", r.cfg.RunName, "beforeMessages", before,
+		"afterMessages", len(r.priorMessages), "chunk", chunkIdx)
+}
+
+// compactEpisodic implements the episodic compaction step tested in isolation.
+// It treats prior+messages as the full live buffer, drops the summarized chunk
+// (everything from index `start` onward), inserts `summaryMsg` in its place, and
+// caps the result to `budget` (via truncateHistory, which preserves a compaction
+// summary of anything still dropped). Returns the new priorMessages; the caller
+// discards the in-memory current turn (it has been folded into the summary and
+// is also on the just-saved checkpoint). Returns `prior` unchanged if budget<=0.
+func compactEpisodic(prior, messages []Message, summaryMsg Message, start, budget int) []Message {
+	if budget <= 0 {
+		return prior
+	}
+	cur := make([]Message, 0, len(prior)+len(messages))
+	cur = append(cur, prior...)
+	cur = append(cur, messages...)
+	if start > len(cur) {
+		start = len(cur)
+	}
+	if start < 0 {
+		start = 0
+	}
+	compacted := append(append([]Message{}, cur[:start]...), summaryMsg)
+	return truncateHistory(compacted, budget)
 }
 
 // loadEpisodicSummaries retrieves all episodic summaries for this run from the store
@@ -1474,11 +1622,12 @@ func (r *Router) loadEpisodicSummaries(ctx context.Context) *Message {
 	if len(summaries) == 0 {
 		return nil
 	}
-	content := "[Memory] Previous conversation summaries:\n"
+	var content strings.Builder
+	content.WriteString("[Memory] Previous conversation summaries:\n")
 	for i, s := range summaries {
-		content += fmt.Sprintf("Chunk %d: %s\n", i+1, s)
+		content.WriteString(fmt.Sprintf("Chunk %d: %s\n", i+1, s))
 	}
-	return &Message{Role: "system", Content: content}
+	return &Message{Role: "system", Content: content.String()}
 }
 
 // autoRetrieveLongTermMemory embeds the latest user message and queries the
@@ -1490,7 +1639,7 @@ func (r *Router) autoRetrieveLongTermMemory(ctx context.Context, userMessage str
 		return nil
 	}
 	// Call the RAG search via the operator API (same path as _rag_search).
-	args, _ := json.Marshal(map[string]interface{}{
+	args, _ := json.Marshal(map[string]any{
 		"knowledgeBase": ltm.KBName,
 		"query":         userMessage,
 		"topK":          ltm.TopK,
@@ -1536,8 +1685,8 @@ func (r *Router) executeMemoryStore(ctx context.Context, args string) string {
 	}
 	saToken := strings.TrimSpace(string(tokenBytes))
 
-	body, _ := json.Marshal(map[string]interface{}{
-		"documents": []map[string]interface{}{
+	body, _ := json.Marshal(map[string]any{
+		"documents": []map[string]any{
 			{"id": fmt.Sprintf("mem-%d", time.Now().UnixNano()), "content": req.Fact, "metadata": meta},
 		},
 	})
@@ -1554,7 +1703,7 @@ func (r *Router) executeMemoryStore(ctx context.Context, args string) string {
 	if err != nil {
 		return fmt.Sprintf(`{"error": "memory store failed: %v"}`, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	respBody, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		return fmt.Sprintf(`{"error": "memory store failed: %s"}`, string(respBody))
@@ -1581,7 +1730,7 @@ func (r *Router) injectTools(chatReq ChatCompletionRequest) ChatCompletionReques
 		// Agent has its own tools — append ours (dedup by name).
 		existingNames := make(map[string]bool)
 		for _, t := range chatReq.Tools {
-			if fn, ok := t["function"].(map[string]interface{}); ok {
+			if fn, ok := t["function"].(map[string]any); ok {
 				if name, ok := fn["name"].(string); ok {
 					existingNames[name] = true
 				}
@@ -1601,13 +1750,14 @@ func (r *Router) injectTools(chatReq ChatCompletionRequest) ChatCompletionReques
 	return chatReq
 }
 
-func toolDefToOpenAI(td ToolDefinition) map[string]interface{} {
-	return map[string]interface{}{
+func toolDefToOpenAI(td ToolDefinition) map[string]any {
+	return map[string]any{
 		"type": "function",
-		"function": map[string]interface{}{
+		"function": map[string]any{
 			"name":        td.Name,
 			"description": td.Description,
-			"parameters":  json.RawMessage(td.Parameters),
+			"parameters":  json.RawMessage(td.Parameters), //nolint:unconvert
+
 		},
 	}
 }
@@ -1645,7 +1795,7 @@ func (r *Router) shouldAutoTriggerClarify(resp ChatCompletionResponse) bool {
 	if len(choice.Message.ToolCalls) > 0 {
 		return false
 	}
-	if choice.FinishReason != "stop" && choice.FinishReason != "end_turn" {
+	if choice.FinishReason != "stop" && choice.FinishReason != "end_turn" { //nolint:goconst
 		return false
 	}
 
@@ -1844,11 +1994,6 @@ func (r *Router) emitTraceEvent(eventJSON string) {
 	}
 }
 
-
-
-
-
-
 // Finalize emits a terminal trace-event release decision if no explicit terminal was reached.
 // Call this from the shutdown path before HTTP servers are closed so the operator POST
 // can still reach the apiserver.
@@ -1872,12 +2017,9 @@ func (r *Router) Finalize() {
 	}
 }
 
-
-
-
-
 // dispatchToolCall routes a single tool call to the appropriate backend.
-func (r *Router) dispatchToolCall(ctx context.Context, tc ToolCall) string {
+func (r *Router) dispatchToolCall(ctx context.Context, tc ToolCall) string { //nolint:gocyclo
+
 	// Emit tool_call trace event.
 	if callJSON, err := json.Marshal(map[string]string{
 		"type": "toolCall", "name": tc.Function.Name, "arguments": tc.Function.Arguments,
@@ -1926,6 +2068,8 @@ func (r *Router) dispatchToolCall(ctx context.Context, tc ToolCall) string {
 		result = r.executeListState(toolCtx, tc.Function.Arguments)
 	case "_delete_state", "delete_state":
 		result = r.executeDeleteState(toolCtx, tc.Function.Arguments)
+	case "_search_history", "search_history":
+		result = r.executeSearchHistory(toolCtx, tc.Function.Arguments)
 	case "_rag_search", "rag_search":
 		result = r.executeRAGSearch(toolCtx, tc.Function.Arguments)
 	case "_rag_ingest", "rag_ingest":
@@ -1971,8 +2115,6 @@ func (r *Router) dispatchToolCall(ctx context.Context, tc ToolCall) string {
 			tc.Function.Name, r.cfg.Safeguards.ToolExecutionTimeoutSec)
 	}
 
-
-
 	// Keep the full result for MCP app iframe injection before truncating for LLM history.
 	fullResult := result
 
@@ -1984,10 +2126,10 @@ func (r *Router) dispatchToolCall(ctx context.Context, tc ToolCall) string {
 	if len(truncated) > 500 {
 		truncated = truncated[:500] + "…"
 	}
-	traceEvent := map[string]interface{}{
-		"type": "toolResult",
-		"name":          tc.Function.Name,
-		"result":        truncated,
+	traceEvent := map[string]any{
+		"type":   "toolResult",
+		"name":   tc.Function.Name,
+		"result": truncated,
 	}
 	if appUrl != "" {
 		traceEvent["appUrl"] = appUrl
@@ -2114,17 +2256,17 @@ func (r *Router) executeHandoff(ctx context.Context, args string) string {
 	}
 
 	successorName := fmt.Sprintf("%s-handoff-%d", r.cfg.RunName, time.Now().UnixNano()%1000000)
-	childRun := map[string]interface{}{
+	childRun := map[string]any{
 		"apiVersion": "agentorc.agentorc.io/v1alpha1",
 		"kind":       "AgentRun",
-		"metadata": map[string]interface{}{
+		"metadata": map[string]any{
 			"name":      successorName,
 			"namespace": r.cfg.RunNamespace,
 			"labels": map[string]string{
 				"agentorc.io/handoff-from": r.cfg.RunName,
 			},
 		},
-		"spec": map[string]interface{}{
+		"spec": map[string]any{
 			"agentRef":     handoffArgs.TargetAgent,
 			"input":        input,
 			"parentRunRef": r.cfg.RunName,
@@ -2144,7 +2286,7 @@ func (r *Router) executeHandoff(ctx context.Context, args string) string {
 	if err != nil {
 		return fmt.Sprintf(`{"error": "creating successor AgentRun: %v"}`, err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
 		return fmt.Sprintf(`{"error": "successor AgentRun creation failed: %d"}`, resp.StatusCode)
 	}
@@ -2158,7 +2300,7 @@ func (r *Router) executeHandoff(ctx context.Context, args string) string {
 		handoffReq.Header.Set("Authorization", "Bearer "+saToken)
 		handoffResp, err := http.DefaultClient.Do(handoffReq)
 		if err == nil {
-			handoffResp.Body.Close()
+			_ = handoffResp.Body.Close()
 		}
 	}
 
@@ -2185,7 +2327,8 @@ func (r *Router) executeHandoff(ctx context.Context, args string) string {
 // the LLM's text tokens have already been written to the stream. They should call
 // notifyOperatorClarify directly and let the UI API's Phase 3 polling emit the
 // clarify SSE event.
-func (r *Router) executeClarify(ctx context.Context, args string) string {
+func (r *Router) executeClarify(ctx context.Context, args string) string { //nolint:unparam
+
 	var clarifyArgs struct {
 		Question string `json:"question"`
 	}
@@ -2213,9 +2356,9 @@ func (r *Router) executeClarify(ctx context.Context, args string) string {
 		clarifyEvent, _ := json.Marshal(map[string]string{
 			"type": "clarify", "question": clarifyArgs.Question,
 		})
-		r.store.SaveTraceEvent(context.Background(), tokenStreamKey, string(clarifyEvent))
+		_ = r.store.SaveTraceEvent(context.Background(), tokenStreamKey, string(clarifyEvent))
 		// Send done sentinel so the UI SSE handler terminates normally.
-		r.store.SaveToken(context.Background(), tokenStreamKey, "")
+		_ = r.store.SaveToken(context.Background(), tokenStreamKey, "")
 	}
 
 	slog.Info("clarify requested", "run", r.cfg.RunName, "question", clarifyArgs.Question)
@@ -2248,7 +2391,7 @@ func (r *Router) notifyOperatorClarify(question string) error {
 	if err != nil {
 		return fmt.Errorf("notifying operator: %w", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("operator returned %d for clarify", resp.StatusCode)
 	}
@@ -2308,7 +2451,7 @@ func (r *Router) notifyOperatorContext() {
 		slog.Warn("notifying operator of context update", "err", err)
 		return
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		slog.Warn("operator returned error for context update", "status", resp.StatusCode)
 	}
@@ -2337,7 +2480,6 @@ func (r *Router) executeDone(ctx context.Context, args string) string {
 	saToken := strings.TrimSpace(string(tokenBytes))
 
 	r.checkpoint(context.Background())
-	
 
 	doneURL := fmt.Sprintf("%s/agentrun/%s/%s/done", r.cfg.OperatorAPIURL, r.cfg.RunNamespace, r.cfg.RunName)
 	body, _ := json.Marshal(map[string]string{"output": output})
@@ -2352,7 +2494,7 @@ func (r *Router) executeDone(ctx context.Context, args string) string {
 	if err != nil {
 		return fmt.Sprintf(`{"error": "notifying operator: %v"}`, err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Sprintf(`{"error": "operator returned %d for done"}`, resp.StatusCode)
 	}
@@ -2360,8 +2502,8 @@ func (r *Router) executeDone(ctx context.Context, args string) string {
 	if r.store != nil {
 		tokenStreamKey := "tokens:" + r.cfg.RunNamespace + ":" + r.cfg.RunName
 		doneEvent, _ := json.Marshal(map[string]string{"type": "done", "output": output})
-		r.store.SaveTraceEvent(context.Background(), tokenStreamKey, string(doneEvent))
-		r.store.SaveToken(context.Background(), tokenStreamKey, "")
+		_ = r.store.SaveTraceEvent(context.Background(), tokenStreamKey, string(doneEvent))
+		_ = r.store.SaveToken(context.Background(), tokenStreamKey, "")
 	}
 
 	r.mu.Lock()
@@ -2393,7 +2535,7 @@ func (r *Router) executeFail(ctx context.Context, args string) string {
 	r.checkpoint(context.Background())
 
 	failURL := fmt.Sprintf("%s/agentrun/%s/%s/fail", r.cfg.OperatorAPIURL, r.cfg.RunNamespace, r.cfg.RunName)
-	body, _ := json.Marshal(map[string]interface{}{"reason": p.Reason, "retryable": p.Retryable})
+	body, _ := json.Marshal(map[string]any{"reason": p.Reason, "retryable": p.Retryable})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, failURL, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Sprintf(`{"error": "building request: %v"}`, err)
@@ -2405,7 +2547,7 @@ func (r *Router) executeFail(ctx context.Context, args string) string {
 	if err != nil {
 		return fmt.Sprintf(`{"error": "notifying operator: %v"}`, err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Sprintf(`{"error": "operator returned %d for fail"}`, resp.StatusCode)
 	}
@@ -2413,8 +2555,8 @@ func (r *Router) executeFail(ctx context.Context, args string) string {
 	if r.store != nil {
 		tokenStreamKey := "tokens:" + r.cfg.RunNamespace + ":" + r.cfg.RunName
 		failEvent, _ := json.Marshal(map[string]string{"type": "fail", "reason": p.Reason})
-		r.store.SaveTraceEvent(context.Background(), tokenStreamKey, string(failEvent))
-		r.store.SaveToken(context.Background(), tokenStreamKey, "")
+		_ = r.store.SaveTraceEvent(context.Background(), tokenStreamKey, string(failEvent))
+		_ = r.store.SaveToken(context.Background(), tokenStreamKey, "")
 	}
 
 	r.mu.Lock()
@@ -2451,14 +2593,14 @@ func (r *Router) executeSpawn(ctx context.Context, args string) string {
 	}
 
 	childName := fmt.Sprintf("%s-spawn-%d", r.cfg.RunName, time.Now().UnixNano()%1000000)
-	childRun := map[string]interface{}{
+	childRun := map[string]any{
 		"apiVersion": "agentorc.agentorc.io/v1alpha1",
 		"kind":       "AgentRun",
-		"metadata": map[string]interface{}{
+		"metadata": map[string]any{
 			"name":      childName,
 			"namespace": r.cfg.RunNamespace,
 		},
-		"spec": map[string]interface{}{
+		"spec": map[string]any{
 			"agentRef":     p.AgentRef,
 			"input":        p.Input,
 			"parentRunRef": r.cfg.RunName,
@@ -2478,7 +2620,7 @@ func (r *Router) executeSpawn(ctx context.Context, args string) string {
 	if err != nil {
 		return fmt.Sprintf(`{"error": "creating child AgentRun: %v"}`, err)
 	}
-	createResp.Body.Close()
+	_ = createResp.Body.Close()
 	if createResp.StatusCode != http.StatusCreated && createResp.StatusCode != http.StatusOK {
 		return fmt.Sprintf(`{"error": "child AgentRun creation failed: %d"}`, createResp.StatusCode)
 	}
@@ -2516,7 +2658,7 @@ func (r *Router) executeSpawn(ctx context.Context, args string) string {
 			} `json:"status"`
 		}
 		decodeErr := json.NewDecoder(getResp.Body).Decode(&child)
-		getResp.Body.Close()
+		_ = getResp.Body.Close()
 		if decodeErr != nil {
 			continue
 		}
@@ -2562,12 +2704,12 @@ func (r *Router) executeSpawn(ctx context.Context, args string) string {
 // and blocks until it reaches a terminal phase, returning all step outputs.
 func (r *Router) executeCreateWorkflow(ctx context.Context, args string) string {
 	var p struct {
-		Name          string                         `json:"name"`
-		Description   string                         `json:"description"`
-		Steps         []map[string]interface{}       `json:"steps"`
-		BudgetCap     map[string]string              `json:"budgetCap,omitempty"`
-		Timeout       string                         `json:"timeout,omitempty"`
-		OnStepFailure string                         `json:"onStepFailure,omitempty"`
+		Name          string            `json:"name"`
+		Description   string            `json:"description"`
+		Steps         []map[string]any  `json:"steps"`
+		BudgetCap     map[string]string `json:"budgetCap,omitempty"`
+		Timeout       string            `json:"timeout,omitempty"`
+		OnStepFailure string            `json:"onStepFailure,omitempty"`
 	}
 	if err := json.Unmarshal([]byte(args), &p); err != nil {
 		return fmt.Sprintf(`{"error": "invalid arguments: %v"}`, err)
@@ -2588,24 +2730,24 @@ func (r *Router) executeCreateWorkflow(ctx context.Context, args string) string 
 	saToken := strings.TrimSpace(string(tokenBytes))
 
 	// Build workflow CRD
-	wf := map[string]interface{}{
+	wf := map[string]any{
 		"apiVersion": "agentorc.agentorc.io/v1alpha1",
 		"kind":       "AgentWorkflow",
-		"metadata": map[string]interface{}{
+		"metadata": map[string]any{
 			"name":      p.Name,
 			"namespace": r.cfg.RunNamespace,
 		},
-		"spec": map[string]interface{}{
+		"spec": map[string]any{
 			"description":   p.Description,
 			"steps":         p.Steps,
 			"onStepFailure": p.OnStepFailure,
 		},
 	}
 	if p.BudgetCap != nil {
-		wf["spec"].(map[string]interface{})["budgetCap"] = p.BudgetCap
+		wf["spec"].(map[string]any)["budgetCap"] = p.BudgetCap
 	}
 	if p.Timeout != "" {
-		wf["spec"].(map[string]interface{})["timeout"] = map[string]string{"duration": p.Timeout}
+		wf["spec"].(map[string]any)["timeout"] = map[string]string{"duration": p.Timeout}
 	}
 	body, _ := json.Marshal(wf)
 
@@ -2621,7 +2763,7 @@ func (r *Router) executeCreateWorkflow(ctx context.Context, args string) string 
 	if err != nil {
 		return fmt.Sprintf(`{"error": "creating AgentWorkflow: %v"}`, err)
 	}
-	createResp.Body.Close()
+	_ = createResp.Body.Close()
 	if createResp.StatusCode != http.StatusCreated && createResp.StatusCode != http.StatusOK {
 		return fmt.Sprintf(`{"error": "AgentWorkflow creation failed: %d"}`, createResp.StatusCode)
 	}
@@ -2652,8 +2794,8 @@ func (r *Router) executeCreateWorkflow(ctx context.Context, args string) string 
 
 		var wfStatus struct {
 			Status struct {
-				Phase         string `json:"phase"`
-				Steps         []struct {
+				Phase string `json:"phase"`
+				Steps []struct {
 					Name   string `json:"name"`
 					Phase  string `json:"phase"`
 					Output string `json:"output"`
@@ -2661,8 +2803,8 @@ func (r *Router) executeCreateWorkflow(ctx context.Context, args string) string 
 				FailureReason string `json:"failureReason"`
 			} `json:"status"`
 		}
-		json.NewDecoder(getResp.Body).Decode(&wfStatus)
-		getResp.Body.Close()
+		_ = json.NewDecoder(getResp.Body).Decode(&wfStatus)
+		_ = getResp.Body.Close()
 
 		switch wfStatus.Status.Phase {
 		case "Succeeded":
@@ -2711,7 +2853,7 @@ func (r *Router) executeEmitEvent(ctx context.Context, args string) string {
 	if err != nil {
 		return fmt.Sprintf(`{"error": "emitting event: %v"}`, err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Sprintf(`{"error": "operator returned %d for emit-event"}`, resp.StatusCode)
 	}
@@ -2719,11 +2861,11 @@ func (r *Router) executeEmitEvent(ctx context.Context, args string) string {
 	if r.store != nil {
 		tokenStreamKey := "tokens:" + r.cfg.RunNamespace + ":" + r.cfg.RunName
 		traceEvent, _ := json.Marshal(map[string]string{
-			"type": "agentEvent",
-			"eventType":     p.EventType,
-			"message":       p.Message,
+			"type":      "agentEvent",
+			"eventType": p.EventType,
+			"message":   p.Message,
 		})
-		r.store.SaveTraceEvent(context.Background(), tokenStreamKey, string(traceEvent))
+		_ = r.store.SaveTraceEvent(context.Background(), tokenStreamKey, string(traceEvent))
 	}
 
 	slog.Info("agent event emitted", "run", r.cfg.RunName, "eventType", p.EventType)
@@ -2734,7 +2876,8 @@ func (r *Router) executeEmitEvent(ctx context.Context, args string) string {
 // postRoutingDecision records the actual per-request routing decision to the
 // AgentRun status via the operator API so the UI shows which model was used.
 // Failures are logged but never returned — routing already happened.
-func (r *Router) postRoutingDecision(ctx context.Context, provider *ProviderConfig, result RouteResult) {
+func (r *Router) postRoutingDecision(ctx context.Context, provider *ProviderConfig, result RouteResult) { //nolint:unused
+
 	if r.cfg.RunName == "" || r.cfg.OperatorAPIURL == "" {
 		return
 	}
@@ -2764,7 +2907,7 @@ func (r *Router) postRoutingDecision(ctx context.Context, provider *ProviderConf
 		slog.Warn("posting route decision", "err", err)
 		return
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 }
 
 // loopDetectedInfo mirrors the API type for use within the router package.
@@ -2872,7 +3015,7 @@ func (r *Router) notifyLoopDetected(info loopDetectedInfo) {
 		slog.Error("notifying operator of loop detection", "err", err)
 		return
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	slog.Info("safeguard tripped, operator notified", "run", r.cfg.RunName, "reason", info.Reason)
 }
 
@@ -2918,7 +3061,7 @@ func (r *Router) executeProposeStep(ctx context.Context, args string) string {
 	if err != nil {
 		return fmt.Sprintf(`{"error": "proposing step: %v"}`, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	respBody, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
@@ -2976,7 +3119,8 @@ func (r *Router) executeWriteState(ctx context.Context, args string) string {
 		return fmt.Sprintf(`{"error": "invalid arguments: %v"}`, err)
 	}
 	if p.Key == "" {
-		return `{"error": "key is required"}`
+		return `{"error": "key is required"}` //nolint:goconst
+
 	}
 	if len(p.Value) > maxKVValueSize {
 		return fmt.Sprintf(`{"error": "value exceeds max size of %d bytes"}`, maxKVValueSize)
@@ -3059,6 +3203,214 @@ func (r *Router) executeDeleteState(ctx context.Context, args string) string {
 	return `{"ok": true}`
 }
 
+// executeSearchHistory powers the _search_history built-in tool. It searches
+// prior conversation turns for this deployment (read from the local emptyDir L1
+// first via the cache-decorated store, falling back to Redis), scores each turn
+// for relevance to the query, and returns the most useful snippets. Returns
+// found=false when no useful prior context exists — at which point the agent is
+// expected to call _clarify and ask the human, rather than hallucinate.
+//
+// This is the warm-pool "look through the redis k/v cache or local emptyDir"
+// behaviour: the local cache is per-pod (scoped to this deployment by
+// construction because a warm pod serves exactly one deployment), and the
+// deployment run index (agentorc/deployments/<dep>/runs:<run>) keeps Redis
+// recall scoped to this deployment without scanning the whole keyspace.
+func (r *Router) executeSearchHistory(ctx context.Context, args string) string {
+	var p struct {
+		Query string `json:"query"`
+		TopK  int    `json:"topK"`
+	}
+	if err := json.Unmarshal([]byte(args), &p); err != nil || strings.TrimSpace(p.Query) == "" {
+		return `{"error": "query is required"}`
+	}
+	if p.TopK <= 0 {
+		p.TopK = 3
+	}
+	if r.store == nil {
+		return `{"error": "state store unavailable; cannot search history", "found": false}`
+	}
+
+	// Scope to this deployment's prior runs via the run index, so Redis recall is
+	// never cross-deployment. (The local emptyDir cache is already per-pod and
+	// therefore per-deployment.) If no deployment is known, fall back to the
+	// current run only — never to an unscoped keyspace scan.
+	var runNames []string
+	currentRun := r.cfg.RunName
+	if dep := r.cfg.DeploymentName; dep != "" {
+		scope := fmt.Sprintf("agentorc/deployments/%s/runs", dep)
+		if names, err := r.store.ListKV(ctx, scope); err == nil {
+			runNames = names
+		} else {
+			slog.Warn("warm history search: listing deployment run index failed",
+				"dep", dep, "err", err)
+		}
+	}
+	if currentRun != "" {
+		// Include the immediate prior run (PriorRunRef chain) even if the index
+		// hasn't been refreshed yet for it.
+		if r.cfg.ResumeCheckpointKey != "" {
+			if prior := runNameFromCheckpointKey(r.cfg.ResumeCheckpointKey); prior != "" {
+				runNames = append(runNames, prior)
+			}
+		}
+	}
+
+	results := r.searchPriorTurns(ctx, runNames, currentRun, p.Query, p.TopK)
+
+	out, _ := json.Marshal(results)
+	return string(out)
+}
+
+// searchResult is a single matching conversation snippet returned by
+// _search_history.
+type searchResult struct {
+	Run     string `json:"run"`
+	Role    string `json:"role"`
+	Snippet string `json:"snippet"`
+	Score   int    `json:"score"`
+}
+
+// searchOutput is the JSON envelope returned to the LLM.
+type searchOutput struct {
+	Found   bool           `json:"found"`
+	Query   string         `json:"query"`
+	Results []searchResult `json:"results"`
+}
+
+// searchPriorTurns loads each candidate run's checkpoint (local-cache-first via
+// the decorated store), scores its messages for overlap with queryTerms, and
+// returns the top-K snippets. The current run (runName) is excluded since its
+// turns are already in the active context.
+func (r *Router) searchPriorTurns(ctx context.Context, runNames []string, currentRun, query string, topK int) searchOutput {
+	terms := tokenizeTerms(query)
+	out := searchOutput{Query: query, Results: nil}
+	if len(terms) == 0 {
+		return out
+	}
+
+	type scored struct {
+		run   string
+		role  string
+		text  string
+		score int
+	}
+	var scoredSnippets []scored
+
+	seen := make(map[string]bool) // dedupe identical snippet text
+	for _, runName := range runNames {
+		runName = strings.TrimSpace(runName)
+		if runName == "" || runName == currentRun || seen[runName] {
+			continue
+		}
+		seen[runName] = true
+
+		key := fmt.Sprintf("agentorc/runs/%s/state", runName)
+		// local-first via the cache decorator, falls back to Redis.
+		msgs, rErr := r.store.LoadMessages(ctx, key)
+		if rErr != nil || len(msgs) == 0 {
+			if rErr != nil {
+				slog.Debug("warm history search: load checkpoint failed", "run", runName, "err", rErr)
+			}
+			continue
+		}
+
+		// Score recent messages higher: weight by position so later turns rank up.
+		for i, raw := range msgs {
+			var m Message
+			if err := json.Unmarshal(raw, &m); err != nil {
+				continue
+			}
+			text := messageText(m)
+			if text == "" {
+				continue
+			}
+			score := overlapScore(text, terms) * (i + 1) // recency weighting
+			if score <= 0 {
+				continue
+			}
+			snippet := text
+			const maxSnippet = 1000
+			if len(snippet) > maxSnippet {
+				snippet = snippet[:maxSnippet] + "…"
+			}
+			scoredSnippets = append(scoredSnippets, scored{runName, m.Role, snippet, score})
+		}
+	}
+
+	// Rank by score descending; tie-break newer runs last (stable).
+	sort.SliceStable(scoredSnippets, func(i, j int) bool {
+		return scoredSnippets[i].score > scoredSnippets[j].score
+	})
+
+	const maxResultsTokens = 2000 // keep retrieval injection under a small budget
+	tokens := 0
+	for i := range scoredSnippets {
+		if topK > 0 && i >= topK {
+			break
+		}
+		// tokens is a rough estimate (chars/4).
+		tokens += len(scoredSnippets[i].text) / 4
+		if i > 0 && tokens > maxResultsTokens {
+			break
+		}
+		out.Results = append(out.Results, searchResult{
+			Run:     scoredSnippets[i].run,
+			Role:    scoredSnippets[i].role,
+			Snippet: scoredSnippets[i].text,
+			Score:   scoredSnippets[i].score,
+		})
+	}
+	out.Found = len(out.Results) > 0
+	if out.Found {
+		// Trust boundary note: prior-turn content is data, not instructions.
+		out.Results[0].Snippet = "<prior-turns untrusted> " + out.Results[0].Snippet
+	}
+	return out
+}
+
+// runNameFromCheckpointKey extracts the run name from a checkpoint key of the form
+// "agentorc/runs/<run>/state". Returns "" if the shape doesn't match.
+func runNameFromCheckpointKey(key string) string {
+	const prefix = "agentorc/runs/"
+	const suffix = "/state"
+	if !strings.HasPrefix(key, prefix) || !strings.HasSuffix(key, suffix) {
+		return ""
+	}
+	return strings.TrimSuffix(strings.TrimPrefix(key, prefix), suffix)
+}
+
+// tokenizeTerms splits a query into lowercase alphanumeric search terms.
+func tokenizeTerms(query string) []string {
+	query = strings.ToLower(query)
+	var terms []string
+	var cur strings.Builder
+	for _, r := range query {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			cur.WriteRune(r)
+		} else if cur.Len() > 0 {
+			terms = append(terms, cur.String())
+			cur.Reset()
+		}
+	}
+	if cur.Len() > 0 {
+		terms = append(terms, cur.String())
+	}
+	return terms
+}
+
+// overlapScore returns the count of query terms found (as substrings) in text,
+// case-insensitive. Cheap keyword overlap — no LLM/embedding call in the hot path.
+func overlapScore(text string, terms []string) int {
+	lower := strings.ToLower(text)
+	score := 0
+	for _, t := range terms {
+		if strings.Contains(lower, t) {
+			score++
+		}
+	}
+	return score
+}
+
 // findKnowledgeBase looks up a KnowledgeBaseConfig by name.
 func (r *Router) findKnowledgeBase(name string) (*KnowledgeBaseConfig, error) {
 	for i := range r.cfg.KnowledgeBases {
@@ -3098,7 +3450,7 @@ func (r *Router) executeRAGSearch(ctx context.Context, args string) string {
 	}
 	saToken := strings.TrimSpace(string(tokenBytes))
 
-	searchReq, _ := json.Marshal(map[string]interface{}{
+	searchReq, _ := json.Marshal(map[string]any{
 		"query":          p.Query,
 		"topK":           p.TopK,
 		"collectionName": kb.CollectionName,
@@ -3120,7 +3472,7 @@ func (r *Router) executeRAGSearch(ctx context.Context, args string) string {
 	if err != nil {
 		return fmt.Sprintf(`{"error": "RAG search failed: %v"}`, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
@@ -3156,7 +3508,7 @@ func (r *Router) executeRAGIngest(ctx context.Context, args string) string {
 	}
 	saToken := strings.TrimSpace(string(tokenBytes))
 
-	body, _ := json.Marshal(map[string]interface{}{"documents": p.Documents})
+	body, _ := json.Marshal(map[string]any{"documents": p.Documents})
 	ingestURL := fmt.Sprintf("%s/knowledgebase/%s/%s/ingest",
 		r.cfg.OperatorAPIURL, r.cfg.RunNamespace, p.KnowledgeBase)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, ingestURL, bytes.NewReader(body))
@@ -3170,7 +3522,7 @@ func (r *Router) executeRAGIngest(ctx context.Context, args string) string {
 	if err != nil {
 		return fmt.Sprintf(`{"error": "RAG ingest failed: %v"}`, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	respBody, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
@@ -3181,8 +3533,9 @@ func (r *Router) executeRAGIngest(ctx context.Context, args string) string {
 
 // executeListResources returns a JSON list of available MCP servers, KnowledgeBases, and tools.
 // This allows agents to discover their available resources at any point during execution.
-func (r *Router) executeListResources(ctx context.Context, args string) string {
-	result := map[string]interface{}{
+func (r *Router) executeListResources(ctx context.Context, args string) string { //nolint:unparam
+
+	result := map[string]any{
 		"mcpServers":     []map[string]string{},
 		"knowledgeBases": []map[string]string{},
 		"tools":          []map[string]string{},
@@ -3190,11 +3543,12 @@ func (r *Router) executeListResources(ctx context.Context, args string) string {
 
 	// List MCP servers
 	mcpServers := make([]map[string]string, len(r.cfg.MCPServers))
-	for i, mcp := range r.cfg.MCPServers {
+	for i, mcp := range r.cfg.MCPServers { //nolint:revive
+
 		mcpServers[i] = map[string]string{
-			"name":       mcp.Name,
-			"transport":  mcp.Transport,
-			"url":        mcp.URL,
+			"name":      mcp.Name,
+			"transport": mcp.Transport,
+			"url":       mcp.URL,
 		}
 	}
 	result["mcpServers"] = mcpServers
@@ -3271,7 +3625,7 @@ func (r *Router) HandleState(w http.ResponseWriter, req *http.Request) {
 			if keys == nil {
 				keys = []string{}
 			}
-			json.NewEncoder(w).Encode(keys)
+			_ = json.NewEncoder(w).Encode(keys)
 			return
 		}
 		val, err := r.store.LoadKV(ctx, prefix, key)
@@ -3284,7 +3638,7 @@ func (r *Router) HandleState(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/octet-stream")
-		w.Write(val)
+		_, _ = w.Write(val)
 
 	case http.MethodPut:
 		if key == "" {
@@ -3346,6 +3700,23 @@ func estimateTokens(messages []Message) int {
 	return total
 }
 
+// estimateToolTokens estimates the token cost of the serialized `tools` array,
+// which providers count toward the context window even though it isn't part of
+// the conversation messages. This lets pre-send truncation reserve room for tool
+// definitions so tool-heavy agents (e.g. the pwnbox toolbelt with ~25 schema'd
+// tools) don't overflow the window right after message truncation.
+func estimateToolTokens(tools []map[string]any) int {
+	if len(tools) == 0 {
+		return 0
+	}
+	b, err := json.Marshal(tools)
+	if err != nil || len(b) == 0 {
+		return 0
+	}
+	// ~8 tokens of envelope overhead per tool ({"type":"function","function":{...}}).
+	return len(b)/4 + 8*len(tools)
+}
+
 // maxContextWindow returns the largest ContextWindow across all configured providers.
 // Falls back to 200000 if no providers report a context window.
 func maxContextWindow(providers []ProviderConfig) int {
@@ -3365,11 +3736,11 @@ func maxContextWindow(providers []ProviderConfig) int {
 
 // ChatCompletionRequest mirrors the OpenAI chat completion request body.
 type ChatCompletionRequest struct {
-	Model         string                   `json:"model"`
-	Messages      []Message                `json:"messages"`
-	Tools         []map[string]interface{} `json:"tools,omitempty"`
-	Stream        bool                     `json:"stream,omitempty"`
-	StreamOptions *StreamOptions           `json:"stream_options,omitempty"`
+	Model         string           `json:"model"`
+	Messages      []Message        `json:"messages"`
+	Tools         []map[string]any `json:"tools,omitempty"`
+	Stream        bool             `json:"stream,omitempty"`
+	StreamOptions *StreamOptions   `json:"stream_options,omitempty"`
 }
 
 // StreamOptions controls streaming behavior.
@@ -3421,13 +3792,13 @@ func anthropicToOpenAI(body []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	text := ""
+	var text strings.Builder
 	var toolCalls []ToolCall
 	for _, c := range anthropicResp.Content {
 		switch c.Type {
 		case "text":
-			text += c.Text
-		case "tool_use":
+			text.WriteString(c.Text)
+		case "tool_use": //nolint:goconst
 			toolCalls = append(toolCalls, ToolCall{
 				ID:   c.ID,
 				Type: "function",
@@ -3439,16 +3810,17 @@ func anthropicToOpenAI(body []byte) ([]byte, error) {
 		}
 	}
 
-	msg := Message{Role: "assistant", Content: text}
+	msg := Message{Role: "assistant", Content: text.String()}
 	if len(toolCalls) > 0 {
 		msg.ToolCalls = toolCalls
 	}
 
 	finishReason := anthropicResp.StopReason
 	// Map Anthropic stop reasons to OpenAI equivalents.
-	if finishReason == "tool_use" {
-		finishReason = "tool_calls"
-	} else if finishReason == "end_turn" {
+	switch finishReason {
+	case "tool_use":
+		finishReason = "tool_calls" //nolint:goconst
+	case "end_turn":
 		finishReason = "stop"
 	}
 
@@ -3487,11 +3859,11 @@ func geminiToOpenAI(body []byte, _ string) (ChatCompletionRequest, error) {
 		if role == "model" {
 			role = "assistant"
 		}
-		text := ""
+		var text strings.Builder
 		for _, p := range c.Parts {
-			text += p.Text
+			text.WriteString(p.Text)
 		}
-		messages = append(messages, Message{Role: role, Content: text})
+		messages = append(messages, Message{Role: role, Content: text.String()})
 	}
 	return ChatCompletionRequest{Messages: messages}, nil
 }
@@ -3511,9 +3883,9 @@ func openAIToGemini(body []byte) ([]byte, error) {
 		text = content
 	}
 
-	geminiResp := map[string]interface{}{
-		"candidates": []map[string]interface{}{{
-			"content": map[string]interface{}{
+	geminiResp := map[string]any{
+		"candidates": []map[string]any{{
+			"content": map[string]any{
 				"role":  "model",
 				"parts": []map[string]string{{"text": text}},
 			},
@@ -3565,7 +3937,7 @@ func (r *Router) HandleInternalStream(w http.ResponseWriter, req *http.Request) 
 			}
 			tokenCount++
 			data, _ := json.Marshal(map[string]string{"type": "token", "content": token})
-			fmt.Fprintf(w, "data: %s\n\n", data)
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 			flusher.Flush()
 		}
 	}
@@ -3661,7 +4033,7 @@ func (r *Router) ClaimRun(input WarmRunInput) {
 					// Safety-net: no _clarify tool call found; inject as user message.
 					msgs = append(msgs, Message{Role: "user", Content: answer})
 				}
-				r.store.DeleteKey(context.Background(), answerKey)
+				_ = r.store.DeleteKey(context.Background(), answerKey)
 				r.resumedWithAnswer = true
 			}
 			r.priorMessages = msgs
@@ -3729,8 +4101,8 @@ func stripInjectionPatterns(s string) string {
 func sanitizeRAGSearchResponse(data []byte) []byte {
 	var resp struct {
 		Results []struct {
-			Score   float32                `json:"Score"`
-			Payload map[string]interface{} `json:"Payload"`
+			Score   float32        `json:"Score"`
+			Payload map[string]any `json:"Payload"`
 		} `json:"results"`
 	}
 	if err := json.Unmarshal(data, &resp); err != nil {

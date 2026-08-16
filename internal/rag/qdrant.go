@@ -23,6 +23,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -61,10 +62,8 @@ func (q *QdrantClient) EnsureCollection(ctx context.Context, name string, dimens
 	if err != nil {
 		return fmt.Errorf("listing collections: %w", err)
 	}
-	for _, c := range collections {
-		if c == name {
-			return nil
-		}
+	if slices.Contains(collections, name) {
+		return nil
 	}
 
 	err = q.client.CreateCollection(ctx, &pb.CreateCollection{
@@ -84,13 +83,13 @@ func (q *QdrantClient) EnsureCollection(ctx context.Context, name string, dimens
 type Point struct {
 	ID      string
 	Vector  []float32
-	Payload map[string]interface{}
+	Payload map[string]any
 }
 
 // SearchResult represents a single search hit with its similarity score.
 type SearchResult struct {
 	Score   float32
-	Payload map[string]interface{}
+	Payload map[string]any
 }
 
 // Upsert inserts or updates points in the given collection.
@@ -205,18 +204,18 @@ func (q *QdrantClient) Close() error {
 }
 
 // payloadToMap converts Qdrant protobuf payload to a Go map.
-func payloadToMap(payload map[string]*pb.Value) map[string]interface{} {
+func payloadToMap(payload map[string]*pb.Value) map[string]any {
 	if payload == nil {
 		return nil
 	}
-	m := make(map[string]interface{}, len(payload))
+	m := make(map[string]any, len(payload))
 	for k, v := range payload {
 		m[k] = valueToInterface(v)
 	}
 	return m
 }
 
-func valueToInterface(v *pb.Value) interface{} {
+func valueToInterface(v *pb.Value) any {
 	if v == nil {
 		return nil
 	}
@@ -249,7 +248,7 @@ func QdrantServerVersion(ctx context.Context, httpAddr string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("querying qdrant version at %s: %w", httpAddr, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 	if err != nil {
@@ -284,7 +283,7 @@ func CreateCollectionSnapshot(ctx context.Context, httpAddr, collection string) 
 	if err != nil {
 		return "", fmt.Errorf("creating snapshot for %q at %s: %w", collection, httpAddr, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 	if err != nil {

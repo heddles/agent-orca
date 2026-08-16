@@ -29,6 +29,10 @@ modelRouter:
     repository: ghcr.io/agentorc/agent-orc/model-router
     tag: "latest"
     pullPolicy: IfNotPresent
+  # LLM request timeout (Go duration). The max time the model-router waits for a single
+  # LLM provider response. 60s/120s is too short for long reasoning/tool-augmented calls;
+  # 1h is the default. Operators can override per deploy (e.g. "30m", "2h").
+  llmRequestTimeout: "1h"
 
 mcpIngester:
   image:

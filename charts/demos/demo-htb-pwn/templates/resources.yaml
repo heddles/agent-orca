@@ -1,0 +1,15 @@
+{{- $ctx := dict "Values" (index .Values "agent-orc-resources") "Release" .Release "Chart" .Chart "Files" .Files "Template" .Template "Capabilities" .Capabilities }}
+{{/*
+Library helpers render the standard agent-orc-resources CRDs (providers, selectors,
+guardrails, KB, MCPServer+child tools, the regular agent, and its deployment) from the
+`agent-orc-resources` values block. The pwnbox host itself is a separate privileged
+Deployment authored in pwnbox-deployment.yaml (it is NOT an Agent — it only runs OpenVPN
++ an MCP server — so it needs no securityContextOverride on the Agent CRD).
+*/}}
+{{ include "agent-orc-resources.modelproviders" $ctx }}
+{{ include "agent-orc-resources.modelselectors" $ctx }}
+{{ include "agent-orc-resources.guardrailpolicies" $ctx }}
+{{ include "agent-orc-resources.knowledgebases" $ctx }}
+{{ include "agent-orc-resources.mcpservers" $ctx }}
+{{ include "agent-orc-resources.agents" $ctx }}
+{{ include "agent-orc-resources.agentdeployments" $ctx }}

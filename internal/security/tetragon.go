@@ -95,24 +95,24 @@ func BuildTracingPolicy(runName, namespace string) *unstructured.Unstructured {
 	}
 
 	raw, _ := json.Marshal(policy)
-	var specMap map[string]interface{}
+	var specMap map[string]any
 	_ = json.Unmarshal(raw, &specMap)
 
 	u := &unstructured.Unstructured{
-		Object: map[string]interface{}{
+		Object: map[string]any{
 			"apiVersion": "cilium.io/v1alpha1",
 			"kind":       TracingPolicyKind,
-			"metadata": map[string]interface{}{
+			"metadata": map[string]any{
 				"name":      tracingPolicyName(runName),
 				"namespace": namespace,
-				"labels": map[string]interface{}{
+				"labels": map[string]any{
 					LabelAgentRunName: SafeLabelValue(runName),
 					LabelManagedBy:    ManagedByValue,
 				},
 			},
 		},
 	}
-	_ = unstructured.SetNestedMap(u.Object, specMap["spec"].(map[string]interface{}), "spec")
+	_ = unstructured.SetNestedMap(u.Object, specMap["spec"].(map[string]any), "spec")
 	return u
 }
 

@@ -63,6 +63,17 @@ type TenantIdentity struct {
 	Namespace string
 	// AllowedAgents is the list of agents this tenant may invoke. Nil means all.
 	AllowedAgents []string
+
+	// Quota fields below are populated from the tenant's TenantConfig (if any) and
+	// are only set for issued/federated tenants — never for in-cluster K8s SA callers,
+	// which assert their own namespace identity and are not rate/budget limited here.
+	//
+	// RateLimitRPM is RequestsPerMinute from TenantConfig.spec.rateLimit.
+	RateLimitRPM int
+	// ConcurrentRuns is spec.rateLimit.concurrentRuns.
+	ConcurrentRuns int
+	// BudgetPerDayUSD is spec.budgetPerDayUSD.
+	BudgetPerDayUSD string
 }
 
 // contextKey is an unexported type for context keys to avoid collisions.
@@ -88,10 +99,14 @@ type ExternalAuth struct {
 	// signingKey is the RSA private key used to sign issued tokens.
 	signingKey *rsa.PrivateKey
 
-	// mu protects tenantCache and oidcVerifiers.
+	// mu protects tenantCache, tenantByName, and oidcVerifiers.
 	mu            sync.RWMutex
 	tenantCache   map[string]*agentorcv1alpha1.TenantConfig // clientID -> TenantConfig
+	tenantByName  map[string]*agentorcv1alpha1.TenantConfig // TenantConfig.name -> TenantConfig
 	oidcVerifiers map[string]*gooidc.IDTokenVerifier        // issuerURL -> verifier
+
+	// rateLimiter enforces per-tenant request rate limits on token submission.
+	rateLimiter *RateLimiter
 }
 
 const (
@@ -107,7 +122,8 @@ const (
 func NewExternalAuth(k8s kubernetes.Interface, crdClient client.Client) (*ExternalAuth, error) {
 	namespace := os.Getenv("POD_NAMESPACE")
 	if namespace == "" {
-		namespace = "agent-orc-system"
+		namespace = "agent-orc-system" //nolint:goconst
+
 	}
 
 	key, err := loadOrCreateSigningKey(context.Background(), k8s, namespace)
@@ -120,7 +136,9 @@ func NewExternalAuth(k8s kubernetes.Interface, crdClient client.Client) (*Extern
 		crdClient:     crdClient,
 		signingKey:    key,
 		tenantCache:   make(map[string]*agentorcv1alpha1.TenantConfig),
+		tenantByName:  make(map[string]*agentorcv1alpha1.TenantConfig),
 		oidcVerifiers: make(map[string]*gooidc.IDTokenVerifier),
+		rateLimiter:   NewRateLimiter(),
 	}, nil
 }
 
@@ -195,8 +213,10 @@ func (a *ExternalAuth) RefreshTenants(ctx context.Context) error {
 	}
 
 	cache := make(map[string]*agentorcv1alpha1.TenantConfig, len(list.Items))
+	byName := make(map[string]*agentorcv1alpha1.TenantConfig, len(list.Items))
 	for i := range list.Items {
 		tc := &list.Items[i]
+		byName[tc.Name] = tc
 		switch tc.Spec.AuthMode {
 		case "issued":
 			if tc.Spec.Issued != nil {
@@ -211,6 +231,7 @@ func (a *ExternalAuth) RefreshTenants(ctx context.Context) error {
 
 	a.mu.Lock()
 	a.tenantCache = cache
+	a.tenantByName = byName
 	// Reset OIDC verifiers so they are re-created with potentially updated config.
 	a.oidcVerifiers = make(map[string]*gooidc.IDTokenVerifier)
 	a.mu.Unlock()
@@ -222,8 +243,11 @@ func (a *ExternalAuth) RefreshTenants(ctx context.Context) error {
 // Middleware returns an http.Handler that authenticates requests and injects TenantIdentity.
 func (a *ExternalAuth) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Skip auth for the token endpoint itself.
-		if r.URL.Path == "/oauth/token" {
+		// Skip auth for publicly-discoverable endpoints (token exchange,
+		// OpenAPI contract, liveness probe). Resolving the set from a table
+		// (rather than an else-if chain) keeps it consistent for every server
+		// that shares this middleware.
+		if publicPaths[r.URL.Path] {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -339,7 +363,7 @@ func (a *ExternalAuth) HandleTokenRequest(w http.ResponseWriter, r *http.Request
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	_ = json.NewEncoder(w).Encode(map[string]any{
 		"access_token": signed,
 		"token_type":   "Bearer",
 		"expires_in":   int(jwtDefaultExpiry.Seconds()),
@@ -348,7 +372,7 @@ func (a *ExternalAuth) HandleTokenRequest(w http.ResponseWriter, r *http.Request
 
 // validateIssuedToken verifies an agent-orc-issued JWT.
 func (a *ExternalAuth) validateIssuedToken(tokenString string) (*TenantIdentity, error) {
-	token, err := jwt.Parse(tokenString, func(t *jwt.Token) (interface{}, error) {
+	token, err := jwt.Parse(tokenString, func(t *jwt.Token) (any, error) {
 		if _, ok := t.Method.(*jwt.SigningMethodRSA); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
 		}
@@ -372,7 +396,7 @@ func (a *ExternalAuth) validateIssuedToken(tokenString string) (*TenantIdentity,
 	}
 
 	var allowedAgents []string
-	if agents, ok := claims["allowed_agents"].([]interface{}); ok {
+	if agents, ok := claims["allowed_agents"].([]any); ok {
 		for _, a := range agents {
 			if s, ok := a.(string); ok {
 				allowedAgents = append(allowedAgents, s)
@@ -380,11 +404,11 @@ func (a *ExternalAuth) validateIssuedToken(tokenString string) (*TenantIdentity,
 		}
 	}
 
-	return &TenantIdentity{
+	return attachQuotaFields(&TenantIdentity{
 		TenantName:    tenant,
 		Namespace:     namespace,
 		AllowedAgents: allowedAgents,
-	}, nil
+	}, a.tenantConfigFor(tenant)), nil
 }
 
 // getOrCreateVerifier returns a cached OIDC verifier for the given issuer, or creates
@@ -468,11 +492,42 @@ func (a *ExternalAuth) validateFederatedToken(ctx context.Context, tokenString s
 		return nil, fmt.Errorf("OIDC token verification failed: %w", err)
 	}
 
-	return &TenantIdentity{
+	return attachQuotaFields(&TenantIdentity{
 		TenantName:    matchedTC.Name,
 		Namespace:     matchedTC.Spec.TargetNamespace,
 		AllowedAgents: matchedTC.Spec.AllowedAgents,
-	}, nil
+	}, matchedTC), nil
+}
+
+// attachQuotaFields copies the rate-limit and budget settings from a tenant's
+// TenantConfig into the resolved identity so callers can enforce them. nil tc
+// (e.g. in-cluster K8s SA callers) is tolerated and leaves quotas unset.
+func attachQuotaFields(id *TenantIdentity, tc *agentorcv1alpha1.TenantConfig) *TenantIdentity {
+	if id == nil {
+		return id
+	}
+	id.RateLimitRPM = 0
+	id.ConcurrentRuns = 0
+	id.BudgetPerDayUSD = ""
+	if tc == nil {
+		return id
+	}
+	if rl := tc.Spec.RateLimit; rl != nil {
+		id.RateLimitRPM = rl.RequestsPerMinute
+		id.ConcurrentRuns = rl.ConcurrentRuns
+	}
+	id.BudgetPerDayUSD = tc.Spec.BudgetPerDayUSD
+	return id
+}
+
+// tenantConfigFor returns the live TenantConfig for a tenant name, or nil.
+func (a *ExternalAuth) tenantConfigFor(name string) *agentorcv1alpha1.TenantConfig {
+	if a == nil || name == "" {
+		return nil
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.tenantByName[name]
 }
 
 // validateK8sToken authenticates a Kubernetes ServiceAccount token.

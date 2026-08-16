@@ -21,6 +21,81 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// EgressSinkType is the kind of external message broker to deliver results to.
+// +kubebuilder:validation:Enum=kafka;pubsub;redis
+type EgressSinkType string
+
+const (
+	EgressSinkKafka  EgressSinkType = "kafka"
+	EgressSinkPubSub EgressSinkType = "pubsub"
+	EgressSinkRedis  EgressSinkType = "redis"
+)
+
+// EgressConfig configures durable result delivery to an external message bus.
+// When set on an AgentRun, the controller publishes the final TaskResponse
+// to the configured sink upon reaching a terminal phase (Succeeded or Failed).
+// This is independent of webhook callbacks — both can be configured simultaneously.
+type EgressConfig struct {
+	// Type is the sink type: kafka, pubsub, or redis.
+	// +kubebuilder:validation:Enum=kafka;pubsub;redis
+	Type EgressSinkType `json:"type"`
+
+	// Topic is the destination topic/queue/stream name.
+	// For Kafka: the topic name. For Pub/Sub: the topic name. For Redis: the stream name.
+	// +kubebuilder:validation:MinLength=1
+	Topic string `json:"topic"`
+
+	// Brokers is the list of broker addresses (kafka only).
+	// Example: ["kafka:9092"]
+	// +optional
+	Brokers []string `json:"brokers,omitempty"`
+
+	// ProjectID is the GCP project ID (pubsub only).
+	// +optional
+	ProjectID string `json:"projectID,omitempty"`
+
+	// Address is the Redis connection address (redis only).
+	// Example: "redis-master:6379"
+	// +optional
+	Address string `json:"address,omitempty"`
+
+	// SecretRef references a Secret containing connection credentials.
+	// The Secret must be in the same namespace as the AgentRun.
+	// For Kafka: key "sasl-username" and "sasl-password" (or "tls-cert"/"tls-key").
+	// For Pub/Sub: key "credentials" containing a service-account JSON blob.
+	// For Redis: key "password".
+	// +optional
+	SecretRef *SecretKeyRef `json:"secretRef,omitempty"`
+
+	// Key is the partition key for the published message (kafka only).
+	// If empty, the run ID is used as the key.
+	// +optional
+	Key string `json:"key,omitempty"`
+}
+
+// EgressResult is the payload published to the egress sink on terminal phase.
+// It mirrors TaskResponse but is self-contained (no HATEOAS links).
+type EgressResult struct {
+	// RunID is the AgentRun name.
+	RunID string `json:"runId"`
+	// Agent is the agent name that was invoked.
+	Agent string `json:"agent"`
+	// Phase is the terminal phase: "Succeeded" or "Failed".
+	Phase string `json:"phase"`
+	// Output is the agent's final output (truncated to 10KB).
+	Output string `json:"output,omitempty"`
+	// SpendUSD is the total cost for this run.
+	SpendUSD string `json:"spendUSD,omitempty"`
+	// FailureReason is set when the run failed.
+	FailureReason string `json:"failureReason,omitempty"`
+	// CompletedAt is the RFC3339 timestamp of terminal phase.
+	CompletedAt string `json:"completedAt,omitempty"`
+	// Metadata is the original task submission metadata.
+	Metadata map[string]string `json:"metadata,omitempty"`
+	// Tenant is the tenant name (for multi-tenant deployments).
+	Tenant string `json:"tenant,omitempty"`
+}
+
 // SecretKeyRef references a key in a Kubernetes Secret.
 type SecretKeyRef struct {
 	// Name of the Secret.

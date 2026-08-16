@@ -1,0 +1,62 @@
+---
+# Optional: seed the red-tactics KnowledgeBase (offensive TTP runbooks ingested by
+# the model-router RAG pipeline). The pwnbox agent retrieves these via _rag_search.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: red-tactics-content
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "demo.labels" . | nindent 4 }}
+data:
+  htb-pwnbox-notes.txt: |
+    RUNBOOK: HTB Autononomous Pwnbox Engagement
+    Severity: N/A (training)
+    Tags: htb, pwnbox, autonomous
+
+    ENGAGEMENT PROCEDURE
+    1. Confirm tun0 is up in the pwnbox pod
+       (kubectl -n red-team logs deploy/red-pwnbox -c pwnbox).
+    2. RECON: host discovery with masscan-scan (fast, low --rate), then a
+       targeted service scan with rustscan-fast or probe-target (nmap -sS/-sV).
+       For web hosts: httpx-probe + whatweb-fingerprint. For domains:
+       subfinder-enum / amass-enum.
+    3. VULN SWEET SPOT: nuclei-scan (cves/misconfig/exposures templates) and
+       ffuf-fuzz / dirb (content discovery). For CMS: wpscan-analyze; SQLi:
+       sqlmap-inject; XSS/cmd injection: xsstrike-scan / commix-inject.
+    4. ENUMERATE: enum-shares (SMB/users), smbmap-scan, rpcclient-enum,
+       netexec-scan (creds via env secret, never in the tool call).
+    5. EXPLOIT: searchsploit-lookup NOTE: the slim image ships no local ExploitDB
+       (offensive-security/exploitdb master is now README-only); use the blackcart
+       image tag for searchsploit-lookup / fetch-exploit(query=). On slim,
+       fetch-exploit(url=<allowlisted>) + run-exploit still work.
+       fetch-exploit copies a file (or curls an allowlisted URL) into /tmp/exploits,
+       then run-exploit runs the agent-authored Python/Bash/Ruby/Perl payload
+       (or msfvenom-payload / metasploit-exploit). Capture any user/root flags found.
+    6. AD LATERAL: bloodhound-collect -> netexec-enum to map attack paths and
+       pivot toward domain admin / root.
+    7. POSTURE (host-independent): trivy-scan, checkov-iac, gitleaks-scan,
+       volatility-analyze, yara-scan on probed targets as relevant.
+    8. submit-findings(flag=..., details=...) for each captured flag.
+    9. Call _done with the final engagement summary (the LLM ends the run; the
+       pwnbox pod stays up for the next engagement).
+
+    TIMEOUT / SAFETY MODEL
+    - model-router ToolExecutionTimeoutSec now defaults to 1h; the pwnbox server
+      clamps each tool's `timeout` arg to [1, 3600] (TOOL_TIMEOUT), default 300s
+      (DEFAULT_TOOL_TIMEOUT). Keep one target + one port-range per call.
+    - fetch-exploit only curls hosts in EXPLOIT_FETCH_ALLOWLIST (empty by default
+      => ExploitDB/searchsploit only). run-exploit writes ONLY to /tmp/exploits.
+    - Transient tools (metasploit, rustscan) report "TOOL MISSING" on the slim
+      image; use the blackcart image tag for the full toolbelt.
+
+    SCOPE BOUNDARY (enforced by platform GuardrailPolicy + egress NP)
+    - Only scan/attack IPs reachable via tun0 (HTB lab range).
+    - Never attempt real infrastructure outside the tunnel.
+    - External TI/template egress is gated by pwnboxEgress.internetRecon (default false).
+  red-team-rules.txt: |
+    RUNBOOK: Red-Team Rules of Engagement
+    1. Scope is strictly the HTB lab network over tun0.
+    2. No real credential reuse outside the lab.
+    3. Log every action; submit findings to the scoreboard.
+    4. Stop immediately if an action would touch anything off-tunnel.

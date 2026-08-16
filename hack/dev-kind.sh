@@ -199,9 +199,9 @@ if [[ "$SKIP_BUILD" == "false" ]]; then
   OPERATOR_TAR="$(mktemp /tmp/agent-orc-operator-XXXXXX)"
   ROUTER_TAR="$(mktemp /tmp/agent-orc-router-XXXXXX)"
   UI_TAR="$(mktemp /tmp/agent-orc-ui-XXXXXX)"
-  DEMO_AGENT_TAR="$(mktemp /tmp/agent-orc-demo-agent-XXXXXX)"
+  # DEMO_AGENT_TAR="$(mktemp /tmp/agent-orc-demo-agent-XXXXXX)"
   # Ensure temp files are removed even on error.
-  trap 'rm -f "${OPERATOR_TAR}" "${ROUTER_TAR}" "${UI_TAR}" "${DEMO_AGENT_TAR}"' EXIT
+  trap 'rm -f "${OPERATOR_TAR}" "${ROUTER_TAR}" "${UI_TAR}"' EXIT
 
   step "Building operator image (${BUILD_PLATFORM})"
   docker buildx build \
@@ -229,20 +229,20 @@ if [[ "$SKIP_BUILD" == "false" ]]; then
     .
   ok "UI image built → ${UI_TAR}"
 
-  step "Building demo-agent image (${BUILD_PLATFORM})"
-  docker buildx build \
-    --platform "${BUILD_PLATFORM}" \
-    --tag "agent-orc/demo-agent:dev" \
-    --output "type=oci,dest=${DEMO_AGENT_TAR}" \
-    -f Dockerfile.demo-agent \
-    .
-  ok "Demo-agent image built → ${DEMO_AGENT_TAR}"
+  # step "Building demo-agent image (${BUILD_PLATFORM})"
+  # docker buildx build \
+  #   --platform "${BUILD_PLATFORM}" \
+  #   --tag "agent-orc/demo-agent:dev" \
+  #   --output "type=oci,dest=${DEMO_AGENT_TAR}" \
+  #   -f Dockerfile.demo-agent \
+  #   .
+  # ok "Demo-agent image built → ${DEMO_AGENT_TAR}"
 
   step "Loading images into kind cluster '${CLUSTER_NAME}'"
   kind load image-archive "${OPERATOR_TAR}" --name "${CLUSTER_NAME}"
   kind load image-archive "${ROUTER_TAR}" --name "${CLUSTER_NAME}"
   kind load image-archive "${UI_TAR}" --name "${CLUSTER_NAME}"
-  kind load image-archive "${DEMO_AGENT_TAR}" --name "${CLUSTER_NAME}"
+  # kind load image-archive "${DEMO_AGENT_TAR}" --name "${CLUSTER_NAME}"
   ok "All four images loaded (${BUILD_PLATFORM})"
 else
   warn "Skipping image build (--skip-build)"

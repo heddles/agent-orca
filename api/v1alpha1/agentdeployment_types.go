@@ -91,6 +91,16 @@ type AgentDeploymentSpec struct {
 	// +optional
 	RestartPolicy *DeploymentRestartPolicy `json:"restartPolicy,omitempty"`
 
+	// ToolExecutionTimeoutSec is the per-tool-call ceiling (seconds) applied to every
+	// AgentRun spawned from this deployment and to warm pods claimed by it. It feeds
+	// RouterSafeguards.ToolExecutionTimeoutSec. Defaults to the model-router's 60s when
+	// 0. Set high for long-holding tooling that exceeds the default (e.g. Sliver
+	// interactive sessions, shells, pivot relays): 1800–3600. A 0 value preserves
+	// today's 60s behaviour.
+	// +kubebuilder:default=0
+	// +optional
+	ToolExecutionTimeoutSec int `json:"toolExecutionTimeoutSec,omitempty"`
+
 	// Replicas is the desired number of agent pod replicas. Defaults to 1.
 	// +kubebuilder:default=1
 	// +optional
@@ -108,6 +118,73 @@ type AgentDeploymentSpec struct {
 	// +kubebuilder:default=1
 	// +optional
 	WarmPoolSize int `json:"warmPoolSize,omitempty"`
+
+	// MaxRequestsPerPod caps how many requests a warm pod will serve before it is
+	// recycled (deleted and replaced). 0 (default) means warm pods are REUSED across
+	// requests — after a run completes the pod is returned to the idle pool instead of
+	// being killed, and is re-claimed for the next chat run. Age-based recycling is
+	// disabled by default (see WarmPodMaxAge), so reuse is the normal path.
+	//
+	// Set >0 (e.g. 50) to rotate pods after that many served requests, which can be
+	// useful to shed per-request state or refresh long-running connections.
+	// +kubebuilder:default=0
+	// +optional
+	MaxRequestsPerPod int `json:"maxRequestsPerPod,omitempty"`
+
+	// WarmPodMaxAge is the maximum age of a warm pod before it is recycled
+	// (deleted and replaced). It defaults to 0 (indefinite) when unset: warm pods
+	// then persist until manually deleted, the agent process exits, config-drift
+	// recycle fires (see RecycleOnConfigDrift), or the MaxRequestsPerPod cap is hit.
+	// This is the desired default for chat and long-trajectory workloads, where
+	// pods must stay alive across runs so an in-progress session is never torn down
+	// mid-task. When age recycling is disabled a long-lived SA token (the cluster
+	// maximum) is minted for each pod so it can keep authenticating claim-run
+	// POSTs for its entire life.
+	//
+	// Set this to a positive duration explicitly to OPT IN to age-based recycling,
+	// e.g. 50m to recycle pods roughly once per LLM token budget window. (controller-gen
+	// cannot express a duration default here, so 0 is applied in code.)
+	// +optional
+	WarmPodMaxAge *metav1.Duration `json:"warmPodMaxAge,omitempty"`
+
+	// RecycleOnConfigDrift controls whether warm pods are recycled when the
+	// router config changes (agent spec, providers/weights, tools, KBs,
+	// guardrails). Defaults to true: a config change rolls the warm pool so
+	// pods pick up the new config immediately.
+	//
+	// Set to false to keep warm pods alive across config changes. Pods continue
+	// serving from the router-config snapshot they were created with and only
+	// refresh on their next natural recycle (age cap or process exit). Combining
+	// "WarmPodMaxAge: 0" with "RecycleOnConfigDrift: false" keeps warm pods
+	// until they are manually deleted (or the agent process exits).
+	// +kubebuilder:default=true
+	// +optional
+	RecycleOnConfigDrift *bool `json:"recycleOnConfigDrift,omitempty"`
+
+	// WarmLocalCache controls the per-warm-pod local disk cache (an emptyDir) that
+	// supplements the shared Redis state store. The model-router write-throughs each
+	// checkpoint to the local disk AND to Redis, then reads from the local disk first
+	// (falling back to Redis on a local miss). Because warm pods are reused across
+	// chat runs (the same Pod survives multiple claims until recycled), the local
+	// cache accelerates warm-pod resume (no Redis round-trip to hydrate the prior
+	// conversation) and lets a warm pod keep serving if Redis is transiently
+	// unavailable. The local cache is per-Pod only — it is wiped when the warm pod is
+	// recycled/deleted; Redis remains the durable, cross-pod source of truth.
+	//
+	// Note: this is unrelated to the read-only-rootFilesystem emptyDir at /tmp
+	// (which is scratch space for the restricted pod-security profile); this is a
+	// separate disk-backed volume used to mirror checkpoints.
+	//
+	// Defaults to true when WarmPoolSize > 0 (a warm pool), false otherwise.
+	// +optional
+	WarmLocalCache *bool `json:"warmLocalCache,omitempty"`
+
+	// WarmLocalCacheSizeMi is the SizeLimit (in Mi) for each warm pod's local cache
+	// emptyDir. 0 means unlimited (bounded only by node ephemeral storage).
+	// Defaults to 256.
+	// +kubebuilder:default=256
+	// +optional
+	WarmLocalCacheSizeMi int `json:"warmLocalCacheSizeMi,omitempty"`
 }
 
 // AgentDeploymentStatus defines the observed state of an AgentDeployment.
@@ -144,6 +221,17 @@ type AgentDeploymentStatus struct {
 	// WarmPoolReady is the number of idle warm pods ready to accept runs.
 	// +optional
 	WarmPoolReady int `json:"warmPoolReady,omitempty"`
+
+	// WarmPoolLastRecycleReason is the reason the most recent warm pod was
+	// recycled (token-age-expired, stale-config, terminal-phase,
+	// request-cap-<N>), or empty if no warm pod has been recycled yet. Emitted
+	// as a WarmPodRecycled Kubernetes Event on the deployment as well.
+	// +optional
+	WarmPoolLastRecycleReason string `json:"warmPoolLastRecycleReason,omitempty"`
+
+	// WarmPoolLastRecycleAt is when the most recent warm pod was recycled.
+	// +optional
+	WarmPoolLastRecycleAt *metav1.Time `json:"warmPoolLastRecycleAt,omitempty"`
 
 	// Message contains a human-readable status message.
 	// +optional

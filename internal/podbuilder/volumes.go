@@ -210,6 +210,45 @@ func ResolveToolSecretVolumes(
 	return volumes, mounts, nil
 }
 
+// ResolveAgentSecretRefs builds volumes and mounts for secrets referenced by an
+// Agent's runtime (Agent.spec.runtime.secretRefs). These are mounted read-only into
+// the agent container only — not the model-router sidecar. Each entry with a MountPath
+// becomes a whole-secret volume mounted at that path; an empty MountPath defaults to
+// /etc/agentorc-secrets/<secret-name> (keys as files). This is a pure transform: the
+// kubelet resolves the secret at pod start.
+//
+// Use case: a red-team pwnbox mounting an HTB OpenVPN .ovpn config directly into the
+// agent container so the entrypoint can bring up the tunnel.
+func ResolveAgentSecretRefs(agent *agentorcv1alpha1.Agent) ([]corev1.Volume, []corev1.VolumeMount) {
+	var volumes []corev1.Volume
+	var mounts []corev1.VolumeMount
+	if agent == nil {
+		return volumes, mounts
+	}
+	for _, sr := range agent.Spec.Runtime.SecretRefs {
+		if sr.Name == "" {
+			continue
+		}
+		mountPath := sr.MountPath
+		if mountPath == "" {
+			mountPath = fmt.Sprintf("%s/%s", AgentSecretMountDir, sr.Name)
+		}
+		volName := AgentSecretVolPrefix + SanitizeVolumeName(agent.Name+"-"+sr.Name)
+		volumes = append(volumes, corev1.Volume{
+			Name: volName,
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{SecretName: sr.Name},
+			},
+		})
+		mounts = append(mounts, corev1.VolumeMount{
+			Name:      volName,
+			MountPath: mountPath,
+			ReadOnly:  true,
+		})
+	}
+	return volumes, mounts
+}
+
 // ResolveMCPSidecarVolumes inspects the agent's MCP tools and builds image
 // volumes + mounts to inject MCP server binaries into the model-router.
 //

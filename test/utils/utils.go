@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2" // nolint:revive,staticcheck
 )
@@ -81,23 +82,55 @@ func UninstallCertManager() {
 	}
 }
 
-// InstallCertManager installs the cert manager bundle.
+// InstallCertManager installs the cert manager bundle and waits until it is
+// fully ready: the controller, webhook, and cainjector deployments must all be
+// Available AND the cert-manager ValidatingWebhookConfiguration must have a
+// populated caBundle. Waiting only for the webhook deployment (the previous
+// behaviour) left a window where the cainjector had not yet injected the
+// caBundle, causing `make deploy`'s cert-manager-typed resources (e.g. the
+// AgentRun webhook Certificate) to fail with "x509: certificate signed by
+// unknown authority".
 func InstallCertManager() error {
 	url := fmt.Sprintf(certmanagerURLTmpl, certmanagerVersion)
 	cmd := exec.Command("kubectl", "apply", "-f", url)
 	if _, err := Run(cmd); err != nil {
 		return err
 	}
-	// Wait for cert-manager-webhook to be ready, which can take time if cert-manager
-	// was re-installed after uninstalling on a cluster.
-	cmd = exec.Command("kubectl", "wait", "deployment.apps/cert-manager-webhook",
-		"--for", "condition=Available",
-		"--namespace", "cert-manager",
-		"--timeout", "5m",
-	)
 
-	_, err := Run(cmd)
-	return err
+	// All three cert-manager deployments must be Available.
+	for _, dep := range []string{"cert-manager", "cert-manager-webhook", "cert-manager-cainjector"} {
+		cmd = exec.Command("kubectl", "wait", "deployment.apps/"+dep,
+			"--for", "condition=Available",
+			"--namespace", "cert-manager",
+			"--timeout", "5m",
+		)
+		if _, err := Run(cmd); err != nil {
+			return fmt.Errorf("waiting for cert-manager deployment %s: %w", dep, err)
+		}
+	}
+
+	// Wait until the cainjector has populated the caBundle on the cert-manager
+	// webhook config, so that subsequent cert-manager-typed resource creation is
+	// admitted without a TLS verification error.
+	if err := waitForWebhookCABundle("cert-manager-webhook", 90*time.Second); err != nil {
+		return fmt.Errorf("cert-manager webhook caBundle not populated: %w", err)
+	}
+	return nil
+}
+
+// waitForWebhookCABundle polls a ValidatingWebhookConfiguration until its first
+// webhook entry has a non-empty clientConfig.caBundle, or times out.
+func waitForWebhookCABundle(name string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		out, err := Run(exec.Command("kubectl", "get", "validatingwebhookconfiguration", name,
+			"-o", "jsonpath={.webhooks[0].clientConfig.caBundle}"))
+		if err == nil && strings.TrimSpace(out) != "" {
+			return nil
+		}
+		time.Sleep(2 * time.Second)
+	}
+	return fmt.Errorf("timed out after %s waiting for caBundle on %s", timeout, name)
 }
 
 // IsCertManagerCRDsInstalled checks if any Cert Manager CRDs are installed

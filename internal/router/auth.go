@@ -122,10 +122,10 @@ func (a *Authenticator) Authenticate(ctx context.Context, bearerToken string) er
 
 // reviewToken performs a Kubernetes TokenReview API call and returns the authenticated SA username.
 func (a *Authenticator) reviewToken(ctx context.Context, token string) (string, error) {
-	body, _ := json.Marshal(map[string]interface{}{
+	body, _ := json.Marshal(map[string]any{
 		"apiVersion": "authentication.k8s.io/v1",
 		"kind":       "TokenReview",
-		"spec": map[string]interface{}{
+		"spec": map[string]any{
 			"token":     token,
 			"audiences": []string{"agentorc/model-router"},
 		},
@@ -149,7 +149,7 @@ func (a *Authenticator) reviewToken(ctx context.Context, token string) (string, 
 	if err != nil {
 		return "", fmt.Errorf("TokenReview request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var result struct {
 		Status struct {
@@ -172,8 +172,8 @@ func (a *Authenticator) reviewToken(ctx context.Context, token string) (string, 
 // ExtractBearerToken returns the token from an "Authorization: Bearer <token>" header.
 func ExtractBearerToken(r *http.Request) string {
 	auth := r.Header.Get("Authorization")
-	if strings.HasPrefix(auth, "Bearer ") {
-		return strings.TrimPrefix(auth, "Bearer ")
+	if after, ok := strings.CutPrefix(auth, "Bearer "); ok {
+		return after
 	}
 	return ""
 }

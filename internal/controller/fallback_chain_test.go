@@ -19,7 +19,8 @@ import (
 
 // fallbackFixture builds the fake client objects shared by both controller tests:
 // one primary provider, one fallback-only provider, one ModelSelector, one Agent.
-func fallbackFixture(scheme *runtime.Scheme) (
+func fallbackFixture(scheme *runtime.Scheme) ( //nolint:unparam
+
 	primary *agentorcv1alpha1.ModelProvider,
 	fallback *agentorcv1alpha1.ModelProvider,
 	selector *agentorcv1alpha1.ModelSelector,
@@ -59,7 +60,10 @@ func fallbackFixture(scheme *runtime.Scheme) (
 			ModelSelectorRef: "default",
 		},
 	}
-	return
+	return primary,
+		fallback,
+		selector,
+		agent
 }
 
 // TestBuildRouterConfig_FallbackProvidersLoadedWithZeroWeight verifies that

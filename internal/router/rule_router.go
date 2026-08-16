@@ -240,15 +240,15 @@ func hasImageContent(messages []Message) bool {
 		switch v := m.Content.(type) {
 		case string:
 			// Plain string content — no images.
-		case []interface{}:
+		case []any:
 			for _, part := range v {
-				if partMap, ok := part.(map[string]interface{}); ok {
+				if partMap, ok := part.(map[string]any); ok {
 					if partMap["type"] == "image_url" {
 						return true
 					}
 				}
 			}
-		case []map[string]interface{}:
+		case []map[string]any:
 			for _, part := range v {
 				if part["type"] == "image_url" {
 					return true

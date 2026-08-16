@@ -2,6 +2,10 @@
 
 agent-orc supports enterprise customers who want to deploy AI agents and integrate them with their existing software. The enterprise integration layer provides a REST API for task submission, multi-tenant authentication, response guardrails, and confirmed-fix knowledge ingestion.
 
+> **Admin operations** (tenant lifecycle management) are documented separately in
+> [docs/admin-api.md](admin-api.md). **Rate limiting and budget enforcement**
+> are documented in [docs/rate-limiting.md](rate-limiting.md).
+
 | Surface | Port | Caller | Auth mechanism |
 |---------|------|--------|----------------|
 | Internal Agent API | 8082 | Agent pods, model-routers | Kubernetes TokenReview |
@@ -101,6 +105,77 @@ When an AgentRun reaches a terminal phase (Succeeded or Failed), the controller 
   "completedAt": "2026-03-25T10:01:23Z"
 }
 ```
+
+### Webhook signature verification (HMAC)
+
+By default callbacks are delivered unsigned. To verify that a callback genuinely
+originated from agent-orc (and not an impersonator on the network path), attach a
+shared secret to the callback. agent-orc then signs every delivery with
+HMAC-SHA256 and the receiver can verify it in constant time.
+
+1. Create a Kubernetes Secret in the **tenant's target namespace** (e.g.
+   `tenant-acme`) with a `hmac-key` entry:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: support-callback-secret
+  namespace: tenant-acme
+stringData:
+  hmac-key: "32-or-more-random-bytes-here"
+```
+
+2. Reference it by name in the callback when submitting a task:
+
+```json
+{
+  "agent": "support-bot",
+  "input": "My app crashes on startup",
+  "callback": {
+    "url": "https://helpdesk.acme.com/webhooks/agent-orc",
+    "secretRef": "support-callback-secret"
+  }
+}
+```
+
+3. Verify the signature on receipt. agent-orc sends:
+
+```
+X-Agentorc-Signature: sha256=<hex>
+X-Agentorc-Timestamp: <unix-seconds>
+```
+
+where the signature is `HMAC-SHA256(hmac-key, raw-request-body)`.
+
+**Python receiver example:**
+
+```python
+import hashlib, hmac, os, time
+
+SHARED_KEY = os.environ["AGENTORC_CALLBACK_KEY"].encode()
+MAX_AGE_SECONDS = 300  # reject stale callbacks
+
+def handle_callback(request_body: bytes, signature: str, timestamp: str) -> None:
+    # 1. Freshness check (optional but recommended).
+    try:
+        age = abs(time.time() - int(timestamp))
+        if age > MAX_AGE_SECONDS:
+            raise RuntimeError("callback timestamp stale")
+    except (ValueError, TypeError):
+        raise RuntimeError("missing/invalid X-Agentorc-Timestamp")
+
+    # 2. Constant-time signature comparison.
+    expected = "sha256=" + hmac.new(SHARED_KEY, request_body, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, signature):
+        raise RuntimeError("invalid signature")
+
+    # 3. Safe to process the callback payload.
+    print("verified callback:", request_body.decode())
+```
+
+If `secretRef` is omitted (or the Secret/`hmac-key` is missing), the callback is
+delivered **unsigned** — receivers that don't verify behave exactly as before.
 
 ### Answering clarification questions
 

@@ -314,6 +314,73 @@ spec:
                       Must be signed with Cosign unless imageVerification.skip is set.
                     minLength: 1
                     type: string
+                  secretRefs:
+                    description: |-
+                      SecretRefs lists Kubernetes Secrets to mount into the agent container as volumes
+                      (or, if MountPath is empty, inject as env vars). Unlike Tool.spec.secretRefs —
+                      which target the model-router sidecar / tool pods — these mount directly into the
+                      agent container. Useful for agent containers that need an on-disk credential the
+                      agent code reads directly, e.g. an HTB OpenVPN ``.ovpn`` config mounted at
+                      ``/etc/htb``. Mounted read-only.
+                    items:
+                      description: SecretMount references a Kubernetes Secret to mount
+                        into a tool pod or sidecar.
+                      properties:
+                        mountPath:
+                          description: |-
+                            MountPath is the filesystem path where the Secret should be mounted.
+                            If empty, the Secret's keys are injected as environment variables instead.
+                          type: string
+                        name:
+                          description: Name of the Secret in the same namespace.
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    type: array
+                  securityContextOverride:
+                    description: |-
+                      SecurityContextOverride opts the agent container (only the "agent" container,
+                      never the model-router sidecar) out of the default restricted PodSecurityStandard.
+
+                      Intended ONLY for purpose-built agents that require elevated privileges the
+                      restricted baseline forbids — e.g. a red-team pwnbox that must bring up a VPN
+                      tun device (requires NET_ADMIN + /dev/net/tun). When set, the operator mounts
+                      /dev/net/tun into the agent container and applies the requested posture.
+
+                      Admission is gated by a validating webhook: the agent's namespace must carry the
+                      label `agentorc.io/enable-privileged-pods: "true"` AND the Agent must reference a
+                      GuardrailPolicyRef. These checks fail‑closed.
+                    properties:
+                      addCapabilities:
+                        description: |-
+                          AddCapabilities adds specific capabilities to the agent container while keeping
+                          the restricted profile otherwise (e.g. ["NET_ADMIN"] + a /dev/net/tun hostPath
+                          mount). Mutually exclusive with Privileged.
+                        items:
+                          type: string
+                        type: array
+                      privileged:
+                        description: |-
+                          Privileged grants the agent container full privileges (CAP_NET_ADMIN,
+                          /dev/net/tun device access, seccomp/capability enforcement disabled). Use this
+                          for tun-device VPNs. Mutually exclusive with AddCapabilities.
+                        type: boolean
+                      readOnlyRootFilesystem:
+                        description: |-
+                          ReadOnlyRootFilesystem overrides the default read-only root filesystem of the
+                          agent container. When omitted and Privileged is true, defaults to writable
+                          (false) since some security tooling writes helpers/logs to the root FS; when
+                          omitted and non-privileged, retains the restricted default (true).
+                        type: boolean
+                      runAsUser:
+                        description: |-
+                          RunAsUser overrides the default non-root UID (65532). 0 (root) is permitted only
+                          when Privileged is true or a capability that requires root (e.g. NET_ADMIN to
+                          create network interfaces) is added; the webhook enforces this.
+                        format: int64
+                        type: integer
+                    type: object
                   shimTarget:
                     description: |-
                       ShimTarget is the hostname to intercept when Framework is "shim".

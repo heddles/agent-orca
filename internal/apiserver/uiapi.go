@@ -62,15 +62,26 @@ func nsListOpts(ns string) []client.ListOption {
 	return []client.ListOption{client.InNamespace(ns)}
 }
 
+// checkpointStore picks a durable session-checkpoint store when a state backend
+// (Redis) is configured, falling back to the in-memory store for local dev. The
+// durable store is what lets a chat's LastRunRef conversation chain survive an
+// API-server or warm-pod restart, so a recycled pod can resume context.
+func checkpointStore(store state.Store) checkpoint.Store {
+	if store != nil {
+		return checkpoint.NewRedisStore(store)
+	}
+	return checkpoint.NewInMemoryStore()
+}
+
 // NewUIServer creates a UIServer.
 // stateConfigured should be true when a Redis-backed state store is active.
-// store may be nil if no state backend is configured.
+// store may be nil if no state backend is configured (in-memory checkpoint fallback).
 // authEnabled requires a valid UIProxy SA token (audience agentorc/ui) on all API calls.
 func NewUIServer(k8s kubernetes.Interface, crdClient client.Client, stateConfigured bool, store state.Store, authEnabled bool) *UIServer {
 	return &UIServer{
 		crdClient:       crdClient,
 		k8s:             k8s,
-		checkpoint:      checkpoint.NewInMemoryStore(),
+		checkpoint:      checkpointStore(store),
 		store:           store,
 		stateConfigured: stateConfigured,
 		authEnabled:     authEnabled,
@@ -80,6 +91,10 @@ func NewUIServer(k8s kubernetes.Interface, crdClient client.Client, stateConfigu
 // Handler returns the http.Handler for the UI API.
 func (s *UIServer) Handler() http.Handler {
 	mux := http.NewServeMux()
+	// Liveness/readiness/version are public probes (do not require a UI session token).
+	mux.HandleFunc("/healthz", healthzHandler)
+	mux.HandleFunc("/readyz", readyzHandlerBuilder(k8sReady(s.k8s), s.store != nil, s.store))
+	mux.HandleFunc("/version", versionHandler)
 	mux.HandleFunc("/api/runs", s.handleListRuns)
 	mux.HandleFunc("/api/runs/", s.handleRunOrStream)
 	mux.HandleFunc("/api/agents", s.handleAgents)
@@ -105,7 +120,13 @@ func (s *UIServer) requireAuth(next http.Handler) http.Handler {
 	if !s.authEnabled {
 		return next
 	}
+	// Public probes that must remain reachable without a session token.
+	uiPublicPaths := map[string]bool{"/healthz": true, "/readyz": true, "/version": true}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if uiPublicPaths[r.URL.Path] {
+			next.ServeHTTP(w, r)
+			return
+		}
 		token := extractBearer(r)
 		if token == "" {
 			token = r.URL.Query().Get("token")
@@ -198,8 +219,8 @@ func (s *UIServer) handleRunOrStream(w http.ResponseWriter, r *http.Request) {
 	ns, runName := parts[0], parts[1]
 
 	if len(parts) == 3 {
-		if strings.HasPrefix(parts[2], "mcpapp/") {
-			s.handleMCPApp(w, r, strings.TrimPrefix(parts[2], "mcpapp/"))
+		if after, ok := strings.CutPrefix(parts[2], "mcpapp/"); ok {
+			s.handleMCPApp(w, r, after)
 			return
 		}
 		switch parts[2] {
@@ -231,46 +252,46 @@ func (s *UIServer) handleRunOrStream(w http.ResponseWriter, r *http.Request) {
 		Timestamp  string `json:"timestamp,omitempty"`
 	}
 	type runDetail struct {
-		Name                      string                `json:"name"`
-		Namespace                 string                `json:"namespace"`
-		AgentRef                  string                `json:"agentRef"`
-		Input                     string                `json:"input"`
-		Phase                     string                `json:"phase"`
-		Output                    string                `json:"output,omitempty"`
-		SpendUSD                  string                `json:"spendUSD"`
-		RestartCount              int                   `json:"restartCount"`
-		LastRestartReason         string                `json:"lastRestartReason,omitempty"`
-		StartTime                 string                `json:"startTime,omitempty"`
-		CompletionTime            string                `json:"completionTime,omitempty"`
-		RoutingDecisions          []routingDecisionJSON `json:"routingDecisions"`
-		ChildRunRefs              []string              `json:"childRunRefs,omitempty"`
-		ParentRunRef              string                `json:"parentRunRef,omitempty"`
-		ClarifyQuestion           string                `json:"clarifyQuestion,omitempty"`
-		ClarifyAnswer             string                `json:"clarifyAnswer,omitempty"`
-		WaitingSince              string                `json:"waitingSince,omitempty"`
-		ContinuationRunRef        string                `json:"continuationRunRef,omitempty"`
-		ContextUsedTokens         int                   `json:"contextUsedTokens"`
-		MaxContextTokens          int                   `json:"maxContextTokens"`
+		Name               string                `json:"name"`
+		Namespace          string                `json:"namespace"`
+		AgentRef           string                `json:"agentRef"`
+		Input              string                `json:"input"`
+		Phase              string                `json:"phase"`
+		Output             string                `json:"output,omitempty"`
+		SpendUSD           string                `json:"spendUSD"`
+		RestartCount       int                   `json:"restartCount"`
+		LastRestartReason  string                `json:"lastRestartReason,omitempty"`
+		StartTime          string                `json:"startTime,omitempty"`
+		CompletionTime     string                `json:"completionTime,omitempty"`
+		RoutingDecisions   []routingDecisionJSON `json:"routingDecisions"`
+		ChildRunRefs       []string              `json:"childRunRefs,omitempty"`
+		ParentRunRef       string                `json:"parentRunRef,omitempty"`
+		ClarifyQuestion    string                `json:"clarifyQuestion,omitempty"`
+		ClarifyAnswer      string                `json:"clarifyAnswer,omitempty"`
+		WaitingSince       string                `json:"waitingSince,omitempty"`
+		ContinuationRunRef string                `json:"continuationRunRef,omitempty"`
+		ContextUsedTokens  int                   `json:"contextUsedTokens"`
+		MaxContextTokens   int                   `json:"maxContextTokens"`
 	}
 
 	detail := runDetail{
-		Name:                      run.Name,
-		Namespace:                 run.Namespace,
-		AgentRef:                  run.Spec.AgentRef,
-		Input:                     run.Spec.Input,
-		Phase:                     string(run.Status.Phase),
-		Output:                    run.Status.Output,
-		SpendUSD:                  run.Status.SpendUSD,
-		RestartCount:              run.Status.RestartCount,
-		LastRestartReason:         run.Status.LastRestartReason,
-		RoutingDecisions:          make([]routingDecisionJSON, 0, len(run.Status.RoutingDecisions)),
-		ChildRunRefs:              run.Status.ChildRunRefs,
-		ParentRunRef:              run.Spec.ParentRunRef,
-		ClarifyQuestion:           run.Status.ClarifyQuestion,
-		ClarifyAnswer:             run.Status.ClarifyAnswer,
-		ContinuationRunRef:        run.Status.ContinuationRunRef,
-		ContextUsedTokens:         run.Status.ContextUsedTokens,
-		MaxContextTokens:          run.Status.MaxContextTokens,
+		Name:               run.Name,
+		Namespace:          run.Namespace,
+		AgentRef:           run.Spec.AgentRef,
+		Input:              run.Spec.Input,
+		Phase:              string(run.Status.Phase),
+		Output:             run.Status.Output,
+		SpendUSD:           run.Status.SpendUSD,
+		RestartCount:       run.Status.RestartCount,
+		LastRestartReason:  run.Status.LastRestartReason,
+		RoutingDecisions:   make([]routingDecisionJSON, 0, len(run.Status.RoutingDecisions)),
+		ChildRunRefs:       run.Status.ChildRunRefs,
+		ParentRunRef:       run.Spec.ParentRunRef,
+		ClarifyQuestion:    run.Status.ClarifyQuestion,
+		ClarifyAnswer:      run.Status.ClarifyAnswer,
+		ContinuationRunRef: run.Status.ContinuationRunRef,
+		ContextUsedTokens:  run.Status.ContextUsedTokens,
+		MaxContextTokens:   run.Status.MaxContextTokens,
 	}
 	if run.Status.WaitingSince != nil {
 		detail.WaitingSince = run.Status.WaitingSince.UTC().Format(time.RFC3339)
@@ -306,7 +327,8 @@ func (s *UIServer) handleRunOrStream(w http.ResponseWriter, r *http.Request) {
 //  3. After the log stream closes, emit routing decisions and final_output/error.
 //
 // If the run is already terminal on connect, all data is emitted immediately.
-func (s *UIServer) handleStream(w http.ResponseWriter, r *http.Request, ns, runName string) {
+func (s *UIServer) handleStream(w http.ResponseWriter, r *http.Request, ns, runName string) { //nolint:gocyclo
+
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
@@ -331,12 +353,12 @@ func (s *UIServer) handleStream(w http.ResponseWriter, r *http.Request, ns, runN
 				continue
 			}
 			conf := 0.0
-			fmt.Sscanf(rd.Confidence, "%f", &conf)
-			writeSSE(w, map[string]interface{}{
-				"type": "modelSelected",
-				"model":         rd.Model,
-				"reason":        fmt.Sprintf("[%s] %s — %s", rd.Strategy, rd.Provider, rd.Reason),
-				"confidence":    conf,
+			_, _ = fmt.Sscanf(rd.Confidence, "%f", &conf)
+			writeSSE(w, map[string]any{
+				"type":       "modelSelected",
+				"model":      rd.Model,
+				"reason":     fmt.Sprintf("[%s] %s — %s", rd.Strategy, rd.Provider, rd.Reason),
+				"confidence": conf,
 			})
 		}
 		emittedRouting = len(run.Status.RoutingDecisions)
@@ -346,25 +368,25 @@ func (s *UIServer) handleStream(w http.ResponseWriter, r *http.Request, ns, runN
 	emitTerminal := func(run *agentorcv1alpha1.AgentRun) bool {
 		phase := string(run.Status.Phase)
 		if phase == "Succeeded" {
-			writeSSE(w, map[string]interface{}{
-				"type": "finalOutput",
-				"output":        run.Status.Output,
+			writeSSE(w, map[string]any{
+				"type":   "finalOutput",
+				"output": run.Status.Output,
 			})
 			flusher.Flush()
 			return true
 		}
 		if phase == "Failed" {
-			writeSSE(w, map[string]interface{}{
-				"type": "error",
-				"message":       run.Status.LastRestartReason,
+			writeSSE(w, map[string]any{
+				"type":    "error",
+				"message": run.Status.LastRestartReason,
 			})
 			flusher.Flush()
 			return true
 		}
 		if phase == "WaitingForInput" && run.Status.ClarifyQuestion != "" {
-			writeSSE(w, map[string]interface{}{
-				"type": "clarify",
-				"question":      run.Status.ClarifyQuestion,
+			writeSSE(w, map[string]any{
+				"type":     "clarify",
+				"question": run.Status.ClarifyQuestion,
 			})
 			flusher.Flush()
 			return true
@@ -438,7 +460,7 @@ func (s *UIServer) handleStream(w http.ResponseWriter, r *http.Request, ns, runN
 				}
 				// Trace events are prefixed with \x00 followed by JSON.
 				if len(token) > 1 && token[0] == '\x00' {
-					var evt map[string]interface{}
+					var evt map[string]any
 					if json.Unmarshal([]byte(token[1:]), &evt) == nil {
 						writeSSE(w, evt)
 						flusher.Flush()
@@ -446,9 +468,9 @@ func (s *UIServer) handleStream(w http.ResponseWriter, r *http.Request, ns, runN
 					}
 				}
 				output.WriteString(token)
-				writeSSE(w, map[string]interface{}{
-					"type": "token",
-					"content":       token,
+				writeSSE(w, map[string]any{
+					"type":    "token",
+					"content": token,
 				})
 				flusher.Flush()
 			}
@@ -478,7 +500,7 @@ func (s *UIServer) handleStream(w http.ResponseWriter, r *http.Request, ns, runN
 		// Without this delay, we'd emit final_output before the controller has a chance to
 		// intercept and redirect to clarification.
 		var run agentorcv1alpha1.AgentRun
-		for i := 0; i < 6; i++ {
+		for range 6 {
 			if err := s.crdClient.Get(ctx, client.ObjectKey{Name: runName, Namespace: ns}, &run); err == nil {
 				if run.Status.Phase == agentorcv1alpha1.AgentRunPhaseWaitingForInput ||
 					run.Status.Phase == agentorcv1alpha1.AgentRunPhaseSucceeded ||
@@ -497,17 +519,17 @@ func (s *UIServer) handleStream(w http.ResponseWriter, r *http.Request, ns, runN
 
 		// If the controller redirected to WaitingForInput, emit clarify instead of final_output.
 		if run.Status.Phase == agentorcv1alpha1.AgentRunPhaseWaitingForInput && run.Status.ClarifyQuestion != "" {
-			writeSSE(w, map[string]interface{}{
-				"type": "clarify",
-				"question":      run.Status.ClarifyQuestion,
+			writeSSE(w, map[string]any{
+				"type":     "clarify",
+				"question": run.Status.ClarifyQuestion,
 			})
 			flusher.Flush()
 			return
 		}
 
-		writeSSE(w, map[string]interface{}{
-			"type": "finalOutput",
-			"output":        output.String(),
+		writeSSE(w, map[string]any{
+			"type":   "finalOutput",
+			"output": output.String(),
 		})
 		flusher.Flush()
 		return
@@ -517,10 +539,10 @@ func (s *UIServer) handleStream(w http.ResponseWriter, r *http.Request, ns, runN
 	// polling the AgentRun status until the controller updates it.
 	fallbackTicker := time.NewTicker(500 * time.Millisecond)
 	defer fallbackTicker.Stop()
-	for i := 0; i < 60; i++ {
+	for range 60 {
 		var run agentorcv1alpha1.AgentRun
 		if err := s.crdClient.Get(ctx, client.ObjectKey{Name: runName, Namespace: ns}, &run); err != nil {
-			writeSSE(w, map[string]interface{}{"type": "error", "message": err.Error()})
+			writeSSE(w, map[string]any{"type": "error", "message": err.Error()})
 			flusher.Flush()
 			return
 		}
@@ -535,9 +557,9 @@ func (s *UIServer) handleStream(w http.ResponseWriter, r *http.Request, ns, runN
 		}
 	}
 
-	writeSSE(w, map[string]interface{}{
-		"type": "error",
-		"message":       "timed out waiting for run to complete",
+	writeSSE(w, map[string]any{
+		"type":    "error",
+		"message": "timed out waiting for run to complete",
 	})
 	flusher.Flush()
 }
@@ -685,7 +707,7 @@ func (s *UIServer) handleAnswerRun(w http.ResponseWriter, r *http.Request, ns, r
 		"originalRun", runName,
 		"continuationRun", continuation.Name,
 		"ns", ns)
-	jsonResponse(w, map[string]interface{}{
+	jsonResponse(w, map[string]any{
 		"status":  "ok",
 		"runName": continuation.Name,
 	})
@@ -806,7 +828,7 @@ func (s *UIServer) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 	if err := s.crdClient.Create(r.Context(), deployment); err != nil {
 		// Agent was created successfully but deployment failed — report but don't fail the whole request.
 		w.WriteHeader(http.StatusCreated)
-		jsonResponse(w, map[string]interface{}{
+		jsonResponse(w, map[string]any{
 			"name":            agent.Name,
 			"namespace":       agent.Namespace,
 			"deploymentError": fmt.Sprintf("agent created but deployment failed: %v", err),
@@ -1163,13 +1185,13 @@ func (s *UIServer) handleCosts(w http.ResponseWriter, r *http.Request) {
 		TotalUSD string            `json:"totalUSD"`
 		ByAgent  map[string]string `json:"byAgent"`
 		ByModel  map[string]string `json:"byModel"`
-		ByDay    []interface{}     `json:"byDay"`
+		ByDay    []any             `json:"byDay"`
 	}
 	out := costData{
 		TotalUSD: fmt.Sprintf("%.4f", total),
 		ByAgent:  make(map[string]string),
 		ByModel:  make(map[string]string),
-		ByDay:    []interface{}{},
+		ByDay:    []any{},
 	}
 	for k, v := range byAgent {
 		out.ByAgent[k] = fmt.Sprintf("%.4f", v)
@@ -1177,19 +1199,19 @@ func (s *UIServer) handleCosts(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, out)
 }
 
-func writeSSE(w http.ResponseWriter, data interface{}) {
+func writeSSE(w http.ResponseWriter, data any) {
 	b, _ := json.Marshal(data)
-	fmt.Fprintf(w, "data: %s\n\n", b)
+	_, _ = fmt.Fprintf(w, "data: %s\n\n", b)
 }
 
-func jsonResponse(w http.ResponseWriter, v interface{}) {
+func jsonResponse(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(v)
 }
 
 // handleSystemStatus returns operator-level feature flags for the UI.
 func (s *UIServer) handleSystemStatus(w http.ResponseWriter, _ *http.Request) {
-	jsonResponse(w, map[string]interface{}{
+	jsonResponse(w, map[string]any{
 		"stateConfigured": s.stateConfigured,
 	})
 }
@@ -1199,7 +1221,7 @@ func parseFloatCost(s string) float64 {
 		return 0
 	}
 	var f float64
-	fmt.Sscanf(s, "%f", &f)
+	_, _ = fmt.Sscanf(s, "%f", &f)
 	return f
 }
 
@@ -1337,6 +1359,13 @@ func (s *UIServer) handleExecute(w http.ResponseWriter, r *http.Request, namespa
 			PriorRunRef: priorRunRef,
 		},
 	}
+	// Propagate the deployment's tool-execution timeout so long-holding tooling
+	// (Sliver sessions, shells) isn't killed by the 60s default on every chat turn.
+	if deployment.Spec.ToolExecutionTimeoutSec > 0 {
+		run.Spec.Safeguards = &agentorcv1alpha1.AgentRunSafeguards{
+			ToolExecutionTimeoutSec: deployment.Spec.ToolExecutionTimeoutSec,
+		}
+	}
 	if err := s.crdClient.Create(r.Context(), run); err != nil {
 		http.Error(w, fmt.Sprintf("creating agent run: %v", err), http.StatusInternalServerError)
 		return
@@ -1354,31 +1383,52 @@ func (s *UIServer) handleExecute(w http.ResponseWriter, r *http.Request, namespa
 	// load it via PriorRunRef when the run starts. This serves as a safety net
 	// in case the prior run's finalization checkpoint wasn't written successfully.
 	if s.store != nil && priorRunRef != "" {
-		priorCheckpointKey := fmt.Sprintf("agentorc/runs/%s/state", priorRunRef)
-		var msgs []json.RawMessage
-		for _, cm := range cp.ConversationHistory {
-			routerMsg := map[string]interface{}{
-				"role":    cm.Role,
-				"content": cm.Content,
-			}
-			raw, _ := json.Marshal(routerMsg)
-			msgs = append(msgs, raw)
+		if err := s.ensureRunCheckpoint(r.Context(), priorRunRef, cp.ConversationHistory); err != nil {
+			slog.Warn("safety-net checkpoint write failed", "run", priorRunRef, "err", err)
 		}
-		s.store.SaveMessages(r.Context(), priorCheckpointKey, msgs, 24*time.Hour)
 	}
 
-	jsonResponse(w, map[string]interface{}{
+	jsonResponse(w, map[string]any{
 		"runName":   run.Name,
 		"sessionId": sessionID,
 	})
 }
 
+// ensureRunCheckpoint is the safety net that lets a warm pod resume a run even if
+// the model-router never checkpointed it (e.g. the pod was killed on its first turn
+// before any LLM call). It writes the session transcript into the run's Redis
+// checkpoint key — but ONLY when that key is empty. When the model-router DID
+// checkpoint, its run-key messages are full-fidelity (tool calls / results); this
+// function preserves them rather than overwriting with the session's
+// role/content-only summary, which would degrade resumed context.
+func (s *UIServer) ensureRunCheckpoint(ctx context.Context, runName string, history []agentorcv1alpha1.ConversationMessage) error {
+	if s.store == nil || runName == "" {
+		return nil
+	}
+	priorCheckpointKey := fmt.Sprintf("agentorc/runs/%s/state", runName)
+	if existing, err := s.store.LoadMessages(ctx, priorCheckpointKey); err == nil && len(existing) > 0 {
+		// Model-router already checkpointed this run — keep its full-fidelity history.
+		return nil
+	}
+	var msgs []json.RawMessage
+	for _, cm := range history {
+		routerMsg := map[string]any{
+			"role":    cm.Role,
+			"content": cm.Content,
+		}
+		raw, _ := json.Marshal(routerMsg)
+		msgs = append(msgs, raw)
+	}
+	return s.store.SaveMessages(ctx, priorCheckpointKey, msgs, 24*time.Hour)
+}
+
 // handleChatHistory returns the conversation history for a session.
 // GET /api/deployments/{namespace}/{name}/history?sessionId=X
-func (s *UIServer) handleChatHistory(w http.ResponseWriter, r *http.Request, namespace, deploymentName string) {
+func (s *UIServer) handleChatHistory(w http.ResponseWriter, r *http.Request, namespace, deploymentName string) { //nolint:unparam
+
 	sessionID := r.URL.Query().Get("sessionId")
 	if sessionID == "" {
-		jsonResponse(w, map[string]interface{}{"messages": []interface{}{}})
+		jsonResponse(w, map[string]any{"messages": []any{}})
 		return
 	}
 
@@ -1388,11 +1438,11 @@ func (s *UIServer) handleChatHistory(w http.ResponseWriter, r *http.Request, nam
 		return
 	}
 	if cp == nil {
-		jsonResponse(w, map[string]interface{}{"messages": []interface{}{}})
+		jsonResponse(w, map[string]any{"messages": []any{}})
 		return
 	}
 
-	jsonResponse(w, map[string]interface{}{
+	jsonResponse(w, map[string]any{
 		"sessionId": cp.SessionID,
 		"messages":  cp.ConversationHistory,
 	})
@@ -1400,7 +1450,8 @@ func (s *UIServer) handleChatHistory(w http.ResponseWriter, r *http.Request, nam
 
 // handleSaveResponse saves an assistant response to the session checkpoint.
 // POST /api/deployments/{namespace}/{name}/complete
-func (s *UIServer) handleSaveResponse(w http.ResponseWriter, r *http.Request, namespace, deploymentName string) {
+func (s *UIServer) handleSaveResponse(w http.ResponseWriter, r *http.Request, namespace, deploymentName string) { //nolint:unparam
+
 	var req struct {
 		SessionID    string `json:"sessionId"`
 		Output       string `json:"output"`
@@ -1466,14 +1517,14 @@ func (s *UIServer) handleSaveResponse(w http.ResponseWriter, r *http.Request, na
 		checkpointKey := fmt.Sprintf("agentorc/runs/%s/state", cp.LastRunRef)
 		var msgs []json.RawMessage
 		for _, cm := range cp.ConversationHistory {
-			routerMsg := map[string]interface{}{
+			routerMsg := map[string]any{
 				"role":    cm.Role,
 				"content": cm.Content,
 			}
 			raw, _ := json.Marshal(routerMsg)
 			msgs = append(msgs, raw)
 		}
-		s.store.SaveMessages(r.Context(), checkpointKey, msgs, 24*time.Hour)
+		_ = s.store.SaveMessages(r.Context(), checkpointKey, msgs, 24*time.Hour)
 	}
 
 	jsonResponse(w, map[string]string{"status": "ok"})
@@ -1501,9 +1552,9 @@ func (s *UIServer) handleDeploymentStream(w http.ResponseWriter, r *http.Request
 
 	// TODO: Implement actual streaming logic
 	// For now, send a placeholder event
-	writeSSE(w, map[string]interface{}{
-		"type": "placeholder",
-		"message":       "[Streaming implementation pending]",
+	writeSSE(w, map[string]any{
+		"type":    "placeholder",
+		"message": "[Streaming implementation pending]",
 	})
 	flusher.Flush()
 }
@@ -1517,18 +1568,18 @@ func (s *UIServer) handleGetDeployment(w http.ResponseWriter, r *http.Request, n
 	}
 
 	type summaryInfo struct {
-		Name                 string `json:"name"`
-		Namespace            string `json:"namespace"`
-		AgentRef             string `json:"agentRef"`
-		Phase                string `json:"phase"`
-		ReadyReplicas        int32  `json:"readyReplicas"`
-		AvailableReplicas    int32  `json:"availableReplicas"`
-		ConsecutiveFailures  int    `json:"consecutiveFailures"`
-		InputSourceType      string `json:"inputSourceType"`
-		LastUpdateTime       string `json:"lastUpdateTime,omitempty"`
-		Message              string `json:"message,omitempty"`
-		ContextUsedTokens    int    `json:"contextUsedTokens"`
-		MaxContextTokens     int    `json:"maxContextTokens"`
+		Name                string `json:"name"`
+		Namespace           string `json:"namespace"`
+		AgentRef            string `json:"agentRef"`
+		Phase               string `json:"phase"`
+		ReadyReplicas       int32  `json:"readyReplicas"`
+		AvailableReplicas   int32  `json:"availableReplicas"`
+		ConsecutiveFailures int    `json:"consecutiveFailures"`
+		InputSourceType     string `json:"inputSourceType"`
+		LastUpdateTime      string `json:"lastUpdateTime,omitempty"`
+		Message             string `json:"message,omitempty"`
+		ContextUsedTokens   int    `json:"contextUsedTokens"`
+		MaxContextTokens    int    `json:"maxContextTokens"`
 	}
 
 	info := summaryInfo{

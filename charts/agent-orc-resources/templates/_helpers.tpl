@@ -89,6 +89,14 @@ spec:
     args:
       {{- toYaml .runtime.args | nindent 6 }}
     {{- end }}
+    {{- if .runtime.securityContextOverride }}
+    securityContextOverride:
+      {{- toYaml .runtime.securityContextOverride | nindent 6 }}
+    {{- end }}
+    {{- if .runtime.secretRefs }}
+    secretRefs:
+      {{- toYaml .runtime.secretRefs | nindent 6 }}
+    {{- end }}
   {{- if .systemPrompt }}
   systemPrompt: |
     {{- .systemPrompt | nindent 4 }}
@@ -150,6 +158,21 @@ spec:
   {{- end }}
   {{- if hasKey . "warmPoolSize" }}
   warmPoolSize: {{ .warmPoolSize }}
+  {{- end }}
+  {{- if hasKey . "maxRequestsPerPod" }}
+  maxRequestsPerPod: {{ .maxRequestsPerPod }}
+  {{- end }}
+  {{- if hasKey . "recycleOnConfigDrift" }}
+  recycleOnConfigDrift: {{ .recycleOnConfigDrift }}
+  {{- end }}
+  {{- if hasKey . "toolExecutionTimeoutSec" }}
+  toolExecutionTimeoutSec: {{ .toolExecutionTimeoutSec }}
+  {{- end }}
+  {{- if hasKey . "warmLocalCache" }}
+  warmLocalCache: {{ .warmLocalCache }}
+  {{- end }}
+  {{- if hasKey . "warmLocalCacheSizeMi" }}
+  warmLocalCacheSizeMi: {{ .warmLocalCacheSizeMi }}
   {{- end }}
 {{- end }}
 {{- end -}}

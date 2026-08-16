@@ -594,7 +594,8 @@ var _ = Describe("resolveTemplates", func() {
 })
 
 var _ = Describe("evalCondition", func() {
-	makeIndex := func(name, phase, output string) map[string]*agentorcv1alpha1.WorkflowStepStatus {
+	makeIndex := func(name, phase, output string) map[string]*agentorcv1alpha1.WorkflowStepStatus { //nolint:unparam
+
 		return map[string]*agentorcv1alpha1.WorkflowStepStatus{
 			name: {Name: name, Phase: agentorcv1alpha1.WorkflowStepPhase(phase), Output: output},
 		}

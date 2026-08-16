@@ -40,6 +40,53 @@ Multi-group layout organizes APIs by group name (e.g., `batch`, `apps`). Check t
 - `config/crd/bases/*.yaml` - from `make manifests`
 - `config/rbac/role.yaml` - from `make manifests`
 - `config/webhook/manifests.yaml` - from `make manifests`
+
+## Documentation Index
+
+| Doc | Audience | What it covers |
+|---|---|---|
+| [README.md](../README.md) | All | High-level overview, quickstart, API endpoint table |
+| [integrating.md](integrating.md) | Developers / integrators | End-to-end integration guide (CLI, SDKs, ACP API, observability) |
+| [openapi-spec.md](openapi-spec.md) | Developers | OpenAPI contract reference (external + ACP specs) |
+| [acp-api.md](acp-api.md) | Developers | ACP API reference (agent discovery, run execution, sessions) |
+| [admin-api.md](admin-api.md) | Operators | Admin API reference (tenant lifecycle management) |
+| [rate-limiting.md](rate-limiting.md) | Operators | Rate limiting, budget enforcement, quota responses |
+| [aoctl-reference.md](aoctl-reference.md) | Developers | Complete `aoctl` CLI reference (all subcommands) |
+| [observability.md](observability.md) | Operators | Health probes, Prometheus metrics, audit logging |
+| [egress-sinks.md](egress-sinks.md) | Operators | Kafka/PubSub/Redis egress configuration + AgentDeployment input sources |
+| [crds.md](crds.md) | Operators | All CRD definitions and field references |
+| [auth.md](auth.md) | Operators | Authentication model (OAuth2, OIDC, ServiceAccount, trust) |
+| [enterprise-integration.md](enterprise-integration.md) | Enterprise | End-to-end enterprise integration (tenant setup, webhooks, guardrails) |
+| [rag.md](rag.md) | Developers | KnowledgeBase / RAG integration |
+| [redis.md](redis.md) | Operators | Redis setup and configuration |
+| [mcp-access-control.md](mcp-access-control.md) | Operators | MCP server access control |
+| [agentworkflow.md](agentworkflow.md) | Developers | AgentWorkflow CRD (declarative DAG) |
+| [alternatives.md](alternatives.md) | Architects | agent-orc vs OpenClaw comparison |
+| [cost-tracking.md](cost-tracking.md) | Operators | LLM spend tracking |
+| [demos.md](demos.md) | Developers | Demo catalog |
+| [local-model-selection.md](local-model-selection.md) | Developers | Local model selection |
+| [mcp-apps.md](mcp-apps.md) | Developers | MCP Apps (sandboxed iframe UI) |
+| [serviceaccount-iam.md](serviceaccount-iam.md) | Operators | ServiceAccount & IAM identity |
+| [testing-tools.md](testing-tools.md) | Developers | Testing MCP and tool calls |
+| [ui-proxy.md](ui-proxy.md) | Operators | UIProxy (B4F for the UI) |
+| [ui-testing.md](ui-testing.md) | Developers | UI testing (unit, component, E2E) |
+| [upgrading-qdrant.md](upgrading-qdrant.md) | Operators | Upgrading Qdrant for KnowledgeBases |
+| [vector-database-selection.md](vector-database-selection.md) | Architects | Why Qdrant |
+
+## OpenAPI spec generation
+
+The OpenAPI specs live in `internal/apiserver/schemas/`:
+
+- `openapi-external.yaml` — External Task API (port 8084)
+- `openapi-acp.yaml` — ACP API (port 8000)
+
+```bash
+make openapi            # copy specs to ./openapi/
+make openapi-validate   # validate specs (requires redocly or swagger-cli)
+```
+
+Both specs are served at runtime at `GET /openapi.json` on their respective
+ports and are also listed in the [openapi-spec.md](openapi-spec.md) reference.
 - `**/zz_generated.*.go` - from `make generate`
 - `PROJECT` - from `kubebuilder [OPTIONS]`
 

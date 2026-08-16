@@ -19,8 +19,17 @@ package router
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
+
+	"github.com/floppyfish14/agent-orc/internal/state"
 )
 
 func TestEstimateTokens_CountsAllPayload(t *testing.T) {
@@ -45,7 +54,7 @@ func TestEstimateTokens_CountsAllPayload(t *testing.T) {
 
 func TestEstimateTokens_NonStringContent(t *testing.T) {
 	msgs := []Message{
-		{Role: "user", Content: []interface{}{map[string]string{"type": "text", "text": "hello world this is a longer message"}}},
+		{Role: "user", Content: []any{map[string]string{"type": "text", "text": "hello world this is a longer message"}}},
 	}
 	est := estimateTokens(msgs)
 	if est <= 4 { // overhead only — should include the marshalled content
@@ -73,6 +82,213 @@ func TestMaxContextWindow_Fallback(t *testing.T) {
 	got = maxContextWindow([]ProviderConfig{{Name: "no-window"}})
 	if got != 200000 {
 		t.Errorf("maxContextWindow(no window) = %d, want 200000", got)
+	}
+}
+
+// TestTrimLiveBuffer_CapsByTokensNotCount is the regression test for the bug where
+// the per-turn cap compared len(priorMessages) (a MESSAGE count) to the budget (a
+// TOKEN count). A buffer of only 2 messages whose token estimate exceeds the budget
+// must be trimmed; the old len-based cap (len=2 << 80000) let a 400k-token buffer
+// slip through every turn, so compaction never stuck.
+func TestTrimLiveBuffer_CapsByTokensNotCount(t *testing.T) {
+	r := &Router{cfg: &Config{Providers: []ProviderConfig{{Name: "p", ContextWindow: 100000}}}}
+	r.priorMessages = []Message{
+		{Role: "user", Content: strings.Repeat("x", 400000)},      // ~100k tokens
+		{Role: "assistant", Content: strings.Repeat("y", 400000)}, // ~100k tokens
+	}
+	before := estimateTokens(r.priorMessages)
+	budget := r.checkpointBudget() // 80000
+	if before <= budget {
+		t.Fatalf("precondition: buffer (%d) should exceed budget (%d)", before, budget)
+	}
+	// Message count (2) is far below budget — proves the OLD len-based check wouldn't fire.
+	if len(r.priorMessages) > budget {
+		t.Fatalf("precondition: message count should be << budget")
+	}
+
+	r.trimLiveBuffer()
+
+	after := estimateTokens(r.priorMessages)
+	if after > budget {
+		t.Fatalf("trimLiveBuffer left buffer over budget: est=%d budget=%d", after, budget)
+	}
+	if after >= before {
+		t.Fatalf("trimLiveBuffer did not shrink the buffer: before=%d after=%d", before, after)
+	}
+	// truncateHistory injects a compaction summary of the dropped turns as a system msg.
+	found := false
+	for _, m := range r.priorMessages {
+		if m.Role == "system" && strings.Contains(messageText(m), "Compacted context") { //nolint:goconst
+
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a compaction-summary system message after trimming; got %d msgs", len(r.priorMessages))
+	}
+}
+
+// TestEstimateToolTokens_ReservesRoomForSchemata verifies that the token budget
+// accounts for the serialized tool definitions (providers count `tools` toward the
+// context window). This is the budget reservation that prevents tool-heavy agents
+// (e.g. the pwnbox ~25-tool belt) from overflowing the window right after message
+// truncation lands at 0.8*CW.
+func TestEstimateToolTokens_ReservesRoomForSchemata(t *testing.T) {
+	t.Run("empty tools cost nothing", func(t *testing.T) {
+		if got := estimateToolTokens(nil); got != 0 {
+			t.Fatalf("expected 0 for nil tools, got %d", got)
+		}
+	})
+	// Build a realistic toolbelt: ~25 tools, each with a description + JSON params
+	// (mirrors the pwnbox MCP tool definitions + builtins).
+	var tools []map[string]any //nolint:prealloc
+
+	for i := range 25 {
+		tools = append(tools, map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name":        fmt.Sprintf("tool-%d", i),
+				"description": "A pentest tool for recon/exploitation (JSON-schema params with props, required, enum).",
+				"parameters": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"target":  map[string]any{"type": "string", "description": "target host or IP"},
+						"timeout": map[string]any{"type": "integer", "description": "timeout seconds", "default": 300},
+					},
+					"required": []string{"target"},
+				},
+			},
+		})
+	}
+	cost := estimateToolTokens(tools)
+	// 25 tools with multi-line schemas should reserve a non-trivial budget
+	// (well above the per-tool 8-token floor of 25*8=200).
+	if cost <= 200 {
+		t.Fatalf("expected tool-def token cost to exceed the per-tool floor, got %d", cost)
+	}
+	// Sanity: the estimated cost should be in the same ballpark as len(json)/4.
+	raw, _ := json.Marshal(tools)
+	wantFloor := len(raw)/4 + 8*len(tools)
+	if cost != wantFloor {
+		t.Fatalf("estimateToolTokens=%d, want %d", cost, wantFloor)
+	}
+}
+
+func TestCheckpointBudget(t *testing.T) {
+	// Capped to 80% of the largest configured provider context window (matching
+	// the persisted-checkpoint budget), with a same-dataset fallback.
+	r := &Router{cfg: &Config{Providers: []ProviderConfig{
+		{Name: "small", ContextWindow: 100000},
+		{Name: "big", ContextWindow: 262144},
+	}}}
+	if got := r.checkpointBudget(); got != 262144*8/10 {
+		t.Fatalf("checkpointBudget=%d want %d", got, 262144*8/10)
+	}
+	// No provider / unknown windows -> 200000 fallback * 80%.
+	r2 := &Router{cfg: &Config{}}
+	if got := r2.checkpointBudget(); got != 160000 {
+		t.Fatalf("checkpointBudget(no providers)=%d want 160000", got)
+	}
+}
+
+func TestCompactEpisodic_DropsChunkAndKeepsSummary(t *testing.T) {
+	// prior = 5 big msgs, messages = 1 current turn. The summarized chunk is the
+	// last 2 prior msgs (+ current turn); after compaction those are replaced by a
+	// single summary message and the buffer shrinks.
+	big := Message{Role: "user", Content: strings.Repeat("x", 100000)} // ~25k tokens each
+	prior := []Message{big, big, big, big, big}
+	messages := []Message{{Role: "assistant", Content: "world"}}
+	summary := Message{Role: "system", Content: "summary of the old turns"}
+
+	// Drop last 2 prior msgs + the current turn => keep first 3 prior + summary.
+	start := len(prior) - 2 // = 3: cur[:3] kept, cur[3:] (big,big,big,world) summarized
+	budget := 262144 * 8 / 10
+	out := compactEpisodic(prior, messages, summary, start, budget)
+
+	// 3 retained old msgs + the summary message.
+	if len(out) != 4 {
+		t.Fatalf("expected 4 messages after compaction (3 old + summary), got %d", len(out))
+	}
+	if out[len(out)-1].Role != "system" || out[len(out)-1].Content != "summary of the old turns" {
+		t.Fatalf("expected summary as last message, got %+v", out[len(out)-1])
+	}
+	// And it must fit the budget.
+	est := estimateTokens(out)
+	if est > budget {
+		t.Fatalf("compacted buffer exceeds budget: est=%d budget=%d", est, budget)
+	}
+}
+
+func TestCompactEpisodic_RespectsBudgetWithTruncation(t *testing.T) {
+	// Even after compaction the head may exceed budget; truncateHistory (inside)
+	// must bring it under budget by dropping the oldest with a compaction summary.
+	head := []Message{{Role: "user", Content: strings.Repeat("y", 10000)}} //nolint:prealloc
+
+	for range 50 {
+		head = append(head, Message{Role: "user", Content: strings.Repeat("y", 8000)})
+	}
+	summary := Message{Role: "system", Content: "summary"}
+	start := len(head) - 2
+	// Tiny budget forces additional trimming.
+	out := compactEpisodic(head, nil, summary, start, 1000)
+	if estimateTokens(out) > 1000 {
+		t.Fatalf("compacted buffer not under tiny budget: est=%d", estimateTokens(out))
+	}
+	if out[len(out)-1].Content != "summary" {
+		t.Fatalf("expected summary preserved as last message, got %+v", out[len(out)-1])
+	}
+}
+
+func TestCompactEpisodic_NoBudgetReturnsPrior(t *testing.T) {
+	prior := []Message{{Role: "user", Content: "hi"}}
+	messages := []Message{{Role: "assistant", Content: "world"}}
+	out := compactEpisodic(prior, messages, Message{Role: "system", Content: "s"}, 0, 0)
+	// budget<=0 => bails, returns prior unchanged (no compaction/truncation).
+	if len(out) != len(prior) {
+		t.Fatalf("expected prior unchanged (len %d), got %d", len(prior), len(out))
+	}
+	if out[0].Content != "hi" {
+		t.Fatalf("expected prior content unchanged, got %q", out[0].Content)
+	}
+}
+
+// TestConcludeTurn_CapsBufferAtTurnEnd verifies the fix for "compaction runs every
+// turn on a giant buffer": after a turn, prior+messages (~412k for a re-sending
+// chat agent) must be capped to the budget so checkpoint() sees <=budget (no
+// re-truncation log) and memory doesn't grow.
+func TestConcludeTurn_CapsBufferAtTurnEnd(t *testing.T) {
+	r := &Router{cfg: &Config{Providers: []ProviderConfig{{Name: "p", ContextWindow: 262144}}}}
+	// prior = capped conversation; messages = the re-sent turn (the agent re-sent
+	// ~412k worth of history this turn). Combined must exceed the 209715 budget.
+	bigTurn := []Message{{Role: "user", Content: strings.Repeat("x", 400000)},
+		{Role: "assistant", Content: strings.Repeat("y", 400000)}}
+	r.priorMessages = []Message{{Role: "user", Content: strings.Repeat("z", 100000)}}
+	r.messages = bigTurn
+
+	budget := r.checkpointBudget() // 209715
+	if est := estimateTokens(append(append([]Message{}, r.priorMessages...), r.messages...)); est <= budget {
+		t.Fatalf("precondition: combined buffer (%d) should exceed budget (%d)", est, budget)
+	}
+
+	// Caller must hold r.mu; single-goroutine test, so call directly.
+	r.mu.Lock()
+	r.concludeTurn()
+	r.mu.Unlock()
+
+	if len(r.messages) != 0 {
+		t.Fatalf("concludeTurn should clear r.messages (folded into prior); got %d", len(r.messages))
+	}
+	est := estimateTokens(r.priorMessages)
+	// The combined buffer (prior+turn) was > budget; concludeTurn must cap it so the
+	// next checkpoint() sees <=budget and doesn't re-truncate every turn.
+	if est > budget {
+		t.Fatalf("concludeTurn left buffer over budget: est=%d budget=%d", est, budget)
+	}
+	// And it must have actually trimmed the over-budget combined buffer.
+	priorSnapshot := []Message{{Role: "user", Content: strings.Repeat("z", 100000)}}
+	combinedBefore := estimateTokens(append(priorSnapshot, bigTurn...))
+	if est >= combinedBefore {
+		t.Fatalf("concludeTurn should have trimmed the over-budget buffer; now=%d was=%d", est, combinedBefore)
 	}
 }
 
@@ -126,7 +342,8 @@ func TestTruncateHistory_BasicTruncation(t *testing.T) {
 
 	// Last message should be preserved (most recent).
 	last := result[len(result)-1]
-	if last.Role != "assistant" {
+	if last.Role != "assistant" { //nolint:goconst
+
 		t.Errorf("last message should be assistant, got %s", last.Role)
 	}
 }
@@ -198,7 +415,8 @@ func TestTruncateHistory_ToolCallBoundaryRespected(t *testing.T) {
 		for _, tc := range m.ToolCalls {
 			pending[tc.ID] = true
 		}
-		if m.Role == "tool" && m.ToolCallID != "" {
+		if m.Role == "tool" && m.ToolCallID != "" { //nolint:goconst
+
 			if !pending[m.ToolCallID] {
 				t.Errorf("tool_result %q has no preceding tool_use in kept messages", m.ToolCallID)
 			}
@@ -411,11 +629,13 @@ func TestInjectBuiltinSystemHints_ListsAllBuiltins(t *testing.T) {
 					break
 				}
 			}
-			if hintMsg == nil {
+			if hintMsg == nil { //nolint:staticcheck
+
 				t.Fatal("expected to find system hint message")
 			}
 
-			content := hintMsg.Content.(string)
+			content := hintMsg.Content.(string) //nolint:staticcheck
+
 			for _, tool := range tt.wantTools {
 				if !strings.Contains(content, tool) {
 					t.Errorf("platform tools hint should contain %q, got: %s", tool, content)
@@ -450,11 +670,13 @@ func TestInjectBuiltinSystemHints_ChatModeGuidance(t *testing.T) {
 			break
 		}
 	}
-	if hintMsg == nil {
+	if hintMsg == nil { //nolint:staticcheck
+
 		t.Fatal("expected to find system hint message")
 	}
 
-	content := hintMsg.Content.(string)
+	content := hintMsg.Content.(string) //nolint:staticcheck
+
 	if !strings.Contains(content, "direct conversation with a human user") {
 		t.Errorf("chat mode hint should mention human conversation, got: %s", content)
 	}
@@ -482,11 +704,13 @@ func TestInjectBuiltinSystemHints_NonChatModeGuidance(t *testing.T) {
 			break
 		}
 	}
-	if hintMsg == nil {
+	if hintMsg == nil { //nolint:staticcheck
+
 		t.Fatal("expected to find system hint message")
 	}
 
-	content := hintMsg.Content.(string)
+	content := hintMsg.Content.(string) //nolint:staticcheck
+
 	if !strings.Contains(content, "automated pipeline") {
 		t.Errorf("non-chat mode hint should mention pipeline, got: %s", content)
 	}
@@ -585,7 +809,8 @@ func TestInjectBuiltinSystemHints_PrependsAfterSystemPrompt(t *testing.T) {
 	if len(result.Messages) < 2 {
 		t.Fatalf("expected at least 2 messages, got %d", len(result.Messages))
 	}
-	if result.Messages[0].Role != "system" || result.Messages[0].Content != "You are a helpful assistant." {
+	if result.Messages[0].Role != "system" || result.Messages[0].Content != "You are a helpful assistant." { //nolint:goconst
+
 		t.Errorf("first message should be SystemPrompt, got: %+v", result.Messages[0])
 	}
 	if result.Messages[1].Role != "system" || !strings.Contains(result.Messages[1].Content.(string), "Platform tools available") {
@@ -601,16 +826,16 @@ func TestTruncateHistory_PreservesSystemMessages(t *testing.T) {
 	userMsg := strings.Repeat("user content ", 200) // ~2k tokens
 
 	msgs := []Message{
-		{Role: "system", Content: systemPrompt},                    // 3.5k tokens
-		{Role: "system", Content: builtinHints},                    // small
-		{Role: "user", Content: userMsg},                           // 2k tokens
-		{Role: "assistant", Content: userMsg},                      // 2k tokens
-		{Role: "user", Content: userMsg},                           // 2k tokens
-		{Role: "assistant", Content: userMsg},                      // 2k tokens
-		{Role: "user", Content: userMsg},                           // 2k tokens
-		{Role: "assistant", Content: userMsg},                      // 2k tokens
-		{Role: "user", Content: userMsg},                           // 2k tokens
-		{Role: "assistant", Content: userMsg},                      // 2k tokens
+		{Role: "system", Content: systemPrompt}, // 3.5k tokens
+		{Role: "system", Content: builtinHints}, // small
+		{Role: "user", Content: userMsg},        // 2k tokens
+		{Role: "assistant", Content: userMsg},   // 2k tokens
+		{Role: "user", Content: userMsg},        // 2k tokens
+		{Role: "assistant", Content: userMsg},   // 2k tokens
+		{Role: "user", Content: userMsg},        // 2k tokens
+		{Role: "assistant", Content: userMsg},   // 2k tokens
+		{Role: "user", Content: userMsg},        // 2k tokens
+		{Role: "assistant", Content: userMsg},   // 2k tokens
 	}
 
 	// Set a budget that requires truncation but should preserve system messages
@@ -673,11 +898,13 @@ func TestInjectBuiltinSystemHints_IncludesListResources(t *testing.T) {
 			break
 		}
 	}
-	if hintMsg == nil {
+	if hintMsg == nil { //nolint:staticcheck
+
 		t.Fatal("expected to find system hint message")
 	}
 
-	content := hintMsg.Content.(string)
+	content := hintMsg.Content.(string) //nolint:staticcheck
+
 	if !strings.Contains(content, "_list_resources") {
 		t.Errorf("builtin hints should contain _list_resources, got: %s", content)
 	}
@@ -686,5 +913,327 @@ func TestInjectBuiltinSystemHints_IncludesListResources(t *testing.T) {
 	}
 	if !strings.Contains(content, "_fail") {
 		t.Errorf("builtin hints should contain _fail, got: %s", content)
+	}
+}
+
+// --- Context preservation tests ---
+
+// TestRouter_PreservesContextAcrossTurns verifies the core fix: when an agent
+// sends only the latest user message on each turn (HTTP/chat-mode pattern, no
+// client-side history), the second turn's LLM request must still include the
+// conversation from the first turn. This exercises the fold of r.messages into
+// r.priorMessages and the system-prompt de-duplication guard.
+func TestRouter_PreservesContextAcrossTurns(t *testing.T) {
+	var mu sync.Mutex
+	var capturedMessages []Message
+	var callCount int
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req ChatCompletionRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+
+		mu.Lock()
+		callCount++
+		capturedMessages = req.Messages
+		currentCall := callCount
+		mu.Unlock()
+
+		resp := ChatCompletionResponse{
+			ID: "chatcmpl-test",
+			Choices: []Choice{{
+				Message: Message{
+					Role:    "assistant",
+					Content: fmt.Sprintf("Turn %d response", currentCall),
+				},
+				FinishReason: "stop",
+			}},
+			Usage: TokenUsage{PromptTokens: 50, CompletionTokens: 10, TotalTokens: 60},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	keyFile := filepath.Join(t.TempDir(), "api-key")
+	if err := os.WriteFile(keyFile, []byte("test-key"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &Config{
+		RunName:      "test-run",
+		RunNamespace: "default",
+		Providers: []ProviderConfig{{
+			Name:               "test-provider",
+			LiteLLMModel:       "gpt-4o",
+			BaseURL:            srv.URL,
+			APIKeyFile:         keyFile,
+			ContextWindow:      200000,
+			CostPerInputToken:  0,
+			CostPerOutputToken: 0,
+			Weight:             1,
+		}},
+		CheckpointEvery:      1,
+		ContextWindowReserve: 0.2,
+		SystemPrompt:         "You are a helpful assistant.",
+		ToolDefinitions:      []ToolDefinition{},
+		LLMRequestTimeout:    30 * time.Second,
+	}
+
+	router, err := New(cfg, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Turn 1: HTTP/chat-mode agent sends ONLY the user message (no history).
+	req1Body := `{"messages":[{"role":"user","content":"probe target 10.10.11.14"}]}`
+	req1 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(req1Body))
+	rec1 := httptest.NewRecorder()
+	router.HandleChatCompletions(rec1, req1)
+
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("turn 1: expected HTTP 200, got %d: %s", rec1.Code, rec1.Body.String())
+	}
+
+	// Turn 2: agent again sends ONLY the new user message.
+	req2Body := `{"messages":[{"role":"user","content":"Why don't you have access to previous chat history?"}]}`
+	req2 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(req2Body))
+	rec2 := httptest.NewRecorder()
+	router.HandleChatCompletions(rec2, req2)
+
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("turn 2: expected HTTP 200, got %d: %s", rec2.Code, rec2.Body.String())
+	}
+
+	// The second LLM request must contain turn 1's content.
+	mu.Lock()
+	secondMessages := capturedMessages
+	mu.Unlock()
+
+	foundTurn1Content := false
+	systemPromptCount := 0
+	for _, msg := range secondMessages {
+		if msg.Role == "system" {
+			if s, ok := msg.Content.(string); ok && s == "You are a helpful assistant." {
+				systemPromptCount++
+			}
+		}
+		if s, ok := msg.Content.(string); ok && strings.Contains(s, "probe target") {
+			foundTurn1Content = true
+		}
+	}
+	if !foundTurn1Content {
+		t.Error("expected turn 2 provider request to include turn 1's 'probe target' content")
+	}
+	if systemPromptCount != 1 {
+		t.Errorf("expected system prompt to appear exactly once in turn 2, got %d", systemPromptCount)
+	}
+}
+
+// TestRouter_SystemPromptNotDuplicatedAfterFold verifies that when r.priorMessages
+// already contains the system prompt (after folding), the injection guard prevents
+// a duplicate system message from being added.
+func TestRouter_SystemPromptNotDuplicatedAfterFold(t *testing.T) {
+	var mu sync.Mutex
+	var capturedCount int
+	var capturedSystemCount int
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req ChatCompletionRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+
+		mu.Lock()
+		capturedCount++
+		for _, msg := range req.Messages {
+			if msg.Role == "system" {
+				if s, ok := msg.Content.(string); ok && s == "You are a helpful assistant." {
+					capturedSystemCount++
+				}
+			}
+		}
+		mu.Unlock()
+
+		resp := ChatCompletionResponse{
+			ID: "chatcmpl-test",
+			Choices: []Choice{{
+				Message:      Message{Role: "assistant", Content: "ok"},
+				FinishReason: "stop",
+			}},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	keyFile := filepath.Join(t.TempDir(), "api-key")
+	_ = os.WriteFile(keyFile, []byte("test-key"), 0o644)
+
+	cfg := &Config{
+		RunName:      "test-run",
+		RunNamespace: "default",
+		Providers: []ProviderConfig{{
+			Name:          "test-provider",
+			LiteLLMModel:  "gpt-4o",
+			BaseURL:       srv.URL,
+			APIKeyFile:    keyFile,
+			ContextWindow: 200000,
+			Weight:        1,
+		}},
+		CheckpointEvery:      1,
+		ContextWindowReserve: 0.2,
+		SystemPrompt:         "You are a helpful assistant.",
+		ToolDefinitions:      []ToolDefinition{},
+		LLMRequestTimeout:    30 * time.Second,
+	}
+
+	router, err := New(cfg, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate state after one turn: priorMessages has the system prompt +
+	// conversation, r.messages has the current turn's response.
+	router.mu.Lock()
+	router.priorMessages = []Message{
+		{Role: "system", Content: "You are a helpful assistant."},
+		{Role: "user", Content: "first question"},
+		{Role: "assistant", Content: "first answer"},
+	}
+	router.messages = []Message{
+		{Role: "user", Content: "second question"},
+		{Role: "assistant", Content: "second answer"},
+	}
+	router.mu.Unlock()
+
+	// Send a new top-level request — the fold should move r.messages into
+	// priorMessages, and the system-prompt guard should prevent duplication.
+	reqBody := `{"messages":[{"role":"user","content":"third question"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(reqBody))
+	rec := httptest.NewRecorder()
+	router.HandleChatCompletions(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected HTTP 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if capturedCount != 1 {
+		t.Fatalf("expected exactly 1 provider request, got %d", capturedCount)
+	}
+	if capturedSystemCount != 1 {
+		t.Errorf("expected system prompt to appear exactly once after fold, got %d", capturedSystemCount)
+	}
+}
+
+// TestRouter_EpisodicSummary_IncludesPriorMessages verifies that
+// maybeRunEpisodicSummary reads from both r.priorMessages and r.messages,
+// so summaries cover the full conversation after the fold.
+func TestRouter_EpisodicSummary_IncludesPriorMessages(t *testing.T) {
+	store, err := state.NewStoreFromConfig(state.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	var mu sync.Mutex
+	var capturedMessages []Message
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req ChatCompletionRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		mu.Lock()
+		capturedMessages = req.Messages
+		mu.Unlock()
+		resp := ChatCompletionResponse{
+			ID: "chatcmpl-summary",
+			Choices: []Choice{{
+				Message:      Message{Role: "assistant", Content: "compact summary"},
+				FinishReason: "stop",
+			}},
+			Usage: TokenUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	keyFile := filepath.Join(t.TempDir(), "api-key")
+	_ = os.WriteFile(keyFile, []byte("test-key"), 0o644)
+
+	cfg := &Config{
+		RunName:      "test-run",
+		RunNamespace: "default",
+		Providers: []ProviderConfig{{
+			Name:               "test-provider",
+			LiteLLMModel:       "gpt-4o",
+			BaseURL:            srv.URL,
+			APIKeyFile:         keyFile,
+			ContextWindow:      200000,
+			CostPerInputToken:  0,
+			CostPerOutputToken: 0,
+			Weight:             1,
+		}},
+		CheckpointEvery:      1,
+		ContextWindowReserve: 0.2,
+		SystemPrompt:         "You are a helpful assistant.",
+		ToolDefinitions:      []ToolDefinition{},
+		LLMRequestTimeout:    30 * time.Second,
+		CheckpointKey:        "test-checkpoint",
+		EpisodicMemory: EpisodicMemoryConfig{
+			SummaryEvery:        2,
+			SummaryProviderName: "test-provider",
+			SummaryModel:        "gpt-4o",
+		},
+	}
+
+	router, err := New(cfg, store, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate post-fold state: prior turns + current turn.
+	router.mu.Lock()
+	router.priorMessages = []Message{
+		{Role: "user", Content: "old question from turn 1"},
+		{Role: "assistant", Content: "old answer from turn 1"},
+	}
+	router.messages = []Message{
+		{Role: "user", Content: "recent question from turn 2"},
+		{Role: "assistant", Content: "recent answer from turn 2"},
+	}
+	router.ruleRouter.turnCount = 2 // SummaryEvery=2, so 2%2==0 triggers summary
+	router.mu.Unlock()
+
+	// Call directly (not via goroutine) so we can assert on the captured request.
+	router.maybeRunEpisodicSummary(context.Background())
+
+	mu.Lock()
+	defer mu.Unlock()
+	if capturedMessages == nil {
+		t.Fatal("expected the provider to receive a summarization request")
+	}
+
+	// The summarization prompt embeds the conversation text, so check both
+	// prior and current content appear.
+	foundOld := false
+	foundRecent := false
+	for _, msg := range capturedMessages {
+		if msg.Role == "user" { //nolint:goconst
+
+			if s, ok := msg.Content.(string); ok {
+				if strings.Contains(s, "old question") {
+					foundOld = true
+				}
+				if strings.Contains(s, "recent question") {
+					foundRecent = true
+				}
+			}
+		}
+	}
+	if !foundOld {
+		t.Error("expected episodic summary to include content from priorMessages")
+	}
+	if !foundRecent {
+		t.Error("expected episodic summary to include content from r.messages")
 	}
 }

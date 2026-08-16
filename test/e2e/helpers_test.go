@@ -1,6 +1,22 @@
 //go:build e2e
 // +build e2e
 
+/*
+Copyright 2026.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package e2e
 
 import (
@@ -276,4 +292,31 @@ func getRouterConfigJSON(runName, ns string) map[string]interface{} {
 	var cfg map[string]interface{}
 	Expect(json.Unmarshal([]byte(out), &cfg)).To(Succeed())
 	return cfg
+}
+
+// waitForPodPhase blocks until the named pod in ns reaches the given phase
+// (e.g. "Running"), or fails the current Ginkgo spec on timeout.
+func waitForPodPhase(podName, ns, phase string, timeout time.Duration) {
+	GinkgoHelper()
+	Eventually(func(g Gomega) {
+		out, err := utils.Run(exec.Command(
+			"kubectl", "get", "pod", podName,
+			"-n", ns,
+			"-o", "jsonpath={.status.phase}",
+		))
+		g.Expect(err).NotTo(HaveOccurred(),
+			"pod %s/%s not found while waiting for phase %s", ns, podName, phase)
+		g.Expect(out).To(Equal(phase),
+			"pod %s/%s in phase %q, expected %s", ns, podName, out, phase)
+	}, timeout, 2*time.Second).Should(Succeed(),
+		"pod %s/%s did not reach phase %s within %s", ns, podName, phase, timeout)
+}
+
+// execInPod runs a command in a container of the named pod and returns
+// combined stdout/stderr. Mirrors `kubectl exec -c <container> -- <args...>`.
+func execInPod(ns, podName, container string, command ...string) (string, error) {
+	GinkgoHelper()
+	args := []string{"exec", podName, "-n", ns, "-c", container, "--"}
+	args = append(args, command...)
+	return utils.Run(exec.Command("kubectl", args...))
 }

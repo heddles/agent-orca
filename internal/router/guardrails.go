@@ -194,11 +194,13 @@ func (f *regexFilter) Apply(text string) FilterResult {
 			continue
 		}
 		switch f.action {
-		case "block":
+		case "block": //nolint:goconst
+
 			return FilterResult{Blocked: true, BlockMessage: f.blockMsg, FilteredText: text}
 		case "redact":
 			result.FilteredText = p.re.ReplaceAllString(result.FilteredText, p.replacement)
-		case "warn":
+		case "warn": //nolint:goconst
+
 			result.Warnings = append(result.Warnings, fmt.Sprintf("guardrail %q matched pattern %q", f.name, p.name))
 		}
 	}
@@ -277,8 +279,8 @@ func (f *topicFilter) Apply(text string) FilterResult {
 	lower := strings.ToLower(text)
 	for _, topic := range f.allowedTopics {
 		// Split topic into words and check if any appear in the text.
-		words := strings.Fields(strings.ToLower(topic))
-		for _, w := range words {
+		words := strings.FieldsSeq(strings.ToLower(topic))
+		for w := range words {
 			if strings.Contains(lower, w) {
 				return FilterResult{FilteredText: text}
 			}

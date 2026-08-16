@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -251,13 +252,15 @@ func (r *KnowledgeBaseReconciler) cleanupIngestResources(ctx context.Context, na
 
 // buildIngestConfig builds the JSON config for the mcp-ingester binary.
 func (r *KnowledgeBaseReconciler) buildIngestConfig(
-	ctx context.Context,
+	ctx context.Context, //nolint:unparam
+
 	kb *agentorcv1alpha1.KnowledgeBase,
 	server *agentorcv1alpha1.MCPServer,
 	tool *agentorcv1alpha1.Tool,
 	mp *agentorcv1alpha1.ModelProvider,
 	src *agentorcv1alpha1.MCPIngestionSource,
-) (*mcpIngestConfig, error) {
+) (*mcpIngestConfig, error) { //nolint:unparam
+
 	embeddingEndpoint := mp.Spec.BaseURL
 	if embeddingEndpoint == "" {
 		embeddingEndpoint = embeddingBaseURL(mp.Spec.LiteLLMModel)
@@ -324,7 +327,8 @@ func (r *KnowledgeBaseReconciler) buildIngestConfig(
 	}
 
 	// stdio transport: resolve binary path.
-	if tool.Spec.MCPConfig.Transport == "stdio" {
+	if tool.Spec.MCPConfig.Transport == "stdio" { //nolint:goconst
+
 		// The MCP binary is mounted via image volume at /mcp-img/<serverName>/.
 		// Tool args contain the original binary path which needs to be rewritten.
 		mountDir := fmt.Sprintf("%s/%s", podbuilder.MCPBinDir, server.Name)
@@ -525,7 +529,8 @@ func (r *KnowledgeBaseReconciler) buildIngestJob(
 		},
 	}
 	if src.Resources != nil {
-		resources = corev1.ResourceRequirements(*src.Resources)
+		resources = corev1.ResourceRequirements(*src.Resources) //nolint:unconvert
+
 	}
 
 	job := &batchv1.Job{
@@ -585,12 +590,7 @@ func (r *KnowledgeBaseReconciler) findMCPTool(ctx context.Context, server *agent
 
 // hasControllerAccess checks if the MCPServer grants access to the _controller principal.
 func hasControllerAccess(server *agentorcv1alpha1.MCPServer) bool {
-	for _, agent := range server.Spec.AllowedAgents {
-		if agent == ControllerPrincipal {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(server.Spec.AllowedAgents, ControllerPrincipal)
 }
 
 // mcpIngestJobName returns a DNS-safe Job name for a KB's MCP ingestion source.

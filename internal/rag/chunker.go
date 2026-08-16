@@ -37,12 +37,12 @@ type Chunk struct {
 	Index    int
 	Text     string
 	DocID    string
-	Metadata map[string]interface{}
+	Metadata map[string]any
 }
 
 // ChunkText splits a document into overlapping chunks.
 // Uses word-count as a token approximation (1 token ≈ 0.75 words, so we use words * 0.75).
-func ChunkText(docID, text string, cfg ChunkConfig, metadata map[string]interface{}) []Chunk {
+func ChunkText(docID, text string, cfg ChunkConfig, metadata map[string]any) []Chunk {
 	if cfg.ChunkSize <= 0 {
 		cfg.ChunkSize = 512
 	}

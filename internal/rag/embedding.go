@@ -86,10 +86,7 @@ func (e *EmbeddingClient) Embed(ctx context.Context, texts []string) ([][]float3
 
 	// Process in batches.
 	for start := 0; start < len(texts); start += maxEmbeddingBatchSize {
-		end := start + maxEmbeddingBatchSize
-		if end > len(texts) {
-			end = len(texts)
-		}
+		end := min(start+maxEmbeddingBatchSize, len(texts))
 		batch := texts[start:end]
 
 		vectors, err := e.embedBatch(ctx, batch, apiKey)
@@ -125,7 +122,7 @@ func (e *EmbeddingClient) embedBatch(ctx context.Context, texts []string, apiKey
 	if err != nil {
 		return nil, fmt.Errorf("calling embeddings API: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 50<<20))
 	if err != nil {

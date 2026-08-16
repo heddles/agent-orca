@@ -17,15 +17,19 @@ limitations under the License.
 package apiserver
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -41,15 +45,19 @@ type ACPServer struct {
 	crdClient client.Client
 	auth      *ExternalAuth
 	store     state.Store
+
+	// rateLimiter enforces per-tenant submission rate limits. nil disables it.
+	rateLimiter *RateLimiter
 }
 
 // NewACPServer creates a new ACP server.
 func NewACPServer(k8s kubernetes.Interface, crdClient client.Client, auth *ExternalAuth, store state.Store) *ACPServer {
 	return &ACPServer{
-		k8s:       k8s,
-		crdClient: crdClient,
-		auth:      auth,
-		store:     store,
+		k8s:         k8s,
+		crdClient:   crdClient,
+		auth:        auth,
+		store:       store,
+		rateLimiter: auth.rateLimiter,
 	}
 }
 
@@ -57,16 +65,25 @@ func NewACPServer(k8s kubernetes.Interface, crdClient client.Client, auth *Exter
 func (s *ACPServer) Handler() http.Handler {
 	mux := http.NewServeMux()
 
+	// Observability (public — for scrapers/probes).
+	mux.HandleFunc("/healthz", healthzHandler)
+	mux.HandleFunc("/readyz", readyzHandlerBuilder(k8sReady(s.k8s), s.store != nil, s.store))
+	mux.HandleFunc("/version", versionHandler)
+	mux.Handle("/metrics", metricsHandler())
+
+	// OpenAPI contract (unauthenticated — for SDK / tooling discovery).
+	mux.HandleFunc("/openapi.json", s.handleACPOpenAPI)
+
 	// Token endpoint (unauthenticated) - needed for client_credentials flow.
 	mux.HandleFunc("/oauth/token", s.auth.HandleTokenRequest)
 
 	mux.HandleFunc("/ping", s.handlePing)
 	mux.HandleFunc("/agents", s.handleListAgents)
-	mux.HandleFunc("/agents/", s.handleAgentManifest)
+	mux.HandleFunc("/agents/", s.handleAgentRoutes)
 	mux.HandleFunc("/runs", s.handleCreateRun)
 	mux.HandleFunc("/runs/", s.handleRunByID)
 	mux.HandleFunc("/session/", s.handleGetSession)
-	return corsMiddleware(s.auth.Middleware(mux))
+	return corsMiddleware(s.auth.Middleware(instrument("acp", mux)))
 }
 
 // ACP types aligned with ACP 0.2.0 spec from https://agentcommunicationprotocol.dev
@@ -91,10 +108,10 @@ type ACPMessageMetadata struct {
 	Title       string `json:"title,omitempty"`
 	Description string `json:"description,omitempty"`
 	// Trajectory fields
-	Message    string      `json:"message,omitempty"`
-	ToolName   string      `json:"tool_name,omitempty"`
-	ToolInput  interface{} `json:"tool_input,omitempty"`
-	ToolOutput interface{} `json:"tool_output,omitempty"`
+	Message    string `json:"message,omitempty"`
+	ToolName   string `json:"tool_name,omitempty"`
+	ToolInput  any    `json:"tool_input,omitempty"`
+	ToolOutput any    `json:"tool_output,omitempty"`
 }
 
 // ACPMessage represents a message with parts per ACP spec.
@@ -170,12 +187,12 @@ type ACPAgentStatus struct {
 
 // ACPAgentMetadata represents agent metadata per spec.
 type ACPAgentMetadata struct {
-	Annotations         map[string]interface{} `json:"annotations,omitempty"`
-	Documentation       string                 `json:"documentation,omitempty"`
-	License             string                 `json:"license,omitempty"`
-	ProgrammingLanguage string                 `json:"programming_language,omitempty"`
-	NaturalLanguages    []string               `json:"natural_languages,omitempty"`
-	Framework           string                 `json:"framework,omitempty"`
+	Annotations         map[string]any `json:"annotations,omitempty"`
+	Documentation       string         `json:"documentation,omitempty"`
+	License             string         `json:"license,omitempty"`
+	ProgrammingLanguage string         `json:"programming_language,omitempty"`
+	NaturalLanguages    []string       `json:"natural_languages,omitempty"`
+	Framework           string         `json:"framework,omitempty"`
 }
 
 // ACPAgentManifest is the response body for GET /agents/{name}.
@@ -186,6 +203,33 @@ type ACPAgentManifest struct {
 	OutputContentTypes []string          `json:"output_content_types"`
 	Metadata           *ACPAgentMetadata `json:"metadata,omitempty"`
 	Status             *ACPAgentStatus   `json:"status,omitempty"`
+
+	// InputSchema is a JSON Schema describing the expected input format
+	// (derived from the agent's configured tools + built-in tools).
+	InputSchema map[string]any `json:"input_schema,omitempty"`
+
+	// OutputSchema is a JSON Schema describing the expected output format.
+	OutputSchema map[string]any `json:"output_schema,omitempty"`
+
+	// AllowedTools lists the tools available to this agent with descriptions.
+	AllowedTools []ACPToolInfo `json:"allowed_tools,omitempty"`
+
+	// KnowledgeBases lists the KnowledgeBase names available to this agent.
+	KnowledgeBases []string `json:"knowledge_bases,omitempty"`
+
+	// GuardrailPolicy is the name of the GuardrailPolicy applied to this agent, if any.
+	GuardrailPolicy string `json:"guardrail_policy,omitempty"`
+
+	// ClarifyAvailable indicates whether the _clarify built-in tool is available
+	// (i.e. human-in-the-loop is possible). False when DisableClarify is true.
+	ClarifyAvailable bool `json:"clarify_available"`
+}
+
+// ACPToolInfo describes a tool available to an agent.
+type ACPToolInfo struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	InputSchema map[string]any `json:"input_schema,omitempty"`
 }
 
 // ACPAgentsListResponse is the response body for GET /agents.
@@ -195,9 +239,9 @@ type ACPAgentsListResponse struct {
 
 // ACPErr represents an error response.
 type ACPErr struct {
-	Code    string      `json:"code"`
-	Message string      `json:"message"`
-	Data    interface{} `json:"data,omitempty"`
+	Code    string `json:"code"`
+	Message string `json:"message"`
+	Data    any    `json:"data,omitempty"`
 }
 
 // ACP Event types for SSE streaming
@@ -227,8 +271,8 @@ type ACPMessageCompletedEvent struct {
 
 // ACPGenericEvent is for generic events.
 type ACPGenericEvent struct {
-	Type    string      `json:"type"`
-	Generic interface{} `json:"generic"`
+	Type    string `json:"type"`
+	Generic any    `json:"generic"`
 }
 
 // ACPRunCreatedEvent is emitted when a run is created.
@@ -275,7 +319,7 @@ type ACPErrEvent struct {
 
 // handlePing returns a simple ping response.
 func (s *ACPServer) handlePing(w http.ResponseWriter, r *http.Request) {
-	jsonResponse(w, map[string]interface{}{"status": "ok"})
+	jsonResponse(w, map[string]any{"status": "ok"})
 }
 
 // parseIntQueryParam parses an integer query parameter with a default value.
@@ -307,10 +351,7 @@ func (s *ACPServer) handleListAgents(w http.ResponseWriter, r *http.Request) {
 	if limit > 1000 {
 		limit = 1000
 	}
-	offset := parseIntQueryParam(r, "offset", 0)
-	if offset < 0 {
-		offset = 0
-	}
+	offset := max(parseIntQueryParam(r, "offset", 0), 0)
 
 	var agentList agentorcv1alpha1.AgentList
 	if err := s.crdClient.List(r.Context(), &agentList, client.InNamespace(tenant.Namespace)); err != nil {
@@ -321,14 +362,9 @@ func (s *ACPServer) handleListAgents(w http.ResponseWriter, r *http.Request) {
 	// Filter by allowed agents if specified
 	var filteredAgents []agentorcv1alpha1.Agent
 	for _, agent := range agentList.Items {
-		if tenant.AllowedAgents != nil && len(tenant.AllowedAgents) > 0 {
-			found := false
-			for _, allowed := range tenant.AllowedAgents {
-				if allowed == agent.Name {
-					found = true
-					break
-				}
-			}
+		if tenant.AllowedAgents != nil && len(tenant.AllowedAgents) > 0 { //nolint:staticcheck
+
+			found := slices.Contains(tenant.AllowedAgents, agent.Name)
 			if !found {
 				continue
 			}
@@ -340,67 +376,289 @@ func (s *ACPServer) handleListAgents(w http.ResponseWriter, r *http.Request) {
 	if offset > len(filteredAgents) {
 		offset = len(filteredAgents)
 	}
-	end := offset + limit
-	if end > len(filteredAgents) {
-		end = len(filteredAgents)
-	}
+	end := min(offset+limit, len(filteredAgents))
 
 	agents := make([]ACPAgentManifest, 0, end-offset)
 	for _, agent := range filteredAgents[offset:end] {
-		agents = append(agents, ACPAgentManifest{
+		manifest := ACPAgentManifest{
 			Name:               agent.Name,
 			Description:        agent.Spec.SystemPrompt,
 			InputContentTypes:  []string{"text/plain", "application/json"},
 			OutputContentTypes: []string{"text/plain", "application/json"},
-		})
+			KnowledgeBases:     agent.Spec.KnowledgeBases,
+			GuardrailPolicy:    agent.Spec.GuardrailPolicyRef,
+			ClarifyAvailable:   !agent.Spec.DisableClarify,
+		}
+		for _, kb := range agent.Spec.KnowledgeBaseRefs {
+			manifest.KnowledgeBases = append(manifest.KnowledgeBases, kb.Name)
+		}
+		agents = append(agents, manifest)
 	}
 
 	jsonResponse(w, ACPAgentsListResponse{Agents: agents})
 }
 
-// handleAgentManifest returns the manifest for a specific agent.
-func (s *ACPServer) handleAgentManifest(w http.ResponseWriter, r *http.Request) {
+// handleAgentRoutes dispatches GET /agents/{name} (manifest) and POST /agents/{name}/run.
+func (s *ACPServer) handleAgentRoutes(w http.ResponseWriter, r *http.Request) {
 	tenant, ok := TenantFromContext(r.Context())
 	if !ok {
 		writeACPError(w, "unauthorized", "no tenant identity", http.StatusUnauthorized)
 		return
 	}
 
-	// Extract agent name from path: /agents/{name}
-	name := strings.TrimPrefix(r.URL.Path, "/agents/")
-	if name == "" {
+	// Extract agent name and optional sub-path from: /agents/{name}[/{sub}]
+	path := strings.TrimPrefix(r.URL.Path, "/agents/")
+	if path == "" {
 		writeACPError(w, "invalid_input", "agent name required", http.StatusBadRequest)
 		return
 	}
+	parts := strings.SplitN(path, "/", 2)
+	name := parts[0]
+	sub := ""
+	if len(parts) > 1 {
+		sub = parts[1]
+	}
 
+	// Check if tenant is allowed to access this agent
+	if !tenantCanAccessAgent(tenant, name) {
+		writeACPError(w, "unauthorized", "agent not allowed for tenant", http.StatusForbidden)
+		return
+	}
+
+	// Verify the agent exists
 	var agent agentorcv1alpha1.Agent
 	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: name, Namespace: tenant.Namespace}, &agent); err != nil {
 		writeACPError(w, "not_found", fmt.Sprintf("agent %q not found", name), http.StatusNotFound)
 		return
 	}
 
-	// Check if tenant is allowed to access this agent
-	if tenant.AllowedAgents != nil && len(tenant.AllowedAgents) > 0 {
-		found := false
-		for _, allowed := range tenant.AllowedAgents {
-			if allowed == name {
-				found = true
-				break
-			}
-		}
-		if !found {
-			writeACPError(w, "unauthorized", "agent not allowed for tenant", http.StatusForbidden)
+	switch sub {
+	case "":
+		if r.Method != http.MethodGet {
+			writeACPError(w, "invalid_input", "GET required", http.StatusMethodNotAllowed)
 			return
 		}
+		s.writeAgentManifest(w, r, &agent)
+	case "run":
+		if r.Method != http.MethodPost {
+			writeACPError(w, "invalid_input", "POST required", http.StatusMethodNotAllowed)
+			return
+		}
+		s.handleAgentRun(w, r, tenant, &agent)
+	default:
+		writeACPError(w, "invalid_input", fmt.Sprintf("unknown sub-path %q", sub), http.StatusBadRequest)
 	}
+}
 
+// tenantCanAccessAgent checks if the tenant is allowed to access the given agent.
+func tenantCanAccessAgent(tenant *TenantIdentity, name string) bool {
+	if tenant.AllowedAgents == nil || len(tenant.AllowedAgents) == 0 { //nolint:staticcheck
+
+		return true
+	}
+	return slices.Contains(tenant.AllowedAgents, name)
+}
+
+// writeAgentManifest builds and writes the enriched agent manifest.
+func (s *ACPServer) writeAgentManifest(w http.ResponseWriter, r *http.Request, agent *agentorcv1alpha1.Agent) {
 	manifest := ACPAgentManifest{
 		Name:               agent.Name,
 		Description:        agent.Spec.SystemPrompt,
 		InputContentTypes:  []string{"text/plain", "application/json"},
 		OutputContentTypes: []string{"text/plain", "application/json"},
 	}
+
+	// Enrich manifest with tool schemas, knowledge bases, and guardrail info.
+	manifest.AllowedTools = buildAllowedTools(r.Context(), s.crdClient, agent)
+	manifest.KnowledgeBases = agent.Spec.KnowledgeBases
+	for _, kb := range agent.Spec.KnowledgeBaseRefs {
+		manifest.KnowledgeBases = append(manifest.KnowledgeBases, kb.Name)
+	}
+	manifest.GuardrailPolicy = agent.Spec.GuardrailPolicyRef
+	manifest.ClarifyAvailable = !agent.Spec.DisableClarify
+
+	// Build input/output schemas from the agent's tools.
+	manifest.InputSchema = buildInputSchema(manifest.AllowedTools)
+	manifest.OutputSchema = buildOutputSchema()
+
 	jsonResponse(w, manifest)
+}
+
+// ACPAgentRunRequest is the body for POST /agents/{name}/run.
+type ACPAgentRunRequest struct {
+	Input     []ACPMessage `json:"input"`
+	SessionID string       `json:"session_id,omitempty"`
+}
+
+// handleAgentRun creates a new AgentRun for the given agent, validating input
+// against the agent's manifest schema. This is a thin, UX-friendly wrapper
+// around the ACP POST /runs flow.
+func (s *ACPServer) handleAgentRun(w http.ResponseWriter, r *http.Request, tenant *TenantIdentity, agent *agentorcv1alpha1.Agent) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		writeACPError(w, "invalid_input", "reading body", http.StatusBadRequest)
+		return
+	}
+
+	var req ACPAgentRunRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeACPError(w, "invalid_input", fmt.Sprintf("invalid JSON: %s", err), http.StatusBadRequest)
+		return
+	}
+
+	if len(req.Input) == 0 {
+		writeACPError(w, "invalid_input", "input is required", http.StatusBadRequest)
+		return
+	}
+
+	// Extract input text from ACP messages
+	var inputText string
+	for _, msg := range req.Input {
+		for _, part := range msg.Parts {
+			if part.Content != "" {
+				inputText += part.Content + "\n"
+			}
+		}
+	}
+	inputText = strings.TrimSpace(inputText)
+	if inputText == "" {
+		writeACPError(w, "invalid_input", "input content is required", http.StatusBadRequest)
+		return
+	}
+
+	// Enforce tenant quotas.
+	if qerr, ok := enforceQuotas(r.Context(), s.crdClient, s.rateLimiter, tenant).(*QuotaError); ok && qerr != nil {
+		if qerr.RetryAfter > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(int(qerr.RetryAfter.Seconds())))
+		}
+		writeACPError(w, "quota_exceeded", qerr.Message, qerr.Code)
+		return
+	}
+
+	// Determine session ID
+	sessionID := req.SessionID
+
+	// Create AgentRun CR
+	run := &agentorcv1alpha1.AgentRun{
+		ObjectMeta: metav1.ObjectMeta{
+			GenerateName: fmt.Sprintf("acp-%s-", agent.Name),
+			Namespace:    tenant.Namespace,
+			Labels: map[string]string{
+				security.LabelManagedBy: "agent-orc",
+				"agentorc.io/tenant":    tenant.TenantName,
+			},
+		},
+		Spec: agentorcv1alpha1.AgentRunSpec{
+			AgentRef: agent.Name,
+			Input:    inputText,
+		},
+	}
+	if sessionID != "" {
+		run.Labels["agentorc.io/session-id"] = sessionID
+	}
+
+	if err := s.crdClient.Create(r.Context(), run); err != nil {
+		slog.Error("creating ACP agent run", "err", err)
+		writeACPError(w, "server_error", fmt.Sprintf("creating run: %s", err), http.StatusInternalServerError)
+		return
+	}
+
+	slog.Info("ACP agent run created", "run", run.Name, "agent", agent.Name, "tenant", tenant.TenantName)
+
+	resp := ACPRun{
+		AgentName: agent.Name,
+		SessionID: sessionID,
+		RunID:     run.Name,
+		Status:    ACPRunCreated,
+		CreatedAt: run.CreationTimestamp.Format(time.RFC3339),
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// buildAllowedTools fetches the Tool CRDs referenced by an agent and returns
+// their names and JSON schemas for the manifest.
+func buildAllowedTools(ctx context.Context, k8sClient client.Client, agent *agentorcv1alpha1.Agent) []ACPToolInfo {
+	// Built-in tools always available.
+	tools := []ACPToolInfo{
+		{Name: "_clarify", Description: "Ask the human a clarifying question before proceeding"},
+		{Name: "_rag_search", Description: "Search the configured knowledge bases"},
+		{Name: "_rag_ingest", Description: "Ingest a document into a knowledge base"},
+	}
+
+	// Fetch each configured Tool CR and extract its schema.
+	for _, toolName := range agent.Spec.Tools {
+		var tool agentorcv1alpha1.Tool
+		if err := k8sClient.Get(ctx, client.ObjectKey{Name: toolName, Namespace: agent.Namespace}, &tool); err != nil {
+			slog.Warn("failed to fetch tool for manifest", "tool", toolName, "err", err)
+			tools = append(tools, ACPToolInfo{Name: toolName})
+			continue
+		}
+		info := ACPToolInfo{
+			Name:        toolName,
+			Description: tool.Spec.Schema.Description,
+		}
+		if tool.Spec.Schema != nil && tool.Spec.Schema.Input != nil {
+			info.InputSchema = rawExtensionToMap(tool.Spec.Schema.Input)
+		}
+		tools = append(tools, info)
+	}
+
+	return tools
+}
+
+// rawExtensionToMap converts a runtime.RawExtension to a map[string]interface{}.
+func rawExtensionToMap(re *runtime.RawExtension) map[string]any {
+	if re == nil {
+		return nil
+	}
+	if len(re.Raw) > 0 {
+		var m map[string]any
+		if err := json.Unmarshal(re.Raw, &m); err == nil {
+			return m
+		}
+	}
+	return nil
+}
+
+// buildInputSchema constructs a JSON Schema for the agent's input based on
+// its available tools. The input is a text field plus optional tool call parameters.
+func buildInputSchema(tools []ACPToolInfo) map[string]any {
+	properties := map[string]any{
+		"input": map[string]any{
+			"type":        "string",
+			"description": "The task or message to send to the agent",
+		},
+	}
+	toolNames := make([]string, 0, len(tools))
+	for _, t := range tools {
+		toolNames = append(toolNames, t.Name)
+	}
+	return map[string]any{
+		"type":       "object",
+		"properties": properties,
+		"required":   []string{"input"},
+		"tool_names": toolNames,
+	}
+}
+
+// buildOutputSchema constructs a JSON Schema for the agent's output.
+func buildOutputSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"output": map[string]any{
+				"type":        "string",
+				"description": "The final text output from the agent",
+			},
+			"status": map[string]any{
+				"type": "string",
+				"enum": []string{"succeeded", "failed", "awaiting"},
+			},
+		},
+		"required": []string{"output", "status"},
+	}
 }
 
 // handleCreateRun creates and starts a new agent run.
@@ -439,14 +697,9 @@ func (s *ACPServer) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check if tenant is allowed to access this agent
-	if tenant.AllowedAgents != nil && len(tenant.AllowedAgents) > 0 {
-		found := false
-		for _, allowed := range tenant.AllowedAgents {
-			if allowed == req.AgentName {
-				found = true
-				break
-			}
-		}
+	if tenant.AllowedAgents != nil && len(tenant.AllowedAgents) > 0 { //nolint:staticcheck
+
+		found := slices.Contains(tenant.AllowedAgents, req.AgentName)
 		if !found {
 			writeACPError(w, "unauthorized", "agent not allowed for tenant", http.StatusForbidden)
 			return
@@ -457,6 +710,15 @@ func (s *ACPServer) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 	var agent agentorcv1alpha1.Agent
 	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: req.AgentName, Namespace: tenant.Namespace}, &agent); err != nil {
 		writeACPError(w, "not_found", fmt.Sprintf("agent %q not found", req.AgentName), http.StatusNotFound)
+		return
+	}
+
+	// Enforce tenant quotas (rate limit, concurrent runs, daily budget).
+	if qerr, ok := enforceQuotas(r.Context(), s.crdClient, s.rateLimiter, tenant).(*QuotaError); ok && qerr != nil {
+		if qerr.RetryAfter > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(int(qerr.RetryAfter.Seconds())))
+		}
+		writeACPError(w, "quota_exceeded", qerr.Message, qerr.Code)
 		return
 	}
 
@@ -514,7 +776,7 @@ func (s *ACPServer) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 // handleRunByID handles GET and POST for /runs/{run_id}.
@@ -617,7 +879,7 @@ func (s *ACPServer) handleCancelRun(w http.ResponseWriter, r *http.Request, tena
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
-	json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 // handleListRunEvents handles GET /runs/{run_id}/events.
@@ -635,7 +897,7 @@ func (s *ACPServer) handleListRunEvents(w http.ResponseWriter, r *http.Request, 
 	}
 
 	// Build events list based on run state using interface{} for polymorphism
-	events := []interface{}{}
+	events := []any{}
 
 	// Run created event
 	events = append(events, ACPRunCreatedEvent{
@@ -719,7 +981,7 @@ func (s *ACPServer) handleListRunEvents(w http.ResponseWriter, r *http.Request, 
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"events": events})
+	_ = json.NewEncoder(w).Encode(map[string]any{"events": events})
 }
 
 // handleGetSession handles GET /session/{session_id}.
@@ -842,11 +1104,11 @@ func (s *ACPServer) streamACPRun(w http.ResponseWriter, r *http.Request, run *ag
 		Status:    ACPRunInProgress,
 		CreatedAt: run.CreationTimestamp.Format(time.RFC3339),
 	}
-	fmt.Fprintf(w, "event: run.created\ndata: %s\n\n", mustJSON(ACPRunCreatedEvent{Type: "run.created", Run: acpRun}))
+	_, _ = fmt.Fprintf(w, "event: run.created\ndata: %s\n\n", mustJSON(ACPRunCreatedEvent{Type: "run.created", Run: acpRun}))
 	flusher.Flush()
 
 	// Emit run.in-progress event
-	fmt.Fprintf(w, "event: run.in-progress\ndata: %s\n\n", mustJSON(ACPRunInProgressEvent{Type: "run.in-progress", Run: acpRun}))
+	_, _ = fmt.Fprintf(w, "event: run.in-progress\ndata: %s\n\n", mustJSON(ACPRunInProgressEvent{Type: "run.in-progress", Run: acpRun}))
 	flusher.Flush()
 
 	// Stream tokens
@@ -854,7 +1116,7 @@ func (s *ACPServer) streamACPRun(w http.ResponseWriter, r *http.Request, run *ag
 	tokenCh, err := s.store.TailTokens(r.Context(), streamKey)
 	if err != nil {
 		slog.Warn("failed to open token stream for ACP", "key", streamKey, "err", err)
-		fmt.Fprintf(w, "event: error\ndata: %s\n\n", mustJSON(ACPErrEvent{Type: "error", Error: ACPErr{Code: "server_error", Message: err.Error()}}))
+		_, _ = fmt.Fprintf(w, "event: error\ndata: %s\n\n", mustJSON(ACPErrEvent{Type: "error", Error: ACPErr{Code: "server_error", Message: err.Error()}}))
 		flusher.Flush()
 		return
 	}
@@ -864,7 +1126,7 @@ func (s *ACPServer) streamACPRun(w http.ResponseWriter, r *http.Request, run *ag
 		Role:  "agent",
 		Parts: []ACPMessagePart{},
 	}
-	fmt.Fprintf(w, "event: message.created\ndata: %s\n\n", mustJSON(ACPMessageCreatedEvent{Type: "message.created", Message: msg}))
+	_, _ = fmt.Fprintf(w, "event: message.created\ndata: %s\n\n", mustJSON(ACPMessageCreatedEvent{Type: "message.created", Message: msg}))
 	flusher.Flush()
 
 	var fullOutput strings.Builder
@@ -882,7 +1144,7 @@ func (s *ACPServer) streamACPRun(w http.ResponseWriter, r *http.Request, run *ag
 			Content:     token,
 		}
 		msg.Parts = append(msg.Parts, part)
-		fmt.Fprintf(w, "event: message.part\ndata: %s\n\n", mustJSON(ACPMessagePartEvent{Type: "message.part", Part: part}))
+		_, _ = fmt.Fprintf(w, "event: message.part\ndata: %s\n\n", mustJSON(ACPMessagePartEvent{Type: "message.part", Part: part}))
 		flusher.Flush()
 	}
 
@@ -904,14 +1166,14 @@ func (s *ACPServer) streamACPRun(w http.ResponseWriter, r *http.Request, run *ag
 			}
 		}
 
-		fmt.Fprintf(w, "event: message.completed\ndata: %s\n\n", mustJSON(ACPMessageCompletedEvent{Type: "message.completed", Message: msg}))
+		_, _ = fmt.Fprintf(w, "event: message.completed\ndata: %s\n\n", mustJSON(ACPMessageCompletedEvent{Type: "message.completed", Message: msg}))
 		flusher.Flush()
 
 		switch finalStatus {
 		case ACPRunCompleted:
-			fmt.Fprintf(w, "event: run.completed\ndata: %s\n\n", mustJSON(ACPRunCompletedEvent{Type: "run.completed", Run: acpRun}))
+			_, _ = fmt.Fprintf(w, "event: run.completed\ndata: %s\n\n", mustJSON(ACPRunCompletedEvent{Type: "run.completed", Run: acpRun}))
 		case ACPRunFailed:
-			fmt.Fprintf(w, "event: run.failed\ndata: %s\n\n", mustJSON(ACPRunFailedEvent{Type: "run.failed", Run: acpRun}))
+			_, _ = fmt.Fprintf(w, "event: run.failed\ndata: %s\n\n", mustJSON(ACPRunFailedEvent{Type: "run.failed", Run: acpRun}))
 		}
 		flusher.Flush()
 	}
@@ -998,5 +1260,5 @@ func mapAgentRunPhaseToACPStatus(phase agentorcv1alpha1.AgentRunPhase) ACPRunSta
 func writeACPError(w http.ResponseWriter, code, message string, status int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(ACPErr{Code: code, Message: message})
+	_ = json.NewEncoder(w).Encode(ACPErr{Code: code, Message: message})
 }

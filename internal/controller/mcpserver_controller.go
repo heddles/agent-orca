@@ -124,7 +124,8 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 // validate checks the MCPServer spec for correctness.
 func (r *MCPServerReconciler) validate(server *agentorcv1alpha1.MCPServer) (bool, string) {
 	switch server.Spec.Transport {
-	case "http", "sse":
+	case "http", "sse": //nolint:goconst
+
 		if server.Spec.URL == "" {
 			return false, fmt.Sprintf("spec.url is required for transport=%s", server.Spec.Transport)
 		}

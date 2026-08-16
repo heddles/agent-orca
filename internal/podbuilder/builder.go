@@ -59,10 +59,24 @@ const (
 	// ToolSecretVolPrefix is the volume name prefix for tool secret volumes.
 	ToolSecretVolPrefix = "tool-secret-"
 
+	// AgentSecretVolPrefix is the volume name prefix for agent-runtime secret volumes
+	// (Agent.spec.runtime.secretRefs). Mounted into the agent container only.
+	AgentSecretVolPrefix = "agent-secret-"
+	// AgentSecretMountDir is the default mount path used for an agent secret ref when
+	// MountPath is empty (keys are injected as files under this directory).
+	AgentSecretMountDir = "/etc/agentorc-secrets"
+
 	// MCPBinDir is the base mount path for MCP sidecar tool image volumes.
 	// Each tool image is mounted at MCPBinDir/<toolName>/ via a Kubernetes
 	// image volume (see ResolveMCPSidecarVolumes).
 	MCPBinDir = "/mcp-img"
+
+	// WarmCacheVolName is the volume name for the disk-backed emptyDir used as a
+	// local L1 checkpoint cache on warm pods (see WarmLocalCacheEnabled in PodConfig).
+	WarmCacheVolName = "agentorc-warm-cache"
+	// WarmCacheMountDir is the in-container path the model-router mirrors warm-pod
+	// checkpoints to. Mounted into the model-router sidecar only.
+	WarmCacheMountDir = "/var/lib/agentorc/warm-cache"
 )
 
 // DefaultRouterResources are the resource requirements applied to the model-router
@@ -139,6 +153,21 @@ type PodConfig struct {
 	MCPBinVolumes     []corev1.Volume
 	MCPBinMounts      []corev1.VolumeMount
 
+	// AgentSecretVolumes and AgentSecretMounts carry secrets referenced by
+	// Agent.spec.runtime.secretRefs. They are mounted into the agent container only
+	// (not the model-router sidecar). Use ResolveAgentSecretRefs to build them.
+	AgentSecretVolumes []corev1.Volume
+	AgentSecretMounts  []corev1.VolumeMount
+
+	// WarmLocalCacheEnabled attaches a disk-backed emptyDir to the model-router
+	// sidecar as a local checkpoint cache that supplements Redis. Only set true
+	// for warm pods (buildWarmPod); one-shot AgentRun pods leave it false so their
+	// specs are unchanged.
+	WarmLocalCacheEnabled bool
+	// WarmLocalCacheSizeLimit is the SizeLimit for the warm-cache emptyDir.
+	// May be nil for "no limit" (bounded by node ephemeral storage).
+	WarmLocalCacheSizeLimit *resource.Quantity
+
 	// --- Network topology ---
 
 	// RouterBaseURL is the base URL the agent uses to reach the model-router.
@@ -169,7 +198,8 @@ func Build(cfg PodConfig) *corev1.Pod {
 
 	// --- Agent container ---
 
-	agentEnv := make([]corev1.EnvVar, len(cfg.AgentEnv))
+	agentEnv := make([]corev1.EnvVar, len(cfg.AgentEnv)) //nolint:prealloc
+
 	copy(agentEnv, cfg.AgentEnv)
 	agentEnv = append(agentEnv, FrameworkEnvVars(cfg.Agent.Spec.Runtime.Framework, routerBaseURL)...)
 
@@ -194,6 +224,7 @@ func Build(cfg PodConfig) *corev1.Pod {
 	if cfg.AgentReadinessProbe != nil {
 		agentContainer.ReadinessProbe = cfg.AgentReadinessProbe
 	}
+	agentContainer.VolumeMounts = append(agentContainer.VolumeMounts, cfg.AgentSecretMounts...)
 
 	// --- Router config volume ---
 
@@ -218,7 +249,8 @@ func Build(cfg PodConfig) *corev1.Pod {
 		routerResources = *cfg.RouterResources
 	}
 
-	routerPorts := []corev1.ContainerPort{
+	routerPorts := []corev1.ContainerPort{ //nolint:prealloc
+
 		{Name: "openai", ContainerPort: 8080, Protocol: corev1.ProtocolTCP},
 		{Name: "gemini", ContainerPort: 8082, Protocol: corev1.ProtocolTCP},
 	}
@@ -234,6 +266,16 @@ func Build(cfg PodConfig) *corev1.Pod {
 		MountPath: RouterConfigDir,
 		ReadOnly:  true,
 	})
+
+	// Warm-pod local L1 checkpoint cache: a disk-backed emptyDir mirrored into the
+	// model-router sidecar (and read by it write-through to Redis). The agent container
+	// never touches this volume directly — it reaches the router over localhost.
+	if cfg.WarmLocalCacheEnabled {
+		routerMounts = append(routerMounts, corev1.VolumeMount{
+			Name:      WarmCacheVolName,
+			MountPath: WarmCacheMountDir,
+		})
+	}
 
 	alwaysRestart := corev1.ContainerRestartPolicyAlways
 	modelRouterContainer := corev1.Container{
@@ -260,14 +302,36 @@ func Build(cfg PodConfig) *corev1.Pod {
 		},
 		Resources: routerResources,
 	}
+	if cfg.WarmLocalCacheEnabled {
+		// AGENTORC_WARM_CACHE_DIR activates the local-mirror state store in the model-router.
+		modelRouterContainer.Env = append(modelRouterContainer.Env, corev1.EnvVar{
+			Name:  "AGENTORC_WARM_CACHE_DIR",
+			Value: WarmCacheMountDir,
+		})
+	}
 
 	// --- Assemble volumes ---
 
 	var volumes []corev1.Volume
+	volumes = append(volumes, cfg.AgentSecretVolumes...)
 	volumes = append(volumes, cfg.ProviderVolumes...)
 	volumes = append(volumes, cfg.ToolSecretVolumes...)
 	volumes = append(volumes, cfg.MCPBinVolumes...)
 	volumes = append(volumes, routerConfigVol)
+	if cfg.WarmLocalCacheEnabled {
+		volumes = append(volumes, corev1.Volume{
+			Name: WarmCacheVolName,
+			VolumeSource: corev1.VolumeSource{
+				// Disk-backed emptyDir (default medium): survives container/sidecar
+				// restarts within the pod and in-place pod restarts, unlike the
+				// memory-backed /tmp volume. Wiped on pod deletion — Redis is the
+				// durable backstop.
+				EmptyDir: &corev1.EmptyDirVolumeSource{
+					SizeLimit: cfg.WarmLocalCacheSizeLimit,
+				},
+			},
+		})
+	}
 
 	// --- Pod ---
 
@@ -299,9 +363,10 @@ func Build(cfg PodConfig) *corev1.Pod {
 	// This may add init containers, env vars, or volume mounts depending on the framework.
 	framework.Inject(pod, cfg.Agent.Spec.Runtime, routerBaseURL)
 
-	// Apply pod security hardening (PSA restricted + projected SA token + /tmp emptyDir).
+	// Apply pod security hardening (PSA restricted + projected SA token + /tmp emptyDir),
+	// scoped-relaxed for the agent container when an override is configured.
 	// Called last so it covers all containers including framework init containers.
-	security.EnforcePodSecurity(pod)
+	security.EnforcePodSecurity(pod, cfg.Agent.Spec.Runtime.SecurityContextOverride)
 
 	return pod
 }
@@ -341,7 +406,8 @@ func BuildAgentOnly(cfg PodConfig) *corev1.Pod {
 		routerBaseURL = "http://localhost:8080"
 	}
 
-	agentEnv := make([]corev1.EnvVar, len(cfg.AgentEnv))
+	agentEnv := make([]corev1.EnvVar, len(cfg.AgentEnv)) //nolint:prealloc
+
 	copy(agentEnv, cfg.AgentEnv)
 	agentEnv = append(agentEnv, FrameworkEnvVars(cfg.Agent.Spec.Runtime.Framework, routerBaseURL)...)
 
@@ -366,6 +432,7 @@ func BuildAgentOnly(cfg PodConfig) *corev1.Pod {
 	if cfg.AgentReadinessProbe != nil {
 		agentContainer.ReadinessProbe = cfg.AgentReadinessProbe
 	}
+	agentContainer.VolumeMounts = append(agentContainer.VolumeMounts, cfg.AgentSecretMounts...)
 
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -379,12 +446,13 @@ func BuildAgentOnly(cfg PodConfig) *corev1.Pod {
 			ServiceAccountName: cfg.ServiceAccount,
 			RestartPolicy:      cfg.RestartPolicy,
 			Containers:         []corev1.Container{agentContainer},
+			Volumes:            cfg.AgentSecretVolumes,
 		},
 	}
 
 	security.ApplyAzurePodLabel(pod, cfg.CloudProvider)
 	framework.Inject(pod, cfg.Agent.Spec.Runtime, routerBaseURL)
-	security.EnforcePodSecurity(pod)
+	security.EnforcePodSecurity(pod, cfg.Agent.Spec.Runtime.SecurityContextOverride)
 
 	return pod
 }
@@ -413,7 +481,8 @@ func BuildRouterOnly(cfg PodConfig) *corev1.Pod {
 		},
 	}
 
-	routerPorts := []corev1.ContainerPort{
+	routerPorts := []corev1.ContainerPort{ //nolint:prealloc
+
 		{Name: "openai", ContainerPort: 8080, Protocol: corev1.ProtocolTCP},
 		{Name: "gemini", ContainerPort: 8082, Protocol: corev1.ProtocolTCP},
 	}
@@ -453,7 +522,8 @@ func BuildRouterOnly(cfg PodConfig) *corev1.Pod {
 		Resources: routerResources,
 	}
 
-	var volumes []corev1.Volume
+	var volumes []corev1.Volume //nolint:prealloc
+
 	volumes = append(volumes, cfg.ProviderVolumes...)
 	volumes = append(volumes, cfg.ToolSecretVolumes...)
 	volumes = append(volumes, cfg.MCPBinVolumes...)
@@ -476,7 +546,8 @@ func BuildRouterOnly(cfg PodConfig) *corev1.Pod {
 	}
 
 	security.ApplyAzurePodLabel(pod, cfg.CloudProvider)
-	security.EnforcePodSecurity(pod)
+	// Router-only pod: no agent container, so no override is applicable.
+	security.EnforcePodSecurity(pod, nil)
 
 	return pod
 }

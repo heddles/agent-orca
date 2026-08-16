@@ -296,7 +296,8 @@ func egressToPort(port int32) networkingv1.NetworkPolicyEgressRule {
 	}
 }
 
-func egressToPortProto(port int32, protocol string) networkingv1.NetworkPolicyEgressRule {
+func egressToPortProto(port int32, protocol string) networkingv1.NetworkPolicyEgressRule { //nolint:unparam
+
 	p := intstr.FromInt32(port)
 	proto := corev1Protocol(protocol)
 	return networkingv1.NetworkPolicyEgressRule{

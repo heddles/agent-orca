@@ -54,6 +54,7 @@ CLAUDE.md
 # Helm Charts
 charts/**/Chart.lock
 charts/**/*.tgz
+.poolside
 .poolside/settings.local.yaml
 
 # Python
@@ -65,3 +66,7 @@ __pycache__/
 # zip files
 *.zip
 ui/test-results/.last-run.json
+
+# Agent dirs
+plans/*
+graphify-out/

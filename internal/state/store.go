@@ -29,6 +29,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -116,6 +117,13 @@ type Store interface {
 	// ListKV returns all keys within a scope.
 	ListKV(ctx context.Context, scope string) ([]string, error)
 
+	// ListMessageKeys returns conversation-checkpoint keys matching a glob pattern.
+	// The pattern uses Redis SCAN MATCH semantics: '*' matches any run of
+	// characters including '/'. Implementations without a native scan should
+	// return (nil, nil). Used to enumerate prior-run checkpoints for the
+	// warm-pool local cache + history retrieval.
+	ListMessageKeys(ctx context.Context, pattern string) ([]string, error)
+
 	// SignalCancel sets a cancellation flag for a run in Redis.
 	// The flag has a short TTL (5 minutes) and auto-expires.
 	// External systems can also write this key directly: SET cancel:<ns>:<run> 1 EX 300
@@ -123,6 +131,10 @@ type Store interface {
 
 	// IsCancelled checks whether the cancel flag is set for a run.
 	IsCancelled(ctx context.Context, ns, runName string) (bool, error)
+
+	// Ping verifies connectivity to the backing store (e.g. Redis).
+	// Used by /readyz. Implementations must return nil if reachable.
+	Ping(ctx context.Context) error
 
 	// Close releases any resources held by the store.
 	Close() error
@@ -172,11 +184,15 @@ func (nopStore) TailTokens(_ context.Context, _ string) (<-chan string, error) {
 func (nopStore) SaveKV(_ context.Context, _, _ string, _ []byte, _ time.Duration) error {
 	return nil
 }
-func (nopStore) LoadKV(_ context.Context, _, _ string) ([]byte, error)    { return nil, nil }
-func (nopStore) DeleteKV(_ context.Context, _, _ string) error            { return nil }
-func (nopStore) ListKV(_ context.Context, _ string) ([]string, error)     { return nil, nil }
+func (nopStore) LoadKV(_ context.Context, _, _ string) ([]byte, error) { return nil, nil }
+func (nopStore) DeleteKV(_ context.Context, _, _ string) error         { return nil }
+func (nopStore) ListKV(_ context.Context, _ string) ([]string, error)  { return nil, nil }
+func (nopStore) ListMessageKeys(_ context.Context, _ string) ([]string, error) {
+	return nil, nil
+}
 func (nopStore) SignalCancel(_ context.Context, _, _ string) error        { return nil }
 func (nopStore) IsCancelled(_ context.Context, _, _ string) (bool, error) { return false, nil }
+func (nopStore) Ping(_ context.Context) error                             { return nil }
 func (nopStore) Close() error                                             { return nil }
 
 // redisStore implements Store using Redis with zstd compression.
@@ -184,6 +200,13 @@ type redisStore struct {
 	client  *redis.Client
 	encoder *zstd.Encoder
 	decoder *zstd.Decoder
+}
+
+func (s *redisStore) Ping(ctx context.Context) error {
+	if s == nil || s.client == nil {
+		return errors.New("redis store not initialized")
+	}
+	return s.client.Ping(ctx).Err()
 }
 
 func newRedisStore(cfg Config) (*redisStore, error) {
@@ -293,7 +316,7 @@ func (s *redisStore) SaveTraceEvent(ctx context.Context, key string, eventJSON s
 		Stream: key,
 		MaxLen: 10000,
 		Approx: true,
-		Values: map[string]interface{}{"ev": eventJSON},
+		Values: map[string]any{"ev": eventJSON},
 	}).Err(); err != nil {
 		return fmt.Errorf("XADD %s (trace): %w", key, err)
 	}
@@ -316,7 +339,7 @@ func (s *redisStore) SaveToken(ctx context.Context, key string, token string) er
 		Stream: key,
 		MaxLen: 10000,
 		Approx: true,
-		Values: map[string]interface{}{field: value},
+		Values: map[string]any{field: value},
 	}).Err(); err != nil {
 		return fmt.Errorf("XADD %s: %w", key, err)
 	}
@@ -451,6 +474,22 @@ func (s *redisStore) ListKV(ctx context.Context, scope string) ([]string, error)
 	}
 	if err := iter.Err(); err != nil {
 		return nil, fmt.Errorf("scanning kv keys with prefix %s: %w", pattern, err)
+	}
+	return keys, nil
+}
+
+// ListMessageKeys enumerates conversation-checkpoint keys matching the Redis SCAN
+// MATCH glob. The model-router uses this to discover prior-run checkpoints for the
+// warm-pool history retrieval (the checkpoint keys use slash-delimited paths like
+// "agentorc/runs/<run>/state", so '*' must match across slashes — SCAN semantics).
+func (s *redisStore) ListMessageKeys(ctx context.Context, pattern string) ([]string, error) {
+	var keys []string
+	iter := s.client.Scan(ctx, 0, pattern, 0).Iterator()
+	for iter.Next(ctx) {
+		keys = append(keys, iter.Val())
+	}
+	if err := iter.Err(); err != nil {
+		return nil, fmt.Errorf("scanning message keys with pattern %s: %w", pattern, err)
 	}
 	return keys, nil
 }

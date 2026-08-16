@@ -1,0 +1,305 @@
+openapi: 3.1.0
+info:
+  title: agent-orc ACP API
+  description: |
+    A subset of the Agent Communication Protocol (ACP) 0.2.0 surface implemented by
+    agent-orc, exposing agent discovery and run execution over the model-router.
+
+    Authentication: requires `Authorization: Bearer <token>` (agent-orc-issued JWT,
+    federated OIDC, or K8s SA token). See docs/auth.md.
+  version: "1.0.0"
+  contact:
+    name: agent-orc
+  license:
+    name: Apache-2.0
+servers:
+  - url: http://localhost:8000
+    description: local dev / cluster-internal
+tags:
+  - name: health
+  - name: agents
+  - name: runs
+  - name: sessions
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT-or-K8s-SA-token
+  schemas:
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string }
+        message: { type: string }
+        data: { nullable: true }
+    ACPMessageMetadata:
+      type: object
+      properties:
+        kind: { type: string, enum: [citation, trajectory] }
+        start_index: { type: integer, nullable: true }
+        end_index: { type: integer, nullable: true }
+        url: { type: string }
+        title: { type: string }
+        description: { type: string }
+        message: { type: string }
+        tool_name: { type: string }
+        tool_input: { nullable: true }
+        tool_output: { nullable: true }
+    ACPMessageContent:
+      description: One of `content`, `content_url`, or `content_encoding` must be present.
+      type: object
+      properties:
+        name: { type: string }
+        content_type: { type: string, default: "text/plain" }
+        content: { type: string }
+        content_encoding: { type: string }
+        content_url: { type: string, format: uri }
+        metadata: { $ref: '#/components/schemas/ACPMessageMetadata' }
+    ACPMessage:
+      type: object
+      required: [role, parts]
+      properties:
+        role: { type: string, enum: [user, assistant, developer, tool] }
+        parts:
+          type: array
+          items: { $ref: '#/components/schemas/ACPMessageContent' }
+        created_at: { type: string, format: date-time, nullable: true }
+        completed_at: { type: string, format: date-time, nullable: true }
+    ACPRunStatus:
+      type: string
+      enum: [created, in-progress, awaiting, cancelling, cancelled, completed, failed]
+    ACPRunMode:
+      type: string
+      enum: [sync, async, stream]
+    ACPAgentMetadata:
+      type: object
+      properties:
+        annotations:
+          type: object
+          additionalProperties: true
+        documentation: { type: string }
+        license: { type: string }
+        programming_language: { type: string }
+        natural_languages:
+          type: array
+          items: { type: string }
+        framework: { type: string }
+    ACPAgentStatus:
+      type: object
+      properties:
+        avg_run_tokens: { type: number, nullable: true }
+        avg_run_time_seconds: { type: number, nullable: true }
+        success_rate: { type: number, nullable: true }
+    ACPAgentManifest:
+      type: object
+      required: [name, description, input_content_types, output_content_types]
+      properties:
+        name: { type: string }
+        description: { type: string }
+        input_content_types:
+          type: array
+          items: { type: string }
+        output_content_types:
+          type: array
+          items: { type: string }
+        metadata: { $ref: '#/components/schemas/ACPAgentMetadata' }
+        status: { $ref: '#/components/schemas/ACPAgentStatus' }
+    ACPAwaitRequest:
+      type: object
+      description: Describes what the client should send next (e.g., a clarification answer).
+      properties: { required: { type: string } }
+    ACPErr:
+      $ref: '#/components/schemas/Error'
+    ACRRun:
+      type: object
+      required: [agent_name, run_id, status, created_at]
+      properties:
+        agent_name: { type: string }
+        session_id: { type: string, nullable: true }
+        run_id: { type: string }
+        status: { $ref: '#/components/schemas/ACPRunStatus' }
+        await_request: { nullable: true }
+        output:
+          type: array
+          items: { $ref: '#/components/schemas/ACPMessage' }
+        error: { $ref: '#/components/schemas/ACPErr' }
+        created_at: { type: string, format: date-time }
+        finished_at: { type: string, format: date-time, nullable: true }
+    ACPRunCreateRequest:
+      type: object
+      required: [agent_name, input]
+      properties:
+        agent_name: { type: string }
+        input:
+          type: array
+          items: { $ref: '#/components/schemas/ACPMessage' }
+        session_id: { type: string }
+        session: { $ref: '#/components/schemas/ACPSession' }
+        mode: { $ref: '#/components/schemas/ACPRunMode' }
+    ACPSession:
+      type: object
+      required: [id]
+      properties:
+        id: { type: string }
+        history:
+          type: array
+          items: { type: string }
+        state: { type: string, nullable: true }
+    ACPAgentsListResponse:
+      type: object
+      properties:
+        agents:
+          type: array
+          items: { $ref: '#/components/schemas/ACPAgentManifest' }
+    EventBatch:
+      description: Each SSE data line is a JSON object with a `type` field naming the event.
+      type: object
+      properties:
+        type: { type: string }
+paths:
+  /ping:
+    get:
+      tags: [health]
+      summary: Liveness probe
+      security: []
+      responses:
+        '200':
+          description: pong
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { status: { type: string, enum: [ok] } }
+  /agents:
+    get:
+      tags: [agents]
+      summary: List agents available to the authenticated tenant
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, default: 10 }
+        - in: query
+          name: offset
+          schema: { type: integer, minimum: 0, default: 0 }
+      responses:
+        '200':
+          content: { application/json: { schema: { $ref: '#/components/schemas/ACPAgentsListResponse' } } }
+  /agents/{name}:
+    get:
+      tags: [agents]
+      summary: Agent manifest (discovery)
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          content: { application/json: { schema: { $ref: '#/components/schemas/ACPAgentManifest' } } }
+        '404':
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+  /runs:
+    post:
+      tags: [runs]
+      summary: Create and start a run
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ACPRunCreateRequest' }
+      responses:
+        '201':
+          content: { application/json: { schema: { $ref: '#/components/schemas/ACRRun' } } }
+        '404':
+          description: Agent not found / not allowed.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+  /runs/{run_id}:
+    get:
+      tags: [runs]
+      summary: Get run status
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: run_id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          content: { application/json: { schema: { $ref: '#/components/schemas/ACRRun' } } }
+        '404':
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    post:
+      tags: [runs]
+      summary: Resume a run awaiting input (send the awaited answer)
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: run_id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ACPRunCreateRequest' }
+      responses:
+        '200':
+          content: { application/json: { schema: { $ref: '#/components/schemas/ACRRun' } } }
+  /runs/{run_id}/cancel:
+    post:
+      tags: [runs]
+      summary: Cancel a run
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: run_id
+          required: true
+          schema: { type: string }
+      responses:
+        '202':
+          content: { application/json: { schema: { $ref: '#/components/schemas/ACRRun' } } }
+        '409':
+          description: Run already terminal.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+  /runs/{run_id}/events:
+    get:
+      tags: [runs]
+      summary: Stream run events via SSE
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: run_id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: SSE event stream (`message_created`, `message_part`, `message_completed`, `run.completed`, `run.failed`, ...).
+          content:
+            text/event-stream:
+              schema: { $ref: '#/components/schemas/EventBatch' }
+  /session/{session_id}:
+    get:
+      tags: [sessions]
+      summary: Get session state
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: session_id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          content: { application/json: { schema: { $ref: '#/components/schemas/ACPSession' } } }

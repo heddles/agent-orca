@@ -28,10 +28,18 @@ jobs:
         with:
           cluster_name: agent-orc-ui-e2e
 
+      - name: Pre-pull Redis image into Kind
+        # redis:7-alpine is deployed by the chart but NOT pre-loaded into the
+        # kind nodes. Pulling + loading it here avoids a runtime image pull
+        # that can push the Helm --wait spend past the timeout on slow runners.
+        run: |
+          docker pull redis:7-alpine
+          kind load docker-image redis:7-alpine --name agent-orc-ui-e2e
+
       - name: Build and load images
         run: |
           make docker-build IMG=agent-orc:e2e
-          docker build -t agent-orc-ui:e2e ui/
+          docker build -t agent-orc-ui:e2e -f Dockerfile.ui-proxy .
           kind load docker-image agent-orc:e2e agent-orc-ui:e2e --name agent-orc-ui-e2e
 
       - name: Deploy with Helm
@@ -42,11 +50,11 @@ jobs:
             --set operator.image.tag=e2e \
             --set ui.image.repository=agent-orc-ui \
             --set ui.image.tag=e2e \
-            --wait --timeout 120s
+            --wait --timeout 300s
 
       - name: Port-forward UI
         run: |
-          kubectl port-forward svc/agent-orc-ui 8080:8080 &
+          kubectl port-forward svc/agent-orc-ui 8080:80 &
           sleep 3
 
       - name: Run Playwright tests
@@ -54,6 +62,40 @@ jobs:
         run: npx playwright test
         env:
           BASE_URL: http://localhost:8080
+
+      - name: Diagnose deployment failures
+        if: failure()
+        run: |
+          echo "=== Pods ==="
+          kubectl get pods -A -o wide || true
+          echo "=== Deployments ==="
+          kubectl get deploy -A || true
+          echo "=== StatefulSets ==="
+          kubectl get sts -A || true
+          echo "=== Secrets ==="
+          kubectl get secrets -A || true
+          echo "=== Recent events (warnings/errors) ==="
+          kubectl get events -A 2>/dev/null | grep -iE "warning|error|fail|kill|oom|mount" | tail -30 || true
+          echo "=== Operator pod describe ==="
+          kubectl describe pod -l app.kubernetes.io/component=operator -n default || true
+          echo "=== Operator pod YAML (for container exit codes) ==="
+          kubectl get pods -l app.kubernetes.io/component=operator -n default -o yaml || true
+          echo "=== Operator pod logs (current) ==="
+          kubectl logs -l app.kubernetes.io/component=operator -n default --tail=200 || true
+          echo "=== Operator pod logs (previous) ==="
+          kubectl logs -l app.kubernetes.io/component=operator -n default --previous --tail=200 || true
+          echo "=== Redis pod logs ==="
+          kubectl logs -l app.kubernetes.io/component=redis -n default --tail=100 || true
+          echo "=== UI pod logs (current) ==="
+          kubectl logs -l app.kubernetes.io/component=ui -n default --tail=100 || true
+          echo "=== UI pod logs (previous) ==="
+          kubectl logs -l app.kubernetes.io/component=ui -n default --previous --tail=100 || true
+          echo "=== Helm release status ==="
+          helm status agent-orc 2>/dev/null || true
+          echo "=== Helm release history ==="
+          helm history agent-orc 2>/dev/null || true
+          echo "=== Playwright report ==="
+          ls ui/test-results/ 2>/dev/null || true
 
       - uses: actions/upload-artifact@v4
         if: failure()

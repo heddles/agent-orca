@@ -1,0 +1,24 @@
+{{- if .Values.pwnbox.exploitWorkspace.enabled }}
+# Persistent workspace for the red-pwnbox, mounted at EXPLOIT_DIR (/tmp/exploits).
+# Without this, every pwnbox pod restart wipes downloaded payloads, Sliver implants,
+# and authored exploit code — forcing the agent to re-download everything. A PVC
+# survives pod churn (node drains are the only reset); the tun0 tunnel and htb-ovpn
+# secret remain ephemeral by design.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: red-pwnbox-exploits
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "demo.labels" . | nindent 4 }}
+    app: red-pwnbox
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.pwnbox.exploitWorkspace.size | quote }}
+  {{- with .Values.pwnbox.exploitWorkspace.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+{{- end }}

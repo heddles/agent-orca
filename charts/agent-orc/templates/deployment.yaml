@@ -31,6 +31,10 @@ spec:
           image: "{{ .Values.global.imageRegistry }}{{ .Values.operator.image.repository }}:{{ .Values.operator.image.tag }}"
           imagePullPolicy: {{ .Values.operator.image.pullPolicy }}
           env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
             - name: MODEL_ROUTER_IMAGE
               value: "{{ .Values.global.imageRegistry }}{{ .Values.modelRouter.image.repository }}:{{ .Values.modelRouter.image.tag }}"
             - name: MCP_INGESTER_IMAGE
@@ -43,6 +47,8 @@ spec:
               value: {{ include "agent-orc.fullname" . }}-token-reviewer
             - name: OPERATOR_API_URL
               value: "http://{{ include "agent-orc.fullname" . }}-internal-api.{{ .Release.Namespace }}.svc.cluster.local:8082"
+            - name: LLM_REQUEST_TIMEOUT
+              value: {{ .Values.modelRouter.llmRequestTimeout | default "1h" | quote }}
             {{- if .Values.operator.allowedRegistries }}
             - name: ALLOWED_REGISTRIES
               value: {{ .Values.operator.allowedRegistries | quote }}

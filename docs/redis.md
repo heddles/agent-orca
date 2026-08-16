@@ -91,3 +91,64 @@ Checkpoint keys expire automatically. The default TTL is 6 hours beyond the Agen
 ## RBAC
 
 Redis credentials never leave the operator namespace. Agent pods receive only the opaque `router-config.json` ConfigMap, which contains the Redis URL. If you want to avoid agent pods having any visibility into the Redis URL, you can set up a Redis proxy (e.g. Envoy, Twemproxy) and give agent pods the proxy address instead.
+
+## Local L1 cache for warm pools (supplements Redis)
+
+When `AgentDeployment.spec.warmPoolSize > 0`, each warm pod additionally gets a
+**disk-backed `emptyDir`** mounted into the model-router sidecar at
+`/var/lib/agentorc/warm-cache`. The model-router layers a local L1 cache on top of
+Redis:
+
+- **Write-through:** every checkpoint is written to the local emptyDir *and* to Redis.
+- **Read-preferred:** checkpoint loads (warm-pod resume via `PriorRunRef`, and
+  `_search_history`) read the local copy first, falling back to Redis on a local miss.
+- The local cache survives container/sidecar restarts and in-place Pod restarts, and
+  lets a warm pod resume a conversation with **no Redis round-trip** — useful when
+  Redis is transiently unavailable at claim time.
+
+### Important: emptyDir is per-Pod, not shared across Pods
+
+A Kubernetes `emptyDir` lives exactly as long as the Pod that owns it. Warm pods are
+**reused across chat runs** (the operator returns an idle warm pod to the pool instead of
+deleting it), so a single Pod's local cache naturally accumulates the prior turns of the
+runs *that Pod served*. Cross-Pod durability is still, and remains, Redis:
+
+| Failure mode | Local emptyDir | Redis |
+|---|---|---|
+| Agent/model-router container restart (same Pod) | ✅ survives | ✅ survives |
+| In-place Pod restart on the same node (same Pod) | ✅ survives | ✅ survives |
+| Pod recycled/deleted (`maxRequestsPerPod`, `warmPodMaxAge`, config drift, node loss) | ❌ wiped | ✅ survives |
+
+So the emptyDir is an **L1 acceleration + Redis-outage resilience** layer; Redis is the
+**L2 durable shared source of truth**. If a warm pod's local cache is empty (e.g. a
+freshly-created Pod, or one that was recycled), reads transparently fall back to Redis.
+
+### Opting out / sizing
+
+The cache defaults **on** for any `AgentDeployment` with a warm pool. To disable it, or to
+cap its disk use, set:
+
+```yaml
+apiVersion: agentorc.agentorc.io/v1alpha1
+kind: AgentDeployment
+metadata:
+  name: soc-triage
+spec:
+  warmPoolSize: 1
+  warmLocalCache: false            # opt out (resume reads/writes Redis only)
+  warmLocalCacheSizeMi: 128        # optional SizeLimit on the emptyDir (MiB); 0 = unlimited
+```
+
+When `warmLocalCache` is `false` (or the warm pool is absent), no cache volume is attached
+and one-shot `AgentRun` pods are unchanged.
+
+### Searching prior chat turns
+
+The `_search_history` built-in tool lets an agent look through **both** the local emptyDir
+cache and Redis for prior conversation turns from its deployment when the information it
+needs is not in its current context. It is scoped per-deployment via a run index the
+operator writes to the `deployment` KV scope, so a pod never reads another deployment's
+runs. If nothing useful is found (`found: false`), the agent should fall back to `_clarify`
+to ask the human rather than guess. The trust boundary: prior-turn snippets are tagged as
+untrusted data (`<prior-turns untrusted>`) and are never treated as instructions.
+

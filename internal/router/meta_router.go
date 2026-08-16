@@ -114,7 +114,7 @@ func (m *MetaRouter) buildRoutingPrompt(messages []Message) string {
 	// Extract the last user message as the task summary.
 	taskSummary := ""
 	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role == "user" {
+		if messages[i].Role == "user" { //nolint:goconst
 			if text, ok := messages[i].Content.(string); ok {
 				if len(text) > 500 {
 					text = text[:500] + "..."
@@ -150,7 +150,7 @@ func (m *MetaRouter) callLLM(ctx context.Context, provider *ProviderConfig, prom
 	}
 
 	// Use LiteLLM proxy format — the provider's LiteLLM model string is passed directly.
-	reqBody, _ := json.Marshal(map[string]interface{}{
+	reqBody, _ := json.Marshal(map[string]any{
 		"model": provider.LiteLLMModel,
 		"messages": []map[string]string{
 			{"role": "user", "content": prompt},
@@ -171,7 +171,7 @@ func (m *MetaRouter) callLLM(ctx context.Context, provider *ProviderConfig, prom
 	if err != nil {
 		return "", TokenUsage{}, fmt.Errorf("meta-router LLM call: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {

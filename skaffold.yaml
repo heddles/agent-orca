@@ -26,14 +26,14 @@ build:
       context: .
       docker:
         dockerfile: Dockerfile.mcp-ingester
-    - image: agent-orc/demo-agent
-      context: .
-      docker:
-        dockerfile: Dockerfile.demo-agent
-      hooks:
-        after:
-          - command: ["sh", "-c", "kind load docker-image ${IMAGE:-$SKAFFOLD_IMAGE} --name agent-orc-dev"]
-            os: [darwin, linux]
+    # - image: agent-orc/demo-agent
+    #   context: .
+    #   docker:
+    #     dockerfile: Dockerfile.demo-agent
+    #   hooks:
+    #     after:
+    #       - command: ["sh", "-c", "kind load docker-image ${IMAGE:-$SKAFFOLD_IMAGE} --name agent-orc-dev"]
+    #         os: [darwin, linux]
 deploy:
   helm:
     hooks: &ensure_kind_deploy_hooks
@@ -61,6 +61,12 @@ deploy:
           modelRouter.image.tag: "{{.IMAGE_TAG_agent_orc_model_router}}"
           ui.image.repository: "{{.IMAGE_REPO_agent_orc_ui}}"
           ui.image.tag: "{{.IMAGE_TAG_agent_orc_ui}}"
+          # Static Redis password for the bundled Redis (opt-in). When unset the
+          # operator auto-generates a random password (checkpointing still works —
+          # the model-router gets it via the operator-propagated REDIS_URL); setting
+          # this to a known value lets the red-pwnbox publish arena-events findings
+          # against the same Redis. Provide via env, never commit a real password.
+          redis.auth.password: "{{.AGENT_ORC_REDIS_PASSWORD}}"
 portForward:
   - resourceType: service
     resourceName: agent-orc-ui
@@ -72,6 +78,11 @@ portForward:
     namespace: agent-orc-system
     port: 8000
     localPort: 8000
+  - resourceType: service
+    resourceName: agent-orc-internal-api
+    namespace: agent-orc-system
+    port: 8084
+    localPort: 8084
 profiles:
   # demo-mcp-apps: deploys the MCP Apps demo (interactive sandboxed iframe dashboards).
   # Requires: agent-orc + 'default' ModelSelector already deployed.
@@ -314,3 +325,76 @@ profiles:
               providerSecrets[1].apiKey: "{{.ANTHROPIC_API_KEY}}"
               providerSecrets[2].apiKey: "{{.GOOGLE_API_KEY}}"
               providerSecrets[3].apiKey: "{{.POOLSIDE_API_KEY}}"
+
+  # demo-htb-pwn: autonomous HTB red-team pwnbox (MCP toolbelt pattern).
+  # A privileged `red-pwnbox` Deployment runs HTB OpenVPN (tun0) + an MCP server
+  # exposing the pentest toolbelt; a RESTRICTED openai-compatible `red-commander`
+  # AgentDeployment (chat) orchestrates the tools via the model-router. The agent is
+  # never privileged — only the dedicated pwnbox pod is.
+  #
+  # Requires: agent-orc operator + model-providers deployed (skaffold dev -p dev).
+  # Provide secrets via env (never commit them):
+  #   AGENT_ORC_POOLSIDE_API_KEY=ps-...
+  #   AGENT_ORC_HTB_OVPN_CONFIG="$(cat ~/htb.ovpn)"   # or create the htb-ovpn Secret yourself
+  #   AGENT_ORC_HTB_OVPN_ENDPOINT="nl.free.hackthebox.com:1194"
+  #   AGENT_ORC_REDIS_PASSWORD="..."   # OPTIONAL: shared Redis password so the
+  #       red-pwnbox can AUTH to Redis and publish arena-events findings. If unset,
+  #       the operator auto-generates a random Redis password (checkpointing via the
+  #       model-router still works) and arena-events publish is best-effort/skipped.
+  #       Set this to a static value and it backs BOTH the operator's redis.auth.password
+  #       AND the pwnbox's REDIS_PASSWORD env.
+  # Optional egress gate (default-deny; see plans/...security-mcp-toolbelt):
+  #   AGENT_ORC_PWNBOX_INTERNET_RECON=1   # open external TI/template/wordlist egress (TCP 443)
+  # The exploit fetch allowlist (EXPLOIT_FETCH_ALLOWLIST) is operator-managed via
+  # values.yaml or `helm install --set-json` — it may contain commas, which break
+  # helm's `--set` parser, so it is NOT wired through a skaffold setValueTemplate.
+  # Deploy: skaffold run -p demo-htb-pwn
+  # Remove:  helm uninstall demo-htb-pwn -n red-team && kubectl delete ns red-team
+  #
+  # NOTE on images: the default builds files/Dockerfile.pwnbox.blackcart
+  # (erdemozgen/blackcart, ~8GB, full toolbelt incl. metasploit/rustscan/SharpHound).
+  # With cluster storage sized for it (the kind node needs headroom for the large image
+  # ingest), `kind load` works. If local kind chokes on the 8GB ingest, build the slim
+  # variant (solid recon/web/exploit belt, metasploit/blackcart-only units report
+  # "TOOL MISSING" gracefully) and kind-load it, then point the chart at the slim tag:
+  #   docker build -t red-pwnbox:slim -f charts/demos/demo-htb-pwn/files/Dockerfile.pwnbox .
+  #   kind load docker-image red-pwnbox:slim --name agent-orc-dev
+  #   skaffold run -p demo-htb-pwn -s pwnbox.image.tag=slim -s pwnbox.image.slim=true
+  - name: demo-htb-pwn
+    build:
+      artifacts:
+        - image: red-pwnbox
+          context: charts/demos/demo-htb-pwn/files
+          docker:
+            dockerfile: Dockerfile.pwnbox
+          hooks:
+            after:
+              - command: ["sh", "-c", "kind load docker-image ${IMAGE:-$SKAFFOLD_IMAGE} --name agent-orc-dev"]
+                os: [darwin, linux]
+      hooks:
+        before: *ensure_kind_build_before
+    deploy:
+      helm:
+        hooks: *ensure_kind_deploy_hooks
+        releases:
+          - name: demo-htb-pwn
+            chartPath: charts/demos/demo-htb-pwn
+            namespace: red-team
+            createNamespace: true
+            setValueTemplates:
+              # Poolside API key (providerSecrets[0].name = poolside-api-key).
+              agent-orc-resources.providerSecrets[0].apiKey: "{{.AGENT_ORC_POOLSIDE_API_KEY}}"
+              # HTB OpenVPN config + endpoint -> injected into the htb-ovpn Secret.
+              openvpn.ovpnConfig: "{{.AGENT_ORC_HTB_OVPN_CONFIG}}"
+              openvpn.endpoint: "{{.AGENT_ORC_HTB_OVPN_ENDPOINT}}"
+              # Pwnbox egress gate (default deny). Comma-free boolean; the
+              # EXPLOIT_FETCH_ALLOWLIST host list is operator-managed via values.yaml
+              # or `helm install --set-json` (commas break helm's `--set` parser).
+              pwnboxEgress.internetRecon: "{{.AGENT_ORC_PWNBOX_INTERNET_RECON}}"
+              # Mirror the operator's static Redis password so the red-pwnbox can
+              # AUTH to Redis for the arena-events findings stream. Must match
+              # redis.auth.password set on the agent-orc release above.
+              redis.password: "{{.AGENT_ORC_REDIS_PASSWORD}}"
+              # Wire the freshly-built (kind-loaded) pwnbox image into the Deployment.
+              pwnbox.image.repository: "{{.IMAGE_REPO_red_pwnbox}}"
+              pwnbox.image.tag: "{{.IMAGE_TAG_red_pwnbox}}"

@@ -75,8 +75,9 @@ type ToolExecuteResponse struct {
 
 // Executor handles tool dispatch requests from the model-router sidecar.
 type Executor struct {
-	k8s            kubernetes.Interface
-	crdClient      client.Client
+	k8s       kubernetes.Interface
+	crdClient client.Client //nolint:unused
+
 	namespace      string
 	runName        string
 	agentSA        string
@@ -231,8 +232,9 @@ func (e *Executor) executePodTool(ctx context.Context, req ToolExecuteRequest) (
 		}
 	}
 
-	// Apply security hardening.
-	security.EnforcePodSecurity(pod)
+	// Apply security hardening. Tool pods are standalone and never carry an agent
+	// override — they always receive the restricted baseline.
+	security.EnforcePodSecurity(pod, nil)
 
 	_, err := e.k8s.CoreV1().Pods(e.namespace).Create(ctx, pod, metav1.CreateOptions{})
 	if err != nil {
@@ -316,7 +318,7 @@ func (e *Executor) executeAgentTool(ctx context.Context, req ToolExecuteRequest)
 	if err != nil {
 		return "", "", fmt.Errorf("creating child AgentRun: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
@@ -364,7 +366,7 @@ func (e *Executor) executeAgentTool(ctx context.Context, req ToolExecuteRequest)
 			if err != nil {
 				return false, nil
 			}
-			defer statusResp.Body.Close()
+			defer func() { _ = statusResp.Body.Close() }()
 			if statusResp.StatusCode != http.StatusOK {
 				return false, nil
 			}

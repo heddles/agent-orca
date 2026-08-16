@@ -137,6 +137,15 @@ func (r *KnowledgeBaseReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		kb.Status.EmbeddingDimensions = dims
 	}
 
+	// Wait for the Qdrant pod to be Ready before touching collections. ensureQdrant
+	// creates the StatefulSet but the pod may still be starting (image pull / PVC
+	// bind / /readyz). Calling ListCollections before the pod has endpoints yields
+	// "name resolver error: produced zero addresses" and churns the reconcile.
+	if !r.qdrantReady(ctx, kb.Namespace, kb.Name) {
+		logger.Info("Qdrant not ready yet; requeuing", "namespace", kb.Namespace, "kb", kb.Name)
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	}
+
 	// Ensure the Qdrant collection exists with the actual model dimension.
 	if err := r.ensureCollection(ctx, qdrantURL, collectionName, uint64(kb.Status.EmbeddingDimensions)); err != nil {
 		logger.Error(err, "ensuring Qdrant collection")
@@ -185,6 +194,31 @@ func (r *KnowledgeBaseReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 type upgradeResult struct {
 	Requeue      bool
 	RequeueAfter time.Duration
+}
+
+// qdrantReady reports whether this KB's Qdrant pod is Running and Ready (readiness
+// probe /readyz passed), i.e. the headless Service has an endpoint gRPC can dial.
+// Until the pod is Ready, ListCollections fails with "produced zero addresses".
+func (r *KnowledgeBaseReconciler) qdrantReady(ctx context.Context, namespace, kbName string) bool {
+	var pods corev1.PodList
+	if err := r.List(ctx, &pods,
+		client.InNamespace(namespace),
+		client.MatchingLabels{"agentorc.io/knowledgebase": kbName},
+	); err != nil {
+		return false
+	}
+	for i := range pods.Items {
+		p := &pods.Items[i]
+		if p.Status.Phase != corev1.PodRunning {
+			continue
+		}
+		for _, cs := range p.Status.ContainerStatuses {
+			if cs.Name == "qdrant" && cs.Ready {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // ensureQdrant creates a dedicated per-KB Qdrant StatefulSet and Service if they don't exist.
@@ -253,11 +287,29 @@ func (r *KnowledgeBaseReconciler) ensureQdrant(ctx context.Context, namespace st
 	}
 
 	// Create StatefulSet.
-	memRequest := resource.MustParse("256Mi")
-	memLimit := resource.MustParse("512Mi")
+	// Defaults: 256Mi/100m request, 512Mi memory limit. These can be LOW for Qdrant
+	// at startup on constrained nodes (arm64 kind), so the limit is overridable via
+	// spec.vectorStore.resources — the field existed but was previously unwired.
+	memRequest := resource.MustParse("512Mi")
+	memLimit := resource.MustParse("1Gi")
 	cpuRequest := resource.MustParse("100m")
+	resources := corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceMemory: memRequest,
+			corev1.ResourceCPU:    cpuRequest,
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceMemory: memLimit,
+		},
+	}
+	// A partial override (e.g. only limits) is merged onto the defaults.
 	if kb.Spec.VectorStore.Resources != nil {
-		// Allow override via CRD — not wired yet but the field exists.
+		if kb.Spec.VectorStore.Resources.Requests != nil {
+			resources.Requests = kb.Spec.VectorStore.Resources.Requests
+		}
+		if kb.Spec.VectorStore.Resources.Limits != nil {
+			resources.Limits = kb.Spec.VectorStore.Resources.Limits
+		}
 	}
 
 	sts := &appsv1.StatefulSet{
@@ -285,15 +337,7 @@ func (r *KnowledgeBaseReconciler) ensureQdrant(ctx context.Context, namespace st
 								{Name: "grpc", ContainerPort: int32(qdrantPort)},
 								{Name: "http", ContainerPort: int32(qdrantHTTPPort)},
 							},
-							Resources: corev1.ResourceRequirements{
-								Requests: corev1.ResourceList{
-									corev1.ResourceMemory: memRequest,
-									corev1.ResourceCPU:    cpuRequest,
-								},
-								Limits: corev1.ResourceList{
-									corev1.ResourceMemory: memLimit,
-								},
-							},
+							Resources: resources,
 							VolumeMounts: []corev1.VolumeMount{
 								{Name: "qdrant-storage", MountPath: "/qdrant/storage"},
 								{Name: "qdrant-snapshots", MountPath: "/qdrant/snapshots"},
@@ -375,7 +419,8 @@ func (r *KnowledgeBaseReconciler) checkQdrantUpgrade(
 	kb.Status.QdrantTargetVersion = target.String()
 
 	// If we're in WaitingForReady or Failed state, handle that without probing version.
-	if kb.Status.QdrantUpgradeState == "WaitingForReady" || kb.Status.QdrantUpgradeState == "Failed" {
+	if kb.Status.QdrantUpgradeState == "WaitingForReady" || kb.Status.QdrantUpgradeState == "Failed" { //nolint:goconst
+
 		return r.stepQdrantUpgrade(ctx, kb, sts, qdrantVersion{}, target)
 	}
 
@@ -604,7 +649,7 @@ func (r *KnowledgeBaseReconciler) ensureCollection(ctx context.Context, qdrantUR
 	if err != nil {
 		return fmt.Errorf("connecting to qdrant: %w", err)
 	}
-	defer qClient.Close()
+	defer func() { _ = qClient.Close() }()
 
 	return qClient.EnsureCollection(ctx, collectionName, dimensions)
 }
@@ -615,7 +660,7 @@ func (r *KnowledgeBaseReconciler) collectionStats(ctx context.Context, qdrantURL
 	if err != nil {
 		return nil, fmt.Errorf("connecting to qdrant: %w", err)
 	}
-	defer qClient.Close()
+	defer func() { _ = qClient.Close() }()
 
 	return qClient.CollectionStats(ctx, collectionName)
 }
@@ -643,10 +688,7 @@ func (r *KnowledgeBaseReconciler) estimateStoragePercent(kb *agentorcv1alpha1.Kn
 	estimatedBytes := int64(float64(uint64(kb.Status.ChunkCount)*bytesPerPoint) * 1.2)
 
 	// Ceiling division so small collections show at least 1% instead of 0.
-	pct := int((estimatedBytes*100 + capacityBytes - 1) / capacityBytes)
-	if pct > 100 {
-		pct = 100
-	}
+	pct := min(int((estimatedBytes*100+capacityBytes-1)/capacityBytes), 100)
 	return pct
 }
 
@@ -682,7 +724,7 @@ func (r *KnowledgeBaseReconciler) runIngestion(ctx context.Context, kb *agentorc
 			docs = append(docs, rag.Document{
 				ID:      fmt.Sprintf("configmap/%s/%s", ref.Name, key),
 				Content: value,
-				Metadata: map[string]interface{}{
+				Metadata: map[string]any{
 					"source":    "configmap",
 					"configmap": ref.Name,
 					"key":       key,
@@ -701,7 +743,7 @@ func (r *KnowledgeBaseReconciler) runIngestion(ctx context.Context, kb *agentorc
 		docs = append(docs, rag.Document{
 			ID:      fmt.Sprintf("url/%s", u),
 			Content: content,
-			Metadata: map[string]interface{}{
+			Metadata: map[string]any{
 				"source": "url",
 				"url":    u,
 			},
@@ -807,6 +849,10 @@ func (r *KnowledgeBaseReconciler) resolveEmbedder(ctx context.Context, kb *agent
 }
 
 // embeddingBaseURL returns the provider's base URL for embedding calls.
+// This is only used when the ModelProvider does not specify an explicit
+// baseURL — i.e. the provider is a direct cloud API rather than a self-hosted
+// LiteLLM proxy. The returned URL is appended with /v1/embeddings by the
+// EmbeddingClient.
 func embeddingBaseURL(litellmModel string) string {
 	switch {
 	case strings.HasPrefix(litellmModel, "openai/"):
@@ -816,6 +862,7 @@ func embeddingBaseURL(litellmModel string) string {
 	case strings.HasPrefix(litellmModel, "ollama/"):
 		return "http://localhost:11434"
 	default:
+		// Unknown provider — assume OpenAI-compatible endpoint.
 		return "https://api.openai.com"
 	}
 }
@@ -843,7 +890,7 @@ func fetchURL(ctx context.Context, url string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20)) // 10MB limit
 	if err != nil {
 		return "", err

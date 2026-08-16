@@ -11,6 +11,8 @@ resources:
 - bases/agentorc.agentorc.io_agentworkflows.yaml
 - bases/agentorc.agentorc.io_mcpservers.yaml
 - bases/agentorc.agentorc.io_knowledgebases.yaml
+- bases/agentorc.agentorc.io_tenantconfigs.yaml
+- bases/agentorc.agentorc.io_guardrailpolicies.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

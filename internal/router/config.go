@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/floppyfish14/agent-orc/internal/state"
 )
@@ -128,6 +129,18 @@ type Config struct {
 	// the run-specific fields (RunName, input) before beginning.
 	WarmMode bool
 
+	// WarmLocalCacheDir is the on-disk directory used as an L1 cache that
+	// supplements the Redis state store on warm pods. The model-router
+	// write-throughs each checkpoint to this directory AND to Redis, then reads
+	// from the local directory first (falling back to Redis on a miss). Non-empty
+	// only on warm pods (set by the operator from AgentDeployment.spec.warmLocalCache).
+	// Empty means the local cache is disabled.
+	WarmLocalCacheDir string `json:"warmLocalCacheDir,omitempty"`
+
+	// WarmLocalCacheSizeMi is the SizeLimit for the warm-pod local cache emptyDir,
+	// mirrored here for observability/debugging. 0 = unlimited.
+	WarmLocalCacheSizeMi int `json:"warmLocalCacheSizeMi,omitempty"`
+
 	// SystemPrompt is the agent's system-level instruction, prepended to every conversation.
 	// Injected by the operator from Agent.spec.systemPrompt.
 	SystemPrompt string
@@ -141,6 +154,12 @@ type Config struct {
 	// Defaults to /var/run/secrets/agentorc/token.
 	SATokenFile string
 
+	// LLMRequestTimeout is the maximum time the model-router waits for a single LLM
+	// provider response (chat completion). Decoupled from the agent's inbound request
+	// context so a short agent-side timeout doesn't cancel an in-flight LLM call.
+	// Defaults to 1h. Set by the operator from the LLM_REQUEST_TIMEOUT env var
+	// (chart value modelRouter.llmRequestTimeout), configurable per deployment.
+	LLMRequestTimeout time.Duration `json:"llmRequestTimeout,omitempty"`
 }
 
 // ProviderConfig is a fully-resolved LLM provider ready for dispatch.
@@ -307,6 +326,13 @@ type HTTPInputConfig struct {
 	Port    int    `json:"port"`
 	Path    string `json:"path"`
 	RunName string `json:"runName"`
+	// TimeoutSeconds is the maximum time the model-router waits for the agent's
+	// HTTP handler to respond to a single run input. Defaults to 1800 (30m) when 0.
+	// This must comfortably exceed a single agent turn — which may perform many
+	// sequential LLM/tool calls — so that long-trajectory tasks are not killed
+	// mid-flight. The old hard-coded 60s cap routinely terminated in-progress
+	// sessions and then (before cleanup) deleted the warm pod.
+	TimeoutSeconds int `json:"timeoutSeconds,omitempty"`
 }
 
 // WarmRunInput is the payload sent to POST /v1/claim-run when a warm pod is assigned to a run.
@@ -337,11 +363,11 @@ type KnowledgeBaseConfig struct {
 
 // Message represents a single message in an LLM conversation.
 type Message struct {
-	Role       string      `json:"role"`
-	Content    interface{} `json:"content"` // string or []ContentPart
-	Name       string      `json:"name,omitempty"`
-	ToolCallID string      `json:"tool_call_id,omitempty"`
-	ToolCalls  []ToolCall  `json:"tool_calls,omitempty"`
+	Role       string     `json:"role"`
+	Content    any        `json:"content"` // string or []ContentPart
+	Name       string     `json:"name,omitempty"`
+	ToolCallID string     `json:"tool_call_id,omitempty"`
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 }
 
 // ToolCall represents an LLM-requested function invocation.
@@ -406,6 +432,11 @@ func ConfigFromEnv() (*Config, error) {
 	}
 	if cfg.MaxToolResultTokens <= 0 {
 		cfg.MaxToolResultTokens = 4000
+	}
+	if cfg.LLMRequestTimeout <= 0 {
+		// Default to 1h — provider chat/completion calls (especially for long
+		// reasoning/tool results) routinely exceed the old 120s hard-coded cap.
+		cfg.LLMRequestTimeout = time.Hour
 	}
 
 	return &cfg, nil

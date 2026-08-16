@@ -165,6 +165,58 @@ type AgentRuntime struct {
 	// Defaults to /invoke.
 	// +optional
 	InputPath string `json:"inputPath,omitempty"`
+
+	// SecurityContextOverride opts the agent container (only the "agent" container,
+	// never the model-router sidecar) out of the default restricted PodSecurityStandard.
+	//
+	// Intended ONLY for purpose-built agents that require elevated privileges the
+	// restricted baseline forbids — e.g. a red-team pwnbox that must bring up a VPN
+	// tun device (requires NET_ADMIN + /dev/net/tun). When set, the operator mounts
+	// /dev/net/tun into the agent container and applies the requested posture.
+	//
+	// Admission is gated by a validating webhook: the agent's namespace must carry the
+	// label `agentorc.io/enable-privileged-pods: "true"` AND the Agent must reference a
+	// GuardrailPolicyRef. These checks fail‑closed.
+	// +optional
+	SecurityContextOverride *PodSecurityOverride `json:"securityContextOverride,omitempty"`
+
+	// SecretRefs lists Kubernetes Secrets to mount into the agent container as volumes
+	// (or, if MountPath is empty, inject as env vars). Unlike Tool.spec.secretRefs —
+	// which target the model-router sidecar / tool pods — these mount directly into the
+	// agent container. Useful for agent containers that need an on-disk credential the
+	// agent code reads directly, e.g. an HTB OpenVPN ``.ovpn`` config mounted at
+	// ``/etc/htb``. Mounted read-only.
+	// +optional
+	SecretRefs []SecretMount `json:"secretRefs,omitempty"`
+}
+
+// PodSecurityOverride describes a scoped relaxation of the restricted pod-security
+// baseline for the agent container of an Agent. See AgentRuntime.
+type PodSecurityOverride struct {
+	// Privileged grants the agent container full privileges (CAP_NET_ADMIN,
+	// /dev/net/tun device access, seccomp/capability enforcement disabled). Use this
+	// for tun-device VPNs. Mutually exclusive with AddCapabilities.
+	// +optional
+	Privileged bool `json:"privileged,omitempty"`
+
+	// AddCapabilities adds specific capabilities to the agent container while keeping
+	// the restricted profile otherwise (e.g. ["NET_ADMIN"] + a /dev/net/tun hostPath
+	// mount). Mutually exclusive with Privileged.
+	// +optional
+	AddCapabilities []string `json:"addCapabilities,omitempty"`
+
+	// RunAsUser overrides the default non-root UID (65532). 0 (root) is permitted only
+	// when Privileged is true or a capability that requires root (e.g. NET_ADMIN to
+	// create network interfaces) is added; the webhook enforces this.
+	// +optional
+	RunAsUser *int64 `json:"runAsUser,omitempty"`
+
+	// ReadOnlyRootFilesystem overrides the default read-only root filesystem of the
+	// agent container. When omitted and Privileged is true, defaults to writable
+	// (false) since some security tooling writes helpers/logs to the root FS; when
+	// omitted and non-privileged, retains the restricted default (true).
+	// +optional
+	ReadOnlyRootFilesystem *bool `json:"readOnlyRootFilesystem,omitempty"`
 }
 
 // AgentMemoryConfig controls conversation state persistence.

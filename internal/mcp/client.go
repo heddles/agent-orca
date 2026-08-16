@@ -160,9 +160,9 @@ func (c *Client) Call(ctx context.Context, toolName, arguments string) (string, 
 		return "", fmt.Errorf("tool %q not found in any MCP server", toolName)
 	}
 
-	var args map[string]interface{}
+	var args map[string]any
 	if arguments == "" || arguments == "{}" {
-		args = map[string]interface{}{}
+		args = map[string]any{}
 	} else if err := json.Unmarshal([]byte(arguments), &args); err != nil {
 		return "", fmt.Errorf("parsing tool arguments: %w", err)
 	}
@@ -202,10 +202,10 @@ type serverConn struct {
 
 // jsonrpcRequest is a JSON-RPC 2.0 request.
 type jsonrpcRequest struct {
-	JSONRPC string      `json:"jsonrpc"`
-	ID      int64       `json:"id"`
-	Method  string      `json:"method"`
-	Params  interface{} `json:"params,omitempty"`
+	JSONRPC string `json:"jsonrpc"`
+	ID      int64  `json:"id"`
+	Method  string `json:"method"`
+	Params  any    `json:"params,omitempty"`
 }
 
 // jsonrpcResponse is a JSON-RPC 2.0 response.
@@ -286,9 +286,9 @@ func (s *serverConn) initHTTP(ctx context.Context) error {
 }
 
 func (s *serverConn) initialize(ctx context.Context) error {
-	resp, err := s.send(ctx, "initialize", map[string]interface{}{
+	resp, err := s.send(ctx, "initialize", map[string]any{
 		"protocolVersion": "2024-11-05",
-		"capabilities":    map[string]interface{}{},
+		"capabilities":    map[string]any{},
 		"clientInfo":      map[string]string{"name": "agent-orc", "version": "v1alpha1"},
 	})
 	if err != nil {
@@ -355,7 +355,7 @@ func (c *Client) FetchResource(ctx context.Context, serverName, uri string) (str
 		return "", fmt.Errorf("MCP server %q not found", serverName)
 	}
 
-	result, err := target.send(ctx, "resources/read", map[string]interface{}{"uri": uri})
+	result, err := target.send(ctx, "resources/read", map[string]any{"uri": uri})
 	if err != nil {
 		return "", fmt.Errorf("resources/read: %w", err)
 	}
@@ -374,8 +374,8 @@ func (c *Client) FetchResource(ctx context.Context, serverName, uri string) (str
 	return "", fmt.Errorf("no text content in resources/read response")
 }
 
-func (s *serverConn) callTool(ctx context.Context, name string, args map[string]interface{}) (string, error) {
-	result, err := s.send(ctx, "tools/call", map[string]interface{}{
+func (s *serverConn) callTool(ctx context.Context, name string, args map[string]any) (string, error) {
+	result, err := s.send(ctx, "tools/call", map[string]any{
 		"name":      name,
 		"arguments": args,
 	})
@@ -414,7 +414,7 @@ func (s *serverConn) callTool(ctx context.Context, name string, args map[string]
 // This function generically walks the JSON to find text content without
 // hardcoding the structure of any specific content type.
 func extractContentText(block json.RawMessage) string {
-	var obj map[string]interface{}
+	var obj map[string]any
 	if err := json.Unmarshal(block, &obj); err != nil {
 		return ""
 	}
@@ -425,7 +425,7 @@ func extractContentText(block json.RawMessage) string {
 	// Walk one level of nested objects to find a "text" field.
 	// Covers type:"resource" ({resource:{text:"..."}}) and similar patterns.
 	for _, v := range obj {
-		if nested, ok := v.(map[string]interface{}); ok {
+		if nested, ok := v.(map[string]any); ok {
 			if t, ok := nested["text"].(string); ok && t != "" {
 				return t
 			}
@@ -435,7 +435,7 @@ func extractContentText(block json.RawMessage) string {
 }
 
 // send sends a JSON-RPC request and returns the raw result bytes.
-func (s *serverConn) send(ctx context.Context, method string, params interface{}) (json.RawMessage, error) {
+func (s *serverConn) send(ctx context.Context, method string, params any) (json.RawMessage, error) {
 	id := s.nextID.Add(1)
 	req := jsonrpcRequest{
 		JSONRPC: "2.0",
@@ -517,7 +517,7 @@ func (s *serverConn) sendHTTP(ctx context.Context, reqBytes []byte) (json.RawMes
 	if err != nil {
 		return nil, fmt.Errorf("MCP HTTP request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var rpcResp jsonrpcResponse
 	if err := json.NewDecoder(resp.Body).Decode(&rpcResp); err != nil {
@@ -530,8 +530,8 @@ func (s *serverConn) sendHTTP(ctx context.Context, reqBytes []byte) (json.RawMes
 }
 
 // notify sends a JSON-RPC notification (no response expected).
-func (s *serverConn) notify(ctx context.Context, method string, params interface{}) error {
-	req := map[string]interface{}{
+func (s *serverConn) notify(ctx context.Context, method string, params any) error {
+	req := map[string]any{
 		"jsonrpc": "2.0",
 		"method":  method,
 	}
@@ -557,7 +557,7 @@ func (s *serverConn) notify(ctx context.Context, method string, params interface
 		if err != nil {
 			return err
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return nil
 	}
 	return nil
@@ -576,8 +576,8 @@ func (s *serverConn) close() error {
 // parseToolName splits "serverName:toolName" into components.
 // If no ":" is present the full name is treated as the local tool name.
 func parseToolName(name string) (serverName, localName string) {
-	if idx := strings.Index(name, ":"); idx >= 0 {
-		return name[:idx], name[idx+1:]
+	if before, after, ok := strings.Cut(name, ":"); ok {
+		return before, after
 	}
 	return "", name
 }

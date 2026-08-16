@@ -1,0 +1,76 @@
+---
+# Egress NetworkPolicy for the restricted red-commander agent Deployment pods.
+#
+# AgentDeployment pods do NOT get an operator-generated per-pod NetworkPolicy (only
+# AgentRun pods do), so the chart authors one. The agent must NOT be privileged — it
+# only needs to: reach a Poolside model (via the model-router sidecar in-pod), call the
+# red-pwnbox MCP server, resolve DNS, checkpoint to Redis, and talk to the K8s API.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: red-commander-egress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "demo.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/managed-by: agent-orc
+      agentdeployment.agentorc.io: red-commander
+  policyTypes:
+    - Ingress
+    - Egress
+  # Inbound: only the operator (in the system namespace) may reach port 9090
+  # (the warm-mgmt /v1/claim-run handshake) on warm pods. The Deployment's hot-replica
+  # pods also match this policy but don't serve :9090, so the rule is a no-op for them.
+  # Without this, claimWarmPod's POST to <warm-pod-ip>:9090 is dropped (deny-all ingress)
+  # and the run falls back to a fresh agentorc-run-* pod every time.
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: 9090
+      from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.cluster.systemNamespace | default "agent-orc-system" }}
+  egress:
+    # Kubernetes DNS.
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Kubernetes API: TokenReview by the model-router sidecar.
+    - ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 6443
+    # Poolside LLM endpoint (HTTPS) — the model-router routes to api.poolsi.de.
+    - ports:
+        - protocol: TCP
+          port: 443
+    # Redis (checkpoint state) in the operator's system namespace.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.cluster.systemNamespace | default "agent-orc-system" }}
+      ports:
+        - protocol: TCP
+          port: 6379
+    # agent-orc internal API (8082) used by the model-router for built-in ops.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.cluster.systemNamespace | default "agent-orc-system" }}
+      ports:
+        - protocol: TCP
+          port: 8082
+    # red-pwnbox MCP toolbelt server (in this namespace).
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.namespace.name }}
+      ports:
+        - protocol: TCP
+          port: 8080

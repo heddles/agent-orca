@@ -30,7 +30,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
 )
 
 const maxRateLimitRetries = 3
@@ -54,7 +53,7 @@ func doWithRateLimitRetry(ctx context.Context, buildReq func() (*http.Request, e
 		// Read the error body to determine if this is a transient rate limit
 		// or a permanent "request too large" error.
 		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		bodyStr := string(body)
 		// "Request too large" 429s will never succeed with retries —
 		// the request itself exceeds the model's token limit.
@@ -87,17 +86,11 @@ func doWithRateLimitRetry(ctx context.Context, buildReq func() (*http.Request, e
 func retryAfterDelay(headers http.Header, attempt int) time.Duration {
 	if ra := headers.Get("Retry-After"); ra != "" {
 		if secs, err := strconv.ParseFloat(ra, 64); err == nil && secs > 0 {
-			d := time.Duration(math.Ceil(secs)) * time.Second
-			if d > 60*time.Second {
-				d = 60 * time.Second
-			}
+			d := min(time.Duration(math.Ceil(secs))*time.Second, 60*time.Second)
 			return d
 		}
 	}
-	d := time.Duration(1<<uint(attempt)) * time.Second
-	if d > 30*time.Second {
-		d = 30 * time.Second
-	}
+	d := min(time.Duration(1<<uint(attempt))*time.Second, 30*time.Second)
 	return d
 }
 
@@ -124,11 +117,13 @@ type streamDelta struct {
 // forwardToProviderStream sends a streaming request to the provider and returns the
 // raw *http.Response for SSE proxying. The caller is responsible for closing the body.
 // Uses a detached context so the outgoing call survives agent-side disconnects.
-func (r *Router) forwardToProviderStream(ctx context.Context, provider *ProviderConfig, chatReq ChatCompletionRequest) (*http.Response, error) {
+func (r *Router) forwardToProviderStream(ctx context.Context, provider *ProviderConfig, chatReq ChatCompletionRequest) (*http.Response, error) { //nolint:unparam
+
 	// Use the run-scoped cancel context so the LLM call is detached from the
 	// agent's HTTP connection (survives disconnects) but can still be cancelled
-	// explicitly via Router.Cancel() when the run is stopped.
-	llmCtx, cancel := context.WithTimeout(r.cancelCtx, llmRequestTimeout)
+	// explicitly via Router.Cancel() when the run is stopped. Timeout is
+	// config-driven (default 1h).
+	llmCtx, cancel := context.WithTimeout(r.cancelCtx, r.cfg.LLMRequestTimeout)
 
 	if strings.HasPrefix(provider.LiteLLMModel, "anthropic/") && provider.BaseURL == "" {
 		resp, err := r.forwardToAnthropicStream(llmCtx, provider, chatReq)
@@ -181,7 +176,7 @@ func (r *Router) forwardToProviderStream(ctx context.Context, provider *Provider
 	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		cancel()
 		return nil, fmt.Errorf("provider %s returned %d: %s", provider.Name, resp.StatusCode, body)
 	}
@@ -214,7 +209,7 @@ func (r *Router) forwardToAnthropicStream(ctx context.Context, provider *Provide
 	// Note: SystemPrompt is now always injected into the messages array in HandleChatCompletions,
 	// so we don't need to add it from config separately.
 	var systemParts []string
-	var anthropicMessages []map[string]interface{}
+	var anthropicMessages []map[string]any
 	for _, msg := range chatReq.Messages {
 		if msg.Role == "system" {
 			if text, ok := msg.Content.(string); ok {
@@ -229,23 +224,23 @@ func (r *Router) forwardToAnthropicStream(ctx context.Context, provider *Provide
 
 		// Convert assistant messages with tool_calls to Anthropic format.
 		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
-			var content []map[string]interface{}
+			var content []map[string]any
 			if text, ok := msg.Content.(string); ok && text != "" {
-				content = append(content, map[string]interface{}{"type": "text", "text": text})
+				content = append(content, map[string]any{"type": "text", "text": text})
 			}
 			for _, tc := range msg.ToolCalls {
 				args := tc.Function.Arguments
 				if args == "" {
 					args = "{}"
 				}
-				content = append(content, map[string]interface{}{
+				content = append(content, map[string]any{
 					"type":  "tool_use",
 					"id":    tc.ID,
 					"name":  tc.Function.Name,
 					"input": json.RawMessage(args),
 				})
 			}
-			anthropicMessages = append(anthropicMessages, map[string]interface{}{
+			anthropicMessages = append(anthropicMessages, map[string]any{
 				"role":    "assistant",
 				"content": content,
 			})
@@ -255,9 +250,9 @@ func (r *Router) forwardToAnthropicStream(ctx context.Context, provider *Provide
 		// Convert tool result messages to Anthropic tool_result blocks.
 		if msg.Role == "tool" {
 			resultContent, _ := msg.Content.(string)
-			anthropicMessages = append(anthropicMessages, map[string]interface{}{
+			anthropicMessages = append(anthropicMessages, map[string]any{
 				"role": "user",
-				"content": []map[string]interface{}{{
+				"content": []map[string]any{{
 					"type":        "tool_result",
 					"tool_use_id": msg.ToolCallID,
 					"content":     resultContent,
@@ -266,7 +261,7 @@ func (r *Router) forwardToAnthropicStream(ctx context.Context, provider *Provide
 			continue
 		}
 
-		anthropicMessages = append(anthropicMessages, map[string]interface{}{
+		anthropicMessages = append(anthropicMessages, map[string]any{
 			"role":    msg.Role,
 			"content": msg.Content,
 		})
@@ -276,7 +271,7 @@ func (r *Router) forwardToAnthropicStream(ctx context.Context, provider *Provide
 	}
 
 	modelName := strings.TrimPrefix(provider.LiteLLMModel, "anthropic/")
-	reqBody := map[string]interface{}{
+	reqBody := map[string]any{
 		"model":      modelName,
 		"messages":   anthropicMessages,
 		"max_tokens": 4096,
@@ -288,13 +283,13 @@ func (r *Router) forwardToAnthropicStream(ctx context.Context, provider *Provide
 
 	// Convert OpenAI tool definitions to Anthropic format.
 	if len(chatReq.Tools) > 0 {
-		var anthropicTools []map[string]interface{}
+		var anthropicTools []map[string]any
 		for _, t := range chatReq.Tools {
-			fn, _ := t["function"].(map[string]interface{})
+			fn, _ := t["function"].(map[string]any)
 			if fn == nil {
 				continue
 			}
-			at := map[string]interface{}{
+			at := map[string]any{
 				"name": fn["name"],
 			}
 			if desc, ok := fn["description"]; ok {
@@ -303,7 +298,7 @@ func (r *Router) forwardToAnthropicStream(ctx context.Context, provider *Provide
 			if params, ok := fn["parameters"]; ok {
 				at["input_schema"] = params
 			} else {
-				at["input_schema"] = map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}
+				at["input_schema"] = map[string]any{"type": "object", "properties": map[string]any{}}
 			}
 			anthropicTools = append(anthropicTools, at)
 		}
@@ -332,16 +327,16 @@ func (r *Router) forwardToAnthropicStream(ctx context.Context, provider *Provide
 	}
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return nil, fmt.Errorf("anthropic returned %d: %s", resp.StatusCode, respBody)
 	}
 
 	// Wrap the Anthropic SSE body in a translator that emits OpenAI-format SSE.
 	pr, pw := io.Pipe()
 	go func() {
-		defer pw.Close()
+		defer func() { _ = pw.Close() }()
 		translateAnthropicSSE(resp.Body, pw)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 	}()
 
 	// Return a synthetic response with the translated body.
@@ -352,8 +347,9 @@ func (r *Router) forwardToAnthropicStream(ctx context.Context, provider *Provide
 
 // handleStreamingResponse proxies SSE chunks from the provider to the client,
 // accumulating the full message for conversation history tracking.
-func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Request, provider *ProviderConfig, resp *http.Response, chatReq ChatCompletionRequest) {
-	defer resp.Body.Close()
+func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Request, provider *ProviderConfig, resp *http.Response, chatReq ChatCompletionRequest) { //nolint:gocyclo
+
+	defer func() { _ = resp.Body.Close() }()
 
 	tokenStreamKey := "tokens:" + r.cfg.RunNamespace + ":" + r.cfg.RunName
 	slog.Info("streaming response started", "provider", provider.Name, "tokenStreamKey", tokenStreamKey, "storeType", fmt.Sprintf("%T", r.store))
@@ -392,15 +388,15 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 		line := scanner.Text()
 
 		// Parse "data: " lines first so we can decide whether to proxy them.
-		if strings.HasPrefix(line, "data: ") {
-			data := strings.TrimPrefix(line, "data: ")
+		if after, ok0 := strings.CutPrefix(line, "data: "); ok0 {
+			data := after
 
 			if data == "[DONE]" {
 				// Suppress [DONE] if there are pending tool calls — the recursive
 				// call will eventually emit its own [DONE] to close the stream.
 				suppressDone = len(toolCalls) > 0
 				if !suppressDone {
-					fmt.Fprintf(w, "%s\n", line)
+					_, _ = fmt.Fprintf(w, "%s\n", line)
 					flusher.Flush()
 				}
 				continue
@@ -435,7 +431,7 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 
 		// Proxy every line (including empty lines for SSE framing) to the client,
 		// except [DONE] which is handled above.
-		fmt.Fprintf(w, "%s\n", line)
+		_, _ = fmt.Fprintf(w, "%s\n", line)
 		flusher.Flush()
 	}
 
@@ -474,9 +470,13 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 	r.messages = append(r.messages, assistantMsg)
 	r.updateSpend(usage, provider)
 	r.ruleRouter.IncrementTurn()
+	// Fold the finished turn into priorMessages and cap the live buffer. Gated to the
+	// final (non-tool) response so the tool-call loop (which appends toolResults and
+	// recurses with r.messages) doesn't lose in-flight context.
+	if len(toolCalls) == 0 {
+		r.concludeTurn()
+	}
 	r.mu.Unlock()
-
-
 
 	// Checkpoint if needed.
 	if r.cfg.CheckpointEvery > 0 && r.ruleRouter.TurnCount()%r.cfg.CheckpointEvery == 0 {
@@ -487,7 +487,8 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 	// detect it and synthetically trigger _clarify. The SSE stream has already been
 	// proxied to the agent, but we can still intercept here: trigger clarify, which
 	// sets WaitingForInput on the run and causes the next agent request to get 410 Gone.
-	if len(toolCalls) == 0 && (finishReason == "stop" || finishReason == "") {
+	if len(toolCalls) == 0 && (finishReason == "stop" || finishReason == "") { //nolint:goconst
+
 		fullText := contentBuilder.String()
 		syntheticResp := ChatCompletionResponse{
 			Choices: []Choice{{
@@ -524,7 +525,8 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 	// Handle tool calls if the LLM requested them.
 	// NOTE: r.messages already contains chatReq.Messages + assistantMsg (added above),
 	// so we only need to dispatch, append results, and recurse — not re-append the history.
-	if len(toolCalls) > 0 && finishReason == "tool_calls" {
+	if len(toolCalls) > 0 && finishReason == "tool_calls" { //nolint:goconst
+
 		toolResults := make([]Message, len(toolCalls))
 		for i, tc := range toolCalls {
 			result := r.dispatchToolCall(req.Context(), tc)
@@ -627,7 +629,7 @@ func translateAnthropicSSE(r io.Reader, w io.Writer) {
 		}
 		data := strings.TrimPrefix(line, "data: ")
 
-		var event map[string]interface{}
+		var event map[string]any
 		if err := json.Unmarshal([]byte(data), &event); err != nil {
 			continue
 		}
@@ -635,7 +637,7 @@ func translateAnthropicSSE(r io.Reader, w io.Writer) {
 		eventType, _ := event["type"].(string)
 		switch eventType {
 		case "message_start":
-			if msg, ok := event["message"].(map[string]interface{}); ok {
+			if msg, ok := event["message"].(map[string]any); ok {
 				msgID, _ = msg["id"].(string)
 			}
 			// Emit initial role chunk.
@@ -652,8 +654,9 @@ func translateAnthropicSSE(r io.Reader, w io.Writer) {
 		case "content_block_start":
 			// Detect tool_use blocks and register their index mapping.
 			blockIdx, _ := event["index"].(float64)
-			if cb, ok := event["content_block"].(map[string]interface{}); ok {
-				if cbType, _ := cb["type"].(string); cbType == "tool_use" {
+			if cb, ok := event["content_block"].(map[string]any); ok {
+				if cbType, _ := cb["type"].(string); cbType == "tool_use" { //nolint:goconst
+
 					toolIdx := toolCallCount
 					toolCallCount++
 					blockIndexToToolIndex[int(blockIdx)] = toolIdx
@@ -684,7 +687,7 @@ func translateAnthropicSSE(r io.Reader, w io.Writer) {
 
 		case "content_block_delta":
 			blockIdx, _ := event["index"].(float64)
-			if delta, ok := event["delta"].(map[string]interface{}); ok {
+			if delta, ok := event["delta"].(map[string]any); ok {
 				deltaType, _ := delta["type"].(string)
 				switch deltaType {
 				case "text_delta":
@@ -726,11 +729,13 @@ func translateAnthropicSSE(r io.Reader, w io.Writer) {
 			}
 
 		case "message_delta":
-			if delta, ok := event["delta"].(map[string]interface{}); ok {
+			if delta, ok := event["delta"].(map[string]any); ok {
 				stopReason, _ := delta["stop_reason"].(string)
-				if stopReason == "end_turn" {
+				switch stopReason {
+				case "end_turn": //nolint:goconst
+
 					stopReason = "stop"
-				} else if stopReason == "tool_use" {
+				case "tool_use":
 					stopReason = "tool_calls"
 				}
 				chunk := streamingChatCompletionChunk{
@@ -743,7 +748,7 @@ func translateAnthropicSSE(r io.Reader, w io.Writer) {
 					}},
 				}
 				// Include usage if present.
-				if usage, ok := event["usage"].(map[string]interface{}); ok {
+				if usage, ok := event["usage"].(map[string]any); ok {
 					outputTokens, _ := usage["output_tokens"].(float64)
 					chunk.Usage = &TokenUsage{
 						CompletionTokens: int(outputTokens),
@@ -753,7 +758,7 @@ func translateAnthropicSSE(r io.Reader, w io.Writer) {
 			}
 
 		case "message_stop":
-			fmt.Fprintf(w, "data: [DONE]\n\n")
+			_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
 		}
 	}
 }
@@ -763,5 +768,5 @@ func writeSSEChunk(w io.Writer, chunk streamingChatCompletionChunk) {
 	if err != nil {
 		return
 	}
-	fmt.Fprintf(w, "data: %s\n\n", data)
+	_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 }
