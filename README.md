@@ -1,5 +1,5 @@
 # Agent Orchestrator (agent-orc) 
-![logo.png](./assets/logo.jpg)
+<!--![logo.png](./assets/logo.jpg)-->
 
 [![Go](https://img.shields.io/badge/go-1.25-00ADD8?logo=go)](https://go.dev/)
 [![Tests](https://github.com/floppyfish14/agent-orc/actions/workflows/test.yml/badge.svg)](https://github.com/floppyfish14/agent-orc/actions/workflows/test.yml)
