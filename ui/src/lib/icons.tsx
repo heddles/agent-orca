@@ -25,10 +25,12 @@ import {
   Clock,
   Code,
   Copy,
+  Database,
   DollarSign,
   Hash,
   Headphones,
   Home,
+  History,
   MessageCircle,
   MoreHorizontal,
   Octagon,
@@ -111,6 +113,9 @@ export const ICON = {
   workflow: RefreshCw,
   runs: Play,
 
+  // History
+  history: History,
+
   // Agent templates
   templates: {
     support: Headphones,
@@ -154,6 +159,7 @@ export const ICON = {
   sun: Sun,
   moon: Moon,
   shuffle: Shuffle,
+  database: Database,
 
   // Chevrons
   chevronRight: ChevronRight,

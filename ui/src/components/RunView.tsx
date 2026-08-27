@@ -8,6 +8,7 @@ import {
   getRun,
   isSSEClientParseEventType,
   subscribeToRunStream,
+  cancelRun,
   type AgentRunDetail,
   type AgentRunSummary,
   type TraceEntry,
@@ -49,7 +50,7 @@ export function RunView({
   const [entries, setEntries] = useState<TraceEntry[]>([])
   const [streamOutput, setStreamOutput] = useState('')
   const [markdown, setMarkdown] = useState(false)
-  const [viewTab, setViewTab] = useState<'details' | 'children'>('details')
+  const [viewTab, setViewTab] = useState<'details' | 'trace' | 'children'>('details')
   const [childDetails, setChildDetails] = useState<AgentRunSummary[]>([])
   const counter = useRef(0)
   const childUnsubsRef = useRef<Array<() => void>>([])
@@ -233,6 +234,21 @@ export function RunView({
             </div>
           )}
           <div style={s.chip}><Icon icon={ICON.cost} size={12} /> <span style={s.chipVal}>${detail?.spendUSD ?? '0.0000'}</span></div>
+          {isRunning && (
+            <button
+              type="button"
+              style={s.stopBtn}
+              onClick={() => {
+                if (window.confirm(`Cancel run "${runId}"? This cannot be undone.`)) {
+                  cancelRun(runId, namespace).catch((e) => alert(`Failed to cancel: ${e.message}`))
+                }
+              }}
+              aria-label={`Cancel run ${runId}`}
+              title="Cancel run"
+            >
+              <Icon icon={ICON.stop} size={12} ariaHidden={true} /> Stop
+            </button>
+          )}
           {(detail?.restartCount ?? 0) > 0 && (
             <div style={s.chip}><Icon icon={ICON.retry} size={12} /> <span style={s.chipVal}>{detail!.restartCount} retries</span></div>
           )}
@@ -253,20 +269,32 @@ export function RunView({
         </div>
       </div>
 
-      {/* Tab bar — only visible when there are child runs */}
-      {hasChildren && (
-        <div role="tablist" style={s.tabBar}>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={viewTab === 'details'}
-            aria-controls="details-panel"
-            tabIndex={viewTab === 'details' ? 0 : -1}
-            style={{ ...s.tab, ...(viewTab === 'details' ? s.tabActive : {}) }}
-            onClick={() => setViewTab('details')}
-          >
-            Details
-          </button>
+      {/* Tab bar — always visible so the Execution Trace is reachable even when
+          the run has no child runs. */}
+      <div role="tablist" style={s.tabBar}>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={viewTab === 'details'}
+          aria-controls="details-panel"
+          tabIndex={viewTab === 'details' ? 0 : -1}
+          style={{ ...s.tab, ...(viewTab === 'details' ? s.tabActive : {}) }}
+          onClick={() => setViewTab('details')}
+        >
+          Details
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={viewTab === 'trace'}
+          aria-controls="trace-panel"
+          tabIndex={viewTab === 'trace' ? 0 : -1}
+          style={{ ...s.tab, ...(viewTab === 'trace' ? s.tabActive : {}) }}
+          onClick={() => setViewTab('trace')}
+        >
+          Execution Trace
+        </button>
+        {hasChildren && (
           <button
             type="button"
             role="tab"
@@ -278,8 +306,8 @@ export function RunView({
           >
             Child Runs ({detail?.childRunRefs?.length ?? 0})
           </button>
-        </div>
-      )}
+        )}
+      </div>
 
       {viewTab === 'children' ? (
         <div id="children-panel" role="tabpanel" style={s.childList}>
@@ -308,6 +336,13 @@ export function RunView({
               </div>
             </button>
           ))}
+        </div>
+      ) : viewTab === 'trace' ? (
+        <div id="trace-panel" role="tabpanel" style={{ flex: 1, overflowY: 'auto' }}>
+          <TraceAccordion entries={entries} streaming={isRunning} markdown={markdown} />
+          {detail && detail.routingDecisions.length > 0 && (
+            <RouterAccordion decisions={detail.routingDecisions} />
+          )}
         </div>
       ) : (
         <div id="details-panel" role="tabpanel" style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -342,14 +377,6 @@ export function RunView({
               <div style={s.inputLabel}>Input prompt</div>
               <div style={s.inputText}>{detail.input}</div>
             </div>
-          )}
-
-          {/* Trace accordion */}
-          <TraceAccordion entries={entries} streaming={isRunning} markdown={markdown} />
-
-          {/* Router accordion */}
-          {detail && detail.routingDecisions.length > 0 && (
-            <RouterAccordion decisions={detail.routingDecisions} />
           )}
         </div>
       )}
@@ -621,5 +648,20 @@ const s: Record<string, React.CSSProperties> = {
     lineHeight: 1.5,
     whiteSpace: 'pre-wrap',
     wordBreak: 'break-word',
+  },
+  stopBtn: {
+    padding: '4px 10px',
+    background: 'rgba(239,68,68,.12)',
+    color: 'var(--ds-error)',
+    border: `1px solid var(--ds-error-border)`,
+    borderRadius: DESIGN.radii.sm,
+    fontSize: 11,
+    fontWeight: 600,
+    cursor: 'pointer',
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 4,
+    transitionProperty: 'background-color',
+    transitionDuration: '0.15s',
   },
 }

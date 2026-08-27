@@ -1,5 +1,8 @@
-# Agent Orchestrator (agent-orc) 
-<!--![logo.png](./assets/logo.jpg)-->
+# Agent ORCAstrator
+<p align="center">
+  <img src="./assets/logo.png" width="450" alt="Mascot"/>
+</p>
+
 
 [![Go](https://img.shields.io/badge/go-1.25-00ADD8?logo=go)](https://go.dev/)
 [![Tests](https://github.com/floppyfish14/agent-orc/actions/workflows/test.yml/badge.svg)](https://github.com/floppyfish14/agent-orc/actions/workflows/test.yml)
@@ -8,7 +11,7 @@
 [![License: Apache 2.0](https://img.shields.io/github/license/floppyfish14/agent-orc)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/floppyfish14/agent-orc?display_name=tag)](https://github.com/floppyfish14/agent-orc/releases)
 
-Agent Orchestrator is a Kubernetes-native platform for deploying, managing, and running AI agents at scale. It lets you declaratively define agents, route them to the right LLM, equip them with tools, and execute them as one-off jobs or long-running services — with checkpoints, cost tracking, guardrails, and RAG built in.
+Agent orcastrator is a Kubernetes-native platform for deploying, managing, and running AI agents at scale. It lets you declaratively define agents, route them to the correct LLM, equip them with tools, and execute them as one-off jobs or long-running services with checkpoints, cost tracking, guardrails, and RAG built in.
 
 > **Open source, Apache 2.0.** See [CONTRIBUTING.md](CONTRIBUTING.md) to get started,
 > [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for the community standard, and

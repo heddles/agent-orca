@@ -111,6 +111,11 @@ func main() { //nolint:gocyclo
 	}
 
 	metricsReg := prometheus.NewRegistry()
+	// Register model-router metrics (tokens, tool calls, stream latency) on the
+	// :9091 endpoint so the status page can scrape real token throughput. Previously
+	// metricsReg was created but never had any metrics registered, so :9091 exposed an
+	// empty registry and token throughput was always unavailable.
+	r.SetMetrics(router.NewMetrics(metricsReg))
 	metricsSrv := &http.Server{
 		Addr:              ":9091",
 		Handler:           promhttp.HandlerFor(metricsReg, promhttp.HandlerOpts{EnableOpenMetrics: true}),

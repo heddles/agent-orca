@@ -75,6 +75,11 @@ type Router struct {
 	// Tool discoveries from MCP servers are merged into cfg.ToolDefinitions at startup.
 	mcpClient *mcp.Client
 
+	// metrics exposes model-router Prometheus counters on the :9091/metrics
+	// endpoint (tokens streamed, tool calls, stream latency). May be nil when
+	// the model-router was built without a metrics registry; all calls are nil-safe.
+	metrics *Metrics
+
 	// guardrails is the content filtering pipeline. Nil when no guardrail policy is configured.
 	guardrails *GuardrailPipeline
 
@@ -226,6 +231,15 @@ func (r *Router) SetExecutor(exec *executor.Executor) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.exec = exec
+}
+
+// SetMetrics attaches a Prometheus metrics set so the streaming hot path can
+// record token/tool/latency counters exposed on :9091. Safe to call (or skip)
+// after New; metrics is nil-safe for all increments.
+func (r *Router) SetMetrics(m *Metrics) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.metrics = m
 }
 
 // Cancel terminates all in-flight LLM requests and marks the router as failed.

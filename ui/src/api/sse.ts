@@ -380,15 +380,84 @@ export async function getChatHistory(
   return res.json()
 }
 
-/** Fetch operator-level feature flags. */
-export async function getSystemStatus(): Promise<SystemStatus> {
-  const res = await apiFetch('/api/system/status')
+/** Fetch operator-level system status with subsystem health and metrics.
+ *  Pass `range` ("1h" | "6h" | "24h" | "7d") to scope the returned metric
+ *  samples to a time window (default 24h). */
+export async function getSystemStatus(range?: MetricRange): Promise<SystemStatus> {
+  let url = '/api/system/status'
+  if (range) url += `?range=${encodeURIComponent(range)}`
+  const res = await apiFetch(url)
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json()
 }
 
+export type MetricRange = '1h' | '6h' | '24h' | '7d'
+
+/** A point-in-time metric snapshot used to render time-series graphs. */
+export interface MetricSample {
+  time: number
+  requestCount: number
+  egressPublished: number
+  egressFailed: number
+  p50LatencyMs: number
+  p95LatencyMs: number
+  p99LatencyMs: number
+  tokenThroughput: number
+}
+
+export interface SystemSubSystemStatus {
+  name: string
+  status: 'up' | 'down' | 'degraded'
+  message?: string
+  latencyMs?: number
+}
+
+export interface ProviderHealth {
+  name: string
+  namespace: string
+  ready: boolean
+  latencyMs?: number
+  message?: string
+}
+
+export interface SystemMetrics {
+  requestCount24h: number
+  p50LatencyMs: number
+  p95LatencyMs: number
+  p99LatencyMs: number
+  tokenThroughput: number
+  egressPublished: number
+  egressFailed: number
+  /** Time-series snapshots for the requested range (see ?range=). */
+  samples?: MetricSample[]
+}
+
+export interface AlertEntry {
+  id: string
+  subsystem: string
+  state: 'firing' | 'resolved'
+  message: string
+  firstSeen: string
+  lastSeen: string
+  resolvedAt?: string
+}
+
 export interface SystemStatus {
   stateConfigured: boolean
+  /** True when the PostgreSQL archival store is wired up (controls /api/runs/history). */
+  runHistoryConfigured: boolean
+  version?: string
+  subsystems: SystemSubSystemStatus[]
+  modelProviders: ProviderHealth[]
+  metrics?: SystemMetrics
+  alerts: AlertEntry[]
+}
+
+/** Fetch alert history from the alert manager. */
+export async function getAlerts(): Promise<AlertEntry[]> {
+  const res = await apiFetch('/api/system/alerts')
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
 }
 
 export interface KnowledgeBaseCondition {
@@ -460,6 +529,138 @@ export async function saveChatResponse(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ sessionId, output, traceEntries }),
+  })
+  if (!res.ok) throw new Error(await res.text())
+}
+
+// ── Run History (PostgreSQL archival) ────────────────────────────────────────
+
+export interface RunHistorySummary {
+  name: string
+  namespace: string
+  agentRef: string
+  phase: string
+  spendUSD: string
+  startTime?: string
+  completionTime?: string
+  tenant?: string
+  /** Estimated token count of the conversation context at archival time. */
+  contextUsedTokens?: number
+  /** Maximum context window size for the selected model. */
+  maxContextTokens?: number
+}
+
+export interface RunHistoryResponse {
+  runs: RunHistorySummary[]
+  total: number
+  limit: number
+  offset: number
+}
+
+export interface RunHistoryQuery {
+  limit?: number
+  offset?: number
+  phase?: string
+  agentRef?: string
+  search?: string
+  namespace?: string
+}
+
+/** Fetch paginated, filtered historical runs from PostgreSQL archival store. */
+export async function listRunHistory(opts: RunHistoryQuery = {}): Promise<RunHistoryResponse> {
+  const params = new URLSearchParams()
+  if (opts.limit) params.set('limit', String(opts.limit))
+  if (opts.offset) params.set('offset', String(opts.offset))
+  if (opts.phase) params.set('phase', opts.phase)
+  if (opts.agentRef) params.set('agentRef', opts.agentRef)
+  if (opts.search) params.set('search', opts.search)
+  if (opts.namespace) params.set('namespace', opts.namespace)
+  const res = await apiFetch(`/api/runs/history?${params}`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+// ── Archived run detail ────────────────────────────────────────────────────
+
+/** Full detail of a single archived AgentRun (read from PostgreSQL). */
+export interface RunHistoryDetail {
+  name: string
+  namespace: string
+  agentRef: string
+  input: string
+  output: string
+  phase: string
+  spendUSD: string
+  restartCount: number
+  startTime?: string
+  completionTime?: string
+  contextUsedTokens?: number
+  maxContextTokens?: number
+  routingDecisions: RoutingDecisionInfo[]
+  childRunRefs?: string[]
+  /** Resolved Tool names from the Agent CRD spec. */
+  tools?: string[]
+  /** Resolved MCP server names accessible to this agent in its namespace. */
+  mcpServers?: string[]
+  /** The model selected at runtime, derived from the last routing decision. */
+  resolvedModel?: string
+  podName?: string
+}
+
+/** Fetch the full detail of a single archived run from PostgreSQL. */
+export async function getRunHistoryDetail(namespace: string, name: string): Promise<RunHistoryDetail> {
+  const res = await apiFetch(`/api/runs/history/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+// ── Generic Resource CRUD ───────────────────────────────────────────────────
+
+export type ResourceKind =
+  | 'agents' | 'tools' | 'mcpservers' | 'modelproviders'
+  | 'knowledgebases' | 'modelselectors' | 'agentdeployments' | 'agentworkflows'
+
+/** List resources of a given kind (scoped to tenant namespace when authed). */
+export async function listResources(kind: ResourceKind, namespace = ''): Promise<any[]> {
+  const url = `/api/resources/${encodeURIComponent(kind)}?namespace=${encodeURIComponent(namespace)}`
+  const res = await apiFetch(url)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+/** Get a single resource by kind, namespace, and name. */
+export async function getResource(kind: ResourceKind, namespace: string, name: string): Promise<any> {
+  const res = await apiFetch(`/api/resources/${encodeURIComponent(kind)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+/** Create a new resource of the given kind. */
+export async function createResource(kind: ResourceKind, data: any): Promise<any> {
+  const res = await apiFetch(`/api/resources/${encodeURIComponent(kind)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) throw new Error(await res.text())
+  return res.json()
+}
+
+/** Update (PUT) a resource's spec. Status fields are stripped server-side. */
+export async function updateResource(kind: ResourceKind, namespace: string, name: string, data: any): Promise<any> {
+  const res = await apiFetch(`/api/resources/${encodeURIComponent(kind)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) throw new Error(await res.text())
+  return res.json()
+}
+
+/** Delete a resource. Only works for agent-orc-managed resources. */
+export async function deleteResource(kind: ResourceKind, namespace: string, name: string): Promise<void> {
+  const res = await apiFetch(`/api/resources/${encodeURIComponent(kind)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
   })
   if (!res.ok) throw new Error(await res.text())
 }

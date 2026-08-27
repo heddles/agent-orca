@@ -68,7 +68,66 @@ deploy:
         - host:
             command: ["bash", "hack/ensure-kind-cluster.sh"]
             os: [darwin, linux]
+        - host:
+            command: ["bash", "-c", "helm repo add cloudnative-pg https://cloudnative-pg.github.io/charts 2>/dev/null || true"]
+            os: [darwin, linux]
+        - host:
+            command: ["bash", "-c", "helm repo add grafana-dashboards https://cloudnative-pg.github.io/grafana-dashboards 2>/dev/null || true"]
+            os: [darwin, linux]
+        # Pre-create the postgres superuser secret with a known password so both
+        # the CNPG operator (sets the DB password) and the agent-orc operator
+        # (reads the password for its DSN) agree on the credential. Without this,
+        # the CNPG operator generates a random password that the agent-orc operator
+        # can't know.
+        - host:
+            command:
+              - bash
+              - -c
+              - |
+                PG_PW="${AGENT_ORC_POSTGRES_PASSWORD:-skaffold-dev-postgres-pw}"
+                kubectl create secret generic postgres-superuser \
+                  --namespace=agent-orc-system \
+                  --from-literal=username=postgres \
+                  --from-literal=password="$PG_PW" \
+                  --dry-run=client -o yaml | kubectl apply -f -
+            os: [darwin, linux]
     releases:
+      # CloudNativePG operator — installs CRDs + operator Deployment.
+      # Deployed FIRST (before the cluster and agent-orc) so CRDs are established.
+      # wait: true ensures CRDs are established before the next release.
+      - name: cloudnative-pg-operator
+        chartPath: charts/cloudnative-pg
+        namespace: agent-orc-system
+        createNamespace: true
+        wait: true
+        setValues:
+          crds.create: "true"
+          config.clusterWide: "true"
+          image.tag: "1.30.0"
+          replicaCount: "1"
+          resources.requests.cpu: "100m"
+          resources.requests.memory: "128Mi"
+          resources.limits.cpu: "500m"
+          resources.limits.memory: "512Mi"
+
+      # CloudNativePG cluster — creates the Cluster CR (kind: Cluster).
+      # Deployed AFTER the operator so the CRD is established.
+      # wait: true ensures the Cluster is ready before agent-orc starts.
+      - name: cloudnative-pg-cluster
+        chartPath: charts/cluster
+        namespace: agent-orc-system
+        wait: true
+        setValues:
+          fullnameOverride: "postgres"
+          cluster.instances: "1"
+          cluster.imageName: "ghcr.io/cloudnative-pg/postgresql:16"
+          cluster.storage.size: "10Gi"
+          cluster.initdb.database: "agentorc"
+          cluster.initdb.owner: "agentorc"
+          cluster.enableSuperuserAccess: "true"
+          cluster.superuserSecret: "postgres-superuser"
+          cluster.enablePDB: "true"
+
       - name: agent-orc
         chartPath: charts/agent-orc
         namespace: agent-orc-system
@@ -79,6 +138,7 @@ deploy:
           ui.image.pullPolicy: Never
           operator.leaderElection: false
           webhook.certManager: true
+          database.enabled: "true"
         setValueTemplates:
           operator.image.repository: "{{.IMAGE_REPO_agent_orc_operator}}"
           operator.image.tag: "{{.IMAGE_TAG_agent_orc_operator}}"
@@ -320,6 +380,31 @@ profiles:
       helm:
         hooks: *ensure_kind_deploy_hooks
         releases:
+          # CloudNativePG operator — installs CRDs + operator Deployment (first).
+          - name: cloudnative-pg-operator
+            chartPath: charts/cloudnative-pg
+            namespace: agent-orc-system
+            wait: true
+            setValues:
+              crds.create: "true"
+              config.clusterWide: "true"
+              image.tag: "1.30.0"
+              replicaCount: "1"
+          # CloudNativePG cluster — creates the Cluster CR (after operator is ready).
+          - name: cloudnative-pg-cluster
+            chartPath: charts/cluster
+            namespace: agent-orc-system
+            wait: true
+            setValues:
+              fullnameOverride: "postgres"
+              cluster.instances: "1"
+              cluster.imageName: "ghcr.io/cloudnative-pg/postgresql:16"
+              cluster.storage.size: "10Gi"
+              cluster.initdb.database: "agentorc"
+              cluster.initdb.owner: "agentorc"
+              cluster.enableSuperuserAccess: "true"
+              cluster.superuserSecret: "postgres-superuser"
+              cluster.enablePDB: "true"
           - name: agent-orc
             chartPath: charts/agent-orc
             namespace: agent-orc-system
@@ -332,6 +417,7 @@ profiles:
               operator.leaderElection: false
               webhook.certManager: false
               webhook.failurePolicy: Ignore
+              database.enabled: "true"
             setValueTemplates:
               operator.image.repository: "{{.IMAGE_REPO_agent_orc_operator}}"
               operator.image.tag: "{{.IMAGE_TAG_agent_orc_operator}}"
@@ -352,6 +438,7 @@ profiles:
               providerSecrets[1].apiKey: "{{.ANTHROPIC_API_KEY}}"
               providerSecrets[2].apiKey: "{{.GOOGLE_API_KEY}}"
               providerSecrets[3].apiKey: "{{.POOLSIDE_API_KEY}}"
+
 
   # demo-htb-pwn: autonomous HTB red-team pwnbox (MCP toolbelt pattern).
   # A privileged `red-pwnbox` Deployment runs HTB OpenVPN (tun0) + an MCP server

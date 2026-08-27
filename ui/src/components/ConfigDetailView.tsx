@@ -26,6 +26,7 @@ type ConfigSelection = Extract<ResourceSelection, { kind: 'agent' | 'tool' | 'mc
 
 interface Props {
   selection: ConfigSelection
+  onEdit?: () => void
 }
 
 function Field({ label, value }: { label: string; value: React.ReactNode }) {
@@ -234,7 +235,7 @@ function KnowledgeBaseDetail({ data }: { data: KnowledgeBaseSummary }) {
   )
 }
 
-export function ConfigDetailView({ selection }: Props) {
+export function ConfigDetailView({ selection, onEdit }: Props) {
   const [agent, setAgent] = useState<AgentSummary | null>(null)
   const [agentMCPServers, setAgentMCPServers] = useState<MCPServerSummary[]>([])
   const [tool, setTool] = useState<ToolSummary | null>(null)
@@ -243,6 +244,7 @@ export function ConfigDetailView({ selection }: Props) {
   const [kb, setKB] = useState<KnowledgeBaseSummary | null>(null)
   const [selector, setSelector] = useState<ModelSelectorSummary | null>(null)
   const [loading, setLoading] = useState(true)
+  const [editError, setEditError] = useState<string | null>(null)
 
   useEffect(() => {
     setLoading(true)
@@ -310,7 +312,24 @@ export function ConfigDetailView({ selection }: Props) {
         <span style={s.kindLabel}>{kindLabels[selection.kind]}</span>
         <h2 style={s.title}>{selection.name}</h2>
         <span style={s.namespace}>{selection.namespace}</span>
+        {onEdit && (
+          <button
+            type="button"
+            style={s.editBtn}
+            onClick={onEdit}
+            aria-label={`Edit ${kindLabels[selection.kind]} ${selection.name}`}
+            title="Edit resource"
+          >
+            <Icon icon={ICON.create} size={13} ariaHidden={true} /> Edit
+          </button>
+        )}
       </div>
+      {editError && (
+        <div style={s.errorBanner}>
+          <Icon icon={ICON.error} size={12} ariaHidden={true} />
+          <span>{editError}</span>
+        </div>
+      )}
       <div style={s.card}>
         {selection.kind === 'agent' && agent && <AgentDetail data={agent} mcpServers={agentMCPServers} />}
         {selection.kind === 'tool' && tool && <ToolDetail data={tool} />}
@@ -355,6 +374,33 @@ const s: Record<string, React.CSSProperties> = {
   namespace: {
     fontSize: 12,
     color: 'var(--ds-text-muted)',
+  },
+  editBtn: {
+    marginTop: 8,
+    padding: '5px 12px',
+    fontSize: 11,
+    fontWeight: 600,
+    color: 'var(--ds-accent)',
+    background: 'rgba(59,130,246,.1)',
+    border: `1px solid var(--ds-accent-border)`,
+    borderRadius: DESIGN.radii.sm,
+    cursor: 'pointer',
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 4,
+    alignSelf: 'flex-start',
+  },
+  errorBanner: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+    padding: '6px 10px',
+    background: 'rgba(239,68,68,.1)',
+    border: `1px solid var(--ds-error-border)`,
+    borderRadius: DESIGN.radii.sm,
+    color: 'var(--ds-error)',
+    fontSize: 12,
+    marginBottom: 8,
   },
   card: {
     background: 'var(--ds-surface)',

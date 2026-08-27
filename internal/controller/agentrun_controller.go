@@ -54,6 +54,7 @@ import (
 	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
 	"github.com/floppyfish14/agent-orc/internal/egress"
 	"github.com/floppyfish14/agent-orc/internal/podbuilder"
+	"github.com/floppyfish14/agent-orc/internal/postgresql"
 	"github.com/floppyfish14/agent-orc/internal/router"
 	"github.com/floppyfish14/agent-orc/internal/security"
 	"github.com/floppyfish14/agent-orc/internal/state"
@@ -74,6 +75,10 @@ type AgentRunReconciler struct {
 	StateConfig      state.Config
 	StateStore       state.Store
 	CloudProvider    security.CloudProvider
+	// PostgresStore is the optional PostgreSQL archival store. When non-nil,
+	// terminal-phase AgentRuns are snapshotted here for long-term retention
+	// and historical querying by the UI.
+	PostgresStore *postgresql.Store
 	// TokenReviewerClusterRole is the name of the ClusterRole that grants
 	// "create tokenreviews" — injected at startup from the Helm release name.
 	// The agentrun controller binds each agent SA to this role so the
@@ -490,6 +495,9 @@ func (r *AgentRunReconciler) handlePodSuccess(ctx context.Context, run *agentorc
 
 	// Publish result to egress sink if configured.
 	r.fireEgress(ctx, run)
+
+	// Archive terminal-phase run to PostgreSQL for historical querying.
+	r.maybeArchiveRun(ctx, run)
 
 	return ctrl.Result{}, nil
 }
@@ -1596,6 +1604,23 @@ func (r *AgentRunReconciler) ensureCleanup(ctx context.Context, run *agentorcv1a
 
 	// Role, RoleBinding, NetworkPolicy, ConfigMap, Secret are owned by the AgentRun
 	// and garbage-collected automatically via ownerReferences.
+
+	// Re-archive terminal runs to PostgreSQL on every terminal reconcile. This is
+	// the restart/back-fill path: a run that went terminal just before a crash may
+	// never have completed the fire-and-forget archive in handlePodSuccess, and
+	// ensureCleanup previously didn't re-archive, so such runs vanished from the
+	// history view after a controller restart. ArchiveRun is an idempotent UPSERT
+	// (keyed by namespace/name), so this is a cheap no-op for runs already
+	// archived and a durable back-fill for the ones that were lost.
+	if r.PostgresStore != nil && postgresql.IsTerminalPhase(run.Status.Phase) {
+		archiveCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		if err := r.PostgresStore.ArchiveRun(archiveCtx, run); err != nil {
+			logger := log.FromContext(ctx)
+			logger.Error(err, "failed to re-archive terminal run on restart", "run", run.Name, "ns", run.Namespace)
+		}
+	}
+
 	return ctrl.Result{}, nil
 }
 
@@ -1720,7 +1745,27 @@ func (r *AgentRunReconciler) failRun(ctx context.Context, run *agentorcv1alpha1.
 	// Publish result to egress sink if configured.
 	r.fireEgress(ctx, run)
 
+	// Archive terminal-phase run to PostgreSQL for historical querying.
+	r.maybeArchiveRun(ctx, run)
+
 	return ctrl.Result{}, nil
+}
+
+// maybeArchiveRun snapshots a terminal-phase AgentRun to PostgreSQL if the
+// archival store is configured. Uses a non-blocking goroutine so DB latency
+// never delays reconciliation. Re-archiving is idempotent (UPSERT by name).
+func (r *AgentRunReconciler) maybeArchiveRun(ctx context.Context, run *agentorcv1alpha1.AgentRun) {
+	if r.PostgresStore == nil || !postgresql.IsTerminalPhase(run.Status.Phase) {
+		return
+	}
+	// Snapshot the run as-is (spec + status) into PostgreSQL.
+		go func() {
+		archiveCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := r.PostgresStore.ArchiveRun(archiveCtx, run); err != nil {
+			log.Log.Error(err, "failed to archive run to PostgreSQL", "run", run.Name, "ns", run.Namespace)
+		}
+	}()
 }
 
 // fireCallback sends an HTTP POST to the configured callback URL when an AgentRun

@@ -289,6 +289,35 @@ func (a *ExternalAuth) Middleware(next http.Handler) http.Handler {
 	})
 }
 
+// ValidateToken attempts to validate a bearer token against all three supported
+// auth modes and returns the resolved TenantIdentity. This is the single-token
+// variant of Middleware, used by the UI API server as a fallback after K8s SA
+// token validation fails (enabling OIDC tenant JWT login from the browser).
+func (a *ExternalAuth) ValidateToken(ctx context.Context, token string) (*TenantIdentity, error) {
+	// Try agent-orc-issued JWT first.
+	if identity, err := a.validateIssuedToken(token); err == nil {
+		return identity, nil
+	} else {
+		slog.Debug("issued token validation failed", "err", err)
+	}
+
+	// Try federated OIDC JWT.
+	if identity, err := a.validateFederatedToken(ctx, token); err == nil {
+		return identity, nil
+	} else {
+		slog.Debug("federated token validation failed", "err", err)
+	}
+
+	// Fall back to Kubernetes SA token.
+	if identity, err := a.validateK8sToken(ctx, token); err == nil {
+		return identity, nil
+	} else {
+		slog.Debug("k8s token validation failed", "err", err)
+	}
+
+	return nil, fmt.Errorf("unauthorized")
+}
+
 // HandleTokenRequest handles POST /oauth/token for client_credentials grant.
 func (a *ExternalAuth) HandleTokenRequest(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {

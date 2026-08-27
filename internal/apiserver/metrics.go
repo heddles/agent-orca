@@ -19,6 +19,7 @@ package apiserver
 import (
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"log/slog"
@@ -71,12 +72,36 @@ func (w *recordingResponseWriter) Write(b []byte) (int, error) {
 	return w.ResponseWriter.Write(b)
 }
 
-// probePaths are endpoints not worth writing to the audit log on every scrape.
+// Flush propagates to the underlying ResponseWriter when it implements
+// http.Flusher. This is REQUIRED for SSE streaming (the run stream and the
+// ACP event stream both assert w.(http.Flusher) and call Flush after each
+// chunk). Without this method, wrapping a Flusher-capable writer in
+// recordingResponseWriter makes the type assertion fail, causing the stream
+// handler to reject the connection as "streaming unsupported" and the UI to see
+// "stream connection lost".
+func (w *recordingResponseWriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// probePaths are endpoints not worth writing to the audit log on every hit.
+// The status page polls /api/system/status and the history tab polls
+// /api/runs/history every 5s; with the UI server now instrumented, counting
+// those is desirable but auditing each poll would be noisy.
 var probePaths = map[string]bool{
-	"/healthz":      true,
-	"/readyz":       true,
-	"/metrics":      true,
-	"/openapi.json": true,
+	"/healthz":            true,
+	"/readyz":             true,
+	"/metrics":            true,
+	"/openapi.json":       true,
+	"/api/system/status":  true,
+	"/api/runs/history":   true,
+}
+
+// isStreamingPath reports whether a request path is a long-lived SSE stream whose
+// open duration must not be counted as request latency (see instrument).
+func isStreamingPath(path string) bool {
+	return strings.HasSuffix(path, "/stream")
 }
 
 // instrument wraps next with Prometheus request counters/histograms, an
@@ -98,8 +123,14 @@ func instrument(server string, next http.Handler) http.Handler {
 			"status": status,
 		}
 		externalRequests.With(labels).Inc()
-		externalRequestDuration.With(prometheus.Labels{"server": server, "path": path}).
-			Observe(time.Since(start).Seconds())
+		// SSE streams (run/deployment chat streams) are long-lived by design;
+		// observing their full open duration would skew the p95/p99 latency
+		// heatmap toward 30s+ and make healthy streaming look "slow". Count them
+		// as requests but exclude them from the latency histogram.
+		if !isStreamingPath(path) {
+			externalRequestDuration.With(prometheus.Labels{"server": server, "path": path}).
+				Observe(time.Since(start).Seconds())
+		}
 		if rw.status == http.StatusUnauthorized || rw.status == http.StatusForbidden {
 			externalAuthFailures.With(prometheus.Labels{"server": server}).Inc()
 		}

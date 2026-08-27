@@ -77,6 +77,26 @@ spec:
               value: {{ .Values.agentState.redis.url | quote }}
             {{- end }}
             {{- end }}
+            {{- if .Values.database.enabled }}
+            # POSTGRES_PASSWORD must be declared BEFORE POSTGRES_DSN — Kubernetes
+            # only expands $(VAR) references for variables declared earlier in the
+            # same container's env list.
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.passwordSecret.name | quote }}
+                  key: {{ .Values.database.passwordSecret.key | quote }}
+            - name: POSTGRES_DSN
+              value: {{ .Values.database.dsn | quote }}
+            {{- end }}
+            {{- if .Values.systemStatus }}
+            {{- if .Values.systemStatus.alertWebhookURL }}
+            - name: ALERT_WEBHOOK_URL
+              value: {{ .Values.systemStatus.alertWebhookURL | quote }}
+            - name: ALERT_HMAC_SECRET
+              value: {{ .Values.systemStatus.alertHmacSecret | quote }}
+            {{- end }}
+            {{- end }}
           args:
             - --leader-elect={{ .Values.operator.leaderElection }}
             - --health-probe-bind-address=:8081

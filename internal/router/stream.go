@@ -434,6 +434,8 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 						contentBuilder.WriteString(choice.Delta.Content)
 						// Broadcast to external subscribers (operator SSE stream).
 						r.tokens.Send(choice.Delta.Content)
+						// Record model-router token output for :9091 metrics.
+						r.metrics.AddTokens(len(choice.Delta.Content))
 						// Write to Redis Stream for UI token streaming.
 						if r.store != nil {
 							if err := r.store.SaveToken(req.Context(), tokenStreamKey, choice.Delta.Content); err != nil {

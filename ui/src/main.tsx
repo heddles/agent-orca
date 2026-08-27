@@ -7,6 +7,10 @@ import { ConfigDetailView } from './components/ConfigDetailView'
 import { RunView } from './components/RunView'
 import { DeploymentView } from './components/DeploymentView'
 import { WorkflowView } from './components/WorkflowView'
+import { RunHistoryView } from './components/RunHistoryView'
+import { RunHistoryDetailView } from './components/RunHistoryDetailView'
+import { SystemStatusPage } from './components/SystemStatusPage'
+import { ResourceEditor } from './components/ResourceEditor'
 import { CostDashboard } from './components/CostDashboard'
 import { CreateAgentPanel } from './components/CreateAgentPanel'
 import { SystemDashboard } from './components/SystemDashboard'
@@ -14,6 +18,7 @@ import { MarketplaceView } from './components/MarketplaceView'
 import { applyDesignSystem, ds, toggleTheme, applyTheme, getPreferredTheme, type Theme } from './lib/designSystem'
 import { ICON, Icon } from './lib/icons'
 import type { IconComponent } from './lib/icons'
+import type { ResourceKind } from './api/sse'
 
 // Register the design system (CSS variables, font smoothing, reduced-motion,
 // focus-visible baseline, aoPulse keyframe) before rendering.
@@ -21,7 +26,7 @@ applyDesignSystem()
 // Apply the saved or system-default theme.
 applyTheme(getPreferredTheme())
 
-type TopLevelTab = ResourceTab | 'home' | 'marketplace'
+type TopLevelTab = ResourceTab | 'home' | 'marketplace' | 'history' | 'status'
 
 // ── Navigation state persistence (survives page refresh) ────────────────────
 //
@@ -57,7 +62,7 @@ function saveNavState(state: Partial<NavState>): void {
 
 // Validate the saved tab — ignore stale tabs from a previous deployment.
 const VALID_TABS: TopLevelTab[] = [
-  'home', 'marketplace', 'runs', 'deployments', 'workflows',
+  'home', 'marketplace', 'history', 'status', 'runs', 'deployments', 'workflows',
   'agents', 'tools', 'mcpservers', 'modelproviders', 'knowledgebases', 'modelselectors',
 ]
 
@@ -172,6 +177,9 @@ const HOME_TABS: { key: 'home' | 'marketplace'; label: string }[] = [
   { key: 'marketplace', label: 'Marketplace' },
 ]
 
+// Dashboard-style tabs that don't use the sidebar navigation.
+const DASHBOARD_TABS: TopLevelTab[] = ['history', 'status']
+
 function App() {
   const [tab, setTab] = useState<TopLevelTab>(initialTab)
   const [selection, setSelection] = useState<ResourceSelection | null>(savedState.selection ?? null)
@@ -183,6 +191,12 @@ function App() {
   const [showCreateAgent, setShowCreateAgent] = useState(false)
   const [showRedisBanner, setShowRedisBanner] = useState(false)
   const [showSkip, setShowSkip] = useState(false)
+  // Resource editor state — when non-null, overlays the main content.
+  const [editorTarget, setEditorTarget] = useState<{
+    kind: ResourceKind
+    name: string
+    namespace: string
+  } | null>(null)
 
   // Persist navigation state to sessionStorage on change (survives page refresh).
   useEffect(() => {
@@ -285,6 +299,23 @@ function App() {
             </button>
           ))}
           <span style={layout.navDivider} />
+          <button
+            style={{ ...layout.navTab, ...(tab === 'history' && !showCosts ? layout.navTabActive : {}) }}
+            onClick={() => { setTab('history'); setSelection(null); setBreadcrumbs([]); setShowCosts(false) }}
+            aria-label="Run history"
+            title="Past Runs"
+          >
+            <Icon icon={ICON.history} size={14} ariaHidden={true} /> History
+          </button>
+          <button
+            style={{ ...layout.navTab, ...(tab === 'status' && !showCosts ? layout.navTabActive : {}) }}
+            onClick={() => { setTab('status'); setSelection(null); setBreadcrumbs([]); setShowCosts(false) }}
+            aria-label="System status"
+            title="System Status"
+          >
+            <Icon icon={ICON.warning} size={14} ariaHidden={true} /> Status
+          </button>
+          <span style={layout.navDivider} />
           {OPS_TABS.map((t) => (
             <button
               key={t}
@@ -341,8 +372,8 @@ function App() {
 
       {/* ── Body ── */}
       <div style={layout.body}>
-        {/* Left list panel - hidden on home/marketplace tabs */}
-        {tab !== 'home' && tab !== 'marketplace' && (
+        {/* Left list panel - hidden on home/marketplace/history/status tabs */}
+        {tab !== 'home' && tab !== 'marketplace' && tab !== 'history' && tab !== 'status' && (
           <aside data-sidebar style={layout.leftPanel}>
             <div style={layout.listHeader}>
               <span style={layout.listTitle}>{TAB_LABELS[tab as ResourceTab]}</span>
@@ -387,6 +418,29 @@ function App() {
             <SystemDashboard navigateToTab={handleNavigateToTab} />
           ) : tab === 'marketplace' ? (
             <MarketplaceView />
+          ) : tab === 'history' && selection?.kind === 'run' ? (
+            <RunHistoryDetailView
+              runId={selection.name}
+              namespace={selection.namespace}
+              onBack={() => { setSelection(null); setBreadcrumbs([]) }}
+              onNavigateToRun={(runName, ns) => setSelection({ kind: 'run', name: runName, namespace: ns })}
+            />
+          ) : tab === 'history' ? (
+            <RunHistoryView
+              onNavigateToRun={(runName, ns) => {
+                setSelection({ kind: 'run', name: runName, namespace: ns })
+              }}
+            />
+          ) : tab === 'status' ? (
+            <SystemStatusPage navigateToTab={(t) => { setTab(t as TopLevelTab); setSelection(null); setBreadcrumbs([]); setShowCosts(false) }} />
+          ) : editorTarget ? (
+            <ResourceEditor
+              kind={editorTarget.kind}
+              name={editorTarget.name}
+              namespace={editorTarget.namespace}
+              onSaved={() => { setEditorTarget(null) }}
+              onClose={() => setEditorTarget(null)}
+            />
           ) : selection?.kind === 'run' ? (
             <RunView
               runId={selection.name}
@@ -409,7 +463,14 @@ function App() {
           ) : selection?.kind === 'workflow' ? (
             <WorkflowView namespace={selection.namespace} name={selection.name} />
           ) : selection && (selection.kind === 'agent' || selection.kind === 'tool' || selection.kind === 'mcpserver' || selection.kind === 'modelprovider' || selection.kind === 'knowledgebase' || selection.kind === 'modelselector') ? (
-            <ConfigDetailView selection={selection} />
+            <ConfigDetailView
+              selection={selection}
+              onEdit={() => setEditorTarget({
+                kind: selection.kind as ResourceKind,
+                name: selection.name,
+                namespace: selection.namespace,
+              })}
+            />
           ) : (
             <EmptyState tab={tab as ResourceTab} />
           )}

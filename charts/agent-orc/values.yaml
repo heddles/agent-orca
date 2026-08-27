@@ -150,3 +150,30 @@ ui:
     # - secretName: agent-orc-ui-tls
     #   hosts:
     #     - agent-orc.example.com
+
+# PostgreSQL archival store (optional).
+# When enabled, completed AgentRuns are snapshotted here for long-term
+# retention and historical querying by the UI's Past Runs page.
+#
+# The PostgreSQL instance is deployed SEPARATELY (e.g., via the cloudnative-pg
+# operator chart + cluster chart as separate Skaffold/Helm releases). This
+# section only configures the agent-orc operator's connection to the database
+# and the env vars injected into the operator pod.
+#
+# For Skaffold dev deployments, the cloudnative-pg-operator and
+# cloudnative-pg-cluster releases are installed automatically (see skaffold.yaml).
+database:
+  enabled: true
+  dsn: "postgresql://postgres:$(POSTGRES_PASSWORD)@postgres-rw.agent-orc-system.svc.cluster.local:5432/agentorc?sslmode=disable"
+  passwordSecret:
+    name: "postgres-superuser"
+    key: "password"
+
+# System status alerting configuration.
+# When alertWebhookURL is set, the operator fires webhook notifications on
+# subsystem health transitions (up→down, down→up). The HMAC key is
+# base64-decoded from alertHmacSecret and used to sign webhook payloads
+# with an X-Agentorc-Signature: sha256=<hex> header.
+systemStatus:
+  alertWebhookURL: ""
+  alertHmacSecret: ""

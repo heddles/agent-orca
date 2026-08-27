@@ -19,6 +19,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"flag"
 	"fmt"
 	"net/http"
@@ -50,6 +51,7 @@ import (
 	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
 	"github.com/floppyfish14/agent-orc/internal/apiserver"
 	"github.com/floppyfish14/agent-orc/internal/controller"
+	"github.com/floppyfish14/agent-orc/internal/postgresql"
 	"github.com/floppyfish14/agent-orc/internal/security"
 	"github.com/floppyfish14/agent-orc/internal/state"
 	agentwebhook "github.com/floppyfish14/agent-orc/internal/webhook"
@@ -281,6 +283,47 @@ func main() {
 			"Set STATE_BACKEND=redis and REDIS_URL to enable.")
 	}
 
+	// ── PostgreSQL archival store (optional) ─────────────────────────────────
+	// When POSTGRES_DSN is set, completed AgentRuns are snapshotted to PostgreSQL
+	// so the UI can display historical runs beyond the K8s CRD retention window.
+	// The CloudNativePG cluster takes a few seconds to bootstrap after install,
+	// so we retry the connection for up to 120s (mirrors the Redis retry pattern).
+	var pgStore *postgresql.Store
+	if pgDsn := os.Getenv("POSTGRES_DSN"); pgDsn != "" {
+		const maxWait = 120 * time.Second
+		const backoff = 5 * time.Second
+		deadline := time.Now().Add(maxWait)
+		for {
+			pgStore, err = postgresql.NewStore(pgDsn)
+			if err == nil {
+				break
+			}
+			if time.Now().After(deadline) {
+				setupLog.Error(err, "Failed to connect to PostgreSQL after retries, run archival disabled")
+				pgStore = nil
+				break
+			}
+			setupLog.Info("PostgreSQL not ready yet, retrying...", "error", err.Error(), "backoff", backoff)
+			time.Sleep(backoff)
+		}
+	} else {
+		setupLog.Info("PostgreSQL archival disabled (POSTGRES_DSN not set)")
+	}
+	if pgStore != nil {
+		ctx := context.Background()
+		if err := pgStore.ApplyMigration(ctx); err != nil {
+			setupLog.Error(err, "Failed to apply PostgreSQL migration")
+		}
+	}
+
+	// ── Alerting subsystem (optional) ────────────────────────────────────────
+	// Configured via ALERT_WEBHOOK_URL (comma-separated) and ALERT_HMAC_SECRET.
+	var alertManager *apiserver.AlertManager
+	if amWebhookURL := os.Getenv("ALERT_WEBHOOK_URL"); amWebhookURL != "" && stateStore != nil {
+		webhooks := parseAlertWebhooks(amWebhookURL, os.Getenv("ALERT_HMAC_SECRET"))
+		alertManager = apiserver.NewAlertManager(stateStore, webhooks)
+	}
+
 	if err := (&controller.ModelProviderReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
@@ -326,6 +369,7 @@ func main() {
 		StateConfig:              stateConfig,
 		StateStore:               stateStore,
 		CloudProvider:            cloudProvider,
+		PostgresStore:            pgStore,
 		TokenReviewerClusterRole: os.Getenv("TOKEN_REVIEWER_CLUSTER_ROLE"),
 		OperatorAPIURL:           os.Getenv("OPERATOR_API_URL"),
 		LLMRequestTimeout:        llmReqTimeout,
@@ -413,17 +457,9 @@ func main() {
 		}
 	}()
 
-	// Start the UI API server (port 8083) for the React frontend.
-	uiAPI := apiserver.NewUIServer(k8sClient, mgr.GetClient(), stateConfig.Backend != "", stateStore, uiAuthEnabled)
-	go func() {
-		srv := &http.Server{Addr: ":8083", Handler: uiAPI.Handler()}
-		setupLog.Info("Starting UI API server", "addr", srv.Addr, "tls", internalAPICert != "")
-		if err := listenAndServeOptionalTLS(srv, internalAPICert, internalAPIKey); err != nil && err != http.ErrServerClosed {
-			setupLog.Error(err, "UI API server failed")
-		}
-	}()
-
-	// Start the external API server (port 8084) for enterprise integrations.
+	// ── External auth (shared by UI API and External API servers) ─────────────
+	// Created before the UI API server so OIDC tenant JWT validation can be
+	// used as a fallback to K8s SA tokens on port 8083.
 	externalAuth, err := apiserver.NewExternalAuth(k8sClient, mgr.GetClient())
 	if err != nil {
 		setupLog.Error(err, "Failed to create external auth")
@@ -443,6 +479,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Start the UI API server (port 8083) for the React frontend.
+	uiAPI := apiserver.NewUIServer(k8sClient, mgr.GetClient(), stateConfig.Backend != "", stateStore, uiAuthEnabled, externalAuth, pgStore, alertManager) //nolint:lll
+	go func() {
+		srv := &http.Server{Addr: ":8083", Handler: uiAPI.Handler()}
+		setupLog.Info("Starting UI API server", "addr", srv.Addr, "tls", internalAPICert != "")
+		if err := listenAndServeOptionalTLS(srv, internalAPICert, internalAPIKey); err != nil && err != http.ErrServerClosed {
+			setupLog.Error(err, "UI API server failed")
+		}
+	}()
+
+	// Start the external API server (port 8084) for enterprise integrations.
 	externalAPI := apiserver.NewExternalAPIServer(k8sClient, mgr.GetClient(), externalAuth, stateConfig.Backend != "", stateStore) //nolint:lll
 
 	go func() {
@@ -551,4 +598,21 @@ func parseLLMRequestTimeout() time.Duration {
 		return time.Hour
 	}
 	return d
+}
+
+// parseAlertWebhooks parses the ALERT_WEBHOOK_URL env var (comma-separated URLs)
+// and the ALERT_HMAC_SECRET env var (base64-encoded key) into AlertWebhook structs.
+func parseAlertWebhooks(urls, hmacSecretB64 string) []apiserver.AlertWebhook {
+	if urls == "" {
+		return nil
+	}
+	key, _ := base64.StdEncoding.DecodeString(hmacSecretB64)
+	var out []apiserver.AlertWebhook
+	for _, u := range strings.Split(urls, ",") {
+		u = strings.TrimSpace(u)
+		if u != "" {
+			out = append(out, apiserver.AlertWebhook{URL: u, HMACKey: key})
+		}
+	}
+	return out
 }

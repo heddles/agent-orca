@@ -1,0 +1,446 @@
+openapi: 3.1.0
+info:
+  title: agent-orc UI API
+  description: |
+    REST API consumed by the agent-orc React UI. Served by the operator on port
+    8083 behind the UIProxy BFF (which injects a projected Kubernetes SA token
+    with audience "agentorc/ui"). OIDC tenant JWTs are also accepted when
+    externalAuth is configured, enabling per-tenant resource scoping.
+  version: "1.0.0"
+  contact:
+    name: agent-orc
+  license:
+    name: Apache-2.0
+servers:
+  - url: http://localhost:8083
+    description: cluster-internal
+tags:
+  - name: health
+    description: Liveness, readiness, version probes (public)
+  - name: runs
+    description: AgentRun listing, detail, streaming, history
+  - name: resources
+    description: Generic CRUD for all CRD types (agents, tools, mcpservers, modelproviders, knowledgebases, modelselectors, agentdeployments, agentworkflows)
+  - name: deployments
+    description: AgentDeployment chat execution, history, streaming
+  - name: workflows
+    description: AgentWorkflow listing and detail
+  - name: costs
+    description: Spend aggregation across runs
+  - name: system
+    description: System status, metrics, and alerts
+  - name: agents
+    description: Agent CRD listing and creation
+  - name: modelselectors
+    description: ModelSelector listing
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: "K8s-SA-token or OIDC-tenant-JWT"
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+    SubSystemStatus:
+      type: object
+      properties:
+        name: { type: string }
+        status: { type: string, enum: [up, down, degraded] }
+        message: { type: string }
+        latencyMs: { type: integer }
+    ProviderHealth:
+      type: object
+      properties:
+        name: { type: string }
+        namespace: { type: string }
+        ready: { type: boolean }
+        latencyMs: { type: integer }
+        message: { type: string }
+    SystemMetrics:
+      type: object
+      properties:
+        requestCount24h: { type: integer }
+        p50LatencyMs: { type: number }
+        p95LatencyMs: { type: number }
+        p99LatencyMs: { type: number }
+        tokenThroughput: { type: number }
+        egressPublished: { type: integer }
+        egressFailed: { type: integer }
+        samples:
+          type: array
+          items: { $ref: '#/components/schemas/MetricSample' }
+    MetricSample:
+      type: object
+      properties:
+        time: { type: integer, format: int64 }
+        requestCount: { type: integer }
+        p50LatencyMs: { type: number }
+        p95LatencyMs: { type: number }
+        p99LatencyMs: { type: number }
+        egressPublished: { type: integer }
+        egressFailed: { type: integer }
+        tokenThroughput: { type: number }
+    SystemStatus:
+      type: object
+      properties:
+        stateConfigured: { type: boolean }
+        runHistoryConfigured: { type: boolean }
+        version: { type: string }
+        subsystems:
+          type: array
+          items: { $ref: '#/components/schemas/SubSystemStatus' }
+        modelProviders:
+          type: array
+          items: { $ref: '#/components/schemas/ProviderHealth' }
+        metrics: { $ref: '#/components/schemas/SystemMetrics' }
+    AlertEntry:
+      type: object
+      properties:
+        id: { type: string }
+        subsystem: { type: string }
+        state: { type: string, enum: [firing, resolved] }
+        message: { type: string }
+        firstSeen: { type: string, format: date-time }
+        lastSeen: { type: string, format: date-time }
+        resolvedAt: { type: string, format: date-time, nullable: true }
+    RunHistorySummary:
+      type: object
+      properties:
+        name: { type: string }
+        namespace: { type: string }
+        agentRef: { type: string }
+        phase: { type: string }
+        spendUSD: { type: string }
+        startTime: { type: string, format: date-time, nullable: true }
+        completionTime: { type: string, format: date-time, nullable: true }
+        tenant: { type: string, nullable: true }
+    RunHistoryResponse:
+      type: object
+      properties:
+        runs:
+          type: array
+          items: { $ref: '#/components/schemas/RunHistorySummary' }
+        total: { type: integer }
+        limit: { type: integer }
+        offset: { type: integer }
+    RunHistoryDetail:
+      type: object
+      properties:
+        name: { type: string }
+        namespace: { type: string }
+        agentRef: { type: string }
+        input: { type: string }
+        output: { type: string }
+        phase: { type: string }
+        spendUSD: { type: string }
+        restartCount: { type: integer }
+        startTime: { type: string, format: date-time, nullable: true }
+        completionTime: { type: string, format: date-time, nullable: true }
+        contextUsedTokens: { type: integer }
+        maxContextTokens: { type: integer }
+        routingDecisions:
+          type: array
+          items: { $ref: '#/components/schemas/RoutingDecisionInfo' }
+        childRunRefs: { type: array, items: { type: string } }
+        tools: { type: array, items: { type: string } }
+        mcps: { type: array, items: { type: string } }
+        resolvedModel: { type: string }
+    RoutingDecisionInfo:
+      type: object
+      properties:
+        model: { type: string }
+        provider: { type: string }
+        strategy: { type: string }
+        reason: { type: string }
+        confidence: { type: string }
+        timestamp: { type: string, format: date-time, nullable: true }
+    ResourceKind:
+      type: string
+      enum: [agents, tools, mcpservers, modelproviders, knowledgebases, modelselectors, agentdeployments, agentworkflows]
+security:
+  - BearerAuth: []
+paths:
+  /healthz:
+    get:
+      tags: [health]
+      summary: Liveness probe
+      security: []
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { type: object, properties: { status: { type: string } } } } } }
+  /readyz:
+    get:
+      tags: [health]
+      summary: Readiness probe
+      security: []
+      responses: { '200': { description: ready }, '503': { description: unready } }
+  /version:
+    get:
+      tags: [health]
+      summary: Build version
+      security: []
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { type: object, properties: { version: { type: string } } } } } }
+  /api/system/status:
+    get:
+      tags: [system]
+      summary: Aggregated system health, model-provider reachability, and Prometheus metrics
+      parameters:
+        - in: query
+          name: range
+          schema: { type: string, enum: [1h, 6h, 24h, 7d], default: 24h }
+          description: Time window for the returned metric samples.
+      responses:
+        '200':
+          description: System status
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SystemStatus' }
+  /api/system/alerts:
+    get:
+      tags: [system]
+      summary: Recent alert history from the alert manager
+      responses:
+        '200':
+          description: Alert list
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AlertEntry' }
+  /api/runs/history:
+    get:
+      tags: [runs]
+      summary: Paginated, filterable list of archived (historical) AgentRuns from PostgreSQL
+      parameters:
+        - in: query
+          name: limit
+          schema: { type: integer, default: 50, maximum: 200 }
+        - in: query
+          name: offset
+          schema: { type: integer, default: 0 }
+        - in: query
+          name: phase
+          schema: { type: string }
+          description: Filter by phase (Succeeded, Failed, etc.)
+        - in: query
+          name: agentRef
+          schema: { type: string }
+          description: Filter by agent name
+        - in: query
+          name: search
+          schema: { type: string }
+          description: Case-insensitive substring match on run name
+        - in: query
+          name: namespace
+          schema: { type: string }
+          description: Namespace filter (ignored when tenant-scoped)
+      responses:
+        '200':
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/RunHistoryResponse' } }
+        '503':
+          description: Run archival not configured
+  /api/runs/history/{namespace}/{name}:
+    get:
+      tags: [runs]
+      summary: Get full detail of a single archived AgentRun from PostgreSQL
+      parameters:
+        - in: path
+          name: namespace
+          required: true
+          schema: { type: string }
+        - in: path
+          name: name
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Archived run detail (cost, output, tools, context)
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/RunHistoryDetail' } }
+        '503':
+          description: Run archival not configured
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/resources/{kind}:
+    get:
+      tags: [resources]
+      summary: List CRDs of the given kind
+      parameters:
+        - in: path
+          name: kind
+          required: true
+          schema: { $ref: '#/components/schemas/ResourceKind' }
+        - in: query
+          name: namespace
+          schema: { type: string }
+      responses:
+        '200': { description: list of resources }
+    post:
+      tags: [resources]
+      summary: Create a new CRD of the given kind
+      parameters:
+        - in: path
+          name: kind
+          required: true
+          schema: { $ref: '#/components/schemas/ResourceKind' }
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { type: object } }
+      responses:
+        '201': { description: resource created }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /api/resources/{kind}/{namespace}/{name}:
+    get:
+      tags: [resources]
+      summary: Get a single CRD
+      parameters:
+        - in: path
+          name: kind
+          required: true
+          schema: { $ref: '#/components/schemas/ResourceKind' }
+        - in: path
+          name: namespace
+          required: true
+          schema: { type: string }
+        - in: path
+          name: name
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: resource }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [resources]
+      summary: Update a CRD's spec (status is always read-only / controller-managed)
+      parameters:
+        - in: path
+          name: kind
+          required: true
+          schema: { $ref: '#/components/schemas/ResourceKind' }
+        - in: path
+          name: namespace
+          required: true
+          schema: { type: string }
+        - in: path
+          name: name
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { type: object } }
+      responses:
+        '200': { description: updated resource }
+    delete:
+      tags: [resources]
+      summary: Delete a CRD (only resources managed by agent-orc)
+      parameters:
+        - in: path
+          name: kind
+          required: true
+          schema: { $ref: '#/components/schemas/ResourceKind' }
+        - in: path
+          name: namespace
+          required: true
+          schema: { type: string }
+        - in: path
+          name: name
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: { status: "deleted" } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/openapi.json:
+    get:
+      tags: [health]
+      summary: OpenAPI contract for the UI API
+      security: []
+      responses:
+        '200':
+          description: OpenAPI JSON
+          content:
+            application/json: { schema: { type: object } }
+  /api/runs:
+    get:
+      tags: [runs]
+      summary: List live AgentRuns in the cluster
+      parameters:
+        - in: query
+          name: namespace
+          schema: { type: string }
+        - in: query
+          name: deployment
+          schema: { type: string }
+      responses:
+        '200': { description: run list }
+  /api/runs/{namespace}/{name}:
+    get:
+      tags: [runs]
+      summary: Get a single AgentRun (live or archived)
+      responses:
+        '200': { description: run detail }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/runs/{namespace}/{name}/stop:
+    post:
+      tags: [runs]
+      summary: Cancel a pending/running/waiting run
+      responses:
+        '200': { description: { status: "cancelled" } }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/runs/{namespace}/{name}/answer:
+    post:
+      tags: [runs]
+      summary: Submit a clarification answer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                answer: { type: string }
+      responses:
+        '200': { description: { status: "ok", runName: "string" } }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/runs/{namespace}/{name}/stream:
+    get:
+      tags: [runs]
+      summary: SSE stream of tokens and trace events
+      responses:
+        '200':
+          description: Event stream
+          content:
+            text/event-stream: { schema: { type: string } }
+  /api/deployments/{namespace}/{name}/execute:
+    post:
+      tags: [deployments]
+      summary: Send a chat message to a deployment (creates an AgentRun)
+      responses:
+        '200': { description: { runName: "string", sessionId: "string" } }
+  /api/deployments/{namespace}/{name}/stream:
+    get:
+      tags: [deployments]
+      summary: SSE stream for deployment execution
+  /api/deployments/{namespace}/{name}/history:
+    get:
+      tags: [deployments]
+      summary: Fetch conversation history for a session
+responseComponents:
+  BadRequest:
+    description: Bad request
+    content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+  NotFound:
+    description: Not found
+    content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+  Forbidden:
+    description: Forbidden
+    content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+  Conflict:
+    description: Conflict
+    content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }

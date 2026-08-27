@@ -55,7 +55,11 @@ type Publisher interface {
 	Close() error
 }
 
-// metrics holds Prometheus counters for egress delivery.
+// metrics holds Prometheus counters for egress delivery. These are registered
+// with the default Prometheus registry (promauto) and surfaced to the UI via
+// the system-status scrapeMetrics handler, which gathers from
+// prometheus.DefaultGatherer (same process: cmd/main.go runs the controller
+// and the UI API server together).
 var metrics = struct {
 	published prometheus.Counter
 	failed    prometheus.Counter
