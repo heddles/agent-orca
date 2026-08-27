@@ -10,30 +10,32 @@ import { STREAM_EVENT_TYPE } from '../contracts/events'
  */
 export const TRACE_EVENT_TYPE = {
   ...STREAM_EVENT_TYPE,
-  thought: 'thought',
 } as const
 
 export type TraceEvent =
   | { type: typeof TRACE_EVENT_TYPE.thought; content: string }
   | { type: typeof STREAM_EVENT_TYPE.token; content: string }
-  | { type: typeof STREAM_EVENT_TYPE.toolCall; name: string; arguments: string }
-  | { type: typeof STREAM_EVENT_TYPE.toolResult; name: string; result: string; appUrl?: string; toolArgs?: string; toolResult?: string }
+  | { type: typeof STREAM_EVENT_TYPE.toolCall; name: string; arguments: string; backendType?: string; backendRef?: string }
+  | { type: typeof STREAM_EVENT_TYPE.toolResult; name: string; result: string; appUrl?: string; toolArgs?: string; toolResult?: string; backendType?: string; backendRef?: string; durationMs?: number }
   | { type: typeof STREAM_EVENT_TYPE.modelSelected; model: string; reason: string; confidence: number }
   | { type: typeof STREAM_EVENT_TYPE.finalOutput; output: string }
   | { type: typeof STREAM_EVENT_TYPE.error; message: string }
   | { type: typeof STREAM_EVENT_TYPE.clarify; question: string }
-  | { type: typeof STREAM_EVENT_TYPE.done; output: string }
+  | { type: typeof STREAM_EVENT_TYPE.done; output?: string; finish_reason?: string }
   | { type: typeof STREAM_EVENT_TYPE.fail; reason: string }
   | { type: typeof STREAM_EVENT_TYPE.agentEvent; eventType: string; message: string }
   | { type: typeof STREAM_EVENT_TYPE.placeholder; message: string }
+  | { type: 'ragResult'; name: string; query: string; results: number; collection: string }
+  | { type: 'mcpDiscovery'; server: string; tools: number }
+  | { type: 'guardrail'; action: string; reason: string }
+  | { type: 'providerFallback'; from: string; to: string; reason: string; exhausted?: boolean }
 
-/** True when the server typically closes the SSE connection after this event (router done/fail, uiapi terminal). */
+/** True when the server typically closes the SSE connection after this event (uiapi finalOutput, or an error/clarify/fail path). */
 export function isTerminalTraceEvent(event: TraceEvent): boolean {
   switch (event.type) {
     case STREAM_EVENT_TYPE.finalOutput:
     case STREAM_EVENT_TYPE.error:
     case STREAM_EVENT_TYPE.clarify:
-    case STREAM_EVENT_TYPE.done:
     case STREAM_EVENT_TYPE.fail:
       return true
     default:

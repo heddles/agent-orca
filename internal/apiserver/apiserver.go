@@ -928,7 +928,11 @@ func (s *Server) ragSearch(w http.ResponseWriter, r *http.Request, namespace, na
 		return
 	}
 	if !kb.Status.Ready {
-		http.Error(w, "KnowledgeBase is not ready", http.StatusServiceUnavailable)
+		msg := "KnowledgeBase is not ready"
+		if kb.Status.Message != "" {
+			msg = fmt.Sprintf("KnowledgeBase is not ready: %s", kb.Status.Message)
+		}
+		http.Error(w, msg, http.StatusServiceUnavailable)
 		return
 	}
 
@@ -1000,7 +1004,11 @@ func (s *Server) ragIngest(w http.ResponseWriter, r *http.Request, namespace, na
 		return
 	}
 	if !kb.Status.Ready {
-		http.Error(w, "KnowledgeBase is not ready", http.StatusServiceUnavailable)
+		msg := "KnowledgeBase is not ready"
+		if kb.Status.Message != "" {
+			msg = fmt.Sprintf("KnowledgeBase is not ready: %s", kb.Status.Message)
+		}
+		http.Error(w, msg, http.StatusServiceUnavailable)
 		return
 	}
 

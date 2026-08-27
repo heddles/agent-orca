@@ -51,8 +51,8 @@ agent-orc-resources:
   modelProviders:
     - name: poolside-pwnbox
       enabled: true
-      litellmModel: "laguna-m-e0419-polaris-t3-mh-s700-ctx256k"
-      baseURL: "https://api.poolsi.de/openai"
+      litellmModel: "poolside/laguna-s-2.1"
+      baseURL: "https://platform.poolsi.de/openai"
       credentialsRef:
         existingSecret: "poolside-api-key"
         key: "api-key"
@@ -173,7 +173,7 @@ agent-orc-resources:
   # pwnbox pod) and streams the result back; this shim just proxies /invoke.
   agents:
     - name: red-commander-agent
-      modelSelectorRef: poolside-strategist
+      modelSelectorRef: poolside
       guardrailPolicyRef: red-pwnbox-guard
       disableClarify: true # fully autonomous — never blocks on a human
       # knowledgeBases: [red-tactics]

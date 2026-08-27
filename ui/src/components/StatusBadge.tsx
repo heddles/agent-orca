@@ -1,5 +1,7 @@
-/** Reusable phase badge for AgentRun, AgentDeployment, and AgentWorkflow. */
+/** Reusable phase badge for AgentRun, AgentDeployment, and AgentWorkflow.
+ * Uses a consistent icon per phase (redundant cue alongside color — better-accessibility §9). */
 import { PHASE_STYLE } from '../lib/phaseColors'
+import { StatusIcon } from '../lib/icons'
 
 interface Props {
   phase: string
@@ -8,10 +10,11 @@ interface Props {
 }
 
 
+// Phase display labels — no emoji, just clean text
 const PHASE_LABEL: Record<string, string> = {
-  Succeeded: '✓ Succeeded',
+  Succeeded: 'Succeeded',
   Running: 'Running',
-  Failed: '✕ Failed',
+  Failed: 'Failed',
   Pending: 'Pending',
   Skipped: 'Skipped',
   Creating: 'Creating',
@@ -31,7 +34,8 @@ export function StatusBadge({ phase, pulse }: Props) {
     fontSize: 11,
     fontWeight: 600,
     letterSpacing: '0.03em',
-    ...(PHASE_STYLE[phase] ?? { background: 'rgba(148,163,184,.1)', color: '#94a3b8' }),
+    fontVariantNumeric: 'tabular-nums',
+    ...(PHASE_STYLE[phase] ?? { background: 'var(--ds-muted-bg)', color: 'var(--ds-text-secondary)' }),
   }
 
   const isRunning = phase === 'Running' || phase === 'Creating'
@@ -39,7 +43,7 @@ export function StatusBadge({ phase, pulse }: Props) {
 
   return (
     <span style={style}>
-      {showPulse && <PulseDot />}
+      {showPulse && isRunning ? <PulseDot /> : <StatusIcon phase={phase} spinning={showPulse && isRunning} />}
       {PHASE_LABEL[phase] ?? phase}
     </span>
   )
@@ -52,8 +56,9 @@ function PulseDot() {
       width: 6,
       height: 6,
       borderRadius: '50%',
-      background: '#3b82f6',
+      background: 'var(--ds-accent)',
       animation: 'aoPulse 1.5s ease infinite',
+      willChange: 'transform, opacity',
     }} />
   )
 }

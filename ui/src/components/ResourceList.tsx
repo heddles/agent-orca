@@ -14,6 +14,8 @@ import {
 } from '../api/sse'
 import { StatusBadge } from './StatusBadge'
 import { PHASE_COLOR } from '../lib/phaseColors'
+import { DESIGN, ds } from '../lib/designSystem'
+import { Icon, ICON } from '../lib/icons'
 
 export type ResourceTab = 'runs' | 'deployments' | 'workflows' | 'agents' | 'tools' | 'mcpservers' | 'modelproviders' | 'knowledgebases' | 'modelselectors'
 
@@ -72,13 +74,13 @@ interface AccordionProps {
 function Accordion({ label, count, color, open, onToggle, children }: AccordionProps) {
   return (
     <div style={s.accordion}>
-      <button style={s.accordionHeader} onClick={onToggle}>
+      <button style={s.accordionHeader} onClick={onToggle} aria-expanded={open} aria-controls={`accordion-body-${label}`}>
         <span style={{ ...s.groupDot, background: color }} />
         <span style={s.groupLabel}>{label}</span>
         <span style={s.groupCount}>{count}</span>
-        <span style={{ ...s.chevron, transform: open ? 'rotate(90deg)' : 'rotate(0deg)' }}>›</span>
+        <span style={{ ...s.chevron, transform: open ? 'rotate(90deg)' : 'rotate(0deg)' }} aria-hidden="true">›</span>
       </button>
-      {open && <div style={s.accordionBody}>{children}</div>}
+      {open && <div id={`accordion-body-${label}`} style={s.accordionBody}>{children}</div>}
     </div>
   )
 }
@@ -154,13 +156,27 @@ export function ResourceList({ tab, namespace = 'default', selection, onSelect }
 
   const q = filterText.trim().toLowerCase()
   const filterInput = (
-    <input
-      type="text"
-      placeholder="Filter by name…"
-      value={filterText}
-      onChange={(e) => setFilterText((e.target as HTMLInputElement).value)}
-      style={s.filterInput}
-    />
+    <div style={s.filterWrapper}>
+      <Icon icon={ICON.search} size={12} style={s.filterIcon} ariaHidden={true} />
+      <input
+        type="text"
+        placeholder="Filter by name…"
+        value={filterText}
+        onChange={(e) => setFilterText((e.target as HTMLInputElement).value)}
+        style={s.filterInput}
+      />
+      {filterText && (
+        <button
+          type="button"
+          style={s.filterClear}
+          onClick={() => setFilterText('')}
+          aria-label="Clear filter"
+          title="Clear filter"
+        >
+          <Icon icon={ICON.close} size={10} />
+        </button>
+      )}
+    </div>
   )
 
   if (tab === 'runs') {
@@ -186,8 +202,9 @@ export function ResourceList({ tab, namespace = 'default', selection, onSelect }
               {items.map((run) => {
                 const active = selection?.kind === 'run' && selection.name === run.name
                 return (
-                  <div
+                  <button
                     key={run.name}
+                    type="button"
                     style={{ ...s.item, ...(active ? s.itemActive : {}) }}
                     onClick={() => onSelect({ kind: 'run', name: run.name, namespace: run.namespace })}
                   >
@@ -195,9 +212,9 @@ export function ResourceList({ tab, namespace = 'default', selection, onSelect }
                     <div style={s.itemSub}>{run.agentRef}</div>
                     <div style={s.itemMeta}>
                       <StatusBadge phase={run.phase} />
-                      <span style={s.spend}>${run.spendUSD}</span>
+                      <span style={{ ...s.spend, fontVariantNumeric: 'tabular-nums' }}>${run.spendUSD}</span>
                     </div>
-                  </div>
+                  </button>
                 )
               })}
             </Accordion>
@@ -230,18 +247,19 @@ export function ResourceList({ tab, namespace = 'default', selection, onSelect }
               {items.map((dep) => {
                 const active = selection?.kind === 'deployment' && selection.name === dep.name
                 return (
-                  <div
+                  <button
                     key={dep.name}
+                    type="button"
                     style={{ ...s.item, ...(active ? s.itemActive : {}) }}
                     onClick={() => onSelect({ kind: 'deployment', name: dep.name, namespace: dep.namespace })}
                   >
                     <div style={s.itemName}>{dep.name}</div>
-                    <div style={s.itemSub}>{dep.agentRef}</div>
+                    <div style={s.itemSub}>{dep.agentRef}{dep.phase === 'Failed' && dep.message ? ` · ${dep.message}` : ''}</div>
                     <div style={s.itemMeta}>
                       <StatusBadge phase={dep.phase} />
-                      <span style={s.spend}>${deployCosts[dep.name] || '0.0000'}</span>
+                      <span style={{ ...s.spend, fontVariantNumeric: 'tabular-nums' }}>${deployCosts[dep.name] || '0.0000'}</span>
                     </div>
-                  </div>
+                  </button>
                 )
               })}
             </Accordion>
@@ -274,8 +292,9 @@ export function ResourceList({ tab, namespace = 'default', selection, onSelect }
             {items.map((wf) => {
               const active = selection?.kind === 'workflow' && selection.name === wf.name
               return (
-                <div
+                <button
                   key={wf.name}
+                  type="button"
                   style={{ ...s.item, ...(active ? s.itemActive : {}) }}
                   onClick={() => onSelect({ kind: 'workflow', name: wf.name, namespace: wf.namespace })}
                 >
@@ -283,9 +302,9 @@ export function ResourceList({ tab, namespace = 'default', selection, onSelect }
                   <div style={s.itemSub}>{wf.stepCount} steps</div>
                   <div style={s.itemMeta}>
                     <StatusBadge phase={wf.phase} />
-                    <span style={s.spend}>${wf.totalSpendUSD || '0.0000'}</span>
+                    <span style={{ ...s.spend, fontVariantNumeric: 'tabular-nums' }}>${wf.totalSpendUSD || '0.0000'}</span>
                   </div>
-                </div>
+                </button>
               )
             })}
           </Accordion>
@@ -316,6 +335,10 @@ const s: Record<string, React.CSSProperties> = {
     cursor: 'pointer',
     width: '100%',
     textAlign: 'left',
+    fontSize: 13,
+    transitionProperty: 'color',
+    transitionDuration: '0.15s',
+    transitionTimingFunction: 'ease',
   },
   groupDot: {
     width: 7,
@@ -327,20 +350,23 @@ const s: Record<string, React.CSSProperties> = {
     flex: 1,
     fontSize: 11,
     fontWeight: 700,
-    color: '#94a3b8',
+    color: 'var(--ds-text-secondary)',
     letterSpacing: '0.06em',
     textTransform: 'uppercase',
   },
   groupCount: {
     fontSize: 11,
-    color: '#475569',
+    color: 'var(--ds-text-muted)',
     fontWeight: 600,
+    fontVariantNumeric: 'tabular-nums',
   },
   chevron: {
     fontSize: 14,
-    color: '#475569',
+    color: 'var(--ds-text-muted)',
     lineHeight: 1,
-    transition: 'transform 0.15s',
+    transitionProperty: 'transform',
+    transitionDuration: '0.15s',
+    transitionTimingFunction: 'cubic-bezier(0.2, 0, 0, 1)',
     display: 'inline-block',
   },
   accordionBody: {
@@ -351,13 +377,23 @@ const s: Record<string, React.CSSProperties> = {
   },
   item: {
     padding: '9px 10px',
-    borderRadius: 6,
+    borderRadius: DESIGN.radii.sm,
     cursor: 'pointer',
     display: 'flex',
     flexDirection: 'column',
     gap: 3,
     border: '1px solid transparent',
-    transition: 'background 0.12s',
+    transitionProperty: 'background-color, border-color',
+    transitionDuration: '0.12s',
+    transitionTimingFunction: 'ease',
+    background: 'transparent',
+    color: 'inherit',
+    font: 'inherit',
+    textAlign: 'left',
+    textDecoration: 'none',
+  },
+  itemHover: {
+    background: 'var(--ds-surface-hover)',
   },
   itemActive: {
     background: 'rgba(59,130,246,.1)',
@@ -366,14 +402,14 @@ const s: Record<string, React.CSSProperties> = {
   itemName: {
     fontSize: 12,
     fontWeight: 600,
-    color: '#f1f5f9',
+    color: 'var(--ds-text-primary)',
     whiteSpace: 'nowrap',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
   },
   itemSub: {
     fontSize: 11,
-    color: '#64748b',
+    color: 'var(--ds-text-muted)',
     whiteSpace: 'nowrap',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
@@ -384,19 +420,57 @@ const s: Record<string, React.CSSProperties> = {
     justifyContent: 'space-between',
     marginTop: 2,
   },
-  spend: { fontSize: 10, color: '#64748b' },
-  loading: { padding: 16, color: '#475569', fontSize: 13 },
-  empty: { padding: '16px 10px', color: '#475569', fontSize: 13 },
-  filterInput: {
+  spend: { fontSize: 10, color: 'var(--ds-text-muted)' },
+  loading: { padding: 16, color: 'var(--ds-text-muted)', fontSize: 13 },
+  empty: { padding: '16px 10px', color: 'var(--ds-text-muted)', fontSize: 13 },
+  filterWrapper: {
+    position: 'relative' as const,
     width: 'calc(100% - 4px)',
-    boxSizing: 'border-box' as const,
-    padding: '5px 8px',
     marginBottom: 4,
-    background: '#1e293b',
-    border: '1px solid #334155',
-    borderRadius: 5,
-    color: '#e2e8f0',
+  },
+  filterIcon: {
+    position: 'absolute' as const,
+    left: 6,
+    top: '50%',
+    transform: 'translateY(-50%)',
+    color: 'var(--ds-text-muted)',
+    pointerEvents: 'none' as const,
+  },
+  filterClear: {
+    position: 'absolute' as const,
+    right: 4,
+    top: '50%',
+    transform: 'translateY(-50%)',
+    width: 16,
+    height: 16,
+    borderRadius: '50%',
+    border: 'none',
+    background: 'transparent',
+    color: 'var(--ds-text-muted)',
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 0,
+    transitionProperty: 'color, background-color',
+    transitionDuration: '0.15s',
+    transitionTimingFunction: 'ease',
+  },
+  filterInput: {
+    width: '100%',
+    boxSizing: 'border-box' as const,
+    padding: '5px 8px 5px 26px',
+    marginBottom: 4,
+    background: 'var(--ds-surface)',
+    border: '1px solid var(--ds-border)',
+    borderRadius: DESIGN.radii.sm,
+    color: 'var(--ds-text-primary)',
     fontSize: 12,
+    fontFamily: 'system-ui, sans-serif',
     outline: 'none',
+    fontVariantNumeric: 'tabular-nums',
+    transitionProperty: 'border-color, box-shadow',
+    transitionDuration: '0.15s',
+    transitionTimingFunction: 'ease',
   },
 }

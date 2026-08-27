@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { getCosts, type CostData, type SidebarSelection } from '../api/sse'
+import { DESIGN } from '../lib/designSystem'
 
 type Scope = 'selection' | 'all'
 
@@ -62,12 +63,14 @@ export function CostDashboard({ namespace = 'default', selection }: Props) {
         {selection && (
           <div style={styles.scopeToggle}>
             <button
+              type="button"
               style={{ ...styles.scopeBtn, ...(effectiveScope === 'selection' ? styles.scopeBtnActive : {}) }}
               onClick={() => setScope('selection')}
             >
               {selection.kind === 'run' ? 'This run' : 'This deployment'}
             </button>
             <button
+              type="button"
               style={{ ...styles.scopeBtn, ...(effectiveScope === 'all' ? styles.scopeBtnActive : {}) }}
               onClick={() => setScope('all')}
             >
@@ -81,8 +84,7 @@ export function CostDashboard({ namespace = 'default', selection }: Props) {
 
       <div style={styles.card}>
         <div style={styles.totalLabel}>Total spend</div>
-        <div style={styles.totalValue}>${data.totalUSD}</div>
-      </div>
+        <div style={styles.totalValue}>${data.totalUSD}</div>      </div>
 
       <div style={styles.row}>
         <Section title="By Agent" entries={data.byAgent} />
@@ -135,8 +137,8 @@ const styles: Record<string, React.CSSProperties> = {
   container: {
     padding: 24,
     fontFamily: 'system-ui, sans-serif',
-    color: '#e2e8f0',
-    background: '#0f172a',
+    color: 'var(--ds-text-primary)',
+    background: 'var(--ds-bg)',
     minHeight: '100%',
   },
   headerRow: {
@@ -149,7 +151,7 @@ const styles: Record<string, React.CSSProperties> = {
   scopeToggle: {
     display: 'flex',
     gap: 2,
-    background: '#1e293b',
+    background: 'var(--ds-surface)',
     borderRadius: 6,
     padding: 2,
   },
@@ -158,43 +160,44 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 4,
     border: 'none',
     background: 'transparent',
-    color: '#64748b',
+    color: 'var(--ds-text-muted)',
     cursor: 'pointer',
     fontSize: 12,
     fontWeight: 500,
   },
   scopeBtnActive: {
-    background: '#334155',
-    color: '#f1f5f9',
+    background: 'var(--ds-border)',
+    color: 'var(--ds-text-primary)',
     fontWeight: 600,
   },
   scopeLabel: {
     fontSize: 12,
-    color: '#64748b',
+    color: 'var(--ds-text-muted)',
     marginBottom: 16,
   },
   card: {
-    background: '#1e293b',
+    background: 'var(--ds-surface)',
     borderRadius: 8,
     padding: 16,
     marginBottom: 16,
   },
-  totalLabel: { fontSize: 13, color: '#64748b', marginBottom: 4 },
-  totalValue: { fontSize: 36, fontWeight: 700, color: '#22c55e' },
+  totalLabel: { fontSize: 13, color: 'var(--ds-text-muted)', marginBottom: 4 },
+  totalValue: { fontSize: 32, fontWeight: 700, color: 'var(--ds-success)', fontVariantNumeric: 'tabular-nums' },
   row: { display: 'flex', gap: 16 },
-  sectionTitle: { fontSize: 13, fontWeight: 600, color: '#94a3b8', marginBottom: 10 },
+  sectionTitle: { fontSize: 13, fontWeight: 600, color: 'var(--ds-text-secondary)', marginBottom: 10 },
   entryRow: {
     display: 'flex',
     justifyContent: 'space-between',
     padding: '4px 0',
-    borderBottom: '1px solid #334155',
+    borderBottom: '1px solid var(--ds-border)',
     fontSize: 13,
+    fontVariantNumeric: 'tabular-nums',
   },
-  entryName: { color: '#e2e8f0' },
-  entryValue: { color: '#22c55e', fontWeight: 600 },
-  empty: { color: '#64748b', fontSize: 13 },
-  loading: { padding: 24, color: '#64748b' },
-  error: { padding: 24, color: '#ef4444' },
+  entryName: { color: 'var(--ds-text-primary)' },
+  entryValue: { color: 'var(--ds-success)', fontWeight: 600, fontVariantNumeric: 'tabular-nums' },
+  empty: { color: 'var(--ds-text-muted)', fontSize: 13 },
+  loading: { padding: 24, color: 'var(--ds-text-muted)' },
+  error: { padding: 24, color: 'var(--ds-error)' },
   chart: {
     display: 'flex',
     alignItems: 'flex-end',
@@ -212,9 +215,12 @@ const styles: Record<string, React.CSSProperties> = {
   },
   barFill: {
     width: '100%',
-    background: '#3b82f6',
+    background: 'var(--ds-accent)',
     borderRadius: '2px 2px 0 0',
     minHeight: 2,
+    transitionProperty: 'height, width',
+    transitionDuration: '0.3s',
+    transitionTimingFunction: 'ease',
   },
-  barLabel: { fontSize: 9, color: '#64748b', marginTop: 2 },
+  barLabel: { fontSize: 9, color: 'var(--ds-text-muted)', marginTop: 2, fontVariantNumeric: 'tabular-nums' },
 }

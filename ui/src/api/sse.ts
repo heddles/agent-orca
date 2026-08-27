@@ -219,6 +219,7 @@ export interface AgentDeploymentSummary {
   readyReplicas: number
   inputSourceType?: string
   lastUpdateTime?: string
+  message?: string
 }
 
 export interface AgentDeploymentDetail {
@@ -390,11 +391,22 @@ export interface SystemStatus {
   stateConfigured: boolean
 }
 
+export interface KnowledgeBaseCondition {
+  type: string
+  status: string
+  reason?: string
+  message?: string
+  lastTransitionTime?: string
+}
+
 export interface KnowledgeBaseSummary {
   name: string
   namespace: string
   description?: string
   ready: boolean
+  /** Human-readable status message, populated on failure or while waiting. */
+  message?: string
+  conditions?: KnowledgeBaseCondition[]
   documentCount: number
   chunkCount: number
   vectorStoreURL?: string

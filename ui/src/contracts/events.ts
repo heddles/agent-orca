@@ -14,6 +14,9 @@ export const STREAM_EVENT_TYPE = {
   fail:          'fail',
   agentEvent:    'agentEvent',
   placeholder:   'placeholder',
+  // Extended-thinking tokens streamed by reasoning models (delta.reasoning).
+  // Emitted by the model-router, surfaced by the UI as an expandable panel.
+  thought:       'thought',
 } as const
 
 export type StreamEventType = typeof STREAM_EVENT_TYPE[keyof typeof STREAM_EVENT_TYPE]

@@ -5,7 +5,7 @@ import { StatusBadge } from './StatusBadge'
 describe('StatusBadge', () => {
   it('renders the phase label for known phases', () => {
     render(<StatusBadge phase="Succeeded" />)
-    expect(screen.getByText('✓ Succeeded')).toBeInTheDocument()
+    expect(screen.getByText('Succeeded')).toBeInTheDocument()
   })
 
   it('falls back to raw phase string for unknown phases', () => {

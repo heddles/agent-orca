@@ -46,7 +46,7 @@ spec:
           port: 443
         - protocol: TCP
           port: 6443
-    # Poolside LLM endpoint (HTTPS) — the model-router routes to api.poolsi.de.
+    # Poolside LLM endpoint (HTTPS) — the model-router routes to inference.poolside.ai.
     - ports:
         - protocol: TCP
           port: 443

@@ -24,6 +24,8 @@ import { STREAM_EVENT_TYPE } from '../contracts/events'
 import { StatusBadge } from './StatusBadge'
 import { PHASE_COLOR } from '../lib/phaseColors'
 import { MCPAppFrame } from './MCPAppFrame'
+import { DESIGN } from '../lib/designSystem'
+import { Icon, ICON } from '../lib/icons'
 
 interface Props {
   namespace: string
@@ -46,6 +48,13 @@ interface LocalMessage {
 
 const SESSION_KEY_PREFIX = 'agentorc-chat-session:'
 const MSGS_KEY_PREFIX = 'agentorc-chat-msgs:'
+
+/** Quick-prompt suggestions shown in the empty chat state (better-writing §11). */
+const QUICK_PROMPTS = [
+  'Summarize the key features of agent-orc',
+  'What model is selected and why?',
+  'Show me the cost breakdown',
+]
 
 function msgsKey(ns: string, n: string, sid: string) {
   return `${MSGS_KEY_PREFIX}${ns}/${n}:${sid}`
@@ -96,7 +105,9 @@ export function DeploymentView({ namespace, name, onNavigateToRun }: Props) {
   const [viewTab, setViewTab] = useState<'chat' | 'runs'>('chat')
   const [runs, setRuns] = useState<AgentRunSummary[]>([])
   const [totalCost, setTotalCost] = useState('0.0000')
+  const [showJumpBtn, setShowJumpBtn] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
+  const messagesRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const unsubRef = useRef<(() => void) | null>(null)
   const childRunUnsubsRef = useRef<Array<() => void>>([])
@@ -104,6 +115,18 @@ export function DeploymentView({ namespace, name, onNavigateToRun }: Props) {
   const traceEventsRef = useRef<TraceEntry[]>([])
   const sessionRef = useRef<string | null>(null)
   sessionRef.current = sessionId
+
+  // Scroll listener for the jump-to-bottom button
+  useEffect(() => {
+    const el = messagesRef.current
+    if (!el) return
+    const onScroll = () => {
+      const atBottom = el.scrollHeight - el.scrollTop <= el.clientHeight + 50
+      setShowJumpBtn(!atBottom)
+    }
+    el.addEventListener('scroll', onScroll, { passive: true })
+    return () => el.removeEventListener('scroll', onScroll)
+  }, [])
 
   // Load deployment metadata and cost.
   useEffect(() => {
@@ -171,6 +194,9 @@ export function DeploymentView({ namespace, name, onNavigateToRun }: Props) {
       const subscribedChildren = new Set<string>()
       // Set to true after final_output so child events route to messages rather than traceEvents.
       let runCompleted = false
+      // Track whether finalOutput has been received — if not, the poll fallback
+      // (Succeeded detection) will fetch the output from the API as a safety net.
+      let finalOutputReceived = false
 
       const subscribeToChild = (childName: string) => {
         if (subscribedChildren.has(childName)) return
@@ -199,6 +225,35 @@ export function DeploymentView({ namespace, name, onNavigateToRun }: Props) {
       }
 
       let pollId: ReturnType<typeof setInterval>
+      // finalizeRun persists the assistant turn with the given output. Called from
+      // the finalOutput SSE handler and from the poll fallback (Succeeded detection).
+      const finalizeRun = async (output: string, snapshotTrace: TraceEntry[]) => {
+        clearInterval(pollId)
+        unsubRef.current = null
+        unsub()
+        runCompleted = true
+        finalOutputReceived = true
+        // Final sweep: pick up any child refs that appeared after the last poll.
+        getRun(runName, namespace).then((detail) => {
+          for (const childName of detail.childRunRefs ?? []) {
+            subscribeToChild(childName)
+          }
+        }).catch(() => {})
+        // Snapshot trace entries into the assistant message so they persist.
+        const traceJSON = snapshotTrace.length > 0 ? JSON.stringify(snapshotTrace) : undefined
+        setMessages((prev) => {
+          const next: LocalMessage[] = [...prev, { role: 'assistant' as const, content: output, traceEntries: snapshotTrace.length > 0 ? snapshotTrace : undefined }]
+          saveCachedMessages(namespace, name, sid, next)
+          return next
+        })
+        setPending(null)
+        try {
+          await saveChatResponse(namespace, name, sid, output, traceJSON)
+        } catch {
+          // Checkpoint unavailable — optimistic message already displayed.
+        }
+      }
+
       const checkForClarifyAndChildren = () => {
         // Check for new child runs to subscribe to (live bubbling).
         getRun(runName, namespace)
@@ -212,7 +267,23 @@ export function DeploymentView({ namespace, name, onNavigateToRun }: Props) {
         listRuns(namespace, name)
           .then((runs) => {
             const waiting = runs.find((r) => r.phase === 'WaitingForInput')
-            if (!waiting) return
+            if (!waiting) {
+              // No WaitingForInput — check if the done event fired but we never
+              // received finalOutput (e.g. SSE connection dropped before Phase 3).
+              // Fall back to the controller's persisted output for a Succeeded run.
+              if (runCompleted && !finalOutputReceived) {
+                getRun(runName, namespace)
+                  .then((detail) => {
+                    if (!finalOutputReceived && detail.output) {
+                      finalOutputReceived = true
+                      const snapshotTrace = [...traceEventsRef.current]
+                      void finalizeRun(detail.output, snapshotTrace)
+                    }
+                  })
+                  .catch(() => {})
+              }
+              return
+            }
             getRun(waiting.name, namespace)
               .then((detail) => {
                 if (detail.clarifyQuestion && !detail.clarifyAnswer) {
@@ -252,30 +323,25 @@ export function DeploymentView({ namespace, name, onNavigateToRun }: Props) {
           setTraceEvents((prev) => [...prev, entry])
           return
         }
-        if (event.type === STREAM_EVENT_TYPE.finalOutput || event.type === STREAM_EVENT_TYPE.done) {
-          clearInterval(pollId)
-          unsubRef.current = null
-          unsub()
+        // done: model-router signaled turn-complete via Redis trace event (emitted
+        // by the _done tool, which carries output). Set runCompleted for child routing.
+        // If the done event carries output, use it as a fast-path completion signal
+        // rather than waiting for finalOutput (which requires the UI API's Phase 3
+        // polling round-trip after TailTokens exits). Only fires once via finalOutputReceived.
+        if (event.type === STREAM_EVENT_TYPE.done) {
           runCompleted = true
-          // Final sweep: pick up any child refs that appeared after the last poll.
-          getRun(runName, namespace).then((detail) => {
-            for (const childName of detail.childRunRefs ?? []) {
-              subscribeToChild(childName)
-            }
-          }).catch(() => {})
-          // Snapshot trace entries into the assistant message so they persist.
-          const snapshotTrace = [...traceEventsRef.current]
-          const traceJSON = snapshotTrace.length > 0 ? JSON.stringify(snapshotTrace) : undefined
-          setMessages((prev) => {
-            const next: LocalMessage[] = [...prev, { role: 'assistant' as const, content: event.output, traceEntries: snapshotTrace.length > 0 ? snapshotTrace : undefined }]
-            saveCachedMessages(namespace, name, sid, next)
-            return next
-          })
-          setPending(null)
-          try {
-            await saveChatResponse(namespace, name, sid, event.output, traceJSON)
-          } catch {
-            // Checkpoint unavailable — optimistic message already displayed.
+          if (event.output != null && !finalOutputReceived) {
+            finalOutputReceived = true
+            const snapshotTrace = [...traceEventsRef.current]
+            void finalizeRun(event.output, snapshotTrace)
+          }
+          return
+        }
+        if (event.type === STREAM_EVENT_TYPE.finalOutput) {
+          if (!finalOutputReceived) {
+            finalOutputReceived = true
+            const snapshotTrace = [...traceEventsRef.current]
+            await finalizeRun(event.output ?? '', snapshotTrace)
           }
         } else if (event.type === STREAM_EVENT_TYPE.clarify) {
           clearInterval(pollId)
@@ -452,9 +518,14 @@ export function DeploymentView({ namespace, name, onNavigateToRun }: Props) {
   }, [input, namespace, name, sessionId, pending, subscribeToRun])
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    // Enter to send, Shift+Enter for newline, Cmd/Ctrl+Enter always sends (better-accessibility)
+    if (e.key === 'Enter' && (!e.shiftKey || e.metaKey || e.ctrlKey)) {
       e.preventDefault()
       send()
+    }
+    // Escape to close clarify or stop
+    if (e.key === 'Escape' && pending?.status === 'running') {
+      e.preventDefault()
     }
   }
 
@@ -475,33 +546,54 @@ export function DeploymentView({ namespace, name, onNavigateToRun }: Props) {
       <div style={s.statusBar}>
         <div style={s.depName}>{name}</div>
         {deployment && <StatusBadge phase={deployment.phase} />}
+        {pending && (
+          <div style={s.streamingIndicator}>
+            <Icon icon={ICON.spinner} size={12} style={s.spinner} ariaHidden={true} />
+            <span style={s.streamingLabel}>Responding</span>
+          </div>
+        )}
         {deployment && (
           <div style={s.depMeta}>
             {deployment.readyReplicas} replica{deployment.readyReplicas !== 1 ? 's' : ''} · {deployment.agentRef}
             {deployment.inputSourceType && ` · ${deployment.inputSourceType}`}
           </div>
         )}
+        {deployment && deployment.message && deployment.phase === 'Failed' && (
+          <span style={s.errorChip} title={deployment.message}>
+            {deployment.message}
+          </span>
+        )}
         {deployment && (deployment.maxContextTokens ?? 0) > 0 && (
           <span style={s.contextChip}>
-            📏 {deployment.contextUsedTokens?.toLocaleString() ?? 0} / {deployment.maxContextTokens?.toLocaleString() ?? '—'} tokens
+            <Icon icon={ICON.tokens} size={12} ariaHidden={true} /> {deployment.contextUsedTokens?.toLocaleString() ?? 0} / {deployment.maxContextTokens?.toLocaleString() ?? '—'} tokens
           </span>
         )}
         <div style={{ flex: 1 }} />
         <span style={s.costChip}>${totalCost}</span>
         {sessionId && viewTab === 'chat' && (
-          <button style={s.newBtn} onClick={newSession}>New session</button>
+          <button type="button" style={s.newBtn} onClick={newSession}>New session</button>
         )}
       </div>
 
       {/* Tab bar */}
-      <div style={s.tabBar}>
+      <div role="tablist" style={s.tabBar}>
         <button
+          type="button"
+          role="tab"
+          aria-selected={viewTab === 'chat'}
+          aria-controls="chat-panel"
+          tabIndex={viewTab === 'chat' ? 0 : -1}
           style={{ ...s.tab, ...(viewTab === 'chat' ? s.tabActive : {}) }}
           onClick={() => setViewTab('chat')}
         >
           Chat
         </button>
         <button
+          type="button"
+          role="tab"
+          aria-selected={viewTab === 'runs'}
+          aria-controls="runs-panel"
+          tabIndex={viewTab === 'runs' ? 0 : -1}
           style={{ ...s.tab, ...(viewTab === 'runs' ? s.tabActive : {}) }}
           onClick={() => setViewTab('runs')}
         >
@@ -510,13 +602,14 @@ export function DeploymentView({ namespace, name, onNavigateToRun }: Props) {
       </div>
 
       {viewTab === 'runs' ? (
-        <div style={s.runsList}>
+        <div id="runs-panel" role="tabpanel" style={s.runsList}>
           {runs.length === 0 && (
             <div style={s.empty}>No runs yet. Send a message to create one.</div>
           )}
           {runs.map((run) => (
-            <div
+            <button
               key={run.name}
+              type="button"
               style={s.runCard}
               onClick={() => onNavigateToRun?.(run.name, namespace)}
             >
@@ -538,16 +631,32 @@ export function DeploymentView({ namespace, name, onNavigateToRun }: Props) {
                 {run.agentRef}
                 {run.startTime && ` · ${new Date(run.startTime).toLocaleString()}`}
               </div>
-            </div>
+            </button>
           ))}
         </div>
       ) : (
-      <>
+      <div id="chat-panel" role="tabpanel" aria-live="polite" style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
       {/* Messages */}
-      <div style={s.messages}>
+      <div ref={messagesRef} style={s.messages}>
         {messages.length === 0 && !pending && (
           <div style={s.empty}>
-            Send a message to start chatting with <strong>{name}</strong>
+            <div style={s.emptyTitle}>Start chatting with <strong>{name}</strong></div>
+            <p style={s.emptySubtitle}>Send a message to begin. Or try one of these prompts:</p>
+            <div style={s.quickPrompts}>
+              {QUICK_PROMPTS.map((p) => (
+                <button
+                  key={p}
+                  type="button"
+                  style={s.quickPromptBtn}
+                  onClick={() => {
+                    setInput(p)
+                    inputRef.current?.focus()
+                  }}
+                >
+                  {p}
+                </button>
+              ))}
+            </div>
           </div>
         )}
         {messages.map((msg, i) => {
@@ -568,14 +677,14 @@ export function DeploymentView({ namespace, name, onNavigateToRun }: Props) {
                     <div key={j} style={s.traceRow}>
                       {ev.type === STREAM_EVENT_TYPE.toolCall ? (
                         <>
-                          <span style={s.traceIcon}>⚙</span>
+                          <Icon icon={ICON.settings} size={12} color="var(--ds-warning)" ariaHidden={true} />
                           {badge}
                           <span style={s.traceName}>{ev.name}</span>
                           <span style={s.traceArgs}>{ev.arguments}</span>
                         </>
                       ) : ev.type === STREAM_EVENT_TYPE.toolResult ? (
                         <>
-                          <span style={s.traceResultIcon}>✓</span>
+                          <Icon icon={ICON.success} size={12} color="var(--ds-success)" ariaHidden={true} />
                           {badge}
                           <span style={s.traceName}>{ev.name}</span>
                           <span style={s.traceResult}>{ev.result}</span>
@@ -618,14 +727,14 @@ export function DeploymentView({ namespace, name, onNavigateToRun }: Props) {
                       <div key={i} style={s.traceRow}>
                         {ev.type === STREAM_EVENT_TYPE.toolCall ? (
                           <>
-                            <span style={s.traceIcon}>⚙</span>
+                            <Icon icon={ICON.settings} size={12} color="var(--ds-warning)" ariaHidden={true} />
                             {badge}
                             <span style={s.traceName}>{ev.name}</span>
                             <span style={s.traceArgs}>{ev.arguments}</span>
                           </>
                         ) : ev.type === STREAM_EVENT_TYPE.toolResult ? (
                           <>
-                            <span style={s.traceResultIcon}>✓</span>
+                            <Icon icon={ICON.success} size={12} color="var(--ds-success)" ariaHidden={true} />
                             {badge}
                             <span style={s.traceName}>{ev.name}</span>
                             <span style={s.traceResult}>{ev.result}</span>
@@ -640,6 +749,7 @@ export function DeploymentView({ namespace, name, onNavigateToRun }: Props) {
                 <div style={s.thinking}>Thinking…</div>
               )}
               <button
+                type="button"
                 style={s.stopBtn}
                 onClick={() => {
                   if (!pending) return
@@ -654,8 +764,9 @@ export function DeploymentView({ namespace, name, onNavigateToRun }: Props) {
                     .catch((e) => setError(e instanceof Error ? e.message : 'Failed to cancel'))
                 }}
                 title="Stop this run"
+                aria-label="Stop running agent"
               >
-                ■ Stop
+                <Icon icon={ICON.stop} size={14} /> Stop
               </button>
             </div>
             {traceEvents.filter((e) => e.event.type === STREAM_EVENT_TYPE.toolResult && (e.event as any).appUrl).map((entry, j) => {
@@ -675,7 +786,7 @@ export function DeploymentView({ namespace, name, onNavigateToRun }: Props) {
                   value={clarifyInput}
                   onChange={(e) => setClarifyInput(e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
+                    if (e.key === 'Enter' && (!e.shiftKey || e.metaKey || e.ctrlKey)) {
                       e.preventDefault()
                       submitClarifyAnswer()
                     }
@@ -687,15 +798,17 @@ export function DeploymentView({ namespace, name, onNavigateToRun }: Props) {
                   style={{ ...s.sendBtn, opacity: clarifyInput.trim() ? 1 : 0.4 }}
                   disabled={!clarifyInput.trim()}
                   onClick={submitClarifyAnswer}
+                  aria-label="Send answer"
                 >
-                  ↑
+                  <Icon icon={ICON.send} size={14} />
                 </button>
                 <button
                   style={s.cancelBtn}
                   onClick={cancelClarify}
+                  aria-label="Cancel clarification request"
                   title="Cancel this request"
                 >
-                  ✕
+                  <Icon icon={ICON.close} size={14} />
                 </button>
               </div>
             </div>
@@ -704,6 +817,19 @@ export function DeploymentView({ namespace, name, onNavigateToRun }: Props) {
         {error && <div style={s.errorBanner}>{error}</div>}
         <div ref={bottomRef} />
       </div>
+
+      {/* Jump to bottom button — shows when scrolled up (better-layout §10) */}
+      {showJumpBtn && (
+        <button
+          type="button"
+          style={s.jumpBtn}
+          onClick={() => bottomRef.current?.scrollIntoView({ behavior: 'smooth' })}
+          aria-label="Jump to latest message"
+          title="Jump to bottom"
+        >
+          <Icon icon={ICON.chevronDown} size={16} />
+        </button>
+      )}
 
       {/* Input area */}
       <div style={s.inputArea}>
@@ -718,14 +844,16 @@ export function DeploymentView({ namespace, name, onNavigateToRun }: Props) {
           disabled={pending?.status === 'running' || !!clarify}
         />
         <button
+          type="button"
           style={{ ...s.sendBtn, opacity: input.trim() && pending?.status !== 'running' && !clarify ? 1 : 0.4 }}
           onClick={send}
           disabled={!input.trim() || pending?.status === 'running' || !!clarify}
+          aria-label="Send message"
         >
-          ↑
+          <Icon icon={ICON.send} size={18} />
         </button>
       </div>
-      </>
+      </div>
       )}
     </div>
   )
@@ -743,36 +871,70 @@ const s: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     gap: 10,
     padding: '12px 28px',
-    borderBottom: '1px solid #334155',
-    background: '#0f172a',
+    borderBottom: `1px solid var(--ds-border)`,
+    background: 'var(--ds-bg)',
     flexShrink: 0,
   },
-  depName: { fontSize: 16, fontWeight: 700, color: '#f1f5f9' },
-  depMeta: { fontSize: 12, color: '#64748b' },
+  depName: { fontSize: 16, fontWeight: 700, color: 'var(--ds-text-primary)' },
+  depMeta: { fontSize: 12, color: 'var(--ds-text-muted)' },
   costChip: {
     fontSize: 12,
     fontWeight: 600,
-    color: '#4ade80',
+    color: 'var(--ds-success)',
     background: 'rgba(74,222,128,.1)',
     padding: '3px 10px',
     borderRadius: 12,
-    fontFamily: 'monospace',
+    fontFamily: 'ui-monospace, "SFMono-Regular", "Menlo", "Monaco", monospace',
+    fontVariantNumeric: 'tabular-nums',
+  },
+  errorChip: {
+    fontSize: 11,
+    fontWeight: 500,
+    color: 'var(--ds-error)',
+    background: 'rgba(239,68,68,.08)',
+    border: '1px solid rgba(239,68,68,.3)',
+    padding: '3px 10px',
+    borderRadius: 12,
+    maxWidth: 400,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    cursor: 'help',
+  },
+  streamingIndicator: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 4,
+    padding: '3px 8px',
+    borderRadius: 12,
+    background: 'rgba(59,130,246,.12)',
+    color: 'var(--ds-accent)',
+    fontSize: 11,
+    fontWeight: 600,
+  },
+  spinner: {
+    animation: 'spin 1s linear infinite',
+    willChange: 'transform',
+  },
+  streamingLabel: {
+    fontSize: 10,
   },
   contextChip: {
     fontSize: 12,
     fontWeight: 600,
-    color: '#3b82f6',
-    background: 'rgba(59,130,246,.1)',
+    color: 'var(--ds-accent)',
+    background: 'var(--ds-accent-bg)',
     padding: '3px 10px',
     borderRadius: 12,
-    fontFamily: 'monospace',
+    fontFamily: 'ui-monospace, "SFMono-Regular", "Menlo", "Monaco", monospace',
+    fontVariantNumeric: 'tabular-nums',
     marginLeft: 8,
   },
   tabBar: {
     display: 'flex',
     gap: 0,
-    borderBottom: '1px solid #334155',
-    background: '#0f172a',
+    borderBottom: `1px solid var(--ds-border)`,
+    background: 'var(--ds-bg)',
     flexShrink: 0,
     padding: '0 28px',
   },
@@ -780,35 +942,48 @@ const s: Record<string, React.CSSProperties> = {
     padding: '8px 16px',
     fontSize: 13,
     fontWeight: 500,
-    color: '#64748b',
+    color: 'var(--ds-text-muted)',
     background: 'none',
     border: 'none',
     borderBottom: '2px solid transparent',
     cursor: 'pointer',
-    transition: 'color 0.15s',
+    transitionProperty: 'color, border-color',
+    transitionDuration: '0.15s',
+    transitionTimingFunction: 'ease',
   },
   tabActive: {
-    color: '#3b82f6',
-    borderBottomColor: '#3b82f6',
+    color: 'var(--ds-accent)',
+    borderBottomColor: 'var(--ds-accent)',
   },
   runsList: {
     flex: 1,
     overflowY: 'auto',
-    padding: '12px 28px',
+    padding: `${DESIGN.space.md} ${DESIGN.space.xxl}`,
     display: 'flex',
     flexDirection: 'column',
     gap: 6,
   },
   runCard: {
     padding: '10px 14px',
-    borderRadius: 8,
-    border: '1px solid #334155',
-    background: '#1e293b',
+    borderRadius: DESIGN.radii.lg,
+    border: '1px solid transparent',
+    background: 'transparent',
+    color: 'inherit',
+    font: 'inherit',
     cursor: 'pointer',
-    transition: 'border-color 0.15s, background 0.15s',
+    textAlign: 'left',
+    textDecoration: 'none',
+    transitionProperty: 'border-color, background-color, box-shadow',
+    transitionDuration: '0.12s',
+    transitionTimingFunction: 'ease',
     display: 'flex',
     flexDirection: 'column',
     gap: 4,
+    boxShadow: 'var(--ds-card-shadow)',
+  },
+  runCardActive: {
+    background: 'var(--ds-surface)',
+    borderColor: 'var(--ds-accent-border)',
   },
   runCardHeader: {
     display: 'flex',
@@ -822,111 +997,153 @@ const s: Record<string, React.CSSProperties> = {
     flexShrink: 0,
   },
   runCardName: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: 600,
-    color: '#f1f5f9',
-    fontFamily: 'monospace',
+    color: 'var(--ds-text-primary)',
+    fontFamily: 'ui-monospace, "SFMono-Regular", "Menlo", "Monaco", monospace',
   },
   runCardPhase: {
     fontSize: 11,
-    color: '#64748b',
+    color: 'var(--ds-text-muted)',
   },
   runCardCost: {
     fontSize: 11,
     fontWeight: 600,
-    color: '#4ade80',
-    fontFamily: 'monospace',
+    color: 'var(--ds-success)',
+    fontFamily: 'ui-monospace, "SFMono-Regular", "Menlo", "Monaco", monospace',
+    fontVariantNumeric: 'tabular-nums',
   },
   runCardMeta: {
     fontSize: 11,
-    color: '#64748b',
+    color: 'var(--ds-text-muted)',
     paddingLeft: 15,
   },
   newBtn: {
     fontSize: 11,
     padding: '4px 10px',
-    borderRadius: 6,
-    border: '1px solid #334155',
+    borderRadius: DESIGN.radii.sm,
+    border: `1px solid var(--ds-border)`,
     background: 'transparent',
-    color: '#94a3b8',
+    color: 'var(--ds-text-secondary)',
     cursor: 'pointer',
     fontWeight: 500,
+    transitionProperty: 'background-color, color',
+    transitionDuration: '0.15s',
+    transitionTimingFunction: 'ease',
   },
   messages: {
     flex: 1,
     minHeight: 0,
     overflowY: 'auto',
-    padding: '20px 28px',
+    padding: `${DESIGN.space.xxl} ${DESIGN.space.xxl}`,
     display: 'flex',
     flexDirection: 'column',
-    gap: 16,
+    gap: DESIGN.space.xl,
   },
   empty: {
-    color: '#475569',
+    color: 'var(--ds-text-muted)',
     fontSize: 14,
     textAlign: 'center',
     marginTop: 64,
+  },
+  emptyTitle: {
+    fontSize: 16,
+    fontWeight: 600,
+    color: 'var(--ds-text-primary)',
+    marginBottom: 4,
+  },
+  emptySubtitle: {
+    fontSize: 13,
+    color: 'var(--ds-text-secondary)',
+    lineHeight: 1.5,
+    marginBottom: 16,
+    maxWidth: 480,
+    margin: '0 auto 16px',
+  },
+  quickPrompts: {
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: 8,
+    alignItems: 'center',
+    maxWidth: 560,
+    margin: '0 auto',
+  },
+  quickPromptBtn: {
+    background: 'var(--ds-surface)',
+    border: `1px solid var(--ds-border)`,
+    borderRadius: DESIGN.radii.md,
+    padding: '8px 14px',
+    color: 'var(--ds-text-secondary)',
+    fontSize: 13,
+    cursor: 'pointer',
+    textAlign: 'left' as const,
+    transitionProperty: 'background-color, border-color, color',
+    transitionDuration: '0.15s',
+    transitionTimingFunction: 'ease',
   },
   msgWrap: { display: 'flex', flexDirection: 'column' },
   userMsg: {
     alignSelf: 'flex-end',
     maxWidth: '75%',
     padding: '12px 16px',
-    borderRadius: 12,
+    borderRadius: DESIGN.radii.xl,
     borderBottomRightRadius: 3,
-    background: 'rgba(59,130,246,.2)',
-    color: '#f1f5f9',
+    background: 'var(--ds-accent-bg)',
+    color: 'var(--ds-text-primary)',
     fontSize: 14,
     lineHeight: 1.65,
+    fontVariantNumeric: 'tabular-nums',
   },
   assistantMsg: {
     alignSelf: 'flex-start',
     maxWidth: '75%',
     padding: '12px 16px',
-    borderRadius: 12,
+    borderRadius: DESIGN.radii.xl,
     borderBottomLeftRadius: 3,
-    background: '#1e293b',
-    border: '1px solid #334155',
-    color: '#f1f5f9',
+    background: 'var(--ds-surface)',
+    border: `1px solid var(--ds-border)`,
+    color: 'var(--ds-text-primary)',
     fontSize: 14,
     lineHeight: 1.65,
+    boxShadow: 'var(--ds-card-shadow)',
   },
   role: {
     fontSize: 10,
     fontWeight: 700,
     textTransform: 'uppercase',
-    color: '#94a3b8',
+    color: 'var(--ds-text-secondary)',
     marginBottom: 6,
     letterSpacing: '0.04em',
   },
   content: { whiteSpace: 'pre-wrap', wordBreak: 'break-word' },
-  mdWrap: { color: '#f1f5f9', fontSize: 14, lineHeight: 1.65, wordBreak: 'break-word' },
-  thinking: { color: '#64748b', fontSize: 13, fontStyle: 'italic' },
-  traceBlock: { display: 'flex', flexDirection: 'column' as const, gap: 4 },
+  mdWrap: { color: 'var(--ds-text-primary)', fontSize: 14, lineHeight: 1.65, wordBreak: 'break-word' },
+  thinking: { color: 'var(--ds-text-secondary)', fontSize: 13, fontStyle: 'italic' },
+  traceBlock: { display: 'flex', flexDirection: 'column', gap: 4 },
   traceRow: {
     display: 'flex',
     alignItems: 'baseline',
     gap: 6,
     fontSize: 12,
-    fontFamily: 'monospace',
-    color: '#94a3b8',
+    fontFamily: 'ui-monospace, "SFMono-Regular", "Menlo", "Monaco", monospace',
+    color: 'var(--ds-text-secondary)',
     lineHeight: 1.5,
+    fontVariantNumeric: 'tabular-nums',
   },
-  traceIcon: { color: '#f59e0b', flexShrink: 0 },
-  traceResultIcon: { color: '#10b981', flexShrink: 0 },
-  traceName: { color: '#f1f5f9', fontWeight: 600, flexShrink: 0 },
-  traceArgs: { color: '#64748b', whiteSpace: 'pre-wrap' as const, wordBreak: 'break-word' as const, overflow: 'hidden', maxHeight: 60, textOverflow: 'ellipsis' },
-  traceResult: { color: '#94a3b8', whiteSpace: 'pre-wrap' as const, wordBreak: 'break-word' as const, overflow: 'hidden', maxHeight: 60, textOverflow: 'ellipsis' },
-  childBadge: { color: '#475569', fontSize: 10, background: 'rgba(148,163,184,.08)', padding: '1px 4px', borderRadius: 3, fontFamily: 'monospace', flexShrink: 0 },
+  traceIcon: { color: 'var(--ds-warning)', flexShrink: 0 },
+  traceResultIcon: { color: 'var(--ds-success)', flexShrink: 0 },
+  traceName: { color: 'var(--ds-text-primary)', fontWeight: 600, flexShrink: 0 },
+  traceArgs: { color: 'var(--ds-text-muted)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', overflow: 'hidden', maxHeight: 60, textOverflow: 'ellipsis' },
+  traceResult: { color: 'var(--ds-text-secondary)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', overflow: 'hidden', maxHeight: 60, textOverflow: 'ellipsis' },
+  childBadge: { color: 'var(--ds-text-muted)', fontSize: 10, background: 'var(--ds-trace-muted-bg)', padding: '1px 4px', borderRadius: 3, fontFamily: 'ui-monospace, "SFMono-Regular", "Menlo", "Monaco", monospace', flexShrink: 0 },
   clarifyMsg: {
     alignSelf: 'flex-start',
     maxWidth: '75%',
     padding: '12px 16px',
-    borderRadius: 12,
+    borderRadius: DESIGN.radii.xl,
     borderBottomLeftRadius: 3,
-    background: 'rgba(245,158,11,.1)',
-    border: '1px solid rgba(245,158,11,.3)',
-    color: '#f1f5f9',
+    background: 'var(--ds-warning-bg)',
+    border: '1px solid var(--ds-warning-border)',
+    color: 'var(--ds-text-primary)',
     fontSize: 14,
     lineHeight: 1.65,
   },
@@ -940,28 +1157,51 @@ const s: Record<string, React.CSSProperties> = {
     flex: 1,
     resize: 'none',
     padding: '8px 12px',
-    borderRadius: 8,
-    border: '1px solid #334155',
-    background: '#1e293b',
-    color: '#f1f5f9',
+    borderRadius: DESIGN.radii.md,
+    border: `1px solid var(--ds-border)`,
+    background: 'var(--ds-surface)',
+    color: 'var(--ds-text-primary)',
     fontSize: 13,
     fontFamily: 'system-ui, sans-serif',
     lineHeight: 1.5,
     outline: 'none',
+    transitionProperty: 'border-color, box-shadow',
+    transitionDuration: '0.15s',
+    transitionTimingFunction: 'ease',
   },
   errorBanner: {
     padding: '8px 12px',
-    borderRadius: 8,
-    background: '#3a1e1e',
+    borderRadius: DESIGN.radii.md,
+    background: 'var(--ds-error-bg)',
     color: '#fca5a5',
     fontSize: 13,
     border: '1px solid #7f1d1d',
   },
+  jumpBtn: {
+    position: 'absolute' as const,
+    bottom: 80,
+    right: 28,
+    width: 40,
+    height: 40,
+    borderRadius: '50%',
+    background: 'var(--ds-surface)',
+    border: `1px solid var(--ds-border)`,
+    color: 'var(--ds-text-secondary)',
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    boxShadow: 'var(--ds-card-shadow-hover)',
+    transitionProperty: 'background-color, border-color, color, transform, opacity',
+    transitionDuration: '0.15s',
+    transitionTimingFunction: 'ease',
+    zIndex: 10,
+  },
   inputArea: {
     display: 'flex',
     gap: 10,
-    padding: '16px 20px',
-    borderTop: '1px solid #334155',
+    padding: '16px 28px',
+    borderTop: `1px solid var(--ds-border)`,
     alignItems: 'flex-end',
     flexShrink: 0,
   },
@@ -969,53 +1209,62 @@ const s: Record<string, React.CSSProperties> = {
     flex: 1,
     resize: 'none',
     padding: '10px 14px',
-    borderRadius: 10,
-    border: '1px solid #334155',
-    background: '#1e293b',
-    color: '#f1f5f9',
+    borderRadius: DESIGN.radii.lg,
+    border: `1px solid var(--ds-border)`,
+    background: 'var(--ds-surface)',
+    color: 'var(--ds-text-primary)',
     fontSize: 14,
     fontFamily: 'system-ui, sans-serif',
     lineHeight: 1.5,
     outline: 'none',
     minHeight: 42,
     maxHeight: 120,
+    transitionProperty: 'border-color, box-shadow',
+    transitionDuration: '0.15s',
+    transitionTimingFunction: 'ease',
   },
   sendBtn: {
     width: 42,
     height: 42,
-    background: '#3b82f6',
+    background: 'var(--ds-accent)',
     border: 'none',
-    borderRadius: 10,
+    borderRadius: DESIGN.radii.lg,
     cursor: 'pointer',
     color: '#fff',
     fontSize: 18,
     fontWeight: 700,
     flexShrink: 0,
-    transition: 'opacity 0.15s',
+    transitionProperty: 'opacity, background-color, transform',
+    transitionDuration: '0.15s',
+    transitionTimingFunction: 'ease',
   },
   cancelBtn: {
     width: 42,
     height: 42,
     background: 'transparent',
-    border: '1px solid #475569',
-    borderRadius: 10,
+    border: `1px solid var(--ds-text-muted)`,
+    borderRadius: DESIGN.radii.lg,
     cursor: 'pointer',
-    color: '#94a3b8',
+    color: 'var(--ds-text-secondary)',
     fontSize: 16,
     fontWeight: 700,
     flexShrink: 0,
-    transition: 'border-color 0.15s, color 0.15s',
+    transitionProperty: 'border-color, color, background-color',
+    transitionDuration: '0.15s',
+    transitionTimingFunction: 'ease',
   },
   stopBtn: {
     marginTop: 8,
     padding: '4px 12px',
     background: 'transparent',
-    border: '1px solid #ef4444',
-    borderRadius: 6,
+    border: `1px solid var(--ds-error)`,
+    borderRadius: DESIGN.radii.sm,
     cursor: 'pointer',
-    color: '#ef4444',
+    color: 'var(--ds-error)',
     fontSize: 12,
     fontWeight: 600,
-    transition: 'background 0.15s, color 0.15s',
-  } as React.CSSProperties,
+    transitionProperty: 'background-color, color',
+    transitionDuration: '0.15s',
+    transitionTimingFunction: 'ease',
+  },
 }

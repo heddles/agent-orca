@@ -19,7 +19,7 @@ export default defineConfig({
     exclude: ['e2e/**', 'node_modules/**'],
     coverage: {
       provider: 'v8',
-      include: ['src/api/traceStream.ts', 'src/components/TraceAccordion.tsx'],
+      include: ['src/api/traceStream.ts', 'src/components/TraceAccordion.tsx', 'src/lib/designSystem.ts', 'src/lib/primitives.tsx'],
       thresholds: {
         lines: 80,
         branches: 78,

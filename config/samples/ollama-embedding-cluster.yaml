@@ -136,7 +136,7 @@ spec:
 apiVersion: agentorc.agentorc.io/v1alpha1
 kind: ModelSelector
 metadata:
-  name: ollama-embeddings
+  name: ollama-embed
 spec:
   strategy: rule-based
   providers:

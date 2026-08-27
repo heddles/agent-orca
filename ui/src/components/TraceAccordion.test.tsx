@@ -30,10 +30,17 @@ describe('TraceAccordion', () => {
   it('shows empty body when expanded with no entries', async () => {
     render(<TraceAccordion entries={[]} />)
     await openAccordion()
-    expect(screen.getByText('No trace events yet.')).toBeInTheDocument()
+    expect(screen.getByText(/Checking for traces./)).toBeInTheDocument()
   })
 
-  it('renders thought and tool events', async () => {
+  it('shows retrieving events with a quip when streaming and empty', async () => {
+    render(<TraceAccordion entries={[]} streaming />)
+    await openAccordion()
+    expect(screen.getByText(/Retrieving events/)).toBeInTheDocument()
+  })
+
+  it('renders thought as an expandable thinking panel', async () => {
+    const user = userEvent.setup()
     render(
       <TraceAccordion
         entries={[
@@ -44,8 +51,14 @@ describe('TraceAccordion', () => {
       />,
     )
     await openAccordion()
-    expect(screen.getByText(/thought/)).toBeInTheDocument()
-    expect(screen.getByText(/tool →/)).toBeInTheDocument()
+    expect(screen.getByText(/thinking/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /expand thinking/i })).toBeInTheDocument()
+    // Collapsed by default — the reasoning content is not in the DOM yet.
+    expect(screen.queryByText('planning')).not.toBeInTheDocument()
+    // Expanding reveals the captured thinking.
+    await user.click(screen.getByRole('button', { name: /expand thinking/i }))
+    expect(screen.getByText('planning')).toBeInTheDocument()
+    expect(screen.getByText(/calls tool/)).toBeInTheDocument()
     expect(screen.getByText(/result/)).toBeInTheDocument()
   })
 
@@ -169,5 +182,63 @@ describe('TraceAccordion', () => {
     await openAccordion()
     expect(screen.getByText(/unknown trace type/)).toBeInTheDocument()
     expect(screen.getAllByText('unknown_kind').length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('renders ragResult with KB name, query, and result count', async () => {
+    render(
+      <TraceAccordion
+        entries={[entry(0, { type: 'ragResult', name: 'llm-research-kb', query: 'attention mechanism', results: 7, collection: 'research-docs' } as TraceEvent)]}
+      />,
+    )
+    await openAccordion()
+    expect(screen.getByText(/RAG search/)).toBeInTheDocument()
+    expect(screen.getByText(/7 results/)).toBeInTheDocument()
+    expect(screen.getByText(/research-docs/)).toBeInTheDocument()
+  })
+
+  it('renders mcpDiscovery with server name and tool count', async () => {
+    render(
+      <TraceAccordion
+        entries={[entry(0, { type: 'mcpDiscovery', server: 'filesystem', tools: 12 } as TraceEvent)]}
+      />,
+    )
+    await openAccordion()
+    expect(screen.getByText(/MCP server/)).toBeInTheDocument()
+    expect(screen.getByText(/filesystem/)).toBeInTheDocument()
+    expect(screen.getByText(/12 tools/)).toBeInTheDocument()
+  })
+
+  it('renders guardrail block event', async () => {
+    render(
+      <TraceAccordion
+        entries={[entry(0, { type: 'guardrail', action: 'blocked', reason: 'PII detected' } as TraceEvent)]}
+      />,
+    )
+    await openAccordion()
+    expect(screen.getByText(/guardrail/)).toBeInTheDocument()
+    expect(screen.getByText(/blocked/)).toBeInTheDocument()
+    expect(screen.getByText(/PII detected/)).toBeInTheDocument()
+  })
+
+  it('renders providerFallback event', async () => {
+    render(
+      <TraceAccordion
+        entries={[entry(0, { type: 'providerFallback', from: 'openai', to: 'anthropic', reason: 'rate limited' } as TraceEvent)]}
+      />,
+    )
+    await openAccordion()
+    expect(screen.getByText(/fallback/)).toBeInTheDocument()
+    expect(screen.getByText(/openai/)).toBeInTheDocument()
+    expect(screen.getByText(/anthropic/)).toBeInTheDocument()
+  })
+
+  it('renders providerFallback exhausted event', async () => {
+    render(
+      <TraceAccordion
+        entries={[entry(0, { type: 'providerFallback', from: 'openai', to: '', reason: 'timeout', exhausted: true } as TraceEvent)]}
+      />,
+    )
+    await openAccordion()
+    expect(screen.getByText(/exhausted/)).toBeInTheDocument()
   })
 })

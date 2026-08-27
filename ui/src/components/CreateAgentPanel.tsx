@@ -8,6 +8,9 @@ import {
   type ToolSummary,
   type MCPServerSummary,
 } from '../api/sse'
+import { DESIGN } from '../lib/designSystem'
+import { ICON, Icon } from '../lib/icons'
+import type { IconComponent } from '../lib/icons'
 
 const FRAMEWORKS = [
   'openai-compatible',
@@ -18,12 +21,20 @@ const FRAMEWORKS = [
 ]
 
 // Pre-defined agent templates
-const AGENT_TEMPLATES = [
+const AGENT_TEMPLATES: Array<{
+  id: string
+  name: string
+  description: string
+  icon: IconComponent
+  ociRef: string
+  systemPrompt: string
+  framework: string
+}> = [
   {
     id: 'support-bot',
     name: 'Support Bot',
     description: 'Customer support agent with tool access',
-    icon: '🎧',
+    icon: ICON.templates.support,
     ociRef: 'python:3.12-slim',
     systemPrompt: 'You are a helpful customer support agent. Be concise, friendly, and solve the user\'s problem efficiently.',
     framework: 'openai-compatible',
@@ -32,7 +43,7 @@ const AGENT_TEMPLATES = [
     id: 'research-assistant',
     name: 'Research Assistant',
     description: 'Deep research and analysis agent',
-    icon: '🔍',
+    icon: ICON.templates.research,
     ociRef: 'python:3.12-slim',
     systemPrompt: 'You are a research assistant. Gather information thoroughly and present findings in a clear, organized manner.',
     framework: 'openai-compatible',
@@ -41,7 +52,7 @@ const AGENT_TEMPLATES = [
     id: 'code-reviewer',
     name: 'Code Reviewer',
     description: 'Code review and refactoring suggestions',
-    icon: '💻',
+    icon: ICON.templates.code,
     ociRef: 'python:3.12-slim',
     systemPrompt: 'You are a senior software engineer. Review code for bugs, performance issues, and best practices. Provide actionable feedback.',
     framework: 'openai-compatible',
@@ -50,7 +61,7 @@ const AGENT_TEMPLATES = [
     id: 'data-analyst',
     name: 'Data Analyst',
     description: 'Data analysis and visualization',
-    icon: '📊',
+    icon: ICON.templates.data,
     ociRef: 'python:3.12-slim',
     systemPrompt: 'You are a data analyst. Analyze data carefully and create clear visualizations. Explain insights in plain language.',
     framework: 'openai-compatible',
@@ -148,7 +159,13 @@ export function CreateAgentPanel({ namespace = 'default', onCreated, onClose }: 
   }
 
   return (
-    <div style={s.overlay} onClick={onClose}>
+    <div
+      style={s.overlay}
+      onClick={onClose}
+      onKeyDown={(e) => e.key === 'Escape' && onClose()}
+      tabIndex={-1}
+      role="presentation"
+    >
       <div style={s.panel} onClick={(e) => e.stopPropagation()}>
         <div style={s.header}>
           <div style={s.titleRow}>
@@ -157,18 +174,26 @@ export function CreateAgentPanel({ namespace = 'default', onCreated, onClose }: 
               <span style={s.badge}>Custom</span>
             )}
           </div>
-          <button style={s.closeBtn} onClick={onClose}>{'✕'}</button>
+          <button type="button" style={s.closeBtn} onClick={onClose} aria-label="Close create agent panel"><Icon icon={ICON.close} size={16} /></button>
         </div>
 
         {/* Mode Tabs */}
-        <div style={s.modeTabs}>
+        <div role="tablist" style={s.modeTabs}>
           <button
+            type="button"
+            role="tab"
+            aria-selected={mode === 'templates'}
+            tabIndex={mode === 'templates' ? 0 : -1}
             style={{ ...s.modeTab, ...(mode === 'templates' ? s.modeTabActive : {}) }}
             onClick={() => setMode('templates')}
           >
             Templates
           </button>
           <button
+            type="button"
+            role="tab"
+            aria-selected={mode === 'custom'}
+            tabIndex={mode === 'custom' ? 0 : -1}
             style={{ ...s.modeTab, ...(mode === 'custom' ? s.modeTabActive : {}) }}
             onClick={() => setMode('custom')}
           >
@@ -181,15 +206,16 @@ export function CreateAgentPanel({ namespace = 'default', onCreated, onClose }: 
             // Template Gallery
             <div style={s.templatesGrid}>
               {AGENT_TEMPLATES.map((template) => (
-                <div
+                <button
                   key={template.id}
+                  type="button"
                   style={s.templateCard}
                   onClick={() => applyTemplate(template)}
                 >
-                  <div style={s.templateIcon}>{template.icon}</div>
+                  <div style={s.templateIcon}><Icon icon={template.icon} size={32} strokeWidth={1.25} /></div>
                   <div style={s.templateName}>{template.name}</div>
                   <div style={s.templateDesc}>{template.description}</div>
-                </div>
+                </button>
               ))}
             </div>
           ) : (
@@ -254,7 +280,7 @@ export function CreateAgentPanel({ namespace = 'default', onCreated, onClose }: 
                   {tools.map((tool) => {
                     const selected = selectedTools.includes(tool.name)
                     return (
-                      <button
+                      <button type="button"
                         key={tool.name}
                         style={{ ...s.selectorItem, ...(selected ? s.selectorItemSelected : {}) }}
                         onClick={() => toggleTool(tool.name)}
@@ -279,7 +305,7 @@ export function CreateAgentPanel({ namespace = 'default', onCreated, onClose }: 
                   {mcps.map((mcp) => {
                     const selected = selectedMCPs.includes(mcp.name)
                     return (
-                      <button
+                      <button type="button"
                         key={mcp.name}
                         style={{ ...s.selectorItem, ...(selected ? s.selectorItemSelected : {}) }}
                         onClick={() => toggleMCP(mcp.name)}
@@ -332,9 +358,9 @@ export function CreateAgentPanel({ namespace = 'default', onCreated, onClose }: 
         </div>
 
         <div style={s.footer}>
-          <button style={s.cancelBtn} onClick={onClose}>Cancel</button>
+          <button type="button" style={s.cancelBtn} onClick={onClose}>Cancel</button>
           {mode === 'custom' && (
-            <button
+            <button type="button"
               style={{ ...s.createBtn, opacity: canSubmit ? 1 : 0.4 }}
               disabled={!canSubmit}
               onClick={handleSubmit}
@@ -372,8 +398,8 @@ const s: Record<string, React.CSSProperties> = {
   panel: {
     width: 420,
     maxWidth: '100%',
-    background: '#0f172a',
-    borderLeft: '1px solid #1e293b',
+    background: 'var(--ds-bg)',
+    borderLeft: '1px solid var(--ds-surface)',
     display: 'flex',
     flexDirection: 'column',
     height: '100%',
@@ -384,18 +410,18 @@ const s: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     justifyContent: 'space-between',
     padding: '16px 20px',
-    borderBottom: '1px solid #1e293b',
+    borderBottom: '1px solid var(--ds-surface)',
   },
   titleRow: {
     display: 'flex',
     alignItems: 'center',
     gap: 8,
   },
-  title: { fontSize: 16, fontWeight: 700, color: '#f1f5f9' },
+  title: { fontSize: 16, fontWeight: 700, color: 'var(--ds-text-primary)' },
   closeBtn: {
     background: 'none',
     border: 'none',
-    color: '#64748b',
+    color: 'var(--ds-text-muted)',
     fontSize: 22,
     cursor: 'pointer',
     lineHeight: 1,
@@ -403,7 +429,7 @@ const s: Record<string, React.CSSProperties> = {
   },
   modeTabs: {
     display: 'flex',
-    borderBottom: '1px solid #1e293b',
+    borderBottom: '1px solid var(--ds-surface)',
   },
   modeTab: {
     flex: 1,
@@ -411,14 +437,14 @@ const s: Record<string, React.CSSProperties> = {
     background: 'transparent',
     border: 'none',
     borderBottom: '2px solid transparent',
-    color: '#64748b',
+    color: 'var(--ds-text-muted)',
     fontSize: 13,
     fontWeight: 500,
     cursor: 'pointer',
   },
   modeTabActive: {
-    color: '#3b82f6',
-    borderBottomColor: '#3b82f6',
+    color: 'var(--ds-accent)',
+    borderBottomColor: 'var(--ds-accent)',
   },
   body: {
     flex: 1,
@@ -434,8 +460,8 @@ const s: Record<string, React.CSSProperties> = {
     gap: 12,
   },
   templateCard: {
-    background: '#1e293b',
-    border: '1px solid #334155',
+    background: 'var(--ds-surface)',
+    border: '1px solid var(--ds-border)',
     borderRadius: 12,
     padding: 16,
     cursor: 'pointer',
@@ -443,11 +469,11 @@ const s: Record<string, React.CSSProperties> = {
     flexDirection: 'column',
     alignItems: 'center',
     gap: 8,
-    transition: 'all 0.15s',
+    transitionProperty: 'border-color, background-color, box-shadow, transform', transitionDuration: '0.15s', transitionTimingFunction: 'ease',
   },
   templateIcon: { fontSize: 32 },
-  templateName: { fontSize: 14, fontWeight: 600, color: '#f1f5f9' },
-  templateDesc: { fontSize: 11, color: '#64748b', textAlign: 'center' },
+  templateName: { fontSize: 14, fontWeight: 600, color: 'var(--ds-text-primary)' },
+  templateDesc: { fontSize: 11, color: 'var(--ds-text-muted)', textAlign: 'center' },
   field: {
     display: 'flex',
     flexDirection: 'column',
@@ -456,19 +482,19 @@ const s: Record<string, React.CSSProperties> = {
   label: {
     fontSize: 12,
     fontWeight: 600,
-    color: '#94a3b8',
+    color: 'var(--ds-text-secondary)',
     textTransform: 'uppercase',
     letterSpacing: '0.04em',
   },
-  required: { color: '#ef4444' },
-  hint: { fontSize: 11, color: '#475569', marginTop: 2 },
-  muted: { color: '#475569', fontSize: 12 },
+  required: { color: 'var(--ds-error)' },
+  hint: { fontSize: 11, color: 'var(--ds-text-muted)', marginTop: 2 },
+  muted: { color: 'var(--ds-text-muted)', fontSize: 12 },
   input: {
-    background: '#1e293b',
-    border: '1px solid #334155',
+    background: 'var(--ds-surface)',
+    border: '1px solid var(--ds-border)',
     borderRadius: 6,
     padding: '8px 10px',
-    color: '#e2e8f0',
+    color: 'var(--ds-text-primary)',
     fontSize: 13,
     fontFamily: 'system-ui, sans-serif',
     outline: 'none',
@@ -476,14 +502,14 @@ const s: Record<string, React.CSSProperties> = {
     boxSizing: 'border-box',
   },
   error: {
-    background: '#3a1e1e',
+    background: 'var(--ds-error-bg)',
     color: '#fca5a5',
     padding: '8px 12px',
     borderRadius: 6,
     fontSize: 12,
   },
   warning: {
-    background: '#3a2e1e',
+    background: 'var(--ds-warning-bg)',
     color: '#fcd34d',
     padding: '8px 12px',
     borderRadius: 6,
@@ -494,14 +520,14 @@ const s: Record<string, React.CSSProperties> = {
     justifyContent: 'flex-end',
     gap: 8,
     padding: '12px 20px',
-    borderTop: '1px solid #1e293b',
+    borderTop: '1px solid var(--ds-surface)',
   },
   cancelBtn: {
     padding: '6px 14px',
     borderRadius: 6,
-    border: '1px solid #334155',
+    border: '1px solid var(--ds-border)',
     background: 'transparent',
-    color: '#94a3b8',
+    color: 'var(--ds-text-secondary)',
     fontSize: 13,
     cursor: 'pointer',
   },
@@ -509,7 +535,7 @@ const s: Record<string, React.CSSProperties> = {
     padding: '6px 14px',
     borderRadius: 6,
     border: 'none',
-    background: '#3b82f6',
+    background: 'var(--ds-accent)',
     color: '#fff',
     fontSize: 13,
     fontWeight: 600,
@@ -524,9 +550,9 @@ const s: Record<string, React.CSSProperties> = {
   selectorItem: {
     padding: '6px 10px',
     borderRadius: 6,
-    border: '1px solid #334155',
-    background: '#1e293b',
-    color: '#94a3b8',
+    border: '1px solid var(--ds-border)',
+    background: 'var(--ds-surface)',
+    color: 'var(--ds-text-secondary)',
     fontSize: 12,
     cursor: 'pointer',
     display: 'flex',
@@ -536,8 +562,8 @@ const s: Record<string, React.CSSProperties> = {
   },
   selectorItemSelected: {
     background: 'rgba(59,130,246,.15)',
-    borderColor: '#3b82f6',
-    color: '#f1f5f9',
+    borderColor: 'var(--ds-accent)',
+    color: 'var(--ds-text-primary)',
   },
   selectorName: { fontSize: 12, fontWeight: 500 },
   selectorType: { fontSize: 10, opacity: 0.6 },
@@ -546,7 +572,7 @@ const s: Record<string, React.CSSProperties> = {
     padding: '2px 8px',
     borderRadius: 4,
     background: 'rgba(59,130,246,.15)',
-    color: '#3b82f6',
+    color: 'var(--ds-accent)',
     fontWeight: 600,
   },
 }

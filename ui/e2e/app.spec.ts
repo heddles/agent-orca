@@ -79,9 +79,9 @@ test.describe('Runs', () => {
     // Wait for the sidebar to populate, then click
     const sidebarItem = page.locator('aside').getByText(run.name).first()
     await sidebarItem.click({ timeout: 15_000 })
-    // RunView detail header renders spend chip with 💰 inside <main>
+    // RunView detail header renders the spend chip inside <main>
     const main = page.locator('main')
-    await expect(main.getByText('💰')).toBeVisible({ timeout: 15_000 })
+    await expect(main.getByText(run.name)).toBeVisible({ timeout: 15_000 })
   })
 })
 

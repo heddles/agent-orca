@@ -2,6 +2,8 @@
 import { useState } from 'react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { DESIGN, ds } from '../lib/designSystem'
+import { Icon, ICON } from '../lib/icons'
 
 interface Props {
   output: string
@@ -23,7 +25,9 @@ export function OutputCard({ output, streaming, markdown }: Props) {
 
   return (
     <div style={s.card}>
-      <div style={s.header} onClick={() => setOpen((o) => !o)}>
+      <button type="button" style={s.header} onClick={() => setOpen((o) => !o)}
+           aria-expanded={open} aria-controls="output-body"
+      >
         <div style={s.title}>
           {streaming ? (
             <>
@@ -32,20 +36,20 @@ export function OutputCard({ output, streaming, markdown }: Props) {
             </>
           ) : (
             <>
-              <span style={s.star}>✦</span>
+              <Icon icon={ICON.output} size={14} strokeWidth={1.5} />
               <span>AI Output</span>
             </>
           )}
         </div>
         <div style={s.actions}>
-          <button style={s.iconBtn} onClick={(e) => { e.stopPropagation(); copy() }} title="Copy output">
-            {copied ? '✓' : '⎘'}
+          <button type="button" style={s.iconBtn} onClick={(e) => { e.stopPropagation(); copy() }} aria-label="Copy output" title="Copy output">
+            {copied ? <Icon icon={ICON.save} size={14} /> : <Icon icon={ICON.copy} size={14} />}
           </button>
-          <span style={{ ...s.chevron, transform: open ? 'rotate(90deg)' : undefined }}>▶</span>
+          <Icon icon={ICON.chevronRight} size={11} style={{ ...s.chevron, transform: open ? 'rotate(90deg)' : undefined }} />
         </div>
-      </div>
+      </button>
       {open && (
-        <div style={{ ...s.body, color: streaming ? '#94a3b8' : '#f1f5f9' }}>
+        <div id="output-body" style={{ ...s.body, color: streaming ? 'var(--ds-text-secondary)' : 'var(--ds-text-primary)' }}>
           {markdown ? (
             <div style={s.mdWrap} className="ao-md">
               <Markdown remarkPlugins={[remarkGfm]}>{output}</Markdown>
@@ -77,71 +81,90 @@ function PulseDot() {
 
 const s: Record<string, React.CSSProperties> = {
   card: {
-    background: '#1e293b',
-    border: '1px solid #334155',
-    borderRadius: 12,
+    background: 'var(--ds-surface)',
+    border: '1px solid var(--ds-border)',
+    borderRadius: DESIGN.radii.xl,
     display: 'flex',
     flexDirection: 'column',
     maxHeight: '50vh',
+    boxShadow: 'var(--ds-card-shadow)',
+    transitionProperty: 'box-shadow, border-color',
+    transitionDuration: '0.15s',
+    transitionTimingFunction: 'ease',
   },
   header: {
     padding: '12px 16px',
-    borderBottom: '1px solid #334155',
+    borderBottom: `1px solid var(--ds-border)`,
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
     cursor: 'pointer',
     userSelect: 'none',
+    background: 'transparent',
+    border: 'none',
+    color: 'inherit',
+    font: 'inherit',
+    textAlign: 'left',
+    transitionProperty: 'border-color, background-color',
+    transitionDuration: '0.15s',
+    transitionTimingFunction: 'ease',
   },
   title: {
     fontSize: 11,
     fontWeight: 600,
-    textTransform: 'uppercase' as const,
+    textTransform: 'uppercase',
     letterSpacing: '0.08em',
-    color: '#94a3b8',
+    color: 'var(--ds-text-secondary)',
     display: 'flex',
     alignItems: 'center',
     gap: 8,
   },
-  star: { fontSize: 14 },
   actions: { display: 'flex', gap: 6, alignItems: 'center' },
   chevron: {
     fontSize: 11,
-    color: '#94a3b8',
-    transition: 'transform 0.2s',
+    color: 'var(--ds-text-secondary)',
+    transitionProperty: 'transform',
+    transitionDuration: '0.2s',
+    transitionTimingFunction: 'ease',
   },
   iconBtn: {
     width: 28,
     height: 28,
-    borderRadius: 5,
-    border: '1px solid #334155',
-    background: 'none',
-    color: '#94a3b8',
+    borderRadius: DESIGN.radii.sm,
+    border: '1px solid var(--ds-border)',
+    background: 'transparent',
+    color: 'var(--ds-text-secondary)',
     cursor: 'pointer',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
     fontSize: 13,
+    transitionProperty: 'background-color, color, border-color',
+    transitionDuration: '0.15s',
+    transitionTimingFunction: 'ease',
   },
   body: {
     padding: 20,
     fontSize: 14,
     lineHeight: 1.7,
     fontFamily: 'system-ui, sans-serif',
-    whiteSpace: 'pre-wrap' as const,
+    whiteSpace: 'pre-wrap',
     minHeight: 80,
     flex: 1,
-    overflowY: 'auto' as const,
-    wordBreak: 'break-word' as const,
+    overflowY: 'auto',
+    wordBreak: 'break-word',
+    fontVariantNumeric: 'tabular-nums',
   },
   mdWrap: {
-    color: '#f1f5f9',
+    color: 'var(--ds-text-primary)',
     fontSize: 14,
     lineHeight: 1.7,
-    wordBreak: 'break-word' as const,
+    wordBreak: 'break-word',
   },
+  // Opacity-only cursor blink — no scale transform (better-ui §16)
   cursor: {
     display: 'inline-block',
     animation: 'aoPulse 1s infinite',
+    willChange: 'opacity',
   },
 }

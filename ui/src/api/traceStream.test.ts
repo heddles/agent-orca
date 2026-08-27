@@ -31,11 +31,14 @@ describe('isTerminalTraceEvent', () => {
     expect(isTerminalTraceEvent({ type: STREAM_EVENT_TYPE.finalOutput, output: 'x' })).toBe(true)
     expect(isTerminalTraceEvent({ type: STREAM_EVENT_TYPE.error, message: 'x' })).toBe(true)
     expect(isTerminalTraceEvent({ type: STREAM_EVENT_TYPE.clarify, question: 'x' })).toBe(true)
-    expect(isTerminalTraceEvent({ type: STREAM_EVENT_TYPE.done, output: 'x' })).toBe(true)
     expect(isTerminalTraceEvent({ type: STREAM_EVENT_TYPE.fail, reason: 'x' })).toBe(true)
   })
 
-  it('returns false for non-terminal types', () => {
+  it('returns false for non-terminal types including done', () => {
+    // `done` is intentionally NOT terminal — it carries no output and the UI
+    // relies on finalOutput (or the poll fallback) for completion.
+    expect(isTerminalTraceEvent({ type: STREAM_EVENT_TYPE.done, finish_reason: 'stop' })).toBe(false)
+    expect(isTerminalTraceEvent({ type: STREAM_EVENT_TYPE.done, output: 'x' })).toBe(false)
     expect(isTerminalTraceEvent({ type: STREAM_EVENT_TYPE.token, content: 'x' })).toBe(false)
     expect(isTerminalTraceEvent({ type: STREAM_EVENT_TYPE.toolCall, name: 'n', arguments: '{}' })).toBe(false)
   })
@@ -75,7 +78,7 @@ describe('subscribeToRunStream', () => {
     expect(EventSource).toHaveBeenCalledWith('/api/runs/my%20ns/run-1/stream')
   })
 
-  it('delivers parsed events and marks terminal after final_output', () => {
+  it('delivers parsed events and marks terminal after finalOutput', () => {
     const onEvent = vi.fn()
     subscribeToRunStream('r', onEvent, 'default')
     expect(mockSource.onmessage).toBeTypeOf('function')
@@ -83,9 +86,12 @@ describe('subscribeToRunStream', () => {
     mockSource.onmessage?.({ data: JSON.stringify({ type: 'token', content: 'hi' }) } as MessageEvent)
     expect(onEvent).toHaveBeenCalledWith({ type: 'token', content: 'hi' })
 
-    mockSource.onmessage?.({ data: JSON.stringify({ type: 'final_output', output: 'done' }) } as MessageEvent)
-    expect(onEvent).toHaveBeenLastCalledWith({ type: 'final_output', output: 'done' })
+    // Use the canonical event constant (camelCase) — the server emits 'finalOutput'
+    const terminalEvent = { type: STREAM_EVENT_TYPE.finalOutput, output: 'done' }
+    mockSource.onmessage?.({ data: JSON.stringify(terminalEvent) } as MessageEvent)
+    expect(onEvent).toHaveBeenLastCalledWith(terminalEvent)
 
+    // Because the event was recognized as terminal, onerror must NOT emit 'connection lost'
     mockSource.onerror?.()
     expect(onEvent).not.toHaveBeenCalledWith(
       expect.objectContaining({ message: 'Stream connection lost' }),

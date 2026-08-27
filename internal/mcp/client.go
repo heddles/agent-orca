@@ -382,13 +382,27 @@ func (s *serverConn) callTool(ctx context.Context, name string, args map[string]
 	if err != nil {
 		return "", err
 	}
+	return parseToolResult(name, result)
+}
 
+// parseToolResult turns an MCP tools/call result into a string suitable for
+// returning to the LLM. Extracted from callTool so it can be unit-tested without
+// a live MCP server.
+func parseToolResult(name string, result []byte) (string, error) {
 	var resp struct {
 		Content []json.RawMessage `json:"content"`
 		IsError bool              `json:"isError"`
 	}
 	if err := json.Unmarshal(result, &resp); err != nil {
-		return string(result), nil // return raw if unparseable
+		// Not a standard MCP tools/call response shape (e.g. a bare `[]` from a
+		// misconfigured / erroring server). Surface it as a tool error instead of
+		// silently returning the raw bytes: otherwise the LLM receives an empty
+		// result, can't tell the tool actually failed, and bails ("exit too soon").
+		raw := string(result)
+		if len(raw) > 200 {
+			raw = raw[:200] + "… (truncated)"
+		}
+		return "", fmt.Errorf("MCP tool %q returned a malformed result (expected an object with a \"content\" array): %s", name, raw)
 	}
 
 	var texts []string

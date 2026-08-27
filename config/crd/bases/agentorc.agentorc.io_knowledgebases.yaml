@@ -586,6 +586,12 @@ spec:
                 description: LastSyncTime is when documents were last ingested.
                 format: date-time
                 type: string
+              message:
+                description: |-
+                  Message contains a human-readable status message. Populated on failure
+                  (e.g. "Qdrant pod failed to start: CrashLoopBackOff") or when waiting
+                  (e.g. "Qdrant pod not ready yet"). Empty once the KnowledgeBase is ready.
+                type: string
               qdrantTargetVersion:
                 description: |-
                   QdrantTargetVersion is the operator's desired Qdrant version for this

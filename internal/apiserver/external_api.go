@@ -502,9 +502,15 @@ func (s *ExternalAPIServer) streamTask(w http.ResponseWriter, r *http.Request, t
 	}
 
 	for token := range tokenCh {
-		if token == "" {
-			// Empty token is the done sentinel.
-			break
+		// Trace events are prefixed with "\x00" (see state.Store.TailTokens).
+		// Terminal events (done/fail/finalOutput) mark OpenAI-turn-loop completion
+		// and end the HTTP stream; non-terminal trace events are not deliverable as
+		// tokens in this protocol, so they are skipped.
+		if len(token) > 0 && token[0] == '\x00' {
+			if state.IsTerminalTraceEventJSON(token[1:]) {
+				break
+			}
+			continue
 		}
 		_, _ = fmt.Fprintf(w, "event: token\ndata: %s\n\n", mustJSON(map[string]string{
 			"content": token,

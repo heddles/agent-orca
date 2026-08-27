@@ -26,7 +26,6 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -109,8 +108,14 @@ type streamChoice struct {
 }
 
 type streamDelta struct {
-	Role      string     `json:"role,omitempty"`
-	Content   string     `json:"content,omitempty"`
+	Role    string `json:"role,omitempty"`
+	Content string `json:"content,omitempty"`
+	// Reasoning holds streaming extended-thinking tokens (OpenAI o-series models emit
+	// these as delta.reasoning). Captured and forwarded to the UI as `thought` trace
+	// events; without this field the thinking is silently dropped while still being
+	// proxied raw to the client, which can leave the run appearing to terminate as
+	// soon as the (content-less) thinking block ends.
+	Reasoning string     `json:"reasoning,omitempty"`
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 }
 
@@ -154,13 +159,12 @@ func (r *Router) forwardToProviderStream(ctx context.Context, provider *Provider
 	}
 
 	endpoint := liteLLMEndpoint(provider)
-	apiKey, err := os.ReadFile(provider.APIKeyFile)
+	key, err := readAPIKey(provider.APIKeyFile)
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("reading API key for %s: %w", provider.Name, err)
 	}
 
-	key := strings.TrimSpace(string(apiKey))
 	resp, err := doWithRateLimitRetry(llmCtx, func() (*http.Request, error) {
 		req, err := http.NewRequestWithContext(llmCtx, http.MethodPost, endpoint, bytes.NewReader(reqBody))
 		if err != nil {
@@ -200,7 +204,7 @@ func (c *cancelOnClose) Close() error {
 // forwardToAnthropicStream sends a streaming request to Anthropic and returns a response
 // whose body emits OpenAI-compatible SSE events (translated on the fly).
 func (r *Router) forwardToAnthropicStream(ctx context.Context, provider *ProviderConfig, chatReq ChatCompletionRequest) (*http.Response, error) {
-	apiKey, err := os.ReadFile(provider.APIKeyFile)
+	key, err := readAPIKey(provider.APIKeyFile)
 	if err != nil {
 		return nil, fmt.Errorf("reading API key for %s: %w", provider.Name, err)
 	}
@@ -310,7 +314,6 @@ func (r *Router) forwardToAnthropicStream(ctx context.Context, provider *Provide
 		return nil, fmt.Errorf("marshalling anthropic request: %w", err)
 	}
 
-	key := strings.TrimSpace(string(apiKey))
 	resp, err := doWithRateLimitRetry(ctx, func() (*http.Request, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 			"https://api.anthropic.com/v1/messages", bytes.NewReader(body))
@@ -354,20 +357,30 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 	tokenStreamKey := "tokens:" + r.cfg.RunNamespace + ":" + r.cfg.RunName
 	slog.Info("streaming response started", "provider", provider.Name, "tokenStreamKey", tokenStreamKey, "storeType", fmt.Sprintf("%T", r.store))
 
+	// A recursive (tool-call-loop) invocation reuses the controller's ResponseWriter:
+	// the outer call has already written the 200 + SSE headers. Re-calling
+	// WriteHeader here is logged as "superfluous response.WriteHeader call" and, on
+	// some servers, resets framing — so skip it for continuations.
+	isContinuation := req.Context().Value(continuationKey{}) != nil
+
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		slog.Error("ResponseWriter does not support flushing, falling back to buffered")
-		body, _ := io.ReadAll(resp.Body)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(body)
+		if !isContinuation {
+			slog.Error("ResponseWriter does not support flushing, falling back to buffered")
+			body, _ := io.ReadAll(resp.Body)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(body)
+		}
 		return
 	}
 
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.WriteHeader(http.StatusOK)
+	if !isContinuation {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.WriteHeader(http.StatusOK)
+	}
 
 	// Accumulate the full response for conversation history.
 	var contentBuilder strings.Builder
@@ -375,15 +388,33 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 	var usage TokenUsage
 	var finishReason string
 
+	// sawToolCall is set whenever ANY tool-call delta is observed on this turn,
+	// independent of mergeToolCallDeltas' index-based merging. The terminal
+	// guards — the canonical client [DONE] (below) and the run-level done sentinel
+	// written to Redis — are keyed off sawToolCall rather than len(toolCalls)==0.
+	// This decouples "is this a terminal text turn?" from the fragility of
+	// mergeToolCallDeltas: if a proxy streams tool-call deltas with a missing or
+	// colliding `index` field, the merge could undercount and make a tool-call turn
+	// look terminal (len==0), which would emit [DONE] and the done sentinel
+	// mid-loop and cause the UI to exit prematurely ("done sentinel too soon").
+	// sawToolCall can only go true when real tool-call content was streamed, so it
+	// is a faithful, merge-independent terminal detector.
+	var sawToolCall bool
+
 	scanner := bufio.NewScanner(resp.Body)
 	// Allow large SSE lines (up to 1MB).
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
-	// pendingToolCalls tracks whether we have accumulated tool calls that need
-	// to be resolved before emitting [DONE] to the client.  We suppress the
-	// upstream [DONE] and re-emit it only after the full tool-call loop finishes.
-	var suppressDone bool
-
+	// We withhold EVERY upstream `data: [DONE]` and emit a single canonical
+	// terminal [DONE] ourselves once the scan completes (see below). The OpenAI
+	// streaming spec permits exactly one terminating [DONE]; some providers
+	// (e.g. thinking-model proxies) emit a premature [DONE] right after the
+	// reasoning block and then keep streaming content. Forwarding it verbatim
+	// makes the OpenAI-SDK client close the stream early ("exit too soon") and
+	// discard the trailing content. Withholding normalizes the stream to exactly
+	// one terminal [DONE]. This also covers the tool-call case (the recursion
+	// emits its own [DONE] at the true end of the loop), so the per-turn
+	// suppression logic that used to live here is no longer needed.
 	for scanner.Scan() {
 		line := scanner.Text()
 
@@ -392,13 +423,7 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 			data := after
 
 			if data == "[DONE]" {
-				// Suppress [DONE] if there are pending tool calls — the recursive
-				// call will eventually emit its own [DONE] to close the stream.
-				suppressDone = len(toolCalls) > 0
-				if !suppressDone {
-					_, _ = fmt.Fprintf(w, "%s\n", line)
-					flusher.Flush()
-				}
+				// Withhold; a single canonical [DONE] is emitted after the scan.
 				continue
 			}
 
@@ -417,7 +442,21 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 						}
 					}
 					if len(choice.Delta.ToolCalls) > 0 {
+						sawToolCall = true
 						toolCalls = mergeToolCallDeltas(toolCalls, choice.Delta.ToolCalls)
+					}
+					// Surface extended-thinking (model "reasoning") progressively as
+					// `thought` trace events so it is captured in the UI (rendered as an
+					// expandable thinking panel) and replayable on refresh, rather than
+					// being silently dropped. This keeps the agentic chat flow faithful
+					// to the provider's full output instead of terminating on a
+					// content-less thinking block.
+					if choice.Delta.Reasoning != "" {
+						ev, _ := json.Marshal(map[string]string{
+							"type":    "thought",
+							"content": choice.Delta.Reasoning,
+						})
+						r.emitTraceEvent(string(ev))
 					}
 					if choice.FinishReason != nil {
 						finishReason = *choice.FinishReason
@@ -439,18 +478,29 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 		slog.Warn("error reading SSE stream", "err", err)
 	}
 
-	// If the run was cancelled, write the done sentinel so UI's TailTokens stops
-	// blocking, then return early — no point checkpointing or continuing.
+	// If the run was cancelled, the OpenAI turn loop never saw a terminal finish
+	// reason. Emit a `fail` trace event so TailTokens closes promptly (the poller
+	// would also catch this, but the fail event gives an immediate, authoritative
+	// signal). No magic done sentinel — completion follows the OpenAI schema's
+	// [DONE] to the agent client; the UI relies on finalOutput (with output) not
+	// a done event (without output).
 	if r.cancelCtx.Err() != nil {
-		slog.Info("run cancelled, writing done sentinel", "run", r.cfg.RunName)
+		slog.Info("run cancelled, emitting terminal fail event", "run", r.cfg.RunName)
+		_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
+		flusher.Flush()
 		if r.store != nil {
-			_ = r.store.SaveToken(context.Background(), tokenStreamKey, "")
+			failEv, _ := json.Marshal(map[string]string{"type": "fail", "reason": "router cancel"})
+			_ = r.store.SaveTraceEvent(context.Background(), tokenStreamKey, string(failEv))
 		}
 		return
 	}
 
-	// NOTE: Done sentinel is deferred until after the clarify safety net check.
-	// If we trigger _clarify, executeClarify sends its own clarify event + done sentinel.
+	// NOTE: the terminal `done` trace event is emitted below (after this clarify
+	// safety-net check) only on the genuine terminal text turn. If _clarify is
+	// auto-triggered, executeClarify emits its own `clarify` trace event — a terminal
+	// event — and the run phase moves to WaitingForInput, so TailTokens closes via
+	// that event (and/or the CRD terminal-state poller). No empty-token sentinel is
+	// written here either.
 
 	// Build the complete message for conversation history.
 	assistantMsg := Message{
@@ -511,21 +561,44 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 		}
 	}
 
-	// Signal end-of-stream to Redis so the UI handler stops blocking.
-	// Deferred to here so the clarify safety net can send its own events first.
-	if r.store != nil && len(toolCalls) == 0 {
-		slog.Info("sending done sentinel to Redis token stream", "key", tokenStreamKey)
-		sentinelCtx, sentinelCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if err := r.store.SaveToken(sentinelCtx, tokenStreamKey, ""); err != nil {
-			slog.Warn("failed to write done sentinel to Redis stream", "key", tokenStreamKey, "err", err)
-		}
-		sentinelCancel()
+	// Emit a single canonical terminal `data: [DONE]` to the client at the true end
+	// of a non-tool response. Upstream [DONE]s were withheld in the scan loop (above)
+	// so a provider's premature [DONE] cannot close the client stream early. When tool
+	// calls are present, this block is skipped and the recursion emits [DONE] itself.
+	//
+	// Keyed off sawToolCall (set the first time any tool-call delta is observed) so a
+	// mergeToolCallDeltas undercount can never make a tool-call turn look terminal.
+	if !sawToolCall {
+		_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
+		flusher.Flush()
 	}
+
+	// Completion is signalled solely by the OpenAI schema's [DONE] to the agent
+	// framework. No custom done trace event is emitted here — the UI relies on the
+	// UI API's finalOutput event (which carries the accumulated output) rather than a
+	// done event (which carried only finish_reason, no output). This prevents the
+	// done/finalOutput race where done closed the SSE connection before finalOutput
+	// arrived. The UI API's poller detects the terminal CRD phase and emits
+	// finalOutput after TailTokens exits.
 
 	// Handle tool calls if the LLM requested them.
 	// NOTE: r.messages already contains chatReq.Messages + assistantMsg (added above),
 	// so we only need to dispatch, append results, and recurse — not re-append the history.
-	if len(toolCalls) > 0 && finishReason == "tool_calls" { //nolint:goconst
+	//
+	// Dispatch on len(toolCalls) > 0 ALONE — the same predicate the non-streaming path
+	// uses (HandleChatCompletions, router.go:879). Do NOT additionally require
+	// finishReason == "tool_calls": OpenAI-compatible proxies (LiteLLM / Poolside)
+	// frequently stream finish_reason: null and signal completion solely via
+	// `data: [DONE]`. Gating dispatch on finish_reason there desyncs the [DONE]
+	// suppression from the dispatch — [DONE] is suppressed (tool calls present) but the
+	// tool call is never dispatched, so it is silently dropped and the client never
+	// receives a terminating [DONE]. Mirroring the non-streaming path fixes this.
+	//
+	// The terminal guards above key off sawToolCall (any tool-call delta observed),
+	// which is true whenever len(toolCalls) > 0 after a successful merge — so the
+	// dispatch predicate and the terminal gate stay in sync even if a future merge
+	// change alters index handling.
+	if len(toolCalls) > 0 {
 
 		toolResults := make([]Message, len(toolCalls))
 		for i, tc := range toolCalls {
@@ -578,6 +651,18 @@ func (r *Router) tryFallbackStream(ctx context.Context, chatReq ChatCompletionRe
 		}
 	}
 	return nil, nil, fmt.Errorf("all fallback providers exhausted")
+}
+
+// explicitlyTerminal reports whether an explicit terminal tool (_done/_fail/
+// _handoff/_clarify) has already fired for this run. The auto terminal signal
+// (emitted on the genuine terminal text turn via [DONE] to the agent framework)
+// is suppressed when this is true,
+// because the explicit path already emitted its own terminal trace event and the
+// streaming recursion short-circuits to 410 on the next call.
+func (r *Router) explicitlyTerminal() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.doneExplicit || r.failedExplicit || r.handedOff || r.waitingForInput
 }
 
 // mergeToolCallDeltas merges incremental tool call deltas into a running list.

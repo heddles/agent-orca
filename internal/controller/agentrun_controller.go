@@ -885,6 +885,15 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 			return nil, nil, false, fmt.Errorf("agent %q is not in KnowledgeBase %q allowedAgents", agent.Name, kbName)
 		}
 		if !kb.Status.Ready {
+			// Surface the KB's own failure reason so the run/agent-deployment
+			// status explains *why* the KB isn't ready.
+			kbReason := kb.Status.Message
+			if kbReason == "" {
+				kbReason = firstConditionMessage(kb.Status.Conditions)
+			}
+			if kbReason != "" {
+				return nil, nil, false, fmt.Errorf("KnowledgeBase %q is not ready: %s", kbName, kbReason)
+			}
 			return nil, nil, false, fmt.Errorf("KnowledgeBase %q is not ready", kbName)
 		}
 		// Resolve the embedding ModelSelector to get the provider's model string.
@@ -1013,10 +1022,16 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 	if agent.Spec.Memory != nil && agent.Spec.Memory.LongTermMemoryRef != "" {
 		ltmKBName := agent.Spec.Memory.LongTermMemoryRef
 		var ltmKB agentorcv1alpha1.KnowledgeBase
-		if err := r.Get(ctx, client.ObjectKey{Name: ltmKBName, Namespace: run.Namespace}, &ltmKB); err != nil || !ltmKB.Status.Ready {
+		var ltmErr error
+		if err := r.Get(ctx, client.ObjectKey{Name: ltmKBName, Namespace: run.Namespace}, &ltmKB); err != nil {
+			ltmErr = err
+		} else if !ltmKB.Status.Ready {
+			ltmErr = fmt.Errorf("not ready: %s", firstNonEmpty(ltmKB.Status.Message, firstConditionMessage(ltmKB.Status.Conditions)))
+		}
+		if ltmErr != nil {
 			// Degrade gracefully: log a warning and proceed without long-term memory.
 			log.FromContext(ctx).Info("long-term memory KnowledgeBase not ready; proceeding without it",
-				"knowledgeBase", ltmKBName, "run", run.Name)
+				"knowledgeBase", ltmKBName, "run", run.Name, "error", ltmErr)
 		} else {
 			// Use the pinned provider from status if available; fall back to Providers[0].
 			ltmEmbProviderName := ltmKB.Status.EmbeddingModelProvider

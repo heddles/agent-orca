@@ -98,25 +98,11 @@ agent-orc-resources:
               limits:
                 cpu: 500m
                 memory: 2048Mi
-  # ── ModelSelector ───────────────────────────────────────────────────────────
-  #
-  # research-primary: Routing policy for Poolside Laguna models.
-  # Uses only laguna-m and laguna-xs series as specified.
-  modelSelectors:
-    - name: research-primary
-      strategy: rule-based
-      providers:
-        - name: poolside-laguna-m-ctx256k
-          weight: 50
-        - name: poolside-laguna-xs-polaris
-          weight: 50
-      fallbackChain:
-        - poolside-laguna-m-nvfp4
-        - poolside-laguna-xs3-rc2
+
   # ── Agent ───────────────────────────────────────────────────────────────────
   agents:
     - name: llm-research-agent
-      modelSelectorRef: research-primary
+      modelSelectorRef: poolside
       systemPrompt: |
         You are an autonomous LLM research agent. Your mission is to build a comprehensive
         knowledge base about how LLMs work internally — from attention mechanisms to layer

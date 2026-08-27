@@ -19,6 +19,8 @@ import {
   type ModelSelectorSummary,
 } from '../api/sse'
 import type { ResourceSelection } from './ResourceList'
+import { DESIGN } from '../lib/designSystem'
+import { Icon, ICON } from '../lib/icons'
 
 type ConfigSelection = Extract<ResourceSelection, { kind: 'agent' | 'tool' | 'mcpserver' | 'modelprovider' | 'knowledgebase' | 'modelselector' }>
 
@@ -38,7 +40,7 @@ function Field({ label, value }: { label: string; value: React.ReactNode }) {
 
 function ReadyBadge({ ready }: { ready: boolean }) {
   return (
-    <span style={{ ...s.badge, background: ready ? 'rgba(34,197,94,.15)' : 'rgba(239,68,68,.15)', color: ready ? '#22c55e' : '#ef4444' }}>
+    <span style={{ ...s.badge, background: ready ? 'rgba(34,197,94,.15)' : 'rgba(239,68,68,.15)', color: ready ? 'var(--ds-success)' : 'var(--ds-error)' }}>
       {ready ? 'Ready' : 'Not Ready'}
     </span>
   )
@@ -117,7 +119,7 @@ function MCPServerDetail({ data }: { data: MCPServerSummary }) {
       } />
       <Field label="Apps" value={
         data.allowApps
-          ? <span style={{ color: '#22c55e', fontSize: 13, fontWeight: 600 }}>Enabled</span>
+          ? <span style={{ color: 'var(--ds-success)', fontSize: 13, fontWeight: 600 }}>Enabled</span>
           : <span style={s.muted}>Disabled</span>
       } />
       {data.tools && data.tools.length > 0 && <MCPToolList tools={data.tools} />}
@@ -177,7 +179,7 @@ function ModelSelectorDetail({ data }: { data: ModelSelectorSummary }) {
             {Object.entries(data.capabilityRouting).map(([cap, provider]) => (
               <div key={cap} style={s.providerRow}>
                 <span style={s.tag}>{cap}</span>
-                <span style={s.muted}>→</span>
+                <Icon icon={ICON.routed} size={12} ariaHidden={true} style={{ color: "var(--ds-text-secondary)" }} />
                 <span style={s.fieldValue}>{provider}</span>
               </div>
             ))}
@@ -198,9 +200,25 @@ function ModelSelectorDetail({ data }: { data: ModelSelectorSummary }) {
 }
 
 function KnowledgeBaseDetail({ data }: { data: KnowledgeBaseSummary }) {
+  // Single reporting path: Status.Message is the authoritative user-facing error,
+  // written by the controller's patchKBStatus at every failure path. If Message
+  // happens to be empty (e.g. KB created before this controller version), fall
+  // back to the "Ready" condition only — NOT all conditions, since benign ones
+  // like QdrantUpgrading=False/UpToDate ("Qdrant is at target version X") would
+  // produce misleading "errors". This mirrors the Go firstConditionMessage logic.
+  const kbError = !data.ready
+    ? data.message || data.conditions?.find((c) => c.type === 'Ready' && (c.status === 'False' || c.status === 'Unknown'))?.message
+    : undefined
+
   return (
     <>
       <Field label="Status" value={<ReadyBadge ready={data.ready} />} />
+      {!data.ready && kbError && (
+        <div style={s.errorField}>
+          <div style={s.fieldLabel}>Error</div>
+          <div style={s.errorValue}>{kbError}</div>
+        </div>
+      )}
       {data.description && <Field label="Description" value={data.description} />}
       <Field label="Documents" value={data.documentCount} />
       <Field label="Chunks" value={data.chunkCount} />
@@ -309,11 +327,11 @@ const s: Record<string, React.CSSProperties> = {
   root: {
     flex: 1,
     overflow: 'auto',
-    padding: 24,
+    padding: DESIGN.space.xl,
   },
   loading: {
-    padding: 24,
-    color: '#475569',
+    padding: DESIGN.space.xl,
+    color: 'var(--ds-text-muted)',
     fontSize: 14,
   },
   header: {
@@ -324,26 +342,29 @@ const s: Record<string, React.CSSProperties> = {
     fontWeight: 600,
     textTransform: 'uppercase',
     letterSpacing: '0.08em',
-    color: '#64748b',
+    color: 'var(--ds-text-secondary)',
   },
   title: {
     fontSize: 20,
     fontWeight: 700,
-    color: '#f1f5f9',
+    color: 'var(--ds-text-primary)',
     margin: '4px 0 2px',
+    lineHeight: 1.1,
+    textWrap: 'balance' as const,
   },
   namespace: {
     fontSize: 12,
-    color: '#64748b',
+    color: 'var(--ds-text-muted)',
   },
   card: {
-    background: '#1e293b',
-    borderRadius: 8,
-    border: '1px solid #334155',
+    background: 'var(--ds-surface)',
+    borderRadius: DESIGN.radii.lg,
+    border: `1px solid var(--ds-border)`,
     padding: 16,
     display: 'flex',
     flexDirection: 'column',
     gap: 14,
+    boxShadow: 'var(--ds-card-shadow)',
   },
   field: {
     display: 'flex',
@@ -353,18 +374,34 @@ const s: Record<string, React.CSSProperties> = {
   fieldLabel: {
     fontSize: 11,
     fontWeight: 600,
-    color: '#94a3b8',
+    color: 'var(--ds-text-secondary)',
     textTransform: 'uppercase',
     letterSpacing: '0.06em',
   },
   fieldValue: {
     fontSize: 13,
-    color: '#e2e8f0',
+    color: 'var(--ds-text-primary)',
+    fontVariantNumeric: 'tabular-nums',
+  },
+  errorField: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 3,
+    padding: '8px 10px',
+    borderRadius: DESIGN.radii.sm,
+    background: 'rgba(239,68,68,.08)',
+    border: '1px solid rgba(239,68,68,.3)',
+  },
+  errorValue: {
+    fontSize: 12,
+    color: 'var(--ds-error)',
+    lineHeight: 1.4,
+    wordBreak: 'break-word' as const,
   },
   badge: {
     display: 'inline-block',
     padding: '2px 8px',
-    borderRadius: 4,
+    borderRadius: DESIGN.radii.sm,
     fontSize: 11,
     fontWeight: 600,
   },
@@ -375,14 +412,14 @@ const s: Record<string, React.CSSProperties> = {
   },
   tag: {
     padding: '2px 8px',
-    borderRadius: 4,
+    borderRadius: DESIGN.radii.sm,
     fontSize: 11,
     fontWeight: 500,
     background: 'rgba(59,130,246,.15)',
-    color: '#93c5fd',
+    color: 'var(--ds-accent)',
   },
   muted: {
-    color: '#475569',
+    color: 'var(--ds-text-muted)',
     fontSize: 13,
   },
   providerRow: {
@@ -393,20 +430,21 @@ const s: Record<string, React.CSSProperties> = {
   pre: {
     margin: 0,
     padding: 10,
-    background: '#0f172a',
-    borderRadius: 6,
-    border: '1px solid #334155',
+    background: 'var(--ds-bg)',
+    borderRadius: DESIGN.radii.sm,
+    border: `1px solid var(--ds-border)`,
     fontSize: 12,
     color: '#cbd5e1',
     whiteSpace: 'pre-wrap',
     wordBreak: 'break-word',
     maxHeight: 500,
     overflow: 'auto',
+    fontVariantNumeric: 'tabular-nums',
   },
   code: {
-    fontFamily: 'monospace',
+    fontFamily: 'ui-monospace, "SFMono-Regular", "Menlo", "Monaco", monospace',
     fontSize: 12,
-    color: '#93c5fd',
+    color: 'var(--ds-accent)',
     background: 'rgba(59,130,246,.1)',
     padding: '1px 5px',
     borderRadius: 3,

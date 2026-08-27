@@ -19,6 +19,8 @@ import { TraceAccordion } from './TraceAccordion'
 import { RouterAccordion } from './RouterAccordion'
 import type { ResourceSelection } from './ResourceList'
 import { PHASE_COLOR } from '../lib/phaseColors'
+import { DESIGN } from '../lib/designSystem'
+import { Icon, ICON } from '../lib/icons'
 
 interface Props {
   runId: string
@@ -72,11 +74,36 @@ export function RunView({
         // Suppress pre-populated candidate entries — only show the actual runtime selection.
         const isCandidate = event.type === STREAM_EVENT_TYPE.modelSelected && event.reason.includes('configured provider')
         if (!isCandidate) {
-          setEntries((prev: TraceEntry[]) => [...prev, { id: counter.current++, event, ts: new Date().toISOString() }])
+          // Group consecutive `thought` (reasoning) deltas into a single expandable
+          // entry so each thinking block renders as one collapsible panel that accumulates
+          // progressively, rather than one trace row per reasoning delta.
+          if (event.type === 'thought') {
+            setEntries((prev: TraceEntry[]) => {
+              const last = prev[prev.length - 1]
+              if (last && last.event.type === 'thought') {
+                return [
+                  ...prev.slice(0, -1),
+                  {
+                    ...last,
+                    event: { ...last.event, content: last.event.content + event.content },
+                  },
+                ]
+              }
+              return [...prev, { id: counter.current++, event, ts: new Date().toISOString() }]
+            })
+          } else {
+            setEntries((prev: TraceEntry[]) => [...prev, { id: counter.current++, event, ts: new Date().toISOString() }])
+          }
         }
       }
       if (event.type === STREAM_EVENT_TYPE.finalOutput || event.type === STREAM_EVENT_TYPE.done) {
-        setStreamOutput(event.output)
+        // An explicit _done event carries the agent's output; an auto terminal
+        // `done` event (schema-derived completion, no _done tool) may omit output —
+        // in that case the final text was already streamed as tokens, so don't
+        // overwrite it with undefined.
+        if (event.output != null) {
+          setStreamOutput(event.output)
+        }
         getRun(runId, namespace).then(setDetail).catch(() => {})
       } else if (event.type === STREAM_EVENT_TYPE.error || event.type === STREAM_EVENT_TYPE.fail) {
         getRun(runId, namespace).then(setDetail).catch(() => {})
@@ -164,10 +191,10 @@ export function RunView({
       {/* Breadcrumb trail */}
       {cameFromHome && (
         <div style={s.breadcrumb}>
-          <button style={s.breadcrumbBtn} onClick={() => onNavigateUp?.(0)}>
-            🏠 Home
+          <button type="button" style={s.breadcrumbBtn} onClick={() => onNavigateUp?.(0)}>
+            <Icon icon={ICON.home} size={12} ariaHidden={true} /> Home
           </button>
-          <span style={s.breadcrumbSep}>/</span>
+          <Icon icon={ICON.chevronRight} size={11} style={s.breadcrumbSepIcon} ariaHidden={true} />
           <span style={s.breadcrumbCurrent}>{runId}</span>
         </div>
       )}
@@ -175,13 +202,13 @@ export function RunView({
         <div style={s.breadcrumb}>
           {breadcrumbs.map((crumb, i) => (
             <span key={i} style={s.breadcrumbItem}>
-              {i > 0 && <span style={s.breadcrumbSep}>/</span>}
-              <button style={s.breadcrumbBtn} onClick={() => onNavigateUp?.(i)}>
+              {i > 0 && <Icon icon={ICON.chevronRight} size={11} style={s.breadcrumbSepIcon} ariaHidden={true} />}
+              <button type="button" style={s.breadcrumbBtn} onClick={() => onNavigateUp?.(i)}>
                 {crumb.name}
               </button>
             </span>
           ))}
-          <span style={s.breadcrumbSep}>/</span>
+          <Icon icon={ICON.chevronRight} size={11} style={s.breadcrumbSepIcon} ariaHidden={true} />
           <span style={s.breadcrumbCurrent}>{runId}</span>
         </div>
       )}
@@ -197,14 +224,20 @@ export function RunView({
         <div style={s.stats}>
           <StatusBadge phase={phase} />
           {elapsed && (
-            <div style={s.chip}>⏱ <span style={s.chipVal}>{elapsed}</span></div>
+            <div style={s.chip}><Icon icon={ICON.timer} size={12} /> <span style={s.chipVal}>{elapsed}</span></div>
           )}
-          <div style={s.chip}>💰 <span style={s.chipVal}>${detail?.spendUSD ?? '0.0000'}</span></div>
+          {isRunning && (
+            <div style={s.liveChip}>
+              <span style={s.liveDot} />
+              <span style={s.liveText}>Live</span>
+            </div>
+          )}
+          <div style={s.chip}><Icon icon={ICON.cost} size={12} /> <span style={s.chipVal}>${detail?.spendUSD ?? '0.0000'}</span></div>
           {(detail?.restartCount ?? 0) > 0 && (
-            <div style={s.chip}>🔁 <span style={s.chipVal}>{detail!.restartCount} retries</span></div>
+            <div style={s.chip}><Icon icon={ICON.retry} size={12} /> <span style={s.chipVal}>{detail!.restartCount} retries</span></div>
           )}
           {(detail?.maxContextTokens ?? 0) > 0 && (
-            <div style={s.chip}>📏 <span style={s.chipVal}>
+            <div style={s.chip}><Icon icon={ICON.tokens} size={12} /> <span style={s.chipVal}>
               {detail!.contextUsedTokens?.toLocaleString() ?? 0} / {detail!.maxContextTokens?.toLocaleString() ?? '—'} tokens
             </span></div>
           )}
@@ -222,14 +255,24 @@ export function RunView({
 
       {/* Tab bar — only visible when there are child runs */}
       {hasChildren && (
-        <div style={s.tabBar}>
+        <div role="tablist" style={s.tabBar}>
           <button
+            type="button"
+            role="tab"
+            aria-selected={viewTab === 'details'}
+            aria-controls="details-panel"
+            tabIndex={viewTab === 'details' ? 0 : -1}
             style={{ ...s.tab, ...(viewTab === 'details' ? s.tabActive : {}) }}
             onClick={() => setViewTab('details')}
           >
             Details
           </button>
           <button
+            type="button"
+            role="tab"
+            aria-selected={viewTab === 'children'}
+            aria-controls="children-panel"
+            tabIndex={viewTab === 'children' ? 0 : -1}
             style={{ ...s.tab, ...(viewTab === 'children' ? s.tabActive : {}) }}
             onClick={() => setViewTab('children')}
           >
@@ -239,13 +282,14 @@ export function RunView({
       )}
 
       {viewTab === 'children' ? (
-        <div style={s.childList}>
+        <div id="children-panel" role="tabpanel" style={s.childList}>
           {childDetails.length === 0 && (
             <div style={s.empty}>Loading child runs…</div>
           )}
           {childDetails.map((run: AgentRunSummary) => (
-            <div
+            <button
               key={run.name}
+              type="button"
               style={s.runCard}
               onClick={() => onNavigateToRun?.(run.name, run.namespace)}
             >
@@ -262,15 +306,15 @@ export function RunView({
                 {run.agentRef}
                 {run.startTime && ` · ${new Date(run.startTime).toLocaleString()}`}
               </div>
-            </div>
+            </button>
           ))}
         </div>
       ) : (
-        <>
+        <div id="details-panel" role="tabpanel" style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 16 }}>
           {/* Error banner for failed runs */}
           {isFailed && detail?.lastRestartReason && (
             <div style={s.errorCard}>
-              <div style={s.errorTitle}>⚠ Run Failed</div>
+              <div style={s.errorTitle}><Icon icon={ICON.warning} size={12} ariaHidden={true} /> Run Failed</div>
               <div style={s.errorBody}>{detail.lastRestartReason}</div>
             </div>
           )}
@@ -307,7 +351,7 @@ export function RunView({
           {detail && detail.routingDecisions.length > 0 && (
             <RouterAccordion decisions={detail.routingDecisions} />
           )}
-        </>
+        </div>
       )}
     </div>
   )
@@ -317,10 +361,10 @@ const s: Record<string, React.CSSProperties> = {
   root: {
     flex: 1,
     overflowY: 'auto',
-    padding: '24px 28px',
+    padding: `${DESIGN.space.xl} ${DESIGN.space.xxl}`,
     display: 'flex',
     flexDirection: 'column',
-    gap: 16,
+    gap: DESIGN.space.xl,
   },
   breadcrumb: {
     display: 'flex',
@@ -337,21 +381,52 @@ const s: Record<string, React.CSSProperties> = {
   breadcrumbBtn: {
     background: 'none',
     border: 'none',
-    color: '#3b82f6',
+    color: 'var(--ds-accent)',
     fontSize: 12,
     fontWeight: 500,
     cursor: 'pointer',
     padding: 0,
-    fontFamily: 'monospace',
+    fontFamily: 'ui-monospace, "SFMono-Regular", "Menlo", "Monaco", monospace',
+    transitionProperty: 'color',
+    transitionDuration: '0.15s',
+    transitionTimingFunction: 'ease',
   },
   breadcrumbSep: {
     fontSize: 12,
-    color: '#334155',
+    color: 'var(--ds-border)',
+  },
+  breadcrumbSepIcon: {
+    fontSize: 11,
+    color: 'var(--ds-text-muted)',
+    flexShrink: 0,
+  },
+  liveChip: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 4,
+    padding: '3px 8px',
+    borderRadius: DESIGN.radii.full,
+    background: 'rgba(34,197,94,.12)',
+    color: 'var(--ds-success)',
+    fontSize: 11,
+    fontWeight: 600,
+  },
+  liveDot: {
+    width: 6,
+    height: 6,
+    borderRadius: '50%',
+    background: 'var(--ds-success)',
+    animation: 'aoPulse 1.5s ease infinite',
+    willChange: 'transform, opacity',
+  },
+  liveText: {
+    fontSize: 10,
+    fontVariantNumeric: 'tabular-nums',
   },
   breadcrumbCurrent: {
     fontSize: 12,
-    color: '#64748b',
-    fontFamily: 'monospace',
+    color: 'var(--ds-text-muted)',
+    fontFamily: 'ui-monospace, "SFMono-Regular", "Menlo", "Monaco", monospace',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
@@ -364,8 +439,18 @@ const s: Record<string, React.CSSProperties> = {
     flexWrap: 'wrap',
     gap: 12,
   },
-  title: { fontSize: 18, fontWeight: 700, color: '#f1f5f9' },
-  subtitle: { fontSize: 12, color: '#94a3b8', marginTop: 4 },
+  title: {
+    fontSize: DESIGN.font.size.heading,
+    fontWeight: 700,
+    color: 'var(--ds-text-primary)',
+    lineHeight: 1.1,
+    textWrap: 'balance' as const,
+  },
+  subtitle: {
+    fontSize: 11,
+    color: 'var(--ds-text-secondary)',
+    marginTop: 4,
+  },
   stats: {
     display: 'flex',
     alignItems: 'center',
@@ -373,17 +458,18 @@ const s: Record<string, React.CSSProperties> = {
     flexWrap: 'wrap',
   },
   chip: {
-    background: '#1e293b',
-    border: '1px solid #334155',
-    borderRadius: 6,
+    background: 'var(--ds-surface)',
+    border: `1px solid var(--ds-border)`,
+    borderRadius: DESIGN.radii.sm,
     padding: '5px 10px',
     display: 'flex',
     alignItems: 'center',
     gap: 6,
     fontSize: 12,
-    color: '#94a3b8',
+    color: 'var(--ds-text-secondary)',
+    fontVariantNumeric: 'tabular-nums',
   },
-  chipVal: { color: '#f1f5f9', fontWeight: 500 },
+  chipVal: { color: 'var(--ds-text-primary)', fontWeight: 500 },
   mdToggle: {
     display: 'flex',
     alignItems: 'center',
@@ -391,26 +477,29 @@ const s: Record<string, React.CSSProperties> = {
     cursor: 'pointer',
     fontSize: 12,
   },
-  mdLabel: { color: '#94a3b8', fontWeight: 500, userSelect: 'none' },
+  mdLabel: { color: 'var(--ds-text-secondary)', fontWeight: 500, userSelect: 'none' },
   tabBar: {
     display: 'flex',
-    borderBottom: '1px solid #334155',
+    borderBottom: `1px solid var(--ds-border)`,
     marginTop: -8,
+    gap: 0,
   },
   tab: {
     padding: '8px 16px',
     fontSize: 13,
     fontWeight: 500,
-    color: '#64748b',
+    color: 'var(--ds-text-muted)',
     background: 'none',
     border: 'none',
     borderBottom: '2px solid transparent',
     cursor: 'pointer',
-    transition: 'color 0.15s',
+    transitionProperty: 'color, border-color',
+    transitionDuration: '0.15s',
+    transitionTimingFunction: 'ease',
   },
   tabActive: {
-    color: '#3b82f6',
-    borderBottomColor: '#3b82f6',
+    color: 'var(--ds-accent)',
+    borderBottomColor: 'var(--ds-accent)',
   },
   childList: {
     display: 'flex',
@@ -419,13 +508,17 @@ const s: Record<string, React.CSSProperties> = {
   },
   runCard: {
     padding: '10px 14px',
-    borderRadius: 8,
-    border: '1px solid #334155',
-    background: '#1e293b',
+    borderRadius: DESIGN.radii.lg,
+    border: `1px solid var(--ds-border)`,
+    background: 'var(--ds-surface)',
     cursor: 'pointer',
     display: 'flex',
     flexDirection: 'column',
     gap: 4,
+    transitionProperty: 'background-color, border-color, box-shadow',
+    transitionDuration: '0.12s',
+    transitionTimingFunction: 'ease',
+    boxShadow: 'var(--ds-card-shadow)',
   },
   runCardHeader: {
     display: 'flex',
@@ -439,57 +532,59 @@ const s: Record<string, React.CSSProperties> = {
     flexShrink: 0,
   },
   runCardName: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: 600,
-    color: '#f1f5f9',
-    fontFamily: 'monospace',
+    color: 'var(--ds-text-primary)',
+    fontFamily: 'ui-monospace, "SFMono-Regular", "Menlo", "Monaco", monospace',
   },
   runCardPhase: {
     fontSize: 11,
-    color: '#64748b',
+    color: 'var(--ds-text-muted)',
   },
   runCardCost: {
     fontSize: 11,
     fontWeight: 600,
-    color: '#4ade80',
-    fontFamily: 'monospace',
+    color: 'var(--ds-success)',
+    fontFamily: 'ui-monospace, "SFMono-Regular", "Menlo", "Monaco", monospace',
+    fontVariantNumeric: 'tabular-nums',
   },
   runCardMeta: {
     fontSize: 11,
-    color: '#64748b',
+    color: 'var(--ds-text-muted)',
     paddingLeft: 15,
   },
   empty: {
-    color: '#475569',
+    color: 'var(--ds-text-muted)',
     fontSize: 13,
     padding: '16px 0',
   },
   errorCard: {
-    background: 'rgba(239,68,68,.06)',
-    border: '1px solid rgba(239,68,68,.25)',
-    borderRadius: 8,
+    background: 'var(--ds-trace-error-bg)',
+    border: '1px solid var(--ds-trace-warning-border)',
+    borderRadius: DESIGN.radii.lg,
     padding: '14px 16px',
   },
   errorTitle: {
     fontSize: 12,
     fontWeight: 600,
-    color: '#ef4444',
+    color: 'var(--ds-error)',
     marginBottom: 8,
     display: 'flex',
     alignItems: 'center',
     gap: 6,
   },
   errorBody: {
-    fontFamily: 'monospace',
+    fontFamily: 'ui-monospace, "SFMono-Regular", "Menlo", "Monaco", monospace',
     fontSize: 12,
     color: '#fca5a5',
     lineHeight: 1.5,
     whiteSpace: 'pre-wrap',
+    fontVariantNumeric: 'tabular-nums',
   },
   inputSection: {
-    background: '#1e293b',
-    border: '1px solid #334155',
-    borderRadius: 8,
+    background: 'var(--ds-surface)',
+    border: `1px solid var(--ds-border)`,
+    borderRadius: DESIGN.radii.lg,
     padding: '12px 16px',
   },
   inputLabel: {
@@ -497,27 +592,27 @@ const s: Record<string, React.CSSProperties> = {
     fontWeight: 600,
     textTransform: 'uppercase',
     letterSpacing: '0.08em',
-    color: '#94a3b8',
+    color: 'var(--ds-text-secondary)',
     marginBottom: 8,
   },
   inputText: {
     fontSize: 13,
-    color: '#94a3b8',
+    color: 'var(--ds-text-secondary)',
     fontStyle: 'italic',
     lineHeight: 1.5,
     whiteSpace: 'pre-wrap',
     wordBreak: 'break-word',
   },
   clarifyCard: {
-    background: 'rgba(245,158,11,.06)',
-    border: '1px solid rgba(245,158,11,.25)',
-    borderRadius: 8,
+    background: 'var(--ds-trace-warning-bg)',
+    border: '1px solid var(--ds-warning-border)',
+    borderRadius: DESIGN.radii.lg,
     padding: '14px 16px',
   },
   clarifyTitle: {
     fontSize: 12,
     fontWeight: 600,
-    color: '#f59e0b',
+    color: 'var(--ds-warning)',
     marginBottom: 8,
   },
   clarifyBody: {

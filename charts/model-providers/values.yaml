@@ -43,7 +43,7 @@ providerSecrets:
     enabled: true
     apiKey: ""            # AIza...
     existingSecret: ""
-  
+
   # ── Poolside ───────────────────────────────────────────────────────────────
   - name: poolside-api-key
     enabled: true
@@ -122,15 +122,15 @@ modelProviders:
 
   # ════════════════════════════════════════════════════════════════════════════
   # Poolside
-  # https://api.poolsi.de/openai/v1
-  # agent-orc appends /v1 to the baseURL, so we put https://api.poolsi.de/openai as the modelProvider baseURL.
+  # https://inference.poolside.ai/v1
+  # agent-orc appends /v1 to the baseURL, so we put https://inference.poolside.ai as the modelProvider baseURL.
   # ════════════════════════════════════════════════════════════════════════════
 
   # laguna-m-e0419-polaris-t3-mh-s700-ctx256k — Laguna M.1 ctx256k with 262k context
-  - name: poolside-laguna-m-ctx256k
+  - name: poolside-laguna-s-2.1
     enabled: true
-    litellmModel: "laguna-m-e0419-polaris-t3-mh-s700-ctx256k"
-    baseURL: "https://api.poolsi.de/openai"
+    litellmModel: "poolside/laguna-s-2.1"
+    baseURL: "https://inference.poolside.ai"
     credentialsRef:
       existingSecret: "poolside-api-key"
       key: "api-key"
@@ -140,857 +140,9 @@ modelProviders:
       - long-context
     latencyProfile: medium
     constraints:
-      contextWindow: 262144
-      maxOutputTokens: 262144
-      maxRequestTokens: 0
-
-  # laguna-xs3-rc2 — Laguna XS3 RC2
-  - name: poolside-laguna-xs3-rc2
-    enabled: true
-    litellmModel: "laguna-xs3-rc2"
-    baseURL: "https://api.poolsi.de/openai"
-    credentialsRef:
-      existingSecret: "poolside-api-key"
-      key: "api-key"
-    capabilities:
-      - reasoning
-      - code
-    latencyProfile: medium
-    constraints:
-      contextWindow: 131072
-      maxOutputTokens: 16384
-      maxRequestTokens: 0
-
-  # laguna-xs3-rc1 — Laguna XS3 RC1
-  - name: poolside-laguna-xs3-rc1
-    enabled: true
-    litellmModel: "laguna-xs3-rc1"
-    baseURL: "https://api.poolsi.de/openai"
-    credentialsRef:
-      existingSecret: "poolside-api-key"
-      key: "api-key"
-    capabilities:
-      - reasoning
-      - code
-    latencyProfile: medium
-    constraints:
-      contextWindow: 131072
-      maxOutputTokens: 16384
-      maxRequestTokens: 0
-
-  # openrouter/fusion — Fusion via OpenRouter
-  - name: poolside-fusion
-    enabled: true
-    litellmModel: "openrouter/fusion"
-    baseURL: "https://api.poolsi.de/openai"
-    credentialsRef:
-      existingSecret: "poolside-api-key"
-      key: "api-key"
-    capabilities:
-      - reasoning
-      - code
-    latencyProfile: medium
-    constraints:
-      contextWindow: 131072
-      maxOutputTokens: 16384
-      maxRequestTokens: 0
-
-  # moonshotai/kimi-k2.7-code — Kimi K2.7 Code
-  - name: poolside-kimi-k2-7-code
-    enabled: true
-    litellmModel: "moonshotai/kimi-k2.7-code"
-    baseURL: "https://api.poolsi.de/openai"
-    credentialsRef:
-      existingSecret: "poolside-api-key"
-      key: "api-key"
-    capabilities:
-      - reasoning
-      - code
-    latencyProfile: medium
-    constraints:
-      contextWindow: 131072
-      maxOutputTokens: 16384
-      maxRequestTokens: 0
-
-  # anthropic/claude-fable-5 — Claude Fable 5
-  - name: poolside-claude-fable-5
-    enabled: true
-    litellmModel: "anthropic/claude-fable-5"
-    baseURL: "https://api.poolsi.de/openai"
-    credentialsRef:
-      existingSecret: "poolside-api-key"
-      key: "api-key"
-    capabilities:
-      - reasoning
-      - code
-    latencyProfile: slow
-    constraints:
-      contextWindow: 200000
-      maxOutputTokens: 100000
-      maxRequestTokens: 0
-
-  # anthropic/claude-opus-4.8-fast — Claude Opus 4.8 Fast
-  - name: poolside-claude-opus-4-8-fast
-    enabled: true
-    litellmModel: "anthropic/claude-opus-4.8-fast"
-    baseURL: "https://api.poolsi.de/openai"
-    credentialsRef:
-      existingSecret: "poolside-api-key"
-      key: "api-key"
-    capabilities:
-      - reasoning
-      - code
-    latencyProfile: medium
-    constraints:
-      contextWindow: 200000
-      maxOutputTokens: 100000
-      maxRequestTokens: 0
-
-  # deepseek/deepseek-v4-flash — DeepSeek V4 Flash
-  - name: poolside-deepseek-v4-flash
-    enabled: true
-    litellmModel: "deepseek/deepseek-v4-flash"
-    baseURL: "https://api.poolsi.de/openai"
-    credentialsRef:
-      existingSecret: "poolside-api-key"
-      key: "api-key"
-    capabilities:
-      - reasoning
-      - code
-      - fast
-    latencyProfile: fast
-    constraints:
-      contextWindow: 131072
-      maxOutputTokens: 16384
-      maxRequestTokens: 0
-
-  # anthropic/claude-opus-4.8 — Claude Opus 4.8
-  - name: poolside-claude-opus-4-8
-    enabled: true
-    litellmModel: "anthropic/claude-opus-4.8"
-    baseURL: "https://api.poolsi.de/openai"
-    credentialsRef:
-      existingSecret: "poolside-api-key"
-      key: "api-key"
-    capabilities:
-      - reasoning
-      - code
-    latencyProfile: slow
-    constraints:
-      contextWindow: 200000
-      maxOutputTokens: 100000
-      maxRequestTokens: 0
-
-  # laguna-m-nvfp4-mlp-fp8kv — Laguna M nvfp4 mlp fp8kv
-  - name: poolside-laguna-m-nvfp4
-    enabled: true
-    litellmModel: "laguna-m-nvfp4-mlp-fp8kv"
-    baseURL: "https://api.poolsi.de/openai"
-    credentialsRef:
-      existingSecret: "poolside-api-key"
-      key: "api-key"
-    capabilities:
-      - reasoning
-      - code
-      - long-context
-    latencyProfile: medium
-    constraints:
-      contextWindow: 262144
-      maxOutputTokens: 262144
-      maxRequestTokens: 0
-
-  # deepseek/deepseek-v4-pro — DeepSeek V4 Pro
-  - name: poolside-deepseek-v4-pro
-    enabled: true
-    litellmModel: "deepseek/deepseek-v4-pro"
-    baseURL: "https://api.poolsi.de/openai"
-    credentialsRef:
-      existingSecret: "poolside-api-key"
-      key: "api-key"
-    capabilities:
-      - reasoning
-      - code
-    latencyProfile: slow
-    constraints:
-      contextWindow: 131072
-      maxOutputTokens: 16384
-      maxRequestTokens: 0
-
-  # production-e2e — Production E2E
-  - name: poolside-production-e2e
-    enabled: true
-    litellmModel: "production-e2e"
-    baseURL: "https://api.poolsi.de/openai"
-    credentialsRef:
-      existingSecret: "poolside-api-key"
-      key: "api-key"
-    capabilities:
-      - reasoning
-      - code
-    latencyProfile: medium
-    constraints:
-      contextWindow: 131072
-      maxOutputTokens: 16384
-      maxRequestTokens: 0
-
-  # laguna-xs-polaris-base-bs256-s600-ctx256k — Laguna XS Polaris Base
-  - name: poolside-laguna-xs-polaris
-    enabled: true
-    litellmModel: "laguna-xs-polaris-base-bs256-s600-ctx256k"
-    baseURL: "https://api.poolsi.de/openai"
-    credentialsRef:
-      existingSecret: "poolside-api-key"
-      key: "api-key"
-    capabilities:
-      - reasoning
-      - code
-      - long-context
-    latencyProfile: medium
-    constraints:
-      contextWindow: 262144
-      maxOutputTokens: 262144
-      maxRequestTokens: 0
-
-  # openai/gpt-5.5 — GPT 5.5
-  - name: poolside-gpt-5-5
-    enabled: true
-    litellmModel: "openai/gpt-5.5"
-    baseURL: "https://api.poolsi.de/openai"
-    credentialsRef:
-      existingSecret: "poolside-api-key"
-      key: "api-key"
-    capabilities:
-      - reasoning
-      - code
-    latencyProfile: slow
-    constraints:
-      contextWindow: 128000
-      maxOutputTokens: 16384
-      maxRequestTokens: 0
-
-  # Qwen-3.6-27B — Qwen 3.6 27B
-  - name: poolside-qwen-3-6-27b
-    enabled: true
-    litellmModel: "Qwen-3.6-27B"
-    baseURL: "https://api.poolsi.de/openai"
-    credentialsRef:
-      existingSecret: "poolside-api-key"
-      key: "api-key"
-    capabilities:
-      - reasoning
-      - code
-    latencyProfile: medium
-    constraints:
-      contextWindow: 131072
-      maxOutputTokens: 16384
-      maxRequestTokens: 0
-
-  # moonshotai/kimi-k2.6 — Kimi K2.6
-  - name: poolside-kimi-k2-6
-    enabled: true
-    litellmModel: "moonshotai/kimi-k2.6"
-    baseURL: "https://api.poolsi.de/openai"
-    credentialsRef:
-      existingSecret: "poolside-api-key"
-      key: "api-key"
-    capabilities:
-      - reasoning
-      - code
-    latencyProfile: medium
-    constraints:
-      contextWindow: 131072
-      maxOutputTokens: 16384
-      maxRequestTokens: 0
-
-  # z-ai/glm-5.1 — GLM 5.1
-  - name: poolside-glm-5-1
-    enabled: true
-    litellmModel: "z-ai/glm-5.1"
-    baseURL: "https://api.poolsi.de/openai"
-    credentialsRef:
-      existingSecret: "poolside-api-key"
-      key: "api-key"
-    capabilities:
-      - reasoning
-      - code
-    latencyProfile: medium
-    constraints:
-      contextWindow: 131072
-      maxOutputTokens: 16384
-      maxRequestTokens: 0
-
-  # minimax/minimax-m2.7:nitro — Minimax M2.7 Nitro
-  - name: poolside-minimax-m2-7
-    enabled: true
-    litellmModel: "minimax/minimax-m2.7:nitro"
-    baseURL: "https://api.poolsi.de/openai"
-    credentialsRef:
-      existingSecret: "poolside-api-key"
-      key: "api-key"
-    capabilities:
-      - reasoning
-      - code
-    latencyProfile: medium
-    constraints:
-      contextWindow: 131072
-      maxOutputTokens: 16384
-      maxRequestTokens: 0
-
-  # anthropic/claude-opus-4.7 — Claude Opus 4.7
-  - name: poolside-claude-opus-4-7
-    enabled: true
-    litellmModel: "anthropic/claude-opus-4.7"
-    baseURL: "https://api.poolsi.de/openai"
-    credentialsRef:
-      existingSecret: "poolside-api-key"
-      key: "api-key"
-    capabilities:
-      - reasoning
-      - code
-    latencyProfile: slow
-    constraints:
-      contextWindow: 200000
-      maxOutputTokens: 100000
-      maxRequestTokens: 0
-
-  # nvidia/nemotron-3-super-120b-a12b:nitro — Nemotron 3 120B Nitro
-  - name: poolside-nemotron-3-120b
-    enabled: true
-    litellmModel: "nvidia/nemotron-3-super-120b-a12b:nitro"
-    baseURL: "https://api.poolsi.de/openai"
-    credentialsRef:
-      existingSecret: "poolside-api-key"
-      key: "api-key"
-    capabilities:
-      - reasoning
-      - code
-    latencyProfile: slow
-    constraints:
-      contextWindow: 131072
-      maxOutputTokens: 16384
-      maxRequestTokens: 0
-
-  # fireworks/kimi-k2p5-turbo — Kimi K2.5 Turbo
-  - name: poolside-kimi-k2-5-turbo
-    enabled: true
-    litellmModel: "fireworks/kimi-k2p5-turbo"
-    baseURL: "https://api.poolsi.de/openai"
-    credentialsRef:
-      existingSecret: "poolside-api-key"
-      key: "api-key"
-    capabilities:
-      - reasoning
-      - code
-      - fast
-    latencyProfile: fast
-    constraints:
-      contextWindow: 131072
-      maxOutputTokens: 16384
-      maxRequestTokens: 0
-
-  # moonshotai/kimi-k2.5:nitro — Kimi K2.5 Nitro
-  - name: poolside-kimi-k2-5-nitro
-    enabled: true
-    litellmModel: "moonshotai/kimi-k2.5:nitro"
-    baseURL: "https://api.poolsi.de/openai"
-    credentialsRef:
-      existingSecret: "poolside-api-key"
-      key: "api-key"
-    capabilities:
-      - reasoning
-      - code
-    latencyProfile: medium
-    constraints:
-      contextWindow: 131072
-      maxOutputTokens: 16384
-      maxRequestTokens: 0
-
-  # openai-direct/gpt-5.4-mini — GPT 5.4 Mini
-  - name: poolside-gpt-5-4-mini
-    enabled: true
-    litellmModel: "openai-direct/gpt-5.4-mini"
-    baseURL: "https://api.poolsi.de/openai"
-    credentialsRef:
-      existingSecret: "poolside-api-key"
-      key: "api-key"
-    capabilities:
-      - reasoning
-      - code
-    latencyProfile: medium
-    constraints:
-      contextWindow: 128000
-      maxOutputTokens: 16384
-      maxRequestTokens: 0
-
-  # anthropic/claude-haiku-4.5 — Claude Haiku 4.5
-  - name: poolside-claude-haiku-4-5
-    enabled: true
-    litellmModel: "anthropic/claude-haiku-4.5"
-    baseURL: "https://api.poolsi.de/openai"
-    credentialsRef:
-      existingSecret: "poolside-api-key"
-      key: "api-key"
-    capabilities:
-      - fast
-      - cheap
-      - vision
-    latencyProfile: fast
-    constraints:
-      contextWindow: 200000
-      maxOutputTokens: 8192
-      maxRequestTokens: 0
-
-  # vertex/gemini-3-flash-preview — Gemini 3 Flash Preview
-  - name: poolside-gemini-3-flash
-    enabled: true
-    litellmModel: "vertex/gemini-3-flash-preview"
-    baseURL: "https://api.poolsi.de/openai"
-    credentialsRef:
-      existingSecret: "poolside-api-key"
-      key: "api-key"
-    capabilities:
-      - reasoning
-      - code
-      - vision
-      - long-context
-    latencyProfile: fast
-    constraints:
-      contextWindow: 1048576
-      maxOutputTokens: 65536
-      maxRequestTokens: 0
-
-  # azurefoundry/grok-4-fast-non-reasoning — Grok 4 Fast Non-Reasoning
-  - name: poolside-grok-4-fast
-    enabled: true
-    litellmModel: "azurefoundry/grok-4-fast-non-reasoning"
-    baseURL: "https://api.poolsi.de/openai"
-    credentialsRef:
-      existingSecret: "poolside-api-key"
-      key: "api-key"
-    capabilities:
-      - reasoning
-      - code
-    latencyProfile: medium
-    constraints:
-      contextWindow: 131072
-      maxOutputTokens: 16384
-      maxRequestTokens: 0
-
-  # azurefoundry/deepseek-v3.2 — DeepSeek V3.2
-  - name: poolside-deepseek-v3-2
-    enabled: true
-    litellmModel: "azurefoundry/deepseek-v3.2"
-    baseURL: "https://api.poolsi.de/openai"
-    credentialsRef:
-      existingSecret: "poolside-api-key"
-      key: "api-key"
-    capabilities:
-      - reasoning
-      - code
-      - cheap
-    latencyProfile: medium
-    constraints:
-      contextWindow: 65536
-      maxOutputTokens: 8192
-      maxRequestTokens: 0
-
-  # openai/gpt-oss-120b — GPT OSS 120B
-  - name: poolside-gpt-oss-120b
-    enabled: true
-    litellmModel: "openai/gpt-oss-120b"
-    baseURL: "https://api.poolsi.de/openai"
-    credentialsRef:
-      existingSecret: "poolside-api-key"
-      key: "api-key"
-    capabilities:
-      - reasoning
-      - code
-    latencyProfile: medium
-    constraints:
-      contextWindow: 131072
-      maxOutputTokens: 16384
-      maxRequestTokens: 0
-
-  # openai/gpt-5.4 — GPT 5.4
-  - name: poolside-gpt-5-4
-    enabled: true
-    litellmModel: "openai/gpt-5.4"
-    baseURL: "https://api.poolsi.de/openai"
-    credentialsRef:
-      existingSecret: "poolside-api-key"
-      key: "api-key"
-    capabilities:
-      - reasoning
-      - code
-    latencyProfile: slow
-    constraints:
-      contextWindow: 128000
-      maxOutputTokens: 16384
-      maxRequestTokens: 0
-
-  # qwen3-coder-next:cloud — Qwen3 Coder Next Cloud
-  - name: poolside-qwen3-coder-next-cloud
-    enabled: true
-    litellmModel: "qwen3-coder-next:cloud"
-    baseURL: "https://api.poolsi.de/openai"
-    credentialsRef:
-      existingSecret: "poolside-api-key"
-      key: "api-key"
-    capabilities:
-      - code
-      - fast
-    latencyProfile: fast
-    constraints:
-      contextWindow: 131072
-      maxOutputTokens: 16384
-      maxRequestTokens: 0
-
-  # qwen/qwen3.5-35b-a3b — Qwen 3.5 35B A3B
-  - name: poolside-qwen-3-5-35b
-    enabled: true
-    litellmModel: "qwen/qwen3.5-35b-a3b"
-    baseURL: "https://api.poolsi.de/openai"
-    credentialsRef:
-      existingSecret: "poolside-api-key"
-      key: "api-key"
-    capabilities:
-      - reasoning
-      - code
-    latencyProfile: medium
-    constraints:
-      contextWindow: 131072
-      maxOutputTokens: 16384
-      maxRequestTokens: 0
-
-  # openai/gpt-5.3-codex — GPT 5.3 Codex
-  - name: poolside-gpt-5-3-codex
-    enabled: true
-    litellmModel: "openai/gpt-5.3-codex"
-    baseURL: "https://api.poolsi.de/openai"
-    credentialsRef:
-      existingSecret: "poolside-api-key"
-      key: "api-key"
-    capabilities:
-      - code
-    latencyProfile: medium
-    constraints:
-      contextWindow: 128000
-      maxOutputTokens: 16384
-      maxRequestTokens: 0
-
-  # arcee-ai/trinity-large-preview:free — Trinity Large Preview
-  - name: poolside-trinity-preview
-    enabled: true
-    litellmModel: "arcee-ai/trinity-large-preview:free"
-    baseURL: "https://api.poolsi.de/openai"
-    credentialsRef:
-      existingSecret: "poolside-api-key"
-      key: "api-key"
-    capabilities:
-      - reasoning
-      - code
-    latencyProfile: medium
-    constraints:
-      contextWindow: 131072
-      maxOutputTokens: 16384
-      maxRequestTokens: 0
-
-  # mistralai/devstral-2512:free — Devstral 2512
-  - name: poolside-devstral
-    enabled: true
-    litellmModel: "mistralai/devstral-2512:free"
-    baseURL: "https://api.poolsi.de/openai"
-    credentialsRef:
-      existingSecret: "poolside-api-key"
-      key: "api-key"
-    capabilities:
-      - code
-    latencyProfile: fast
-    constraints:
-      contextWindow: 32768
-      maxOutputTokens: 4096
-      maxRequestTokens: 0
-
-  # xiaomi/mimo-v2-flash:free — Mimo V2 Flash
-  - name: poolside-mimo-v2
-    enabled: true
-    litellmModel: "xiaomi/mimo-v2-flash:free"
-    baseURL: "https://api.poolsi.de/openai"
-    credentialsRef:
-      existingSecret: "poolside-api-key"
-      key: "api-key"
-    capabilities:
-      - fast
-      - cheap
-    latencyProfile: fast
-    constraints:
-      contextWindow: 32768
-      maxOutputTokens: 4096
-      maxRequestTokens: 0
-
-  # minimax/minimax-m2.1 — Minimax M2.1
-  - name: poolside-minimax-m2-1
-    enabled: true
-    litellmModel: "minimax/minimax-m2.1"
-    baseURL: "https://api.poolsi.de/openai"
-    credentialsRef:
-      existingSecret: "poolside-api-key"
-      key: "api-key"
-    capabilities:
-      - reasoning
-      - code
-    latencyProfile: medium
-    constraints:
-      contextWindow: 131072
-      maxOutputTokens: 16384
-      maxRequestTokens: 0
-
-  # anthropic/claude-opus-4.5 — Claude Opus 4.5
-  - name: poolside-claude-opus-4-5
-    enabled: true
-    litellmModel: "anthropic/claude-opus-4.5"
-    baseURL: "https://api.poolsi.de/openai"
-    credentialsRef:
-      existingSecret: "poolside-api-key"
-      key: "api-key"
-    capabilities:
-      - reasoning
-      - code
-    latencyProfile: slow
-    constraints:
-      contextWindow: 200000
-      maxOutputTokens: 100000
-      maxRequestTokens: 0
-
-  # google/gemini-3-pro-preview — Gemini 3 Pro Preview
-  - name: poolside-gemini-3-pro
-    enabled: true
-    litellmModel: "google/gemini-3-pro-preview"
-    baseURL: "https://api.poolsi.de/openai"
-    credentialsRef:
-      existingSecret: "poolside-api-key"
-      key: "api-key"
-    capabilities:
-      - reasoning
-      - code
-      - vision
-      - long-context
-    latencyProfile: medium
-    constraints:
-      contextWindow: 1048576
-      maxOutputTokens: 65536
-      maxRequestTokens: 0
-
-  # z-ai/glm-4.7 — GLM 4.7
-  - name: poolside-glm-4-7
-    enabled: true
-    litellmModel: "z-ai/glm-4.7"
-    baseURL: "https://api.poolsi.de/openai"
-    credentialsRef:
-      existingSecret: "poolside-api-key"
-      key: "api-key"
-    capabilities:
-      - reasoning
-      - code
-    latencyProfile: medium
-    constraints:
-      contextWindow: 131072
-      maxOutputTokens: 16384
-      maxRequestTokens: 0
-
-  # x-ai/grok-code-fast-1 — Grok Code Fast 1
-  - name: poolside-grok-code-fast
-    enabled: true
-    litellmModel: "x-ai/grok-code-fast-1"
-    baseURL: "https://api.poolsi.de/openai"
-    credentialsRef:
-      existingSecret: "poolside-api-key"
-      key: "api-key"
-    capabilities:
-      - code
-    latencyProfile: fast
-    constraints:
-      contextWindow: 32768
-      maxOutputTokens: 4096
-      maxRequestTokens: 0
-
-  # qwen/qwen3-235b-a22b-2507 — Qwen 3 235B A22B
-  - name: poolside-qwen3-235b
-    enabled: true
-    litellmModel: "qwen/qwen3-235b-a22b-2507"
-    baseURL: "https://api.poolsi.de/openai"
-    credentialsRef:
-      existingSecret: "poolside-api-key"
-      key: "api-key"
-    capabilities:
-      - reasoning
-      - code
-    latencyProfile: slow
-    constraints:
-      contextWindow: 131072
-      maxOutputTokens: 8192
-      maxRequestTokens: 0
-
-  # anthropic/claude-4.5-sonnet — Claude 4.5 Sonnet
-  - name: poolside-claude-4-5-sonnet
-    enabled: true
-    litellmModel: "anthropic/claude-4.5-sonnet"
-    baseURL: "https://api.poolsi.de/openai"
-    credentialsRef:
-      existingSecret: "poolside-api-key"
-      key: "api-key"
-    capabilities:
-      - reasoning
-      - code
-      - vision
-    latencyProfile: medium
-    constraints:
-      contextWindow: 200000
-      maxOutputTokens: 16384
-      maxRequestTokens: 0
-
-  # anthropic/claude-sonnet-4.6 — Claude Sonnet 4.6
-  - name: poolside-claude-sonnet-4-6
-    enabled: true
-    litellmModel: "anthropic/claude-sonnet-4.6"
-    baseURL: "https://api.poolsi.de/openai"
-    credentialsRef:
-      existingSecret: "poolside-api-key"
-      key: "api-key"
-    capabilities:
-      - reasoning
-      - code
-      - vision
-      - fast
-      - long-context
-    latencyProfile: medium
-    constraints:
-      contextWindow: 200000
-      maxOutputTokens: 16384
-      maxRequestTokens: 0
-
-  # minimax/minimax-m2.5:nitro — Minimax M2.5 Nitro
-  - name: poolside-minimax-m2-5-nitro
-    enabled: true
-    litellmModel: "minimax/minimax-m2.5:nitro"
-    baseURL: "https://api.poolsi.de/openai"
-    credentialsRef:
-      existingSecret: "poolside-api-key"
-      key: "api-key"
-    capabilities:
-      - reasoning
-      - code
-    latencyProfile: medium
-    constraints:
-      contextWindow: 131072
-      maxOutputTokens: 16384
-      maxRequestTokens: 0
-
-  # nvidia/nemotron-3-nano-30b-a3b — Nemotron 3 Nano 30B A3B
-  - name: poolside-nemotron-3-nano
-    enabled: true
-    litellmModel: "nvidia/nemotron-3-nano-30b-a3b"
-    baseURL: "https://api.poolsi.de/openai"
-    credentialsRef:
-      existingSecret: "poolside-api-key"
-      key: "api-key"
-    capabilities:
-      - reasoning
-      - code
-      - fast
-    latencyProfile: fast
-    constraints:
-      contextWindow: 32768
-      maxOutputTokens: 4096
-      maxRequestTokens: 0
-
-  # google/gemini-2.5-flash — Gemini 2.5 Flash
-  - name: poolside-gemini-2-5-flash
-    enabled: true
-    litellmModel: "google/gemini-2.5-flash"
-    baseURL: "https://api.poolsi.de/openai"
-    credentialsRef:
-      existingSecret: "poolside-api-key"
-      key: "api-key"
-    capabilities:
-      - reasoning
-      - code
-      - vision
-      - fast
-      - long-context
-    latencyProfile: fast
-    constraints:
-      contextWindow: 1048576
-      maxOutputTokens: 65536
-      maxRequestTokens: 0
-
-  # anthropic/claude-opus-4.6 — Claude Opus 4.6
-  - name: poolside-claude-opus-4-6
-    enabled: true
-    litellmModel: "anthropic/claude-opus-4.6"
-    baseURL: "https://api.poolsi.de/openai"
-    credentialsRef:
-      existingSecret: "poolside-api-key"
-      key: "api-key"
-    capabilities:
-      - reasoning
-      - code
-      - vision
-      - long-context
-    latencyProfile: slow
-    constraints:
-      contextWindow: 200000
-      maxOutputTokens: 32000
-      maxRequestTokens: 0
-
-  # qwen/qwen3-coder-next — Qwen3 Coder Next
-  - name: poolside-qwen3-coder-next
-    enabled: true
-    litellmModel: "qwen/qwen3-coder-next"
-    baseURL: "https://api.poolsi.de/openai"
-    credentialsRef:
-      existingSecret: "poolside-api-key"
-      key: "api-key"
-    capabilities:
-      - code
-    latencyProfile: fast
-    constraints:
-      contextWindow: 32768
-      maxOutputTokens: 4096
-      maxRequestTokens: 0
-
-  # openai/gpt-5.2-codex — GPT 5.2 Codex
-  - name: poolside-gpt-5-2-codex
-    enabled: true
-    litellmModel: "openai/gpt-5.2-codex"
-    baseURL: "https://api.poolsi.de/openai"
-    credentialsRef:
-      existingSecret: "poolside-api-key"
-      key: "api-key"
-    capabilities:
-      - code
-    latencyProfile: medium
-    constraints:
-      contextWindow: 128000
-      maxOutputTokens: 16384
-      maxRequestTokens: 0
-
-  # z-ai/glm-4.7-flash — GLM 4.7 Flash
-  - name: poolside-glm-4-7-flash
-    enabled: true
-    litellmModel: "z-ai/glm-4.7-flash"
-    baseURL: "https://api.poolsi.de/openai"
-    credentialsRef:
-      existingSecret: "poolside-api-key"
-      key: "api-key"
-    capabilities:
-      - reasoning
-      - code
-    latencyProfile: medium
-    constraints:
-      contextWindow: 131072
-      maxOutputTokens: 16384
-      maxRequestTokens: 0
+      contextWindow: 1000000
+      maxOutputTokens: 32768
+      maxRequestTokens: 128000
 
   # ════════════════════════════════════════════════════════════════════════════
   # OpenAI
@@ -998,6 +150,7 @@ modelProviders:
   # ════════════════════════════════════════════════════════════════════════════
 
   # gpt-4o — flagship multimodal model, vision + function calling
+  - name: openai-gpt-4o
     enabled: true
     litellmModel: "openai/gpt-4o"
     credentialsRef:
@@ -1018,7 +171,7 @@ modelProviders:
 
   # gpt-4o-mini — fast and cheap, still vision-capable
   - name: openai-gpt-4o-mini
-    enabled: true
+    enabled: false
     litellmModel: "openai/gpt-4o-mini"
     credentialsRef:
       existingSecret: "openai-api-key"
@@ -1037,7 +190,7 @@ modelProviders:
 
   # o1 — advanced reasoning (chain-of-thought)
   - name: openai-o1
-    enabled: true
+    enabled: false
     litellmModel: "openai/o1"
     credentialsRef:
       existingSecret: "openai-api-key"
@@ -1055,7 +208,7 @@ modelProviders:
 
   # o1-mini — fast reasoning, lower cost than o1
   - name: openai-o1-mini
-    enabled: true
+    enabled: false
     litellmModel: "openai/o1-mini"
     credentialsRef:
       existingSecret: "openai-api-key"
@@ -1074,7 +227,7 @@ modelProviders:
 
   # o3-mini — latest fast reasoning model
   - name: openai-o3-mini
-    enabled: true
+    enabled: false
     litellmModel: "openai/o3-mini"
     credentialsRef:
       existingSecret: "openai-api-key"
@@ -1093,7 +246,7 @@ modelProviders:
 
   # text-embedding-3-large — best OpenAI embedding model (3072-dim)
   - name: openai-text-embedding-3-large
-    enabled: true
+    enabled: false
     litellmModel: "openai/text-embedding-3-large"
     credentialsRef:
       existingSecret: "openai-api-key"
@@ -1108,7 +261,7 @@ modelProviders:
 
   # text-embedding-3-small — cheaper OpenAI embedding model (1536-dim)
   - name: openai-text-embedding-3-small
-    enabled: true
+    enabled: false
     litellmModel: "openai/text-embedding-3-small"
     credentialsRef:
       existingSecret: "openai-api-key"
@@ -1170,7 +323,7 @@ modelProviders:
 
   # claude-haiku-4-5 — fastest and most compact Claude model
   - name: anthropic-claude-haiku-4-5
-    enabled: true
+    enabled: false
     litellmModel: "anthropic/claude-haiku-4-5-20251001"
     credentialsRef:
       existingSecret: "anthropic-api-key"
@@ -1189,7 +342,7 @@ modelProviders:
 
   # claude-3-5-sonnet — previous flagship, still highly capable
   - name: anthropic-claude-3-5-sonnet
-    enabled: true
+    enabled: false
     litellmModel: "anthropic/claude-3-5-sonnet-20241022"
     credentialsRef:
       existingSecret: "anthropic-api-key"
@@ -1209,7 +362,7 @@ modelProviders:
 
   # claude-3-5-haiku — previous fast model
   - name: anthropic-claude-3-5-haiku
-    enabled: true
+    enabled: false
     litellmModel: "anthropic/claude-3-5-haiku-20241022"
     credentialsRef:
       existingSecret: "anthropic-api-key"
@@ -1274,7 +427,7 @@ modelProviders:
 
   # gemini-2.5-flash-lite — cheapest Gemini, great for high-volume tasks
   - name: google-gemini-2-5-flash-lite
-    enabled: true
+    enabled: false
     litellmModel: "gemini/gemini-2.5-flash-lite"
     credentialsRef:
       existingSecret: "google-api-key"
@@ -1293,7 +446,7 @@ modelProviders:
 
   # gemini-embedding-001 — Google's text embedding model
   - name: google-gemini-embedding-001
-    enabled: true
+    enabled: false
     litellmModel: "gemini/gemini-embedding-001"
     credentialsRef:
       existingSecret: "google-api-key"
@@ -1735,7 +888,7 @@ modelProviders:
   # Model is pre-pulled by the ollama-pull-model Job when you deploy
   # ollama-embedding-cluster.yaml
   - name: ollama-nomic-embed-text
-    enabled: true
+    enabled: false
     litellmModel: "ollama/nomic-embed-text"
     baseURL: "http://ollama-embed.agent-orc-system.svc:11434"
     credentialsRef:
@@ -1761,7 +914,7 @@ modelSelectors:
   # default — balanced quality/cost, multi-provider fallback
   # Enable if you have at least one of: claude-sonnet-4-6, gpt-4o, gemini-2.0-flash
   - name: default
-    enabled: true
+    enabled: false
     strategy: rule-based
     providers:
       - name: anthropic-claude-sonnet-4-6
@@ -1775,7 +928,7 @@ modelSelectors:
 
   # fast — lowest latency, optimised for interactive / high-volume workloads
   - name: fast
-    enabled: true
+    enabled: false
     strategy: rule-based
     providers:
       - name: openai-gpt-4o-mini
@@ -1789,7 +942,7 @@ modelSelectors:
 
   # reasoning — deep analytical tasks, math, multi-step problem solving
   - name: reasoning
-    enabled: true
+    enabled: false
     strategy: rule-based
     providers:
       - name: openai-o3-mini
@@ -1804,7 +957,7 @@ modelSelectors:
 
   # coding — code generation, review, and debugging
   - name: coding
-    enabled: true
+    enabled: false
     strategy: rule-based
     providers:
       - name: anthropic-claude-sonnet-4-6
@@ -1817,7 +970,7 @@ modelSelectors:
 
   # vision — multimodal tasks requiring image or document understanding
   - name: vision
-    enabled: true
+    enabled: false
     strategy: rule-based
     providers:
       - name: anthropic-claude-sonnet-4-6
@@ -1831,7 +984,7 @@ modelSelectors:
 
   # long-context — processing large documents (>100k tokens)
   - name: long-context
-    enabled: true
+    enabled: false
     strategy: rule-based
     providers:
       - name: google-gemini-2-5-pro
@@ -1845,7 +998,7 @@ modelSelectors:
 
   # embeddings — vector embedding generation for RAG / semantic search
   - name: embeddings
-    enabled: true
+    enabled: false
     strategy: rule-based
     providers:
       - name: openai-text-embedding-3-large
@@ -1859,7 +1012,7 @@ modelSelectors:
   # ollama-embeddings — local in-cluster Ollama for embeddings
   # Used when running Ollama inside the cluster (no external API costs)
   - name: ollama-embed
-    enabled: true
+    enabled: false
     strategy: rule-based
     providers:
       - name: ollama-nomic-embed-text
@@ -1867,7 +1020,7 @@ modelSelectors:
 
   # cheap — cost-optimised for batch / background workloads
   - name: cheap
-    enabled: true
+    enabled: false
     strategy: rule-based
     providers:
       - name: deepseek-v3
@@ -1885,56 +1038,4 @@ modelSelectors:
     enabled: true
     strategy: rule-based
     providers:
-      - name: poolside-laguna-m-ctx256k
-      - name: poolside-laguna-xs3-rc2
-      - name: poolside-laguna-xs3-rc1
-      # - name: poolside-fusion
-      # - name: poolside-kimi-k2-7-code
-      # - name: poolside-claude-fable-5
-      # - name: poolside-claude-opus-4-8-fast
-      # - name: poolside-deepseek-v4-flash
-      # - name: poolside-claude-opus-4-8
-      # - name: poolside-laguna-m-nvfp4
-      # - name: poolside-deepseek-v4-pro
-      # - name: poolside-production-e2e
-      # - name: poolside-laguna-xs-polaris
-      # - name: poolside-gpt-5-5
-      # - name: poolside-qwen-3-6-27b
-      # - name: poolside-kimi-k2-6
-      # - name: poolside-glm-5-1
-      # - name: poolside-minimax-m2-7
-      # - name: poolside-claude-opus-4-7
-      # - name: poolside-nemotron-3-120b
-      # - name: poolside-kimi-k2-5-turbo
-      # - name: poolside-kimi-k2-5-nitro
-      # - name: poolside-gpt-5-4-mini
-      # - name: poolside-claude-haiku-4-5
-      # - name: poolside-gemini-3-flash
-      # - name: poolside-grok-4-fast
-      # - name: poolside-deepseek-v3-2
-      # - name: poolside-gpt-oss-120b
-      # - name: poolside-gpt-5-4
-      # - name: poolside-qwen3-coder-next-cloud
-      # - name: poolside-qwen-3-5-35b
-      # - name: poolside-gpt-5-3-codex
-      # - name: poolside-trinity-preview
-      # - name: poolside-devstral
-      # - name: poolside-mimo-v2
-      # - name: poolside-minimax-m2-1
-      # - name: poolside-claude-opus-4-5
-      # - name: poolside-gemini-3-pro
-      # - name: poolside-glm-4-7
-      # - name: poolside-grok-code-fast
-      # - name: poolside-qwen3-235b
-      # - name: poolside-claude-4-5-sonnet
-      # - name: poolside-claude-sonnet-4-6
-      # - name: poolside-minimax-m2-5-nitro
-      # - name: poolside-nemotron-3-nano
-      # - name: poolside-gemini-2-5-flash
-      # - name: poolside-claude-opus-4-6
-      # - name: poolside-qwen3-coder-next
-      # - name: poolside-gpt-5-2-codex
-      # - name: poolside-glm-4-7-flash
-    fallbackChain:
-      - poolside-laguna-m-ctx256k
-      - poolside-laguna-xs-polaris
+      - name: poolside-laguna-s-2.1

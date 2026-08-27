@@ -35,6 +35,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/floppyfish14/agent-orc/internal/executor"
@@ -95,6 +96,13 @@ type Router struct {
 
 	// exec dispatches non-MCP tools in-process (no localhost :8081 listener).
 	exec *executor.Executor
+
+	// streamingActive guards against concurrent turn processing. Set when a
+	// non-continuation (top-level) request enters HandleChatCompletions and
+	// cleared on return. Continuation (recursive tool-call) requests skip the
+	// guard since they belong to the same turn. Uses atomic.Bool for
+	// goroutine-safe access without holding r.mu during the entire LLM call.
+	streamingActive atomic.Bool
 }
 
 // New creates a Router with the given configuration.
@@ -530,6 +538,19 @@ func (r *Router) InitMCPServers() {
 	r.mcpClient = client
 	r.cfg.ToolDefinitions = mergeMCPToolDefs(r.cfg.ToolDefinitions, client.Tools())
 	r.mu.Unlock()
+
+	// Emit a trace event per MCP server with discovered tool count.
+	for _, s := range r.cfg.MCPServers {
+		toolCount := 0
+		for _, td := range r.cfg.ToolDefinitions {
+			if td.BackendRef == s.Name && td.BackendType == "mcp" {
+				toolCount++
+			}
+		}
+		r.emitTraceEvent(fmt.Sprintf(`{"type":"mcpDiscovery","server":%q,"tools":%d}`,
+			s.Name, toolCount))
+	}
+
 	slog.Info("MCP servers initialized", "tools", len(client.Tools()))
 }
 
@@ -625,6 +646,23 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 	// Determine if this is a continuation (recursive tool-call loop within the
 	// same LLM invocation) vs. a new top-level request from the agent framework.
 	isContinuation := req.Context().Value(continuationKey{}) != nil
+
+	// Prevent concurrent turn processing: if a top-level (non-continuation)
+	// request arrives while a streaming/non-streaming response is still in
+	// flight, the previous stream would be abandoned without a terminal done
+	// event — the exact race that caused the "done sentinel too soon" class
+	// of bugs. Reject with 409 so the agent framework retries after the
+	// in-flight turn completes.
+	if !isContinuation && r.streamingActive.Load() {
+		slog.Warn("concurrent request rejected: turn still in flight",
+			"run", r.cfg.RunName)
+		http.Error(w, "request in progress", http.StatusConflict)
+		return
+	}
+	if !isContinuation {
+		r.streamingActive.Store(true)
+		defer r.streamingActive.Store(false)
+	}
 
 	// For new top-level requests, fold the accumulated in-memory conversation
 	// (r.messages) into r.priorMessages so the LLM has full multi-turn context.
@@ -749,6 +787,7 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 				// Handle Hard Block
 				if result.Blocked {
 					slog.Warn("Guardrail blocked outbound content", "run", r.cfg.RunName)
+					r.emitTraceEvent(fmt.Sprintf(`{"type":"guardrail","action":"blocked","reason":%q}`, result.BlockMessage))
 					blockedResp := ChatCompletionResponse{
 						Choices: []Choice{{
 							Message: Message{Role: "assistant", Content: result.BlockMessage},
@@ -827,13 +866,15 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 		if err != nil {
 			primaryName := provider.Name
 			slog.Warn("primary provider failed (streaming), trying fallback", "provider", primaryName, "err", err)
+			r.emitTraceEvent(fmt.Sprintf(`{"type":"providerFallback","from":%q,"to":"","reason":%q}`, primaryName, err.Error()))
 			resp, provider, err = r.tryFallbackStream(req.Context(), chatReq, primaryName)
 			if err != nil {
 				slog.Error("all providers failed (streaming)", "err", err)
-				// trace-event: record LLM call failure when all providers exhausted.
+				r.emitTraceEvent(fmt.Sprintf(`{"type":"providerFallback","from":%q,"to":"","reason":%q,"exhausted":true}`, primaryName, err.Error()))
 				http.Error(w, "upstream error", http.StatusBadGateway)
 				return
 			}
+			r.emitTraceEvent(fmt.Sprintf(`{"type":"providerFallback","from":%q,"to":%q,"reason":%q}`, primaryName, provider.Name, "streaming fallback succeeded"))
 		}
 		r.handleStreamingResponse(w, req, provider, resp, chatReq)
 		return
@@ -848,9 +889,11 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 		respBody, provider, err = r.tryFallback(req.Context(), chatReq, primaryName)
 		if err != nil {
 			slog.Error("all providers failed", "err", err)
+			r.emitTraceEvent(fmt.Sprintf(`{"type":"providerFallback","from":%q,"to":"","reason":%q,"exhausted":true}`, primaryName, err.Error()))
 			http.Error(w, "upstream error", http.StatusBadGateway)
 			return
 		}
+		r.emitTraceEvent(fmt.Sprintf(`{"type":"providerFallback","from":%q,"to":%q,"reason":%q}`, primaryName, provider.Name, "fallback succeeded"))
 	}
 
 	// Intercept tool calls and dispatch them.
@@ -872,6 +915,7 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 			result := r.guardrails.ApplyOutput(text)
 			if result.Blocked {
 				slog.Warn("Guardrail blocked output", "run", r.cfg.RunName, "message", result.BlockMessage)
+				r.emitTraceEvent(fmt.Sprintf(`{"type":"guardrail","action":"blocked","reason":%q}`, result.BlockMessage))
 				// trace-event: record guardrail block.
 				completionResp.Choices[0].Message.Content = result.BlockMessage
 			} else if result.FilteredText != text {
@@ -916,13 +960,10 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 		// trace-event: record auto-clarify release decision.
 		{
 		}
-		// Send done sentinel so the UI SSE handler exits the token loop.
-		if r.store != nil {
-			tokenStreamKey := "tokens:" + r.cfg.RunNamespace + ":" + r.cfg.RunName
-			sentinelCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			_ = r.store.SaveToken(sentinelCtx, tokenStreamKey, "")
-			cancel()
-		}
+		// Completion of the token stream is signalled by the WaitingForInput phase
+		// the operator just set (notifyOperatorClarify above): uiapi's terminal-state
+		// poller cancels TailTokens on that phase, closing the SSE. No empty-token
+		// "done sentinel" is written here — completion follows the OpenAI/CRD schema.
 		// Return the real LLM response (which IS the question) so the agent
 		// framework gets a clean 200 in HTTP/chat/warm mode. In job mode, return
 		// 410 Gone so the agent container exits cleanly.
@@ -1110,11 +1151,11 @@ func (r *Router) forwardToProvider(ctx context.Context, provider *ProviderConfig
 	// Skip when a custom BaseURL is set (e.g., Poolside proxy) since the proxy is
 	// OpenAI-compatible and expects the standard format regardless of model prefix.
 	if strings.HasPrefix(provider.LiteLLMModel, "anthropic/") && provider.BaseURL == "" {
-		apiKey, err := os.ReadFile(provider.APIKeyFile)
+		key, err := readAPIKey(provider.APIKeyFile)
 		if err != nil {
 			return nil, fmt.Errorf("reading API key for %s: %w", provider.Name, err)
 		}
-		return r.forwardToAnthropic(llmCtx, provider, chatReq, apiKey)
+		return r.forwardToAnthropic(llmCtx, provider, chatReq, []byte(key))
 	}
 
 	// Strip the "<provider>/" prefix so the downstream API receives a bare model name.
@@ -1138,12 +1179,11 @@ func (r *Router) forwardToProvider(ctx context.Context, provider *ProviderConfig
 	}
 
 	endpoint := liteLLMEndpoint(provider)
-	apiKey, err := os.ReadFile(provider.APIKeyFile)
+	key, err := readAPIKey(provider.APIKeyFile)
 	if err != nil {
 		return nil, fmt.Errorf("reading API key for %s: %w", provider.Name, err)
 	}
 
-	key := strings.TrimSpace(string(apiKey))
 	resp, err := doWithRateLimitRetry(llmCtx, func() (*http.Request, error) {
 		req, err := http.NewRequestWithContext(llmCtx, http.MethodPost, endpoint, bytes.NewReader(reqBody))
 		if err != nil {
@@ -2020,9 +2060,16 @@ func (r *Router) Finalize() {
 // dispatchToolCall routes a single tool call to the appropriate backend.
 func (r *Router) dispatchToolCall(ctx context.Context, tc ToolCall) string { //nolint:gocyclo
 
+	// Determine backend type and reference for trace enrichment.
+	backendType, backendRef := r.classifyTool(tc.Function.Name, tc.Function.Arguments)
+
 	// Emit tool_call trace event.
 	if callJSON, err := json.Marshal(map[string]string{
-		"type": "toolCall", "name": tc.Function.Name, "arguments": tc.Function.Arguments,
+		"type":        "toolCall",
+		"name":        tc.Function.Name,
+		"arguments":   tc.Function.Arguments,
+		"backendType": backendType,
+		"backendRef":  backendRef,
 	}); err == nil {
 		r.emitTraceEvent(string(callJSON))
 	}
@@ -2121,15 +2168,26 @@ func (r *Router) dispatchToolCall(ctx context.Context, tc ToolCall) string { //n
 	// Cap tool result size before it enters conversation history.
 	result = truncateToolResult(result, r.cfg.MaxToolResultTokens)
 
+	// A tool result that is empty or a bare "[]" / "{}" carries no information for
+	// the LLM, so it is usually read as "no data" and the agent bails (the
+	// "exit too soon after empty tool results" symptom). Replace such trivial
+	// payloads with a clear, recoverable hint so the LLM can refine its query or
+	// call _clarify instead of silently chasing an empty result. Results that
+	// actually contain data are unchanged.
+	result = annotateTrivialToolResult(tc.Function.Name, result)
+
 	// Emit tool_result trace event. Truncate long results for the trace.
 	truncated := result
 	if len(truncated) > 500 {
 		truncated = truncated[:500] + "…"
 	}
 	traceEvent := map[string]any{
-		"type":   "toolResult",
-		"name":   tc.Function.Name,
-		"result": truncated,
+		"type":        "toolResult",
+		"name":        tc.Function.Name,
+		"result":      truncated,
+		"backendType": backendType,
+		"backendRef":  backendRef,
+		"durationMs":  time.Since(startTime).Milliseconds(),
 	}
 	if appUrl != "" {
 		traceEvent["appUrl"] = appUrl
@@ -2149,7 +2207,68 @@ func (r *Router) dispatchToolCall(ctx context.Context, tc ToolCall) string { //n
 	return result
 }
 
-// callMCPTool dispatches a tool call directly to the MCP client.
+// annotateTrivialToolResult replaces empty / bare-placeholder tool results
+// (`""`, `"[]"`, `"{}"`) with a clear, recoverable hint so the LLM can refine its
+// query or call _clarify instead of treating an empty payload as data and
+// terminating the run. Non-trivial results are returned unchanged.
+func annotateTrivialToolResult(toolName, result string) string {
+	switch strings.TrimSpace(result) {
+	case "", "[]", "{}":
+		return fmt.Sprintf(
+			`{"error": "tool %q returned no results for this call (empty response); `+
+				`try refining the query, narrowing the scope, or using a different tool"}`,
+			toolName)
+	}
+	return result
+}
+
+// classifyTool determines the backend type and reference for a tool call,
+// used to enrich trace events with backendType and backendRef fields.
+// Returns (backendType, backendRef):
+//   - "mcp" + server name (from ToolDefinition.BackendRef)
+//   - "rag" + knowledge base name (parsed from tool arguments)
+//   - "mcp-resource" + resource URI (parsed from tool arguments)
+//   - "agent" + agent name (for handoff/spawn)
+//   - "external" + "" (for user-defined tool backends)
+//   - "builtin" + "" (for other built-in tools)
+func (r *Router) classifyTool(toolName, args string) (backendType, backendRef string) {
+	// Check tool definitions first — only MCP tools return here.
+	// Built-in tools appear in ToolDefinitions with BackendType "builtin" for
+	// LLM schema injection; those must fall through to the name-based switch below.
+	for _, td := range r.cfg.ToolDefinitions {
+		if td.Name == toolName {
+			if td.BackendType == "mcp" {
+				return "mcp", td.BackendRef
+			}
+			break
+		}
+	}
+
+	// Built-in tools: classify by name pattern.
+	switch toolName {
+	case "_rag_search", "rag_search", "_rag_ingest", "rag_ingest":
+		var p struct {
+			KnowledgeBase string `json:"knowledgeBase"`
+		}
+		_ = json.Unmarshal([]byte(args), &p)
+		return "rag", p.KnowledgeBase
+	case "_mcp_read_resource", "mcp_read_resource", "_list_resources", "list_resources":
+		var p struct {
+			URI string `json:"uri"`
+		}
+		_ = json.Unmarshal([]byte(args), &p)
+		return "mcp-resource", p.URI
+	case "_handoff", "handoff", "_spawn", "spawn":
+		var p struct {
+			AgentRef string `json:"agentRef"`
+		}
+		_ = json.Unmarshal([]byte(args), &p)
+		return "agent", p.AgentRef
+	default:
+		return "builtin", ""
+	}
+}
+
 // It also fetches and caches the MCP App HTML resource if allowApps is set,
 // returning an appUrl that the UI can use to render a sandboxed iframe.
 func (r *Router) callMCPTool(ctx context.Context, td ToolDefinition, args string) (result, appUrl string) {
@@ -2356,9 +2475,10 @@ func (r *Router) executeClarify(ctx context.Context, args string) string { //nol
 		clarifyEvent, _ := json.Marshal(map[string]string{
 			"type": "clarify", "question": clarifyArgs.Question,
 		})
+		// The `clarify` trace event is terminal (state.IsTerminalTraceEventJSON);
+		// TailTokens closes the UI SSE after it. No empty-token "done sentinel"
+		// is written — completion follows the schema, not a magic token.
 		_ = r.store.SaveTraceEvent(context.Background(), tokenStreamKey, string(clarifyEvent))
-		// Send done sentinel so the UI SSE handler terminates normally.
-		_ = r.store.SaveToken(context.Background(), tokenStreamKey, "")
 	}
 
 	slog.Info("clarify requested", "run", r.cfg.RunName, "question", clarifyArgs.Question)
@@ -2458,8 +2578,9 @@ func (r *Router) notifyOperatorContext() {
 }
 
 // executeDone handles the _done built-in tool: checkpoints, notifies the operator
-// to set Phase=Succeeded with the agent's explicit output, emits a done sentinel
-// to the token stream, and signals the router to stop further LLM calls.
+// to set Phase=Succeeded with the agent's explicit output, emits a terminal `done`
+// trace event to the token stream (which closes the UI SSE via TailTokens), and
+// signals the router to stop further LLM calls.
 func (r *Router) executeDone(ctx context.Context, args string) string {
 	var p struct {
 		Output  string `json:"output"`
@@ -2502,8 +2623,11 @@ func (r *Router) executeDone(ctx context.Context, args string) string {
 	if r.store != nil {
 		tokenStreamKey := "tokens:" + r.cfg.RunNamespace + ":" + r.cfg.RunName
 		doneEvent, _ := json.Marshal(map[string]string{"type": "done", "output": output})
+		// The `done` trace event is terminal (state.IsTerminalTraceEventJSON);
+		// TailTokens closes the UI SSE after yielding it. No empty-token "done
+		// sentinel" is written — completion follows the OpenAI/CRD schema, not a
+		// magic token that could fire mid-loop.
 		_ = r.store.SaveTraceEvent(context.Background(), tokenStreamKey, string(doneEvent))
-		_ = r.store.SaveToken(context.Background(), tokenStreamKey, "")
 	}
 
 	r.mu.Lock()
@@ -2515,8 +2639,9 @@ func (r *Router) executeDone(ctx context.Context, args string) string {
 }
 
 // executeFail handles the _fail built-in tool: checkpoints, notifies the operator
-// to set Phase=Failed with the agent's explicit reason, emits a fail sentinel to
-// the token stream, and signals the router to stop further LLM calls.
+// to set Phase=Failed with the agent's explicit reason, emits a terminal `fail`
+// trace event to the token stream (which closes the UI SSE via TailTokens), and
+// signals the router to stop further LLM calls.
 func (r *Router) executeFail(ctx context.Context, args string) string {
 	var p struct {
 		Reason    string `json:"reason"`
@@ -2555,8 +2680,9 @@ func (r *Router) executeFail(ctx context.Context, args string) string {
 	if r.store != nil {
 		tokenStreamKey := "tokens:" + r.cfg.RunNamespace + ":" + r.cfg.RunName
 		failEvent, _ := json.Marshal(map[string]string{"type": "fail", "reason": p.Reason})
+		// The `fail` trace event is terminal; TailTokens closes the UI SSE after it.
+		// No empty-token "done sentinel" is written — completion follows the schema.
 		_ = r.store.SaveTraceEvent(context.Background(), tokenStreamKey, string(failEvent))
-		_ = r.store.SaveToken(context.Background(), tokenStreamKey, "")
 	}
 
 	r.mu.Lock()
@@ -3477,6 +3603,16 @@ func (r *Router) executeRAGSearch(ctx context.Context, args string) string {
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Sprintf(`{"error": "RAG search failed: %s"}`, string(body))
+	}
+	// Emit a ragResult trace event with result count and collection info.
+	var ragResp struct {
+		Results []struct {
+			Score float32 `json:"Score"`
+		} `json:"results"`
+	}
+	if json.Unmarshal(body, &ragResp) == nil {
+		r.emitTraceEvent(fmt.Sprintf(`{"type":"ragResult","name":%q,"query":%q,"results":%d,"collection":%q}`,
+			p.KnowledgeBase, p.Query, len(ragResp.Results), kb.CollectionName))
 	}
 	// Sanitize content fields in each returned chunk before the LLM sees them.
 	return string(sanitizeRAGSearchResponse(body))

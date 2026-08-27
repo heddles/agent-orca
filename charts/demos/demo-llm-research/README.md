@@ -129,8 +129,8 @@ curl -X POST http://agent-orc-ui/api/deployments/agent-orc-system/llm-research/e
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                     llm-research Agent                           │
-│  Model: poolside-laguna-m-ctx256k / poolside-laguna-xs-polaris    │
+│                     llm-research Agent                          │
+│  Model: poolside/laguna-s-2.1                                   │
 │  Knowledge Base: llm-research-kb (25Gi Qdrant)                  │
 └─────────────────────────────────────────────────────────────────┘
           │ tools                     │ ingest

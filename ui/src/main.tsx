@@ -11,41 +11,93 @@ import { CostDashboard } from './components/CostDashboard'
 import { CreateAgentPanel } from './components/CreateAgentPanel'
 import { SystemDashboard } from './components/SystemDashboard'
 import { MarketplaceView } from './components/MarketplaceView'
+import { applyDesignSystem, ds, toggleTheme, applyTheme, getPreferredTheme, type Theme } from './lib/designSystem'
+import { ICON, Icon } from './lib/icons'
+import type { IconComponent } from './lib/icons'
+
+// Register the design system (CSS variables, font smoothing, reduced-motion,
+// focus-visible baseline, aoPulse keyframe) before rendering.
+applyDesignSystem()
+// Apply the saved or system-default theme.
+applyTheme(getPreferredTheme())
 
 type TopLevelTab = ResourceTab | 'home' | 'marketplace'
 
-// Inject global keyframe animations (used by StatusBadge, OutputCard pulse cursors).
+// ── Navigation state persistence (survives page refresh) ────────────────────
+//
+// SessionStorage preserves the user's navigation across refreshes without
+// leaking across tabs/sessions. Only navigation-relevant state is saved;
+// transient UI state (create-agent panel, redis banner, cost view) resets.
+const NAV_STATE_KEY = 'agentorc-nav-state'
+
+interface NavState {
+  tab: TopLevelTab
+  selection: ResourceSelection | null
+  breadcrumbs: ResourceSelection[]
+  navigationOrigin: 'sidebar' | 'home' | 'marketplace'
+}
+
+function loadNavState(): Partial<NavState> {
+  try {
+    const raw = sessionStorage.getItem(NAV_STATE_KEY)
+    if (!raw) return {}
+    return JSON.parse(raw) as Partial<NavState>
+  } catch {
+    return {}
+  }
+}
+
+function saveNavState(state: Partial<NavState>): void {
+  try {
+    sessionStorage.setItem(NAV_STATE_KEY, JSON.stringify(state))
+  } catch {
+    // private browsing / quota exceeded
+  }
+}
+
+// Validate the saved tab — ignore stale tabs from a previous deployment.
+const VALID_TABS: TopLevelTab[] = [
+  'home', 'marketplace', 'runs', 'deployments', 'workflows',
+  'agents', 'tools', 'mcpservers', 'modelproviders', 'knowledgebases', 'modelselectors',
+]
+
+const savedState = loadNavState()
+const initialTab: TopLevelTab = VALID_TABS.includes(savedState.tab as TopLevelTab)
+  ? (savedState.tab as TopLevelTab)
+  : 'home'
+
+// Inject global markdown rendering styles (aoPulse keyframe now lives in the design system).
 const styleEl = document.createElement('style')
 styleEl.textContent = `
-  @keyframes aoPulse {
-    0%, 100% { opacity: 1; transform: scale(1); }
-    50% { opacity: 0.5; transform: scale(0.8); }
-  }
   .ao-md table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 13px; }
-  .ao-md th, .ao-md td { border: 1px solid #334155; padding: 6px 12px; text-align: left; vertical-align: top; }
-  .ao-md th { background: #1e293b; color: #94a3b8; font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
-  .ao-md tr:nth-child(even) td { background: rgba(51,65,85,.25); }
+  .ao-md th, .ao-md td { border: 1px solid var(--ds-border); padding: 6px 12px; text-align: left; vertical-align: top; }
+  .ao-md th { background: var(--ds-surface); color: var(--ds-text-secondary); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
+  .ao-md tr:nth-child(even) td { background: var(--ds-md-table-bg); }
   .ao-md p { margin: 0 0 8px; }
   .ao-md p:last-child { margin-bottom: 0; }
-  .ao-md h1, .ao-md h2, .ao-md h3 { color: #f1f5f9; margin: 16px 0 8px; }
-  .ao-md code { background: rgba(51,65,85,.6); border-radius: 3px; padding: 1px 5px; font-family: monospace; font-size: 12px; }
-  .ao-md pre { background: rgba(15,23,42,.8); border: 1px solid #334155; border-radius: 6px; padding: 12px; overflow-x: auto; }
+  .ao-md h1, .ao-md h2, .ao-md h3 { color: var(--ds-text-primary); margin: 16px 0 8px; }
+  .ao-md code { background: var(--ds-md-code-bg); border-radius: 3px; padding: 1px 5px; font-family: 'ui-monospace, "SFMono-Regular", "Menlo", "Monaco", monospace'; font-size: 12px; }
+  .ao-md pre { background: var(--ds-md-pre-bg); border: 1px solid var(--ds-border); border-radius: 6px; padding: 12px; overflow-x: auto; }
   .ao-md pre code { background: none; padding: 0; }
   .ao-md ul, .ao-md ol { padding-left: 20px; margin: 8px 0; }
+  .ao-md blockquote { border-left: 3px solid var(--ds-accent); padding-left: 12px; margin: 12px 0; color: var(--ds-text-secondary); }
+  .ao-md img { max-width: 100%; border-radius: 6px; }
+  /* Tabular numerals for stable markdown tables and inline values */
+  .ao-md { font-variant-numeric: tabular-nums; }
 `
 document.head.appendChild(styleEl)
 
 function RedisBanner({ onDismiss }: { onDismiss: () => void }) {
   return (
     <div style={banner.root}>
-      <span>⚠</span>
+      <span style={{ display: "inline-flex" }}><Icon icon={ICON.warning} size={14} ariaHidden={true} /></span>
       <span style={{ flex: 1 }}>
         <strong>Redis is not configured.</strong> Cost tracking will show $0 and conversation
         history will not persist across pod restarts. Set{' '}
         <code style={banner.code}>STATE_BACKEND=redis</code> and{' '}
         <code style={banner.code}>REDIS_URL</code> on the operator to enable these features.
       </span>
-      <button style={banner.dismiss} onClick={onDismiss} aria-label="Dismiss">✕</button>
+      <button style={banner.dismiss} onClick={onDismiss} aria-label="Dismiss Redis warning"><Icon icon={ICON.close} size={14} /></button>
     </div>
   )
 }
@@ -56,17 +108,18 @@ const banner: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     gap: 10,
     padding: '8px 20px',
-    background: '#78350f',
-    borderBottom: '1px solid #92400e',
+    background: 'rgba(245,158,11,.10)',
+    borderBottom: '1px solid var(--ds-border)',
     fontSize: 13,
-    color: '#fef3c7',
+    color: '#fcd34d',
     flexShrink: 0,
   },
   code: {
-    fontFamily: 'monospace',
-    background: '#92400e',
+    fontFamily: 'ui-monospace, "SFMono-Regular", "Menlo", monospace',
+    background: 'rgba(245,158,11,.20)',
     borderRadius: 3,
     padding: '1px 4px',
+    color: '#fde68a',
   },
   dismiss: {
     background: 'transparent',
@@ -76,6 +129,23 @@ const banner: Record<string, React.CSSProperties> = {
     fontSize: 14,
     flexShrink: 0,
   },
+}
+
+const skipLinkStyle: React.CSSProperties = {
+  position: 'absolute',
+  top: -40,
+  left: 6,
+  padding: '6px 10px',
+  fontSize: 12,
+  fontWeight: 600,
+  color: ds.textPrimary,
+  background: ds.surface,
+  border: `1px solid var(--ds-border)`,
+  borderRadius: 4,
+  zIndex: 100,
+  transitionProperty: 'top',
+  transitionDuration: '0.15s',
+  transitionTimingFunction: 'ease',
 }
 
 const TAB_LABELS: Record<ResourceTab, string> = {
@@ -103,15 +173,22 @@ const HOME_TABS: { key: 'home' | 'marketplace'; label: string }[] = [
 ]
 
 function App() {
-  const [tab, setTab] = useState<TopLevelTab>('home')
-  const [selection, setSelection] = useState<ResourceSelection | null>(null)
+  const [tab, setTab] = useState<TopLevelTab>(initialTab)
+  const [selection, setSelection] = useState<ResourceSelection | null>(savedState.selection ?? null)
   // breadcrumbs holds the navigation stack of ancestors above the current selection.
-  const [breadcrumbs, setBreadcrumbs] = useState<ResourceSelection[]>([])
+  const [breadcrumbs, setBreadcrumbs] = useState<ResourceSelection[]>(savedState.breadcrumbs ?? [])
   // Track if we navigated from home so breadcrumbs show Home origin
-  const [navigationOrigin, setNavigationOrigin] = useState<'sidebar' | 'home' | 'marketplace'>('sidebar')
+  const [navigationOrigin, setNavigationOrigin] = useState<'sidebar' | 'home' | 'marketplace'>(savedState.navigationOrigin ?? 'sidebar')
   const [showCosts, setShowCosts] = useState(false)
   const [showCreateAgent, setShowCreateAgent] = useState(false)
   const [showRedisBanner, setShowRedisBanner] = useState(false)
+  const [showSkip, setShowSkip] = useState(false)
+
+  // Persist navigation state to sessionStorage on change (survives page refresh).
+  useEffect(() => {
+    saveNavState({ tab, selection, breadcrumbs, navigationOrigin })
+  }, [tab, selection, breadcrumbs, navigationOrigin])
+  const [theme, setTheme] = useState<Theme>(() => getPreferredTheme())
 
   useEffect(() => {
     getSystemStatus()
@@ -187,6 +264,10 @@ function App() {
 
   return (
     <div style={layout.root}>
+      {/* Skip to content link (better-accessibility §13) */}
+      <a href="#main-content" style={{ ...skipLinkStyle, top: showSkip ? 6 : -40 }}
+         onFocus={() => setShowSkip(true)} onBlur={() => setShowSkip(false)}
+      >Skip to content</a>
       {/* ── Top bar ── */}
       <header style={layout.topbar}>
         <div style={layout.logo}>
@@ -228,16 +309,29 @@ function App() {
           <button
             style={{ ...layout.iconBtn, ...(showCosts ? layout.iconBtnActive : {}) }}
             onClick={() => setShowCosts((v) => !v)}
+            aria-label={showCosts ? 'Hide cost dashboard' : 'Show cost dashboard'}
             title="Cost Dashboard"
           >
-            💰
+            <Icon icon={ICON.cost} size={16} />
+          </button>
+          <button
+            style={layout.iconBtn}
+            onClick={() => {
+              const next = toggleTheme()
+              setTheme(next)
+            }}
+            aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+            title={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+          >
+            {theme === 'dark' ? <Icon icon={ICON.moon} size={16} /> : <Icon icon={ICON.sun} size={16} />}
           </button>
           <button
             style={layout.iconBtn}
             onClick={() => setShowCreateAgent(true)}
+            aria-label="Create agent"
             title="Create Agent"
           >
-            ＋
+            <Icon icon={ICON.create} size={16} />
           </button>
         </div>
       </header>
@@ -249,7 +343,7 @@ function App() {
       <div style={layout.body}>
         {/* Left list panel - hidden on home/marketplace tabs */}
         {tab !== 'home' && tab !== 'marketplace' && (
-          <aside style={layout.leftPanel}>
+          <aside data-sidebar style={layout.leftPanel}>
             <div style={layout.listHeader}>
               <span style={layout.listTitle}>{TAB_LABELS[tab as ResourceTab]}</span>
             </div>
@@ -274,7 +368,7 @@ function App() {
         )}
 
         {/* Main content */}
-        <main style={{
+        <main id="main-content" tabIndex={-1} style={{
             ...layout.main,
             ...(tab === 'home' || tab === 'marketplace' ? { padding: 0 } : {}),
           }}>
@@ -334,16 +428,16 @@ function App() {
 }
 
 function EmptyState({ tab }: { tab: ResourceTab }) {
-  const icons: Record<ResourceTab, string> = {
-    runs: '▶',
-    deployments: '⚡',
-    workflows: '⟳',
-    agents: '🤖',
-    tools: '🔧',
-    mcpservers: '🔌',
-    modelproviders: '🧠',
-    knowledgebases: '📚',
-    modelselectors: '🔀',
+  const icons: Record<ResourceTab, IconComponent> = {
+    runs: ICON.runs,
+    deployments: ICON.deployment,
+    workflows: ICON.workflow,
+    agents: ICON.agent,
+    tools: ICON.tool,
+    mcpservers: ICON.mcpserver,
+    modelproviders: ICON.modelprovider,
+    knowledgebases: ICON.knowledgebase,
+    modelselectors: ICON.modelselector,
   }
   const messages: Record<ResourceTab, string> = {
     runs: 'Select a run to see its output',
@@ -358,7 +452,7 @@ function EmptyState({ tab }: { tab: ResourceTab }) {
   }
   return (
     <div style={empty.root}>
-      <div style={empty.icon}>{icons[tab]}</div>
+      <div style={empty.icon}><Icon icon={icons[tab]} size={32} strokeWidth={1.25} /></div>
       <div style={empty.title}>{messages[tab]}</div>
     </div>
   )
@@ -372,10 +466,10 @@ const empty: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     justifyContent: 'center',
     gap: 12,
-    color: '#475569',
+    color: ds.textMuted,
   },
   icon: { fontSize: 32, opacity: 0.4 },
-  title: { fontSize: 15, fontWeight: 500, color: '#64748b' },
+  title: { fontSize: 15, fontWeight: 500, color: 'var(--ds-text-muted)' },
 }
 
 const layout: Record<string, React.CSSProperties> = {
@@ -383,15 +477,15 @@ const layout: Record<string, React.CSSProperties> = {
     display: 'flex',
     flexDirection: 'column',
     height: '100vh',
-    background: '#0f172a',
-    color: '#e2e8f0',
-    fontFamily: 'system-ui, -apple-system, sans-serif',
+    background: ds.bg,
+    color: ds.textPrimary,
+    fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
     overflow: 'hidden',
   },
   topbar: {
     height: 52,
-    background: '#1e293b',
-    borderBottom: '1px solid #334155',
+    background: ds.surface,
+    borderBottom: '1px solid var(--ds-border)',
     display: 'flex',
     alignItems: 'center',
     padding: '0 20px',
@@ -402,7 +496,7 @@ const layout: Record<string, React.CSSProperties> = {
   logo: {
     fontSize: 15,
     fontWeight: 700,
-    color: '#f1f5f9',
+    color: ds.textPrimary,
     letterSpacing: '-0.3px',
     display: 'flex',
     alignItems: 'center',
@@ -412,15 +506,16 @@ const layout: Record<string, React.CSSProperties> = {
   logoDot: {
     width: 8,
     height: 8,
-    background: '#3b82f6',
+    background: ds.accent,
     borderRadius: '50%',
-    boxShadow: '0 0 8px #3b82f6',
+    boxShadow: '0 0 8px var(--ds-accent)',
   },
-  nav: { display: 'flex', gap: 2, alignItems: 'center' },
+  nav: { display: 'flex', gap: 4, alignItems: 'center' },
+  // Group with space, not lines (better-layout §1)
   navDivider: {
     width: 1,
     height: 20,
-    background: '#334155',
+    background: 'var(--ds-border)',
     margin: '0 6px',
     flexShrink: 0,
   },
@@ -430,13 +525,15 @@ const layout: Record<string, React.CSSProperties> = {
     cursor: 'pointer',
     fontSize: 13,
     fontWeight: 500,
-    color: '#94a3b8',
+    color: ds.textSecondary,
     border: 'none',
     background: 'none',
-    transition: 'all 0.15s',
+    transitionProperty: 'background-color, color',
+    transitionDuration: '0.15s',
+    transitionTimingFunction: 'ease',
   },
   navTabActive: {
-    color: '#3b82f6',
+    color: ds.accent,
     background: 'rgba(59,130,246,.15)',
   },
   topbarRight: {
@@ -453,14 +550,16 @@ const layout: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     justifyContent: 'center',
     cursor: 'pointer',
-    color: '#94a3b8',
+    color: ds.textSecondary,
     border: 'none',
     background: 'none',
     fontSize: 16,
-    transition: 'all 0.15s',
+    transitionProperty: 'background-color, color',
+    transitionDuration: '0.15s',
+    transitionTimingFunction: 'ease',
   },
   iconBtnActive: {
-    color: '#3b82f6',
+    color: ds.accent,
     background: 'rgba(59,130,246,.15)',
   },
   body: {
@@ -469,16 +568,16 @@ const layout: Record<string, React.CSSProperties> = {
     overflow: 'hidden',
   },
   leftPanel: {
-    width: 220,
+    width: 240,
     flexShrink: 0,
-    borderRight: '1px solid #334155',
+    borderRight: '1px solid var(--ds-border)',
     display: 'flex',
     flexDirection: 'column',
     overflow: 'hidden',
   },
   listHeader: {
     padding: '12px 14px 8px',
-    borderBottom: '1px solid #334155',
+    borderBottom: '1px solid var(--ds-border)',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -488,7 +587,7 @@ const layout: Record<string, React.CSSProperties> = {
     fontWeight: 600,
     textTransform: 'uppercase',
     letterSpacing: '0.08em',
-    color: '#94a3b8',
+    color: ds.textSecondary,
   },
   listScroll: {
     flex: 1,

@@ -1027,21 +1027,23 @@ func (s *UIServer) handleListKnowledgeBases(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	type summary struct {
-		Name               string   `json:"name"`
-		Namespace          string   `json:"namespace"`
-		Description        string   `json:"description,omitempty"`
-		AllowedAgents      []string `json:"allowedAgents"`
-		Ready              bool     `json:"ready"`
-		DocumentCount      int      `json:"documentCount"`
-		ChunkCount         int      `json:"chunkCount"`
-		VectorStoreURL     string   `json:"vectorStoreURL,omitempty"`
-		CollectionName     string   `json:"collectionName,omitempty"`
-		ModelSelectorRef   string   `json:"modelSelectorRef"`
-		Dimensions         int      `json:"dimensions"`
-		ChunkSize          int      `json:"chunkSize"`
-		ChunkOverlap       int      `json:"chunkOverlap"`
-		StorageUsedPercent int      `json:"storageUsedPercent"`
-		LastSyncTime       string   `json:"lastSyncTime,omitempty"`
+		Name               string                  `json:"name"`
+		Namespace          string                  `json:"namespace"`
+		Description        string                  `json:"description,omitempty"`
+		AllowedAgents      []string                `json:"allowedAgents"`
+		Ready              bool                    `json:"ready"`
+		Message            string                  `json:"message,omitempty"`
+		Conditions         []metav1.Condition      `json:"conditions,omitempty"`
+		DocumentCount      int                     `json:"documentCount"`
+		ChunkCount         int                     `json:"chunkCount"`
+		VectorStoreURL     string                  `json:"vectorStoreURL,omitempty"`
+		CollectionName     string                  `json:"collectionName,omitempty"`
+		ModelSelectorRef   string                  `json:"modelSelectorRef"`
+		Dimensions         int                     `json:"dimensions"`
+		ChunkSize          int                     `json:"chunkSize"`
+		ChunkOverlap       int                     `json:"chunkOverlap"`
+		StorageUsedPercent int                     `json:"storageUsedPercent"`
+		LastSyncTime       string                  `json:"lastSyncTime,omitempty"`
 	}
 	out := make([]summary, 0, len(list.Items))
 	for _, kb := range list.Items {
@@ -1055,6 +1057,8 @@ func (s *UIServer) handleListKnowledgeBases(w http.ResponseWriter, r *http.Reque
 			Description:        kb.Spec.Description,
 			AllowedAgents:      allowed,
 			Ready:              kb.Status.Ready,
+			Message:            kb.Status.Message,
+			Conditions:         kb.Status.Conditions,
 			DocumentCount:      kb.Status.DocumentCount,
 			ChunkCount:         kb.Status.ChunkCount,
 			VectorStoreURL:     kb.Status.VectorStoreURL,
@@ -1128,6 +1132,7 @@ func (s *UIServer) handleListDeployments(w http.ResponseWriter, r *http.Request)
 		ReadyReplicas   int32  `json:"readyReplicas"`
 		InputSourceType string `json:"inputSourceType,omitempty"`
 		LastUpdateTime  string `json:"lastUpdateTime,omitempty"`
+		Message         string `json:"message,omitempty"`
 	}
 	out := make([]summary, 0, len(list.Items))
 	for _, d := range list.Items {
@@ -1137,6 +1142,7 @@ func (s *UIServer) handleListDeployments(w http.ResponseWriter, r *http.Request)
 			AgentRef:      d.Spec.AgentRef,
 			Phase:         string(d.Status.Phase),
 			ReadyReplicas: d.Status.ReadyReplicas,
+			Message:       d.Status.Message,
 		}
 		if d.Spec.InputSource != nil {
 			s.InputSourceType = string(d.Spec.InputSource.Type)

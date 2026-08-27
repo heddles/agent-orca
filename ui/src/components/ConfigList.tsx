@@ -18,6 +18,8 @@ import {
   type ModelSelectorSummary,
 } from '../api/sse'
 import type { ResourceSelection, ResourceTab } from './ResourceList'
+import { DESIGN } from '../lib/designSystem'
+import { Icon, ICON } from '../lib/icons'
 
 type ConfigTab = 'agents' | 'tools' | 'mcpservers' | 'modelproviders' | 'knowledgebases' | 'modelselectors'
 
@@ -73,7 +75,9 @@ function toItems(tab: ConfigTab, agents: AgentSummary[], tools: ToolSummary[], m
       return kbs.map((kb) => ({
         name: kb.name,
         namespace: kb.namespace,
-        subtitle: `${kb.documentCount} docs · ${kb.chunkCount} chunks`,
+        subtitle: !kb.ready && kb.message
+          ? `${kb.message}`
+          : `${kb.documentCount} docs · ${kb.chunkCount} chunks`,
         ready: kb.ready,
         kind: 'knowledgebase' as const,
       }))
@@ -133,32 +137,47 @@ export function ConfigList({ tab, namespace = 'default', selection, onSelect }: 
 
   return (
     <div style={s.list}>
-      <input
-        type="text"
-        placeholder="Filter by name…"
-        value={filterText}
-        onChange={(e) => setFilterText((e.target as HTMLInputElement).value)}
-        style={s.filterInput}
-      />
+      <div style={s.filterWrapper}>
+        <Icon icon={ICON.search} size={12} style={s.filterIcon} ariaHidden={true} />
+        <input
+          type="text"
+          placeholder="Filter by name…"
+          value={filterText}
+          onChange={(e) => setFilterText((e.target as HTMLInputElement).value)}
+          style={s.filterInput}
+        />
+        {filterText && (
+          <button
+            type="button"
+            style={s.filterClear}
+            onClick={() => setFilterText('')}
+            aria-label="Clear filter"
+            title="Clear filter"
+          >
+            <Icon icon={ICON.close} size={10} />
+          </button>
+        )}
+      </div>
       {filtered.length === 0 && (
         <div style={s.empty}>{q ? `No ${emptyLabel} match your filter.` : `No ${emptyLabel} found.`}</div>
       )}
       {filtered.map((item) => {
         const active = selection?.kind === item.kind && selection.name === item.name
         return (
-          <div
+          <button
             key={`${item.namespace}/${item.name}`}
+            type="button"
             style={{ ...s.item, ...(active ? s.itemActive : {}) }}
             onClick={() => onSelect({ kind: item.kind, name: item.name, namespace: item.namespace })}
           >
             <div style={s.itemRow}>
               {item.ready !== undefined && (
-                <span style={{ ...s.readyDot, background: item.ready ? '#22c55e' : '#ef4444' }} />
+                <span style={{ ...s.readyDot, background: item.ready ? 'var(--ds-success)' : 'var(--ds-error)' }} />
               )}
               <span style={s.itemName}>{item.name}</span>
             </div>
             <div style={s.itemSub}>{item.subtitle}</div>
-          </div>
+          </button>
         )
       })}
     </div>
@@ -174,13 +193,20 @@ const s: Record<string, React.CSSProperties> = {
   },
   item: {
     padding: '9px 10px',
-    borderRadius: 6,
+    borderRadius: DESIGN.radii.sm,
     cursor: 'pointer',
     display: 'flex',
     flexDirection: 'column',
     gap: 3,
     border: '1px solid transparent',
-    transition: 'background 0.12s',
+    transitionProperty: 'background-color, border-color',
+    transitionDuration: '0.12s',
+    transitionTimingFunction: 'ease',
+    background: 'transparent',
+    color: 'inherit',
+    font: 'inherit',
+    textAlign: 'left',
+    textDecoration: 'none',
   },
   itemActive: {
     background: 'rgba(59,130,246,.1)',
@@ -200,30 +226,68 @@ const s: Record<string, React.CSSProperties> = {
   itemName: {
     fontSize: 12,
     fontWeight: 600,
-    color: '#f1f5f9',
+    color: 'var(--ds-text-primary)',
     whiteSpace: 'nowrap',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
   },
   itemSub: {
     fontSize: 11,
-    color: '#64748b',
+    color: 'var(--ds-text-muted)',
     whiteSpace: 'nowrap',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
   },
-  loading: { padding: 16, color: '#475569', fontSize: 13 },
-  empty: { padding: '16px 10px', color: '#475569', fontSize: 13 },
-  filterInput: {
+  loading: { padding: 16, color: 'var(--ds-text-muted)', fontSize: 13 },
+  empty: { padding: '16px 10px', color: 'var(--ds-text-muted)', fontSize: 13 },
+  filterWrapper: {
+    position: 'relative' as const,
     width: 'calc(100% - 4px)',
-    boxSizing: 'border-box' as const,
-    padding: '5px 8px',
     marginBottom: 4,
-    background: '#1e293b',
-    border: '1px solid #334155',
-    borderRadius: 5,
-    color: '#e2e8f0',
+  },
+  filterIcon: {
+    position: 'absolute' as const,
+    left: 6,
+    top: '50%',
+    transform: 'translateY(-50%)',
+    color: 'var(--ds-text-muted)',
+    pointerEvents: 'none' as const,
+  },
+  filterClear: {
+    position: 'absolute' as const,
+    right: 4,
+    top: '50%',
+    transform: 'translateY(-50%)',
+    width: 16,
+    height: 16,
+    borderRadius: '50%',
+    border: 'none',
+    background: 'transparent',
+    color: 'var(--ds-text-muted)',
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 0,
+    transitionProperty: 'color, background-color',
+    transitionDuration: '0.15s',
+    transitionTimingFunction: 'ease',
+  },
+  filterInput: {
+    width: '100%',
+    boxSizing: 'border-box' as const,
+    padding: '5px 8px 5px 26px',
+    marginBottom: 4,
+    background: 'var(--ds-surface)',
+    border: '1px solid var(--ds-border)',
+    borderRadius: DESIGN.radii.sm,
+    color: 'var(--ds-text-primary)',
     fontSize: 12,
+    fontFamily: 'system-ui, sans-serif',
     outline: 'none',
+    fontVariantNumeric: 'tabular-nums',
+    transitionProperty: 'border-color, box-shadow',
+    transitionDuration: '0.15s',
+    transitionTimingFunction: 'ease',
   },
 }

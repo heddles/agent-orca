@@ -7,6 +7,8 @@ import { STREAM_EVENT_TYPE } from '../contracts/events'
 import { answerClarification, getRun, getWorkflow, subscribeToRunStream, type AgentWorkflowDetail, type TraceEntry, type TraceEvent, type WorkflowStepSummary } from '../api/sse'
 import { StatusBadge } from './StatusBadge'
 import { TraceAccordion } from './TraceAccordion'
+import { DESIGN } from '../lib/designSystem'
+import { Icon, ICON } from '../lib/icons'
 
 interface Props {
   name: string
@@ -191,8 +193,8 @@ export function WorkflowView({ name, namespace }: Props) {
         </div>
         <div style={s.stats}>
           <StatusBadge phase={detail.phase} />
-          {elapsed && <div style={s.chip}>⏱ <span style={s.chipVal}>{elapsed}</span></div>}
-          <div style={s.chip}>💰 <span style={s.chipVal}>${detail.totalSpendUSD || '0.0000'}</span></div>
+          {elapsed && <div style={s.chip}><Icon icon={ICON.timer} size={12} ariaHidden={true} /> <span style={s.chipVal}>{elapsed}</span></div>}
+          <div style={s.chip}><Icon icon={ICON.cost} size={12} ariaHidden={true} /> <span style={s.chipVal}>${detail.totalSpendUSD || '0.0000'}</span></div>
         </div>
       </div>
 
@@ -211,7 +213,7 @@ export function WorkflowView({ name, namespace }: Props) {
       <div style={s.pipeline}>
         {detail.steps.map((step, i) => (
           <div key={step.name} style={s.pipelineItem}>
-            {i > 0 && <div style={s.connector}>→</div>}
+            {i > 0 && <div style={s.connector}><Icon icon={ICON.routed} size={16} ariaHidden={true} /></div>}
             <StepCard
               step={step}
               active={selectedStep?.name === step.name}
@@ -227,20 +229,22 @@ export function WorkflowView({ name, namespace }: Props) {
           {/* Input */}
           {selectedStep.input && (
             <div style={s.stepOutput}>
-              <div style={{ ...s.stepOutputHeader, cursor: 'pointer', userSelect: 'none' }} onClick={() => setInputOpen((prev: boolean) => !prev)}>
+              <button type="button" style={{ ...s.stepOutputHeader, cursor: 'pointer', userSelect: 'none', background: 'transparent', border: 'none', color: 'inherit', font: 'inherit', textAlign: 'left' }} onClick={() => setInputOpen((prev: boolean) => !prev)} aria-expanded={inputOpen} aria-controls="input-body">
                 <div style={{ ...s.stepOutputLabel, display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span style={{ ...s.chevron, transform: inputOpen ? 'rotate(90deg)' : undefined }}>▶</span>
-                  Input: <span style={{ color: '#f1f5f9' }}>{selectedStep.name}</span>
+                  <Icon icon={ICON.chevronRight} size={11} style={{ ...s.chevron, transform: inputOpen ? 'rotate(90deg)' : undefined }} ariaHidden={true} />
+                  Input: <span style={{ color: 'var(--ds-text-primary)' }}>{selectedStep.name}</span>
                 </div>
                 <button
+                  type="button"
                   style={s.iconBtn}
                   onClick={(e: React.MouseEvent) => { e.stopPropagation(); navigator.clipboard.writeText(selectedStep.input!) }}
-                  title="Copy"
+                  title="Copy input"
+                  aria-label="Copy input"
                 >
-                  ⎘
+                  <Icon icon={ICON.copy} size={14} />
                 </button>
-              </div>
-              {inputOpen && <div style={s.stepOutputBody}>{selectedStep.input}</div>}
+              </button>
+              {inputOpen && <div id="input-body" style={s.stepOutputBody}>{selectedStep.input}</div>}
             </div>
           )}
 
@@ -277,32 +281,34 @@ export function WorkflowView({ name, namespace }: Props) {
 
           {/* Output */}
           <div style={s.stepOutput}>
-            <div style={{ ...s.stepOutputHeader, cursor: 'pointer', userSelect: 'none' }} onClick={() => setOutputOpen((prev: boolean) => !prev)}>
+            <button type="button" style={{ ...s.stepOutputHeader, cursor: 'pointer', userSelect: 'none', background: 'transparent', border: 'none', color: 'inherit', font: 'inherit', textAlign: 'left' }} onClick={() => setOutputOpen((prev: boolean) => !prev)} aria-expanded={outputOpen} aria-controls="output-step-body">
               <div style={{ ...s.stepOutputLabel, display: 'flex', alignItems: 'center', gap: 8 }}>
-                <span style={{ ...s.chevron, transform: outputOpen ? 'rotate(90deg)' : undefined }}>▶</span>
-                Output: <span style={{ color: '#f1f5f9' }}>{selectedStep.name}</span>
+                <Icon icon={ICON.chevronRight} size={11} style={{ ...s.chevron, transform: outputOpen ? 'rotate(90deg)' : undefined }} ariaHidden={true} />
+                Output: <span style={{ color: 'var(--ds-text-primary)' }}>{selectedStep.name}</span>
               </div>
               {selectedStep.output && (
                 <button
+                  type="button"
                   style={s.iconBtn}
                   onClick={(e: React.MouseEvent) => { e.stopPropagation(); navigator.clipboard.writeText(selectedStep.output!) }}
-                  title="Copy"
+                  title="Copy output"
+                  aria-label="Copy output"
                 >
-                  ⎘
+                  <Icon icon={ICON.copy} size={14} />
                 </button>
               )}
-            </div>
+            </button>
             {outputOpen && (
-              <div style={s.stepOutputBody}>
+              <div id="output-step-body" style={s.stepOutputBody}>
                 {selectedStep.output
                   ? selectedStep.output
                   : selectedStep.phase === 'WaitingForInput'
-                  ? <span style={{ color: '#f59e0b', fontStyle: 'italic' }}>Waiting for human input…</span>
+                  ? <span style={{ color: 'var(--ds-warning)', fontStyle: 'italic' }}>Waiting for human input…</span>
                   : selectedStep.phase === 'Running'
-                  ? <span style={{ color: '#94a3b8', fontStyle: 'italic' }}>Running…</span>
+                  ? <span style={{ color: 'var(--ds-text-secondary)', fontStyle: 'italic' }}>Running…</span>
                   : selectedStep.phase === 'Failed'
-                  ? <span style={{ color: '#ef4444' }}>{selectedStep.failureReason || 'Step failed'}</span>
-                  : <span style={{ color: '#475569', fontStyle: 'italic' }}>Waiting to run</span>
+                  ? <span style={{ color: 'var(--ds-error)' }}>{selectedStep.failureReason || 'Step failed'}</span>
+                  : <span style={{ color: 'var(--ds-text-muted)', fontStyle: 'italic' }}>Waiting to run</span>
                 }
               </div>
             )}
@@ -329,21 +335,22 @@ function StepCard({
   onClick: () => void
 }) {
   return (
-    <div
+    <button
+      type="button"
       style={{
         ...s.stepCard,
         ...(active ? s.stepCardActive : {}),
       }}
       onClick={onClick}
     >
-      <div style={s.stepSpend}>{step.spendUSD ? `$${step.spendUSD}` : ''}</div>
+      <div style={{ ...s.stepSpend, fontVariantNumeric: 'tabular-nums' }}>{step.spendUSD ? `$${step.spendUSD}` : ''}</div>
       <StatusBadge phase={step.phase} />
       <div style={s.stepName}>{step.name}</div>
       {step.agentRef && <div style={s.stepAgent}>{step.agentRef}</div>}
       {step.output && (
         <div style={s.stepPreview}>"{step.output.slice(0, 100)}{step.output.length > 100 ? '…' : ''}"</div>
       )}
-    </div>
+    </button>
   )
 }
 
@@ -351,17 +358,17 @@ const s: Record<string, React.CSSProperties> = {
   root: {
     flex: 1,
     overflowY: 'auto',
-    padding: '24px 28px',
+    padding: `${DESIGN.space.xl} ${DESIGN.space.xxl}`,
     display: 'flex',
     flexDirection: 'column',
-    gap: 20,
+    gap: DESIGN.space.xl,
   },
   loading: {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
     height: '100%',
-    color: '#475569',
+    color: 'var(--ds-text-muted)',
     fontSize: 14,
   },
   header: {
@@ -371,31 +378,31 @@ const s: Record<string, React.CSSProperties> = {
     flexWrap: 'wrap',
     gap: 12,
   },
-  title: { fontSize: 18, fontWeight: 700, color: '#f1f5f9' },
-  description: { fontSize: 13, color: '#94a3b8', marginTop: 4, lineHeight: 1.5 },
-  subtitle: { fontSize: 12, color: '#64748b', marginTop: 4 },
+  title: { fontSize: 18, fontWeight: 700, color: 'var(--ds-text-primary)' },
+  description: { fontSize: 13, color: 'var(--ds-text-secondary)', marginTop: 4, lineHeight: 1.5 },
+  subtitle: { fontSize: 12, color: 'var(--ds-text-muted)', marginTop: 4 },
   stats: { display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' },
   chip: {
-    background: '#1e293b',
-    border: '1px solid #334155',
+    background: 'var(--ds-surface)',
+    border: '1px solid var(--ds-border)',
     borderRadius: 6,
     padding: '5px 10px',
     display: 'flex',
     alignItems: 'center',
     gap: 6,
     fontSize: 12,
-    color: '#94a3b8',
+    color: 'var(--ds-text-secondary)',
   },
-  chipVal: { color: '#f1f5f9', fontWeight: 500 },
+  chipVal: { color: 'var(--ds-text-primary)', fontWeight: 500 },
   budgetWrap: {
-    background: '#1e293b',
-    border: '1px solid #334155',
+    background: 'var(--ds-surface)',
+    border: '1px solid var(--ds-border)',
     borderRadius: 8,
     padding: '12px 16px',
   },
   budgetLabel: {
     fontSize: 11,
-    color: '#94a3b8',
+    color: 'var(--ds-text-secondary)',
     marginBottom: 8,
     display: 'flex',
     justifyContent: 'space-between',
@@ -408,7 +415,7 @@ const s: Record<string, React.CSSProperties> = {
   },
   budgetFill: {
     height: '100%',
-    background: 'linear-gradient(90deg, #22c55e, #3b82f6)',
+    background: 'linear-gradient(90deg, var(--ds-success), var(--ds-accent))',
     borderRadius: 3,
     transition: 'width 0.5s ease',
   },
@@ -426,26 +433,26 @@ const s: Record<string, React.CSSProperties> = {
   },
   connector: {
     padding: '0 8px',
-    color: '#475569',
+    color: 'var(--ds-text-muted)',
     fontSize: 16,
     alignSelf: 'center',
     paddingBottom: 16,
   },
   stepCard: {
-    background: '#1e293b',
-    border: '1px solid #334155',
+    background: 'var(--ds-surface)',
+    border: '1px solid var(--ds-border)',
     borderRadius: 12,
     padding: '14px 16px',
     width: 180,
     cursor: 'pointer',
-    transition: 'all 0.15s',
+    transitionProperty: 'border-color, background-color, box-shadow, transform', transitionDuration: '0.15s', transitionTimingFunction: 'ease',
     position: 'relative',
     display: 'flex',
     flexDirection: 'column',
     gap: 4,
   },
   stepCardActive: {
-    borderColor: '#3b82f6',
+    borderColor: 'var(--ds-accent)',
     background: 'rgba(59,130,246,.08)',
     boxShadow: '0 0 0 2px rgba(59,130,246,.15)',
   },
@@ -454,13 +461,13 @@ const s: Record<string, React.CSSProperties> = {
     top: 10,
     right: 12,
     fontSize: 10,
-    color: '#64748b',
+    color: 'var(--ds-text-muted)',
   },
-  stepName: { fontSize: 12, fontWeight: 700, color: '#f1f5f9', marginTop: 6 },
-  stepAgent: { fontSize: 11, color: '#64748b' },
+  stepName: { fontSize: 12, fontWeight: 700, color: 'var(--ds-text-primary)', marginTop: 6 },
+  stepAgent: { fontSize: 11, color: 'var(--ds-text-muted)' },
   stepPreview: {
     fontSize: 11,
-    color: '#94a3b8',
+    color: 'var(--ds-text-secondary)',
     lineHeight: 1.5,
     fontStyle: 'italic',
     overflow: 'hidden',
@@ -470,26 +477,26 @@ const s: Record<string, React.CSSProperties> = {
     marginTop: 6,
   },
   stepOutput: {
-    background: '#1e293b',
-    border: '1px solid #334155',
+    background: 'var(--ds-surface)',
+    border: '1px solid var(--ds-border)',
     borderRadius: 12,
     overflow: 'hidden',
   },
   stepOutputHeader: {
     padding: '12px 16px',
-    borderBottom: '1px solid #334155',
+    borderBottom: '1px solid var(--ds-border)',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
   },
-  stepOutputLabel: { fontSize: 12, fontWeight: 600, color: '#94a3b8' },
+  stepOutputLabel: { fontSize: 12, fontWeight: 600, color: 'var(--ds-text-secondary)' },
   iconBtn: {
     width: 28,
     height: 28,
     borderRadius: 5,
-    border: '1px solid #334155',
+    border: '1px solid var(--ds-border)',
     background: 'none',
-    color: '#94a3b8',
+    color: 'var(--ds-text-secondary)',
     cursor: 'pointer',
     display: 'flex',
     alignItems: 'center',
@@ -500,15 +507,15 @@ const s: Record<string, React.CSSProperties> = {
     padding: 20,
     fontSize: 14,
     lineHeight: 1.7,
-    color: '#f1f5f9',
+    color: 'var(--ds-text-primary)',
     whiteSpace: 'pre-wrap',
     wordBreak: 'break-word',
     maxHeight: 300,
     overflowY: 'auto',
   },
   accordion: {
-    background: '#1e293b',
-    border: '1px solid #334155',
+    background: 'var(--ds-surface)',
+    border: '1px solid var(--ds-border)',
     borderRadius: 8,
     overflow: 'hidden',
   },
@@ -523,50 +530,50 @@ const s: Record<string, React.CSSProperties> = {
   accordionTitle: {
     fontSize: 12,
     fontWeight: 600,
-    color: '#94a3b8',
+    color: 'var(--ds-text-secondary)',
     display: 'flex',
     alignItems: 'center',
     gap: 8,
   },
   chevron: {
     fontSize: 11,
-    color: '#94a3b8',
+    color: 'var(--ds-text-secondary)',
     transition: 'transform 0.2s',
   },
   accordionBody: {
     padding: '14px 16px',
-    borderTop: '1px solid #334155',
+    borderTop: '1px solid var(--ds-border)',
     display: 'flex',
     flexDirection: 'column',
     gap: 6,
-    fontFamily: 'monospace',
+    fontFamily: 'ui-monospace, "SFMono-Regular", "Menlo", "Monaco", "Consolas", monospace',
     fontSize: 12,
   },
   traceRow: {
     display: 'flex',
     alignItems: 'center',
     gap: 10,
-    color: '#94a3b8',
+    color: 'var(--ds-text-secondary)',
   },
-  traceIcon: { color: '#3b82f6' },
+  traceIcon: { color: 'var(--ds-accent)' },
   tracePhase: {
     padding: '1px 6px',
     borderRadius: 4,
-    background: 'rgba(148,163,184,.1)',
+    background: 'var(--ds-muted-bg)',
     fontSize: 10,
   },
-  traceSpend: { color: '#64748b', fontSize: 10 },
-  traceRun: { color: '#475569', fontSize: 10 },
+  traceSpend: { color: 'var(--ds-text-muted)', fontSize: 10 },
+  traceRun: { color: 'var(--ds-text-muted)', fontSize: 10 },
   clarifyCard: {
-    background: 'rgba(245,158,11,.06)',
-    border: '1px solid rgba(245,158,11,.25)',
+    background: 'var(--ds-warning-bg)',
+    border: '1px solid var(--ds-warning-border)',
     borderRadius: 12,
     padding: '16px 20px',
   },
   clarifyTitle: {
     fontSize: 12,
     fontWeight: 600,
-    color: '#f59e0b',
+    color: 'var(--ds-warning)',
     marginBottom: 8,
   },
   clarifyBody: {
@@ -587,9 +594,9 @@ const s: Record<string, React.CSSProperties> = {
     resize: 'none',
     padding: '8px 12px',
     borderRadius: 8,
-    border: '1px solid #334155',
-    background: '#0f172a',
-    color: '#f1f5f9',
+    border: '1px solid var(--ds-border)',
+    background: 'var(--ds-bg)',
+    color: 'var(--ds-text-primary)',
     fontSize: 13,
     fontFamily: 'inherit',
     outline: 'none',
@@ -598,8 +605,8 @@ const s: Record<string, React.CSSProperties> = {
     padding: '8px 16px',
     borderRadius: 8,
     border: 'none',
-    background: '#f59e0b',
-    color: '#0f172a',
+    background: 'var(--ds-warning)',
+    color: 'var(--ds-bg)',
     fontWeight: 600,
     fontSize: 13,
     cursor: 'pointer',

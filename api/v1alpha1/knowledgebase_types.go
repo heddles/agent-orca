@@ -268,6 +268,12 @@ type KnowledgeBaseStatus struct {
 	// +optional
 	Ready bool `json:"ready,omitempty"`
 
+	// Message contains a human-readable status message. Populated on failure
+	// (e.g. "Qdrant pod failed to start: CrashLoopBackOff") or when waiting
+	// (e.g. "Qdrant pod not ready yet"). Empty once the KnowledgeBase is ready.
+	// +optional
+	Message string `json:"message,omitempty"`
+
 	// DocumentCount is the number of source documents ingested.
 	// +optional
 	DocumentCount int `json:"documentCount,omitempty"`
@@ -337,6 +343,7 @@ type KnowledgeBaseStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Ready",type=boolean,JSONPath=`.status.ready`
+// +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.message`
 // +kubebuilder:printcolumn:name="Docs",type=integer,JSONPath=`.status.documentCount`
 // +kubebuilder:printcolumn:name="Chunks",type=integer,JSONPath=`.status.chunkCount`
 // +kubebuilder:printcolumn:name="Storage%",type=integer,JSONPath=`.status.storageUsedPercent`

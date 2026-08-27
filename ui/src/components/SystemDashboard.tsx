@@ -26,7 +26,10 @@ import {
   type CostData,
 } from '../api/sse'
 import { ResourceCard } from './ResourceCard'
+import { PHASE_COLOR } from '../lib/phaseColors'
+import { ICON } from '../lib/icons'
 import type { ResourceTab } from './ResourceList'
+import { DESIGN } from '../lib/designSystem'
 
 interface Props {
   navigateToTab: (tab: ResourceTab) => void
@@ -136,9 +139,19 @@ export function SystemDashboard({ navigateToTab }: Props) {
 
   if (!stats) {
     return (
-      <div style={s.loading}>
-        <div style={s.loadingSpinner} />
-        <span>Loading system overview…</span>
+      <div style={s.root}>
+        <div style={s.hero}>
+          <div style={s.skeletonLine} />
+          <div style={{ ...s.skeletonLine, width: '60%', marginTop: 4 }} />
+        </div>
+        <h2 style={s.sectionTitle}>System Overview</h2>
+        <div style={s.cardsGrid}>
+          {Array.from({ length: 9 }).map((_, i) => (
+            <div key={i} style={s.cardSkeleton} />
+          ))}
+        </div>
+        <h2 style={s.sectionTitle}>Total Cost</h2>
+        <div style={s.cardSkeleton} />
       </div>
     )
   }
@@ -159,7 +172,7 @@ export function SystemDashboard({ navigateToTab }: Props) {
         <div style={s.cardsGrid}>
           <ResourceCard
             title="Agents"
-            icon="🤖"
+            icon={ICON.agent}
             total={stats.agents.total}
             statuses={[
               { label: 'Ready', count: stats.agents.ready, color: '#22c55e' },
@@ -169,7 +182,7 @@ export function SystemDashboard({ navigateToTab }: Props) {
           />
           <ResourceCard
             title="Agent Runs"
-            icon="▶"
+            icon={ICON.runs}
             total={stats.runs.total}
             statuses={[
               { label: 'Running', count: stats.runs.running, color: '#3b82f6' },
@@ -181,18 +194,18 @@ export function SystemDashboard({ navigateToTab }: Props) {
           />
           <ResourceCard
             title="Deployments"
-            icon="⚡"
+            icon={ICON.deployment}
             total={stats.deployments.total}
             statuses={[
               { label: 'Running', count: stats.deployments.running, color: '#3b82f6' },
-              { label: 'Paused', count: stats.deployments.paused, color: '#64748b' },
+              { label: 'Paused', count: stats.deployments.paused, color: 'var(--ds-text-muted)' },
               { label: 'Failed', count: stats.deployments.failed, color: '#ef4444' },
             ]}
             onClick={() => navigateToTab('deployments')}
           />
           <ResourceCard
             title="Workflows"
-            icon="⟳"
+            icon={ICON.workflow}
             total={stats.workflows.total}
             statuses={[
               { label: 'Running', count: stats.workflows.running, color: '#3b82f6' },
@@ -203,7 +216,7 @@ export function SystemDashboard({ navigateToTab }: Props) {
           />
           <ResourceCard
             title="MCP Servers"
-            icon="🔌"
+            icon={ICON.mcpserver}
             total={stats.mcpservers.total}
             statuses={[
               { label: 'Ready', count: stats.mcpservers.ready, color: '#22c55e' },
@@ -213,7 +226,7 @@ export function SystemDashboard({ navigateToTab }: Props) {
           />
           <ResourceCard
             title="Knowledge Bases"
-            icon="📚"
+            icon={ICON.knowledgebase}
             total={stats.knowledgebases.total}
             statuses={[
               { label: 'Ready', count: stats.knowledgebases.ready, color: '#22c55e' },
@@ -223,7 +236,7 @@ export function SystemDashboard({ navigateToTab }: Props) {
           />
           <ResourceCard
             title="Tools"
-            icon="🔧"
+            icon={ICON.tool}
             total={stats.tools.total}
             statuses={[
               { label: 'Ready', count: stats.tools.ready, color: '#22c55e' },
@@ -233,7 +246,7 @@ export function SystemDashboard({ navigateToTab }: Props) {
           />
           <ResourceCard
             title="Model Providers"
-            icon="🧠"
+            icon={ICON.modelprovider}
             total={stats.modelproviders.total}
             statuses={[
               { label: 'Ready', count: stats.modelproviders.ready, color: '#22c55e' },
@@ -243,7 +256,7 @@ export function SystemDashboard({ navigateToTab }: Props) {
           />
           <ResourceCard
             title="Model Selectors"
-            icon="🔀"
+            icon={ICON.modelselector}
             total={stats.modelselectors.total}
             statuses={[]}
             onClick={() => navigateToTab('modelselectors')}
@@ -267,11 +280,11 @@ const s: Record<string, React.CSSProperties> = {
   root: {
     flex: 1,
     overflowY: 'auto',
-    padding: 32,
+    padding: `${DESIGN.space.xl} ${DESIGN.space.xxl}`,
     display: 'flex',
     flexDirection: 'column',
-    gap: 32,
-    background: '#0f172a',
+    gap: DESIGN.space.xxl,
+    background: 'var(--ds-bg)',
   },
   loading: {
     flex: 1,
@@ -280,36 +293,46 @@ const s: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     justifyContent: 'center',
     gap: 16,
-    color: '#64748b',
+    color: 'var(--ds-text-muted)',
     fontSize: 14,
   },
-  loadingSpinner: {
-    width: 32,
-    height: 32,
-    border: '2px solid #334155',
-    borderTopColor: '#3b82f6',
-    borderRadius: '50%',
-    animation: 'aoPulse 1s linear infinite',
+  skeletonLine: {
+    background: 'rgba(148,163,184,.15)',
+    borderRadius: DESIGN.radii.md,
+    height: 24,
+    width: '40%',
+    animation: 'aoPulse 1.5s ease infinite',
+  },
+  cardSkeleton: {
+    background: 'rgba(148,163,184,.1)',
+    borderRadius: DESIGN.radii.lg,
+    height: 120,
+    width: '100%',
+    animation: 'aoPulse 1.5s ease infinite',
+    willChange: 'opacity',
   },
   hero: {
     display: 'flex',
     flexDirection: 'column',
     gap: 8,
-    padding: 32,
-    background: 'linear-gradient(135deg, #1e293b 0%, #0f172a 100%)',
-    borderRadius: 16,
-    border: '1px solid #334155',
+    padding: DESIGN.space.xxl,
+    background: 'linear-gradient(135deg, var(--ds-surface) 0%, var(--ds-bg) 100%)',
+    borderRadius: DESIGN.radii.xl,
+    border: `1px solid var(--ds-border)`,
+    boxShadow: 'var(--ds-card-shadow)',
   },
   heroTitle: {
-    fontSize: 36,
+    fontSize: DESIGN.font.size.display,
     fontWeight: 700,
-    color: '#f1f5f9',
+    color: 'var(--ds-text-primary)',
     margin: 0,
     letterSpacing: '-0.5px',
+    lineHeight: 1.1,
+    textWrap: 'balance' as const,
   },
   heroSubtitle: {
     fontSize: 16,
-    color: '#94a3b8',
+    color: 'var(--ds-text-secondary)',
     margin: '4px 0 0',
   },
   section: {
@@ -320,7 +343,7 @@ const s: Record<string, React.CSSProperties> = {
   sectionTitle: {
     fontSize: 16,
     fontWeight: 600,
-    color: '#f1f5f9',
+    color: 'var(--ds-text-primary)',
     margin: 0,
   },
   cardsGrid: {
@@ -329,21 +352,23 @@ const s: Record<string, React.CSSProperties> = {
     gap: 16,
   },
   costCard: {
-    background: '#1e293b',
-    border: '1px solid #334155',
-    borderRadius: 12,
+    background: 'var(--ds-surface)',
+    border: `1px solid var(--ds-border)`,
+    borderRadius: DESIGN.radii.xl,
     padding: 20,
     display: 'flex',
     alignItems: 'baseline',
     gap: 8,
+    boxShadow: 'var(--ds-card-shadow)',
   },
   costValue: {
-    fontSize: 32,
+    fontSize: DESIGN.font.size.cost,
     fontWeight: 700,
-    color: '#f1f5f9',
+    color: 'var(--ds-success)',
+    fontVariantNumeric: 'tabular-nums',
   },
   costLabel: {
     fontSize: 14,
-    color: '#94a3b8',
+    color: 'var(--ds-text-secondary)',
   },
 }

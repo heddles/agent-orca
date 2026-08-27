@@ -654,6 +654,16 @@ func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig( //nolint:gocycl
 			return nil, fmt.Errorf("agent %q is not in KnowledgeBase %q allowedAgents", agent.Name, kbName)
 		}
 		if !kb.Status.Ready {
+			// Surface the KB's own failure reason so the deployment status
+			// message explains *why* the agent is failed, not just that the
+			// KB isn't ready.
+			kbReason := kb.Status.Message
+			if kbReason == "" {
+				kbReason = firstConditionMessage(kb.Status.Conditions)
+			}
+			if kbReason != "" {
+				return nil, fmt.Errorf("KnowledgeBase %q is not ready: %s", kbName, kbReason)
+			}
 			return nil, fmt.Errorf("KnowledgeBase %q is not ready", kbName)
 		}
 		var embMS agentorcv1alpha1.ModelSelector
@@ -711,9 +721,15 @@ func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig( //nolint:gocycl
 	if agent.Spec.Memory != nil && agent.Spec.Memory.LongTermMemoryRef != "" {
 		ltmKBName := agent.Spec.Memory.LongTermMemoryRef
 		var ltmKB agentorcv1alpha1.KnowledgeBase
-		if err := r.Get(ctx, client.ObjectKey{Name: ltmKBName, Namespace: deploy.Namespace}, &ltmKB); err != nil || !ltmKB.Status.Ready {
+		var ltmErr error
+		if err := r.Get(ctx, client.ObjectKey{Name: ltmKBName, Namespace: deploy.Namespace}, &ltmKB); err != nil {
+			ltmErr = err
+		} else if !ltmKB.Status.Ready {
+			ltmErr = fmt.Errorf("not ready: %s", firstNonEmpty(ltmKB.Status.Message, firstConditionMessage(ltmKB.Status.Conditions)))
+		}
+		if ltmErr != nil {
 			slog.Warn("long-term memory KnowledgeBase not ready; proceeding without it",
-				"knowledgeBase", ltmKBName, "deployment", deploy.Name)
+				"knowledgeBase", ltmKBName, "deployment", deploy.Name, "error", ltmErr)
 		} else {
 			var ltmEmbMS agentorcv1alpha1.ModelSelector
 			if err := r.Get(ctx, client.ObjectKey{Name: ltmKB.Spec.Embedding.ModelSelectorRef, Namespace: deploy.Namespace}, &ltmEmbMS); err == nil && len(ltmEmbMS.Spec.Providers) > 0 {
@@ -1675,4 +1691,27 @@ func (r *AgentDeploymentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&agentorcv1alpha1.Tool{}, handler.EnqueueRequestsFromMapFunc(r.agentDeploymentsForTool)).
 		Watches(&agentorcv1alpha1.KnowledgeBase{}, handler.EnqueueRequestsFromMapFunc(r.agentDeploymentsForKnowledgeBase)).
 		Complete(r)
+}
+
+// firstNonEmpty returns the first non-empty string from the provided values.
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// firstConditionMessage returns the message of the "Ready" condition when its
+// status is False or Unknown. This avoids picking up benign informational
+// conditions like QdrantUpgrading=False (Reason="UpToDate"), which is a healthy
+// state, not an error.
+func firstConditionMessage(conditions []metav1.Condition) string {
+	for _, c := range conditions {
+		if c.Type == conditionReady && (c.Status == metav1.ConditionFalse || c.Status == metav1.ConditionUnknown) {
+			return c.Message
+		}
+	}
+	return ""
 }

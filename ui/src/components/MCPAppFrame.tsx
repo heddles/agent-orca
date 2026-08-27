@@ -55,11 +55,11 @@ export function MCPAppFrame({ appUrl, toolName, toolArgs, toolResult, initialHei
         width: '100%',
         height: initialHeight,
         minHeight: 80,
-        border: '1px solid #334155',
+        border: '1px solid var(--ds-border)',
         borderRadius: 6,
         display: 'block',
         marginTop: 8,
-        background: '#0f172a',
+        background: 'var(--ds-bg)',
         resize: 'vertical',
         overflow: 'hidden',
       }}

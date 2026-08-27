@@ -26,6 +26,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -254,12 +255,15 @@ func liteLLMEndpoint(provider *ProviderConfig) string {
 	}
 }
 
-// readAPIKey reads an API key from a file path.
+// readAPIKey reads an API key from a file path. The file contents are
+// trimmed of leading/trailing whitespace before being returned. This is
+// the single entry point for reading provider API keys across the
+// streaming, non-streaming, anthropic, and meta-router code paths.
 func readAPIKey(path string) (string, error) {
 	if path == "" {
 		return "", fmt.Errorf("no API key file configured")
 	}
-	data, err := io.ReadAll(bytes.NewReader([]byte(path))) // placeholder
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", err
 	}

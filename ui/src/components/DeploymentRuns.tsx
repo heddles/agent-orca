@@ -64,6 +64,7 @@ export function DeploymentRuns({ namespace, name }: Props) {
           {runs.length === 0 && <span style={styles.empty}>No runs yet</span>}
           {runs.map((run) => (
             <button
+              type="button"
               key={run.name}
               style={{
                 ...styles.runBtn,
@@ -109,8 +110,8 @@ const styles: Record<string, React.CSSProperties> = {
   },
   picker: {
     padding: '8px 12px',
-    background: '#1e293b',
-    borderBottom: '1px solid #334155',
+    background: 'var(--ds-surface)',
+    borderBottom: '1px solid var(--ds-border)',
     display: 'flex',
     flexDirection: 'column',
     gap: 6,
@@ -120,7 +121,7 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 11,
     fontWeight: 700,
     textTransform: 'uppercase',
-    color: '#64748b',
+    color: 'var(--ds-text-muted)',
     letterSpacing: '0.04em',
   },
   runList: {
@@ -136,17 +137,17 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 6,
     padding: '4px 10px',
     borderRadius: 6,
-    border: '1px solid #334155',
+    border: '1px solid var(--ds-border)',
     background: 'transparent',
-    color: '#94a3b8',
+    color: 'var(--ds-text-secondary)',
     cursor: 'pointer',
     fontSize: 12,
-    fontFamily: 'monospace',
+    fontFamily: 'ui-monospace, "SFMono-Regular", "Menlo", "Monaco", "Consolas", monospace',
   },
   runBtnActive: {
-    background: '#0f172a',
-    borderColor: '#3b82f6',
-    color: '#f1f5f9',
+    background: 'var(--ds-bg)',
+    borderColor: 'var(--ds-accent)',
+    color: 'var(--ds-text-primary)',
   },
   dot: {
     width: 6,
@@ -155,15 +156,15 @@ const styles: Record<string, React.CSSProperties> = {
     flexShrink: 0,
   },
   runName: { fontWeight: 600, fontSize: 11 },
-  runPhase: { fontSize: 10, color: '#64748b' },
-  empty: { fontSize: 12, color: '#475569', fontStyle: 'italic' },
+  runPhase: { fontSize: 10, color: 'var(--ds-text-muted)' },
+  empty: { fontSize: 12, color: 'var(--ds-text-muted)', fontStyle: 'italic' },
   trace: { flex: 1, overflow: 'hidden' },
   emptyTrace: {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
     height: '100%',
-    color: '#475569',
+    color: 'var(--ds-text-muted)',
     fontSize: 14,
   },
   error: {
@@ -171,7 +172,7 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     justifyContent: 'center',
     height: '100%',
-    color: '#ef4444',
+    color: 'var(--ds-error)',
     fontSize: 14,
   },
 }

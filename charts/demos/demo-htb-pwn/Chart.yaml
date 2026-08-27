@@ -16,7 +16,7 @@ description: |
       admission webhook, fail-closed),
     - a GuardrailPolicyRef on the Agent (content filtering),
     - a dedicated egress NetworkPolicy allowing ONLY the HTB VPN endpoint,
-      api.poolsi.de, cluster DNS/Redis/K8s-API (deny-by-default elsewhere).
+      inference.poolside.ai, cluster DNS/Redis/K8s-API (deny-by-default elsewhere).
 
   Requires: agent-orc operator + a Poolside API key (from the model-providers
   chart or a pre-existing `poolside-api-key` Secret). See README.md.

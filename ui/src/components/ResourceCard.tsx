@@ -3,6 +3,9 @@
  * Used on the home dashboard to provide system status at a glance.
  */
 import React, { type CSSProperties } from 'react'
+import { DESIGN, ds } from '../lib/designSystem'
+import type { IconComponent } from '../lib/icons'
+import { Icon } from '../lib/icons'
 
 interface StatusEntry {
   label: string
@@ -12,7 +15,7 @@ interface StatusEntry {
 
 interface Props {
   title: string
-  icon: string
+  icon: IconComponent
   total: number
   statuses: StatusEntry[]
   onClick: () => void
@@ -22,15 +25,21 @@ export function ResourceCard({ title, icon, total, statuses, onClick }: Props) {
   const hasStatusData = statuses.some(s => s.count > 0)
 
   return (
-    <div style={s.card} onClick={onClick} onMouseEnter={(e) => {
-      e.currentTarget.style.borderColor = '#3b82f6'
-      e.currentTarget.style.transform = 'translateY(-2px)'
-    }} onMouseLeave={(e) => {
-      e.currentTarget.style.borderColor = '#334155'
-      e.currentTarget.style.transform = 'none'
-    }}>
+    <button
+      type="button"
+      style={s.card}
+      onClick={onClick}
+      onMouseEnter={(e) => {
+        e.currentTarget.style.borderColor = 'var(--ds-accent)'
+        e.currentTarget.style.transform = 'translateY(-2px)'
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.borderColor = 'var(--ds-border)'
+        e.currentTarget.style.transform = 'none'
+      }}
+    >
       <div style={s.cardHeader}>
-        <span style={s.cardIcon}>{icon}</span>
+        <Icon icon={icon} size={20} ariaHidden={false} />
         <span style={s.cardTitle}>{title}</span>
       </div>
       <div style={s.cardTotal}>{total}</div>
@@ -45,42 +54,46 @@ export function ResourceCard({ title, icon, total, statuses, onClick }: Props) {
           ))}
         </div>
       )}
-    </div>
+    </button>
   )
 }
 
 const s: Record<string, CSSProperties> = {
   card: {
-    background: '#1e293b',
-    border: '1px solid #334155',
-    borderRadius: 12,
+    background: 'var(--ds-surface)',
+    border: '1px solid var(--ds-border)',
+    borderRadius: DESIGN.radii.lg,
     padding: 20,
     cursor: 'pointer',
-    transition: 'all 0.2s ease',
+    transitionProperty: 'border-color, transform, box-shadow',
+    transitionDuration: '0.2s',
+    transitionTimingFunction: 'ease',
     display: 'flex',
     flexDirection: 'column',
     gap: 12,
+    textAlign: 'left',
+    // Remove default button appearance
+    font: 'inherit',
+    color: 'inherit',
   },
   cardHeader: {
     display: 'flex',
     alignItems: 'center',
     gap: 8,
   },
-  cardIcon: {
-    fontSize: 20,
-  },
   cardTitle: {
     fontSize: 14,
     fontWeight: 600,
-    color: '#94a3b8',
+    color: 'var(--ds-text-secondary)',
     textTransform: 'uppercase',
     letterSpacing: '0.06em',
   },
   cardTotal: {
     fontSize: 36,
     fontWeight: 700,
-    color: '#f1f5f9',
+    color: 'var(--ds-text-primary)',
     lineHeight: 1,
+    fontVariantNumeric: 'tabular-nums',
   },
   statusTable: {
     display: 'flex',
@@ -101,11 +114,12 @@ const s: Record<string, CSSProperties> = {
     flexShrink: 0,
   },
   statusLabel: {
-    color: '#64748b',
+    color: 'var(--ds-text-muted)',
     flex: 1,
   },
   statusCount: {
-    color: '#94a3b8',
+    color: 'var(--ds-text-secondary)',
     fontWeight: 600,
+    fontVariantNumeric: 'tabular-nums',
   },
 }

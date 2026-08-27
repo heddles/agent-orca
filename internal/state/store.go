@@ -75,8 +75,10 @@ type Store interface {
 	// Returns 0 if no spend has been recorded.
 	LoadSpend(ctx context.Context, key string) (float64, error)
 
-	// SaveToken appends a token to a Redis Stream for real-time UI streaming.
-	// An empty token signals end-of-stream (done sentinel).
+	// SaveToken appends a streaming token to a Redis Stream for real-time UI
+	// streaming. Completion is signalled by a terminal trace event (see
+	// IsTerminalTraceEventJSON and TailTokens), not by an empty token, so every
+	// value saved here is real streaming content under the "t" field.
 	SaveToken(ctx context.Context, key string, token string) error
 
 	// SaveTraceEvent appends a structured trace event (JSON) to the Redis Stream.
@@ -86,7 +88,8 @@ type Store interface {
 	// TailTokens returns a channel that yields tokens and trace events in order.
 	// Regular tokens are plain strings. Trace events are prefixed with "\x00" followed
 	// by JSON. Replays all prior entries first (handles page refresh), then blocks for
-	// new ones. The channel closes when ctx is cancelled or a done sentinel is received.
+	// new ones. The channel closes when ctx is cancelled, when a terminal trace event
+	// (done/fail/finalOutput) is received, or after a 10-minute absolute deadline.
 	TailTokens(ctx context.Context, key string) (<-chan string, error)
 
 	// SaveAnswer stores a human's clarification answer for a run.
@@ -325,21 +328,16 @@ func (s *redisStore) SaveTraceEvent(ctx context.Context, key string, eventJSON s
 }
 
 func (s *redisStore) SaveToken(ctx context.Context, key string, token string) error {
-	field := "t"
-	value := token
 	// Keep the stream long enough for a user to refresh and replay tokens.
-	// The done sentinel uses the same TTL — it marks completion but the data
-	// should remain available for the full retention window.
+	// Completion is signalled by a terminal trace event (see IsTerminalTraceEventJSON
+	// and TailTokens), not by an empty token — so every value saved here is real
+	// streaming content under the "t" field.
 	expiry := 24 * time.Hour
-	if token == "" {
-		field = "done"
-		value = "1"
-	}
 	if err := s.client.XAdd(ctx, &redis.XAddArgs{
 		Stream: key,
 		MaxLen: 10000,
 		Approx: true,
-		Values: map[string]any{field: value},
+		Values: map[string]any{"t": token},
 	}).Err(); err != nil {
 		return fmt.Errorf("XADD %s: %w", key, err)
 	}
@@ -353,8 +351,11 @@ func (s *redisStore) TailTokens(ctx context.Context, key string) (<-chan string,
 	go func() {
 		defer close(ch)
 
-		// Absolute deadline: if the done sentinel never arrives (e.g. sidecar crashed
-		// before writing it), don't block the UI handler forever.
+		// Absolute deadline: if no terminal trace event arrives (e.g. the sidecar
+		// crashed after streaming content but before the final `done` event), don't
+		// block the UI handler forever. The normal close signal is a terminal trace
+		// event (done/fail/finalOutput) emitted at the OpenAI-schema terminal turn,
+		// not a magic empty token.
 		ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 		defer cancel()
 
@@ -366,22 +367,8 @@ func (s *redisStore) TailTokens(ctx context.Context, key string) (<-chan string,
 		}
 		lastID := "0-0"
 		for _, entry := range entries {
-			if _, ok := entry.Values["done"]; ok {
+			if s.sendStreamEntry(ctx, ch, entry) {
 				return
-			}
-			if t, ok := entry.Values["t"]; ok {
-				select {
-				case ch <- fmt.Sprint(t):
-				case <-ctx.Done():
-					return
-				}
-			}
-			if ev, ok := entry.Values["ev"]; ok {
-				select {
-				case ch <- "\x00" + fmt.Sprint(ev):
-				case <-ctx.Done():
-					return
-				}
 			}
 			lastID = entry.ID
 		}
@@ -406,22 +393,8 @@ func (s *redisStore) TailTokens(ctx context.Context, key string) (<-chan string,
 			}
 			for _, stream := range streams {
 				for _, entry := range stream.Messages {
-					if _, ok := entry.Values["done"]; ok {
+					if s.sendStreamEntry(ctx, ch, entry) {
 						return
-					}
-					if t, ok := entry.Values["t"]; ok {
-						select {
-						case ch <- fmt.Sprint(t):
-						case <-ctx.Done():
-							return
-						}
-					}
-					if ev, ok := entry.Values["ev"]; ok {
-						select {
-						case ch <- "\x00" + fmt.Sprint(ev):
-						case <-ctx.Done():
-							return
-						}
 					}
 					lastID = entry.ID
 				}
@@ -429,6 +402,65 @@ func (s *redisStore) TailTokens(ctx context.Context, key string) (<-chan string,
 		}
 	}()
 	return ch, nil
+}
+
+// sendStreamEntry forwards one Redis stream entry to ch. Regular tokens are yielded
+// as plain strings; trace events are prefixed with "\x00" (see the uiapi SSE handler).
+// It returns true when the channel should close: on a terminal trace event
+// (done/fail/finalOutput — the OpenAI turn loop has completed) or on context
+// cancellation. This replaces the old empty-token "done sentinel", which was written
+// at per-turn boundaries and could close the stream mid-loop ("done sentinel too
+// soon" / "exit early"); a terminal trace event is only emitted at the genuine
+// schema terminal turn. A legacy `done` field entry (older producers) is still
+// treated as terminal for backward compatibility.
+func (s *redisStore) sendStreamEntry(ctx context.Context, ch chan<- string, entry redis.XMessage) bool {
+	if _, ok := entry.Values["done"]; ok {
+		// Legacy empty-token "done sentinel" from older producers.
+		return true
+	}
+	if t, ok := entry.Values["t"]; ok {
+		select {
+		case ch <- fmt.Sprint(t):
+		case <-ctx.Done():
+			return true
+		}
+	}
+	if ev, ok := entry.Values["ev"]; ok {
+		evStr := fmt.Sprint(ev)
+		select {
+		case ch <- "\x00" + evStr:
+		case <-ctx.Done():
+			return true
+		}
+		if IsTerminalTraceEventJSON(evStr) {
+			return true
+		}
+	}
+	return false
+}
+
+// terminalTraceEventTypes are trace-event types that mark the end of an OpenAI
+// streaming turn loop. They mirror the UI's isTerminalTraceEvent (ui/src/api/traceStream.ts).
+// `clarify` is intentionally excluded: a clarified run pauses for human input and
+// later resumes on the same token-stream key, so it is not a hard close — that path
+// is closed via the CRD WaitingForInput phase (uiapi terminal-state poller) instead.
+var terminalTraceEventTypes = map[string]struct{}{
+	"fail":        {},
+	"finalOutput": {},
+}
+
+// IsTerminalTraceEventJSON reports whether a trace-event JSON payload (the value of
+// a Redis stream "ev" entry) represents a terminal event — i.e. the OpenAI turn loop
+// has completed and TailTokens should close the UI SSE channel. Exported so the
+// apiserver's external HTTP client and tests reuse the same rule.
+func IsTerminalTraceEventJSON(evJSON string) bool {
+	var m map[string]any
+	if err := json.Unmarshal([]byte(evJSON), &m); err != nil {
+		return false
+	}
+	t, _ := m["type"].(string)
+	_, ok := terminalTraceEventTypes[t]
+	return ok
 }
 
 // kvKey builds a namespaced Redis key for the KV store.

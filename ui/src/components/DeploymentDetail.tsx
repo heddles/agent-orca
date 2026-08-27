@@ -7,10 +7,10 @@ interface Props {
 }
 
 const PHASE_COLORS: Record<string, string> = {
-  Creating: '#f59e0b',
-  Running: '#22c55e',
-  Failed: '#ef4444',
-  Paused: '#64748b',
+  Creating: 'var(--ds-warning)',
+  Running: 'var(--ds-success)',
+  Failed: 'var(--ds-error)',
+  Paused: 'var(--ds-text-muted)',
 }
 
 export function DeploymentDetail({ namespace, name }: Props) {
@@ -65,7 +65,7 @@ export function DeploymentDetail({ namespace, name }: Props) {
           <div style={styles.cardLabel}>Consecutive Failures</div>
           <div style={{
             ...styles.cardValue,
-            color: detail.consecutiveFailures > 0 ? '#ef4444' : '#22c55e',
+            color: detail.consecutiveFailures > 0 ? 'var(--ds-error)' : 'var(--ds-success)',
           }}>
             {detail.consecutiveFailures}
           </div>
@@ -112,7 +112,7 @@ const styles: Record<string, React.CSSProperties> = {
   title: {
     fontSize: 20,
     fontWeight: 700,
-    color: '#f1f5f9',
+    color: 'var(--ds-text-primary)',
   },
   phase: {
     fontSize: 11,
@@ -129,14 +129,14 @@ const styles: Record<string, React.CSSProperties> = {
     marginBottom: 20,
   },
   card: {
-    background: '#1e293b',
+    background: 'var(--ds-surface)',
     borderRadius: 8,
     padding: '14px 16px',
   },
   cardLabel: {
     fontSize: 11,
     fontWeight: 600,
-    color: '#64748b',
+    color: 'var(--ds-text-muted)',
     textTransform: 'uppercase',
     letterSpacing: '0.04em',
     marginBottom: 6,
@@ -144,16 +144,16 @@ const styles: Record<string, React.CSSProperties> = {
   cardValue: {
     fontSize: 15,
     fontWeight: 600,
-    color: '#e2e8f0',
+    color: 'var(--ds-text-primary)',
   },
   messageBox: {
-    background: '#1e293b',
+    background: 'var(--ds-surface)',
     borderRadius: 8,
     padding: '14px 16px',
   },
   message: {
     fontSize: 13,
-    color: '#cbd5e1',
+    color: 'var(--ds-text-secondary)',
     lineHeight: 1.5,
   },
   loading: {
@@ -161,7 +161,7 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     justifyContent: 'center',
     height: '100%',
-    color: '#64748b',
+    color: 'var(--ds-text-muted)',
     fontSize: 14,
   },
   error: {
@@ -169,7 +169,7 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     justifyContent: 'center',
     height: '100%',
-    color: '#ef4444',
+    color: 'var(--ds-error)',
     fontSize: 14,
   },
 }
