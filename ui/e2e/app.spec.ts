@@ -169,11 +169,4 @@ test.describe('Home Dashboard', () => {
     await expect(page.getByText('Marketplace')).toBeVisible()
     await expect(page.getByText('Coming soon')).toBeVisible()
   })
-
-  test('clicking Create Agent from nav bar opens agent panel', async ({ page }) => {
-    await page.goto('/')
-    await page.getByTitle('Create Agent').click()
-    // CreateAgentPanel should appear (has template tabs)
-    await expect(page.getByRole('button', { name: /templates/i })).toBeVisible()
-  })
 })

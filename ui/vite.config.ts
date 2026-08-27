@@ -5,6 +5,9 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   plugins: [react()],
   server: {
+    // The app logo is imported from the repo-root assets/ dir (outside this
+    // package root), so allow the dev server to read beyond the project root.
+    fs: { allow: ['..'] },
     proxy: {
       '/api': 'http://localhost:8080',
     },

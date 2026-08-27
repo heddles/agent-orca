@@ -56,6 +56,22 @@ type ModelProviderSpec struct {
 	// +kubebuilder:default=medium
 	// +optional
 	LatencyProfile string `json:"latencyProfile,omitempty"`
+
+	// QueryPrompt is an optional prefix prepended to query text before embedding.
+	// Required by some open-source embedding models (e.g. nomic-embed-text via
+	// Ollama) that need task-specific instructions to produce retrieval-quality
+	// vectors. When set, this prefix is applied to _rag_search query embeddings.
+	// Example: "search_query: "
+	// +optional
+	QueryPrompt string `json:"queryPrompt,omitempty"`
+
+	// DocPrompt is an optional prefix prepended to document chunks before embedding.
+	// Required by some open-source embedding models (e.g. nomic-embed-text via
+	// Ollama) that need task-specific instructions to produce retrieval-quality
+	// vectors. When set, this prefix is applied to _rag_ingest document embeddings.
+	// Example: "search_document: "
+	// +optional
+	DocPrompt string `json:"docPrompt,omitempty"`
 }
 
 // ModelConstraints describes a model's capacity limits and pricing.

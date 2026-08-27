@@ -29,6 +29,9 @@ spec:
     contextWindow: 8192
     costPerMillionInputTokens: "0"
     costPerMillionOutputTokens: "0"
+  # nomic-embed-text requires task prefixes for retrieval-quality embeddings
+  queryPrompt: "search_query: "
+  docPrompt: "search_document: "
 
 ---
 # ModelSelector for embedding calls

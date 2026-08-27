@@ -943,8 +943,8 @@ func (s *Server) ragSearch(w http.ResponseWriter, r *http.Request, namespace, na
 		return
 	}
 
-	// Embed the query.
-	vectors, err := embedder.Embed(r.Context(), []string{req.Query})
+	// Embed the query (forQuery=true → uses queryPrompt).
+	vectors, err := embedder.Embed(r.Context(), []string{req.Query}, true)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("embedding query: %v", err), http.StatusInternalServerError)
 		return
@@ -1124,7 +1124,7 @@ func (s *Server) resolveEmbedder(ctx context.Context, namespace string, kb *agen
 		}
 	}
 
-	return rag.NewEmbeddingClientWithKey(endpoint, apiKey, model), nil
+	return rag.NewEmbeddingClientWithKey(endpoint, apiKey, model, mp.Spec.DocPrompt, mp.Spec.QueryPrompt), nil
 }
 
 // embeddingBaseURL returns the base URL for embedding API calls based on the LiteLLM model prefix.

@@ -129,8 +129,8 @@ modelProviders:
   # laguna-m-e0419-polaris-t3-mh-s700-ctx256k — Laguna M.1 ctx256k with 262k context
   - name: poolside-laguna-s-2.1
     enabled: true
-    litellmModel: "poolside/laguna-s-2.1"
-    baseURL: "https://inference.poolside.ai"
+    litellmModel: "riemann1_turbo4"
+    baseURL: "https://api.poolsi.de/openai"
     credentialsRef:
       existingSecret: "poolside-api-key"
       key: "api-key"
@@ -143,6 +143,8 @@ modelProviders:
       contextWindow: 1000000
       maxOutputTokens: 32768
       maxRequestTokens: 128000
+      costPerMillionInputTokens: "0.10"
+      costPerMillionOutputTokens: "0.20"
 
   # ════════════════════════════════════════════════════════════════════════════
   # OpenAI
@@ -887,6 +889,16 @@ modelProviders:
   # nomic-embed-text — local embedding model (768-dim)
   # Model is pre-pulled by the ollama-pull-model Job when you deploy
   # ollama-embedding-cluster.yaml
+  #
+  # nomic-embed-text requires task-specific prefixes: documents must start with
+  # "search_document: " and queries with "search_query: ". Without these prefixes,
+  # embeddings are produced in the wrong vector space and retrieval quality
+  # degrades significantly.
+  #
+  # Two Ollama gotchas (from the model card):
+  # 1. The native context window is 8,192 tokens, but the Ollama model card
+  #    lists 2,048. Set num_ctx: 8192 in the Modelfile to use the full window.
+  # 2. The model requires task prefixes (set below as queryPrompt/docPrompt).
   - name: ollama-nomic-embed-text
     enabled: false
     litellmModel: "ollama/nomic-embed-text"
@@ -901,6 +913,8 @@ modelProviders:
       contextWindow: 8192
       costPerMillionInputTokens: "0"
       costPerMillionOutputTokens: "0"
+    queryPrompt: "search_query: "
+    docPrompt: "search_document: "
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Model Selectors

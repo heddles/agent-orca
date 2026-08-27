@@ -116,6 +116,14 @@ spec:
                 - key
                 - name
                 type: object
+              docPrompt:
+                description: |-
+                  DocPrompt is an optional prefix prepended to document chunks before embedding.
+                  Required by some open-source embedding models (e.g. nomic-embed-text via
+                  Ollama) that need task-specific instructions to produce retrieval-quality
+                  vectors. When set, this prefix is applied to _rag_ingest document embeddings.
+                  Example: "search_document: "
+                type: string
               latencyProfile:
                 default: medium
                 description: LatencyProfile is a coarse latency classification used
@@ -135,6 +143,14 @@ spec:
                     "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0"
                     "openai/gpt-4o"
                 minLength: 1
+                type: string
+              queryPrompt:
+                description: |-
+                  QueryPrompt is an optional prefix prepended to query text before embedding.
+                  Required by some open-source embedding models (e.g. nomic-embed-text via
+                  Ollama) that need task-specific instructions to produce retrieval-quality
+                  vectors. When set, this prefix is applied to _rag_search query embeddings.
+                  Example: "search_query: "
                 type: string
             required:
             - credentialsRef

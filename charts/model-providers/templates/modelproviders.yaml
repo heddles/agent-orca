@@ -30,6 +30,12 @@ spec:
   constraints:
     {{- toYaml .constraints | nindent 4 }}
   {{- end }}
+  {{- if .queryPrompt }}
+  queryPrompt: {{ .queryPrompt | quote }}
+  {{- end }}
+  {{- if .docPrompt }}
+  docPrompt: {{ .docPrompt | quote }}
+  {{- end }}
 {{- end }}
 {{- end }}
 {{- end }}

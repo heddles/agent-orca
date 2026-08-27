@@ -26,7 +26,6 @@ type ConfigSelection = Extract<ResourceSelection, { kind: 'agent' | 'tool' | 'mc
 
 interface Props {
   selection: ConfigSelection
-  onEdit?: () => void
 }
 
 function Field({ label, value }: { label: string; value: React.ReactNode }) {
@@ -235,7 +234,7 @@ function KnowledgeBaseDetail({ data }: { data: KnowledgeBaseSummary }) {
   )
 }
 
-export function ConfigDetailView({ selection, onEdit }: Props) {
+export function ConfigDetailView({ selection }: Props) {
   const [agent, setAgent] = useState<AgentSummary | null>(null)
   const [agentMCPServers, setAgentMCPServers] = useState<MCPServerSummary[]>([])
   const [tool, setTool] = useState<ToolSummary | null>(null)
@@ -244,7 +243,6 @@ export function ConfigDetailView({ selection, onEdit }: Props) {
   const [kb, setKB] = useState<KnowledgeBaseSummary | null>(null)
   const [selector, setSelector] = useState<ModelSelectorSummary | null>(null)
   const [loading, setLoading] = useState(true)
-  const [editError, setEditError] = useState<string | null>(null)
 
   useEffect(() => {
     setLoading(true)
@@ -312,24 +310,7 @@ export function ConfigDetailView({ selection, onEdit }: Props) {
         <span style={s.kindLabel}>{kindLabels[selection.kind]}</span>
         <h2 style={s.title}>{selection.name}</h2>
         <span style={s.namespace}>{selection.namespace}</span>
-        {onEdit && (
-          <button
-            type="button"
-            style={s.editBtn}
-            onClick={onEdit}
-            aria-label={`Edit ${kindLabels[selection.kind]} ${selection.name}`}
-            title="Edit resource"
-          >
-            <Icon icon={ICON.create} size={13} ariaHidden={true} /> Edit
-          </button>
-        )}
       </div>
-      {editError && (
-        <div style={s.errorBanner}>
-          <Icon icon={ICON.error} size={12} ariaHidden={true} />
-          <span>{editError}</span>
-        </div>
-      )}
       <div style={s.card}>
         {selection.kind === 'agent' && agent && <AgentDetail data={agent} mcpServers={agentMCPServers} />}
         {selection.kind === 'tool' && tool && <ToolDetail data={tool} />}

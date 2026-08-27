@@ -161,7 +161,7 @@ export function SystemDashboard({ navigateToTab }: Props) {
       {/* Hero Header */}
       <div style={s.hero}>
         <div>
-          <h1 style={s.heroTitle}>agent-orc</h1>
+          <h1 style={s.heroTitle}>Agent Orcastrator</h1>
           <p style={s.heroSubtitle}>AI Agent Orchestration Platform</p>
         </div>
       </div>

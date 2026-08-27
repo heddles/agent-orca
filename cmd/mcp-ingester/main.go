@@ -70,6 +70,7 @@ type IngestConfig struct {
 	EmbeddingModel    string `json:"embeddingModel"`
 	EmbeddingKeyFile  string `json:"embeddingKeyFile"`
 	EmbeddingDims     int    `json:"embeddingDims"`
+	EmbeddingDocPrompt string `json:"embeddingDocPrompt,omitempty"`
 	ChunkSize         int    `json:"chunkSize"`
 	ChunkOverlap      int    `json:"chunkOverlap"`
 
@@ -135,7 +136,8 @@ func run(ctx context.Context) error {
 	}
 
 	// Chunk, embed, and upsert directly into Qdrant.
-	embedder := rag.NewEmbeddingClient(cfg.EmbeddingEndpoint, cfg.EmbeddingKeyFile, cfg.EmbeddingModel)
+	embedder := rag.NewEmbeddingClient(cfg.EmbeddingEndpoint, cfg.EmbeddingKeyFile, cfg.EmbeddingModel,
+		cfg.EmbeddingDocPrompt, "") // queryPrompt unused — MCP ingester only ingests documents
 
 	chunkCfg := rag.ChunkConfig{
 		ChunkSize:    cfg.ChunkSize,

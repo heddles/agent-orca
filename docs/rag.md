@@ -306,12 +306,78 @@ Any model that serves an OpenAI-compatible `/v1/embeddings` endpoint works. Comm
 
 | Model | Provider | Dimensions | Notes |
 |-------|----------|-----------|-------|
-| `nomic-embed-text` | Ollama | 768 | Free, runs locally on Apple Silicon |
-| `text-embedding-3-small` | OpenAI | 1536 | Low cost, good quality |
-| `text-embedding-3-large` | OpenAI | 3072 | Higher quality, higher cost |
+| `nomic-embed-text` | Ollama | 768 | Free, runs locally on Apple Silicon. **Requires `queryPrompt` / `docPrompt`** (see below). |
+| `text-embedding-3-small` | OpenAI | 1536 | Low cost, good quality. No prompt needed. |
+| `text-embedding-3-large` | OpenAI | 3072 | Higher quality, higher cost. No prompt needed. |
 
 The `dimensions` field no longer exists in the KnowledgeBase spec. The controller probes the
 embedding model on first use and stores the discovered dimension in `status.embeddingDimensions`.
+
+---
+
+## Prompt Prefixes for Open-Source Embedding Models
+
+Some embedding models — notably **`nomic-embed-text`** via Ollama — require task-specific
+prefixes to produce retrieval-quality vectors. These models were trained with an instruction
+prefix prepended to the input text; without it, the embedding space is shifted and similarity
+search quality degrades significantly (or the model may return degenerate vectors).
+
+agent-orc handles this via two optional fields on the **ModelProvider** CRD:
+
+| Field | Applied to | Example |
+|-------|-----------|---------|
+| `queryPrompt` | Query text before `_rag_search` | `"search_query: "` |
+| `docPrompt` | Document chunks before `_rag_ingest` | `"search_document: "` |
+
+When set, the `EmbeddingClient` prepends the relevant prefix to each input string before
+sending it to the model's `/v1/embeddings` endpoint. Both ingestion and search use the same
+`ModelProvider`, so the correct prefix is applied in each context automatically.
+
+### Configuration
+
+```yaml
+apiVersion: agentorc.agentorc.io/v1alpha1
+kind: ModelProvider
+metadata:
+  name: ollama-embed
+spec:
+  litellmModel: "ollama/nomic-embed-text"
+  baseURL: "http://ollama-embed.agent-orc-system.svc:11434"
+  credentialsRef:
+    name: ollama-embed-credentials
+    key: api-key
+  capabilities:
+    - embeddings
+  queryPrompt: "search_query: "
+  docPrompt: "search_document: "
+```
+
+When `queryPrompt` and `docPrompt` are omitted, raw text is sent as-is — this is suitable for
+hosted models like OpenAI's `text-embedding-3-*` which handle instructions internally and do
+not accept a `prompt` parameter in the OpenAI-compatible API.
+
+### Ollama `nomic-embed-text` Gotchas
+
+1. **Task prefixes are required.** Documents must be prefixed with `search_document: ` and
+   queries with `search_query: `. Set these as `docPrompt` and `queryPrompt` on your
+   ModelProvider respectively. Skipping the prefixes degrades retrieval quality.
+
+2. **Context window size.** The model card lists 2,048 tokens, but the native context window
+   is actually 8,192 tokens. Ollama's OpenAI-compatible `/v1/embeddings` endpoint does not
+   accept a `num_ctx` parameter per request, so set it in your Ollama `Modelfile` instead:
+
+   ```dockerfile
+   FROM nomic-embed-text
+   PARAMETER num_ctx 8192
+   ```
+
+   The bundled `ollama-nomic-embed-text` ModelProvider in `charts/model-providers/values.yaml`
+   already includes the correct `queryPrompt` and `docPrompt`.
+
+3. **No `prompt` field in the OpenAI-compatible embeddings API.** The `EmbeddingClient` sends
+   `{"model": "...", "input": ["<prefix><text>"]}` — the prefix is prepended to the input text
+   itself, not sent as a separate request parameter. This works for both native Ollama
+   OpenAI-compatible mode and hosted providers.
 
 ---
 
@@ -324,14 +390,18 @@ Source Documents → Chunk (sentence-boundary, token-based) → Embed (batch /v1
 ```
 
 1. **Chunking**: Splits on sentence boundaries, respecting `chunkSize` tokens with `chunkOverlap` overlap. Uses word count as a token approximation (1 token ~ 1.33 words).
-2. **Embedding**: Batches up to 100 texts per `/v1/embeddings` call.
+2. **Embedding**: Batches up to 100 texts per `/v1/embeddings` call. If the ModelProvider has a `docPrompt`, it is prepended to each chunk text before embedding.
 3. **Upsert**: Each chunk gets a deterministic ID (`sha256(docID:chunkIndex)`), enabling idempotent re-ingestion. Points include payload: `text`, `doc_id`, `chunk_index`, plus any user metadata.
 
 ### Search Flow
 
 ```
-Query → Embed → Qdrant nearest-neighbor (cosine) → Top-K chunks with scores
+Query → Embed (with queryPrompt if set) → Qdrant nearest-neighbor (cosine) → Top-K chunks with scores
 ```
+
+The query text is embedded via the same `EmbeddingClient`, using `queryPrompt` (if configured)
+instead of `docPrompt`. This ensures the query and document vectors share the same prompt-space
+alignment required by models like `nomic-embed-text`.
 
 ### Key Files
 

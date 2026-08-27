@@ -12,6 +12,9 @@ COPY ui/package.json ui/package-lock.json* ./
 RUN npm install
 COPY ui/tsconfig.json ui/vite.config.ts ui/index.html ./
 COPY ui/src/ ./src/
+# Pull the project logo from the repo-root assets/ dir (single source of truth)
+# so the React build can import it; Vite emits it into dist/assets/.
+COPY assets/logo.png /assets/logo.png
 RUN npm run build
 
 # ── Stage 2: Go proxy binary ─────────────────────────────────────────────────

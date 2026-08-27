@@ -64,10 +64,11 @@ func TestRAGEndToEnd(t *testing.T) {
 	qClient.Close()
 
 	// 2. Create embedding client pointing at Ollama.
-	embedder := NewEmbeddingClient(testOllamaURL, keyFile, testModel)
+	// nomic-embed-text requires task prefixes: "search_document: " for docs, "search_query: " for queries.
+	embedder := NewEmbeddingClient(testOllamaURL, keyFile, testModel, "search_document: ", "search_query: ")
 
-	// Quick smoke test: embed a single string.
-	vectors, err := embedder.Embed(ctx, []string{"hello world"})
+	// Quick smoke test: embed a single string (as a document).
+	vectors, err := embedder.Embed(ctx, []string{"hello world"}, false)
 	if err != nil {
 		t.Fatalf("embedding smoke test failed (is ollama running with %s?): %v", testModel, err)
 	}
@@ -128,8 +129,8 @@ func TestRAGEndToEnd(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.query, func(t *testing.T) {
-			// Embed the query.
-			qVec, err := embedder.Embed(ctx, []string{tc.query})
+			// Embed the query (forQuery=true → uses queryPrompt).
+			qVec, err := embedder.Embed(ctx, []string{tc.query}, true)
 			if err != nil {
 				t.Fatalf("embedding query: %v", err)
 			}

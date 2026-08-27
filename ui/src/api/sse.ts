@@ -49,17 +49,6 @@ export async function listAgents(namespace = ''): Promise<AgentSummary[]> {
   return res.json()
 }
 
-/** Create a new Agent (also auto-creates an AgentDeployment). */
-export async function createAgent(agent: CreateAgentRequest): Promise<{ name: string; namespace: string; deploymentError?: string }> {
-  const res = await apiFetch('/api/agents', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(agent),
-  })
-  if (!res.ok) throw new Error(await res.text())
-  return res.json()
-}
-
 /** Fetch all ModelSelectors across all namespaces. */
 export async function listModelSelectors(namespace = ''): Promise<ModelSelectorSummary[]> {
   const res = await apiFetch(`/api/modelselectors?namespace=${namespace}`)
@@ -100,12 +89,6 @@ export async function getDeployment(namespace: string, name: string): Promise<Ag
   const res = await apiFetch(`/api/deployments/${namespace}/${name}`)
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json()
-}
-
-/** Delete an AgentDeployment. */
-export async function deleteDeployment(namespace: string, name: string): Promise<void> {
-  const res = await apiFetch(`/api/deployments/${namespace}/${name}`, { method: 'DELETE' })
-  if (!res.ok) throw new Error(await res.text())
 }
 
 /** Fetch cost data across all namespaces. */
@@ -187,17 +170,6 @@ export interface ModelProviderSummary {
   costPerMillionOutputTokens?: string
   contextWindow?: number
   ready: boolean
-}
-
-export interface CreateAgentRequest {
-  name: string
-  namespace?: string
-  modelSelectorRef: string
-  systemPrompt?: string
-  ociRef: string
-  framework?: string
-  command?: string[]
-  args?: string[]
 }
 
 export interface ModelSelectorSummary {
@@ -633,34 +605,4 @@ export async function getResource(kind: ResourceKind, namespace: string, name: s
   const res = await apiFetch(`/api/resources/${encodeURIComponent(kind)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`)
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json()
-}
-
-/** Create a new resource of the given kind. */
-export async function createResource(kind: ResourceKind, data: any): Promise<any> {
-  const res = await apiFetch(`/api/resources/${encodeURIComponent(kind)}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data),
-  })
-  if (!res.ok) throw new Error(await res.text())
-  return res.json()
-}
-
-/** Update (PUT) a resource's spec. Status fields are stripped server-side. */
-export async function updateResource(kind: ResourceKind, namespace: string, name: string, data: any): Promise<any> {
-  const res = await apiFetch(`/api/resources/${encodeURIComponent(kind)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data),
-  })
-  if (!res.ok) throw new Error(await res.text())
-  return res.json()
-}
-
-/** Delete a resource. Only works for agent-orc-managed resources. */
-export async function deleteResource(kind: ResourceKind, namespace: string, name: string): Promise<void> {
-  const res = await apiFetch(`/api/resources/${encodeURIComponent(kind)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`, {
-    method: 'DELETE',
-  })
-  if (!res.ok) throw new Error(await res.text())
 }

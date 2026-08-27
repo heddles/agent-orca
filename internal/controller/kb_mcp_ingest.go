@@ -82,12 +82,13 @@ type mcpIngestConfig struct {
 	DocIDTemplate     string          `json:"documentIDTemplate,omitempty"`
 
 	// Embedding configuration.
-	EmbeddingEndpoint string `json:"embeddingEndpoint"`
-	EmbeddingModel    string `json:"embeddingModel"`
-	EmbeddingKeyFile  string `json:"embeddingKeyFile"`
-	EmbeddingDims     int    `json:"embeddingDims"`
-	ChunkSize         int    `json:"chunkSize"`
-	ChunkOverlap      int    `json:"chunkOverlap"`
+	EmbeddingEndpoint  string `json:"embeddingEndpoint"`
+	EmbeddingModel     string `json:"embeddingModel"`
+	EmbeddingKeyFile   string `json:"embeddingKeyFile"`
+	EmbeddingDims      int    `json:"embeddingDims"`
+	EmbeddingDocPrompt string `json:"embeddingDocPrompt,omitempty"`
+	ChunkSize          int    `json:"chunkSize"`
+	ChunkOverlap       int    `json:"chunkOverlap"`
 
 	// Qdrant destination.
 	QdrantURL      string `json:"qdrantURL"`
@@ -282,12 +283,13 @@ func (r *KnowledgeBaseReconciler) buildIngestConfig(
 		MCPServerName: server.Name,
 		DocIDTemplate: src.DocumentIDTemplate,
 
-		EmbeddingEndpoint: embeddingEndpoint,
-		EmbeddingModel:    embeddingModel,
-		EmbeddingKeyFile:  fmt.Sprintf("/etc/embed-key/%s", mp.Spec.CredentialsRef.Key),
-		EmbeddingDims:     dims,
-		ChunkSize:         kb.Spec.Embedding.ChunkSize,
-		ChunkOverlap:      kb.Spec.Embedding.ChunkOverlap,
+		EmbeddingEndpoint:  embeddingEndpoint,
+		EmbeddingModel:     embeddingModel,
+		EmbeddingKeyFile:   fmt.Sprintf("/etc/embed-key/%s", mp.Spec.CredentialsRef.Key),
+		EmbeddingDims:      dims,
+		EmbeddingDocPrompt: mp.Spec.DocPrompt,
+		ChunkSize:          kb.Spec.Embedding.ChunkSize,
+		ChunkOverlap:       kb.Spec.Embedding.ChunkOverlap,
 
 		QdrantURL:      kb.Status.VectorStoreURL,
 		CollectionName: kb.Status.CollectionName,

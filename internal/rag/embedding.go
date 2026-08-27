@@ -32,30 +32,40 @@ const maxEmbeddingBatchSize = 10 // Smaller batches for local models like Ollama
 
 // EmbeddingClient calls an OpenAI-compatible /v1/embeddings endpoint.
 type EmbeddingClient struct {
-	endpoint   string // base URL (e.g. "https://api.openai.com")
-	apiKeyFile string // path to file containing the API key (used by agent pods)
-	apiKey     string // API key value (used by operator, read from k8s Secret)
-	model      string // model identifier (e.g. "text-embedding-3-small")
-	httpClient *http.Client
+	endpoint    string // base URL (e.g. "https://api.openai.com")
+	apiKeyFile  string // path to file containing the API key (used by agent pods)
+	apiKey      string // API key value (used by operator, read from k8s Secret)
+	model       string // model identifier (e.g. "text-embedding-3-small")
+	docPrompt   string // optional prefix prepended to document chunk texts before embedding
+	queryPrompt string // optional prefix prepended to query texts before embedding
+	httpClient  *http.Client
 }
 
 // NewEmbeddingClient creates an embedding client that reads the API key from a file.
-func NewEmbeddingClient(endpoint, apiKeyFile, model string) *EmbeddingClient {
+// docPrompt is prepended to document texts; queryPrompt is prepended to query texts.
+// Leave either empty to send raw text (suitable for OpenAI-hosted models).
+func NewEmbeddingClient(endpoint, apiKeyFile, model, docPrompt, queryPrompt string) *EmbeddingClient {
 	return &EmbeddingClient{
-		endpoint:   strings.TrimRight(endpoint, "/"),
-		apiKeyFile: apiKeyFile,
-		model:      model,
-		httpClient: &http.Client{Timeout: 5 * time.Minute},
+		endpoint:    strings.TrimRight(endpoint, "/"),
+		apiKeyFile:  apiKeyFile,
+		model:       model,
+		docPrompt:   docPrompt,
+		queryPrompt: queryPrompt,
+		httpClient:  &http.Client{Timeout: 5 * time.Minute},
 	}
 }
 
 // NewEmbeddingClientWithKey creates an embedding client with an explicit API key.
-func NewEmbeddingClientWithKey(endpoint, apiKey, model string) *EmbeddingClient {
+// docPrompt is prepended to document texts; queryPrompt is prepended to query texts.
+// Leave either empty to send raw text (suitable for OpenAI-hosted models).
+func NewEmbeddingClientWithKey(endpoint, apiKey, model, docPrompt, queryPrompt string) *EmbeddingClient {
 	return &EmbeddingClient{
-		endpoint:   strings.TrimRight(endpoint, "/"),
-		apiKey:     apiKey,
-		model:      model,
-		httpClient: &http.Client{Timeout: 5 * time.Minute},
+		endpoint:    strings.TrimRight(endpoint, "/"),
+		apiKey:      apiKey,
+		model:       model,
+		docPrompt:   docPrompt,
+		queryPrompt: queryPrompt,
+		httpClient:  &http.Client{Timeout: 5 * time.Minute},
 	}
 }
 
@@ -72,7 +82,12 @@ type embeddingResponse struct {
 }
 
 // Embed converts texts into embedding vectors. Handles batching automatically.
-func (e *EmbeddingClient) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+// When forQuery is true, queryPrompt is prepended to each text (used for
+// _rag_search); when false, docPrompt is prepended (used for _rag_ingest).
+// When the relevant prompt is empty, texts are sent as-is — this preserves
+// backward compatibility for models that do not need a task prefix (e.g.
+// OpenAI's text-embedding-3-*).
+func (e *EmbeddingClient) Embed(ctx context.Context, texts []string, forQuery bool) ([][]float32, error) {
 	if len(texts) == 0 {
 		return nil, nil
 	}
@@ -89,7 +104,7 @@ func (e *EmbeddingClient) Embed(ctx context.Context, texts []string) ([][]float3
 		end := min(start+maxEmbeddingBatchSize, len(texts))
 		batch := texts[start:end]
 
-		vectors, err := e.embedBatch(ctx, batch, apiKey)
+		vectors, err := e.embedBatch(ctx, batch, apiKey, forQuery)
 		if err != nil {
 			return nil, fmt.Errorf("embedding batch [%d:%d]: %w", start, end, err)
 		}
@@ -101,10 +116,29 @@ func (e *EmbeddingClient) Embed(ctx context.Context, texts []string) ([][]float3
 	return results, nil
 }
 
-func (e *EmbeddingClient) embedBatch(ctx context.Context, texts []string, apiKey string) ([][]float32, error) {
+func (e *EmbeddingClient) embedBatch(ctx context.Context, texts []string, apiKey string, forQuery bool) ([][]float32, error) {
+	// Select the appropriate prompt prefix. forQuery=true → queryPrompt
+	// (for _rag_search); false → docPrompt (for _rag_ingest).
+	prompt := e.docPrompt
+	if forQuery {
+		prompt = e.queryPrompt
+	}
+
+	// Prepend the prompt to each text if one is configured. This is needed for
+	// open-source embedding models that require task-specific prefixes (e.g.
+	// nomic-embed-text expects "search_query: " / "search_document: ").
+	inputTexts := make([]string, len(texts))
+	for i, t := range texts {
+		if prompt != "" {
+			inputTexts[i] = prompt + t
+		} else {
+			inputTexts[i] = t
+		}
+	}
+
 	reqBody, err := json.Marshal(embeddingRequest{
 		Model: e.model,
-		Input: texts,
+		Input: inputTexts,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshaling request: %w", err)
@@ -158,9 +192,10 @@ func (e *EmbeddingClient) embedBatch(ctx context.Context, texts []string, apiKey
 
 // ProbeDimension embeds a single placeholder string and returns the output vector length.
 // Call once on first use to discover the model's actual embedding dimension rather than
-// requiring users to specify it manually.
+// requiring users to specify it manually. Uses docPrompt for consistency; the dimension
+// is prompt-independent.
 func (e *EmbeddingClient) ProbeDimension(ctx context.Context) (int, error) {
-	vecs, err := e.Embed(ctx, []string{"probe"})
+	vecs, err := e.Embed(ctx, []string{"probe"}, false)
 	if err != nil {
 		return 0, fmt.Errorf("probing embedding dimension: %w", err)
 	}

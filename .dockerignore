@@ -22,6 +22,10 @@
 !ui/src
 !ui/src/**
 
+# Project logo — single source of truth, copied into the UI build by Dockerfile.ui-proxy.
+!assets
+!assets/logo.png
+
 # Reference agent image (examples/agent-sdk-template/Dockerfile) needs the Python SDK
 # and the template entrypoint. Selectively re-include them (base context is `**`).
 !pkg/python/agentorc

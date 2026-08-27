@@ -10,15 +10,13 @@ import { WorkflowView } from './components/WorkflowView'
 import { RunHistoryView } from './components/RunHistoryView'
 import { RunHistoryDetailView } from './components/RunHistoryDetailView'
 import { SystemStatusPage } from './components/SystemStatusPage'
-import { ResourceEditor } from './components/ResourceEditor'
 import { CostDashboard } from './components/CostDashboard'
-import { CreateAgentPanel } from './components/CreateAgentPanel'
 import { SystemDashboard } from './components/SystemDashboard'
 import { MarketplaceView } from './components/MarketplaceView'
 import { applyDesignSystem, ds, toggleTheme, applyTheme, getPreferredTheme, type Theme } from './lib/designSystem'
 import { ICON, Icon } from './lib/icons'
 import type { IconComponent } from './lib/icons'
-import type { ResourceKind } from './api/sse'
+import logoUrl from '../../assets/logo.png'
 
 // Register the design system (CSS variables, font smoothing, reduced-motion,
 // focus-visible baseline, aoPulse keyframe) before rendering.
@@ -188,15 +186,8 @@ function App() {
   // Track if we navigated from home so breadcrumbs show Home origin
   const [navigationOrigin, setNavigationOrigin] = useState<'sidebar' | 'home' | 'marketplace'>(savedState.navigationOrigin ?? 'sidebar')
   const [showCosts, setShowCosts] = useState(false)
-  const [showCreateAgent, setShowCreateAgent] = useState(false)
   const [showRedisBanner, setShowRedisBanner] = useState(false)
   const [showSkip, setShowSkip] = useState(false)
-  // Resource editor state — when non-null, overlays the main content.
-  const [editorTarget, setEditorTarget] = useState<{
-    kind: ResourceKind
-    name: string
-    namespace: string
-  } | null>(null)
 
   // Persist navigation state to sessionStorage on change (survives page refresh).
   useEffect(() => {
@@ -285,8 +276,7 @@ function App() {
       {/* ── Top bar ── */}
       <header style={layout.topbar}>
         <div style={layout.logo}>
-          <div style={layout.logoDot} />
-          agent-orc
+          <img src={logoUrl} alt="agent-orca logo" style={layout.logoImg} />
         </div>
         <nav style={layout.nav}>
           {HOME_TABS.map((t) => (
@@ -355,14 +345,6 @@ function App() {
             title={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
           >
             {theme === 'dark' ? <Icon icon={ICON.moon} size={16} /> : <Icon icon={ICON.sun} size={16} />}
-          </button>
-          <button
-            style={layout.iconBtn}
-            onClick={() => setShowCreateAgent(true)}
-            aria-label="Create agent"
-            title="Create Agent"
-          >
-            <Icon icon={ICON.create} size={16} />
           </button>
         </div>
       </header>
@@ -433,14 +415,6 @@ function App() {
             />
           ) : tab === 'status' ? (
             <SystemStatusPage navigateToTab={(t) => { setTab(t as TopLevelTab); setSelection(null); setBreadcrumbs([]); setShowCosts(false) }} />
-          ) : editorTarget ? (
-            <ResourceEditor
-              kind={editorTarget.kind}
-              name={editorTarget.name}
-              namespace={editorTarget.namespace}
-              onSaved={() => { setEditorTarget(null) }}
-              onClose={() => setEditorTarget(null)}
-            />
           ) : selection?.kind === 'run' ? (
             <RunView
               runId={selection.name}
@@ -463,27 +437,12 @@ function App() {
           ) : selection?.kind === 'workflow' ? (
             <WorkflowView namespace={selection.namespace} name={selection.name} />
           ) : selection && (selection.kind === 'agent' || selection.kind === 'tool' || selection.kind === 'mcpserver' || selection.kind === 'modelprovider' || selection.kind === 'knowledgebase' || selection.kind === 'modelselector') ? (
-            <ConfigDetailView
-              selection={selection}
-              onEdit={() => setEditorTarget({
-                kind: selection.kind as ResourceKind,
-                name: selection.name,
-                namespace: selection.namespace,
-              })}
-            />
+            <ConfigDetailView selection={selection} />
           ) : (
             <EmptyState tab={tab as ResourceTab} />
           )}
         </main>
       </div>
-
-      {/* Create Agent panel */}
-      {showCreateAgent && (
-        <CreateAgentPanel
-          onCreated={() => setShowCreateAgent(false)}
-          onClose={() => setShowCreateAgent(false)}
-        />
-      )}
     </div>
   )
 }
@@ -564,12 +523,14 @@ const layout: Record<string, React.CSSProperties> = {
     gap: 8,
     marginRight: 16,
   },
-  logoDot: {
-    width: 8,
-    height: 8,
-    background: ds.accent,
-    borderRadius: '50%',
-    boxShadow: '0 0 8px var(--ds-accent)',
+  logoImg: {
+    // Size by height, let width follow the logo's natural aspect ratio, and
+    // never let flex shrink squeeze it. object-fit:contain guards against any
+    // aspect-ratio mismatch (the logo is a wide 768x613 PNG).
+    height: 28,
+    width: 'auto',
+    flexShrink: 0,
+    objectFit: 'contain',
   },
   nav: { display: 'flex', gap: 4, alignItems: 'center' },
   // Group with space, not lines (better-layout §1)

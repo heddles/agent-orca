@@ -18,6 +18,9 @@ spec:
     - jsonPath: .status.ready
       name: Ready
       type: boolean
+    - jsonPath: .status.message
+      name: Message
+      type: string
     - jsonPath: .status.documentCount
       name: Docs
       type: integer

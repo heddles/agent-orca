@@ -85,8 +85,8 @@ func IngestDocuments(
 			texts[i] = c.Text
 		}
 
-		// Embed chunks for this document.
-		vectors, err := embedder.Embed(ctx, texts)
+		// Embed chunks for this document (forQuery=false → uses docPrompt).
+		vectors, err := embedder.Embed(ctx, texts, false)
 		if err != nil {
 			return nil, fmt.Errorf("document %q: embedding chunks: %w", doc.ID, err)
 		}
