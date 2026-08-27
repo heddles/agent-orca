@@ -56,6 +56,7 @@ Multi-group layout organizes APIs by group name (e.g., `batch`, `apps`). Check t
 | [egress-sinks.md](egress-sinks.md) | Operators | Kafka/PubSub/Redis egress configuration + AgentDeployment input sources |
 | [crds.md](crds.md) | Operators | All CRD definitions and field references |
 | [auth.md](auth.md) | Operators | Authentication model (OAuth2, OIDC, ServiceAccount, trust) |
+| [oauth-login.md](oauth-login.md) | Operators | Interactive OIDC login (auth-code flow, session cookies, ID-token mapping) |
 | [enterprise-integration.md](enterprise-integration.md) | Enterprise | End-to-end enterprise integration (tenant setup, webhooks, guardrails) |
 | [rag.md](rag.md) | Developers | KnowledgeBase / RAG integration |
 | [redis.md](redis.md) | Operators | Redis setup and configuration |

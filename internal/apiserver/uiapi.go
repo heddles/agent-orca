@@ -76,6 +76,11 @@ type UIServer struct {
 	// K8s SA tokens. When nil, only K8s SA tokens are accepted.
 	externalAuth *ExternalAuth
 
+	// oidcLogin, when non-nil, serves the OIDC authorization-code login flow
+	// (/oauth/login, /oauth/callback, /oauth/logout) and a session-cookie fallback
+	// inside requireAuth. Nil disables browser OIDC login (cluster-internal SA-BFF only).
+	oidcLogin *OIDCLoginHandler
+
 	// alertManager evaluates subsystem health and fires webhooks on transitions.
 	// When nil, alerting is disabled (health checks still run).
 	alertManager *AlertManager
@@ -156,6 +161,14 @@ func NewUIServer(
 	}
 }
 
+// SetOIDCLogin wires the OIDC authorization-code login flow (browser login via an
+// external IdP) into the UI server. When set, /oauth/login, /oauth/callback and
+// /oauth/logout are served, and requireAuth accepts the resulting session cookie.
+// Call this after NewUIServer; safe to skip (nil) for cluster-internal-only dev.
+func (s *UIServer) SetOIDCLogin(h *OIDCLoginHandler) {
+	s.oidcLogin = h
+}
+
 // Handler returns the http.Handler for the UI API.
 func (s *UIServer) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -183,6 +196,10 @@ func (s *UIServer) Handler() http.Handler {
 	mux.HandleFunc("/api/resources/", s.handleResource)
 	// OpenAPI contract for the UI API.
 	mux.HandleFunc("/api/openapi.json", s.handleUIOpenAPI)
+	// OIDC login flow (public — exempt from requireAuth via uiPublicPaths).
+	if s.oidcLogin != nil {
+		s.oidcLogin.Register(mux)
+	}
 	// Instrument the UI server (8083) so browser-driven traffic populates the
 	// shared externalReg request/latency counters that the status page reads.
 	// Previously only the external Task API (8084) was instrumented, so the UI
@@ -208,9 +225,26 @@ func (s *UIServer) requireAuth(next http.Handler) http.Handler {
 	uiPublicPaths := map[string]bool{"/healthz": true, "/readyz": true, "/version": true}
 	// Public API paths that the UI may call before a token is available (e.g. token exchange).
 	uiPublicPaths["/api/system/status"] = true
+	// OIDC login flow is public (redirects to/from the IdP).
+	uiPublicPaths["/oauth/login"] = true
+	uiPublicPaths["/oauth/callback"] = true
+	uiPublicPaths["/oauth/logout"] = true
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if uiPublicPaths[r.URL.Path] {
 			next.ServeHTTP(w, r)
+			return
+		}
+		// 0. OIDC session cookie (browser login). When OIDC login is enabled this is
+		//    the ONLY accepted credential for the UI: the UIProxy BFF SA token is
+		//    intentionally NOT accepted as a fallback, so the UI is never shown
+		//    without a successful OIDC login ("no UI without login").
+		if s.oidcLogin != nil {
+			if identity, ok := s.oidcLogin.verifySession(r); ok {
+				ctx := context.WithValue(r.Context(), tenantIdentityKey, identity)
+				next.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
+			writeUIAuthFailure(w, false, fmt.Errorf("authentication required; sign in at /oauth/login"))
 			return
 		}
 		token := extractBearer(r)

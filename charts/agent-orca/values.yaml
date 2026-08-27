@@ -23,6 +23,36 @@ operator:
   # Comma-separated list of allowed OCI registry prefixes.
   # Empty = allow all registries.
   allowedRegistries: ""
+  # extraArgs are appended to the operator container args. Use this to enable
+  # optional features such as OIDC login, e.g.:
+  #   extraArgs:
+  #     - --oidc-login-enabled=true
+  #     - --oidc-issuer-url=https://dex.example.com
+  #     - --oidc-client-id=agent-orca
+  #     - --oidc-client-secret=$(OIDC_CLIENT_SECRET)
+  #     - --oidc-redirect-uri=https://app.example.com/oauth/callback
+  #     - --oidc-cookie-secure=true
+  extraArgs: []
+  # OIDC interactive login (authorization-code flow). When enabled the UI API
+  # (:8083) serves /oauth/login, /oauth/callback, /oauth/logout. Login is
+  # tenant-driven: each federated TenantConfig carries its own IdP config
+  # (issuer/client/secret/redirect/claim mappings) — see config/samples/dev-tenant-google.yaml.
+  # The per-tenant client secret lives on the TenantConfig (spec.federated.clientSecretRef,
+  # in the tenant's targetNamespace), never in these values.
+  oidc:
+    enabled: false
+    cookieSecure: true          # set false for plain-HTTP local dev
+
+  # operator.networkPolicy controls the NetworkPolicy applied to the operator pod.
+  # oidcEgress grants the operator egress so it can reach its OIDC IdP(s) for JWKS
+  # discovery and token introspection (the operator must reach the issuer URL). K8s
+  # NetworkPolicy is CIDR-only (no URL/hostname egress), so supply the IdP host's
+  # CIDR; 0.0.0.0/0 is the dev default. Enable only when the pod can't already reach
+  # the IdP (e.g. a cluster default-deny egress). Broaden with care in production.
+  networkPolicy:
+    oidcEgress:
+      enabled: false
+      cidrs: ["0.0.0.0/0"]
 
 modelRouter:
   image:

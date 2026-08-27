@@ -1,0 +1,17 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: agent-orca
+  namespace: agent-orca-system
+spec:
+  rules:
+  - host: "agent-orca.local"
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: agent-orca-ui
+            port:
+              number: 80

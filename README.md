@@ -97,6 +97,7 @@ In-depth guides, organized by audience. **Developers** start with the first bloc
 | [Egress Sinks](docs/egress-sinks.md) | Operators | Kafka/PubSub/Redis result delivery, AgentDeployment input sources |
 | [CRDs](docs/crds.md) | Operators | All CRD definitions and field references |
 | [Authentication](docs/auth.md) | Operators | OAuth2, OIDC, ServiceAccount, trust model |
+| [OIDC Login](docs/oauth-login.md) | Operators | Interactive OIDC authorization-code login for the UI & External API |
 | [Enterprise Integration](docs/enterprise-integration.md) | Enterprise | End-to-end enterprise setup (tenants, webhooks, guardrails, KBs) |
 
 ---

@@ -114,8 +114,13 @@ func (r *TenantConfigReconciler) validate(tc *agentorcav1alpha1.TenantConfig) (b
 		if tc.Spec.Federated.ClientID == "" {
 			return false, "spec.federated.clientID is required"
 		}
-		if tc.Spec.Federated.MatchClaim == "" {
-			return false, "spec.federated.matchClaim is required"
+		// matchClaim/matchValue are optional: when both are empty the tenant trusts
+		// any token validly signed by IssuerURL with the expected ClientID audience
+		// (issuer-only / default-allow). When set, both must be present together.
+		claimEmpty := tc.Spec.Federated.MatchClaim == ""
+		valueEmpty := tc.Spec.Federated.MatchValue == ""
+		if claimEmpty != valueEmpty {
+			return false, "spec.federated.matchClaim and matchValue must be set together, or both omitted for issuer-only trust"
 		}
 	default:
 		return false, fmt.Sprintf("unknown authMode %q", tc.Spec.AuthMode)

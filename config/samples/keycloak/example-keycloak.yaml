@@ -1,0 +1,44 @@
+apiVersion: k8s.keycloak.org/v2beta1
+kind: Keycloak
+metadata:
+  name: example-kc
+spec:
+  instances: 1
+  features:
+    enabled:
+      - client-admin-api:v2
+  db:
+    vendor: postgres
+    host: postgres-db
+    usernameSecret:
+      name: keycloak-db-secret
+      key: username
+    passwordSecret:
+      name: keycloak-db-secret
+      key: password
+  http:
+    tlsSecret: example-tls-secret
+  hostname:
+    hostname: test.keycloak.org
+  proxy:
+    headers: xforwarded
+---
+# apiVersion: k8s.keycloak.org/v2alpha1
+# kind: KeycloakOIDCClient
+# metadata:
+#   name: agent-orca-oidc
+# spec:
+#   keycloakCRName: example-kc
+#   realm: agentorca
+#   client:
+#     auth:
+#       method: client-secret
+#       secretRef:
+#         name: agent-orca-client-secret
+#         key: client-secret-key
+#     loginFlows:
+#       - STANDARD
+#       - IMPLICIT
+#       - DIRECT_GRANT
+#     redirectUris:
+#       - "http://agent-orca.local/*"

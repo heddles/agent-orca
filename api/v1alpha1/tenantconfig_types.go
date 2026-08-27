@@ -73,23 +73,68 @@ type IssuedAuthConfig struct {
 
 // FederatedAuthConfig configures trust for an external OIDC identity provider.
 // agent-orca validates JWTs issued by the tenant's IdP and maps claims to tenant identity.
+//
+// Bearer/federated trust (no browser login) needs only IssuerURL + ClientID (+ optional
+// matchClaim/matchValue); agent-orca verifies caller-presented JWTs against the IdP's
+// public JWKS. The interactive (authorization-code) browser-login flow additionally
+// needs ClientSecretRef + RedirectURI + ClaimMappings, all of which may be omitted on
+// a bearer-only tenant.
 type FederatedAuthConfig struct {
 	// IssuerURL is the OIDC issuer URL (e.g. "https://acme.okta.com/oauth2/default").
 	// agent-orca fetches the JWKS from this issuer to verify token signatures.
 	// +kubebuilder:validation:MinLength=1
 	IssuerURL string `json:"issuerURL"`
 
-	// ClientID is the expected "aud" (audience) claim in the JWT.
+	// ClientID is the expected "aud" (audience) claim in the JWT for bearer tokens,
+	// and the OAuth2 client ID used for the interactive login flow.
 	// +kubebuilder:validation:MinLength=1
 	ClientID string `json:"clientID"`
 
-	// MatchClaim is the JWT claim used to identify this tenant (e.g. "org_id", "tenant").
+	// MatchClaim is the JWT claim used to identify this tenant (e.g. "org_id",
+	// "tenant", or a GitHub-style "repository_owner"). When both MatchClaim and
+	// MatchValue are omitted the tenant trusts *any* token validly signed by
+	// IssuerURL with the expected ClientID audience (issuer-only / default-allow).
+	// +optional
 	// +kubebuilder:validation:MinLength=1
-	MatchClaim string `json:"matchClaim"`
+	MatchClaim string `json:"matchClaim,omitempty"`
 
 	// MatchValue is the expected value of MatchClaim that maps to this tenant.
+	// Required when MatchClaim is set; omit both for issuer-only trust.
+	// +optional
 	// +kubebuilder:validation:MinLength=1
-	MatchValue string `json:"matchValue"`
+	MatchValue string `json:"matchValue,omitempty"`
+
+	// ClientSecretRef references the OAuth2 client_secret used for the interactive
+	// login (authorization-code) flow, fetched from the tenant's targetNamespace.
+	// Omit for bearer-only federation (no secret is needed — verification uses the
+	// IdP's public JWKS).
+	// +optional
+	ClientSecretRef SecretKeyRef `json:"clientSecretRef,omitempty"`
+
+	// RedirectURI is the callback URL registered with the IdP for the interactive
+	// login flow. Omit for bearer-only federation.
+	// +optional
+	RedirectURI string `json:"redirectURI,omitempty"`
+
+	// ClaimMappings selects which IdP claims map onto the resolved principal/identity.
+	// All fields default to the standard OIDC claim when empty (userid=sub,
+	// groups=groups, email=email). Set userid=email for Google social login.
+	// +optional
+	ClaimMappings FederatedClaimMappings `json:"claimMappings,omitempty"`
+}
+
+// FederatedClaimMappings maps IdP claims onto TenantIdentity fields. Zero values
+// mean "use the standard default" (resolved by the OIDC provider config).
+type FederatedClaimMappings struct {
+	// UserID maps to TenantIdentity.UserID (default "sub").
+	// +optional
+	UserID string `json:"userid,omitempty"`
+	// Groups maps to TenantIdentity.Groups (default "groups").
+	// +optional
+	Groups string `json:"groups,omitempty"`
+	// Email maps to TenantIdentity.Email (default "email").
+	// +optional
+	Email string `json:"email,omitempty"`
 }
 
 // TenantRateLimit configures request rate limiting.

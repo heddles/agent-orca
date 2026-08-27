@@ -15,6 +15,36 @@ for deployment details.
 
 ---
 
+## External & ACP surfaces (ports 8084, 8000)
+
+The **External Task API** (port 8084, enterprise integrations) and the **ACP API**
+(port 8000, ACP-compatible clients) are gated by the shared `ExternalAuth` middleware
+(`internal/apiserver/auth.go`), the same one the UI API falls back to. Public paths
+stay open for discovery and probes — `/oauth/token`, `/oauth/login`, `/oauth/callback`,
+`/oauth/logout` (the login flow), `/openapi.json`, `/ping`, `/healthz`, `/readyz`,
+`/version`, `/metrics` — and **every other request** must
+present a bearer token that validates in one of three ways:
+
+1. **agent-orca-issued JWT** (OAuth2 `client_credentials` exchange at `/oauth/token`)
+2. **Federated OIDC JWT** (a JWT from an external IdP, verified against the IdP's JWKS)
+3. **Kubernetes ServiceAccount token** (in-cluster callers, via TokenReview)
+
+On success the middleware injects a `TenantIdentity` (tenant name + namespace +
+allowed agents + rate/budget quotas) into the request context; all downstream
+handlers are scoped to that namespace, so cross-tenant access is impossible. A
+401 is returned if none match.
+
+See [enterprise-integration.md](enterprise-integration.md) for the federated OIDC
+setup, including a **GitHub OIDC** example (`config/samples/dev-tenant.yaml`) that
+maps the GitHub `repository_owner` claim to your GitHub org (admitting all org
+members), or omits `matchClaim`/`matchValue` for issuer-only trust.
+
+For **interactive browser login** (the authorization-code `/oauth/login` flow that
+mints a session cookie on the UI and an access token on the External API), see
+[oauth-login.md](oauth-login.md).
+
+---
+
 ## Internal Agent API (port 8082)
 
 Every agent pod and model-router sidecar communicates with the operator over this API to create child AgentRuns and report status. Callers must present a Kubernetes ServiceAccount token in the `Authorization: Bearer` header.
@@ -56,7 +86,17 @@ The Kubernetes API server verifies the token's signature, expiry, audience, and 
 
 ## UI API (port 8083)
 
-The React UI is served to a browser — browsers have no access to Kubernetes ServiceAccount tokens. Instead the operator generates a random **session token** at startup and makes it available to the frontend automatically.
+> **Auth model note:** The UI API no longer uses an in-memory session token. The
+> browser now authenticates indirectly through the **UIProxy** pod's projected
+> ServiceAccount token (audience `agentorca/ui`), with an OIDC tenant-JWT fallback
+> for direct calls. See [Current model & OIDC fallback](#current-model--oidc-fallback)
+> below; the legacy session-token flows under "Token lifecycle" / "Browser flow" are
+> superseded by that section.
+
+The browser authenticates to the UI API indirectly: the UIProxy pod holds the SA
+token and injects it on every proxied request, while `requireAuth` validates it via
+Kubernetes TokenReview (audience `agentorca/ui`). A federated/issued OIDC JWT is also
+accepted as a fallback (see below).
 
 ### Token lifecycle
 
@@ -127,7 +167,39 @@ Auth can be disabled for local development:
 --ui-auth-enabled=false
 ```
 
-When disabled, `GET /api/auth/token` returns `{"token": ""}` and no `Authorization` header is required.
+When disabled, `requireAuth` is a no-op and no `Authorization` header is required.
+In production (and in the dev Helm chart, which hardcodes `--ui-auth-enabled=true`),
+every `/api/*` request except `/healthz`, `/readyz`, `/version`, and
+`/api/system/status` must authenticate.
+
+### Current model & OIDC fallback
+
+The UI API no longer serves a session-token endpoint. Authentication on port 8083
+works as follows:
+
+1. The **UIProxy** pod holds a projected ServiceAccount token (audience
+   `agentorca/ui`), injected by the kubelet and auto-refreshed every ~12 minutes.
+   It forwards it as `Authorization: Bearer <SA token>` on every proxied `/api/*`
+   request. The browser never sees this token.
+2. `requireAuth` validates that SA token via Kubernetes TokenReview
+   (audience `agentorca/ui`).
+3. As a fallback, when an `ExternalAuth` is wired in (it is, for the External API
+   and ACP), `requireAuth` also accepts an **OIDC tenant JWT** — issued or federated
+   — by calling `ExternalAuth.ValidateToken`. This is what lets a GitHub OIDC token
+   authenticate directly against the UI API: present
+   `Authorization: Bearer <github-oidc-jwt>` (or `?token=<jwt>` for SSE streams)
+   instead of the UIProxy SA token.
+
+So all three browser-facing/enterprise surfaces check authentication:
+
+| Surface | Port | Auth check |
+|---------|------|------------|
+| External Task API | 8084 | `ExternalAuth` middleware (issued / federated OIDC / K8s SA) |
+| ACP API | 8000 | `ExternalAuth` middleware (issued / federated OIDC / K8s SA) |
+| UI API | 8083 | `requireAuth` (K8s SA TokenReview `agentorca/ui`, with OIDC tenant JWT fallback) |
+
+Run `hack/dev-tenant-oidc.sh` against a running dev cluster to assert that each
+surface returns `401` without a token and accepts a valid token.
 
 ---
 

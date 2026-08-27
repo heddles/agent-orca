@@ -23,7 +23,14 @@ function authHeaders(): Record<string, string> {
 
 /** fetch wrapper that automatically includes the Bearer token when set. */
 function apiFetch(url: string, init?: RequestInit): Promise<Response> {
-  return fetch(url, { ...init, headers: { ...authHeaders(), ...init?.headers } })
+  return fetch(url, { ...init, headers: { ...authHeaders(), ...init?.headers } }).then((res) => {
+    // Interactive OIDC login is required. A 401 means no valid session — send the
+    // browser to the login picker instead of surfacing a bare "HTTP 401".
+    if (res.status === 401 && !url.startsWith("/oauth/")) {
+      window.location.href = "/oauth/login";
+    }
+    return res;
+  });
 }
 
 /** Fetch a list of AgentRuns, optionally filtered by deployment name. */

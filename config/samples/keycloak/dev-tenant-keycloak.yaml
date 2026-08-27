@@ -1,0 +1,50 @@
+---
+# Keycloak OIDC federated tenant for interactive browser login.
+#
+# Matches your setup: Keycloak reachable at http(s)://test.keycloak.org, the
+# "master" realm, and an OIDC confidential client named "agent-orca".
+#
+# Flow:
+#   Browser -> /oauth/login -> picker -> /oauth/login?tenant=keycloak-oidc
+#           -> Keycloak login -> /oauth/callback (code exchanged using this
+#              tenant's client_secret, read from the oidc-client-secret Secret
+#              in spec.targetNamespace) -> session cookie set -> /api/* allowed
+#
+# Prerequisites:
+#   * Operator running with OIDC login enabled:
+#       helm upgrade agent-orca charts/agent-orca -n agent-orca-system \
+#         -f charts/agent-orca/values-dev-oidc.yaml
+#   * A keycloak client-secret Secret in the tenant namespace:
+#       kubectl create secret generic oidc-client-secret -n default \
+#         --from-literal=client-secret='<your-keycloak-client-secret>'
+#   * Keycloak client "agent-orca" with Valid Redirect URI:
+#       http://localhost:8083/oauth/callback   (local dev; skaffold forwards :8083)
+#   * The operator (in kind) must reach the issuer below for JWKS discovery. With
+#     both on the same host, use host.docker.internal instead of test.keycloak.org
+#     if the cluster can't resolve the latter, e.g.
+#       issuerURL: "http://host.docker.internal:8080/realms/master"
+apiVersion: agentorca.agentorca.io/v1alpha1
+kind: TenantConfig
+metadata:
+  name: keycloak-oidc
+  namespace: agent-orca-system
+spec:
+  authMode: federated
+  # "default" matches the quickstart agents; the client secret lives here too.
+  targetNamespace: agent-orca-system
+  federated:
+    issuerURL: "http://test.keycloak.org/realms/agentorca"
+    clientID: "agent-orca"
+    redirectURI: "http://agent-orca.local/oauth/callback"
+    clientSecretRef:
+      name: agent-orca-client-secret      # Secret in spec.targetNamespace (default)
+      key: client-secret-key
+    claimMappings:
+      userid: email                 # map the user's email -> TenantIdentity.UserID
+    # matchClaim/matchValue omitted => issuer-only trust (any verified Keycloak
+    # login is admitted). Restrict to a role/group via matchClaim/matchValue, e.g.
+    #   matchClaim: "resource_access.agent-orca.roles"  (requires a custom claim)
+    # or gate per-user with matchClaim: "email", matchValue: "you@example.com".
+  rateLimit:
+    requestsPerMinute: 60
+    concurrentRuns: 4

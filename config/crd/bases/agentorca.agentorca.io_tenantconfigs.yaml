@@ -82,11 +82,51 @@ spec:
                   Federated configures trust for an external OIDC identity provider.
                   Required when AuthMode is "federated".
                 properties:
+                  claimMappings:
+                    description: |-
+                      ClaimMappings selects which IdP claims map onto the resolved principal/identity.
+                      All fields default to the standard OIDC claim when empty (userid=sub,
+                      groups=groups, email=email). Set userid=email for Google social login.
+                    properties:
+                      email:
+                        description: Email maps to TenantIdentity.Email (default "email").
+                        type: string
+                      groups:
+                        description: Groups maps to TenantIdentity.Groups (default
+                          "groups").
+                        type: string
+                      userid:
+                        description: UserID maps to TenantIdentity.UserID (default
+                          "sub").
+                        type: string
+                    type: object
                   clientID:
-                    description: ClientID is the expected "aud" (audience) claim in
-                      the JWT.
+                    description: |-
+                      ClientID is the expected "aud" (audience) claim in the JWT for bearer tokens,
+                      and the OAuth2 client ID used for the interactive login flow.
                     minLength: 1
                     type: string
+                  clientSecretRef:
+                    description: |-
+                      ClientSecretRef references the OAuth2 client_secret used for the interactive
+                      login (authorization-code) flow, fetched from the tenant's targetNamespace.
+                      Omit for bearer-only federation (no secret is needed — verification uses the
+                      IdP's public JWKS).
+                    properties:
+                      key:
+                        description: Key within the Secret.
+                        type: string
+                      name:
+                        description: Name of the Secret.
+                        type: string
+                      namespace:
+                        description: Namespace of the Secret. Defaults to the same
+                          namespace as the referencing resource.
+                        type: string
+                    required:
+                    - key
+                    - name
+                    type: object
                   issuerURL:
                     description: |-
                       IssuerURL is the OIDC issuer URL (e.g. "https://acme.okta.com/oauth2/default").
@@ -94,20 +134,27 @@ spec:
                     minLength: 1
                     type: string
                   matchClaim:
-                    description: MatchClaim is the JWT claim used to identify this
-                      tenant (e.g. "org_id", "tenant").
+                    description: |-
+                      MatchClaim is the JWT claim used to identify this tenant (e.g. "org_id",
+                      "tenant", or a GitHub-style "repository_owner"). When both MatchClaim and
+                      MatchValue are omitted the tenant trusts *any* token validly signed by
+                      IssuerURL with the expected ClientID audience (issuer-only / default-allow).
                     minLength: 1
                     type: string
                   matchValue:
-                    description: MatchValue is the expected value of MatchClaim that
-                      maps to this tenant.
+                    description: |-
+                      MatchValue is the expected value of MatchClaim that maps to this tenant.
+                      Required when MatchClaim is set; omit both for issuer-only trust.
                     minLength: 1
+                    type: string
+                  redirectURI:
+                    description: |-
+                      RedirectURI is the callback URL registered with the IdP for the interactive
+                      login flow. Omit for bearer-only federation.
                     type: string
                 required:
                 - clientID
                 - issuerURL
-                - matchClaim
-                - matchValue
                 type: object
               issued:
                 description: |-

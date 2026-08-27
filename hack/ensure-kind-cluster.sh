@@ -22,4 +22,4 @@ fi
 HOST_ARCH="$(uname -m)"
 export DOCKER_DEFAULT_PLATFORM="linux/${HOST_ARCH}"
 echo "ensure-kind-cluster: creating kind cluster '${CLUSTER_NAME}'..."
-kind create cluster --name "${CLUSTER_NAME}" --wait 60s
+kind create cluster --name "${CLUSTER_NAME}" --config config/samples/kind-cluster.yaml --wait 60s

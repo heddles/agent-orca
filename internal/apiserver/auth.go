@@ -23,6 +23,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -42,6 +43,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
+	"github.com/floppyfish14/agent-orca/internal/security/oidc"
 )
 
 const (
@@ -63,6 +65,21 @@ type TenantIdentity struct {
 	Namespace string
 	// AllowedAgents is the list of agents this tenant may invoke. Nil means all.
 	AllowedAgents []string
+
+	// UserID is the authenticated user's stable identifier (e.g. the IdP sub or
+	// email claim). Populated from the bearer/session token's "userid" claim.
+	// Empty for client_credentials and K8s SA callers (tenant-level, not user-level).
+	// +optional
+	UserID string
+	// Groups are the user's group memberships (e.g. from an IdP "groups" claim),
+	// carried through the identity so a future RBAC layer can map group -> role.
+	// Intentionally NOT used for authorization yet.
+	// +optional
+	Groups []string
+	// Roles are resolved from Groups by a future role-mapper; empty until that
+	// layer exists. Present so the identity shape is stable for RBAC.
+	// +optional
+	Roles []string
 
 	// Quota fields below are populated from the tenant's TenantConfig (if any) and
 	// are only set for issued/federated tenants — never for in-cluster K8s SA callers,
@@ -370,7 +387,7 @@ func (a *ExternalAuth) HandleTokenRequest(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Issue a signed JWT.
+	// Issue a signed JWT (MintSessionJWT is shared with the OIDC login callback).
 	now := time.Now()
 	claims := jwt.MapClaims{
 		"iss":            jwtIssuer,
@@ -382,8 +399,7 @@ func (a *ExternalAuth) HandleTokenRequest(w http.ResponseWriter, r *http.Request
 		"namespace":      tc.Spec.TargetNamespace,
 		"allowed_agents": tc.Spec.AllowedAgents,
 	}
-	jwtToken := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
-	signed, err := jwtToken.SignedString(a.signingKey)
+	signed, err := a.MintSessionJWT(claims)
 	if err != nil {
 		slog.Error("failed to sign JWT", "err", err)
 		http.Error(w, `{"error":"server_error"}`, http.StatusInternalServerError)
@@ -396,6 +412,44 @@ func (a *ExternalAuth) HandleTokenRequest(w http.ResponseWriter, r *http.Request
 		"access_token": signed,
 		"token_type":   "Bearer",
 		"expires_in":   int(jwtDefaultExpiry.Seconds()),
+	})
+}
+
+// MintSessionJWT signs a JWT with the operator's signing key. It is shared by the
+// client_credentials token exchange (HandleTokenRequest) and the OIDC login callback
+// so that an OIDC-logged-in user receives an agent-orca-issued session JWT that the
+// existing validateIssuedToken middleware already accepts. Identity claims such as
+// "userid"/"groups"/"roles" are carried through so a future RBAC layer can consume
+// them (see TenantIdentity).
+func (a *ExternalAuth) MintSessionJWT(claims jwt.MapClaims) (string, error) {
+	if a.signingKey == nil {
+		return "", errors.New("oidc: no signing key configured")
+	}
+	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	return tok.SignedString(a.signingKey)
+}
+
+// MintSessionForIdentity mints an agent-orca-issued session JWT for an
+// authenticated principal (e.g. the result of an OIDC login). The token is
+// accepted by validateIssuedToken and carries the per-user identity claims
+// (userid/groups/roles) needed by the future RBAC layer.
+func (a *ExternalAuth) MintSessionForIdentity(ident *TenantIdentity) (string, error) {
+	if ident == nil {
+		return "", errors.New("oidc: nil identity")
+	}
+	now := time.Now()
+	return a.MintSessionJWT(jwt.MapClaims{
+		"iss":            jwtIssuer,
+		"sub":            ident.UserID,
+		"aud":            ExternalAPITokenAudience,
+		"iat":            now.Unix(),
+		"exp":            now.Add(jwtDefaultExpiry).Unix(),
+		"tenant":         ident.TenantName,
+		"namespace":      ident.Namespace,
+		"allowed_agents": ident.AllowedAgents,
+		"userid":         ident.UserID,
+		"groups":         ident.Groups,
+		"roles":          ident.Roles,
 	})
 }
 
@@ -433,11 +487,41 @@ func (a *ExternalAuth) validateIssuedToken(tokenString string) (*TenantIdentity,
 		}
 	}
 
+	// OIDC login sessions mint issued JWTs carrying per-user identity claims so the
+	// RBAC layer (future) can consume them; client_credentials and SA tokens omit
+	// these, leaving the fields empty.
+	userID, _ := claims["userid"].(string)
+	groups := claimStringSlice(claims["groups"])
+	roles := claimStringSlice(claims["roles"])
+
 	return attachQuotaFields(&TenantIdentity{
 		TenantName:    tenant,
 		Namespace:     namespace,
 		AllowedAgents: allowedAgents,
+		UserID:        userID,
+		Groups:        groups,
+		Roles:         roles,
 	}, a.tenantConfigFor(tenant)), nil
+}
+
+// claimStringSlice normalizes a JWT claim that may be a []any, []string, or a
+// single string into a []string. Returns nil for absent/non-string values.
+func claimStringSlice(v any) []string {
+	switch t := v.(type) {
+	case []string:
+		return t
+	case []any:
+		out := make([]string, 0, len(t))
+		for _, e := range t {
+			if s, ok := e.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	case string:
+		return []string{t}
+	}
+	return nil
 }
 
 // getOrCreateVerifier returns a cached OIDC verifier for the given issuer, or creates
@@ -487,26 +571,10 @@ func (a *ExternalAuth) validateFederatedToken(ctx context.Context, tokenString s
 		return nil, fmt.Errorf("not a federated token")
 	}
 
-	// Search for a matching TenantConfig.
-	a.mu.RLock()
-	var matchedTC *agentorcav1alpha1.TenantConfig
-	for key, tc := range a.tenantCache {
-		if !strings.HasPrefix(key, "federated:") {
-			continue
-		}
-		fed := tc.Spec.Federated
-		if fed == nil || fed.IssuerURL != issuer {
-			continue
-		}
-		claimValue, _ := claims[fed.MatchClaim].(string)
-		if claimValue != fed.MatchValue {
-			continue
-		}
-		matchedTC = tc
-		break
-	}
-	a.mu.RUnlock()
-
+	// Search for a matching TenantConfig. A tenant with empty matchClaim/matchValue
+	// trusts any token validly signed by IssuerURL with the expected audience
+	// (issuer-only / default-allow); otherwise the configured claim must match.
+	matchedTC := a.findFederatedTenant(issuer, claims)
 	if matchedTC == nil {
 		return nil, fmt.Errorf("no matching federated tenant for issuer %q", issuer)
 	}
@@ -526,6 +594,112 @@ func (a *ExternalAuth) validateFederatedToken(ctx context.Context, tokenString s
 		Namespace:     matchedTC.Spec.TargetNamespace,
 		AllowedAgents: matchedTC.Spec.AllowedAgents,
 	}, matchedTC), nil
+}
+
+// findFederatedTenant returns the federated TenantConfig whose IssuerURL matches
+// the supplied issuer and whose matchClaim/matchValue (if configured) match the
+// supplied claims. When a tenant's matchClaim is empty, issuer-only trust applies
+// (any token from that issuer is admitted). This is the shared matcher used by both
+// bearer-token validation (validateFederatedToken) and the OIDC login callback
+// (ResolveFederatedTenant, which skips re-verification since the provider already
+// verified the ID token). Caller must NOT hold a.mu.
+func (a *ExternalAuth) findFederatedTenant(issuer string, claims map[string]any) *agentorcav1alpha1.TenantConfig {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	for key, tc := range a.tenantCache {
+		if !strings.HasPrefix(key, "federated:") {
+			continue
+		}
+		fed := tc.Spec.Federated
+		if fed == nil || fed.IssuerURL != issuer {
+			continue
+		}
+		if fed.MatchClaim == "" {
+			return tc
+		}
+		if claimValue, _ := claims[fed.MatchClaim].(string); claimValue == fed.MatchValue {
+			return tc
+		}
+	}
+	return nil
+}
+
+// ResolveFederatedTenant resolves the federated tenant for an already-verified OIDC
+// token (e.g. one minted by the login callback). Unlike validateFederatedToken it
+// does NOT re-verify the signature — the caller is responsible for that — and so it
+// is the bridge from the browser auth-code flow into the existing tenant cache.
+func (a *ExternalAuth) ResolveFederatedTenant(issuer string, claims map[string]any) (*agentorcav1alpha1.TenantConfig, error) {
+	if tc := a.findFederatedTenant(issuer, claims); tc != nil {
+		return tc, nil
+	}
+	return nil, fmt.Errorf("no matching federated tenant for issuer %q", issuer)
+}
+
+// FederatedLoginTenants returns federated TenantConfigs configured for the
+// interactive (authorization-code) login flow — i.e. whose FederatedAuthConfig
+// carries a ClientSecretRef or RedirectURI. Used to render the /oauth/login picker.
+func (a *ExternalAuth) FederatedLoginTenants() []*agentorcav1alpha1.TenantConfig {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	var out []*agentorcav1alpha1.TenantConfig
+	for _, tc := range a.tenantByName {
+		if tc.Spec.AuthMode != "federated" || tc.Spec.Federated == nil || !fedIsLoginCapable(tc.Spec.Federated) {
+			continue
+		}
+		out = append(out, tc)
+	}
+	return out
+}
+
+// NewProviderForTenant builds an OIDC provider from a federated tenant's config,
+// reading its OAuth2 client_secret from the tenant's targetNamespace (or
+// ClientSecretRef.Namespace when set). PKCE is enabled for the browser flow. The
+// login handler only calls this for login-capable tenants (see isLoginCapable).
+func (a *ExternalAuth) NewProviderForTenant(ctx context.Context, tc *agentorcav1alpha1.TenantConfig) (*oidc.Provider, error) {
+	if tc == nil || tc.Spec.Federated == nil {
+		return nil, errors.New("oidc: tenant has no federated config")
+	}
+	fed := tc.Spec.Federated
+	secret := ""
+	if fed.ClientSecretRef.Name != "" {
+		if a.k8s == nil {
+			return nil, errors.New("oidc: no kubernetes client to read client secret")
+		}
+		ns := tc.Spec.TargetNamespace
+		if fed.ClientSecretRef.Namespace != "" {
+			ns = fed.ClientSecretRef.Namespace
+		}
+		sec, err := a.k8s.CoreV1().Secrets(ns).Get(ctx, fed.ClientSecretRef.Name, metav1.GetOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("reading OIDC client secret %s/%s: %w", ns, fed.ClientSecretRef.Name, err)
+		}
+		secret = string(sec.Data[fed.ClientSecretRef.Key])
+	}
+	cfg := oidc.Config{
+		IssuerURL:    fed.IssuerURL,
+		ClientID:     fed.ClientID,
+		ClientSecret: secret,
+		RedirectURI:  fed.RedirectURI,
+		PKCE:         true,
+	}
+	if fed.ClaimMappings.UserID != "" {
+		cfg.ClaimMappings.UserID = fed.ClaimMappings.UserID
+	}
+	if fed.ClaimMappings.Groups != "" {
+		cfg.ClaimMappings.Groups = fed.ClaimMappings.Groups
+	}
+	if fed.ClaimMappings.Email != "" {
+		cfg.ClaimMappings.Email = fed.ClaimMappings.Email
+	}
+	return oidc.NewProvider(ctx, cfg)
+}
+
+// fedIsLoginCapable reports whether the federated config drives the interactive
+// (authorization-code) login flow (has a client secret or redirect URI). A tenant
+// with neither is bearer/federated-only: its JWTs are validated via JWKS, but it
+// cannot be used for browser login.
+func fedIsLoginCapable(fed *agentorcav1alpha1.FederatedAuthConfig) bool {
+	return fed != nil && (fed.ClientSecretRef.Name != "" || fed.RedirectURI != "")
 }
 
 // attachQuotaFields copies the rate-limit and budget settings from a tenant's

@@ -116,11 +116,38 @@ func main() {
 			"and prints its long-lived bearer token to stdout once. Store this token like a kubeconfig "+
 			"credential; use it to call POST /admin/tenants and other admin endpoints. Ignored on "+
 			"subsequent restarts (the SA persists).")
+	// OIDC interactive login (authorization-code flow) for browser login.
+	// Off by default. When enabled, the UI API (:8083) serves /oauth/login,
+	// /oauth/callback, /oauth/logout. Login is tenant-driven: each federated
+	// TenantConfig carrying a ClientSecretRef is a selectable IdP, and the
+	// callback builds the OIDC provider from that tenant issuer/client/secret
+	// (read from the tenant targetNamespace) — so each org authenticates via
+	// its own IdP. Per-tenant issuer/client_id/secret/redirect/claim mappings
+	// live on the TenantConfig CRD; no operator-wide IdP client is configured.
+	var oidcLoginEnabled bool
+	flag.BoolVar(&oidcLoginEnabled, "oidc-login-enabled", false,
+		"Enable interactive OIDC login (authorization-code flow) on the UI API"+
+			" (/oauth/login, /oauth/callback, /oauth/logout). Per-tenant IdP config"+
+			" lives on the TenantConfig CRD spec.federated.clientSecretRef.")
+	var oidcCookieSecure bool
+	flag.BoolVar(&oidcCookieSecure, "oidc-cookie-secure", true,
+		"Set the Secure attribute on OIDC session cookies (enable behind TLS;"+
+			" set false for plain-HTTP local dev).")
+
 	opts := zap.Options{
 		Development: true,
 	}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
+
+	// Env fallbacks: OIDC_LOGIN_ENABLED=true enables login; OIDC_COOKIE_SECURE
+	// toggles the cookie Secure attribute (false for plain-HTTP local dev).
+	if os.Getenv("OIDC_LOGIN_ENABLED") == "true" {
+		oidcLoginEnabled = true
+	}
+	if os.Getenv("OIDC_COOKIE_SECURE") != "" {
+		oidcCookieSecure = os.Getenv("OIDC_COOKIE_SECURE") == "true"
+	}
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
@@ -479,8 +506,22 @@ func main() {
 		os.Exit(1)
 	}
 
+	// ── OIDC interactive login (browser "login via OIDC") ────────────────────
+	// Tenant-driven: no operator-wide IdP client. The handler builds the OIDC
+	// provider per TenantConfig at /oauth/login|/oauth/callback using the tenant
+	// own client_secret (read from its targetNamespace).
+	var uiOIDC *apiserver.OIDCLoginHandler
+	if oidcLoginEnabled {
+		uiOIDC = apiserver.NewOIDCLoginHandler(externalAuth,
+			apiserver.WithOIDCCookieSecure(oidcCookieSecure),
+			apiserver.WithOIDCRedirectURI("/"))
+	}
+
 	// Start the UI API server (port 8083) for the React frontend.
 	uiAPI := apiserver.NewUIServer(k8sClient, mgr.GetClient(), stateConfig.Backend != "", stateStore, uiAuthEnabled, externalAuth, pgStore, alertManager) //nolint:lll
+	if uiOIDC != nil {
+		uiAPI.SetOIDCLogin(uiOIDC)
+	}
 	go func() {
 		srv := &http.Server{Addr: ":8083", Handler: uiAPI.Handler()}
 		setupLog.Info("Starting UI API server", "addr", srv.Addr, "tls", internalAPICert != "")

@@ -12,7 +12,15 @@ spec:
       app.kubernetes.io/component: operator
   policyTypes:
     - Ingress
+    {{- if .Values.operator.networkPolicy.oidcEgress.enabled }}
+    - Egress
+    {{- end }}
   ingress:
+    - from:
+      matchExpressions:
+      - key: namespace
+        operator: In
+        values: ["kube-system"]
     # Port 8080: metrics — allow from namespaces labeled metrics: enabled.
     # controller-runtime serves the operator's metrics insecurely on :8080
     # (--metrics-secure=false, see deployment.yaml); the metrics Service targets
@@ -52,4 +60,32 @@ spec:
     - ports:
         - port: {{ .Values.externalAPI.port | default 8084 }}
           protocol: TCP
+    {{- end }}
+    {{- if .Values.operator.networkPolicy.oidcEgress.enabled }}
+  # Egress: allow the operator to reach its OIDC IdP(s) for JWKS discovery and
+  # token introspection. K8s NetworkPolicy is CIDR-only (no URL/hostname egress),
+  # so supply the IdP host CIDR (0.0.0.0/0 in dev). The kube-apiserver/DNS rules
+  # below keep TokenReview and DNS working when this isolation is active.
+  egress:
+    - to:
+      matchExpressions:
+      - key: namespace
+        operator: In
+        values: ["kube-system"]
+    {{- range .Values.operator.networkPolicy.oidcEgress.cidrs }}
+    - to:
+        - ipBlock:
+            cidr: {{ . }}
+      {{- end }}
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - port: 443
+          protocol: TCP
+        - port: 80
+          protocol: TCP
+        - port: 53
+          protocol: TCP
+        - port: 53
+          protocol: UDP
     {{- end }}

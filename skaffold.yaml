@@ -173,6 +173,14 @@ portForward:
     namespace: agent-orca-system
     port: 8084
     localPort: 8084
+  # UI API (:8083) — reachable directly so the OIDC /oauth/callback can be tested
+  # against localhost without going through the UIProxy. (The UIProxy on :8080
+  # also proxies /oauth/* once the proxy image is rebuilt.)
+  - resourceType: service
+    resourceName: agent-orca-internal-api
+    namespace: agent-orca-system
+    port: 8083
+    localPort: 8083
 profiles:
   # demo-mcp-apps: deploys the MCP Apps demo (interactive sandboxed iframe dashboards).
   # Requires: agent-orca + 'default' ModelSelector already deployed.
@@ -356,6 +364,9 @@ profiles:
               webhook.certManager: false
               webhook.failurePolicy: Ignore
               database.enabled: "true"
+              operator.oidc.cookieSecure: "false"
+              operator.oidc.enabled: "false"
+              operator.networkPolicy.oidcEgress.enabled: "false"
             setValueTemplates:
               operator.image.repository: "{{.IMAGE_REPO_agent_orca_operator}}"
               operator.image.tag: "{{.IMAGE_TAG_agent_orca_operator}}"
@@ -376,6 +387,14 @@ profiles:
               providerSecrets[1].apiKey: "{{.ANTHROPIC_API_KEY}}"
               providerSecrets[2].apiKey: "{{.GOOGLE_API_KEY}}"
               providerSecrets[3].apiKey: "{{.DEFUALT_API_KEY}}"
+
+
+  # dev-oidc: OIDC login is OFF by default in the dev profile. To enable it for a
+  # browser-login test with your own IdP (e.g. Keycloak), apply
+  # charts/agent-orca/values-dev-oidc.yaml after `skaffold dev` starts, then apply a
+  # login-capable TenantConfig (e.g. config/samples/dev-tenant-google.yaml):
+  #   helm upgrade agent-orca charts/agent-orca -n agent-orca-system \
+  #     -f charts/agent-orca/values-dev-oidc.yaml
 
 
   # demo-htb-pwn: autonomous HTB red-team pwnbox (MCP toolbelt pattern).

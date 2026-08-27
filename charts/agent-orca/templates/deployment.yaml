@@ -105,12 +105,21 @@ spec:
               value: {{ .Values.systemStatus.alertHmacSecret | quote }}
             {{- end }}
             {{- end }}
+            {{- if .Values.operator.oidc.enabled }}
+            - name: OIDC_LOGIN_ENABLED
+              value: "true"
+            - name: OIDC_COOKIE_SECURE
+              value: {{ .Values.operator.oidc.cookieSecure | quote }}
+            {{- end }}
           args:
             - --leader-elect={{ .Values.operator.leaderElection }}
             - --health-probe-bind-address=:8081
             - --metrics-secure=false
             - --metrics-bind-address=:8080
             - --ui-auth-enabled=true
+            {{- range .Values.operator.extraArgs }}
+            - {{ . | quote }}
+            {{- end }}
           ports:
             - name: metrics
               containerPort: 8080

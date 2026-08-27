@@ -264,6 +264,75 @@ spec:
 
 agent-orca verifies the JWT signature against the IdP's JWKS endpoint and maps the `matchClaim` value to a tenant namespace.
 
+#### GitHub OIDC
+
+GitHub exposes a [standard OIDC issuer](https://docs.github.com/en/actions/security-for-github-actions/security-guides/about-security-hardening-with-openid-connect)
+that GitHub Actions uses to mint short-lived tokens: `https://token.actions.githubusercontent.com`
+(RS256, JWKS at `https://token.actions.githubusercontent.com/.well-known/jwks`). These
+tokens carry the triggering user's login in the `actor` claim, so GitHub OIDC is a
+natural fit for testing the federated path with your own GitHub login.
+
+```yaml
+apiVersion: agentorca.agentorca.io/v1alpha1
+kind: TenantConfig
+metadata:
+  name: github-oidc
+  namespace: agent-orca-system
+spec:
+  authMode: federated
+  targetNamespace: default          # where this tenant's tasks/agents live
+  federated:
+    issuerURL: "https://token.actions.githubusercontent.com"
+    clientID:  "agent-orca-dev"     # the OIDC `aud` you request in your workflow
+    matchClaim: "actor"             # GitHub claim = the login that triggered the workflow
+    matchValue: "floppyfish14"      # your GitHub login
+```
+
+No client secret is required: agent-orca fetches GitHub's **public** JWKS and
+verifies the token signature + audience, so there is nothing to rotate.
+
+**How a caller obtains a token to present.** A GitHub-issued OIDC JWT can only be
+minted from inside a GitHub Actions workflow (with `permissions: id-token: write`),
+so the "login" is the workflow run, not a browser session. Request the audience
+declared as `clientID` (`agent-orca-dev`) and present the token as
+`Authorization: Bearer <token>`:
+
+```yaml
+# .github/workflows/test-agent-orca-oidc.yml  (trigger on workflow_dispatch)
+permissions:
+  id-token: write
+steps:
+  - uses: actions/github-script@v7
+    id: oidc
+    with:
+      script: |
+        core.setOutput('token', await core.getIDToken('agent-orca-dev'))
+  - name: Call the External Task API
+    env:
+      GITHUB_OIDC_TOKEN: ${{ steps.oidc.outputs.token }}
+    run: |
+      curl -sS https://agent-orca.example.com:8084/v1/agents \
+        -H "Authorization: Bearer $GITHUB_OIDC_TOKEN"
+```
+
+The workflow run **must be triggered by the GitHub login** named in `matchValue`
+(`floppyfish14`), otherwise the `actor` claim won't match and the token is rejected.
+`repository_owner` (repo owner) and `sub` (`repo:org/repo:ref:...`) are handy
+alternatives if you'd rather scope by org or repository — just swap
+`matchClaim`/`matchValue`.
+
+> **For browser "login via GitHub"** (as opposed to presenting a workload token):
+> GitHub user authentication is OAuth2, not OIDC, so there is no GitHub-issued ID
+> token a browser can present directly. To gate the UI behind a GitHub login, place
+> an OIDC proxy — e.g. oauth2-proxy or Dex in front of the UIProxy pod — that performs
+> the GitHub OAuth2 login and issues its own ID token; then configure a federated
+> TenantConfig pointing at that proxy's issuer (not GitHub's). See
+> [ui-proxy.md](ui-proxy.md) and [auth.md](auth.md) for the BFF layout.
+
+A ready-to-apply dev sample lives at [`config/samples/dev-tenant.yaml`](../config/samples/dev-tenant.yaml),
+and [`hack/dev-tenant-oidc.sh`](../hack/dev-tenant-oidc.sh) verifies that every API
+surface rejects unauthenticated requests (401) and accepts an authenticated one.
+
 ### Mode 3: Kubernetes SA tokens (in-cluster)
 
 For workloads running inside the same cluster, existing Kubernetes ServiceAccount tokens are accepted. The namespace is derived from the SA identity. No TenantConfig is needed.
