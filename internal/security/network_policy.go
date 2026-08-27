@@ -134,8 +134,11 @@ func BuildNetworkPolicy(
 				networkingv1.PolicyTypeIngress,
 				networkingv1.PolicyTypeEgress,
 			},
-			// Empty ingress = deny all ingress.
-			Ingress: []networkingv1.NetworkPolicyIngressRule{},
+			// Ingress open only to the model-router metrics port (9091), so an
+			// in-cluster Prometheus/Datadog (or the operator itself; see
+			// internal/apiserver/uiapi.go scrapeModelRouterTokenRate) can scrape
+			// token throughput. Every other ingress is denied.
+			Ingress: []networkingv1.NetworkPolicyIngressRule{metricsIngressFromScraper()},
 			Egress:  egressRules,
 		},
 	}
@@ -143,7 +146,8 @@ func BuildNetworkPolicy(
 
 // BuildRouterPodNetworkPolicy constructs the NetworkPolicy for the router pod in split-pod
 // topology. It applies the same egress rules as BuildNetworkPolicy (provider HTTPS, K8s API,
-// Redis, tools, DNS) and adds ingress from the agent pod on ports 8080/8082.
+// Redis, tools, DNS) and adds ingress from the agent pod on ports 8080/8082, plus the model-router
+// metrics port (9091) from namespaces labeled metrics: enabled (Prometheus/Datadog).
 //
 // The PodSelector targets pods labeled agentorca.io/component=router for this run, so the
 // router and agent pods receive independent egress allowances.
@@ -212,7 +216,7 @@ func BuildRouterPodNetworkPolicy(
 				networkingv1.PolicyTypeIngress,
 				networkingv1.PolicyTypeEgress,
 			},
-			Ingress: []networkingv1.NetworkPolicyIngressRule{ingressFromAgent},
+			Ingress: []networkingv1.NetworkPolicyIngressRule{ingressFromAgent, metricsIngressFromScraper()},
 			Egress:  egressRules,
 		},
 	}
@@ -312,4 +316,24 @@ func corev1Protocol(p string) corev1.Protocol {
 		return corev1.ProtocolUDP
 	}
 	return corev1.ProtocolTCP
+}
+
+// metricsIngressFromScraper returns an ingress rule that opens the model-router metrics
+// port (9091) to namespaces labeled `metrics: enabled` (where Prometheus/Datadog typically
+// run). This mirrors the operator's own metrics NetworkPolicy convention
+// (charts/agent-orca/templates/operator-network-policy.yaml allows the operator's :8080
+// metrics from `metrics: enabled` namespaces).
+func metricsIngressFromScraper() networkingv1.NetworkPolicyIngressRule {
+	port := intstr.FromInt32(9091)
+	proto := corev1Protocol("TCP")
+	return networkingv1.NetworkPolicyIngressRule{
+		Ports: []networkingv1.NetworkPolicyPort{
+			{Port: &port, Protocol: &proto},
+		},
+		From: []networkingv1.NetworkPolicyPeer{
+			{NamespaceSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"metrics": "enabled"},
+			}},
+		},
+	}
 }

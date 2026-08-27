@@ -13,13 +13,16 @@ spec:
   policyTypes:
     - Ingress
   ingress:
-    # Port 8443: metrics — allow from namespaces labeled metrics: enabled
+    # Port 8080: metrics — allow from namespaces labeled metrics: enabled.
+    # controller-runtime serves the operator's metrics insecurely on :8080
+    # (--metrics-secure=false, see deployment.yaml); the metrics Service targets
+    # this port, and the ServiceMonitor/PodMonitor scrape through it.
     - from:
         - namespaceSelector:
             matchLabels:
               metrics: enabled
       ports:
-        - port: 8443
+        - port: 8080
           protocol: TCP
     # Port 9443: webhook — allow from any (kube-apiserver calls webhooks)
     - ports:

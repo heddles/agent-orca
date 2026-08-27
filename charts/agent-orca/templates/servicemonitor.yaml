@@ -1,0 +1,40 @@
+{{- /*
+  ServiceMonitor for the operator's controller-runtime metrics (port 8080).
+
+  Requires the Prometheus Operator (monitoring.coreos.com/v1 ServiceMonitor
+  CRD) to be installed in the cluster — the same CRD the project's cluster and
+  cloudnative-pg charts rely on. Disable when the CRD is absent:
+
+      helm upgrade agent-orca ./charts/agent-orca \
+        --set metrics.serviceMonitor.enabled=false
+*/ -}}
+{{- if and .Values.metrics.enabled .Values.metrics.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "agent-orca.fullname" . }}-operator-metrics
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agent-orca.labels" . | nindent 4 }}
+    app.kubernetes.io/component: operator
+  {{- with .Values.metrics.serviceMonitor.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  selector:
+    {{- include "agent-orca.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: metrics
+      path: /metrics
+      scheme: http
+      interval: {{ .Values.metrics.serviceMonitor.interval | default "30s" | quote }}
+      scrapeTimeout: {{ .Values.metrics.serviceMonitor.scrapeTimeout | default "10s" | quote }}
+      {{- with .Values.metrics.serviceMonitor.relabelings }}
+      relabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.metrics.serviceMonitor.metricRelabelings }}
+      metricRelabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

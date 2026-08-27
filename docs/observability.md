@@ -44,9 +44,13 @@ controller-runtime manager metrics on `:8443`.
 
 ### Controller metrics
 
-The controller-runtime manager exposes additional metrics on `:8443` (internal,
-not the external surfaces). These include standard Kubernetes controller
-metrics (reconciliation counts, errors, etc.).
+The controller-runtime manager exposes additional metrics on `:8080` in the
+Helm chart (`--metrics-bind-address=:8080 --metrics-secure=false`; kubebuilder
+scaffold default is `:8443` over HTTPS) — these are server-internal and not on
+the external API surfaces. They include standard Kubernetes controller metrics
+(reconciliation counts, errors, workqueue depth, etc.). These are the metrics
+served by the `<release>-metrics` Service and scraped by the chart's
+`ServiceMonitor`.
 
 ## Audit logging
 
@@ -71,11 +75,71 @@ Example log line:
 
 ## Scraping with Prometheus
 
+agent-orca ships a dedicated `Service` exposing the operator's
+controller-runtime metrics on port **8080** (`<release>-metrics`), plus
+Prometheus-format `/metrics` endpoints on the External Task API (**8084**) and
+the ACP API (**8000**). Use the `server` label to distinguish the API metrics.
+
+You do **not** need a separate external service to collect these metrics — they
+are plain Prometheus/OpenMetrics HTTP endpoints. The only question is how a
+scraper discovers and reaches them. In-cluster Prometheus (via the Prometheus
+Operator) is the supported default; Datadog and any OpenMetrics consumer can scrape
+the *same* Service/Pod endpoints with no code changes.
+
+### Prometheus Operator (`ServiceMonitor` / `PodMonitor`)
+
+When the `monitoring.coreos.com` CRDs are installed (the project's `charts/cluster`
+and `cloudnative-pg` charts already depend on them if they are enabled). The `agent-orca` Helm chart
+renders the following when `metrics.serviceMonitor.enabled` and `metrics.modelRouter.podMonitor.enabled` are both `true`:
+
+- a `ServiceMonitor` scraping the operator metrics `Service` (port 8080), and
+- a `PodMonitor` scraping every model-router sidecar on port 9091.
+
+Toggle them in `values.yaml` under `metrics.`:
+
+```bash
+helm upgrade agent-orca ./charts/agent-orca \
+  --set metrics.serviceMonitor.enabled=true \
+  --set metrics.modelRouter.podMonitor.enabled=true
+# or disable the whole metrics feature (Service + annotations + monitors):
+#   --set metrics.enabled=false
+```
+
+### Reaching agent-pod metrics behind the NetworkPolicy
+
+The model-router `PodMonitor` scrapes agent pods by PodIP on `:9091`. Each
+AgentRun's `NetworkPolicy` is deny-by-default, so agent-orca opens `:9091` only
+from namespaces labeled `metrics: enabled` — the same convention already used
+for the operator's own metrics port (8080). Label your scraper namespace:
+
+```bash
+kubectl label namespace prometheus-operator metrics=enabled
+```
+
+### Datadog / external scrapers
+
+Point a Datadog OpenMetrics integration at the **same** targets:
+
+- Operator metrics: `http://<release>-metrics.<namespace>.svc:8080/metrics`
+- model-router metrics: discover pods with the `metrics` container port (9091)
+  via the Datadog Kubernetes/Agent integration, or set a pod-level
+  `prometheus.io/scrape: "true"` check.
+
+The `prometheus.io/scrape`, `prometheus.io/port`, and `prometheus.io/path`
+annotations are added to the operator pod by default (`metrics.enabled=true`),
+so Datadog auto-discovery works without a ServiceMonitor.
+
+### Static scrape config (plain Prometheus, no Operator)
+
 ```yaml
 scrape_configs:
+  - job_name: "agent-orca-operator"
+    static_configs:
+      - targets: ["<release>-metrics.<namespace>.svc:8080"]
+    metrics_path: /metrics
   - job_name: "agent-orca-external"
     static_configs:
-      - targets: ["agent-orca-external.default.svc:8084"]
+      - targets: ["<release>-internal-api.<namespace>.svc:8084"]
     metrics_path: /metrics
 ```
 

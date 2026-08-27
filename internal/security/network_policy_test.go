@@ -34,8 +34,8 @@ func TestBuildNetworkPolicy_BasicNoToolsNoRedis(t *testing.T) {
 	if np.Namespace != "default" {
 		t.Errorf("unexpected namespace: %s", np.Namespace)
 	}
-	if len(np.Spec.Ingress) != 0 {
-		t.Errorf("expected empty ingress (deny all), got %d rules", len(np.Spec.Ingress))
+	if len(np.Spec.Ingress) != 1 {
+		t.Errorf("expected 1 ingress rule (metrics), got %d rules", len(np.Spec.Ingress))
 	}
 	// 443, 6443, 8082, 53 UDP, 53 TCP = 5
 	if len(np.Spec.Egress) != 5 {
@@ -92,8 +92,8 @@ func TestBuildRouterPodNetworkPolicy_Basic(t *testing.T) {
 			np.Spec.PodSelector.MatchLabels[LabelComponent], LabelComponentRouter)
 	}
 	// Must allow ingress from agent pod.
-	if len(np.Spec.Ingress) != 1 {
-		t.Fatalf("expected 1 ingress rule, got %d", len(np.Spec.Ingress))
+	if len(np.Spec.Ingress) != 2 {
+		t.Fatalf("expected 2 ingress rules, got %d", len(np.Spec.Ingress))
 	}
 	ingress := np.Spec.Ingress[0]
 	if len(ingress.From) != 1 || ingress.From[0].PodSelector == nil {

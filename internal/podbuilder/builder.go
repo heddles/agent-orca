@@ -253,6 +253,10 @@ func Build(cfg PodConfig) *corev1.Pod {
 
 		{Name: "openai", ContainerPort: 8080, Protocol: corev1.ProtocolTCP},
 		{Name: "gemini", ContainerPort: 8082, Protocol: corev1.ProtocolTCP},
+		// Metrics endpoint served by the model-router on :9091 (Prometheus/OpenMetrics).
+		// Declared as a containerPort so a PodMonitor/ServiceMonitor can resolve
+		// port: metrics and so cluster networking tooling can see it.
+		{Name: "metrics", ContainerPort: 9091, Protocol: corev1.ProtocolTCP},
 	}
 	routerPorts = append(routerPorts, cfg.RouterExtraPorts...)
 
@@ -485,6 +489,10 @@ func BuildRouterOnly(cfg PodConfig) *corev1.Pod {
 
 		{Name: "openai", ContainerPort: 8080, Protocol: corev1.ProtocolTCP},
 		{Name: "gemini", ContainerPort: 8082, Protocol: corev1.ProtocolTCP},
+		// Metrics endpoint served by the model-router on :9091 (Prometheus/OpenMetrics).
+		// Declared as a containerPort so a PodMonitor/ServiceMonitor can resolve
+		// port: metrics and so cluster networking tooling can see it.
+		{Name: "metrics", ContainerPort: 9091, Protocol: corev1.ProtocolTCP},
 	}
 	routerPorts = append(routerPorts, cfg.RouterExtraPorts...)
 

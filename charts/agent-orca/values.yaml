@@ -177,3 +177,41 @@ database:
 systemStatus:
   alertWebhookURL: ""
   alertHmacSecret: ""
+
+# Metrics & observability configuration.
+# The operator exposes Prometheus-format metrics on every HTTP surface:
+#   - controller-runtime manager metrics : :8080 (insecure, --metrics-secure=false)
+#   - external API + ACP API metrics    : :8084 / :8000/metrics (dedicated registry)
+#   - model-router sidecar metrics      : :9091/metrics (per agent-run pod)
+#
+# A dedicated Kubernetes Service exposing :8080 is always created when
+# `metrics.enabled=true`. Scraping it (in-cluster Prometheus via the
+# ServiceMonitor below, or an external scraper like Datadog) is what makes the
+# metrics available to consumers — the operator does not push anywhere.
+metrics:
+  enabled: true
+  # Dedicated Service fronting the operator metrics port. Used by the
+  # ServiceMonitor and by external scrapers (e.g. Datadog OpenMetricsCheck).
+  service:
+    type: ClusterIP
+    annotations: {}
+  # Prometheus Operator ServiceMonitor for the operator (controller-runtime)
+  # metrics. Requires the monitoring.coreos.com/v1 ServiceMonitor CRD, which
+  # the project's cluster/cloudnative-pg charts already depend on.
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    scrapeTimeout: 10s
+    relabelings: []
+    metricRelabelings: []
+    additionalLabels: {}
+  modelRouter:
+    # Prometheus Operator PodMonitor for the model-router sidecar metrics
+    # (:9091). Requires the monitoring.coreos.com/v1 PodMonitor CRD.
+    podMonitor:
+      enabled: false
+      interval: 30s
+      scrapeTimeout: 10s
+      relabelings: []
+      metricRelabelings: []
+      additionalLabels: {}

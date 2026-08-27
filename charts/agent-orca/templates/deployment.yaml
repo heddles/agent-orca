@@ -17,6 +17,14 @@ spec:
       labels:
         {{- include "agent-orca.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: operator
+      {{- with .Values.metrics.enabled }}
+      annotations:
+        # Legacy K8s-native scrape annotations for Prometheus (pod discovery)
+        # and Datadog auto-discovery, in addition to the ServiceMonitor above.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+      {{- end }}
     spec:
       serviceAccountName: {{ include "agent-orca.fullname" . }}-operator
       securityContext:

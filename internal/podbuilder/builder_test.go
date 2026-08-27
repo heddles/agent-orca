@@ -162,9 +162,9 @@ func TestBuild_AgentRunPod(t *testing.T) { //nolint:gocyclo
 	if routerC.RestartPolicy == nil || *routerC.RestartPolicy != corev1.ContainerRestartPolicyAlways {
 		t.Error("expected model-router to have RestartPolicy=Always (native sidecar)")
 	}
-	// Should have 2 ports (openai, gemini); tool executor is in-process (no :8081 listener).
-	if len(routerC.Ports) != 2 {
-		t.Errorf("expected 2 ports on model-router, got %d", len(routerC.Ports))
+	// Should have 3 ports (openai, gemini, metrics); tool executor is in-process.
+	if len(routerC.Ports) != 3 {
+		t.Errorf("expected 3 ports on model-router, got %d", len(routerC.Ports))
 	}
 	// Startup probe on port 8080 (default)
 	if routerC.StartupProbe == nil || routerC.StartupProbe.HTTPGet.Port.IntValue() != 8080 {
@@ -301,7 +301,7 @@ func TestBuild_WarmPod(t *testing.T) {
 		t.Errorf("expected RestartPolicyNever, got %v", pod.Spec.RestartPolicy)
 	}
 
-	// Model-router should have 3 ports (2 base + warm-mgmt)
+	// Model-router should have 4 ports (3 base + warm-mgmt)
 	var routerC *corev1.Container
 	for i := range pod.Spec.InitContainers {
 		if pod.Spec.InitContainers[i].Name == "model-router" {
@@ -313,9 +313,9 @@ func TestBuild_WarmPod(t *testing.T) {
 
 		t.Fatal("model-router not found")
 	}
-	if len(routerC.Ports) != 3 { //nolint:staticcheck
+	if len(routerC.Ports) != 4 { //nolint:staticcheck
 
-		t.Errorf("expected 3 ports on warm model-router, got %d", len(routerC.Ports))
+		t.Errorf("expected 4 ports on warm model-router, got %d", len(routerC.Ports))
 	}
 	foundWarmMgmt := false
 	for _, p := range routerC.Ports {

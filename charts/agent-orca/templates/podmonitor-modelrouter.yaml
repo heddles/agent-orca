@@ -1,0 +1,56 @@
+{{- /*
+  PodMonitor for the model-router sidecar metrics (:9091/metrics).
+
+  The model-router runs as a sidecar in every agent-run pod (combined-pod
+  topology) and as a standalone pod in split-pod topology. It always starts a
+  Prometheus/OpenMetrics endpoint on :9091 (see cmd/model-router/main.go). For a
+  PodMonitor to resolve the port, that endpoint is declared as a named container
+  port (`metrics` = 9091) by internal/podbuilder.
+
+  The selector targets run pods via the `agentorca.io/run` label (present on
+  every agent-run pod). `port: metrics` then narrows scraping to pods that
+  actually expose the model-router metrics port, excluding agent-only pods in
+  split-pod topology and the operator pod itself.
+
+  Requires the Prometheus Operator PodMonitor CRD. Disable when absent:
+
+      helm upgrade agent-orca ./charts/agent-orca \
+        --set metrics.modelRouter.podMonitor.enabled=false
+
+  Scraping pods by PodIP means the per-run NetworkPolicy must allow ingress on
+  9091 from the scraper's namespace (labeled `metrics: enabled`); this is
+  granted by internal/security/network_policy.go, mirroring the operator's own
+  metrics NetworkPolicy convention.
+*/ -}}
+{{- if and .Values.metrics.enabled .Values.metrics.modelRouter.podMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ include "agent-orca.fullname" . }}-model-router
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agent-orca.labels" . | nindent 4 }}
+    app.kubernetes.io/component: model-router
+  {{- with .Values.metrics.modelRouter.podMonitor.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  selector:
+    matchExpressions:
+      - key: agentorca.io/run
+        operator: Exists
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
+      scheme: http
+      interval: {{ .Values.metrics.modelRouter.podMonitor.interval | default "30s" | quote }}
+      scrapeTimeout: {{ .Values.metrics.modelRouter.podMonitor.scrapeTimeout | default "10s" | quote }}
+      {{- with .Values.metrics.modelRouter.podMonitor.relabelings }}
+      relabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.metrics.modelRouter.podMonitor.metricRelabelings }}
+      metricRelabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

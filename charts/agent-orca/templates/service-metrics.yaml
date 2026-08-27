@@ -1,0 +1,36 @@
+{{- /*
+  Dedicated metrics Service for the operator pod.
+
+  The operator serves controller-runtime metrics on port 8080 (insecure,
+  --metrics-secure=false, see charts/agent-orca/templates/deployment.yaml). This
+  Service fronts that port so in-cluster Prometheus (via the ServiceMonitor
+  rendered below) and external scrapers such as Datadog can reach the metrics.
+
+  Note the existing <release>-internal-api Service deliberately exposes only the
+  API planes (8082/8083/8084/8000); metrics live on a separate Service so the
+  scrape target is decoupled from the ingress/exposed API surface.
+*/ -}}
+{{- if .Values.metrics.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agent-orca.fullname" . }}-metrics
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agent-orca.labels" . | nindent 4 }}
+    app.kubernetes.io/component: operator
+  {{- with .Values.metrics.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.metrics.service.type | default "ClusterIP" | quote }}
+  ports:
+    - name: metrics
+      port: 8080
+      targetPort: metrics
+      protocol: TCP
+  selector:
+    {{- include "agent-orca.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: operator
+{{- end }}
