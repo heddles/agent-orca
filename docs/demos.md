@@ -1,7 +1,7 @@
 # Demo Catalog
 
 Seven self-contained demos, each deployed as an independent Helm chart under
-`charts/demos/`. Every demo requires the agent-orc platform and model-providers to be
+`charts/demos/`. Every demo requires the agent-orca platform and model-providers to be
 running first, but is otherwise independent — install only what you need, remove it
 cleanly when done.
 
@@ -17,7 +17,7 @@ export GOOGLE_API_KEY=AIza...
 
 # 2. Start the platform (operator + model-router + UI) and deploy model-providers:
 skaffold dev -p dev
-#   Deploys: agent-orc, agent-orc-resources, model-providers
+#   Deploys: agent-orca, agent-orca-resources, model-providers
 #   Starts local llama-cpp servers with Metal GPU acceleration (macOS)
 
 # 3. Deploy any demo profile:
@@ -32,24 +32,24 @@ Install in the same order Skaffold uses:
 
 ```bash
 # 1. Platform operator + model-router + UI
-helm install agent-orc charts/agent-orc -n agent-orc-system --create-namespace \
+helm install agent-orca charts/agent-orca -n agent-orca-system --create-namespace \
   --set operator.image.pullPolicy=IfNotPresent \
   --set webhook.certManager=true
 
 # 2. Platform resources (llama-cpp, base agents)
-helm install agent-orc-resources charts/agent-orc-resources -n agent-orc-system
+helm install agent-orca-resources charts/agent-orca-resources -n agent-orca-system
 
 # 3. Model providers + selectors (required by all demos)
-helm install model-providers charts/model-providers -n agent-orc-system \
+helm install model-providers charts/model-providers -n agent-orca-system \
   --set providerSecrets[0].apiKey=$ANTHROPIC_API_KEY \
   --set providerSecrets[1].apiKey=$OPENAI_API_KEY \
   --set providerSecrets[2].apiKey=$GOOGLE_API_KEY
 
 # 4. Deploy a demo
-helm install demo-soc-triage charts/demos/demo-soc-triage -n agent-orc-system
+helm install demo-soc-triage charts/demos/demo-soc-triage -n agent-orca-system
 ```
 
-UI available at [http://localhost:8080](http://localhost:8080) (skaffold port-forwards automatically; for helm installs, run `kubectl port-forward svc/agent-orc-ui 8080:80 -n agent-orc-system`).
+UI available at [http://localhost:8080](http://localhost:8080) (skaffold port-forwards automatically; for helm installs, run `kubectl port-forward svc/agent-orca-ui 8080:80 -n agent-orca-system`).
 
 ---
 
@@ -69,12 +69,12 @@ UI available at [http://localhost:8080](http://localhost:8080) (skaffold port-fo
 
 ## MCP Apps — Sandboxed Iframe UI
 
-An ops assistant backed by two live-data MCP servers. When a tool is called, agent-orc
+An ops assistant backed by two live-data MCP servers. When a tool is called, agent-orca
 fetches the server's HTML dashboard via `resources/read`, caches it in Redis, and renders it
 as a sandboxed iframe directly below the tool result — no page navigation required.
 
 **What it shows:**
-- **MCP App rendering**: `_meta.ui.resourceUri` in `tools/list` tells agent-orc to fetch and
+- **MCP App rendering**: `_meta.ui.resourceUri` in `tools/list` tells agent-orca to fetch and
   cache the tool's HTML; the UI renders a `sandbox="allow-scripts"` iframe below each result
 - **Multiple MCP servers**: two independent servers (`health-mcp` and `system-monitor`) each
   provide their own tools and HTML dashboards; the agent has access to all four tools
@@ -87,7 +87,7 @@ as a sandboxed iframe directly below the tool result — no page navigation requ
 
 ```
 User (chat UI)
-    │  POST /api/deployments/agent-orc-system/ops-advisor-chat/execute
+    │  POST /api/deployments/agent-orca-system/ops-advisor-chat/execute
     ▼
 ┌────────────────────────────────────────────────────────┐
 │  ops-advisor  (AgentDeployment: ops-advisor-chat)      │
@@ -121,12 +121,12 @@ User (chat UI)
 skaffold run -p demo-mcp-apps
 
 # or Helm
-helm install demo-mcp-apps charts/demos/demo-mcp-apps -n agent-orc-system
+helm install demo-mcp-apps charts/demos/demo-mcp-apps -n agent-orca-system
 
 # Wait for the warm pod:
-kubectl get pods -n agent-orc-system -l agentorc.io/deployment=ops-advisor-chat -w
+kubectl get pods -n agent-orca-system -l agentorca.io/deployment=ops-advisor-chat -w
 
-helm uninstall demo-mcp-apps -n agent-orc-system
+helm uninstall demo-mcp-apps -n agent-orca-system
 ```
 
 ### Scenarios
@@ -222,7 +222,7 @@ correlated assets recalculate live in the browser.
 ```
 User (chat UI)
     │  "How would a poor wheat harvest affect gold prices over 5 years?"
-    │  POST /api/deployments/agent-orc-system/financial-analysis-chat/execute
+    │  POST /api/deployments/agent-orca-system/financial-analysis-chat/execute
     ▼
 ┌──────────────────────────────────────────────────────────────────────┐
 │  financial-analyst  (AgentDeployment: financial-analysis-chat)        │
@@ -259,13 +259,13 @@ User (chat UI)
 skaffold run -p demo-financial-analysis
 
 # or Helm
-helm install demo-financial-analysis charts/demos/demo-financial-analysis -n agent-orc-system
+helm install demo-financial-analysis charts/demos/demo-financial-analysis -n agent-orca-system
 
 # Wait for KB ingestion and warm pod:
-kubectl get knowledgebase financial-planning-kb -n agent-orc-system -w   # → Ready
-kubectl get pods -n agent-orc-system -l agentorc.io/deployment=financial-analysis-chat -w
+kubectl get knowledgebase financial-planning-kb -n agent-orca-system -w   # → Ready
+kubectl get pods -n agent-orca-system -l agentorca.io/deployment=financial-analysis-chat -w
 
-helm uninstall demo-financial-analysis -n agent-orc-system
+helm uninstall demo-financial-analysis -n agent-orca-system
 ```
 
 ### Scenarios
@@ -364,7 +364,7 @@ individual cost tracking.
 
 ```
 User (chat UI)
-    │  POST /api/deployments/agent-orc-system/soc-triage/execute
+    │  POST /api/deployments/agent-orca-system/soc-triage/execute
     ▼
 ┌──────────────────────────────────────────────────────────────────────┐
 │  soc-orchestrator-agent  (AgentDeployment: chat)                     │
@@ -400,13 +400,13 @@ User (chat UI)
 skaffold run -p demo-soc-triage
 
 # or Helm
-helm install demo-soc-triage charts/demos/demo-soc-triage -n agent-orc-system
+helm install demo-soc-triage charts/demos/demo-soc-triage -n agent-orca-system
 
 # Wait for KB ingestion and warm pod:
-kubectl get knowledgebase soc-runbooks -n agent-orc-system -w   # → Ready
-kubectl get pods -n agent-orc-system -l agentorc.io/deployment=soc-triage -w
+kubectl get knowledgebase soc-runbooks -n agent-orca-system -w   # → Ready
+kubectl get pods -n agent-orca-system -l agentorca.io/deployment=soc-triage -w
 
-helm uninstall demo-soc-triage -n agent-orc-system
+helm uninstall demo-soc-triage -n agent-orca-system
 ```
 
 ### Scenarios
@@ -440,8 +440,8 @@ helm uninstall demo-soc-triage -n agent-orc-system
 ### Audit trail
 
 ```bash
-kubectl get agentrun -n agent-orc-system \
-  -l agentorc.io/deployment=soc-triage \
+kubectl get agentrun -n agent-orca-system \
+  -l agentorca.io/deployment=soc-triage \
   --sort-by=.metadata.creationTimestamp
 ```
 
@@ -499,7 +499,7 @@ and the human's answer travels back down. Every step is a Kubernetes resource.
 
 ```
 User (chat UI)
-    │  POST /api/deployments/agent-orc-system/platform-deploys/execute
+    │  POST /api/deployments/agent-orca-system/platform-deploys/execute
     ▼
 ┌──────────────────────────────────────────────┐
 │  deploy-orchestrator-agent  (AgentDeployment)│
@@ -545,11 +545,11 @@ model-providers.
 skaffold run -p demo-escalation-chain
 
 # or Helm
-helm install demo-escalation-chain charts/demos/demo-escalation-chain -n agent-orc-system
+helm install demo-escalation-chain charts/demos/demo-escalation-chain -n agent-orca-system
 
-kubectl get pods -n agent-orc-system -l agentorc.io/deployment=platform-deploys -w
+kubectl get pods -n agent-orca-system -l agentorca.io/deployment=platform-deploys -w
 
-helm uninstall demo-escalation-chain -n agent-orc-system
+helm uninstall demo-escalation-chain -n agent-orca-system
 ```
 
 ### Scenarios
@@ -568,15 +568,15 @@ After the demo, inspect the audit trail:
 
 ```bash
 # All three runs: orchestrator, failed child, continuation
-kubectl get agentrun -n agent-orc-system \
-  -l agentorc.io/deployment=platform-deploys \
+kubectl get agentrun -n agent-orca-system \
+  -l agentorca.io/deployment=platform-deploys \
   --sort-by=.metadata.creationTimestamp
 
 # Orchestrator run shows childRunRefs and continuationRunRef
-kubectl describe agentrun <orchestrator-run> -n agent-orc-system
+kubectl describe agentrun <orchestrator-run> -n agent-orca-system
 
 # Failed child run shows failureReason
-kubectl describe agentrun <child-run> -n agent-orc-system
+kubectl describe agentrun <child-run> -n agent-orca-system
 ```
 
 **Scenario B — Clean deployment** *(no escalation)*
@@ -630,7 +630,7 @@ for all three, then synthesizes a report. Total wall time is far less than seque
 
 ```
 User (chat UI)
-    │  POST /api/deployments/agent-orc-system/research-swarm/execute
+    │  POST /api/deployments/agent-orca-system/research-swarm/execute
     ▼
 ┌────────────────────────────────────────────────────────────────┐
 │  research-orchestrator-agent  (AgentDeployment: chat)          │
@@ -657,11 +657,11 @@ User (chat UI)
 skaffold run -p demo-parallel-swarm
 
 # or Helm
-helm install demo-parallel-swarm charts/demos/demo-parallel-swarm -n agent-orc-system
+helm install demo-parallel-swarm charts/demos/demo-parallel-swarm -n agent-orca-system
 
-kubectl get pods -n agent-orc-system -l agentorc.io/deployment=research-swarm -w
+kubectl get pods -n agent-orca-system -l agentorca.io/deployment=research-swarm -w
 
-helm uninstall demo-parallel-swarm -n agent-orc-system
+helm uninstall demo-parallel-swarm -n agent-orca-system
 ```
 
 ### Demo question
@@ -674,11 +674,11 @@ not sum.
 
 ```bash
 # Watch child runs appear in real time
-kubectl get agentrun -n agent-orc-system -w
+kubectl get agentrun -n agent-orca-system -w
 
 # After completion — compare per-child spend
-kubectl get agentrun -n agent-orc-system \
-  -l agentorc.io/deployment=research-swarm \
+kubectl get agentrun -n agent-orca-system \
+  -l agentorca.io/deployment=research-swarm \
   --sort-by=.metadata.creationTimestamp \
   -o custom-columns='NAME:.metadata.name,PHASE:.status.phase,SPEND:.status.spendUSD'
 ```
@@ -712,7 +712,7 @@ Hardcoded in the `cve-lookup` MCP sidecar for demo reproducibility.
 
 ## Codebase Expert
 
-A persistent expert agent for the agent-orc repository. The `agent-orc-codebase`
+A persistent expert agent for the agent-orca repository. The `agent-orca-codebase`
 KnowledgeBase is pre-populated via MCP ingestion on deploy and re-synced hourly — the
 agent can answer architecture questions from semantic search alone, then drill into live
 code via GitHub MCP tools when precision matters. Files read via MCP are back-filled into
@@ -722,21 +722,21 @@ the KB via `_rag_ingest` so the vector store grows richer with each session.
 - **MCP ingestion pipeline**: `KnowledgeBase.spec.ingestion.mcp` — controller discovers repo files via `get_file_contents`, fetches content, and chunks into Qdrant automatically at deploy and on the hourly sync interval
 - **`_rag_search` + GitHub MCP combination**: agent starts with semantic retrieval, falls back to live `search_code` or `get_file_contents` when RAG results are insufficient
 - **`_rag_ingest` back-fill**: after reading a file via MCP the agent calls `_rag_ingest` to persist it, keeping the vector store current without a full re-sync
-- **Scoped agent**: system prompt enforces strict topic scope — questions outside agent-orc are politely refused
+- **Scoped agent**: system prompt enforces strict topic scope — questions outside agent-orca are politely refused
 
 ```
 User (chat UI)
-    │  POST /api/deployments/agent-orc-system/codebase-expert/execute
+    │  POST /api/deployments/agent-orca-system/codebase-expert/execute
     ▼
 ┌──────────────────────────────────────────────────────────────────────┐
 │  codebase-expert-agent  (AgentDeployment: chat, warm pool: 1)        │
 │  tools: _rag_search, _rag_ingest, github-mcp-*                       │
 │                                                                      │
-│  1. _rag_search(agent-orc-codebase, query)  ─────────────────────┐  │
+│  1. _rag_search(agent-orca-codebase, query)  ─────────────────────┐  │
 │  2. If needed: github-mcp-search-code / get-file-contents        │  │
 │  3. _rag_ingest(new content read via MCP)   ←────────────────────┘  │
 │                                                                      │
-│  agent-orc-codebase KnowledgeBase (Qdrant, 10 Gi)                   │
+│  agent-orca-codebase KnowledgeBase (Qdrant, 10 Gi)                   │
 │    populated at deploy via MCP ingestion  (up to 500 files)         │
 │    re-synced every 3600 s                                            │
 └──────────────────────────────────────────────────────────────────────┘
@@ -744,30 +744,30 @@ User (chat UI)
 
 ### Prerequisites
 
-- GitHub Personal Access Token with `repo` (read) scope for `ci-agent-orc/agent-orc`
+- GitHub Personal Access Token with `repo` (read) scope for `ci-agent-orca/agent-orca`
 - `codebase-expert` and `codebase-expert-embeddings` ModelSelectors (deployed by this chart) require providers from the model-providers chart (`OPENAI_API_KEY` or `ANTHROPIC_API_KEY`)
 
 ### Deploy / Remove
 
 ```bash
-# Skaffold (token read from AGENT_ORC_GITHUB_TOKEN env var)
-export AGENT_ORC_GITHUB_TOKEN=ghp_YOUR_TOKEN
+# Skaffold (token read from AGENT_ORCA_GITHUB_TOKEN env var)
+export AGENT_ORCA_GITHUB_TOKEN=ghp_YOUR_TOKEN
 skaffold run -p demo-codebase-expert
 
 # or Helm
-helm install demo-codebase-expert charts/demos/demo-codebase-expert -n agent-orc-system \
+helm install demo-codebase-expert charts/demos/demo-codebase-expert -n agent-orca-system \
   --set githubToken=ghp_YOUR_TOKEN
 
 # Wait for the KnowledgeBase ingestion job and warm pod:
-kubectl get knowledgebase agent-orc-codebase -n agent-orc-system -w   # → Ready
-kubectl get pods -n agent-orc-system -l agentorc.io/deployment=codebase-expert -w
+kubectl get knowledgebase agent-orca-codebase -n agent-orca-system -w   # → Ready
+kubectl get pods -n agent-orca-system -l agentorca.io/deployment=codebase-expert -w
 
-helm uninstall demo-codebase-expert -n agent-orc-system
+helm uninstall demo-codebase-expert -n agent-orca-system
 ```
 
 ### Running the demo
 
-Chat endpoint: `POST /api/deployments/agent-orc-system/codebase-expert/execute`
+Chat endpoint: `POST /api/deployments/agent-orca-system/codebase-expert/execute`
 
 **Scenario 1 — Architecture overview**
 
@@ -794,12 +794,12 @@ Expected: agent calls `github-mcp-list-commits` and summarises the recent diff.
 
 ```bash
 # Each session = one AgentRun; inspect tool calls and spend
-kubectl get agentrun -n agent-orc-system \
-  -l agentorc.io/deployment=codebase-expert \
+kubectl get agentrun -n agent-orca-system \
+  -l agentorca.io/deployment=codebase-expert \
   --sort-by=.metadata.creationTimestamp
 
 # Check KnowledgeBase ingestion status
-kubectl describe knowledgebase agent-orc-codebase -n agent-orc-system
+kubectl describe knowledgebase agent-orca-codebase -n agent-orca-system
 ```
 
 ### Resources
@@ -808,7 +808,7 @@ kubectl describe knowledgebase agent-orc-codebase -n agent-orc-system
 |---|---|---|
 | `github-mcp-token` | Secret | GitHub PAT (repo read scope) |
 | `github-mcp` | MCPServer | GitHub MCP sidecar — auto-creates Tool CRs; used by agent and KB ingestion |
-| `agent-orc-codebase` | KnowledgeBase | Qdrant-backed vector store; MCP-ingested from `ci-agent-orc/agent-orc` |
+| `agent-orca-codebase` | KnowledgeBase | Qdrant-backed vector store; MCP-ingested from `ci-agent-orca/agent-orca` |
 | `codebase-expert` | ModelSelector | Multi-provider rule-based selector (Opus, Sonnet, Gemini, GPT-4o) |
 | `codebase-expert-embeddings` | ModelSelector | Embeddings selector (OpenAI `text-embedding-3-large`, Gemini fallback) |
 | `codebase-expert-agent` | Agent | Expert agent with `_rag_search`, `_rag_ingest`, and GitHub MCP tools |
@@ -831,7 +831,7 @@ An autonomous penetration testing agent that discovers vulnerabilities, correlat
 
 ```
 User (chat UI)
-    │  POST /api/deployments/agent-orc-system/pentest-chat/execute
+    │  POST /api/deployments/agent-orca-system/pentest-chat/execute
     ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  pentest-orchestrator  (AgentDeployment: pentest-chat)                  │
@@ -860,12 +860,12 @@ User (chat UI)
 skaffold run -p demo-pen-test
 
 # or Helm
-helm install demo-pen-test charts/demos/demo-pen-test -n agent-orc-system
+helm install demo-pen-test charts/demos/demo-pen-test -n agent-orca-system
 
 # Wait for the warm pod:
-kubectl get pods -n agent-orc-system -l agentorc.io/deployment=pentest-chat -w
+kubectl get pods -n agent-orca-system -l agentorca.io/deployment=pentest-chat -w
 
-helm uninstall demo-pen-test -n agent-orc-system
+helm uninstall demo-pen-test -n agent-orca-system
 ```
 
 ### Demo Targets

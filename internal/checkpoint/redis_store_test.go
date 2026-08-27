@@ -21,7 +21,7 @@ import (
 	"testing"
 	"time"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
 )
 
 // memKV is a tiny in-memory kvStore for testing RedisStore without Redis.
@@ -58,11 +58,11 @@ func (m *memKV) ListKV(_ context.Context, scope string) ([]string, error) {
 
 func TestRedisStoreRoundTrip(t *testing.T) {
 	s := NewRedisStore(newMemKV())
-	cp := &agentorcv1alpha1.Checkpoint{
+	cp := &agentorcav1alpha1.Checkpoint{
 		SessionID:  "sess-1",
 		Version:    3,
 		LastRunRef: "run-2",
-		ConversationHistory: []agentorcv1alpha1.ConversationMessage{
+		ConversationHistory: []agentorcav1alpha1.ConversationMessage{
 			{Role: "user", Content: "hello"},
 			{Role: "assistant", Content: "world"},
 		},
@@ -103,7 +103,7 @@ func TestRedisStoreEmptySessionID(t *testing.T) {
 	if got, err := s.Load(context.Background(), ""); err != nil || got != nil {
 		t.Fatalf("Load(\"\") = %v, %v; want nil,nil", got, err)
 	}
-	if _, err := s.Save(context.Background(), &agentorcv1alpha1.Checkpoint{}); err == nil {
+	if _, err := s.Save(context.Background(), &agentorcav1alpha1.Checkpoint{}); err == nil {
 		t.Fatal("Save without SessionID should error")
 	}
 	if err := s.Delete(context.Background(), ""); err != nil {
@@ -113,12 +113,12 @@ func TestRedisStoreEmptySessionID(t *testing.T) {
 
 func TestRedisStoreHistoryTruncated(t *testing.T) {
 	s := NewRedisStore(newMemKV())
-	cp := &agentorcv1alpha1.Checkpoint{SessionID: "sess"}
+	cp := &agentorcav1alpha1.Checkpoint{SessionID: "sess"}
 	// More than maxSessionHistoryMessages: only the tail should persist.
 	got, want := 250, maxSessionHistoryMessages
-	history := make([]agentorcv1alpha1.ConversationMessage, got)
+	history := make([]agentorcav1alpha1.ConversationMessage, got)
 	for i := range history {
-		history[i] = agentorcv1alpha1.ConversationMessage{Role: "user", Content: "msg"}
+		history[i] = agentorcav1alpha1.ConversationMessage{Role: "user", Content: "msg"}
 	}
 	cp.ConversationHistory = history
 	if _, err := s.Save(context.Background(), cp); err != nil {
@@ -140,7 +140,7 @@ func TestRedisStoreHistoryTruncated(t *testing.T) {
 func TestRedisStoreTTLPropagated(t *testing.T) {
 	kv := newMemKV()
 	s := NewRedisStore(kv)
-	cp := &agentorcv1alpha1.Checkpoint{SessionID: "sess2"}
+	cp := &agentorcav1alpha1.Checkpoint{SessionID: "sess2"}
 	if _, err := s.Save(context.Background(), cp); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -155,7 +155,7 @@ func TestRedisStoreTTLPropagated(t *testing.T) {
 func TestRedisStoreDeleteAndList(t *testing.T) {
 	s := NewRedisStore(newMemKV())
 	for _, sid := range []string{"a", "b", "c"} {
-		if _, err := s.Save(context.Background(), &agentorcv1alpha1.Checkpoint{SessionID: sid}); err != nil {
+		if _, err := s.Save(context.Background(), &agentorcav1alpha1.Checkpoint{SessionID: sid}); err != nil {
 			t.Fatalf("Save %s: %v", sid, err)
 		}
 	}

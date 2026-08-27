@@ -1,5 +1,5 @@
 /**
- * Design system for agent-orc UI — single source of truth for colors, spacing,
+ * Design system for agent-orca UI — single source of truth for colors, spacing,
  * typography, and global root styles.
  *
  * CSS custom properties are registered on `:root` via `applyDesignSystem()`.
@@ -100,7 +100,7 @@ export { PHASE_COLOR, PHASE_STYLE } from './phaseColors'
 
 // ── Theme persistence ─────────────────────────────────────────────────────────
 
-export const THEME_KEY = 'agentorc-theme'
+export const THEME_KEY = 'agentorca-theme'
 export type Theme = 'dark' | 'light'
 
 /** Returns the user's saved theme preference, or the system default. */
@@ -164,10 +164,10 @@ export function applyDesignSystem(): void {
   if (typeof document === 'undefined') return
 
   // Avoid double-injection
-  if (document.getElementById('agentorc-design-system')) return
+  if (document.getElementById('agentorca-design-system')) return
 
   const styleEl = document.createElement('style')
-  styleEl.id = 'agentorc-design-system'
+  styleEl.id = 'agentorca-design-system'
   styleEl.textContent = `
     :root {
       /* === Semantic color tokens === */

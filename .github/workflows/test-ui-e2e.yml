@@ -26,7 +26,7 @@ jobs:
       - name: Create Kind cluster
         uses: helm/kind-action@v1
         with:
-          cluster_name: agent-orc-ui-e2e
+          cluster_name: agent-orca-ui-e2e
 
       - name: Pre-pull Redis image into Kind
         # redis:7-alpine is deployed by the chart but NOT pre-loaded into the
@@ -34,27 +34,27 @@ jobs:
         # that can push the Helm --wait spend past the timeout on slow runners.
         run: |
           docker pull redis:7-alpine
-          kind load docker-image redis:7-alpine --name agent-orc-ui-e2e
+          kind load docker-image redis:7-alpine --name agent-orca-ui-e2e
 
       - name: Build and load images
         run: |
-          make docker-build IMG=agent-orc:e2e
-          docker build -t agent-orc-ui:e2e -f Dockerfile.ui-proxy .
-          kind load docker-image agent-orc:e2e agent-orc-ui:e2e --name agent-orc-ui-e2e
+          make docker-build IMG=agent-orca:e2e
+          docker build -t agent-orca-ui:e2e -f Dockerfile.ui-proxy .
+          kind load docker-image agent-orca:e2e agent-orca-ui:e2e --name agent-orca-ui-e2e
 
       - name: Deploy with Helm
         run: |
           make install
-          helm upgrade --install agent-orc ./charts/agent-orc \
-            --set operator.image.repository=agent-orc \
+          helm upgrade --install agent-orca ./charts/agent-orca \
+            --set operator.image.repository=agent-orca \
             --set operator.image.tag=e2e \
-            --set ui.image.repository=agent-orc-ui \
+            --set ui.image.repository=agent-orca-ui \
             --set ui.image.tag=e2e \
             --wait --timeout 300s
 
       - name: Port-forward UI
         run: |
-          kubectl port-forward svc/agent-orc-ui 8080:80 &
+          kubectl port-forward svc/agent-orca-ui 8080:80 &
           sleep 3
 
       - name: Run Playwright tests
@@ -91,9 +91,9 @@ jobs:
           echo "=== UI pod logs (previous) ==="
           kubectl logs -l app.kubernetes.io/component=ui -n default --previous --tail=100 || true
           echo "=== Helm release status ==="
-          helm status agent-orc 2>/dev/null || true
+          helm status agent-orca 2>/dev/null || true
           echo "=== Helm release history ==="
-          helm history agent-orc 2>/dev/null || true
+          helm history agent-orca 2>/dev/null || true
           echo "=== Playwright report ==="
           ls ui/test-results/ 2>/dev/null || true
 

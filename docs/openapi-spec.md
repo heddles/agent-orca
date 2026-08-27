@@ -1,6 +1,6 @@
 # OpenAPI Specification
 
-agent-orc publishes two machine-readable OpenAPI specifications that describe
+agent-orca publishes two machine-readable OpenAPI specifications that describe
 every HTTP endpoint on its two external API surfaces. You can use them to
 generate client SDKs, validate requests, or explore the API interactively.
 

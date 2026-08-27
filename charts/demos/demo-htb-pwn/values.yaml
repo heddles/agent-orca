@@ -11,7 +11,7 @@
 #   plans/blue-red-team-wargame.md §16.
 #
 # Secrets via env (never committed):
-#   AGENT_ORC_POOLSIDE_API_KEY, AGENT_ORC_HTB_OVPN_CONFIG, AGENT_ORC_HTB_OVPN_ENDPOINT
+#   AGENT_ORCA_DEFAULT_API_KEY, AGENT_ORCA_HTB_OVPN_CONFIG, AGENT_ORCA_HTB_OVPN_ENDPOINT
 
 nameOverride: ""
 # pwnbox image (the privileged MCP-toolbelt host). Built by the skaffold profile.
@@ -41,32 +41,59 @@ pwnbox:
 namespace:
   name: red-team
   create: false # chart creates the namespace with the privilege opt-in label
-agent-orc-resources:
-  # ── ModelProviders / ModelSelectors (Poolside) ───────────────────────────────
+agent-orca-resources:
+  # ── ModelProviders / ModelSelectors ───────────────────────────────
   providerSecrets:
-    - name: poolside-api-key
-      enabled: true
-      apiKey: "" # ps-... ; set via AGENT_ORC_POOLSIDE_API_KEY
-      existingSecret: ""
+    - name: default-api-key
+      apiKey: "" # ps-... ; set via DEFAULT_API_KEY
   modelProviders:
-    - name: poolside-pwnbox
+    - name: openai-gpt-4o
+      enabled: true
+      litellmModel: "openai/gpt-4o"
+      credentialsRef:
+        existingSecret: "openai-api-key"
+        key: "api-key"
+      capabilities:
+        - reasoning
+        - code
+        - vision
+        - fast
+      latencyProfile: medium
+      constraints:
+        contextWindow: 128000
+        maxOutputTokens: 16384
+        maxRequestTokens: 0
+        costPerMillionInputTokens: "2.50"
+        costPerMillionOutputTokens: "10.00"
+    - name: poolside-laguna-s-2.1
       enabled: true
       litellmModel: "poolside/laguna-s-2.1"
-      baseURL: "https://platform.poolsi.de/openai"
+      baseURL: "https://inference.poolside.ai"
       credentialsRef:
         existingSecret: "poolside-api-key"
         key: "api-key"
-      capabilities: [reasoning, code, long-context]
+      capabilities:
+        - reasoning
+        - code
+        - long-context
       latencyProfile: medium
       constraints:
-        contextWindow: 262144
-        maxOutputTokens: 131072
-        maxRequestTokens: 0
+        contextWindow: 1000000
+        maxOutputTokens: 32768
+        maxRequestTokens: 128000
+        costPerMillionInputTokens: "0.10"
+        costPerMillionOutputTokens: "0.20"
   modelSelectors:
-    - name: poolside-strategist
+    - name: default
       strategy: rule-based
-      providers: [{name: poolside-pwnbox, weight: 100}]
-      budgetCap: {perRun: "1.00", perDay: "25.00"}
+      providers:
+        - name: poolside-laguna-s-2.1
+          weight: 80
+        - name: openai-gpt-4o
+          weight: 20
+      budgetCap:
+        perRun: "1.00"
+        perDay: "25.00"
   # ── GuardrailPolicy: bounds on the red-commander agent ────────────────────────
   # The agent stays restricted; this guardrail keeps its LLM output in-bounds (no real
   # cloud endpoints / secret leakage). The pwnbox pod itself is network-isolated by its NP.
@@ -86,7 +113,7 @@ agent-orc-resources:
             action: block
             patterns:
               - {name: aws-key, pattern: '(?i)AKIA[0-9A-Z]{16}'}
-              - {name: poolside-key, pattern: '(?i)ps-[a-z0-9]{32}'}
+              - {name: default-key, pattern: '(?i)ps-[a-z0-9]{32}'}
               - {name: openai-key, pattern: '(?i)sk-[a-zA-Z0-9]{20,}'}
         formatValidation:
           maxTokens: 4096
@@ -153,19 +180,6 @@ agent-orc-resources:
       resources:
         requests: {cpu: "250m", memory: 128Mi}
         limits: {cpu: "1", memory: 512Mi}
-  # ── KnowledgeBase: offensive TTP runbooks (RAG) ──────────────────────────────
-  # knowledgeBases:
-  #   - name: red-tactics
-  #     allowedAgents: [red-commander-agent]
-  #     embedding:
-  #       modelSelectorRef: ollama-embeddings
-  #       chunkSize: 512
-  #       chunkOverlap: 64
-  #     vectorStore:
-  #       storageSize: 1Gi
-  #     ingestion:
-  #       configMapRefs: [ { name: red-tactics-content } ]
-  #       syncIntervalSeconds: 86400
 
   # ── The autonomous agent (BRAIN) — fully RESTRICTED, openai-compatible ───────
   # Not privileged. Calls the pwnbox tools via the model-router -> red-pwnbox MCP.
@@ -173,7 +187,7 @@ agent-orc-resources:
   # pwnbox pod) and streams the result back; this shim just proxies /invoke.
   agents:
     - name: red-commander-agent
-      modelSelectorRef: poolside
+      modelSelectorRef: default
       guardrailPolicyRef: red-pwnbox-guard
       disableClarify: true # fully autonomous — never blocks on a human
       # knowledgeBases: [red-tactics]
@@ -290,7 +304,7 @@ agent-orc-resources:
             ⇒ searchsploit/ExploitDB only). run-exploit writes only to /tmp/exploits.
           - Do NOT brute-force real internet services; keep wordlists small and rates low.
       runtime:
-        ociRef: "ghcr.io/agentorc/agent-orc/openai-reference:latest"
+        ociRef: "ghcr.io/agentorca/agent-orca/openai-reference:latest"
         framework: openai-compatible
         inputMode: http
       resources:
@@ -323,32 +337,32 @@ openvpn:
   protocol: udp
   port: 1194
   createSecret: true # set false and `kubectl create secret htb-ovpn --from-file=...`
-  ovpnConfig: "" # set via AGENT_ORC_HTB_OVPN_CONFIG, or create the secret yourself
+  ovpnConfig: "" # set via AGENT_ORCA_HTB_OVPN_CONFIG, or create the secret yourself
 # ── Pwnbox egress toggles (deny-by-default) ────────────────────────────────────
 # The pwnbox egress NetworkPolicy is deny-by-default except for: DNS, the HTB VPN
 # endpoint, and TCP 443. Enabling internetRecon.internetRecon opens explicit external
 # hosts used by TI/template/wordlist tooling — NEVER scopes to real infra, only OTX/VT/
-# Shodan/etc. Set via AGENT_ORC_* env in the skaffold profile; default false.
+# Shodan/etc. Set via AGENT_ORCA_* env in the skaffold profile; default false.
 pwnboxEgress:
   internetRecon: false # true -> allow Shodan/OTX/VT/Censys:443 + nuclei templates defrag
   exploitFetchAllowlist: "" # hosts fetch-exploit may curl (see pwnbox.env.EXPLOIT_FETCH_ALLOWLIST)
 # ── Redis (checkpoint state + pwnbox findings stream) ─────────────────────────
 # The operator chart deploys Redis as a Service named "<release>-redis-master"
-# (release "agent-orc" => "agent-orc-redis-master") in the system namespace.
+# (release "agent-orca" => "agent-orca-redis-master") in the system namespace.
 # The model-router reaches it via the operator-propagated REDIS_URL (with the
 # random/static password); the pwnbox reaches it for the wargame `arena-events`
 # stream using the host below PLUS redis.password (see skaffold profile).
 redis:
-  serviceName: agent-orc-redis-master
+  serviceName: agent-orca-redis-master
   port: 6379
   # Password backing the operator's bundled Redis. Leave empty to use the
   # operator's auto-generated random password (then the pwnbox arena-events
   # publish is best-effort and will log AUTH failures — checkpointing still works
   # via the model-router). For the pwnbox to publish findings, set this to the
-  # SAME value the operator uses: wire AGENT_ORC_REDIS_PASSWORD through the
-  # skaffold profile (sets both redis.auth.password on agent-orc and redis.password
+  # SAME value the operator uses: wire AGENT_ORCA_REDIS_PASSWORD through the
+  # skaffold profile (sets both redis.auth.password on agent-orca and redis.password
   # here). Provide it via env, never commit a real one.
   password: ""
 # ── Cluster / operator reference (for egress NetworkPolicies) ──────────────────
 cluster:
-  systemNamespace: agent-orc-system
+  systemNamespace: agent-orca-system

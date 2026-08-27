@@ -120,5 +120,5 @@ func BuildTracingPolicy(runName, namespace string) *unstructured.Unstructured {
 func TracingPolicyName(runName string) string { return tracingPolicyName(runName) }
 
 func tracingPolicyName(runName string) string {
-	return "agentorc-run-" + runName
+	return "agentorca-run-" + runName
 }

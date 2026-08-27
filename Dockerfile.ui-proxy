@@ -3,7 +3,7 @@
 # Stage 3 produces a minimal distroless runtime image.
 #
 # Build (from repo root):
-#   docker buildx build -f Dockerfile.ui-proxy -t agent-orc/ui-proxy:dev .
+#   docker buildx build -f Dockerfile.ui-proxy -t agent-orca/ui-proxy:dev .
 
 # ── Stage 1: React SPA ───────────────────────────────────────────────────────
 FROM node:20-alpine AS ui-builder

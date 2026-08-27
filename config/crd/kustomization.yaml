@@ -2,17 +2,17 @@
 # since it depends on service name and namespace that are out of this kustomize package.
 # It should be run by config/default
 resources:
-- bases/agentorc.agentorc.io_modelproviders.yaml
-- bases/agentorc.agentorc.io_modelselectors.yaml
-- bases/agentorc.agentorc.io_tools.yaml
-- bases/agentorc.agentorc.io_agents.yaml
-- bases/agentorc.agentorc.io_agentruns.yaml
-- bases/agentorc.agentorc.io_agentdeployments.yaml
-- bases/agentorc.agentorc.io_agentworkflows.yaml
-- bases/agentorc.agentorc.io_mcpservers.yaml
-- bases/agentorc.agentorc.io_knowledgebases.yaml
-- bases/agentorc.agentorc.io_tenantconfigs.yaml
-- bases/agentorc.agentorc.io_guardrailpolicies.yaml
+- bases/agentorca.agentorca.io_modelproviders.yaml
+- bases/agentorca.agentorca.io_modelselectors.yaml
+- bases/agentorca.agentorca.io_tools.yaml
+- bases/agentorca.agentorca.io_agents.yaml
+- bases/agentorca.agentorca.io_agentruns.yaml
+- bases/agentorca.agentorca.io_agentdeployments.yaml
+- bases/agentorca.agentorca.io_agentworkflows.yaml
+- bases/agentorca.agentorca.io_mcpservers.yaml
+- bases/agentorca.agentorca.io_knowledgebases.yaml
+- bases/agentorca.agentorca.io_tenantconfigs.yaml
+- bases/agentorca.agentorca.io_guardrailpolicies.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

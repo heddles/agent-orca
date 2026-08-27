@@ -26,7 +26,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
 )
 
 var sanitizeVolumeRe = regexp.MustCompile(`[^a-z0-9-]`)
@@ -51,9 +51,9 @@ func ResolveProviderVolumes(
 	ctx context.Context,
 	reader client.Reader,
 	namespace string,
-	agent *agentorcv1alpha1.Agent,
+	agent *agentorcav1alpha1.Agent,
 ) ([]corev1.Volume, []corev1.VolumeMount, error) {
-	var selector agentorcv1alpha1.ModelSelector
+	var selector agentorcav1alpha1.ModelSelector
 	if err := reader.Get(ctx, client.ObjectKey{Name: agent.Spec.ModelSelectorRef, Namespace: namespace}, &selector); err != nil {
 		return nil, nil, fmt.Errorf("getting ModelSelector: %w", err)
 	}
@@ -67,7 +67,7 @@ func ResolveProviderVolumes(
 			return nil
 		}
 		seen[name] = true
-		var mp agentorcv1alpha1.ModelProvider
+		var mp agentorcav1alpha1.ModelProvider
 		if err := reader.Get(ctx, client.ObjectKey{Name: name, Namespace: namespace}, &mp); err != nil {
 			if skipNotFound && apierrors.IsNotFound(err) {
 				// Provider is listed in the fallback chain but not deployed (e.g. disabled
@@ -115,7 +115,7 @@ func ResolveToolSecretVolumes(
 	ctx context.Context,
 	reader client.Reader,
 	namespace string,
-	agent *agentorcv1alpha1.Agent,
+	agent *agentorcav1alpha1.Agent,
 ) ([]corev1.Volume, []corev1.VolumeMount, error) {
 	var volumes []corev1.Volume
 	var mounts []corev1.VolumeMount
@@ -123,7 +123,7 @@ func ResolveToolSecretVolumes(
 	type volKey struct{ tool, secret, key string }
 	seen := make(map[volKey]bool)
 
-	addSecretKeyVolume := func(toolName string, ref *agentorcv1alpha1.SecretKeyRef) {
+	addSecretKeyVolume := func(toolName string, ref *agentorcav1alpha1.SecretKeyRef) {
 		vk := volKey{toolName, ref.Name, ref.Key}
 		if seen[vk] {
 			return
@@ -153,11 +153,11 @@ func ResolveToolSecretVolumes(
 	}
 
 	for _, toolName := range agent.Spec.Tools {
-		var tool agentorcv1alpha1.Tool
+		var tool agentorcav1alpha1.Tool
 		if err := reader.Get(ctx, client.ObjectKey{Name: toolName, Namespace: namespace}, &tool); err != nil {
 			continue // already validated in buildRouterConfig
 		}
-		if tool.Spec.Type != agentorcv1alpha1.ToolTypeMCP || tool.Spec.MCPConfig == nil {
+		if tool.Spec.Type != agentorcav1alpha1.ToolTypeMCP || tool.Spec.MCPConfig == nil {
 			continue
 		}
 
@@ -214,12 +214,12 @@ func ResolveToolSecretVolumes(
 // Agent's runtime (Agent.spec.runtime.secretRefs). These are mounted read-only into
 // the agent container only — not the model-router sidecar. Each entry with a MountPath
 // becomes a whole-secret volume mounted at that path; an empty MountPath defaults to
-// /etc/agentorc-secrets/<secret-name> (keys as files). This is a pure transform: the
+// /etc/agentorca-secrets/<secret-name> (keys as files). This is a pure transform: the
 // kubelet resolves the secret at pod start.
 //
 // Use case: a red-team pwnbox mounting an HTB OpenVPN .ovpn config directly into the
 // agent container so the entrypoint can bring up the tunnel.
-func ResolveAgentSecretRefs(agent *agentorcv1alpha1.Agent) ([]corev1.Volume, []corev1.VolumeMount) {
+func ResolveAgentSecretRefs(agent *agentorcav1alpha1.Agent) ([]corev1.Volume, []corev1.VolumeMount) {
 	var volumes []corev1.Volume
 	var mounts []corev1.VolumeMount
 	if agent == nil {
@@ -264,21 +264,21 @@ func ResolveMCPSidecarVolumes(
 	ctx context.Context,
 	reader client.Reader,
 	namespace string,
-	agent *agentorcv1alpha1.Agent,
+	agent *agentorcav1alpha1.Agent,
 ) ([]corev1.Volume, []corev1.VolumeMount, map[string]string, error) {
 	var volumes []corev1.Volume
 	var mounts []corev1.VolumeMount
 	binPathRewrites := make(map[string]string) // toolName -> rewritten binary path
 
 	for _, toolName := range agent.Spec.Tools {
-		var tool agentorcv1alpha1.Tool
+		var tool agentorcav1alpha1.Tool
 		if err := reader.Get(ctx, client.ObjectKey{Name: toolName, Namespace: namespace}, &tool); err != nil {
 			continue
 		}
-		if tool.Spec.Type != agentorcv1alpha1.ToolTypeMCP || tool.Spec.MCPConfig == nil {
+		if tool.Spec.Type != agentorcav1alpha1.ToolTypeMCP || tool.Spec.MCPConfig == nil {
 			continue
 		}
-		if tool.Spec.ExecutionMode != agentorcv1alpha1.ToolExecSidecar || tool.Spec.OCIRef == "" {
+		if tool.Spec.ExecutionMode != agentorcav1alpha1.ToolExecSidecar || tool.Spec.OCIRef == "" {
 			continue
 		}
 		args := tool.Spec.MCPConfig.Args

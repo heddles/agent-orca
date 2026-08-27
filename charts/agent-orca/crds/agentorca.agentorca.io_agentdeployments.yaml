@@ -1,0 +1,342 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: agentdeployments.agentorca.agentorca.io
+spec:
+  group: agentorca.agentorca.io
+  names:
+    kind: AgentDeployment
+    listKind: AgentDeploymentList
+    plural: agentdeployments
+    singular: agentdeployment
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.agentRef
+      name: Agent
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.contextUsedTokens
+      name: Context
+      type: integer
+    - jsonPath: .status.readyReplicas
+      name: Ready
+      type: integer
+    - jsonPath: .spec.inputSource.type
+      name: InputSource
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          AgentDeployment manages a long-running agent that processes input continuously.
+          Unlike AgentRun (one-time execution), AgentDeployment restarts pods on failure
+          and supports multiple input sources (chat API, queues, pubsub, self-managed loops).
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: AgentDeploymentSpec defines the desired state of an AgentDeployment.
+            properties:
+              agentRef:
+                description: AgentRef names the Agent template to run continuously.
+                minLength: 1
+                type: string
+              checkpointTTL:
+                default: 2592000
+                description: |-
+                  CheckpointTTL is the duration to retain conversation checkpoints after completion.
+                  Defaults to 2592000 (30 days).
+                type: integer
+              inputSource:
+                description: InputSource configures where this deployment receives
+                  input from.
+                properties:
+                  config:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      Config holds provider-specific settings.
+                      Examples:
+                        queue: {provider: "redis", url: "redis://redis:6379", queue: "tasks"}
+                        pubsub: {provider: "kafka", brokers: "kafka:9092", topic: "agent-input"}
+                        loop: {initialPrompt: "Run continuously, answering questions..."}
+                    type: object
+                  type:
+                    default: chat
+                    description: 'Type specifies the input source: chat (API-driven),
+                      queue (Redis, etc), pubsub (Kafka, etc), or loop (self-managed).'
+                    enum:
+                    - chat
+                    - queue
+                    - pubsub
+                    - loop
+                    type: string
+                type: object
+              maxRequestsPerPod:
+                default: 0
+                description: |-
+                  MaxRequestsPerPod caps how many requests a warm pod will serve before it is
+                  recycled (deleted and replaced). 0 (default) means warm pods are REUSED across
+                  requests — after a run completes the pod is returned to the idle pool instead of
+                  being killed, and is re-claimed for the next chat run. Age-based recycling is
+                  disabled by default (see WarmPodMaxAge), so reuse is the normal path.
+
+                  Set >0 (e.g. 50) to rotate pods after that many served requests, which can be
+                  useful to shed per-request state or refresh long-running connections.
+                type: integer
+              recycleOnConfigDrift:
+                default: true
+                description: |-
+                  RecycleOnConfigDrift controls whether warm pods are recycled when the
+                  router config changes (agent spec, providers/weights, tools, KBs,
+                  guardrails). Defaults to true: a config change rolls the warm pool so
+                  pods pick up the new config immediately.
+
+                  Set to false to keep warm pods alive across config changes. Pods continue
+                  serving from the router-config snapshot they were created with and only
+                  refresh on their next natural recycle (age cap or process exit). Combining
+                  "WarmPodMaxAge: 0" with "RecycleOnConfigDrift: false" keeps warm pods
+                  until they are manually deleted (or the agent process exits).
+                type: boolean
+              replicas:
+                default: 1
+                description: Replicas is the desired number of agent pod replicas.
+                  Defaults to 1.
+                format: int32
+                type: integer
+              restartPolicy:
+                description: RestartPolicy controls failure recovery and backoff behavior.
+                properties:
+                  maxBackoffSeconds:
+                    default: 300
+                    description: MaxBackoffSeconds is the maximum backoff duration
+                      after a failure. Defaults to 300.
+                    type: integer
+                  maxConsecutiveFailures:
+                    default: 10
+                    description: |-
+                      MaxConsecutiveFailures is the number of consecutive failures before pausing the deployment.
+                      0 means unlimited (always restart). Defaults to 10.
+                    type: integer
+                  minBackoffSeconds:
+                    default: 5
+                    description: MinBackoffSeconds is the minimum backoff duration
+                      after a failure. Defaults to 5.
+                    type: integer
+                type: object
+              toolExecutionTimeoutSec:
+                default: 0
+                description: |-
+                  ToolExecutionTimeoutSec is the per-tool-call ceiling (seconds) applied to every
+                  AgentRun spawned from this deployment and to warm pods claimed by it. It feeds
+                  RouterSafeguards.ToolExecutionTimeoutSec. Defaults to the model-router's 60s when
+                  0. Set high for long-holding tooling that exceeds the default (e.g. Sliver
+                  interactive sessions, shells, pivot relays): 1800–3600. A 0 value preserves
+                  today's 60s behaviour.
+                type: integer
+              warmLocalCache:
+                description: |-
+                  WarmLocalCache controls the per-warm-pod local disk cache (an emptyDir) that
+                  supplements the shared Redis state store. The model-router write-throughs each
+                  checkpoint to the local disk AND to Redis, then reads from the local disk first
+                  (falling back to Redis on a local miss). Because warm pods are reused across
+                  chat runs (the same Pod survives multiple claims until recycled), the local
+                  cache accelerates warm-pod resume (no Redis round-trip to hydrate the prior
+                  conversation) and lets a warm pod keep serving if Redis is transiently
+                  unavailable. The local cache is per-Pod only — it is wiped when the warm pod is
+                  recycled/deleted; Redis remains the durable, cross-pod source of truth.
+
+                  Note: this is unrelated to the read-only-rootFilesystem emptyDir at /tmp
+                  (which is scratch space for the restricted pod-security profile); this is a
+                  separate disk-backed volume used to mirror checkpoints.
+
+                  Defaults to true when WarmPoolSize > 0 (a warm pool), false otherwise.
+                type: boolean
+              warmLocalCacheSizeMi:
+                default: 256
+                description: |-
+                  WarmLocalCacheSizeMi is the SizeLimit (in Mi) for each warm pod's local cache
+                  emptyDir. 0 means unlimited (bounded only by node ephemeral storage).
+                  Defaults to 256.
+                type: integer
+              warmPodMaxAge:
+                description: |-
+                  WarmPodMaxAge is the maximum age of a warm pod before it is recycled
+                  (deleted and replaced). It defaults to 0 (indefinite) when unset: warm pods
+                  then persist until manually deleted, the agent process exits, config-drift
+                  recycle fires (see RecycleOnConfigDrift), or the MaxRequestsPerPod cap is hit.
+                  This is the desired default for chat and long-trajectory workloads, where
+                  pods must stay alive across runs so an in-progress session is never torn down
+                  mid-task. When age recycling is disabled a long-lived SA token (the cluster
+                  maximum) is minted for each pod so it can keep authenticating claim-run
+                  POSTs for its entire life.
+
+                  Set this to a positive duration explicitly to OPT IN to age-based recycling,
+                  e.g. 50m to recycle pods roughly once per LLM token budget window. (controller-gen
+                  cannot express a duration default here, so 0 is applied in code.)
+                type: string
+              warmPoolSize:
+                default: 1
+                description: |-
+                  WarmPoolSize is the number of pre-warmed pods to maintain for fast run dispatch.
+                  Warm pods have the agent and model-router already initialized, eliminating cold-start
+                  latency (~15s) for chat runs. Set to 0 to disable (use classic per-run pods).
+                type: integer
+            required:
+            - agentRef
+            type: object
+          status:
+            description: AgentDeploymentStatus defines the observed state of an AgentDeployment.
+            properties:
+              availableReplicas:
+                description: AvailableReplicas is the number of available agent pods.
+                format: int32
+                type: integer
+              conditions:
+                description: Conditions holds standard Kubernetes conditions.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              consecutiveFailures:
+                description: |-
+                  ConsecutiveFailures is the count of consecutive pod failures.
+                  Resets to 0 when a pod succeeds.
+                type: integer
+              contextUsedTokens:
+                description: |-
+                  ContextUsedTokens is the estimated token count of the current conversation context.
+                  Only populated when running in chat mode.
+                type: integer
+              lastFailureTime:
+                description: LastFailureTime is when the last pod failure occurred.
+                format: date-time
+                type: string
+              lastUpdateTime:
+                description: LastUpdateTime is when the deployment was last reconciled.
+                format: date-time
+                type: string
+              maxContextTokens:
+                description: MaxContextTokens is the maximum context window size for
+                  the selected model.
+                type: integer
+              message:
+                description: Message contains a human-readable status message.
+                type: string
+              phase:
+                description: Phase is the current lifecycle phase of the deployment.
+                enum:
+                - Creating
+                - Running
+                - Failed
+                - Paused
+                type: string
+              podNames:
+                description: PodNames lists the names of managed agent pods.
+                items:
+                  type: string
+                type: array
+              readyReplicas:
+                description: ReadyReplicas is the number of ready agent pods.
+                format: int32
+                type: integer
+              warmPoolLastRecycleAt:
+                description: WarmPoolLastRecycleAt is when the most recent warm pod
+                  was recycled.
+                format: date-time
+                type: string
+              warmPoolLastRecycleReason:
+                description: |-
+                  WarmPoolLastRecycleReason is the reason the most recent warm pod was
+                  recycled (token-age-expired, stale-config, terminal-phase,
+                  request-cap-<N>), or empty if no warm pod has been recycled yet. Emitted
+                  as a WarmPodRecycled Kubernetes Event on the deployment as well.
+                type: string
+              warmPoolReady:
+                description: WarmPoolReady is the number of idle warm pods ready to
+                  accept runs.
+                type: integer
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

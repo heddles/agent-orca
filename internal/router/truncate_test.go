@@ -29,7 +29,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floppyfish14/agent-orc/internal/state"
+	"github.com/floppyfish14/agent-orca/internal/state"
 )
 
 func TestEstimateTokens_CountsAllPayload(t *testing.T) {
@@ -357,7 +357,7 @@ func TestTruncateHistory_CompactionContainsKeyContext(t *testing.T) {
 		{Role: "tool", ToolCallID: "tc1", Content: "some results"},
 		{Role: "user", Content: "Now check the GitHub issues"},
 		{Role: "assistant", Content: "ok", ToolCalls: []ToolCall{
-			{ID: "tc2", Function: FunctionCall{Name: "github-mcp-list-issues", Arguments: `{"owner":"ci-agent-orc"}`}},
+			{ID: "tc2", Function: FunctionCall{Name: "github-mcp-list-issues", Arguments: `{"owner":"ci-agent-orca"}`}},
 		}},
 		{Role: "tool", ToolCallID: "tc2", Content: "issue list"},
 		{Role: "user", Content: strings.Repeat("x", 8000)},      // force truncation

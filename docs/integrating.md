@@ -1,18 +1,18 @@
-# Integrating with agent-orc
+# Integrating with agent-orca
 
 This guide is for developers and enterprise engineers who want to send tasks to
-agent-orc from external software. Choose your level:
+agent-orca from external software. Choose your level:
 
 | Goal | Use |
 |------|-----|
 | Quick scripted integration | `aoctl` CLI |
-| Embed in an application | Python SDK (`pip install agentorc`) or Go client |
+| Embed in an application | Python SDK (`pip install agentorca`) or Go client |
 | Full control / custom language | The External Task API over HTTP (contract: `GET /<endpoint>/openapi.json`) |
 | Discover agents & self-service run | ACP API (`GET /agents`, `GET /agents/{name}`, `POST /agents/{name}/run`) |
 
 ## 1. Pick a surface
 
-agent-orc exposes three HTTP surfaces (see [docs/auth.md](auth.md)):
+agent-orca exposes three HTTP surfaces (see [docs/auth.md](auth.md)):
 
 - **External Task API** on port **8084** — `POST /v1/tasks`, streaming, webhooks.
   This is what integrations use. See [docs/enterprise-integration.md](enterprise-integration.md).
@@ -57,13 +57,13 @@ not to pass `--endpoint` each time.
 ## 3. Use the Python SDK
 
 ```bash
-pip install ./pkg/python/agentorc   # or: pip install agentorc
+pip install ./pkg/python/agentorca   # or: pip install agentorca
 ```
 
 ```python
-from agentorc import AgentOrc
+from agentorca import AgentOrca
 
-ao = AgentOrc(endpoint="https://agent-orc.acme-internal.com:8084")
+ao = AgentOrca(endpoint="https://agent-orca.acme-internal.com:8084")
 ao.login(client_id="acme-client", client_secret="secret123")
 
 run = ao.submit_task(agent="support-bot", input="How do I reset my password?")
@@ -82,16 +82,16 @@ print("final:", final["status"], final.get("output"))
 
 ## 4. Write an agent (SDK)
 
-agent-orc ships SDKs that let you write agents targeting the **Tier 1 `openai-compatible`** framework tier. The SDK handles the OpenAI-compatible HTTP protocol against the model-router sidecar (default `http://localhost:8080`), checkpoint save/restore, and built-in lifecycle tools.
+agent-orca ships SDKs that let you write agents targeting the **Tier 1 `openai-compatible`** framework tier. The SDK handles the OpenAI-compatible HTTP protocol against the model-router sidecar (default `http://localhost:8080`), checkpoint save/restore, and built-in lifecycle tools.
 
 ### Python SDK
 
 ```bash
-pip install ./pkg/python/agentorc
+pip install ./pkg/python/agentorca
 ```
 
 ```python
-from agentorc import Agent
+from agentorca import Agent
 
 agent = Agent()  # reads OPENAI_BASE_URL, AGENTORC_INPUT, etc. from env
 
@@ -128,7 +128,7 @@ See [examples/agent-sdk-template/agent.py](../examples/agent-sdk-template/agent.
 ### Go SDK
 
 ```go
-import "github.com/floppyfish14/agent-orc/pkg/agent"
+import "github.com/floppyfish14/agent-orca/pkg/agent"
 
 func main() {
     agent := agent.New()
@@ -198,7 +198,7 @@ reference. Generate a client with any OpenAPI generator:
 ```bash
 npx --package=@openapitools/openapi-generator-cli openapi-generator-cli generate \
   -i internal/apiserver/schemas/openapi-external.yaml \
-  -g python -o /tmp/agentorc-client
+  -g python -o /tmp/agentorca-client
 ```
 
 ## 7. Observability

@@ -34,17 +34,17 @@ var externalReg = prometheus.NewRegistry()
 
 var (
 	externalRequests = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "agentorc_external_requests_total",
+		Name: "agentorca_external_requests_total",
 		Help: "HTTP requests handled by the external API servers, by server/method/path/status.",
 	}, []string{"server", "method", "path", "status"})
 
 	externalRequestDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
-		Name: "agentorc_external_request_duration_seconds",
+		Name: "agentorca_external_request_duration_seconds",
 		Help: "Latency of HTTP requests handled by the external API servers.",
 	}, []string{"server", "path"})
 
 	externalAuthFailures = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "agentorc_external_auth_failures_total",
+		Name: "agentorca_external_auth_failures_total",
 		Help: "Authentication/authorization rejections on the external API servers.",
 	}, []string{"server"})
 )
@@ -90,12 +90,12 @@ func (w *recordingResponseWriter) Flush() {
 // /api/runs/history every 5s; with the UI server now instrumented, counting
 // those is desirable but auditing each poll would be noisy.
 var probePaths = map[string]bool{
-	"/healthz":            true,
-	"/readyz":             true,
-	"/metrics":            true,
-	"/openapi.json":       true,
-	"/api/system/status":  true,
-	"/api/runs/history":   true,
+	"/healthz":           true,
+	"/readyz":            true,
+	"/metrics":           true,
+	"/openapi.json":      true,
+	"/api/system/status": true,
+	"/api/runs/history":  true,
 }
 
 // isStreamingPath reports whether a request path is a long-lived SSE stream whose

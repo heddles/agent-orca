@@ -15,7 +15,7 @@ UIProxy Pod
                                 │
                                 ▼
                           Operator Pod
-                          (TokenReview: audience agentorc/ui)
+                          (TokenReview: audience agentorca/ui)
 ```
 
 ---
@@ -45,7 +45,7 @@ go build -o bin/ui-proxy ./cmd/ui-proxy
 |------|---------|-------------|
 | `--port` | `8080` | Port the proxy listens on |
 | `--operator-addr` | `http://localhost:8083` | Upstream operator UI API |
-| `--token-file` | `/var/run/secrets/agentorc/ui/token` | Path to the projected SA token |
+| `--token-file` | `/var/run/secrets/agentorca/ui/token` | Path to the projected SA token |
 
 ---
 
@@ -60,7 +60,7 @@ only used for identity proof via TokenReview.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: agentorc-ui-proxy
+  name: agentorca-ui-proxy
   namespace: default
 ```
 
@@ -70,37 +70,37 @@ metadata:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: agentorc-ui-proxy
+  name: agentorca-ui-proxy
   namespace: default
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: agentorc-ui-proxy
+      app: agentorca-ui-proxy
   template:
     metadata:
       labels:
-        app: agentorc-ui-proxy
+        app: agentorca-ui-proxy
     spec:
-      serviceAccountName: agentorc-ui-proxy
+      serviceAccountName: agentorca-ui-proxy
       containers:
         - name: ui-proxy
-          image: your-registry/agentorc-ui-proxy:latest
+          image: your-registry/agentorca-ui-proxy:latest
           args:
-            - --operator-addr=http://agentorc-operator:8083
-            - --token-file=/var/run/secrets/agentorc/ui/token
+            - --operator-addr=http://agentorca-operator:8083
+            - --token-file=/var/run/secrets/agentorca/ui/token
           ports:
             - containerPort: 8080
           volumeMounts:
             - name: ui-token
-              mountPath: /var/run/secrets/agentorc/ui
+              mountPath: /var/run/secrets/agentorca/ui
               readOnly: true
       volumes:
         - name: ui-token
           projected:
             sources:
               - serviceAccountToken:
-                  audience: agentorc/ui       # must match UITokenAudience in the operator
+                  audience: agentorca/ui       # must match UITokenAudience in the operator
                   expirationSeconds: 900      # 15 minutes; kubelet auto-refreshes
                   path: token
 ```
@@ -111,11 +111,11 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: agentorc-ui-proxy
+  name: agentorca-ui-proxy
   namespace: default
 spec:
   selector:
-    app: agentorc-ui-proxy
+    app: agentorca-ui-proxy
   ports:
     - port: 80
       targetPort: 8080
@@ -123,20 +123,20 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: agentorc-ui
+  name: agentorca-ui
   namespace: default
   annotations:
     # Future: add OIDC/SAML here via oauth2-proxy annotation
 spec:
   rules:
-    - host: agentorc.example.com
+    - host: agentorca.example.com
       http:
         paths:
           - path: /
             pathType: Prefix
             backend:
               service:
-                name: agentorc-ui-proxy
+                name: agentorca-ui-proxy
                 port:
                   number: 80
 ```
@@ -154,14 +154,14 @@ metadata:
 spec:
   podSelector:
     matchLabels:
-      app: agentorc-operator   # adjust to match your operator pod label
+      app: agentorca-operator   # adjust to match your operator pod label
   ingress:
     - ports:
         - port: 8083
       from:
         - podSelector:
             matchLabels:
-              app: agentorc-ui-proxy
+              app: agentorca-ui-proxy
 ```
 
 ### 5. Enable auth on the operator

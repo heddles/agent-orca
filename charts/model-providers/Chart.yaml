@@ -12,7 +12,7 @@ description: |
     4. Enable and configure `modelSelectors` to route traffic across models.
 
   No infrastructure is deployed — only Secrets, ModelProvider CRs, and
-  ModelSelector CRs managed by the agent-orc operator.
+  ModelSelector CRs managed by the agent-orca operator.
 type: application
 version: 0.1.0
 appVersion: "0.1.0"
@@ -26,8 +26,8 @@ keywords:
   - anthropic
   - google
   - mistral
-home: https://github.com/floppyfish14/agent-orc
+home: https://github.com/floppyfish14/agent-orca
 sources:
-  - https://github.com/floppyfish14/agent-orc
+  - https://github.com/floppyfish14/agent-orca
 maintainers:
-  - name: agent-orc maintainers
+  - name: agent-orca maintainers

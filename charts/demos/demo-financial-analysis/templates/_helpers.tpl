@@ -1,6 +1,6 @@
 {{/*
 Common helpers shared by all demo charts.
-Named templates use the "demo" prefix to avoid conflicts with agent-orc-resources
+Named templates use the "demo" prefix to avoid conflicts with agent-orca-resources
 when both charts are deployed into the same namespace.
 */}}
 

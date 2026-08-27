@@ -113,19 +113,21 @@ stringData:
 
 ---
 # ModelProvider for Ollama embedding model
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: ModelProvider
 metadata:
   name: ollama-embed
 spec:
   litellmModel: "ollama/nomic-embed-text"
-  baseURL: "http://ollama-embed.agent-orc-system.svc:11434"
+  baseURL: "http://ollama-embed.agent-orca-system.svc:11434"
   credentialsRef:
     name: ollama-embed-credentials
     key: api-key
   latencyProfile: "fast"
   capabilities:
     - embeddings
+  queryPrompt: "search_query: "
+  docPrompt: "search_document: "
   constraints:
     contextWindow: 8192
     costPerMillionInputTokens: "0"
@@ -133,7 +135,7 @@ spec:
 
 ---
 # ModelSelector for embedding calls
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: ModelSelector
 metadata:
   name: ollama-embed

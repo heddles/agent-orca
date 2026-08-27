@@ -7,7 +7,7 @@
 
 ## Context
 
-agent-orc's KnowledgeBase feature needs a vector database to store embeddings and serve nearest-neighbor queries for the RAG pipeline. The vector store is deployed **per-KnowledgeBase** as a dedicated StatefulSet managed by the operator — not as a shared cluster service. This deployment model heavily influences the selection criteria.
+agent-orca's KnowledgeBase feature needs a vector database to store embeddings and serve nearest-neighbor queries for the RAG pipeline. The vector store is deployed **per-KnowledgeBase** as a dedicated StatefulSet managed by the operator — not as a shared cluster service. This deployment model heavily influences the selection criteria.
 
 Each KnowledgeBase gets its own instance (`kb-qdrant-<name>`) with a 10Gi PVC, 256Mi–512Mi memory, and 100m CPU. The operator creates collections, upserts embeddings via gRPC, and queries via cosine similarity. The entire lifecycle — deploy, create collection, ingest, search, teardown — is managed declaratively through the KnowledgeBase CRD.
 
@@ -76,7 +76,7 @@ Each KnowledgeBase gets its own instance (`kb-qdrant-<name>`) with a 10Gi PVC, 2
 | Deployment model | Managed SaaS only. No self-hosted option. |
 | License | Proprietary. |
 
-**Why not**: Non-starter. agent-orc is a self-hosted Kubernetes operator. Requiring an external SaaS dependency for a core feature (vector search) breaks the deployment model, adds a network hop, introduces an external billing relationship, and makes air-gapped/on-prem deployments impossible.
+**Why not**: Non-starter. agent-orca is a self-hosted Kubernetes operator. Requiring an external SaaS dependency for a core feature (vector search) breaks the deployment model, adds a network hop, introduces an external billing relationship, and makes air-gapped/on-prem deployments impossible.
 
 ### ChromaDB
 
@@ -98,7 +98,7 @@ Each KnowledgeBase gets its own instance (`kb-qdrant-<name>`) with a 10Gi PVC, 2
 | Memory footprint | PostgreSQL: 128Mi minimum, but realistically 256Mi+ with shared buffers for reasonable query performance. |
 | License | PostgreSQL License (permissive). |
 
-**Why not**: pgvector is a good choice if you already run PostgreSQL and want to avoid a new dependency. We don't — agent-orc uses Redis for state and S3/GCS for checkpoints. Adding PostgreSQL to the dependency tree for vector search introduces a heavyweight operational dependency (backups, vacuuming, connection pooling, WAL management) that outweighs the benefit. Qdrant does one thing (vector search) and does it with zero operational overhead beyond a PVC.
+**Why not**: pgvector is a good choice if you already run PostgreSQL and want to avoid a new dependency. We don't — agent-orca uses Redis for state and S3/GCS for checkpoints. Adding PostgreSQL to the dependency tree for vector search introduces a heavyweight operational dependency (backups, vacuuming, connection pooling, WAL management) that outweighs the benefit. Qdrant does one thing (vector search) and does it with zero operational overhead beyond a PVC.
 
 ---
 

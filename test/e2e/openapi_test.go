@@ -32,7 +32,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/floppyfish14/agent-orc/test/utils"
+	"github.com/floppyfish14/agent-orca/test/utils"
 )
 
 // TestExternalAPIOpenAPIContract validates that a live, deployed operator serves
@@ -44,7 +44,7 @@ var _ = Describe("External API OpenAPI contract", Label("openapi"), Ordered, fun
 		acpCancel        func()
 		openAPILocal     = 18084
 		acpLocal         = 18000
-		controllerDeploy = "agent-orc-controller-manager"
+		controllerDeploy = "agent-orca-controller-manager"
 	)
 
 	// startPortForward launches kubectl port-forward for <deploy>:<port> and
@@ -157,7 +157,7 @@ var _ = Describe("External API OpenAPI contract", Label("openapi"), Ordered, fun
 		}
 		status, body := httpGet(openAPILocal, "/metrics")
 		Expect(status).To(Equal(http.StatusOK), "/metrics: %s", body)
-		Expect(body).To(ContainSubstring("agentorc_external_requests_total"),
+		Expect(body).To(ContainSubstring("agentorca_external_requests_total"),
 			"/metrics should expose the request counter:\n%s", body)
 
 		By("ACP API (8000) liveness")

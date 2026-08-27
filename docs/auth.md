@@ -1,11 +1,11 @@
 # Authentication
 
-agent-orc exposes two distinct HTTP API surfaces with different authentication models:
+agent-orca exposes two distinct HTTP API surfaces with different authentication models:
 
 | Surface | Port | Caller | Auth mechanism |
 |---------|------|--------|----------------|
-| Internal Agent API | 8082 | Agent pods, model-routers | Kubernetes TokenReview (projected SA token, audience `agentorc/model-router`) |
-| UI API | 8083 | UIProxy pod | Kubernetes TokenReview (projected SA token, audience `agentorc/ui`) |
+| Internal Agent API | 8082 | Agent pods, model-routers | Kubernetes TokenReview (projected SA token, audience `agentorca/model-router`) |
+| UI API | 8083 | UIProxy pod | Kubernetes TokenReview (projected SA token, audience `agentorca/ui`) |
 
 MCP servers have their own access-control and identity layer, documented separately in [mcp-access-control.md](mcp-access-control.md).
 
@@ -29,12 +29,12 @@ volumes:
     projected:
       sources:
         - serviceAccountToken:
-            audience: agentorc/model-router
+            audience: agentorca/model-router
             expirationSeconds: 900        # 15-minute token, auto-refreshed by kubelet
             path: token
 ```
 
-The audience is scoped to `agentorc/model-router` so the token cannot be replayed against the Kubernetes API server itself.
+The audience is scoped to `agentorca/model-router` so the token cannot be replayed against the Kubernetes API server itself.
 
 ### How the operator validates the token
 
@@ -45,7 +45,7 @@ POST /apis/authentication.k8s.io/v1/tokenreviews
 {
   "spec": {
     "token": "<bearer token from request>",
-    "audiences": ["agentorc/model-router"]
+    "audiences": ["agentorca/model-router"]
   }
 }
 ```
@@ -153,7 +153,7 @@ Internet
 Ingress / Gateway API
   │  (future: OAuth2 Proxy / OIDC / SAML here)
   ▼
-UIProxy Pod  ──── projected SA token (audience: agentorc/ui) ────▶  Operator (port 8083)
+UIProxy Pod  ──── projected SA token (audience: agentorca/ui) ────▶  Operator (port 8083)
   │                                                                   │
   │  serves React SPA                                                 │  TokenReview validates
   │  proxies /api/* to operator                                       │  SA is a valid cluster pod
@@ -163,9 +163,9 @@ Browser
 
 In this model:
 - The browser never talks directly to the operator. It only talks to the UIProxy pod.
-- The UIProxy holds a projected SA token with audience `agentorc/ui`, mounted by the kubelet and auto-refreshed every 15 minutes.
+- The UIProxy holds a projected SA token with audience `agentorca/ui`, mounted by the kubelet and auto-refreshed every 15 minutes.
 - The operator validates every inbound request via Kubernetes TokenReview — the same mechanism used for agent pods on port 8082.
-- Adding OIDC/SAML later is a configuration change to the Ingress/Gateway, not a code change to agent-orc.
+- Adding OIDC/SAML later is a configuration change to the Ingress/Gateway, not a code change to agent-orca.
 
 ### Flow comparison
 
@@ -178,19 +178,19 @@ graph LR
     subgraph "Internet-facing (BFF pattern)"
         B2[Browser] --> I[Ingress / Gateway<br/>future: OIDC proxy]
         I --> P[UIProxy Pod<br/>projected SA token]
-        P -- "Authorization: Bearer SA token<br/>audience: agentorc/ui" --> U2[Operator :8083<br/>Kubernetes TokenReview]
+        P -- "Authorization: Bearer SA token<br/>audience: agentorca/ui" --> U2[Operator :8083<br/>Kubernetes TokenReview]
         U2 --> K[Kubernetes API<br/>TokenReview]
     end
 ```
 
 ### What needs to change for the BFF pattern
 
-**Operator (`uiapi.go`):** Replace the session-token `requireAuth` middleware with Kubernetes TokenReview scoped to a `agentorc/ui` audience — the same approach used on port 8082 for `agentorc/model-router`. The `validateUIToken` implementation was prototyped during earlier work and just needs to be restored.
+**Operator (`uiapi.go`):** Replace the session-token `requireAuth` middleware with Kubernetes TokenReview scoped to a `agentorca/ui` audience — the same approach used on port 8082 for `agentorca/model-router`. The `validateUIToken` implementation was prototyped during earlier work and just needs to be restored.
 
 **UIProxy:** A small deployment (Nginx, Caddy, or a thin Go reverse proxy) that:
 1. Serves the pre-built React static assets.
-2. Proxies `/api/*` to the operator's ClusterIP, adding `Authorization: Bearer $(cat /var/run/secrets/agentorc/ui/token)` from its projected volume.
-3. Has its own ServiceAccount with a projected token: audience `agentorc/ui`, expiry 15 minutes.
+2. Proxies `/api/*` to the operator's ClusterIP, adding `Authorization: Bearer $(cat /var/run/secrets/agentorca/ui/token)` from its projected volume.
+3. Has its own ServiceAccount with a projected token: audience `agentorca/ui`, expiry 15 minutes.
 
 **NetworkPolicy:** Restrict port 8083 on the operator to `podSelector` matching only the UIProxy's SA label. Deny all other in-cluster access.
 
@@ -220,7 +220,7 @@ sequenceDiagram
 
     note over Pod,API: Internal API — Kubernetes TokenReview
     Pod->>API: POST /agentrun/default (Bearer <projected SA token>)
-    API->>K8s: TokenReview (audience: agentorc/model-router)
+    API->>K8s: TokenReview (audience: agentorca/model-router)
     K8s-->>API: authenticated: true
     API-->>Pod: 201 Created
 
@@ -245,9 +245,9 @@ sequenceDiagram
 
     B->>I: GET /api/runs
     I->>P: GET /api/runs (forwarded)
-    P->>UI: GET /api/runs<br/>Authorization: Bearer <SA token, aud: agentorc/ui>
-    UI->>K8s: TokenReview (audience: agentorc/ui)
-    K8s-->>UI: authenticated: true, user: system:serviceaccount:default:agentorc-ui-proxy
+    P->>UI: GET /api/runs<br/>Authorization: Bearer <SA token, aud: agentorca/ui>
+    UI->>K8s: TokenReview (audience: agentorca/ui)
+    K8s-->>UI: authenticated: true, user: system:serviceaccount:default:agentorca-ui-proxy
     UI-->>P: [...runs]
     P-->>I: [...runs]
     I-->>B: [...runs]

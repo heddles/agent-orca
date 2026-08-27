@@ -1,0 +1,16 @@
+apiVersion: v2
+name: agent-orca
+description: Kubernetes-native AI agent orchestrator
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - ai
+  - agents
+  - kubernetes
+  - llm
+home: https://github.com/floppyfish14/agent-orca
+sources:
+  - https://github.com/floppyfish14/agent-orca
+maintainers:
+  - name: agent-orca maintainers

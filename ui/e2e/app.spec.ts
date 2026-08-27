@@ -155,7 +155,7 @@ test.describe('Home Dashboard', () => {
     await page.goto('/')
     await expect(page.getByRole('button', { name: 'Home' })).toBeVisible()
     // Home is default, so dashboard should be visible
-    await expect(page.getByText('agent-orc')).toBeVisible()
+    await expect(page.getByText('agent-orca')).toBeVisible()
     await expect(page.getByText('AI Agent Orchestration Platform')).toBeVisible()
     // Cards should be visible
     await expect(page.getByText('Agents')).toBeVisible()

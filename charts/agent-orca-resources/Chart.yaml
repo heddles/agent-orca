@@ -1,0 +1,19 @@
+apiVersion: v2
+name: agent-orca-resources
+description: |
+  Reusable agent-orca platform resources — Agents, AgentDeployments,
+  Tools, MCPServers, KnowledgeBases, ModelProviders, ModelSelectors,
+  GuardrailPolicies, and MCP server deployments.
+  Used as a dependency by demo and test charts.
+type: library
+version: 0.2.0
+keywords:
+  - ai
+  - agents
+  - kubernetes
+  - llm
+home: https://github.com/agentorca/agent-orca
+sources:
+  - https://github.com/agentorca/agent-orca
+maintainers:
+  - name: agent-orca maintainers

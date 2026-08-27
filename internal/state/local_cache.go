@@ -48,7 +48,7 @@ const LocalCacheFileExt = ".msg.zst"
 // pod is deleted).
 //
 // On-disk checkpoint keys mirror the storage key as a path (e.g. the key
-// "agentorc/runs/<run>/state" is stored at <dir>/agentorc/runs/<run>/state.msg.zst).
+// "agentorca/runs/<run>/state" is stored at <dir>/agentorca/runs/<run>/state.msg.zst).
 // Path traversal is rejected: keys are confined to dir via filepath.Clean + a
 // prefix check, and only relative component paths are accepted.
 func NewLocalCacheStore(backing Store, dir string) Store {

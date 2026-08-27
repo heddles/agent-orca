@@ -27,7 +27,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floppyfish14/agent-orc/internal/state"
+	"github.com/floppyfish14/agent-orca/internal/state"
 )
 
 // fakeReadyStore is a minimal state.Store used only to drive /readyz's Ping path.
@@ -152,10 +152,10 @@ func TestInstrument_RecordsMetrics(t *testing.T) {
 	}
 	body, _ := io.ReadAll(m.Body)
 	_ = m.Body.Close()
-	if !strings.Contains(string(body), "agentorc_external_requests_total") {
+	if !strings.Contains(string(body), "agentorca_external_requests_total") {
 		t.Fatalf("metrics missing requests counter:\n%s", body)
 	}
-	if !strings.Contains(string(body), "agentorc_external_auth_failures_total") {
+	if !strings.Contains(string(body), "agentorca_external_auth_failures_total") {
 		t.Fatalf("metrics missing auth-failures counter:\n%s", body)
 	}
 }

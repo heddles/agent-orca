@@ -5,7 +5,7 @@
 #   kubectl create secret generic anthropic-dev-key --from-literal=api-key=<KEY>
 #   kubectl create secret generic openai-dev-key   --from-literal=api-key=<KEY>
 ---
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: ModelProvider
 metadata:
   name: test-claude-sonnet
@@ -25,7 +25,7 @@ spec:
     costPerMillionInputTokens: "3.00"
     costPerMillionOutputTokens: "15.00"
 ---
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: ModelProvider
 metadata:
   name: test-openai-gpt4
@@ -46,7 +46,7 @@ spec:
     costPerMillionInputTokens: "2.00"
     costPerMillionOutputTokens: "8.00"
 ---
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: ModelSelector
 metadata:
   name: test-router

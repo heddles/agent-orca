@@ -1,6 +1,6 @@
 # MCP Apps — Sandboxed Iframe UI
 
-MCP Apps let an MCP server embed a rich HTML panel into the agent-orc UI alongside a tool's
+MCP Apps let an MCP server embed a rich HTML panel into the agent-orca UI alongside a tool's
 text result. When a tool declares `_meta.ui.resourceUri` in the `tools/list` response, the
 model-router fetches that HTML once, caches it, and the UI renders it in a sandboxed iframe
 below the tool result — in both the RunView trace accordion and the DeploymentView chat window.
@@ -12,7 +12,7 @@ below the tool result — in both the RunView trace accordion and the Deployment
 Set `spec.allowApps: true` on the MCPServer CRD. It defaults to `false`.
 
 ```yaml
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: MCPServer
 metadata:
   name: my-mcp-server

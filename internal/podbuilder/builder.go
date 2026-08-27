@@ -26,36 +26,36 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
-	"github.com/floppyfish14/agent-orc/internal/framework"
-	"github.com/floppyfish14/agent-orc/internal/security"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
+	"github.com/floppyfish14/agent-orca/internal/framework"
+	"github.com/floppyfish14/agent-orca/internal/security"
 )
 
 const (
 	// RouterConfigKey is the key within the router config ConfigMap.
 	RouterConfigKey = "router-config.json"
 	// RouterConfigVolume is the volume name for the router config ConfigMap.
-	RouterConfigVolume = "agentorc-router-config"
+	RouterConfigVolume = "agentorca-router-config"
 	// RouterConfigDir is the mount path for the router config directory.
-	RouterConfigDir = "/etc/agentorc"
+	RouterConfigDir = "/etc/agentorca"
 
 	// TokenSecretSuffix is appended to resource names for token secrets.
 	TokenSecretSuffix = "-token"
 	// TokenVolumeName is the volume name for the token env secret.
-	TokenVolumeName = "agentorc-env"
+	TokenVolumeName = "agentorca-env"
 	// TokenEnvDir is the mount path for the token env secret.
-	TokenEnvDir = "/etc/agentorc-env"
+	TokenEnvDir = "/etc/agentorca-env"
 
 	// ProviderVolPrefix is the volume name prefix for provider API key secrets.
 	ProviderVolPrefix = "provider-"
 	// ProviderSecretsDir is the mount path for provider secret directories.
 	// Must NOT be under RouterConfigDir — the ConfigMap volume is read-only and
 	// the kubelet cannot create intermediate directories inside it.
-	ProviderSecretsDir = "/etc/agentorc-providers"
+	ProviderSecretsDir = "/etc/agentorca-providers"
 
 	// ToolSecretsDir is the base mount path for tool secret volumes.
 	// Must NOT be under RouterConfigDir for the same reason as ProviderSecretsDir.
-	ToolSecretsDir = "/etc/agentorc-tool-secrets"
+	ToolSecretsDir = "/etc/agentorca-tool-secrets"
 	// ToolSecretVolPrefix is the volume name prefix for tool secret volumes.
 	ToolSecretVolPrefix = "tool-secret-"
 
@@ -64,7 +64,7 @@ const (
 	AgentSecretVolPrefix = "agent-secret-"
 	// AgentSecretMountDir is the default mount path used for an agent secret ref when
 	// MountPath is empty (keys are injected as files under this directory).
-	AgentSecretMountDir = "/etc/agentorc-secrets"
+	AgentSecretMountDir = "/etc/agentorca-secrets"
 
 	// MCPBinDir is the base mount path for MCP sidecar tool image volumes.
 	// Each tool image is mounted at MCPBinDir/<toolName>/ via a Kubernetes
@@ -73,10 +73,10 @@ const (
 
 	// WarmCacheVolName is the volume name for the disk-backed emptyDir used as a
 	// local L1 checkpoint cache on warm pods (see WarmLocalCacheEnabled in PodConfig).
-	WarmCacheVolName = "agentorc-warm-cache"
+	WarmCacheVolName = "agentorca-warm-cache"
 	// WarmCacheMountDir is the in-container path the model-router mirrors warm-pod
 	// checkpoints to. Mounted into the model-router sidecar only.
-	WarmCacheMountDir = "/var/lib/agentorc/warm-cache"
+	WarmCacheMountDir = "/var/lib/agentorca/warm-cache"
 )
 
 // DefaultRouterResources are the resource requirements applied to the model-router
@@ -97,7 +97,7 @@ var DefaultRouterResources = corev1.ResourceRequirements{
 type PodConfig struct {
 	// --- Identity ---
 
-	// PodName is set for AgentRun pods (e.g. "agentorc-run-<name>").
+	// PodName is set for AgentRun pods (e.g. "agentorca-run-<name>").
 	// Empty for Deployment templates and warm pods that use GenerateName.
 	PodName string
 	// GenerateName is set for warm pods (e.g. "warm-<deploy>-").
@@ -110,7 +110,7 @@ type PodConfig struct {
 	// --- Agent spec ---
 
 	// Agent is the Agent CRD that defines the runtime image, framework, tools, etc.
-	Agent *agentorcv1alpha1.Agent
+	Agent *agentorcav1alpha1.Agent
 	// AgentEnv holds caller-specific env vars (e.g. AGENTORC_RUN_ID for runs,
 	// AGENTORC_AGENT for deployments). FrameworkEnvVars are appended automatically.
 	AgentEnv []corev1.EnvVar
@@ -172,7 +172,7 @@ type PodConfig struct {
 
 	// RouterBaseURL is the base URL the agent uses to reach the model-router.
 	// Defaults to "http://localhost:8080" when empty (combined-pod sidecar topology).
-	// Set to the router Service URL (e.g. "http://agentorc-router-<run>.<ns>:8080") in
+	// Set to the router Service URL (e.g. "http://agentorca-router-<run>.<ns>:8080") in
 	// split-pod topology so framework env vars point at the correct endpoint.
 	RouterBaseURL string
 

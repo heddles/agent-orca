@@ -48,13 +48,13 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
-	"github.com/floppyfish14/agent-orc/internal/apiserver"
-	"github.com/floppyfish14/agent-orc/internal/controller"
-	"github.com/floppyfish14/agent-orc/internal/postgresql"
-	"github.com/floppyfish14/agent-orc/internal/security"
-	"github.com/floppyfish14/agent-orc/internal/state"
-	agentwebhook "github.com/floppyfish14/agent-orc/internal/webhook"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
+	"github.com/floppyfish14/agent-orca/internal/apiserver"
+	"github.com/floppyfish14/agent-orca/internal/controller"
+	"github.com/floppyfish14/agent-orca/internal/postgresql"
+	"github.com/floppyfish14/agent-orca/internal/security"
+	"github.com/floppyfish14/agent-orca/internal/state"
+	agentwebhook "github.com/floppyfish14/agent-orca/internal/webhook"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -66,7 +66,7 @@ var (
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
-	utilruntime.Must(agentorcv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(agentorcav1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -106,13 +106,13 @@ func main() {
 	flag.StringVar(&internalAPICertKey, "internal-api-cert-key", "tls.key", "The name of the internal API key file.")
 	var uiAuthEnabled bool
 	flag.BoolVar(&uiAuthEnabled, "ui-auth-enabled", false,
-		"Require a valid UIProxy Kubernetes SA token (audience 'agentorc/ui') on all UI API "+
+		"Require a valid UIProxy Kubernetes SA token (audience 'agentorca/ui') on all UI API "+
 			"requests. Set to true in production deployments where the UIProxy pod provides the token. "+
 			"Leave false for local development (npm run dev + operator without the proxy).")
 	var adminBootstrapToken string
 	flag.StringVar(&adminBootstrapToken, "admin-bootstrap-token", "",
 		"One-time bootstrap: when set to a non-empty value, the operator creates a ServiceAccount "+
-			"named 'agentorc-admin' (with the agentorc.io/admin=true label) in the operator namespace "+
+			"named 'agentorca-admin' (with the agentorca.io/admin=true label) in the operator namespace "+
 			"and prints its long-lived bearer token to stdout once. Store this token like a kubeconfig "+
 			"credential; use it to call POST /admin/tenants and other admin endpoints. Ignored on "+
 			"subsequent restarts (the SA persists).")
@@ -197,7 +197,7 @@ func main() {
 		WebhookServer:          webhookServer,
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "6950eef6.agentorc.io",
+		LeaderElectionID:       "6950eef6.agentorca.io",
 		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
 		// when the Manager ends. This requires the binary to immediately end when the
 		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
@@ -242,7 +242,7 @@ func main() {
 
 	modelRouterImage := os.Getenv("MODEL_ROUTER_IMAGE")
 	if modelRouterImage == "" {
-		modelRouterImage = "ghcr.io/agentorc/agent-orc/model-router:latest"
+		modelRouterImage = "ghcr.io/agentorca/agent-orca/model-router:latest"
 	}
 
 	// Connect to the state store so the controller can read spend data
@@ -544,15 +544,15 @@ func listenAndServeOptionalTLS(srv *http.Server, certFile, keyFile string) error
 func bootstrapAdminSA(ctx context.Context, k8s kubernetes.Interface) error {
 	ns := os.Getenv("POD_NAMESPACE")
 	if ns == "" {
-		ns = "agent-orc-system"
+		ns = "agent-orca-system"
 	}
-	saName := "agentorc-admin"
+	saName := "agentorca-admin"
 
 	sa := &corev1.ServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      saName,
 			Namespace: ns,
-			Labels:    map[string]string{"agentorc.io/admin": "true"},
+			Labels:    map[string]string{"agentorca.io/admin": "true"},
 		},
 	}
 	if _, err := k8s.CoreV1().ServiceAccounts(ns).Create(ctx, sa, metav1.CreateOptions{}); err != nil && !k8serrors.IsAlreadyExists(err) { //nolint:lll
@@ -576,7 +576,7 @@ func bootstrapAdminSA(ctx context.Context, k8s kubernetes.Interface) error {
 
 	setupLog.Info("Admin SA bootstrapped — store this token like a kubeconfig credential",
 		"serviceAccount", saName, "namespace", ns)
-	fmt.Println("=== agent-orc admin bootstrap token ===")
+	fmt.Println("=== agent-orca admin bootstrap token ===")
 	fmt.Println(tokenReq.Status.Token)
 	fmt.Println("=== end bootstrap token (store securely) ===")
 	return nil

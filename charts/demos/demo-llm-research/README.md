@@ -10,7 +10,6 @@ A single research agent with:
 1. **Web Research Tools** — Fetch web pages, search via DuckDuckGo, extract PDFs, and query arXiv
 2. **25Gi Knowledge Base** — Local Ollama embeddings for RAG indexing of research documents
 3. **Periodic Ingestion** — Automatically fetches new arXiv papers every 6 hours via CronJobs
-4. **Poolside Laguna Models** — Uses laguna-m and laguna-xs series for reasoning tasks
 
 ## Evaluation Suite (Laguna XS.2 vs M.1 Code Generation)
 
@@ -91,7 +90,7 @@ No additional Python packages needed — `urllib.request` from stdlib handles HT
 
 Build the image locally:
 ```bash
-docker build -f charts/demos/demo-llm-research/Dockerfile.eval -t ghcr.io/agentorc/eval-runtime:latest .
+docker build -f charts/demos/demo-llm-research/Dockerfile.eval -t ghcr.io/agentorca/eval-runtime:latest .
 ```
 
 Push to GitHub Container Registry:
@@ -100,7 +99,7 @@ Push to GitHub Container Registry:
 echo $CR_PAT | docker login ghcr.io -u USERNAME --password-stdin
 
 # Push the image
-docker push ghcr.io/agentorc/eval-runtime:latest
+docker push ghcr.io/agentorca/eval-runtime:latest
 ```
 
 For local kind clusters, the skaffold profile automatically loads the image.
@@ -110,18 +109,18 @@ For local kind clusters, the skaffold profile automatically loads the image.
 Run evaluations:
 ```bash
 # Trigger from llm-research agent
-curl -X POST http://agent-orc-ui/api/deployments/agent-orc-system/llm-research/execute \
+curl -X POST http://agent-orca-ui/api/deployments/agent-orca-system/llm-research/execute \
   -d '{"input": "Run the full evaluation suite comparing Laguna XS.2 and M.1 models"}'
 
 # Or call coordinator directly
-curl -X POST http://agent-orc-ui/api/deployments/agent-orc-system/evaluation-coordinator/execute \
+curl -X POST http://agent-orca-ui/api/deployments/agent-orca-system/evaluation-coordinator/execute \
   -d '{"input": "Run full evaluation suite"}'
 ```
 
 Query results:
 ```bash
 # Search evaluation results
-curl -X POST http://agent-orc-ui/api/deployments/agent-orc-system/llm-research/execute \
+curl -X POST http://agent-orca-ui/api/deployments/agent-orca-system/llm-research/execute \
   -d '{"input": "Show me evaluation results for python from the evaluation-metrics-kb"}'
 ```
 
@@ -130,7 +129,6 @@ curl -X POST http://agent-orc-ui/api/deployments/agent-orc-system/llm-research/e
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                     llm-research Agent                          │
-│  Model: poolside/laguna-s-2.1                                   │
 │  Knowledge Base: llm-research-kb (25Gi Qdrant)                  │
 └─────────────────────────────────────────────────────────────────┘
           │ tools                     │ ingest
@@ -154,20 +152,20 @@ curl -X POST http://agent-orc-ui/api/deployments/agent-orc-system/llm-research/e
 
 ## Prerequisites
 
-1. **agent-orc operator** deployed in the cluster
+1. **agent-orca operator** deployed in the cluster
 2. **model-providers** chart deployed with:
-   - Poolside API key (poolside-api-key secret)
+   - Default API key (default-api-key secret)
    - Ollama embedding deployed (ollama-nomic-embed-text model provider)
 
 Deploy prerequisites:
 ```bash
 # Using skaffold
-skaffold dev -p dev  # Deploys operator + model-providers with poolside and ollama
+skaffold dev -p dev  # Deploys operator + model-providers
 
 # Or manually
 helm install model-providers charts/model-providers \
   --set providerSecrets[3].enabled=true \
-  --set providerSecrets[3].apiKey=$POOLSIDE_API_KEY \
+  --set providerSecrets[3].apiKey=$DEFAULT_API_KEY \
   --set providerSecrets[9].enabled=true
 ```
 
@@ -179,7 +177,7 @@ skaffold run -p demo-llm-research
 
 Or using helm directly:
 ```bash
-helm install demo-llm-research charts/demos/demo-llm-research -n agent-orc-system
+helm install demo-llm-research charts/demos/demo-llm-research -n agent-orca-system
 ```
 
 ## Usage
@@ -188,13 +186,13 @@ Query the agent via the chat deployment:
 
 ```bash
 # Example queries
-curl -X POST http://agent-orc-ui/api/deployments/agent-orc-system/llm-research/execute \
+curl -X POST http://agent-orca-ui/api/deployments/agent-orca-system/llm-research/execute \
   -d '{"input": "Research transformer attention mechanisms and summarize key findings"}'
 
-curl -X POST http://agent-orc-ui/api/deployments/agent-orc-system/llm-research/execute \
+curl -X POST http://agent-orca-ui/api/deployments/agent-orca-system/llm-research/execute \
   -d '{"input": "Find recent arXiv papers on mechanistic interpretability of large language models"}'
 
-curl -X POST http://agent-orc-ui/api/deployments/agent-orc-system/llm-research/execute \
+curl -X POST http://agent-orca-ui/api/deployments/agent-orca-system/llm-research/execute \
   -d '{"input": "What do we know about how LLMs represent concepts across layers?"}'
 ```
 
@@ -242,17 +240,17 @@ creates a CronJob that:
 ```bash
 skaffold delete -p demo-llm-research
 # Or
-helm uninstall demo-llm-research -n agent-orc-system
+helm uninstall demo-llm-research -n agent-orca-system
 ```
 
 ## Troubleshooting
 
-- Check MCP server logs: `kubectl logs -l app=research-tools-server -n agent-orc-system`
-- Check KB sync jobs: `kubectl get jobs -n agent-orc-system -l agentorc.io/knowledgebase=llm-research-kb`
-- Verify tools: `kubectl get tools -n agent-orc-system -l agentorc.io/mcpserver=research-tools`
+- Check MCP server logs: `kubectl logs -l app=research-tools-server -n agent-orca-system`
+- Check KB sync jobs: `kubectl get jobs -n agent-orca-system -l agentorca.io/knowledgebase=llm-research-kb`
+- Verify tools: `kubectl get tools -n agent-orca-system -l agentorca.io/mcpserver=research-tools`
 
 ### Evaluation-Specific Troubleshooting
 
-- Check evaluation coordinator: `kubectl logs -l agentorc.io/agent=evaluation-coordinator-agent -n agent-orc-system`
-- Check individual evaluation agents: `kubectl get pods -n agent-orc-system -l agentorc.io/agent=eval-python-xs2-agent`
+- Check evaluation coordinator: `kubectl logs -l agentorca.io/agent=evaluation-coordinator-agent -n agent-orca-system`
+- Check individual evaluation agents: `kubectl get pods -n agent-orca-system -l agentorca.io/agent=eval-python-xs2-agent`
 - Query evaluation metrics: search `evaluation-metrics-kb` via `_rag_search` tool

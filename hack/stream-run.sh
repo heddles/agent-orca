@@ -6,16 +6,16 @@
 # Usage:
 #   ./hack/stream-run.sh                          # namespace=default
 #   ./hack/stream-run.sh my-namespace
-#   ./hack/stream-run.sh default agent-orc-system
+#   ./hack/stream-run.sh default agent-orca-system
 
 NAMESPACE=${1:-default}
-OPERATOR_NS=${2:-agent-orc-system}
+OPERATOR_NS=${2:-agent-orca-system}
 LOCAL_PORT=18083
 
 # ── Port-forward ──────────────────────────────────────────────────────────────
 
 echo "Starting port-forward to operator on localhost:$LOCAL_PORT ..."
-kubectl port-forward -n "$OPERATOR_NS" svc/agent-orc-internal-api "$LOCAL_PORT:8083" \
+kubectl port-forward -n "$OPERATOR_NS" svc/agent-orca-internal-api "$LOCAL_PORT:8083" \
     >/dev/null 2>&1 &
 PF_PID=$!
 trap 'kill "$PF_PID" 2>/dev/null; wait "$PF_PID" 2>/dev/null' EXIT INT TERM

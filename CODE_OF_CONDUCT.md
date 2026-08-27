@@ -60,7 +60,7 @@ representative at an online or offline event.
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
 reported to the community leaders responsible for enforcement at
-security@agent-orc.io (or, if email is unavailable, open a private report via
+security@agent-orca.io (or, if email is unavailable, open a private report via
 GitHub Security Advisories — see [SECURITY.md](SECURITY.md)).
 All complaints will be reviewed and investigated promptly and fairly.
 

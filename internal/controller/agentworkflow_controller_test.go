@@ -27,14 +27,14 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
 )
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 // newWorkflow creates and applies an AgentWorkflow to the API server.
-func newWorkflow(ctx context.Context, name string, spec agentorcv1alpha1.AgentWorkflowSpec) *agentorcv1alpha1.AgentWorkflow {
-	wf := &agentorcv1alpha1.AgentWorkflow{
+func newWorkflow(ctx context.Context, name string, spec agentorcav1alpha1.AgentWorkflowSpec) *agentorcav1alpha1.AgentWorkflow {
+	wf := &agentorcav1alpha1.AgentWorkflow{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
 		Spec:       spec,
 	}
@@ -53,15 +53,15 @@ func reconcileWF(ctx context.Context, name string) reconcile.Result {
 }
 
 // getWF fetches the latest AgentWorkflow.
-func getWF(ctx context.Context, name string) *agentorcv1alpha1.AgentWorkflow {
-	wf := &agentorcv1alpha1.AgentWorkflow{}
+func getWF(ctx context.Context, name string) *agentorcav1alpha1.AgentWorkflow {
+	wf := &agentorcav1alpha1.AgentWorkflow{}
 	Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: "default"}, wf)).To(Succeed())
 	return wf
 }
 
 // getAR fetches the latest AgentRun (returns nil if not found).
-func getAR(ctx context.Context, name string) *agentorcv1alpha1.AgentRun {
-	ar := &agentorcv1alpha1.AgentRun{}
+func getAR(ctx context.Context, name string) *agentorcav1alpha1.AgentRun {
+	ar := &agentorcav1alpha1.AgentRun{}
 	if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: "default"}, ar); err != nil {
 		return nil
 	}
@@ -70,9 +70,9 @@ func getAR(ctx context.Context, name string) *agentorcv1alpha1.AgentRun {
 
 // succeedAR patches an AgentRun's status to Succeeded with the given output and spend.
 func succeedAR(ctx context.Context, name, output, spend string) {
-	ar := &agentorcv1alpha1.AgentRun{}
+	ar := &agentorcav1alpha1.AgentRun{}
 	Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: "default"}, ar)).To(Succeed())
-	ar.Status.Phase = agentorcv1alpha1.AgentRunPhaseSucceeded
+	ar.Status.Phase = agentorcav1alpha1.AgentRunPhaseSucceeded
 	ar.Status.Output = output
 	ar.Status.SpendUSD = spend
 	Expect(k8sClient.Status().Update(ctx, ar)).To(Succeed())
@@ -80,15 +80,15 @@ func succeedAR(ctx context.Context, name, output, spend string) {
 
 // failAR patches an AgentRun's status to Failed.
 func failAR(ctx context.Context, name, reason string) {
-	ar := &agentorcv1alpha1.AgentRun{}
+	ar := &agentorcav1alpha1.AgentRun{}
 	Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: "default"}, ar)).To(Succeed())
-	ar.Status.Phase = agentorcv1alpha1.AgentRunPhaseFailed
+	ar.Status.Phase = agentorcav1alpha1.AgentRunPhaseFailed
 	ar.Status.RawOutput = reason
 	Expect(k8sClient.Status().Update(ctx, ar)).To(Succeed())
 }
 
 // stepStatus returns the WorkflowStepStatus for the named step, or nil.
-func stepStatus(wf *agentorcv1alpha1.AgentWorkflow, name string) *agentorcv1alpha1.WorkflowStepStatus {
+func stepStatus(wf *agentorcav1alpha1.AgentWorkflow, name string) *agentorcav1alpha1.WorkflowStepStatus {
 	for i := range wf.Status.Steps {
 		if wf.Status.Steps[i].Name == name {
 			return &wf.Status.Steps[i]
@@ -113,7 +113,7 @@ var _ = Describe("AgentWorkflow Controller", func() {
 
 	AfterEach(func() {
 		// Best-effort cleanup.
-		wf := &agentorcv1alpha1.AgentWorkflow{}
+		wf := &agentorcav1alpha1.AgentWorkflow{}
 		if err := k8sClient.Get(ctx, types.NamespacedName{Name: wfName, Namespace: "default"}, wf); err == nil {
 			_ = k8sClient.Delete(ctx, wf)
 		}
@@ -121,8 +121,8 @@ var _ = Describe("AgentWorkflow Controller", func() {
 
 	// ── 1. Single step: Pending → Running ─────────────────────────────────────
 	It("creates an AgentRun and sets step+workflow to Running on first reconcile", func() {
-		newWorkflow(ctx, wfName, agentorcv1alpha1.AgentWorkflowSpec{
-			Steps: []agentorcv1alpha1.WorkflowStep{
+		newWorkflow(ctx, wfName, agentorcav1alpha1.AgentWorkflowSpec{
+			Steps: []agentorcav1alpha1.WorkflowStep{
 				{Name: "step1", AgentRef: "my-agent", Input: "do the thing"},
 			},
 		})
@@ -130,12 +130,12 @@ var _ = Describe("AgentWorkflow Controller", func() {
 		reconcileWF(ctx, wfName)
 
 		wf := getWF(ctx, wfName)
-		Expect(wf.Status.Phase).To(Equal(agentorcv1alpha1.AgentWorkflowPhaseRunning))
+		Expect(wf.Status.Phase).To(Equal(agentorcav1alpha1.AgentWorkflowPhaseRunning))
 		Expect(wf.Status.StartTime).NotTo(BeNil())
 
 		ss := stepStatus(wf, "step1")
 		Expect(ss).NotTo(BeNil())
-		Expect(ss.Phase).To(Equal(agentorcv1alpha1.WorkflowStepPhaseRunning))
+		Expect(ss.Phase).To(Equal(agentorcav1alpha1.WorkflowStepPhaseRunning))
 		Expect(ss.AgentRunRef).To(Equal(wfName + "-step1"))
 		Expect(ss.StartTime).NotTo(BeNil())
 
@@ -149,14 +149,14 @@ var _ = Describe("AgentWorkflow Controller", func() {
 		Expect(ar.OwnerReferences[0].Name).To(Equal(wfName))
 
 		// Workflow-step labels are present.
-		Expect(ar.Labels["agentorc.io/workflow"]).To(Equal(wfName))
-		Expect(ar.Labels["agentorc.io/workflow-step"]).To(Equal("step1"))
+		Expect(ar.Labels["agentorca.io/workflow"]).To(Equal(wfName))
+		Expect(ar.Labels["agentorca.io/workflow-step"]).To(Equal("step1"))
 	})
 
 	// ── 2. Single step: full success path ─────────────────────────────────────
 	It("transitions workflow to Succeeded when the single step AgentRun succeeds", func() {
-		newWorkflow(ctx, wfName, agentorcv1alpha1.AgentWorkflowSpec{
-			Steps: []agentorcv1alpha1.WorkflowStep{
+		newWorkflow(ctx, wfName, agentorcav1alpha1.AgentWorkflowSpec{
+			Steps: []agentorcav1alpha1.WorkflowStep{
 				{Name: "step1", AgentRef: "my-agent", Input: "summarise"},
 			},
 		})
@@ -171,12 +171,12 @@ var _ = Describe("AgentWorkflow Controller", func() {
 		reconcileWF(ctx, wfName)
 
 		wf := getWF(ctx, wfName)
-		Expect(wf.Status.Phase).To(Equal(agentorcv1alpha1.AgentWorkflowPhaseSucceeded))
+		Expect(wf.Status.Phase).To(Equal(agentorcav1alpha1.AgentWorkflowPhaseSucceeded))
 		Expect(wf.Status.CompletionTime).NotTo(BeNil())
 		Expect(wf.Status.TotalSpendUSD).To(Equal("0.001234"))
 
 		ss := stepStatus(wf, "step1")
-		Expect(ss.Phase).To(Equal(agentorcv1alpha1.WorkflowStepPhaseSucceeded))
+		Expect(ss.Phase).To(Equal(agentorcav1alpha1.WorkflowStepPhaseSucceeded))
 		Expect(ss.Output).To(Equal("great summary"))
 		Expect(ss.SpendUSD).To(Equal("0.001234"))
 		Expect(ss.CompletionTime).NotTo(BeNil())
@@ -184,8 +184,8 @@ var _ = Describe("AgentWorkflow Controller", func() {
 
 	// ── 3. Linear chain with template variable resolution ─────────────────────
 	It("threads step1 output into step2 input via {{steps.step1.output}}", func() {
-		newWorkflow(ctx, wfName, agentorcv1alpha1.AgentWorkflowSpec{
-			Steps: []agentorcv1alpha1.WorkflowStep{
+		newWorkflow(ctx, wfName, agentorcav1alpha1.AgentWorkflowSpec{
+			Steps: []agentorcav1alpha1.WorkflowStep{
 				{Name: "research", AgentRef: "researcher", Input: "Research quantum computing."},
 				{
 					Name:      "analyze",
@@ -200,8 +200,8 @@ var _ = Describe("AgentWorkflow Controller", func() {
 		reconcileWF(ctx, wfName)
 
 		wf := getWF(ctx, wfName)
-		Expect(stepStatus(wf, "research").Phase).To(Equal(agentorcv1alpha1.WorkflowStepPhaseRunning))
-		Expect(stepStatus(wf, "analyze").Phase).To(Equal(agentorcv1alpha1.WorkflowStepPhasePending))
+		Expect(stepStatus(wf, "research").Phase).To(Equal(agentorcav1alpha1.WorkflowStepPhaseRunning))
+		Expect(stepStatus(wf, "analyze").Phase).To(Equal(agentorcav1alpha1.WorkflowStepPhasePending))
 		Expect(getAR(ctx, wfName+"-analyze")).To(BeNil())
 
 		// research step completes with output.
@@ -211,8 +211,8 @@ var _ = Describe("AgentWorkflow Controller", func() {
 		reconcileWF(ctx, wfName)
 
 		wf = getWF(ctx, wfName)
-		Expect(stepStatus(wf, "research").Phase).To(Equal(agentorcv1alpha1.WorkflowStepPhaseSucceeded))
-		Expect(stepStatus(wf, "analyze").Phase).To(Equal(agentorcv1alpha1.WorkflowStepPhaseRunning))
+		Expect(stepStatus(wf, "research").Phase).To(Equal(agentorcav1alpha1.WorkflowStepPhaseSucceeded))
+		Expect(stepStatus(wf, "analyze").Phase).To(Equal(agentorcav1alpha1.WorkflowStepPhaseRunning))
 
 		// Template variable resolved in analyze's AgentRun input.
 		ar := getAR(ctx, wfName+"-analyze")
@@ -224,14 +224,14 @@ var _ = Describe("AgentWorkflow Controller", func() {
 		reconcileWF(ctx, wfName)
 
 		wf = getWF(ctx, wfName)
-		Expect(wf.Status.Phase).To(Equal(agentorcv1alpha1.AgentWorkflowPhaseSucceeded))
+		Expect(wf.Status.Phase).To(Equal(agentorcav1alpha1.AgentWorkflowPhaseSucceeded))
 		Expect(wf.Status.TotalSpendUSD).To(Equal("0.001300"))
 	})
 
 	// ── 4. Fan-out: two parallel steps share a dependency ─────────────────────
 	It("starts two parallel steps in the same reconcile once their shared dep succeeds", func() {
-		newWorkflow(ctx, wfName, agentorcv1alpha1.AgentWorkflowSpec{
-			Steps: []agentorcv1alpha1.WorkflowStep{
+		newWorkflow(ctx, wfName, agentorcav1alpha1.AgentWorkflowSpec{
+			Steps: []agentorcav1alpha1.WorkflowStep{
 				{Name: "gather", AgentRef: "data-agent", Input: "gather data"},
 				{Name: "emea", AgentRef: "analyst", DependsOn: []string{"gather"}, Input: "analyze EMEA"},
 				{Name: "apac", AgentRef: "analyst", DependsOn: []string{"gather"}, Input: "analyze APAC"},
@@ -241,9 +241,9 @@ var _ = Describe("AgentWorkflow Controller", func() {
 		// Reconcile #1: gather starts.
 		reconcileWF(ctx, wfName)
 		wf := getWF(ctx, wfName)
-		Expect(stepStatus(wf, "gather").Phase).To(Equal(agentorcv1alpha1.WorkflowStepPhaseRunning))
-		Expect(stepStatus(wf, "emea").Phase).To(Equal(agentorcv1alpha1.WorkflowStepPhasePending))
-		Expect(stepStatus(wf, "apac").Phase).To(Equal(agentorcv1alpha1.WorkflowStepPhasePending))
+		Expect(stepStatus(wf, "gather").Phase).To(Equal(agentorcav1alpha1.WorkflowStepPhaseRunning))
+		Expect(stepStatus(wf, "emea").Phase).To(Equal(agentorcav1alpha1.WorkflowStepPhasePending))
+		Expect(stepStatus(wf, "apac").Phase).To(Equal(agentorcav1alpha1.WorkflowStepPhasePending))
 
 		// gather succeeds.
 		succeedAR(ctx, wfName+"-gather", "raw data", "0.001")
@@ -251,16 +251,16 @@ var _ = Describe("AgentWorkflow Controller", func() {
 		// Reconcile #2: both parallel steps start in the same pass.
 		reconcileWF(ctx, wfName)
 		wf = getWF(ctx, wfName)
-		Expect(stepStatus(wf, "emea").Phase).To(Equal(agentorcv1alpha1.WorkflowStepPhaseRunning))
-		Expect(stepStatus(wf, "apac").Phase).To(Equal(agentorcv1alpha1.WorkflowStepPhaseRunning))
+		Expect(stepStatus(wf, "emea").Phase).To(Equal(agentorcav1alpha1.WorkflowStepPhaseRunning))
+		Expect(stepStatus(wf, "apac").Phase).To(Equal(agentorcav1alpha1.WorkflowStepPhaseRunning))
 		Expect(getAR(ctx, wfName+"-emea")).NotTo(BeNil())
 		Expect(getAR(ctx, wfName+"-apac")).NotTo(BeNil())
 	})
 
 	// ── 5. Step failure + onStepFailure=stop → workflow Failed ────────────────
 	It("fails the workflow immediately when a step fails and onStepFailure=stop", func() {
-		newWorkflow(ctx, wfName, agentorcv1alpha1.AgentWorkflowSpec{
-			Steps: []agentorcv1alpha1.WorkflowStep{
+		newWorkflow(ctx, wfName, agentorcav1alpha1.AgentWorkflowSpec{
+			Steps: []agentorcav1alpha1.WorkflowStep{
 				{Name: "step1", AgentRef: "my-agent", Input: "task"},
 			},
 			// stop is the default; set it explicitly for clarity.
@@ -272,19 +272,19 @@ var _ = Describe("AgentWorkflow Controller", func() {
 		reconcileWF(ctx, wfName)
 
 		wf := getWF(ctx, wfName)
-		Expect(wf.Status.Phase).To(Equal(agentorcv1alpha1.AgentWorkflowPhaseFailed))
+		Expect(wf.Status.Phase).To(Equal(agentorcav1alpha1.AgentWorkflowPhaseFailed))
 		Expect(wf.Status.CompletionTime).NotTo(BeNil())
 
 		ss := stepStatus(wf, "step1")
-		Expect(ss.Phase).To(Equal(agentorcv1alpha1.WorkflowStepPhaseFailed))
+		Expect(ss.Phase).To(Equal(agentorcav1alpha1.WorkflowStepPhaseFailed))
 		Expect(ss.FailureReason).To(ContainSubstring("OOM killed"))
 	})
 
 	// ── 6. onStepFailure=continue → failed step Skipped, dependent runs ───────
 	It("skips a failed step and continues with dependents when onStepFailure=continue", func() {
-		newWorkflow(ctx, wfName, agentorcv1alpha1.AgentWorkflowSpec{
+		newWorkflow(ctx, wfName, agentorcav1alpha1.AgentWorkflowSpec{
 			OnStepFailure: "continue",
-			Steps: []agentorcv1alpha1.WorkflowStep{
+			Steps: []agentorcav1alpha1.WorkflowStep{
 				{Name: "optional", AgentRef: "enricher", Input: "enrich"},
 				{
 					Name:      "report",
@@ -302,11 +302,11 @@ var _ = Describe("AgentWorkflow Controller", func() {
 		reconcileWF(ctx, wfName)
 
 		wf := getWF(ctx, wfName)
-		Expect(stepStatus(wf, "optional").Phase).To(Equal(agentorcv1alpha1.WorkflowStepPhaseSkipped))
-		Expect(stepStatus(wf, "report").Phase).To(Equal(agentorcv1alpha1.WorkflowStepPhaseRunning))
+		Expect(stepStatus(wf, "optional").Phase).To(Equal(agentorcav1alpha1.WorkflowStepPhaseSkipped))
+		Expect(stepStatus(wf, "report").Phase).To(Equal(agentorcav1alpha1.WorkflowStepPhaseRunning))
 
 		// Workflow should still be Running (not Failed).
-		Expect(wf.Status.Phase).To(Equal(agentorcv1alpha1.AgentWorkflowPhaseRunning))
+		Expect(wf.Status.Phase).To(Equal(agentorcav1alpha1.AgentWorkflowPhaseRunning))
 
 		// Empty template var since optional was skipped (output="").
 		ar := getAR(ctx, wfName+"-report")
@@ -316,13 +316,13 @@ var _ = Describe("AgentWorkflow Controller", func() {
 		reconcileWF(ctx, wfName)
 
 		wf = getWF(ctx, wfName)
-		Expect(wf.Status.Phase).To(Equal(agentorcv1alpha1.AgentWorkflowPhaseSucceeded))
+		Expect(wf.Status.Phase).To(Equal(agentorcav1alpha1.AgentWorkflowPhaseSucceeded))
 	})
 
 	// ── 7. CEL condition false → step Skipped ─────────────────────────────────
 	It("skips a step whose condition evaluates to false", func() {
-		newWorkflow(ctx, wfName, agentorcv1alpha1.AgentWorkflowSpec{
-			Steps: []agentorcv1alpha1.WorkflowStep{
+		newWorkflow(ctx, wfName, agentorcav1alpha1.AgentWorkflowSpec{
+			Steps: []agentorcav1alpha1.WorkflowStep{
 				{Name: "gate", AgentRef: "gater", Input: "gate"},
 				{
 					Name:      "conditional",
@@ -342,20 +342,20 @@ var _ = Describe("AgentWorkflow Controller", func() {
 		reconcileWF(ctx, wfName)
 
 		wf := getWF(ctx, wfName)
-		Expect(stepStatus(wf, "gate").Phase).To(Equal(agentorcv1alpha1.WorkflowStepPhaseSucceeded))
-		Expect(stepStatus(wf, "conditional").Phase).To(Equal(agentorcv1alpha1.WorkflowStepPhaseSkipped))
+		Expect(stepStatus(wf, "gate").Phase).To(Equal(agentorcav1alpha1.WorkflowStepPhaseSucceeded))
+		Expect(stepStatus(wf, "conditional").Phase).To(Equal(agentorcav1alpha1.WorkflowStepPhaseSkipped))
 		Expect(getAR(ctx, wfName+"-conditional")).To(BeNil())
 
 		// All steps terminal → workflow Succeeded.
 		reconcileWF(ctx, wfName)
 		wf = getWF(ctx, wfName)
-		Expect(wf.Status.Phase).To(Equal(agentorcv1alpha1.AgentWorkflowPhaseSucceeded))
+		Expect(wf.Status.Phase).To(Equal(agentorcav1alpha1.AgentWorkflowPhaseSucceeded))
 	})
 
 	// ── 8. CEL condition true → step runs ─────────────────────────────────────
 	It("runs a step whose condition evaluates to true", func() {
-		newWorkflow(ctx, wfName, agentorcv1alpha1.AgentWorkflowSpec{
-			Steps: []agentorcv1alpha1.WorkflowStep{
+		newWorkflow(ctx, wfName, agentorcav1alpha1.AgentWorkflowSpec{
+			Steps: []agentorcav1alpha1.WorkflowStep{
 				{Name: "gate", AgentRef: "gater", Input: "gate"},
 				{
 					Name:      "conditional",
@@ -372,15 +372,15 @@ var _ = Describe("AgentWorkflow Controller", func() {
 		reconcileWF(ctx, wfName)
 
 		wf := getWF(ctx, wfName)
-		Expect(stepStatus(wf, "conditional").Phase).To(Equal(agentorcv1alpha1.WorkflowStepPhaseRunning))
+		Expect(stepStatus(wf, "conditional").Phase).To(Equal(agentorcav1alpha1.WorkflowStepPhaseRunning))
 		Expect(getAR(ctx, wfName+"-conditional")).NotTo(BeNil())
 	})
 
 	// ── 9. Budget cap exceeded → workflow Failed ──────────────────────────────
 	It("fails the workflow when cumulative spend exceeds the budget cap", func() {
-		newWorkflow(ctx, wfName, agentorcv1alpha1.AgentWorkflowSpec{
-			BudgetCap: &agentorcv1alpha1.WorkflowBudgetCap{Total: "0.001"},
-			Steps: []agentorcv1alpha1.WorkflowStep{
+		newWorkflow(ctx, wfName, agentorcav1alpha1.AgentWorkflowSpec{
+			BudgetCap: &agentorcav1alpha1.WorkflowBudgetCap{Total: "0.001"},
+			Steps: []agentorcav1alpha1.WorkflowStep{
 				{Name: "expensive", AgentRef: "big-model", Input: "expensive task"},
 			},
 		})
@@ -391,43 +391,43 @@ var _ = Describe("AgentWorkflow Controller", func() {
 		reconcileWF(ctx, wfName)
 
 		wf := getWF(ctx, wfName)
-		Expect(wf.Status.Phase).To(Equal(agentorcv1alpha1.AgentWorkflowPhaseFailed))
+		Expect(wf.Status.Phase).To(Equal(agentorcav1alpha1.AgentWorkflowPhaseFailed))
 		Expect(wf.Status.TotalSpendUSD).NotTo(BeEmpty())
 	})
 
 	// ── 10. Workflow timeout → workflow Failed ────────────────────────────────
 	It("fails the workflow when the wall-clock timeout is exceeded", func() {
-		wf := newWorkflow(ctx, wfName, agentorcv1alpha1.AgentWorkflowSpec{
+		wf := newWorkflow(ctx, wfName, agentorcav1alpha1.AgentWorkflowSpec{
 			Timeout: &metav1.Duration{Duration: 1 * time.Second},
-			Steps: []agentorcv1alpha1.WorkflowStep{
+			Steps: []agentorcav1alpha1.WorkflowStep{
 				{Name: "slow", AgentRef: "slow-agent", Input: "slow task"},
 			},
 		})
 
 		// Manually set StartTime in the past so timeout has already elapsed.
 		past := metav1.NewTime(time.Now().Add(-10 * time.Second))
-		wf.Status.Phase = agentorcv1alpha1.AgentWorkflowPhaseRunning
+		wf.Status.Phase = agentorcav1alpha1.AgentWorkflowPhaseRunning
 		wf.Status.StartTime = &past
 		Expect(k8sClient.Status().Update(ctx, wf)).To(Succeed())
 
 		reconcileWF(ctx, wfName)
 
 		wf = getWF(ctx, wfName)
-		Expect(wf.Status.Phase).To(Equal(agentorcv1alpha1.AgentWorkflowPhaseFailed))
+		Expect(wf.Status.Phase).To(Equal(agentorcav1alpha1.AgentWorkflowPhaseFailed))
 		Expect(wf.Status.CompletionTime).NotTo(BeNil())
 	})
 
 	// ── 11. Terminal workflow is not re-reconciled ────────────────────────────
 	It("returns immediately without changes when the workflow is already terminal", func() {
-		wf := newWorkflow(ctx, wfName, agentorcv1alpha1.AgentWorkflowSpec{
-			Steps: []agentorcv1alpha1.WorkflowStep{
+		wf := newWorkflow(ctx, wfName, agentorcav1alpha1.AgentWorkflowSpec{
+			Steps: []agentorcav1alpha1.WorkflowStep{
 				{Name: "step1", AgentRef: "my-agent", Input: "task"},
 			},
 		})
 
 		// Force terminal state directly.
 		now := metav1.Now()
-		wf.Status.Phase = agentorcv1alpha1.AgentWorkflowPhaseSucceeded
+		wf.Status.Phase = agentorcav1alpha1.AgentWorkflowPhaseSucceeded
 		wf.Status.CompletionTime = &now
 		Expect(k8sClient.Status().Update(ctx, wf)).To(Succeed())
 
@@ -438,13 +438,13 @@ var _ = Describe("AgentWorkflow Controller", func() {
 		Expect(getAR(ctx, wfName+"-step1")).To(BeNil())
 
 		wf = getWF(ctx, wfName)
-		Expect(wf.Status.Phase).To(Equal(agentorcv1alpha1.AgentWorkflowPhaseSucceeded))
+		Expect(wf.Status.Phase).To(Equal(agentorcav1alpha1.AgentWorkflowPhaseSucceeded))
 	})
 
 	// ── 12. AgentRun deleted externally → step Failed ────────────────────────
 	It("marks a running step as Failed when its AgentRun is deleted externally", func() {
-		newWorkflow(ctx, wfName, agentorcv1alpha1.AgentWorkflowSpec{
-			Steps: []agentorcv1alpha1.WorkflowStep{
+		newWorkflow(ctx, wfName, agentorcav1alpha1.AgentWorkflowSpec{
+			Steps: []agentorcav1alpha1.WorkflowStep{
 				{Name: "step1", AgentRef: "my-agent", Input: "task"},
 			},
 		})
@@ -460,14 +460,14 @@ var _ = Describe("AgentWorkflow Controller", func() {
 
 		wf := getWF(ctx, wfName)
 		ss := stepStatus(wf, "step1")
-		Expect(ss.Phase).To(Equal(agentorcv1alpha1.WorkflowStepPhaseFailed))
+		Expect(ss.Phase).To(Equal(agentorcav1alpha1.WorkflowStepPhaseFailed))
 		Expect(ss.FailureReason).To(ContainSubstring("deleted"))
 	})
 
 	// ── 13. Idempotency: reconcile on in-progress workflow is safe ────────────
 	It("does not create duplicate AgentRuns when reconciled multiple times while Running", func() {
-		newWorkflow(ctx, wfName, agentorcv1alpha1.AgentWorkflowSpec{
-			Steps: []agentorcv1alpha1.WorkflowStep{
+		newWorkflow(ctx, wfName, agentorcav1alpha1.AgentWorkflowSpec{
+			Steps: []agentorcav1alpha1.WorkflowStep{
 				{Name: "step1", AgentRef: "my-agent", Input: "task"},
 			},
 		})
@@ -479,11 +479,11 @@ var _ = Describe("AgentWorkflow Controller", func() {
 		Expect(result.RequeueAfter).To(Equal(workflowPollInterval))
 
 		// Still only one AgentRun.
-		arList := &agentorcv1alpha1.AgentRunList{}
+		arList := &agentorcav1alpha1.AgentRunList{}
 		Expect(k8sClient.List(ctx, arList)).To(Succeed())
 		count := 0
 		for _, ar := range arList.Items {
-			if ar.Labels["agentorc.io/workflow"] == wfName {
+			if ar.Labels["agentorca.io/workflow"] == wfName {
 				count++
 			}
 		}
@@ -493,8 +493,8 @@ var _ = Describe("AgentWorkflow Controller", func() {
 	// ── 14. Step-level timeout propagation ────────────────────────────────────
 	It("passes step-level timeout to the created AgentRun", func() {
 		stepTimeout := metav1.Duration{Duration: 5 * time.Minute}
-		newWorkflow(ctx, wfName, agentorcv1alpha1.AgentWorkflowSpec{
-			Steps: []agentorcv1alpha1.WorkflowStep{
+		newWorkflow(ctx, wfName, agentorcav1alpha1.AgentWorkflowSpec{
+			Steps: []agentorcav1alpha1.WorkflowStep{
 				{Name: "step1", AgentRef: "my-agent", Input: "task", Timeout: &stepTimeout},
 			},
 		})
@@ -509,8 +509,8 @@ var _ = Describe("AgentWorkflow Controller", func() {
 
 	// ── 15. Full fan-in pipeline ──────────────────────────────────────────────
 	It("completes a gather → [emea, apac] → merge fan-in pipeline", func() {
-		newWorkflow(ctx, wfName, agentorcv1alpha1.AgentWorkflowSpec{
-			Steps: []agentorcv1alpha1.WorkflowStep{
+		newWorkflow(ctx, wfName, agentorcav1alpha1.AgentWorkflowSpec{
+			Steps: []agentorcav1alpha1.WorkflowStep{
 				{Name: "gather", AgentRef: "data-agent", Input: "gather"},
 				{
 					Name: "emea", AgentRef: "analyst", DependsOn: []string{"gather"},
@@ -536,9 +536,9 @@ var _ = Describe("AgentWorkflow Controller", func() {
 		// Phase 2: emea and apac start in parallel.
 		reconcileWF(ctx, wfName)
 		wf := getWF(ctx, wfName)
-		Expect(stepStatus(wf, "emea").Phase).To(Equal(agentorcv1alpha1.WorkflowStepPhaseRunning))
-		Expect(stepStatus(wf, "apac").Phase).To(Equal(agentorcv1alpha1.WorkflowStepPhaseRunning))
-		Expect(stepStatus(wf, "merge").Phase).To(Equal(agentorcv1alpha1.WorkflowStepPhasePending))
+		Expect(stepStatus(wf, "emea").Phase).To(Equal(agentorcav1alpha1.WorkflowStepPhaseRunning))
+		Expect(stepStatus(wf, "apac").Phase).To(Equal(agentorcav1alpha1.WorkflowStepPhaseRunning))
+		Expect(stepStatus(wf, "merge").Phase).To(Equal(agentorcav1alpha1.WorkflowStepPhasePending))
 
 		succeedAR(ctx, wfName+"-emea", "emea results", "0.001")
 		succeedAR(ctx, wfName+"-apac", "apac results", "0.001")
@@ -546,7 +546,7 @@ var _ = Describe("AgentWorkflow Controller", func() {
 		// Phase 3: merge starts with both outputs resolved.
 		reconcileWF(ctx, wfName)
 		wf = getWF(ctx, wfName)
-		Expect(stepStatus(wf, "merge").Phase).To(Equal(agentorcv1alpha1.WorkflowStepPhaseRunning))
+		Expect(stepStatus(wf, "merge").Phase).To(Equal(agentorcav1alpha1.WorkflowStepPhaseRunning))
 
 		ar := getAR(ctx, wfName+"-merge")
 		Expect(ar.Spec.Input).To(ContainSubstring("EMEA: emea results"))
@@ -557,7 +557,7 @@ var _ = Describe("AgentWorkflow Controller", func() {
 		// Phase 4: workflow Succeeded.
 		reconcileWF(ctx, wfName)
 		wf = getWF(ctx, wfName)
-		Expect(wf.Status.Phase).To(Equal(agentorcv1alpha1.AgentWorkflowPhaseSucceeded))
+		Expect(wf.Status.Phase).To(Equal(agentorcav1alpha1.AgentWorkflowPhaseSucceeded))
 		// Total spend across all 4 steps.
 		Expect(wf.Status.TotalSpendUSD).To(Equal("0.005000"))
 	})
@@ -567,14 +567,14 @@ var _ = Describe("AgentWorkflow Controller", func() {
 
 var _ = Describe("resolveTemplates", func() {
 	It("replaces a single placeholder", func() {
-		steps := []agentorcv1alpha1.WorkflowStepStatus{
+		steps := []agentorcav1alpha1.WorkflowStepStatus{
 			{Name: "step1", Output: "hello world"},
 		}
 		Expect(resolveTemplates("Input: {{steps.step1.output}}", steps)).To(Equal("Input: hello world"))
 	})
 
 	It("replaces multiple placeholders", func() {
-		steps := []agentorcv1alpha1.WorkflowStepStatus{
+		steps := []agentorcav1alpha1.WorkflowStepStatus{
 			{Name: "a", Output: "AAA"},
 			{Name: "b", Output: "BBB"},
 		}
@@ -582,22 +582,22 @@ var _ = Describe("resolveTemplates", func() {
 	})
 
 	It("leaves input unchanged when no placeholders match", func() {
-		steps := []agentorcv1alpha1.WorkflowStepStatus{{Name: "x", Output: "X"}}
+		steps := []agentorcav1alpha1.WorkflowStepStatus{{Name: "x", Output: "X"}}
 		input := "no placeholders here"
 		Expect(resolveTemplates(input, steps)).To(Equal(input))
 	})
 
 	It("replaces a placeholder with empty string when step output is empty", func() {
-		steps := []agentorcv1alpha1.WorkflowStepStatus{{Name: "empty", Output: ""}}
+		steps := []agentorcav1alpha1.WorkflowStepStatus{{Name: "empty", Output: ""}}
 		Expect(resolveTemplates("prefix {{steps.empty.output}} suffix", steps)).To(Equal("prefix  suffix"))
 	})
 })
 
 var _ = Describe("evalCondition", func() {
-	makeIndex := func(name, phase, output string) map[string]*agentorcv1alpha1.WorkflowStepStatus { //nolint:unparam
+	makeIndex := func(name, phase, output string) map[string]*agentorcav1alpha1.WorkflowStepStatus { //nolint:unparam
 
-		return map[string]*agentorcv1alpha1.WorkflowStepStatus{
-			name: {Name: name, Phase: agentorcv1alpha1.WorkflowStepPhase(phase), Output: output},
+		return map[string]*agentorcav1alpha1.WorkflowStepStatus{
+			name: {Name: name, Phase: agentorcav1alpha1.WorkflowStepPhase(phase), Output: output},
 		}
 	}
 

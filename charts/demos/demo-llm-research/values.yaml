@@ -1,5 +1,5 @@
 nameOverride: ""
-agent-orc-resources:
+agent-orca-resources:
   # ── MCPServer ────────────────────────────────────────────────────────────────
   #
   # research-tools: HTTP transport MCP server providing web fetching, PDF extraction,
@@ -13,12 +13,12 @@ agent-orc-resources:
   mcpServers:
     - name: research-tools
       transport: http
-      url: "http://research-tools-server.agent-orc-system.svc.cluster.local:8080"
+      url: "http://research-tools-server.agent-orca-system.svc.cluster.local:8080"
       allowedAgents:
         - llm-research-agent
         - _controller
       networkEgress:
-        - host: research-tools-server.agent-orc-system.svc.cluster.local
+        - host: research-tools-server.agent-orca-system.svc.cluster.local
           port: 8080
           protocol: TCP
         - host: export.arxiv.org
@@ -102,7 +102,7 @@ agent-orc-resources:
   # ── Agent ───────────────────────────────────────────────────────────────────
   agents:
     - name: llm-research-agent
-      modelSelectorRef: poolside
+      modelSelectorRef: default
       systemPrompt: |
         You are an autonomous LLM research agent. Your mission is to build a comprehensive
         knowledge base about how LLMs work internally — from attention mechanisms to layer
@@ -161,7 +161,7 @@ agent-orc-resources:
         - llm-research-kb
       runtime:
         inputMode: http
-        ociRef: "ghcr.io/agentorc/agent-orc/openai-reference:latest"
+        ociRef: "ghcr.io/agentorca/agent-orca/openai-reference:latest"
         framework: openai-compatible
       memory:
         checkpointEvery: 5

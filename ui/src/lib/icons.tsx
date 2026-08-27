@@ -1,5 +1,5 @@
 /**
- * Icon system for agent-orc UI.
+ * Icon system for agent-orca UI.
  *
  * Replaces emoji with consistent, stroke-weight-matched SVG icons from
  * Lucide React. All icons render at the same 1.5px stroke for visual harmony

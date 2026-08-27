@@ -1,6 +1,6 @@
 # Framework: semantic-kernel (Tier 2 — init container config injection)
 #
-# The operator writes appsettings.json to /etc/agentorc-framework/ via an init
+# The operator writes appsettings.json to /etc/agentorca-framework/ via an init
 # container, then sets APPSETTINGS_PATH, AZURE_OPENAI_ENDPOINT, and OPENAI_ENDPOINT
 # env vars. Semantic Kernel reads the endpoint from OPENAI_ENDPOINT so requests
 # flow through the model-router sidecar.
@@ -9,7 +9,7 @@
 # Agent: Semantic Kernel Python 1.x ChatCompletion
 #        (https://github.com/microsoft/semantic-kernel)
 ---
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: Agent
 metadata:
   name: test-semantic-kernel
@@ -81,7 +81,7 @@ spec:
       cpu: 500m
       memory: 1Gi
 ---
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: AgentRun
 metadata:
   name: test-semantic-kernel-run

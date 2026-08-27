@@ -34,9 +34,9 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
-	"github.com/floppyfish14/agent-orc/internal/security"
-	"github.com/floppyfish14/agent-orc/internal/state"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
+	"github.com/floppyfish14/agent-orca/internal/security"
+	"github.com/floppyfish14/agent-orca/internal/state"
 )
 
 // ExternalAPIServer handles the external-facing REST API for enterprise integrations.
@@ -52,7 +52,7 @@ type ExternalAPIServer struct {
 	rateLimiter *RateLimiter
 
 	// Admin surface (under /admin/*) authenticates via Kubernetes SA token +
-	// the `agentorc.io/admin` label, separately from the tenant JWT auth above.
+	// the `agentorca.io/admin` label, separately from the tenant JWT auth above.
 	// Both fields are injectable so requireAdminAuth is fully unit-testable.
 	reviewSAToken func(ctx context.Context, token string) (username string, ok bool, err error)
 	isAdminSA     func(ctx context.Context, namespace, name string) (bool, error)
@@ -79,7 +79,7 @@ func (s *ExternalAPIServer) adminNamespace() string {
 	if ns := os.Getenv("POD_NAMESPACE"); ns != "" {
 		return ns
 	}
-	return "agent-orc-system" //nolint:goconst
+	return "agent-orca-system" //nolint:goconst
 }
 
 // defaultReviewSAToken authenticates a Kubernetes SA token via TokenReview
@@ -110,7 +110,7 @@ func (s *ExternalAPIServer) defaultIsAdminSA(ctx context.Context, namespace, nam
 	if err != nil {
 		return false, err
 	}
-	return sa.Labels["agentorc.io/admin"] == "true", nil
+	return sa.Labels["agentorca.io/admin"] == "true", nil
 }
 
 // Handler returns an http.Handler for the external API.
@@ -134,7 +134,7 @@ func (s *ExternalAPIServer) Handler() http.Handler {
 	mux.HandleFunc("/v1/tasks/", s.handleTaskByID)
 
 	// /admin/* is a separate surface: authenticated by Kubernetes ServiceAccount
-	// token + the `agentorc.io/admin` label (requireAdminAuth), NOT by the tenant
+	// token + the `agentorca.io/admin` label (requireAdminAuth), NOT by the tenant
 	// JWT middleware above.
 	adminMux := http.NewServeMux()
 	adminMux.HandleFunc("/admin/tenants", s.handleAdminTenants)
@@ -161,7 +161,7 @@ type TaskSubmission struct {
 	Metadata map[string]string `json:"metadata,omitempty"`
 	// Egress configures durable result delivery to an external message bus.
 	// +optional
-	Egress *agentorcv1alpha1.EgressConfig `json:"egress,omitempty"`
+	Egress *agentorcav1alpha1.EgressConfig `json:"egress,omitempty"`
 }
 
 // TaskCallback configures webhook delivery on task completion.
@@ -269,7 +269,7 @@ func (s *ExternalAPIServer) createTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Verify the agent exists in the target namespace.
-	var agent agentorcv1alpha1.Agent
+	var agent agentorcav1alpha1.Agent
 	if err := s.crdClient.Get(r.Context(), client.ObjectKey{
 		Name: req.Agent, Namespace: tenant.Namespace,
 	}, &agent); err != nil {
@@ -294,17 +294,17 @@ func (s *ExternalAPIServer) createTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Build the AgentRun CR.
-	run := &agentorcv1alpha1.AgentRun{
+	run := &agentorcav1alpha1.AgentRun{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: fmt.Sprintf("task-%s-", req.Agent),
 			Namespace:    tenant.Namespace,
 			Labels: map[string]string{
-				security.LabelManagedBy:     security.ManagedByValue,
-				"agentorc.io/external-task": "true",
-				"agentorc.io/tenant":        tenant.TenantName,
+				security.LabelManagedBy:      security.ManagedByValue,
+				"agentorca.io/external-task": "true",
+				"agentorca.io/tenant":        tenant.TenantName,
 			},
 		},
-		Spec: agentorcv1alpha1.AgentRunSpec{
+		Spec: agentorcav1alpha1.AgentRunSpec{
 			AgentRef: req.Agent,
 			Input:    req.Input,
 		},
@@ -316,11 +316,11 @@ func (s *ExternalAPIServer) createTask(w http.ResponseWriter, r *http.Request) {
 			run.Annotations = make(map[string]string)
 		}
 		if cid, ok := req.Metadata["correlationId"]; ok {
-			run.Labels["agentorc.io/correlation-id"] = cid
+			run.Labels["agentorca.io/correlation-id"] = cid
 		}
 		// Store all metadata as annotations.
 		for k, v := range req.Metadata {
-			run.Annotations["agentorc.io/meta-"+k] = v
+			run.Annotations["agentorca.io/meta-"+k] = v
 		}
 	}
 
@@ -334,7 +334,7 @@ func (s *ExternalAPIServer) createTask(w http.ResponseWriter, r *http.Request) {
 
 	// Set callbacks.
 	if req.Callback != nil && req.Callback.URL != "" {
-		run.Spec.Callbacks = &agentorcv1alpha1.CallbackConfig{
+		run.Spec.Callbacks = &agentorcav1alpha1.CallbackConfig{
 			OnComplete: req.Callback.URL,
 			OnFailed:   req.Callback.URL,
 		}
@@ -342,7 +342,7 @@ func (s *ExternalAPIServer) createTask(w http.ResponseWriter, r *http.Request) {
 			if run.Annotations == nil {
 				run.Annotations = make(map[string]string)
 			}
-			run.Annotations["agentorc.io/callback-secret"] = req.Callback.SecretRef
+			run.Annotations["agentorca.io/callback-secret"] = req.Callback.SecretRef
 		}
 	}
 
@@ -362,7 +362,7 @@ func (s *ExternalAPIServer) createTask(w http.ResponseWriter, r *http.Request) {
 	resp := TaskResponse{
 		ID:        run.Name,
 		Agent:     req.Agent,
-		Status:    string(agentorcv1alpha1.AgentRunPhasePending),
+		Status:    string(agentorcav1alpha1.AgentRunPhasePending),
 		CreatedAt: run.CreationTimestamp.Format(time.RFC3339),
 		Metadata:  req.Metadata,
 		Links: &TaskLinks{
@@ -384,7 +384,7 @@ func (s *ExternalAPIServer) getTask(w http.ResponseWriter, r *http.Request, task
 		return
 	}
 
-	var run agentorcv1alpha1.AgentRun
+	var run agentorcav1alpha1.AgentRun
 	if err := s.crdClient.Get(r.Context(), client.ObjectKey{
 		Name: taskID, Namespace: tenant.Namespace,
 	}, &run); err != nil {
@@ -393,7 +393,7 @@ func (s *ExternalAPIServer) getTask(w http.ResponseWriter, r *http.Request, task
 	}
 
 	// Verify the run belongs to this tenant.
-	if run.Labels["agentorc.io/tenant"] != tenant.TenantName {
+	if run.Labels["agentorca.io/tenant"] != tenant.TenantName {
 		http.Error(w, `{"error":"task not found"}`, http.StatusNotFound)
 		return
 	}
@@ -412,11 +412,11 @@ func (s *ExternalAPIServer) listTasks(w http.ResponseWriter, r *http.Request) {
 	}
 
 	labels := client.MatchingLabels{
-		"agentorc.io/external-task": "true",
-		"agentorc.io/tenant":        tenant.TenantName,
+		"agentorca.io/external-task": "true",
+		"agentorca.io/tenant":        tenant.TenantName,
 	}
 
-	var runList agentorcv1alpha1.AgentRunList
+	var runList agentorcav1alpha1.AgentRunList
 	if err := s.crdClient.List(r.Context(), &runList,
 		client.InNamespace(tenant.Namespace), labels); err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"listing tasks: %s"}`, err), http.StatusInternalServerError)
@@ -454,7 +454,7 @@ func (s *ExternalAPIServer) streamTask(w http.ResponseWriter, r *http.Request, t
 		return
 	}
 
-	var run agentorcv1alpha1.AgentRun
+	var run agentorcav1alpha1.AgentRun
 	if err := s.crdClient.Get(r.Context(), client.ObjectKey{
 		Name: taskID, Namespace: tenant.Namespace,
 	}, &run); err != nil {
@@ -462,7 +462,7 @@ func (s *ExternalAPIServer) streamTask(w http.ResponseWriter, r *http.Request, t
 		return
 	}
 
-	if run.Labels["agentorc.io/tenant"] != tenant.TenantName {
+	if run.Labels["agentorca.io/tenant"] != tenant.TenantName {
 		http.Error(w, `{"error":"task not found"}`, http.StatusNotFound)
 		return
 	}
@@ -550,7 +550,7 @@ func (s *ExternalAPIServer) answerTask(w http.ResponseWriter, r *http.Request, t
 		return
 	}
 
-	var run agentorcv1alpha1.AgentRun
+	var run agentorcav1alpha1.AgentRun
 	if err := s.crdClient.Get(r.Context(), client.ObjectKey{
 		Name: taskID, Namespace: tenant.Namespace,
 	}, &run); err != nil {
@@ -558,12 +558,12 @@ func (s *ExternalAPIServer) answerTask(w http.ResponseWriter, r *http.Request, t
 		return
 	}
 
-	if run.Labels["agentorc.io/tenant"] != tenant.TenantName {
+	if run.Labels["agentorca.io/tenant"] != tenant.TenantName {
 		http.Error(w, `{"error":"task not found"}`, http.StatusNotFound)
 		return
 	}
 
-	if run.Status.Phase != agentorcv1alpha1.AgentRunPhaseWaitingForInput {
+	if run.Status.Phase != agentorcav1alpha1.AgentRunPhaseWaitingForInput {
 		http.Error(w, `{"error":"task is not waiting for input"}`, http.StatusConflict)
 		return
 	}
@@ -597,7 +597,7 @@ func (s *ExternalAPIServer) cancelTask(w http.ResponseWriter, r *http.Request, t
 		return
 	}
 
-	var run agentorcv1alpha1.AgentRun
+	var run agentorcav1alpha1.AgentRun
 	if err := s.crdClient.Get(r.Context(), client.ObjectKey{
 		Name: taskID, Namespace: tenant.Namespace,
 	}, &run); err != nil {
@@ -605,15 +605,15 @@ func (s *ExternalAPIServer) cancelTask(w http.ResponseWriter, r *http.Request, t
 		return
 	}
 
-	if run.Labels["agentorc.io/tenant"] != tenant.TenantName {
+	if run.Labels["agentorca.io/tenant"] != tenant.TenantName {
 		http.Error(w, `{"error":"task not found"}`, http.StatusNotFound)
 		return
 	}
 
 	// Only cancel running or pending tasks.
-	if run.Status.Phase != agentorcv1alpha1.AgentRunPhasePending &&
-		run.Status.Phase != agentorcv1alpha1.AgentRunPhaseRunning &&
-		run.Status.Phase != agentorcv1alpha1.AgentRunPhaseWaitingForInput {
+	if run.Status.Phase != agentorcav1alpha1.AgentRunPhasePending &&
+		run.Status.Phase != agentorcav1alpha1.AgentRunPhaseRunning &&
+		run.Status.Phase != agentorcav1alpha1.AgentRunPhaseWaitingForInput {
 		http.Error(w, `{"error":"task is already in a terminal state"}`, http.StatusConflict)
 		return
 	}
@@ -621,7 +621,7 @@ func (s *ExternalAPIServer) cancelTask(w http.ResponseWriter, r *http.Request, t
 	// Mark the run as failed with a cancellation reason.
 	patch := client.MergeFrom(run.DeepCopy())
 	now := metav1.Now()
-	run.Status.Phase = agentorcv1alpha1.AgentRunPhaseFailed
+	run.Status.Phase = agentorcav1alpha1.AgentRunPhaseFailed
 	run.Status.FailureReason = "cancelled by tenant via external API"
 	run.Status.CompletionTime = &now
 	if err := s.crdClient.Status().Patch(r.Context(), &run, patch); err != nil {
@@ -640,7 +640,7 @@ func (s *ExternalAPIServer) cancelTask(w http.ResponseWriter, r *http.Request, t
 }
 
 // runToTaskResponse converts an AgentRun to a TaskResponse.
-func (s *ExternalAPIServer) runToTaskResponse(run *agentorcv1alpha1.AgentRun) TaskResponse {
+func (s *ExternalAPIServer) runToTaskResponse(run *agentorcav1alpha1.AgentRun) TaskResponse {
 	resp := TaskResponse{
 		ID:       run.Name,
 		Agent:    run.Spec.AgentRef,
@@ -661,7 +661,7 @@ func (s *ExternalAPIServer) runToTaskResponse(run *agentorcv1alpha1.AgentRun) Ta
 	// Reconstruct metadata from annotations.
 	meta := make(map[string]string)
 	for k, v := range run.Annotations {
-		if after, ok := strings.CutPrefix(k, "agentorc.io/meta-"); ok {
+		if after, ok := strings.CutPrefix(k, "agentorca.io/meta-"); ok {
 			meta[after] = v
 		}
 	}

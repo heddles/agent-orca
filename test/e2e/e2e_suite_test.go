@@ -30,12 +30,12 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/floppyfish14/agent-orc/test/utils"
+	"github.com/floppyfish14/agent-orca/test/utils"
 )
 
 var (
 	// managerImage is the manager image to be built and loaded for testing.
-	managerImage = "example.com/agent-orc:v0.0.1"
+	managerImage = "example.com/agent-orca:v0.0.1"
 	// routerImage is the model-router sidecar image built and loaded for tests.
 	// Override via ROUTER_IMG env var; defaults to the same tag as managerImage for consistency.
 	routerImage = func() string {
@@ -54,7 +54,7 @@ var (
 // To skip CertManager installation, set: CERT_MANAGER_INSTALL_SKIP=true
 func TestE2E(t *testing.T) {
 	RegisterFailHandler(Fail)
-	_, _ = fmt.Fprintf(GinkgoWriter, "Starting agent-orc e2e test suite\n")
+	_, _ = fmt.Fprintf(GinkgoWriter, "Starting agent-orca e2e test suite\n")
 	RunSpecs(t, "e2e suite")
 }
 
@@ -106,7 +106,7 @@ var _ = BeforeSuite(func() {
 	By("patching MODEL_ROUTER_IMAGE on controller-manager deployment")
 	// TOKEN_REVIEWER_CLUSTER_ROLE is already set via kustomize patch; this only overrides
 	// the router image so that pods use the locally-loaded image instead of the registry default.
-	cmd = exec.Command("kubectl", "set", "env", "deployment/agent-orc-controller-manager",
+	cmd = exec.Command("kubectl", "set", "env", "deployment/agent-orca-controller-manager",
 		fmt.Sprintf("MODEL_ROUTER_IMAGE=%s", routerImage),
 		"-n", namespace,
 	)
@@ -115,7 +115,7 @@ var _ = BeforeSuite(func() {
 
 	By("waiting for the controller-manager deployment to be available")
 	cmd = exec.Command("kubectl", "wait", "deployment",
-		"agent-orc-controller-manager",
+		"agent-orca-controller-manager",
 		"--for=condition=Available",
 		"-n", namespace,
 		"--timeout=120s",
@@ -129,7 +129,7 @@ var _ = BeforeSuite(func() {
 	Eventually(func() error {
 		c := exec.Command("kubectl", "apply", "--dry-run=server", "-f", "-")
 		c.Stdin = strings.NewReader(`
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: AgentRun
 metadata:
   name: webhook-probe

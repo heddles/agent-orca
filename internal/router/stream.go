@@ -142,7 +142,7 @@ func (r *Router) forwardToProviderStream(ctx context.Context, provider *Provider
 	}
 
 	modelName := provider.LiteLLMModel
-	// Keep full model identifier when custom BaseURL is set (e.g., Poolside proxy)
+	// Keep full model identifier when custom BaseURL is set
 	// since the proxy expects the complete identifier including provider prefix.
 	if provider.BaseURL == "" {
 		if idx := strings.Index(modelName, "/"); idx != -1 {
@@ -589,7 +589,7 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 	//
 	// Dispatch on len(toolCalls) > 0 ALONE — the same predicate the non-streaming path
 	// uses (HandleChatCompletions, router.go:879). Do NOT additionally require
-	// finishReason == "tool_calls": OpenAI-compatible proxies (LiteLLM / Poolside)
+	// finishReason == "tool_calls": OpenAI-compatible proxies (LiteLLM)
 	// frequently stream finish_reason: null and signal completion solely via
 	// `data: [DONE]`. Gating dispatch on finish_reason there desyncs the [DONE]
 	// suppression from the dispatch — [DONE] is suppressed (tool calls present) but the

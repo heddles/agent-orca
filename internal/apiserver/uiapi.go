@@ -17,6 +17,7 @@ limitations under the License.
 package apiserver
 
 import (
+	"bufio"
 	"context"
 	_ "embed"
 	"encoding/json"
@@ -24,12 +25,11 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
-	"bufio"
-	"sort"
 
 	authv1 "k8s.io/api/authentication/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
@@ -40,17 +40,17 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
-	"github.com/floppyfish14/agent-orc/internal/checkpoint"
-	"github.com/floppyfish14/agent-orc/internal/postgresql"
-	"github.com/floppyfish14/agent-orc/internal/security"
-	"github.com/floppyfish14/agent-orc/internal/state"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
+	"github.com/floppyfish14/agent-orca/internal/checkpoint"
+	"github.com/floppyfish14/agent-orca/internal/postgresql"
+	"github.com/floppyfish14/agent-orca/internal/security"
+	"github.com/floppyfish14/agent-orca/internal/state"
 )
 
 // UIServer serves the REST API consumed by the React UI.
 //
 // When authEnabled is true every request must carry a valid Kubernetes SA token
-// with audience "agentorc/ui", validated via TokenReview. In production the
+// with audience "agentorca/ui", validated via TokenReview. In production the
 // UIProxy pod holds such a token (projected volume) and injects it on every
 // proxied request. Browsers never send the token directly.
 //
@@ -129,7 +129,7 @@ func checkpointStore(store state.Store) checkpoint.Store {
 // NewUIServer creates a UIServer.
 // stateConfigured should be true when a Redis-backed state store is active.
 // store may be nil if no state backend is configured (in-memory checkpoint fallback).
-// authEnabled requires a valid UIProxy SA token (audience agentorc/ui) on all API calls.
+// authEnabled requires a valid UIProxy SA token (audience agentorca/ui) on all API calls.
 // pgStore may be nil to disable run archival/history.
 // externalAuth may be nil to disable OIDC tenant JWT auth (K8s SA only).
 // alertManager may be nil to disable alerting.
@@ -197,7 +197,7 @@ func (s *UIServer) Handler() http.Handler {
 // ?token= query parameter (required for SSE, where EventSource cannot set headers).
 //
 // Authentication is tried in order:
-//  1. K8s SA TokenReview with audience "agentorc/ui" (UIProxy BFF flow).
+//  1. K8s SA TokenReview with audience "agentorca/ui" (UIProxy BFF flow).
 //  2. OIDC tenant JWT via externalAuth (when configured) — injects TenantIdentity
 //     into the request context so downstream handlers can scope queries.
 func (s *UIServer) requireAuth(next http.Handler) http.Handler {
@@ -262,9 +262,9 @@ func (s *UIServer) handleListRuns(w http.ResponseWriter, r *http.Request) {
 	ns := r.URL.Query().Get("namespace")
 	opts := tenantScope(r.Context(), ns)
 	if dep := r.URL.Query().Get("deployment"); dep != "" {
-		opts = append(opts, client.MatchingLabels{"agentorc.io/deployment": dep})
+		opts = append(opts, client.MatchingLabels{"agentorca.io/deployment": dep})
 	}
-	var list agentorcv1alpha1.AgentRunList
+	var list agentorcav1alpha1.AgentRunList
 	if err := s.crdClient.List(r.Context(), &list, opts...); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -341,7 +341,7 @@ func (s *UIServer) handleRunOrStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Single run detail.
-	var run agentorcv1alpha1.AgentRun
+	var run agentorcav1alpha1.AgentRun
 	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: runName, Namespace: ns}, &run); err != nil {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
@@ -442,7 +442,7 @@ func (s *UIServer) handleStream(w http.ResponseWriter, r *http.Request, ns, runN
 	// Pre-populated candidate entries (reason starts with "configured provider") are
 	// skipped — only the actual runtime selection chosen by the router is emitted.
 	var emittedRouting int
-	emitRoutingDecisions := func(run *agentorcv1alpha1.AgentRun) {
+	emitRoutingDecisions := func(run *agentorcav1alpha1.AgentRun) {
 		for i := emittedRouting; i < len(run.Status.RoutingDecisions); i++ {
 			rd := run.Status.RoutingDecisions[i]
 			if strings.HasPrefix(rd.Reason, "configured provider") {
@@ -461,7 +461,7 @@ func (s *UIServer) handleStream(w http.ResponseWriter, r *http.Request, ns, runN
 	}
 
 	// emitTerminal sends the final SSE event for a completed run. Returns true if terminal.
-	emitTerminal := func(run *agentorcv1alpha1.AgentRun) bool {
+	emitTerminal := func(run *agentorcav1alpha1.AgentRun) bool {
 		phase := string(run.Status.Phase)
 		if phase == "Succeeded" {
 			writeSSE(w, map[string]any{
@@ -516,7 +516,7 @@ func (s *UIServer) handleStream(w http.ResponseWriter, r *http.Request, ns, runN
 
 		// Poll AgentRun status concurrently. Cancel the stream context the moment
 		// a terminal state is detected.
-		terminalRun := make(chan agentorcv1alpha1.AgentRun, 1)
+		terminalRun := make(chan agentorcav1alpha1.AgentRun, 1)
 		go func() {
 			ticker := time.NewTicker(500 * time.Millisecond)
 			defer ticker.Stop()
@@ -525,14 +525,14 @@ func (s *UIServer) handleStream(w http.ResponseWriter, r *http.Request, ns, runN
 				case <-streamCtx.Done():
 					return
 				case <-ticker.C:
-					var run agentorcv1alpha1.AgentRun
+					var run agentorcav1alpha1.AgentRun
 					if err := s.crdClient.Get(streamCtx, client.ObjectKey{Name: runName, Namespace: ns}, &run); err != nil {
 						continue
 					}
 					phase := run.Status.Phase
-					if phase == agentorcv1alpha1.AgentRunPhaseSucceeded ||
-						phase == agentorcv1alpha1.AgentRunPhaseFailed ||
-						phase == agentorcv1alpha1.AgentRunPhaseWaitingForInput {
+					if phase == agentorcav1alpha1.AgentRunPhaseSucceeded ||
+						phase == agentorcav1alpha1.AgentRunPhaseFailed ||
+						phase == agentorcav1alpha1.AgentRunPhaseWaitingForInput {
 						select {
 						case terminalRun <- run:
 						default:
@@ -595,12 +595,12 @@ func (s *UIServer) handleStream(w http.ResponseWriter, r *http.Request, ns, runN
 		// if the output looks like a clarifying question (safety net in handlePodSuccess).
 		// Without this delay, we'd emit final_output before the controller has a chance to
 		// intercept and redirect to clarification.
-		var run agentorcv1alpha1.AgentRun
+		var run agentorcav1alpha1.AgentRun
 		for range 6 {
 			if err := s.crdClient.Get(ctx, client.ObjectKey{Name: runName, Namespace: ns}, &run); err == nil {
-				if run.Status.Phase == agentorcv1alpha1.AgentRunPhaseWaitingForInput ||
-					run.Status.Phase == agentorcv1alpha1.AgentRunPhaseSucceeded ||
-					run.Status.Phase == agentorcv1alpha1.AgentRunPhaseFailed {
+				if run.Status.Phase == agentorcav1alpha1.AgentRunPhaseWaitingForInput ||
+					run.Status.Phase == agentorcav1alpha1.AgentRunPhaseSucceeded ||
+					run.Status.Phase == agentorcav1alpha1.AgentRunPhaseFailed {
 					break
 				}
 			}
@@ -614,7 +614,7 @@ func (s *UIServer) handleStream(w http.ResponseWriter, r *http.Request, ns, runN
 		emitRoutingDecisions(&run)
 
 		// If the controller redirected to WaitingForInput, emit clarify instead of final_output.
-		if run.Status.Phase == agentorcv1alpha1.AgentRunPhaseWaitingForInput && run.Status.ClarifyQuestion != "" {
+		if run.Status.Phase == agentorcav1alpha1.AgentRunPhaseWaitingForInput && run.Status.ClarifyQuestion != "" {
 			writeSSE(w, map[string]any{
 				"type":     "clarify",
 				"question": run.Status.ClarifyQuestion,
@@ -636,7 +636,7 @@ func (s *UIServer) handleStream(w http.ResponseWriter, r *http.Request, ns, runN
 	fallbackTicker := time.NewTicker(500 * time.Millisecond)
 	defer fallbackTicker.Stop()
 	for range 60 {
-		var run agentorcv1alpha1.AgentRun
+		var run agentorcav1alpha1.AgentRun
 		if err := s.crdClient.Get(ctx, client.ObjectKey{Name: runName, Namespace: ns}, &run); err != nil {
 			writeSSE(w, map[string]any{"type": "error", "message": err.Error()})
 			flusher.Flush()
@@ -667,19 +667,19 @@ func (s *UIServer) handleStopRun(w http.ResponseWriter, r *http.Request, ns, run
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	var run agentorcv1alpha1.AgentRun
+	var run agentorcav1alpha1.AgentRun
 	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: runName, Namespace: ns}, &run); err != nil {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
-	if run.Status.Phase != agentorcv1alpha1.AgentRunPhasePending &&
-		run.Status.Phase != agentorcv1alpha1.AgentRunPhaseRunning &&
-		run.Status.Phase != agentorcv1alpha1.AgentRunPhaseWaitingForInput {
+	if run.Status.Phase != agentorcav1alpha1.AgentRunPhasePending &&
+		run.Status.Phase != agentorcav1alpha1.AgentRunPhaseRunning &&
+		run.Status.Phase != agentorcav1alpha1.AgentRunPhaseWaitingForInput {
 		http.Error(w, "run is not in a cancellable state", http.StatusConflict)
 		return
 	}
 	now := metav1.Now()
-	run.Status.Phase = agentorcv1alpha1.AgentRunPhaseFailed
+	run.Status.Phase = agentorcav1alpha1.AgentRunPhaseFailed
 	run.Status.LastRestartReason = "cancelled by user"
 	run.Status.CompletionTime = &now
 	if err := s.crdClient.Status().Update(r.Context(), &run); err != nil {
@@ -715,12 +715,12 @@ func (s *UIServer) handleAnswerRun(w http.ResponseWriter, r *http.Request, ns, r
 		return
 	}
 
-	var run agentorcv1alpha1.AgentRun
+	var run agentorcav1alpha1.AgentRun
 	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: runName, Namespace: ns}, &run); err != nil {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
-	if run.Status.Phase != agentorcv1alpha1.AgentRunPhaseWaitingForInput {
+	if run.Status.Phase != agentorcav1alpha1.AgentRunPhaseWaitingForInput {
 		http.Error(w, "run is not waiting for input", http.StatusConflict)
 		return
 	}
@@ -733,7 +733,7 @@ func (s *UIServer) handleAnswerRun(w http.ResponseWriter, r *http.Request, ns, r
 	continuationInput := run.Spec.Input
 	hasCheckpoint := false
 	if s.store != nil {
-		checkpointKey := fmt.Sprintf("agentorc/runs/%s/state", runName)
+		checkpointKey := fmt.Sprintf("agentorca/runs/%s/state", runName)
 		if msgs, err := s.store.LoadMessages(r.Context(), checkpointKey); err == nil && len(msgs) > 0 {
 			hasCheckpoint = true
 		}
@@ -745,13 +745,13 @@ func (s *UIServer) handleAnswerRun(w http.ResponseWriter, r *http.Request, ns, r
 	}
 
 	// Create a continuation AgentRun that picks up from the original run's checkpoint.
-	continuation := &agentorcv1alpha1.AgentRun{
+	continuation := &agentorcav1alpha1.AgentRun{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: runName + "-cont-",
 			Namespace:    ns,
 			Labels:       run.Labels, // preserve deployment, session, source labels
 		},
-		Spec: agentorcv1alpha1.AgentRunSpec{
+		Spec: agentorcav1alpha1.AgentRunSpec{
 			AgentRef:    run.Spec.AgentRef,
 			Input:       continuationInput,
 			Timeout:     run.Spec.Timeout,
@@ -776,7 +776,7 @@ func (s *UIServer) handleAnswerRun(w http.ResponseWriter, r *http.Request, ns, r
 	// rediscovered on page reload. Mark it Succeeded — the continuation run
 	// carries the conversation forward.
 	patch := client.MergeFrom(run.DeepCopy())
-	run.Status.Phase = agentorcv1alpha1.AgentRunPhaseSucceeded
+	run.Status.Phase = agentorcav1alpha1.AgentRunPhaseSucceeded
 	run.Status.ClarifyAnswer = req.Answer
 	run.Status.ContinuationRunRef = continuation.Name
 	if err := s.crdClient.Status().Patch(r.Context(), &run, patch); err != nil {
@@ -785,12 +785,12 @@ func (s *UIServer) handleAnswerRun(w http.ResponseWriter, r *http.Request, ns, r
 
 	// Update the session checkpoint: advance LastRunRef to the continuation run
 	// and append the clarify Q&A so reloadHistory returns the complete history.
-	if sessionID := run.Labels["agentorc.io/session"]; sessionID != "" && s.checkpoint != nil {
+	if sessionID := run.Labels["agentorca.io/session"]; sessionID != "" && s.checkpoint != nil {
 		if cp, err := s.checkpoint.Load(r.Context(), sessionID); err == nil && cp != nil {
 			cp.LastRunRef = continuation.Name
 			cp.ConversationHistory = append(cp.ConversationHistory,
-				agentorcv1alpha1.ConversationMessage{Role: "assistant", Content: run.Status.ClarifyQuestion},
-				agentorcv1alpha1.ConversationMessage{Role: "user", Content: req.Answer},
+				agentorcav1alpha1.ConversationMessage{Role: "assistant", Content: run.Status.ClarifyQuestion},
+				agentorcav1alpha1.ConversationMessage{Role: "user", Content: req.Answer},
 			)
 			cp.Version++
 			if _, err := s.checkpoint.Save(r.Context(), cp); err != nil {
@@ -824,7 +824,7 @@ func (s *UIServer) handleAgents(w http.ResponseWriter, r *http.Request) {
 // handleListAgents lists Agent CRDs (all namespaces when namespace param is omitted).
 func (s *UIServer) handleListAgents(w http.ResponseWriter, r *http.Request) {
 	ns := r.URL.Query().Get("namespace")
-	var list agentorcv1alpha1.AgentList
+	var list agentorcav1alpha1.AgentList
 	if err := s.crdClient.List(r.Context(), &list, tenantScope(r.Context(), ns)...); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -885,15 +885,15 @@ func (s *UIServer) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 		req.Framework = "openai-compatible"
 	}
 
-	agent := &agentorcv1alpha1.Agent{
+	agent := &agentorcav1alpha1.Agent{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      req.Name,
 			Namespace: req.Namespace,
 		},
-		Spec: agentorcv1alpha1.AgentSpec{
+		Spec: agentorcav1alpha1.AgentSpec{
 			ModelSelectorRef: req.ModelSelectorRef,
 			SystemPrompt:     req.SystemPrompt,
-			Runtime: agentorcv1alpha1.AgentRuntime{
+			Runtime: agentorcav1alpha1.AgentRuntime{
 				OCIRef:    req.OCIRef,
 				Framework: req.Framework,
 				Command:   req.Command,
@@ -908,15 +908,15 @@ func (s *UIServer) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 
 	// Auto-create an AgentDeployment referencing the new agent.
 	replicas := int32(1)
-	deployment := &agentorcv1alpha1.AgentDeployment{
+	deployment := &agentorcav1alpha1.AgentDeployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      agent.Name,
 			Namespace: agent.Namespace,
 		},
-		Spec: agentorcv1alpha1.AgentDeploymentSpec{
+		Spec: agentorcav1alpha1.AgentDeploymentSpec{
 			AgentRef: agent.Name,
-			InputSource: &agentorcv1alpha1.InputSourceConfig{
-				Type: agentorcv1alpha1.InputSourceChat,
+			InputSource: &agentorcav1alpha1.InputSourceConfig{
+				Type: agentorcav1alpha1.InputSourceChat,
 			},
 			Replicas: &replicas,
 		},
@@ -940,7 +940,7 @@ func (s *UIServer) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 // Used for both form dropdowns (create agent) and the ModelSelectors UI view.
 func (s *UIServer) handleListModelSelectors(w http.ResponseWriter, r *http.Request) {
 	ns := r.URL.Query().Get("namespace")
-	var list agentorcv1alpha1.ModelSelectorList
+	var list agentorcav1alpha1.ModelSelectorList
 	if err := s.crdClient.List(r.Context(), &list, tenantScope(r.Context(), ns)...); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -991,7 +991,7 @@ func (s *UIServer) handleListModelSelectors(w http.ResponseWriter, r *http.Reque
 // handleListTools lists Tool CRDs (all namespaces when namespace param is omitted).
 func (s *UIServer) handleListTools(w http.ResponseWriter, r *http.Request) {
 	ns := r.URL.Query().Get("namespace")
-	var list agentorcv1alpha1.ToolList
+	var list agentorcav1alpha1.ToolList
 	if err := s.crdClient.List(r.Context(), &list, tenantScope(r.Context(), ns)...); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -1059,7 +1059,7 @@ func (s *UIServer) handleMCPApp(w http.ResponseWriter, r *http.Request, key stri
 // handleListMCPServers lists MCPServer CRDs (all namespaces when namespace param is omitted).
 func (s *UIServer) handleListMCPServers(w http.ResponseWriter, r *http.Request) {
 	ns := r.URL.Query().Get("namespace")
-	var list agentorcv1alpha1.MCPServerList
+	var list agentorcav1alpha1.MCPServerList
 	if err := s.crdClient.List(r.Context(), &list, tenantScope(r.Context(), ns)...); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -1117,29 +1117,29 @@ func (s *UIServer) handleListMCPServers(w http.ResponseWriter, r *http.Request) 
 // handleListKnowledgeBases lists KnowledgeBase CRDs in the requested namespace.
 func (s *UIServer) handleListKnowledgeBases(w http.ResponseWriter, r *http.Request) {
 	ns := r.URL.Query().Get("namespace")
-	var list agentorcv1alpha1.KnowledgeBaseList
+	var list agentorcav1alpha1.KnowledgeBaseList
 	if err := s.crdClient.List(r.Context(), &list, tenantScope(r.Context(), ns)...); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	type summary struct {
-		Name               string                  `json:"name"`
-		Namespace          string                  `json:"namespace"`
-		Description        string                  `json:"description,omitempty"`
-		AllowedAgents      []string                `json:"allowedAgents"`
-		Ready              bool                    `json:"ready"`
-		Message            string                  `json:"message,omitempty"`
-		Conditions         []metav1.Condition      `json:"conditions,omitempty"`
-		DocumentCount      int                     `json:"documentCount"`
-		ChunkCount         int                     `json:"chunkCount"`
-		VectorStoreURL     string                  `json:"vectorStoreURL,omitempty"`
-		CollectionName     string                  `json:"collectionName,omitempty"`
-		ModelSelectorRef   string                  `json:"modelSelectorRef"`
-		Dimensions         int                     `json:"dimensions"`
-		ChunkSize          int                     `json:"chunkSize"`
-		ChunkOverlap       int                     `json:"chunkOverlap"`
-		StorageUsedPercent int                     `json:"storageUsedPercent"`
-		LastSyncTime       string                  `json:"lastSyncTime,omitempty"`
+		Name               string             `json:"name"`
+		Namespace          string             `json:"namespace"`
+		Description        string             `json:"description,omitempty"`
+		AllowedAgents      []string           `json:"allowedAgents"`
+		Ready              bool               `json:"ready"`
+		Message            string             `json:"message,omitempty"`
+		Conditions         []metav1.Condition `json:"conditions,omitempty"`
+		DocumentCount      int                `json:"documentCount"`
+		ChunkCount         int                `json:"chunkCount"`
+		VectorStoreURL     string             `json:"vectorStoreURL,omitempty"`
+		CollectionName     string             `json:"collectionName,omitempty"`
+		ModelSelectorRef   string             `json:"modelSelectorRef"`
+		Dimensions         int                `json:"dimensions"`
+		ChunkSize          int                `json:"chunkSize"`
+		ChunkOverlap       int                `json:"chunkOverlap"`
+		StorageUsedPercent int                `json:"storageUsedPercent"`
+		LastSyncTime       string             `json:"lastSyncTime,omitempty"`
 	}
 	out := make([]summary, 0, len(list.Items))
 	for _, kb := range list.Items {
@@ -1176,7 +1176,7 @@ func (s *UIServer) handleListKnowledgeBases(w http.ResponseWriter, r *http.Reque
 // handleListModelProviders lists ModelProvider CRDs (all namespaces when namespace param is omitted).
 func (s *UIServer) handleListModelProviders(w http.ResponseWriter, r *http.Request) {
 	ns := r.URL.Query().Get("namespace")
-	var list agentorcv1alpha1.ModelProviderList
+	var list agentorcav1alpha1.ModelProviderList
 	if err := s.crdClient.List(r.Context(), &list, tenantScope(r.Context(), ns)...); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -1214,7 +1214,7 @@ func (s *UIServer) handleListModelProviders(w http.ResponseWriter, r *http.Reque
 // handleListDeployments lists AgentDeployments in the requested namespace.
 func (s *UIServer) handleListDeployments(w http.ResponseWriter, r *http.Request) {
 	ns := r.URL.Query().Get("namespace")
-	var list agentorcv1alpha1.AgentDeploymentList
+	var list agentorcav1alpha1.AgentDeploymentList
 	if err := s.crdClient.List(r.Context(), &list, tenantScope(r.Context(), ns)...); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -1260,10 +1260,10 @@ func (s *UIServer) handleCosts(w http.ResponseWriter, r *http.Request) {
 	ns := r.URL.Query().Get("namespace")
 	opts := tenantScope(r.Context(), ns)
 	if dep := r.URL.Query().Get("deployment"); dep != "" {
-		opts = append(opts, client.MatchingLabels{"agentorc.io/deployment": dep})
+		opts = append(opts, client.MatchingLabels{"agentorca.io/deployment": dep})
 	}
 
-	var list agentorcv1alpha1.AgentRunList
+	var list agentorcav1alpha1.AgentRunList
 	if err := s.crdClient.List(r.Context(), &list, opts...); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -1321,8 +1321,8 @@ type SystemSubSystemStatus struct {
 
 // SystemStatusResponse is the full system status payload returned to the UI.
 type SystemStatusResponse struct {
-	StateConfigured bool                `json:"stateConfigured"`
-	Version         string              `json:"version"`
+	StateConfigured bool                    `json:"stateConfigured"`
+	Version         string                  `json:"version"`
 	SubSystems      []SystemSubSystemStatus `json:"subsystems"`
 	// ModelProviders reports per-provider reachability and latency.
 	ModelProviders []ProviderHealth `json:"modelProviders,omitempty"`
@@ -1335,11 +1335,11 @@ type SystemStatusResponse struct {
 
 // ProviderHealth is a per-model-provider reachability probe result.
 type ProviderHealth struct {
-	Name        string `json:"name"`
-	Namespace   string `json:"namespace"`
-	Ready       bool   `json:"ready"`
-	LatencyMs   int    `json:"latencyMs,omitempty"`
-	Message     string `json:"message,omitempty"`
+	Name      string `json:"name"`
+	Namespace string `json:"namespace"`
+	Ready     bool   `json:"ready"`
+	LatencyMs int    `json:"latencyMs,omitempty"`
+	Message   string `json:"message,omitempty"`
 }
 
 // MetricSample is a point-in-time snapshot of system metrics, recorded on a
@@ -1350,9 +1350,9 @@ type MetricSample struct {
 	Time int64 `json:"time"`
 	// RequestCount / EgressPublished / EgressFailed are CUMULATIVE counters as
 	// exported by the registries; the UI derives per-bucket rates.
-	RequestCount    int     `json:"requestCount"`
-	EgressPublished int     `json:"egressPublished"`
-	EgressFailed    int     `json:"egressFailed"`
+	RequestCount    int `json:"requestCount"`
+	EgressPublished int `json:"egressPublished"`
+	EgressFailed    int `json:"egressFailed"`
 	// Latency percentiles (ms) from the external-request duration histogram.
 	P50LatencyMs float64 `json:"p50LatencyMs"`
 	P95LatencyMs float64 `json:"p95LatencyMs"`
@@ -1379,10 +1379,10 @@ type SystemMetrics struct {
 // metrics from the controller and model-router pods.
 func (s *UIServer) handleSystemStatus(w http.ResponseWriter, r *http.Request) {
 	resp := SystemStatusResponse{
-		StateConfigured:       s.stateConfigured,
-		Version:               Version,
-		RunHistoryConfigured:  s.pgStore != nil,
-		SubSystems:            []SystemSubSystemStatus{},
+		StateConfigured:      s.stateConfigured,
+		Version:              Version,
+		RunHistoryConfigured: s.pgStore != nil,
+		SubSystems:           []SystemSubSystemStatus{},
 	}
 
 	// ── Kubernetes API ──
@@ -1482,7 +1482,7 @@ func (s *UIServer) handleSystemStatus(w http.ResponseWriter, r *http.Request) {
 // probeModelProviders pings each ModelProvider's base URL (if set) to determine
 // reachability and latency. Returns an empty slice if no providers are configured.
 func (s *UIServer) probeModelProviders(ctx context.Context) []ProviderHealth {
-	var list agentorcv1alpha1.ModelProviderList
+	var list agentorcav1alpha1.ModelProviderList
 	if err := s.crdClient.List(ctx, &list); err != nil {
 		return nil
 	}
@@ -1507,19 +1507,19 @@ func (s *UIServer) scrapeMetrics(ctx context.Context) (*SystemMetrics, error) {
 	// External API server counters live in `externalReg` (a dedicated registry),
 	// so we sum across all label series to get a single value (these are
 	// CounterVecs with server/method/path/status labels).
-	m.RequestCount24h = int(getCounterValue(externalReg, "agentorc_external_requests_total"))
+	m.RequestCount24h = int(getCounterValue(externalReg, "agentorca_external_requests_total"))
 	// Latency percentiles (ms) pooled across all labeled histogram series.
-	m.P50LatencyMs = getHistogramQuantile(externalReg, "agentorc_external_request_duration_seconds", 0.50) * 1000
-	m.P95LatencyMs = getHistogramQuantile(externalReg, "agentorc_external_request_duration_seconds", 0.95) * 1000
-	m.P99LatencyMs = getHistogramQuantile(externalReg, "agentorc_external_request_duration_seconds", 0.99) * 1000
+	m.P50LatencyMs = getHistogramQuantile(externalReg, "agentorca_external_request_duration_seconds", 0.50) * 1000
+	m.P95LatencyMs = getHistogramQuantile(externalReg, "agentorca_external_request_duration_seconds", 0.95) * 1000
+	m.P99LatencyMs = getHistogramQuantile(externalReg, "agentorca_external_request_duration_seconds", 0.99) * 1000
 
 	// Egress counters are registered via promauto in the internal/egress package,
 	// which lands on the DEFAULT registry. The UI API server runs in the same
 	// process as the controller (cmd/main.go), so we gather them from
 	// prometheus.DefaultGatherer. (Previously these were read from externalReg,
 	// which never held them — so egress always showed 0.)
-	m.EgressPublished = int(getCounterValue(prometheus.DefaultGatherer, "agentorc_egress_published_total"))
-	m.EgressFailed = int(getCounterValue(prometheus.DefaultGatherer, "agentorc_egress_failed_total"))
+	m.EgressPublished = int(getCounterValue(prometheus.DefaultGatherer, "agentorca_egress_published_total"))
+	m.EgressFailed = int(getCounterValue(prometheus.DefaultGatherer, "agentorca_egress_failed_total"))
 
 	// Model-router token throughput — the model-router runs as a separate pod
 	// (:9091/metrics); scraping it is a follow-up. Until then this stays 0,
@@ -1532,7 +1532,7 @@ func (s *UIServer) scrapeMetrics(ctx context.Context) (*SystemMetrics, error) {
 // scrapeModelRouterTokenRate is a stub for scraping token counts from model-router
 // Prometheus endpoints. In a full implementation this would list pods with the
 // model-router container and scrape /metrics for token counts.
-// scrapeModelRouterTokenRate aggregates the cumulative `agentorc_modelrouter_tokens_total`
+// scrapeModelRouterTokenRate aggregates the cumulative `agentorca_modelrouter_tokens_total`
 // counter across all live model-router pods (each run's model-router exposes
 // :9091/metrics). It is cached for routerScrapeInterval so a 5s status poll
 // doesn't list+scrape pods every time. Any error (no k8s client, pod
@@ -1553,7 +1553,7 @@ func (s *UIServer) scrapeModelRouterTokenRate(ctx context.Context) float64 {
 	scrapeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 
-	var runs agentorcv1alpha1.AgentRunList
+	var runs agentorcav1alpha1.AgentRunList
 	if err := s.crdClient.List(scrapeCtx, &runs); err != nil {
 		return 0
 	}
@@ -1583,7 +1583,7 @@ func (s *UIServer) scrapeModelRouterTokenRate(ctx context.Context) float64 {
 		if err != nil || pod.Status.PodIP == "" {
 			continue
 		}
-		if v, ok := scrapePromCounter(scrapeCtx, "http://"+pod.Status.PodIP+":9091/metrics", "agentorc_modelrouter_tokens_total"); ok && v > 0 {
+		if v, ok := scrapePromCounter(scrapeCtx, "http://"+pod.Status.PodIP+":9091/metrics", "agentorca_modelrouter_tokens_total"); ok && v > 0 {
 			total += v
 			scraped++
 		}
@@ -1648,7 +1648,7 @@ func scrapePromCounter(ctx context.Context, url, name string) (float64, bool) {
 }
 
 const (
-	routerScrapeInterval = 30 * time.Second
+	routerScrapeInterval  = 30 * time.Second
 	maxRouterPodsToScrape = 10
 )
 
@@ -1897,7 +1897,7 @@ func (s *UIServer) handleExecute(w http.ResponseWriter, r *http.Request, namespa
 	}
 
 	// Verify the deployment exists and get the agent ref.
-	var deployment agentorcv1alpha1.AgentDeployment
+	var deployment agentorcav1alpha1.AgentDeployment
 	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: deploymentName, Namespace: namespace}, &deployment); err != nil {
 		http.Error(w, "deployment not found", http.StatusNotFound)
 		return
@@ -1912,18 +1912,18 @@ func (s *UIServer) handleExecute(w http.ResponseWriter, r *http.Request, namespa
 
 	// Save the user message to the checkpoint immediately.
 	version := 1
-	var history []agentorcv1alpha1.ConversationMessage
+	var history []agentorcav1alpha1.ConversationMessage
 	if existing != nil {
 		version = existing.Version + 1
 		history = append(history, existing.ConversationHistory...)
 	}
-	history = append(history, agentorcv1alpha1.ConversationMessage{Role: "user", Content: req.Input})
+	history = append(history, agentorcav1alpha1.ConversationMessage{Role: "user", Content: req.Input})
 
-	cp := &agentorcv1alpha1.Checkpoint{
+	cp := &agentorcav1alpha1.Checkpoint{
 		SessionID:           sessionID,
 		Version:             version,
 		ConversationHistory: history,
-		Metadata: agentorcv1alpha1.CheckpointMetadata{
+		Metadata: agentorcav1alpha1.CheckpointMetadata{
 			TotalMessages:   len(history),
 			StartTime:       &metav1.Time{Time: time.Now()},
 			LastMessageTime: &metav1.Time{Time: time.Now()},
@@ -1944,17 +1944,17 @@ func (s *UIServer) handleExecute(w http.ResponseWriter, r *http.Request, namespa
 	}
 
 	// Create an AgentRun for this chat message.
-	run := &agentorcv1alpha1.AgentRun{
+	run := &agentorcav1alpha1.AgentRun{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: fmt.Sprintf("chat-%s-", deploymentName),
 			Namespace:    namespace,
 			Labels: map[string]string{
-				"agentorc.io/deployment": deploymentName,
-				"agentorc.io/session":    sessionID,
-				"agentorc.io/source":     "chat",
+				"agentorca.io/deployment": deploymentName,
+				"agentorca.io/session":    sessionID,
+				"agentorca.io/source":     "chat",
 			},
 		},
-		Spec: agentorcv1alpha1.AgentRunSpec{
+		Spec: agentorcav1alpha1.AgentRunSpec{
 			AgentRef:    deployment.Spec.AgentRef,
 			Input:       req.Input,
 			PriorRunRef: priorRunRef,
@@ -1963,7 +1963,7 @@ func (s *UIServer) handleExecute(w http.ResponseWriter, r *http.Request, namespa
 	// Propagate the deployment's tool-execution timeout so long-holding tooling
 	// (Sliver sessions, shells) isn't killed by the 60s default on every chat turn.
 	if deployment.Spec.ToolExecutionTimeoutSec > 0 {
-		run.Spec.Safeguards = &agentorcv1alpha1.AgentRunSafeguards{
+		run.Spec.Safeguards = &agentorcav1alpha1.AgentRunSafeguards{
 			ToolExecutionTimeoutSec: deployment.Spec.ToolExecutionTimeoutSec,
 		}
 	}
@@ -2002,11 +2002,11 @@ func (s *UIServer) handleExecute(w http.ResponseWriter, r *http.Request, namespa
 // checkpoint, its run-key messages are full-fidelity (tool calls / results); this
 // function preserves them rather than overwriting with the session's
 // role/content-only summary, which would degrade resumed context.
-func (s *UIServer) ensureRunCheckpoint(ctx context.Context, runName string, history []agentorcv1alpha1.ConversationMessage) error {
+func (s *UIServer) ensureRunCheckpoint(ctx context.Context, runName string, history []agentorcav1alpha1.ConversationMessage) error {
 	if s.store == nil || runName == "" {
 		return nil
 	}
-	priorCheckpointKey := fmt.Sprintf("agentorc/runs/%s/state", runName)
+	priorCheckpointKey := fmt.Sprintf("agentorca/runs/%s/state", runName)
 	if existing, err := s.store.LoadMessages(ctx, priorCheckpointKey); err == nil && len(existing) > 0 {
 		// Model-router already checkpointed this run — keep its full-fidelity history.
 		return nil
@@ -2075,17 +2075,17 @@ func (s *UIServer) handleSaveResponse(w http.ResponseWriter, r *http.Request, na
 	if cp == nil {
 		// Checkpoint was lost (e.g. server restart) — create a minimal one so the
 		// assistant response is still persisted for subsequent history loads.
-		cp = &agentorcv1alpha1.Checkpoint{
+		cp = &agentorcav1alpha1.Checkpoint{
 			SessionID: req.SessionID,
 			Version:   0,
-			Metadata: agentorcv1alpha1.CheckpointMetadata{
+			Metadata: agentorcav1alpha1.CheckpointMetadata{
 				StartTime: &metav1.Time{Time: time.Now()},
 			},
 		}
 	}
 
 	cp.Version++
-	cp.ConversationHistory = append(cp.ConversationHistory, agentorcv1alpha1.ConversationMessage{
+	cp.ConversationHistory = append(cp.ConversationHistory, agentorcav1alpha1.ConversationMessage{
 		Role:         "assistant",
 		Content:      req.Output,
 		TraceEntries: req.TraceEntries,
@@ -2095,7 +2095,7 @@ func (s *UIServer) handleSaveResponse(w http.ResponseWriter, r *http.Request, na
 
 	// Populate TotalCostUSD from the current run's spend.
 	if cp.LastRunRef != "" {
-		var run agentorcv1alpha1.AgentRun
+		var run agentorcav1alpha1.AgentRun
 		if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: cp.LastRunRef, Namespace: namespace}, &run); err == nil && run.Status.SpendUSD != "" {
 			// Accumulate: parse existing total, add this run's spend.
 			existing, _ := strconv.ParseFloat(cp.Metadata.TotalCostUSD, 64)
@@ -2115,7 +2115,7 @@ func (s *UIServer) handleSaveResponse(w http.ResponseWriter, r *http.Request, na
 	// This serves as a safety net in case the model-router's finalization checkpoint
 	// wasn't written or the run completed without triggering periodic checkpoints.
 	if s.store != nil && cp.LastRunRef != "" {
-		checkpointKey := fmt.Sprintf("agentorc/runs/%s/state", cp.LastRunRef)
+		checkpointKey := fmt.Sprintf("agentorca/runs/%s/state", cp.LastRunRef)
 		var msgs []json.RawMessage
 		for _, cm := range cp.ConversationHistory {
 			routerMsg := map[string]any{
@@ -2140,7 +2140,7 @@ func (s *UIServer) handleDeploymentStream(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	var deployment agentorcv1alpha1.AgentDeployment
+	var deployment agentorcav1alpha1.AgentDeployment
 	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: deploymentName, Namespace: namespace}, &deployment); err != nil {
 		http.Error(w, "deployment not found", http.StatusNotFound)
 		return
@@ -2162,7 +2162,7 @@ func (s *UIServer) handleDeploymentStream(w http.ResponseWriter, r *http.Request
 
 // handleGetDeployment handles GET /api/deployments/{namespace}/{name}
 func (s *UIServer) handleGetDeployment(w http.ResponseWriter, r *http.Request, namespace, deploymentName string) {
-	var deployment agentorcv1alpha1.AgentDeployment
+	var deployment agentorcav1alpha1.AgentDeployment
 	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: deploymentName, Namespace: namespace}, &deployment); err != nil {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
@@ -2209,7 +2209,7 @@ func (s *UIServer) handleGetDeployment(w http.ResponseWriter, r *http.Request, n
 
 // handleDeleteDeployment handles DELETE /api/deployments/{namespace}/{name}.
 func (s *UIServer) handleDeleteDeployment(w http.ResponseWriter, r *http.Request, namespace, deploymentName string) {
-	var deployment agentorcv1alpha1.AgentDeployment
+	var deployment agentorcav1alpha1.AgentDeployment
 	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: deploymentName, Namespace: namespace}, &deployment); err != nil {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
@@ -2224,7 +2224,7 @@ func (s *UIServer) handleDeleteDeployment(w http.ResponseWriter, r *http.Request
 // handleListWorkflows lists AgentWorkflows in the requested namespace.
 func (s *UIServer) handleListWorkflows(w http.ResponseWriter, r *http.Request) {
 	ns := r.URL.Query().Get("namespace")
-	var list agentorcv1alpha1.AgentWorkflowList
+	var list agentorcav1alpha1.AgentWorkflowList
 	if err := s.crdClient.List(r.Context(), &list, tenantScope(r.Context(), ns)...); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -2272,7 +2272,7 @@ func (s *UIServer) handleGetWorkflow(w http.ResponseWriter, r *http.Request) {
 	}
 	namespace, name := parts[0], parts[1]
 
-	var wf agentorcv1alpha1.AgentWorkflow
+	var wf agentorcav1alpha1.AgentWorkflow
 	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: name, Namespace: namespace}, &wf); err != nil {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
@@ -2435,7 +2435,7 @@ func (s *UIServer) handleGetArchivedRun(w http.ResponseWriter, r *http.Request, 
 	}
 
 	// Re-hydrate the JSON-serialised fields captured at archival time.
-	var routing []agentorcv1alpha1.RoutingDecision
+	var routing []agentorcav1alpha1.RoutingDecision
 	if len(archive.RoutingDecisionsJSON) > 0 {
 		_ = json.Unmarshal(archive.RoutingDecisionsJSON, &routing)
 	}
@@ -2459,27 +2459,27 @@ func (s *UIServer) handleGetArchivedRun(w http.ResponseWriter, r *http.Request, 
 	}
 
 	detail := archivedRunDetail{
-		Name:               archive.Name,
-		Namespace:          archive.Namespace,
-		AgentRef:           archive.AgentRef,
-		Input:              archive.Input,
-		Phase:              archive.Phase,
-		Output:             archive.Output,
-		SpendUSD:           archive.SpendUSD,
-		RestartCount:       archive.RestartCount,
-		PodName:            archive.PodName,
-		ContextUsedTokens:  archive.ContextUsedTokens,
-		MaxContextTokens:   archive.MaxContextTokens,
-		StartTime:          formatTimePtr(archive.StartTime),
-		CompletionTime:     formatTimePtr(archive.CompletionTime),
-		RoutingDecisions:   routingDecisionsToJSON(routing),
-		ChildRunRefs:       childRefs,
-		ResolvedModel:      resolvedModel,
+		Name:              archive.Name,
+		Namespace:         archive.Namespace,
+		AgentRef:          archive.AgentRef,
+		Input:             archive.Input,
+		Phase:             archive.Phase,
+		Output:            archive.Output,
+		SpendUSD:          archive.SpendUSD,
+		RestartCount:      archive.RestartCount,
+		PodName:           archive.PodName,
+		ContextUsedTokens: archive.ContextUsedTokens,
+		MaxContextTokens:  archive.MaxContextTokens,
+		StartTime:         formatTimePtr(archive.StartTime),
+		CompletionTime:    formatTimePtr(archive.CompletionTime),
+		RoutingDecisions:  routingDecisionsToJSON(routing),
+		ChildRunRefs:      childRefs,
+		ResolvedModel:     resolvedModel,
 	}
 
 	// Resolve the Agent CRD to surface tools/MCP surface area alongside the run.
 	if s.crdClient != nil {
-		var agent agentorcv1alpha1.Agent
+		var agent agentorcav1alpha1.Agent
 		if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: archive.AgentRef, Namespace: archive.Namespace}, &agent); err == nil {
 			tools := agent.Spec.Tools
 			if tools == nil {
@@ -2488,7 +2488,7 @@ func (s *UIServer) handleGetArchivedRun(w http.ResponseWriter, r *http.Request, 
 			detail.Tools = tools
 			// Resolve MCP servers in the agent's namespace whose allowedAgents
 			// explicitly lists this agent (default-deny: empty = no access).
-			var mcpList agentorcv1alpha1.MCPServerList
+			var mcpList agentorcav1alpha1.MCPServerList
 			if err := s.crdClient.List(r.Context(), &mcpList, client.InNamespace(archive.Namespace)); err == nil {
 				for i := range mcpList.Items {
 					mp := &mcpList.Items[i]
@@ -2525,36 +2525,36 @@ type routingDecisionJSON struct {
 // the live runDetail struct (so the UI reuses its presentational components)
 // and adds tool/mcp resolution plus a computed resolved-model string.
 type archivedRunDetail struct {
-	Name               string              `json:"name"`
-	Namespace          string              `json:"namespace"`
-	AgentRef           string              `json:"agentRef"`
-	Input              string              `json:"input"`
-	Phase              string              `json:"phase"`
-	Output             string              `json:"output,omitempty"`
-	SpendUSD           string              `json:"spendUSD"`
-	RestartCount       int                 `json:"restartCount"`
-	LastRestartReason  string              `json:"lastRestartReason,omitempty"`
-	StartTime          string              `json:"startTime,omitempty"`
-	CompletionTime     string              `json:"completionTime,omitempty"`
+	Name               string                `json:"name"`
+	Namespace          string                `json:"namespace"`
+	AgentRef           string                `json:"agentRef"`
+	Input              string                `json:"input"`
+	Phase              string                `json:"phase"`
+	Output             string                `json:"output,omitempty"`
+	SpendUSD           string                `json:"spendUSD"`
+	RestartCount       int                   `json:"restartCount"`
+	LastRestartReason  string                `json:"lastRestartReason,omitempty"`
+	StartTime          string                `json:"startTime,omitempty"`
+	CompletionTime     string                `json:"completionTime,omitempty"`
 	RoutingDecisions   []routingDecisionJSON `json:"routingDecisions"`
-	ChildRunRefs       []string            `json:"childRunRefs,omitempty"`
-	ParentRunRef       string              `json:"parentRunRef,omitempty"`
-	ClarifyQuestion    string              `json:"clarifyQuestion,omitempty"`
-	ClarifyAnswer      string              `json:"clarifyAnswer,omitempty"`
-	WaitingSince       string              `json:"waitingSince,omitempty"`
-	ContinuationRunRef string              `json:"continuationRunRef,omitempty"`
-	ContextUsedTokens  int                 `json:"contextUsedTokens"`
-	MaxContextTokens   int                 `json:"maxContextTokens"`
-	PodName            string              `json:"podName,omitempty"`
-	Tools              []string            `json:"tools,omitempty"`
-	MCPServers         []string            `json:"mcps,omitempty"`
-	ResolvedModel      string              `json:"resolvedModel,omitempty"`
+	ChildRunRefs       []string              `json:"childRunRefs,omitempty"`
+	ParentRunRef       string                `json:"parentRunRef,omitempty"`
+	ClarifyQuestion    string                `json:"clarifyQuestion,omitempty"`
+	ClarifyAnswer      string                `json:"clarifyAnswer,omitempty"`
+	WaitingSince       string                `json:"waitingSince,omitempty"`
+	ContinuationRunRef string                `json:"continuationRunRef,omitempty"`
+	ContextUsedTokens  int                   `json:"contextUsedTokens"`
+	MaxContextTokens   int                   `json:"maxContextTokens"`
+	PodName            string                `json:"podName,omitempty"`
+	Tools              []string              `json:"tools,omitempty"`
+	MCPServers         []string              `json:"mcps,omitempty"`
+	ResolvedModel      string                `json:"resolvedModel,omitempty"`
 }
 
 // routingDecisionsToJSON converts CRD routing decisions into the JSON shape,
 // formatting the timestamp to RFC3339 (UTC). Reused by both the live and
 // archived run-detail handlers.
-func routingDecisionsToJSON(rds []agentorcv1alpha1.RoutingDecision) []routingDecisionJSON {
+func routingDecisionsToJSON(rds []agentorcav1alpha1.RoutingDecision) []routingDecisionJSON {
 	if len(rds) == 0 {
 		return []routingDecisionJSON{}
 	}
@@ -2586,8 +2586,8 @@ func formatTimePtr(t *time.Time) string {
 // ── Generic resource CRUD ───────────────────────────────────────────────────
 //
 // These endpoints provide full read/write access to all CRD types via a single
-//   - The agentorc.io/managed-by label is checked on delete to prevent
-//     users from deleting resources not created by agent-orc.
+//   - The agentorca.io/managed-by label is checked on delete to prevent
+//     users from deleting resources not created by agent-orca.
 //   - Tenant scoping: when a TenantIdentity is in context, all list/get
 //     operations are restricted to the tenant's namespace.
 
@@ -2599,14 +2599,14 @@ type crdKindInfo struct {
 }
 
 var crdKinds = map[string]crdKindInfo{
-	"agents":          {&agentorcv1alpha1.AgentList{}, func() client.Object { return &agentorcv1alpha1.Agent{} }, "Agent"},
-	"tools":           {&agentorcv1alpha1.ToolList{}, func() client.Object { return &agentorcv1alpha1.Tool{} }, "Tool"},
-	"mcpservers":      {&agentorcv1alpha1.MCPServerList{}, func() client.Object { return &agentorcv1alpha1.MCPServer{} }, "MCPServer"},
-	"modelproviders":  {&agentorcv1alpha1.ModelProviderList{}, func() client.Object { return &agentorcv1alpha1.ModelProvider{} }, "ModelProvider"},
-	"knowledgebases":  {&agentorcv1alpha1.KnowledgeBaseList{}, func() client.Object { return &agentorcv1alpha1.KnowledgeBase{} }, "KnowledgeBase"},
-	"modelselectors":  {&agentorcv1alpha1.ModelSelectorList{}, func() client.Object { return &agentorcv1alpha1.ModelSelector{} }, "ModelSelector"},
-	"agentdeployments": {&agentorcv1alpha1.AgentDeploymentList{}, func() client.Object { return &agentorcv1alpha1.AgentDeployment{} }, "AgentDeployment"},
-	"agentworkflows": {&agentorcv1alpha1.AgentWorkflowList{}, func() client.Object { return &agentorcv1alpha1.AgentWorkflow{} }, "AgentWorkflow"},
+	"agents":           {&agentorcav1alpha1.AgentList{}, func() client.Object { return &agentorcav1alpha1.Agent{} }, "Agent"},
+	"tools":            {&agentorcav1alpha1.ToolList{}, func() client.Object { return &agentorcav1alpha1.Tool{} }, "Tool"},
+	"mcpservers":       {&agentorcav1alpha1.MCPServerList{}, func() client.Object { return &agentorcav1alpha1.MCPServer{} }, "MCPServer"},
+	"modelproviders":   {&agentorcav1alpha1.ModelProviderList{}, func() client.Object { return &agentorcav1alpha1.ModelProvider{} }, "ModelProvider"},
+	"knowledgebases":   {&agentorcav1alpha1.KnowledgeBaseList{}, func() client.Object { return &agentorcav1alpha1.KnowledgeBase{} }, "KnowledgeBase"},
+	"modelselectors":   {&agentorcav1alpha1.ModelSelectorList{}, func() client.Object { return &agentorcav1alpha1.ModelSelector{} }, "ModelSelector"},
+	"agentdeployments": {&agentorcav1alpha1.AgentDeploymentList{}, func() client.Object { return &agentorcav1alpha1.AgentDeployment{} }, "AgentDeployment"},
+	"agentworkflows":   {&agentorcav1alpha1.AgentWorkflowList{}, func() client.Object { return &agentorcav1alpha1.AgentWorkflow{} }, "AgentWorkflow"},
 }
 
 // handleResourceCollection handles GET (list) and POST (create) on /api/resources/{kind}.
@@ -2689,7 +2689,7 @@ func (s *UIServer) createResource(w http.ResponseWriter, r *http.Request, info c
 		labels = make(map[string]string)
 	}
 	if _, exists := labels["app.kubernetes.io/managed-by"]; !exists {
-		labels["app.kubernetes.io/managed-by"] = "agent-orc"
+		labels["app.kubernetes.io/managed-by"] = "agent-orca"
 		obj.SetLabels(labels)
 	}
 	// Enforce tenant scoping: when a tenant identity is present, force the
@@ -2752,7 +2752,7 @@ func (s *UIServer) updateResource(w http.ResponseWriter, r *http.Request, info c
 			labels = make(map[string]string)
 		}
 		if _, exists := labels["app.kubernetes.io/managed-by"]; !exists {
-			labels["app.kubernetes.io/managed-by"] = "agent-orc"
+			labels["app.kubernetes.io/managed-by"] = "agent-orca"
 			accessor.SetLabels(labels)
 		}
 	}
@@ -2764,8 +2764,8 @@ func (s *UIServer) updateResource(w http.ResponseWriter, r *http.Request, info c
 	jsonResponse(w, obj)
 }
 
-// deleteResource deletes a CRD. Checks the agentorc.io/managed-by label to
-// prevent deletion of resources not created by agent-orc.
+// deleteResource deletes a CRD. Checks the agentorca.io/managed-by label to
+// prevent deletion of resources not created by agent-orca.
 func (s *UIServer) deleteResource(w http.ResponseWriter, r *http.Request, info crdKindInfo, ns, name string) {
 	obj := info.newObj()
 	obj.SetName(name)
@@ -2778,9 +2778,9 @@ func (s *UIServer) deleteResource(w http.ResponseWriter, r *http.Request, info c
 		http.Error(w, err.Error(), code)
 		return
 	}
-	// Managed-by guard: only allow deletion of agent-orc-managed resources.
-	if !isManagedByAgentOrc(obj) {
-		http.Error(w, `{"error":"resource is not managed by agent-orc"}`, http.StatusForbidden)
+	// Managed-by guard: only allow deletion of agent-orca-managed resources.
+	if !isManagedByAgentOrca(obj) {
+		http.Error(w, `{"error":"resource is not managed by agent-orca"}`, http.StatusForbidden)
 		return
 	}
 	if err := s.crdClient.Delete(r.Context(), obj); err != nil {
@@ -2790,18 +2790,18 @@ func (s *UIServer) deleteResource(w http.ResponseWriter, r *http.Request, info c
 	jsonResponse(w, map[string]string{"status": "deleted"})
 }
 
-// isManagedByAgentOrc returns true if the object is managed by agent-orc.
+// isManagedByAgentOrca returns true if the object is managed by agent-orca.
 // Resources are considered managed if they carry any of:
-//   - app.kubernetes.io/managed-by: agent-orc (controllers, system-created AgentRuns)
-//   - agentorc.io/managed-by: agent-orc (some controllers use this variant)
-//   - agentorc.io/source (chat-created runs via the UI API)
-//   - agentorc.io/deployment (runs belonging to a deployment)
-func isManagedByAgentOrc(obj client.Object) bool {
+//   - app.kubernetes.io/managed-by: agent-orca (controllers, system-created AgentRuns)
+//   - agentorca.io/managed-by: agent-orca (some controllers use this variant)
+//   - agentorca.io/source (chat-created runs via the UI API)
+//   - agentorca.io/deployment (runs belonging to a deployment)
+func isManagedByAgentOrca(obj client.Object) bool {
 	labels := obj.GetLabels()
-	return labels["app.kubernetes.io/managed-by"] == "agent-orc" ||
-		labels["agentorc.io/managed-by"] == "agent-orc" ||
-		labels["agentorc.io/source"] != "" ||
-		labels["agentorc.io/deployment"] != ""
+	return labels["app.kubernetes.io/managed-by"] == "agent-orca" ||
+		labels["agentorca.io/managed-by"] == "agent-orca" ||
+		labels["agentorca.io/source"] != "" ||
+		labels["agentorca.io/deployment"] != ""
 }
 
 // ── OpenAPI ─────────────────────────────────────────────────────────────────
@@ -2810,9 +2810,9 @@ func isManagedByAgentOrc(obj client.Object) bool {
 var openapiUIYAML []byte
 
 var (
-	uiOpenAPIOnce    sync.Once
-	uiOpenAPIJSON    []byte
-	uiOpenAPIErr     error
+	uiOpenAPIOnce sync.Once
+	uiOpenAPIJSON []byte
+	uiOpenAPIErr  error
 )
 
 func uiOpenAPIJSONBytes() ([]byte, error) {

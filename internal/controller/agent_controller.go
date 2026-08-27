@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package controller implements the Kubernetes controllers for agent-orc CRDs.
+// Package controller implements the Kubernetes controllers for agent-orca CRDs.
 package controller
 
 import (
@@ -29,11 +29,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
-	"github.com/floppyfish14/agent-orc/internal/security"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
+	"github.com/floppyfish14/agent-orca/internal/security"
 )
 
-const agentFinalizer = "agentorc.io/agent-cleanup"
+const agentFinalizer = "agentorca.io/agent-cleanup"
 
 // AgentReconciler reconciles a Agent object.
 type AgentReconciler struct {
@@ -42,15 +42,15 @@ type AgentReconciler struct {
 	CloudProvider security.CloudProvider
 }
 
-// +kubebuilder:rbac:groups=agentorc.agentorc.io,resources=agents,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=agentorc.agentorc.io,resources=agents/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=agentorc.agentorc.io,resources=agents/finalizers,verbs=update
+// +kubebuilder:rbac:groups=agentorca.agentorca.io,resources=agents,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=agentorca.agentorca.io,resources=agents/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=agentorca.agentorca.io,resources=agents/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
 
 func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
-	var agent agentorcv1alpha1.Agent
+	var agent agentorcav1alpha1.Agent
 	if err := r.Get(ctx, req.NamespacedName, &agent); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -85,7 +85,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 }
 
 // reconcileManagedSA creates or updates the stable Agent-scoped ServiceAccount.
-func (r *AgentReconciler) reconcileManagedSA(ctx context.Context, agent *agentorcv1alpha1.Agent, saName string) error {
+func (r *AgentReconciler) reconcileManagedSA(ctx context.Context, agent *agentorcav1alpha1.Agent, saName string) error {
 	desired := security.BuildManagedServiceAccount(agent.Name, agent.Namespace)
 	security.ApplyCloudAuthAnnotations(desired, agent.Spec.CloudAuth, r.CloudProvider)
 
@@ -111,7 +111,7 @@ func (r *AgentReconciler) reconcileManagedSA(ctx context.Context, agent *agentor
 }
 
 // setStatus patches AgentStatus with the SA name and detected cloud provider.
-func (r *AgentReconciler) setStatus(ctx context.Context, agent *agentorcv1alpha1.Agent, saName string) (ctrl.Result, error) {
+func (r *AgentReconciler) setStatus(ctx context.Context, agent *agentorcav1alpha1.Agent, saName string) (ctrl.Result, error) {
 	if agent.Status.ServiceAccountName == saName &&
 		agent.Status.CloudProviderDetected == string(r.CloudProvider) {
 		return ctrl.Result{}, nil
@@ -126,7 +126,7 @@ func (r *AgentReconciler) setStatus(ctx context.Context, agent *agentorcv1alpha1
 }
 
 // handleDeletion removes the operator-managed SA and clears the finalizer.
-func (r *AgentReconciler) handleDeletion(ctx context.Context, agent *agentorcv1alpha1.Agent) (ctrl.Result, error) {
+func (r *AgentReconciler) handleDeletion(ctx context.Context, agent *agentorcav1alpha1.Agent) (ctrl.Result, error) {
 	if agent.Spec.ServiceAccountRef == nil {
 		saName := security.AgentSAName(agent.Name)
 		var sa corev1.ServiceAccount
@@ -143,7 +143,7 @@ func (r *AgentReconciler) handleDeletion(ctx context.Context, agent *agentorcv1a
 // SetupWithManager sets up the controller with the Manager.
 func (r *AgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&agentorcv1alpha1.Agent{}).
+		For(&agentorcav1alpha1.Agent{}).
 		Owns(&corev1.ServiceAccount{}).
 		Named("agent").
 		Complete(r)

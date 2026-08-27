@@ -22,7 +22,7 @@ import (
 	"testing"
 	"time"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
 )
 
 // recordingStore embeds the existing fakeReadyStore (full state.Store impl) and
@@ -54,10 +54,10 @@ func TestEnsureRunCheckpoint_PreservesExisting(t *testing.T) {
 	// messages (incl. tool calls). The safety-net must NOT overwrite it.
 	full := []json.RawMessage{json.RawMessage(`{"role":"assistant","tool_calls":[...]}`)}
 	store := newRecordingStore(map[string][]json.RawMessage{
-		"agentorc/runs/run-1/state": full,
+		"agentorca/runs/run-1/state": full,
 	})
 	srv := &UIServer{store: store}
-	history := []agentorcv1alpha1.ConversationMessage{{Role: "user", Content: "fallback only"}}
+	history := []agentorcav1alpha1.ConversationMessage{{Role: "user", Content: "fallback only"}}
 	if err := srv.ensureRunCheckpoint(context.Background(), "run-1", history); err != nil {
 		t.Fatalf("ensureRunCheckpoint: %v", err)
 	}
@@ -71,14 +71,14 @@ func TestEnsureRunCheckpoint_FallbackWhenEmpty(t *testing.T) {
 	// so a restarted pod can resume from it.
 	store := newRecordingStore(nil)
 	srv := &UIServer{store: store}
-	history := []agentorcv1alpha1.ConversationMessage{
+	history := []agentorcav1alpha1.ConversationMessage{
 		{Role: "user", Content: "hi"},
 		{Role: "assistant", Content: "hello"},
 	}
 	if err := srv.ensureRunCheckpoint(context.Background(), "run-2", history); err != nil {
 		t.Fatalf("ensureRunCheckpoint: %v", err)
 	}
-	got, ok := store.written["agentorc/runs/run-2/state"]
+	got, ok := store.written["agentorca/runs/run-2/state"]
 	if !ok {
 		t.Fatalf("safety-net should have written fallback checkpoint, wrote: %v", store.written)
 	}

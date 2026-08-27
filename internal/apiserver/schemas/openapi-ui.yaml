@@ -1,14 +1,14 @@
 openapi: 3.1.0
 info:
-  title: agent-orc UI API
+  title: agent-orca UI API
   description: |
-    REST API consumed by the agent-orc React UI. Served by the operator on port
+    REST API consumed by the agent-orca React UI. Served by the operator on port
     8083 behind the UIProxy BFF (which injects a projected Kubernetes SA token
-    with audience "agentorc/ui"). OIDC tenant JWTs are also accepted when
+    with audience "agentorca/ui"). OIDC tenant JWTs are also accepted when
     externalAuth is configured, enabling per-tenant resource scoping.
   version: "1.0.0"
   contact:
-    name: agent-orc
+    name: agent-orca
   license:
     name: Apache-2.0
 servers:
@@ -339,7 +339,7 @@ paths:
         '200': { description: updated resource }
     delete:
       tags: [resources]
-      summary: Delete a CRD (only resources managed by agent-orc)
+      summary: Delete a CRD (only resources managed by agent-orca)
       parameters:
         - in: path
           name: kind

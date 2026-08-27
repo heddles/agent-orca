@@ -30,8 +30,8 @@ import (
 	"strings"
 	"time"
 
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
 	_ "github.com/jackc/pgx/v5/stdlib" // pgx as database/sql driver
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
 )
 
 // RunArchive is the relational representation of an archived AgentRun.
@@ -44,23 +44,23 @@ type RunArchive struct {
 	Namespace string            `db:"namespace"`
 	Labels    map[string]string `db:"labels"`
 	// Spec-level fields.
-	AgentRef      string         `db:"agent_ref"`
-	Input         string         `db:"input"`
-	ParentRunRef  string         `db:"parent_run_ref"`
-	PriorRunRef   string         `db:"prior_run_ref"`
-	TimeoutSec    sql.NullInt64  `db:"timeout_sec"`
+	AgentRef     string        `db:"agent_ref"`
+	Input        string        `db:"input"`
+	ParentRunRef string        `db:"parent_run_ref"`
+	PriorRunRef  string        `db:"prior_run_ref"`
+	TimeoutSec   sql.NullInt64 `db:"timeout_sec"`
 	// Status-level fields (captured at archival time).
-	Phase          string `db:"phase"`
-	PodName        string `db:"pod_name"`
-	SpendUSD       string `db:"spend_usd"`
-	Output         string `db:"output"`
-	RawOutput      string `db:"raw_output"`
-	RestartCount   int    `db:"restart_count"`
-	StartTime      *time.Time `db:"start_time"`
-	CompletionTime *time.Time `db:"completion_time"`
-	ContextUsedTokens  int `db:"context_used_tokens"`
-	MaxContextTokens   int `db:"max_context_tokens"`
-	// Tenant attribution (from agentorc.io/tenant label, empty if unattributed).
+	Phase             string     `db:"phase"`
+	PodName           string     `db:"pod_name"`
+	SpendUSD          string     `db:"spend_usd"`
+	Output            string     `db:"output"`
+	RawOutput         string     `db:"raw_output"`
+	RestartCount      int        `db:"restart_count"`
+	StartTime         *time.Time `db:"start_time"`
+	CompletionTime    *time.Time `db:"completion_time"`
+	ContextUsedTokens int        `db:"context_used_tokens"`
+	MaxContextTokens  int        `db:"max_context_tokens"`
+	// Tenant attribution (from agentorca.io/tenant label, empty if unattributed).
 	Tenant string `db:"tenant"`
 	// Routing decisions and child refs (JSON-serialised).
 	RoutingDecisionsJSON []byte `db:"routing_decisions"`
@@ -157,7 +157,7 @@ func (s *Store) Ping(ctx context.Context) error {
 }
 
 // ArchiveRun upserts a completed AgentRun into the archival table.
-func (s *Store) ArchiveRun(ctx context.Context, run *agentorcv1alpha1.AgentRun) error {
+func (s *Store) ArchiveRun(ctx context.Context, run *agentorcav1alpha1.AgentRun) error {
 	archived := fromAgentRun(run)
 
 	labelsJSON, _ := json.Marshal(archived.Labels)
@@ -378,25 +378,25 @@ func (s *Store) ApplyMigration(ctx context.Context) error {
 }
 
 // fromAgentRun converts a CRD AgentRun into the flat archival struct.
-func fromAgentRun(run *agentorcv1alpha1.AgentRun) RunArchive {
+func fromAgentRun(run *agentorcav1alpha1.AgentRun) RunArchive {
 	r := RunArchive{
-		ID:               fmt.Sprintf("%s/%s", run.Namespace, run.Name),
-		Name:             run.Name,
-		Namespace:        run.Namespace,
-		AgentRef:         run.Spec.AgentRef,
-		Input:            run.Spec.Input,
-		ParentRunRef:     run.Spec.ParentRunRef,
-		PriorRunRef:      run.Spec.PriorRunRef,
-		PodName:          run.Status.PodName,
-		Phase:            string(run.Status.Phase),
-		SpendUSD:         run.Status.SpendUSD,
-		Output:           run.Status.Output,
-		RawOutput:        run.Status.RawOutput,
-		RestartCount:     run.Status.RestartCount,
-		Tenant:           run.Labels["agentorc.io/tenant"],
-		ContextUsedTokens:  run.Status.ContextUsedTokens,
-		MaxContextTokens:   run.Status.MaxContextTokens,
-		Labels:           run.Labels,
+		ID:                fmt.Sprintf("%s/%s", run.Namespace, run.Name),
+		Name:              run.Name,
+		Namespace:         run.Namespace,
+		AgentRef:          run.Spec.AgentRef,
+		Input:             run.Spec.Input,
+		ParentRunRef:      run.Spec.ParentRunRef,
+		PriorRunRef:       run.Spec.PriorRunRef,
+		PodName:           run.Status.PodName,
+		Phase:             string(run.Status.Phase),
+		SpendUSD:          run.Status.SpendUSD,
+		Output:            run.Status.Output,
+		RawOutput:         run.Status.RawOutput,
+		RestartCount:      run.Status.RestartCount,
+		Tenant:            run.Labels["agentorca.io/tenant"],
+		ContextUsedTokens: run.Status.ContextUsedTokens,
+		MaxContextTokens:  run.Status.MaxContextTokens,
+		Labels:            run.Labels,
 	}
 	if run.Spec.Timeout != nil {
 		r.TimeoutSec = sql.NullInt64{Int64: int64(run.Spec.Timeout.Duration.Seconds()), Valid: true}
@@ -420,11 +420,11 @@ func fromAgentRun(run *agentorcv1alpha1.AgentRun) RunArchive {
 }
 
 // IsTerminalPhase reports whether the given AgentRun phase is terminal.
-func IsTerminalPhase(phase agentorcv1alpha1.AgentRunPhase) bool {
+func IsTerminalPhase(phase agentorcav1alpha1.AgentRunPhase) bool {
 	switch phase {
-	case agentorcv1alpha1.AgentRunPhaseSucceeded,
-		agentorcv1alpha1.AgentRunPhaseFailed,
-		agentorcv1alpha1.AgentRunPhaseHandedOff:
+	case agentorcav1alpha1.AgentRunPhaseSucceeded,
+		agentorcav1alpha1.AgentRunPhaseFailed,
+		agentorcav1alpha1.AgentRunPhaseHandedOff:
 		return true
 	default:
 		return false

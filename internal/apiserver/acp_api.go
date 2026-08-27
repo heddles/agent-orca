@@ -33,9 +33,9 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
-	"github.com/floppyfish14/agent-orc/internal/security"
-	"github.com/floppyfish14/agent-orc/internal/state"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
+	"github.com/floppyfish14/agent-orca/internal/security"
+	"github.com/floppyfish14/agent-orca/internal/state"
 )
 
 // ACPServer implements the Agent Communication Protocol (ACP) API.
@@ -353,14 +353,14 @@ func (s *ACPServer) handleListAgents(w http.ResponseWriter, r *http.Request) {
 	}
 	offset := max(parseIntQueryParam(r, "offset", 0), 0)
 
-	var agentList agentorcv1alpha1.AgentList
+	var agentList agentorcav1alpha1.AgentList
 	if err := s.crdClient.List(r.Context(), &agentList, client.InNamespace(tenant.Namespace)); err != nil {
 		writeACPError(w, "server_error", err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	// Filter by allowed agents if specified
-	var filteredAgents []agentorcv1alpha1.Agent
+	var filteredAgents []agentorcav1alpha1.Agent
 	for _, agent := range agentList.Items {
 		if tenant.AllowedAgents != nil && len(tenant.AllowedAgents) > 0 { //nolint:staticcheck
 
@@ -426,7 +426,7 @@ func (s *ACPServer) handleAgentRoutes(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Verify the agent exists
-	var agent agentorcv1alpha1.Agent
+	var agent agentorcav1alpha1.Agent
 	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: name, Namespace: tenant.Namespace}, &agent); err != nil {
 		writeACPError(w, "not_found", fmt.Sprintf("agent %q not found", name), http.StatusNotFound)
 		return
@@ -460,7 +460,7 @@ func tenantCanAccessAgent(tenant *TenantIdentity, name string) bool {
 }
 
 // writeAgentManifest builds and writes the enriched agent manifest.
-func (s *ACPServer) writeAgentManifest(w http.ResponseWriter, r *http.Request, agent *agentorcv1alpha1.Agent) {
+func (s *ACPServer) writeAgentManifest(w http.ResponseWriter, r *http.Request, agent *agentorcav1alpha1.Agent) {
 	manifest := ACPAgentManifest{
 		Name:               agent.Name,
 		Description:        agent.Spec.SystemPrompt,
@@ -493,7 +493,7 @@ type ACPAgentRunRequest struct {
 // handleAgentRun creates a new AgentRun for the given agent, validating input
 // against the agent's manifest schema. This is a thin, UX-friendly wrapper
 // around the ACP POST /runs flow.
-func (s *ACPServer) handleAgentRun(w http.ResponseWriter, r *http.Request, tenant *TenantIdentity, agent *agentorcv1alpha1.Agent) {
+func (s *ACPServer) handleAgentRun(w http.ResponseWriter, r *http.Request, tenant *TenantIdentity, agent *agentorcav1alpha1.Agent) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {
 		writeACPError(w, "invalid_input", "reading body", http.StatusBadRequest)
@@ -539,22 +539,22 @@ func (s *ACPServer) handleAgentRun(w http.ResponseWriter, r *http.Request, tenan
 	sessionID := req.SessionID
 
 	// Create AgentRun CR
-	run := &agentorcv1alpha1.AgentRun{
+	run := &agentorcav1alpha1.AgentRun{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: fmt.Sprintf("acp-%s-", agent.Name),
 			Namespace:    tenant.Namespace,
 			Labels: map[string]string{
-				security.LabelManagedBy: "agent-orc",
-				"agentorc.io/tenant":    tenant.TenantName,
+				security.LabelManagedBy: "agent-orca",
+				"agentorca.io/tenant":   tenant.TenantName,
 			},
 		},
-		Spec: agentorcv1alpha1.AgentRunSpec{
+		Spec: agentorcav1alpha1.AgentRunSpec{
 			AgentRef: agent.Name,
 			Input:    inputText,
 		},
 	}
 	if sessionID != "" {
-		run.Labels["agentorc.io/session-id"] = sessionID
+		run.Labels["agentorca.io/session-id"] = sessionID
 	}
 
 	if err := s.crdClient.Create(r.Context(), run); err != nil {
@@ -579,7 +579,7 @@ func (s *ACPServer) handleAgentRun(w http.ResponseWriter, r *http.Request, tenan
 
 // buildAllowedTools fetches the Tool CRDs referenced by an agent and returns
 // their names and JSON schemas for the manifest.
-func buildAllowedTools(ctx context.Context, k8sClient client.Client, agent *agentorcv1alpha1.Agent) []ACPToolInfo {
+func buildAllowedTools(ctx context.Context, k8sClient client.Client, agent *agentorcav1alpha1.Agent) []ACPToolInfo {
 	// Built-in tools always available.
 	tools := []ACPToolInfo{
 		{Name: "_clarify", Description: "Ask the human a clarifying question before proceeding"},
@@ -589,7 +589,7 @@ func buildAllowedTools(ctx context.Context, k8sClient client.Client, agent *agen
 
 	// Fetch each configured Tool CR and extract its schema.
 	for _, toolName := range agent.Spec.Tools {
-		var tool agentorcv1alpha1.Tool
+		var tool agentorcav1alpha1.Tool
 		if err := k8sClient.Get(ctx, client.ObjectKey{Name: toolName, Namespace: agent.Namespace}, &tool); err != nil {
 			slog.Warn("failed to fetch tool for manifest", "tool", toolName, "err", err)
 			tools = append(tools, ACPToolInfo{Name: toolName})
@@ -707,7 +707,7 @@ func (s *ACPServer) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Verify the agent exists
-	var agent agentorcv1alpha1.Agent
+	var agent agentorcav1alpha1.Agent
 	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: req.AgentName, Namespace: tenant.Namespace}, &agent); err != nil {
 		writeACPError(w, "not_found", fmt.Sprintf("agent %q not found", req.AgentName), http.StatusNotFound)
 		return
@@ -740,22 +740,22 @@ func (s *ACPServer) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create AgentRun CR
-	run := &agentorcv1alpha1.AgentRun{
+	run := &agentorcav1alpha1.AgentRun{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: fmt.Sprintf("acp-%s-", req.AgentName),
 			Namespace:    tenant.Namespace,
 			Labels: map[string]string{
-				security.LabelManagedBy: "agent-orc",
-				"agentorc.io/tenant":    tenant.TenantName,
+				security.LabelManagedBy: "agent-orca",
+				"agentorca.io/tenant":   tenant.TenantName,
 			},
 		},
-		Spec: agentorcv1alpha1.AgentRunSpec{
+		Spec: agentorcav1alpha1.AgentRunSpec{
 			AgentRef: req.AgentName,
 			Input:    inputText,
 		},
 	}
 	if sessionID != "" {
-		run.Labels["agentorc.io/session-id"] = sessionID
+		run.Labels["agentorca.io/session-id"] = sessionID
 	}
 
 	if err := s.crdClient.Create(r.Context(), run); err != nil {
@@ -809,14 +809,14 @@ func (s *ACPServer) handleRunByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var run agentorcv1alpha1.AgentRun
+	var run agentorcav1alpha1.AgentRun
 	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: runID, Namespace: tenant.Namespace}, &run); err != nil {
 		writeACPError(w, "not_found", "run not found", http.StatusNotFound)
 		return
 	}
 
 	// Verify run belongs to tenant
-	if run.Labels["agentorc.io/tenant"] != tenant.TenantName {
+	if run.Labels["agentorca.io/tenant"] != tenant.TenantName {
 		writeACPError(w, "not_found", "run not found", http.StatusNotFound)
 		return
 	}
@@ -833,23 +833,23 @@ func (s *ACPServer) handleRunByID(w http.ResponseWriter, r *http.Request) {
 
 // handleCancelRun handles POST /runs/{run_id}/cancel.
 func (s *ACPServer) handleCancelRun(w http.ResponseWriter, r *http.Request, tenant *TenantIdentity, runID string) {
-	var run agentorcv1alpha1.AgentRun
+	var run agentorcav1alpha1.AgentRun
 	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: runID, Namespace: tenant.Namespace}, &run); err != nil {
 		writeACPError(w, "not_found", "run not found", http.StatusNotFound)
 		return
 	}
 
 	// Verify run belongs to tenant
-	if run.Labels["agentorc.io/tenant"] != tenant.TenantName {
+	if run.Labels["agentorca.io/tenant"] != tenant.TenantName {
 		writeACPError(w, "not_found", "run not found", http.StatusNotFound)
 		return
 	}
 
 	// Only allow cancelling pending, running, or waiting runs
 	switch run.Status.Phase {
-	case agentorcv1alpha1.AgentRunPhasePending,
-		agentorcv1alpha1.AgentRunPhaseRunning,
-		agentorcv1alpha1.AgentRunPhaseWaitingForInput:
+	case agentorcav1alpha1.AgentRunPhasePending,
+		agentorcav1alpha1.AgentRunPhaseRunning,
+		agentorcav1alpha1.AgentRunPhaseWaitingForInput:
 		// Valid states to cancel
 	default:
 		writeACPError(w, "invalid_input", "run is already in a terminal state", http.StatusConflict)
@@ -858,7 +858,7 @@ func (s *ACPServer) handleCancelRun(w http.ResponseWriter, r *http.Request, tena
 
 	// Mark as failed with cancellation reason (no dedicated Cancelled phase exists)
 	patch := client.MergeFrom(run.DeepCopy())
-	run.Status.Phase = agentorcv1alpha1.AgentRunPhaseFailed
+	run.Status.Phase = agentorcav1alpha1.AgentRunPhaseFailed
 	run.Status.FailureReason = "cancelled by user"
 	now := metav1.Now()
 	run.Status.CompletionTime = &now
@@ -871,7 +871,7 @@ func (s *ACPServer) handleCancelRun(w http.ResponseWriter, r *http.Request, tena
 
 	resp := ACPRun{
 		AgentName:  run.Spec.AgentRef,
-		SessionID:  run.Labels["agentorc.io/session-id"],
+		SessionID:  run.Labels["agentorca.io/session-id"],
 		RunID:      run.Name,
 		Status:     ACPRunCancelled,
 		CreatedAt:  run.CreationTimestamp.Format(time.RFC3339),
@@ -884,14 +884,14 @@ func (s *ACPServer) handleCancelRun(w http.ResponseWriter, r *http.Request, tena
 
 // handleListRunEvents handles GET /runs/{run_id}/events.
 func (s *ACPServer) handleListRunEvents(w http.ResponseWriter, r *http.Request, tenant *TenantIdentity, runID string) {
-	var run agentorcv1alpha1.AgentRun
+	var run agentorcav1alpha1.AgentRun
 	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: runID, Namespace: tenant.Namespace}, &run); err != nil {
 		writeACPError(w, "not_found", "run not found", http.StatusNotFound)
 		return
 	}
 
 	// Verify run belongs to tenant
-	if run.Labels["agentorc.io/tenant"] != tenant.TenantName {
+	if run.Labels["agentorca.io/tenant"] != tenant.TenantName {
 		writeACPError(w, "not_found", "run not found", http.StatusNotFound)
 		return
 	}
@@ -922,7 +922,7 @@ func (s *ACPServer) handleListRunEvents(w http.ResponseWriter, r *http.Request, 
 	})
 
 	// Output message if run succeeded
-	if run.Status.Phase == agentorcv1alpha1.AgentRunPhaseSucceeded && run.Status.Output != "" {
+	if run.Status.Phase == agentorcav1alpha1.AgentRunPhaseSucceeded && run.Status.Output != "" {
 		events = append(events, ACPMessageCreatedEvent{
 			Type: "message.created",
 			Message: ACPMessage{
@@ -958,7 +958,7 @@ func (s *ACPServer) handleListRunEvents(w http.ResponseWriter, r *http.Request, 
 			lastEvent.Run.FinishedAt = run.Status.CompletionTime.Format(time.RFC3339)
 			events[len(events)-1] = lastEvent
 		}
-	} else if run.Status.Phase == agentorcv1alpha1.AgentRunPhaseFailed {
+	} else if run.Status.Phase == agentorcav1alpha1.AgentRunPhaseFailed {
 		events = append(events, ACPRunFailedEvent{
 			Type: "run.failed",
 			Run: ACPRun{
@@ -968,7 +968,7 @@ func (s *ACPServer) handleListRunEvents(w http.ResponseWriter, r *http.Request, 
 				CreatedAt: run.CreationTimestamp.Format(time.RFC3339),
 			},
 		})
-	} else if run.Status.Phase == agentorcv1alpha1.AgentRunPhaseWaitingForInput {
+	} else if run.Status.Phase == agentorcav1alpha1.AgentRunPhaseWaitingForInput {
 		events = append(events, ACPRunAwaitingEvent{
 			Type: "run.awaiting",
 			Run: ACPRun{
@@ -1005,8 +1005,8 @@ func (s *ACPServer) handleGetSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Find runs with this session ID to build session history
-	labels := client.MatchingLabels{"agentorc.io/session-id": sessionID}
-	var runList agentorcv1alpha1.AgentRunList
+	labels := client.MatchingLabels{"agentorca.io/session-id": sessionID}
+	var runList agentorcav1alpha1.AgentRunList
 	if err := s.crdClient.List(r.Context(), &runList,
 		client.InNamespace(tenant.Namespace), labels); err != nil {
 		writeACPError(w, "server_error", err.Error(), http.StatusInternalServerError)
@@ -1027,18 +1027,18 @@ func (s *ACPServer) handleGetSession(w http.ResponseWriter, r *http.Request) {
 }
 
 // getACPRun returns the current run status.
-func (s *ACPServer) getACPRun(w http.ResponseWriter, r *http.Request, run *agentorcv1alpha1.AgentRun) {
+func (s *ACPServer) getACPRun(w http.ResponseWriter, r *http.Request, run *agentorcav1alpha1.AgentRun) {
 	acpStatus := mapAgentRunPhaseToACPStatus(run.Status.Phase)
 
 	// Check if client wants streaming
 	accept := r.Header.Get("Accept")
-	if accept == "text/event-stream" && run.Status.Phase == agentorcv1alpha1.AgentRunPhaseRunning {
+	if accept == "text/event-stream" && run.Status.Phase == agentorcav1alpha1.AgentRunPhaseRunning {
 		s.streamACPRun(w, r, run)
 		return
 	}
 
 	// Get session ID from labels if present
-	sessionID := run.Labels["agentorc.io/session-id"]
+	sessionID := run.Labels["agentorca.io/session-id"]
 
 	resp := ACPRun{
 		AgentName: run.Spec.AgentRef,
@@ -1048,7 +1048,7 @@ func (s *ACPServer) getACPRun(w http.ResponseWriter, r *http.Request, run *agent
 		CreatedAt: run.CreationTimestamp.Format(time.RFC3339),
 	}
 
-	if run.Status.Phase == agentorcv1alpha1.AgentRunPhaseSucceeded && run.Status.Output != "" {
+	if run.Status.Phase == agentorcav1alpha1.AgentRunPhaseSucceeded && run.Status.Output != "" {
 		resp.Output = []ACPMessage{{
 			Role: "agent",
 			Parts: []ACPMessagePart{{
@@ -1062,12 +1062,12 @@ func (s *ACPServer) getACPRun(w http.ResponseWriter, r *http.Request, run *agent
 		resp.Status = ACPRunCompleted
 	}
 
-	if run.Status.Phase == agentorcv1alpha1.AgentRunPhaseFailed {
+	if run.Status.Phase == agentorcav1alpha1.AgentRunPhaseFailed {
 		resp.Status = ACPRunFailed
 		resp.FinishedAt = time.Now().Format(time.RFC3339)
 	}
 
-	if run.Status.Phase == agentorcv1alpha1.AgentRunPhaseWaitingForInput {
+	if run.Status.Phase == agentorcav1alpha1.AgentRunPhaseWaitingForInput {
 		resp.Status = ACPRunAwaiting
 		resp.AwaitRequest = &ACPAwaitRequest{}
 	}
@@ -1076,7 +1076,7 @@ func (s *ACPServer) getACPRun(w http.ResponseWriter, r *http.Request, run *agent
 }
 
 // streamACPRun streams tokens via SSE using ACP-compliant event format.
-func (s *ACPServer) streamACPRun(w http.ResponseWriter, r *http.Request, run *agentorcv1alpha1.AgentRun) {
+func (s *ACPServer) streamACPRun(w http.ResponseWriter, r *http.Request, run *agentorcav1alpha1.AgentRun) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -1094,7 +1094,7 @@ func (s *ACPServer) streamACPRun(w http.ResponseWriter, r *http.Request, run *ag
 	}
 
 	// Get session ID from labels if present
-	sessionID := run.Labels["agentorc.io/session-id"]
+	sessionID := run.Labels["agentorca.io/session-id"]
 
 	// Emit run.created event (ACP spec format)
 	acpRun := ACPRun{
@@ -1153,7 +1153,7 @@ func (s *ACPServer) streamACPRun(w http.ResponseWriter, r *http.Request, run *ag
 		finalStatus := mapAgentRunPhaseToACPStatus(run.Status.Phase)
 		acpRun.Status = finalStatus
 
-		if run.Status.Phase == agentorcv1alpha1.AgentRunPhaseSucceeded && run.Status.Output != "" {
+		if run.Status.Phase == agentorcav1alpha1.AgentRunPhaseSucceeded && run.Status.Output != "" {
 			acpRun.Output = []ACPMessage{{
 				Role: "agent",
 				Parts: []ACPMessagePart{{
@@ -1180,13 +1180,13 @@ func (s *ACPServer) streamACPRun(w http.ResponseWriter, r *http.Request, run *ag
 }
 
 // resumeACPRun handles POST /runs/{run_id} to resume a waiting run.
-func (s *ACPServer) resumeACPRun(w http.ResponseWriter, r *http.Request, run *agentorcv1alpha1.AgentRun) {
+func (s *ACPServer) resumeACPRun(w http.ResponseWriter, r *http.Request, run *agentorcav1alpha1.AgentRun) {
 	if r.Method != http.MethodPost {
 		writeACPError(w, "invalid_input", "POST required", http.StatusMethodNotAllowed)
 		return
 	}
 
-	if run.Status.Phase != agentorcv1alpha1.AgentRunPhaseWaitingForInput {
+	if run.Status.Phase != agentorcav1alpha1.AgentRunPhaseWaitingForInput {
 		writeACPError(w, "invalid_input", "run is not awaiting input", http.StatusConflict)
 		return
 	}
@@ -1231,7 +1231,7 @@ func (s *ACPServer) resumeACPRun(w http.ResponseWriter, r *http.Request, run *ag
 
 	resp := ACPRun{
 		AgentName: run.Spec.AgentRef,
-		SessionID: run.Labels["agentorc.io/session-id"],
+		SessionID: run.Labels["agentorca.io/session-id"],
 		RunID:     run.Name,
 		Status:    ACPRunInProgress,
 		CreatedAt: run.CreationTimestamp.Format(time.RFC3339),
@@ -1239,18 +1239,18 @@ func (s *ACPServer) resumeACPRun(w http.ResponseWriter, r *http.Request, run *ag
 	jsonResponse(w, resp)
 }
 
-// mapAgentRunPhaseToACPStatus converts agent-orc phase to ACP status.
-func mapAgentRunPhaseToACPStatus(phase agentorcv1alpha1.AgentRunPhase) ACPRunStatus {
+// mapAgentRunPhaseToACPStatus converts agent-orca phase to ACP status.
+func mapAgentRunPhaseToACPStatus(phase agentorcav1alpha1.AgentRunPhase) ACPRunStatus {
 	switch phase {
-	case agentorcv1alpha1.AgentRunPhasePending:
+	case agentorcav1alpha1.AgentRunPhasePending:
 		return ACPRunCreated
-	case agentorcv1alpha1.AgentRunPhaseRunning:
+	case agentorcav1alpha1.AgentRunPhaseRunning:
 		return ACPRunInProgress
-	case agentorcv1alpha1.AgentRunPhaseWaitingForInput:
+	case agentorcav1alpha1.AgentRunPhaseWaitingForInput:
 		return ACPRunAwaiting
-	case agentorcv1alpha1.AgentRunPhaseSucceeded:
+	case agentorcav1alpha1.AgentRunPhaseSucceeded:
 		return ACPRunCompleted
-	case agentorcv1alpha1.AgentRunPhaseFailed:
+	case agentorcav1alpha1.AgentRunPhaseFailed:
 		return ACPRunFailed
 	default:
 		return ACPRunCreated

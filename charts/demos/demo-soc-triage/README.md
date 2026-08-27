@@ -17,5 +17,5 @@ skaffold run -p demo-soc-triage
 ## Cleanup
 
 ```bash
-helm uninstall demo-soc-triage -n agent-orc-system
+helm uninstall demo-soc-triage -n agent-orca-system
 ```

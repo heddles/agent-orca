@@ -1,6 +1,6 @@
-# Reference agent image (`ghcr.io/agentorc/agent-orc/openai-reference`)
+# Reference agent image (`ghcr.io/agentorca/agent-orca/openai-reference`)
 
-A minimal, **generic** OpenAI-compatible agent image for agent-orc. It is a thin
+A minimal, **generic** OpenAI-compatible agent image for agent-orca. It is a thin
 transport that streams a chat request to the model-router and returns the tokens —
 the model-router injects the system prompt, tools, conversation history, guardrails,
 built-in tool resolution (`_done`, `_fail`, `_clarify`, `_handoff`, `_spawn`,
@@ -8,7 +8,7 @@ built-in tool resolution (`_done`, `_fail`, `_clarify`, `_handoff`, `_spawn`,
 [docs/agent-images.md](../docs/agent-images.md) for the full contract.
 
 This is the image published alongside releases as
-`ghcr.io/agentorc/agent-orc/openai-reference:<version>` (plus `:latest`).
+`ghcr.io/agentorca/agent-orca/openai-reference:<version>` (plus `:latest`).
 
 ## Input modes
 
@@ -22,13 +22,13 @@ This is the image published alongside releases as
 ## Quick start (local)
 
 ```bash
-docker build -t ghcr.io/agentorc/agent-orc/openai-reference:latest -f examples/agent-sdk-template/Dockerfile .
+docker build -t ghcr.io/agentorca/agent-orca/openai-reference:latest -f examples/agent-sdk-template/Dockerfile .
 ```
 
 Deploy it:
 
 ```yaml
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: Agent
 metadata:
   name: my-agent
@@ -36,7 +36,7 @@ spec:
   modelSelectorRef: default
   systemPrompt: "You are a helpful assistant."
   runtime:
-    ociRef: ghcr.io/agentorc/agent-orc/openai-reference:latest
+    ociRef: ghcr.io/agentorca/agent-orca/openai-reference:latest
     framework: openai-compatible
 ```
 
@@ -45,12 +45,12 @@ The image has no baked persona or custom tools — set `systemPrompt` and `tools
 
 ## Custom persona / custom tools
 
-The `agentorc` Python SDK (installed in this image) lets you write a richer agent with a
+The `agentorca` Python SDK (installed in this image) lets you write a richer agent with a
 custom system prompt, `@agent.tool` registration, and lifecycle helpers. Replace
 `agent.py` with your own and rebuild:
 
 ```python
-from agentorc import Agent
+from agentorca import Agent
 
 agent = Agent(system_prompt="You are a domain expert. ...")
 

@@ -4,23 +4,23 @@ import { applyDesignSystem, DESIGN, CSS_VARS, applyTheme, getPreferredTheme, tog
 describe('applyDesignSystem', () => {
   beforeEach(() => {
     // Clean up any previous injection
-    document.getElementById('agentorc-design-system')?.remove()
+    document.getElementById('agentorca-design-system')?.remove()
   })
 
   afterEach(() => {
-    document.getElementById('agentorc-design-system')?.remove()
+    document.getElementById('agentorca-design-system')?.remove()
   })
 
-  it('injects a style element with id agentorc-design-system', () => {
+  it('injects a style element with id agentorca-design-system', () => {
     applyDesignSystem()
-    const el = document.getElementById('agentorc-design-system')
+    const el = document.getElementById('agentorca-design-system')
     expect(el).not.toBeNull()
     expect(el!.tagName).toBe('STYLE')
   })
 
   it('registers CSS custom properties on :root', () => {
     applyDesignSystem()
-    const el = document.getElementById('agentorc-design-system')
+    const el = document.getElementById('agentorca-design-system')
     const css = el!.textContent!
     // Check that key CSS variables are declared
     expect(css).toContain('--ds-bg:')
@@ -34,34 +34,34 @@ describe('applyDesignSystem', () => {
 
   it('injects font smoothing on html', () => {
     applyDesignSystem()
-    const css = document.getElementById('agentorc-design-system')!.textContent!
+    const css = document.getElementById('agentorca-design-system')!.textContent!
     expect(css).toContain('-webkit-font-smoothing: antialiased')
     expect(css).toContain('-moz-osx-font-smoothing: grayscale')
   })
 
   it('injects prefers-reduced-motion media query', () => {
     applyDesignSystem()
-    const css = document.getElementById('agentorc-design-system')!.textContent!
+    const css = document.getElementById('agentorca-design-system')!.textContent!
     expect(css).toContain('@media (prefers-reduced-motion: reduce)')
   })
 
   it('injects :focus-visible baseline rule', () => {
     applyDesignSystem()
-    const css = document.getElementById('agentorc-design-system')!.textContent!
+    const css = document.getElementById('agentorca-design-system')!.textContent!
     expect(css).toContain(':focus-visible')
     expect(css).toContain('outline: 2px solid')
   })
 
   it('gates aoPulse keyframe behind prefers-reduced-motion', () => {
     applyDesignSystem()
-    const css = document.getElementById('agentorc-design-system')!.textContent!
+    const css = document.getElementById('agentorca-design-system')!.textContent!
     expect(css).toContain('@media (prefers-reduced-motion: no-preference)')
     expect(css).toContain('@keyframes aoPulse')
   })
 
   it('injects tabular-nums on body', () => {
     applyDesignSystem()
-    const css = document.getElementById('agentorc-design-system')!.textContent!
+    const css = document.getElementById('agentorca-design-system')!.textContent!
     expect(css).toContain('font-variant-numeric: tabular-nums')
   })
 
@@ -69,7 +69,7 @@ describe('applyDesignSystem', () => {
     applyDesignSystem()
     applyDesignSystem()
     applyDesignSystem()
-    const els = document.querySelectorAll('#agentorc-design-system')
+    const els = document.querySelectorAll('#agentorca-design-system')
     expect(els).toHaveLength(1)
   })
 })

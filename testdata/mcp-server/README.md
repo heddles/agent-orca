@@ -63,7 +63,7 @@ curl -s http://localhost:3000 -H 'Content-Type: application/json' -d '{
 
 ### Prerequisites
 
-- A running kind cluster with the agent-orc operator deployed
+- A running kind cluster with the agent-orca operator deployed
 - CRDs installed (`make install`)
 - `shared.yaml` applied (`kubectl apply -f testdata/agents/shared.yaml`)
 
@@ -104,7 +104,7 @@ curl -s http://localhost:3000 -H 'Content-Type: application/json' -d '{
    # NAME       TRANSPORT   READY   TOOLS   AGE
    # demo-mcp   http        true    4       10s
 
-   kubectl get tools -l agentorc.io/managed-by=mcpserver
+   kubectl get tools -l agentorca.io/managed-by=mcpserver
    # NAME                       AGE
    # demo-mcp-current-time      10s
    # demo-mcp-random-number     10s

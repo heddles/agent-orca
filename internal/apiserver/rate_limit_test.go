@@ -27,14 +27,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
 )
 
 func newQuotaScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	s := runtime.NewScheme()
-	if err := agentorcv1alpha1.AddToScheme(s); err != nil {
-		t.Fatalf("adding agentorc scheme: %v", err)
+	if err := agentorcav1alpha1.AddToScheme(s); err != nil {
+		t.Fatalf("adding agentorca scheme: %v", err)
 	}
 	return s
 }
@@ -93,14 +93,14 @@ func TestAttachQuotaFields(t *testing.T) {
 		}
 	})
 	t.Run("nil id is safe", func(t *testing.T) {
-		if got := attachQuotaFields(nil, &agentorcv1alpha1.TenantConfig{}); got != nil {
+		if got := attachQuotaFields(nil, &agentorcav1alpha1.TenantConfig{}); got != nil {
 			t.Fatalf("expected nil, got %+v", got)
 		}
 	})
 	t.Run("populates from TenantConfig", func(t *testing.T) {
-		tc := &agentorcv1alpha1.TenantConfig{
-			Spec: agentorcv1alpha1.TenantConfigSpec{
-				RateLimit:       &agentorcv1alpha1.TenantRateLimit{RequestsPerMinute: 60, ConcurrentRuns: 3},
+		tc := &agentorcav1alpha1.TenantConfig{
+			Spec: agentorcav1alpha1.TenantConfigSpec{
+				RateLimit:       &agentorcav1alpha1.TenantRateLimit{RequestsPerMinute: 60, ConcurrentRuns: 3},
 				BudgetPerDayUSD: "100.00",
 			},
 		}
@@ -110,8 +110,8 @@ func TestAttachQuotaFields(t *testing.T) {
 		}
 	})
 	t.Run("nil rateLimit block zeroes fields", func(t *testing.T) {
-		tc := &agentorcv1alpha1.TenantConfig{
-			Spec: agentorcv1alpha1.TenantConfigSpec{BudgetPerDayUSD: "5.00"},
+		tc := &agentorcav1alpha1.TenantConfig{
+			Spec: agentorcav1alpha1.TenantConfigSpec{BudgetPerDayUSD: "5.00"},
 		}
 		out := attachQuotaFields(&TenantIdentity{RateLimitRPM: 9, ConcurrentRuns: 9}, tc)
 		if out.RateLimitRPM != 0 || out.ConcurrentRuns != 0 || out.BudgetPerDayUSD != "5.00" {
@@ -121,19 +121,19 @@ func TestAttachQuotaFields(t *testing.T) {
 }
 
 // runWith builds an AgentRun labelled as tenant acme's external task.
-func runWith(ns, name, phase, spend string) *agentorcv1alpha1.AgentRun { //nolint:unparam
+func runWith(ns, name, phase, spend string) *agentorcav1alpha1.AgentRun { //nolint:unparam
 
-	return &agentorcv1alpha1.AgentRun{
+	return &agentorcav1alpha1.AgentRun{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: ns,
 			Labels: map[string]string{
-				"agentorc.io/tenant":        "acme",
-				"agentorc.io/external-task": "true",
+				"agentorca.io/tenant":        "acme",
+				"agentorca.io/external-task": "true",
 			},
 		},
-		Status: agentorcv1alpha1.AgentRunStatus{
-			Phase:    agentorcv1alpha1.AgentRunPhase(phase),
+		Status: agentorcav1alpha1.AgentRunStatus{
+			Phase:    agentorcav1alpha1.AgentRunPhase(phase),
 			SpendUSD: spend,
 		},
 	}
@@ -214,28 +214,28 @@ func TestEnforceQuotas_BudgetExceeded(t *testing.T) {
 	// Two runs completed today summing to $0.05 == $0.05 cap -> 402.
 	yesterday := metav1.Time{Time: time.Now().Add(-24 * time.Hour)}
 	kube := fakeClientWith(t,
-		&agentorcv1alpha1.AgentRun{
+		&agentorcav1alpha1.AgentRun{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "r-today-1",
 				Namespace: "tenant-acme",
-				Labels:    map[string]string{"agentorc.io/tenant": "acme"},
+				Labels:    map[string]string{"agentorca.io/tenant": "acme"},
 			},
-			Status: agentorcv1alpha1.AgentRunStatus{
-				Phase:    agentorcv1alpha1.AgentRunPhaseSucceeded,
+			Status: agentorcav1alpha1.AgentRunStatus{
+				Phase:    agentorcav1alpha1.AgentRunPhaseSucceeded,
 				SpendUSD: "0.03",
 			},
 		},
 		runWith("tenant-acme", "r-today-2", "Succeeded", "0.02"),
 		// A yesterday run that must NOT be counted toward today's budget.
-		&agentorcv1alpha1.AgentRun{
+		&agentorcav1alpha1.AgentRun{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:              "r-yesterday",
 				Namespace:         "tenant-acme",
 				CreationTimestamp: yesterday,
-				Labels:            map[string]string{"agentorc.io/tenant": "acme"},
+				Labels:            map[string]string{"agentorca.io/tenant": "acme"},
 			},
-			Status: agentorcv1alpha1.AgentRunStatus{
-				Phase:    agentorcv1alpha1.AgentRunPhaseSucceeded,
+			Status: agentorcav1alpha1.AgentRunStatus{
+				Phase:    agentorcav1alpha1.AgentRunPhaseSucceeded,
 				SpendUSD: "50.00",
 			},
 		},

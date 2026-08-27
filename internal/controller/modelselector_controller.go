@@ -24,7 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
 )
 
 // ModelSelectorReconciler reconciles a ModelSelector object
@@ -33,9 +33,9 @@ type ModelSelectorReconciler struct {
 	Scheme *runtime.Scheme
 }
 
-// +kubebuilder:rbac:groups=agentorc.agentorc.io,resources=modelselectors,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=agentorc.agentorc.io,resources=modelselectors/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=agentorc.agentorc.io,resources=modelselectors/finalizers,verbs=update
+// +kubebuilder:rbac:groups=agentorca.agentorca.io,resources=modelselectors,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=agentorca.agentorca.io,resources=modelselectors/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=agentorca.agentorca.io,resources=modelselectors/finalizers,verbs=update
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -57,7 +57,7 @@ func (r *ModelSelectorReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 // SetupWithManager sets up the controller with the Manager.
 func (r *ModelSelectorReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&agentorcv1alpha1.ModelSelector{}).
+		For(&agentorcav1alpha1.ModelSelector{}).
 		Named("modelselector").
 		Complete(r)
 }

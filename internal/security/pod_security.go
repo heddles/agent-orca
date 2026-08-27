@@ -15,7 +15,7 @@ limitations under the License.
 */
 
 // Package security provides helpers that apply security policies to agent and tool pods.
-// All pods created by agent-orc must comply with the Kubernetes PodSecurityStandards
+// All pods created by agent-orca must comply with the Kubernetes PodSecurityStandards
 // "restricted" profile and are additionally hardened with Tetragon eBPF policies and
 // per-run NetworkPolicies.
 //
@@ -23,7 +23,7 @@ limitations under the License.
 // via Spec.Runtime.SecurityContextOverride (e.g. to bring up a VPN tun device). The
 // override applies only to the container named "agent" (never the model-router sidecar
 // or tool/router pods) and is gated at admission by a validating webhook that requires
-// the namespace label `agentorc.io/enable-privileged-pods: "true"` and an Agent-level
+// the namespace label `agentorca.io/enable-privileged-pods: "true"` and an Agent-level
 // GuardrailPolicyRef.
 package security
 
@@ -31,7 +31,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/utils/ptr"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
 )
 
 const (
@@ -43,19 +43,19 @@ const (
 	// allowing PodSecurityOverride on its agents. Admission of an Agent (or AgentRun
 	// against such an Agent) whose runtime requests an override is rejected unless
 	// the namespace carries this label set to "true".
-	LabelEnablePrivilegedPods = "agentorc.io/enable-privileged-pods"
+	LabelEnablePrivilegedPods = "agentorca.io/enable-privileged-pods"
 	// PrivilegedPodsAllowedValue is the only value the label may take.
 	PrivilegedPodsAllowedValue = "true"
 
 	// saTokenVolumeName is the volume name for the projected SA token.
-	saTokenVolumeName = "agentorc-sa-token"
+	saTokenVolumeName = "agentorca-sa-token"
 
 	// tmpVolumeName is the volume name for the writable /tmp emptyDir.
 	tmpVolumeName = "tmp"
 
 	// tunDeviceVolumeName is the volume name for the /dev/net/tun hostPath device
 	// mounted into privileged/VPN agent containers.
-	tunDeviceVolumeName = "agentorc-tun"
+	tunDeviceVolumeName = "agentorca-tun"
 
 	// tunDeviceMountPath is the in-container path of the tun device.
 	tunDeviceMountPath = "/dev/net/tun"
@@ -65,11 +65,11 @@ const (
 
 	// ModelRouterTokenAudience is the audience used for projected SA tokens.
 	// The model-router validates tokens with this audience via TokenReview.
-	ModelRouterTokenAudience = "agentorc/model-router"
+	ModelRouterTokenAudience = "agentorca/model-router"
 
 	// UITokenAudience is the audience used by the UIProxy pod's projected SA token.
 	// The operator validates requests from the proxy with this audience via TokenReview.
-	UITokenAudience = "agentorc/ui"
+	UITokenAudience = "agentorca/ui"
 
 	// saTokenExpirySeconds is the SA token expiry. Kubelet auto-refreshes before expiry.
 	saTokenExpirySeconds int64 = 900 // 15 minutes
@@ -90,7 +90,7 @@ var hostPathCharDevice = corev1.HostPathType("CharDevice")
 // restricted profile.
 //
 // This is called for every AgentRun pod, every tool pod, and every AgentDeployment pod.
-func EnforcePodSecurity(pod *corev1.Pod, agentOverride *agentorcv1alpha1.PodSecurityOverride) {
+func EnforcePodSecurity(pod *corev1.Pod, agentOverride *agentorcav1alpha1.PodSecurityOverride) {
 	// Pod-level security context.
 	if pod.Spec.SecurityContext == nil {
 		pod.Spec.SecurityContext = &corev1.PodSecurityContext{}
@@ -178,7 +178,7 @@ func EnforcePodSecurity(pod *corev1.Pod, agentOverride *agentorcv1alpha1.PodSecu
 
 // containerOverride returns the override to apply to a container, scoping it to the
 // "agent" container only.
-func containerOverride(agentOverride *agentorcv1alpha1.PodSecurityOverride, name string) *agentorcv1alpha1.PodSecurityOverride {
+func containerOverride(agentOverride *agentorcav1alpha1.PodSecurityOverride, name string) *agentorcav1alpha1.PodSecurityOverride {
 	if agentOverride == nil || name != agentContainerName {
 		return nil
 	}
@@ -193,7 +193,7 @@ const (
 // enforceContainerSecurity applies the restricted-profile settings to a single
 // container, unless override is non-nil in which case the requested (scoped) privilege
 // posture is applied. The override is only ever passed for the "agent" container.
-func enforceContainerSecurity(c *corev1.Container, override *agentorcv1alpha1.PodSecurityOverride) {
+func enforceContainerSecurity(c *corev1.Container, override *agentorcav1alpha1.PodSecurityOverride) {
 	if c.SecurityContext == nil {
 		c.SecurityContext = &corev1.SecurityContext{}
 	}
@@ -280,7 +280,7 @@ func mountSAToken(c *corev1.Container) {
 	}
 	c.VolumeMounts = append(c.VolumeMounts, corev1.VolumeMount{
 		Name:      saTokenVolumeName,
-		MountPath: "/var/run/secrets/agentorc",
+		MountPath: "/var/run/secrets/agentorca",
 		ReadOnly:  true,
 	})
 }

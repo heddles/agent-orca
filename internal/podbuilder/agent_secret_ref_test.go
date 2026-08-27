@@ -21,14 +21,14 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
 )
 
-func agentWithSecrets(name string, refs ...agentorcv1alpha1.SecretMount) *agentorcv1alpha1.Agent {
-	return &agentorcv1alpha1.Agent{
+func agentWithSecrets(name string, refs ...agentorcav1alpha1.SecretMount) *agentorcav1alpha1.Agent {
+	return &agentorcav1alpha1.Agent{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
-		Spec: agentorcv1alpha1.AgentSpec{
-			Runtime: agentorcv1alpha1.AgentRuntime{
+		Spec: agentorcav1alpha1.AgentSpec{
+			Runtime: agentorcav1alpha1.AgentRuntime{
 				SecretRefs: refs,
 			},
 		},
@@ -38,7 +38,7 @@ func agentWithSecrets(name string, refs ...agentorcv1alpha1.SecretMount) *agento
 func TestResolveAgentSecretRefs(t *testing.T) {
 	tests := []struct {
 		name          string
-		agent         *agentorcv1alpha1.Agent
+		agent         *agentorcav1alpha1.Agent
 		wantVol       int
 		wantMount     int
 		wantPath      string // a mount path that must exist
@@ -47,17 +47,17 @@ func TestResolveAgentSecretRefs(t *testing.T) {
 		{name: "nil agent returns nothing", agent: nil, wantVol: 0, wantMount: 0},
 		{name: "empty refs returns nothing", agent: agentWithSecrets("a"), wantVol: 0, wantMount: 0},
 		{name: "mount path set", agent: agentWithSecrets("red-pwnbox",
-			agentorcv1alpha1.SecretMount{Name: "htb-ovpn", MountPath: "/etc/htb"}),
+			agentorcav1alpha1.SecretMount{Name: "htb-ovpn", MountPath: "/etc/htb"}),
 			wantVol: 1, wantMount: 1, wantPath: "/etc/htb", wantNoSubPath: true},
 		{name: "mount path defaults to AgentSecretMountDir", agent: agentWithSecrets("red-pwnbox",
-			agentorcv1alpha1.SecretMount{Name: "htb-ovpn"}),
+			agentorcav1alpha1.SecretMount{Name: "htb-ovpn"}),
 			wantVol: 1, wantMount: 1, wantPath: AgentSecretMountDir + "/htb-ovpn", wantNoSubPath: true},
 		{name: "empty Name is skipped", agent: agentWithSecrets("red-pwnbox",
-			agentorcv1alpha1.SecretMount{Name: "", MountPath: "/x"}),
+			agentorcav1alpha1.SecretMount{Name: "", MountPath: "/x"}),
 			wantVol: 0, wantMount: 0},
 		{name: "multiple refs each get a volume+mount", agent: agentWithSecrets("red-pwnbox",
-			agentorcv1alpha1.SecretMount{Name: "htb-ovpn", MountPath: "/etc/htb"},
-			agentorcv1alpha1.SecretMount{Name: "tls", MountPath: "/etc/tls"}),
+			agentorcav1alpha1.SecretMount{Name: "htb-ovpn", MountPath: "/etc/htb"},
+			agentorcav1alpha1.SecretMount{Name: "tls", MountPath: "/etc/tls"}),
 			wantVol: 2, wantMount: 2, wantPath: "/etc/tls", wantNoSubPath: true},
 	}
 

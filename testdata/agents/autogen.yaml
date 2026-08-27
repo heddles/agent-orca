@@ -1,6 +1,6 @@
 # Framework: autogen (Tier 2 — init container config injection)
 #
-# The operator writes OAI_CONFIG_LIST.json to /etc/agentorc-framework/ via an
+# The operator writes OAI_CONFIG_LIST.json to /etc/agentorca-framework/ via an
 # init container before the agent starts, then sets OAI_CONFIG_LIST env var to
 # point at that file. The config list contains the model-router base_url so
 # AutoGen's LLM backend transparently routes through the operator.
@@ -9,7 +9,7 @@
 # Agent: AutoGen v0.4 AssistantAgent via autogen-agentchat + autogen-ext[openai]
 #        (https://github.com/microsoft/autogen)
 ---
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: Agent
 metadata:
   name: test-autogen
@@ -74,7 +74,7 @@ spec:
       cpu: 500m
       memory: 1Gi
 ---
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: AgentRun
 metadata:
   name: test-autogen-run

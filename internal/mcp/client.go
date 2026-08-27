@@ -289,7 +289,7 @@ func (s *serverConn) initialize(ctx context.Context) error {
 	resp, err := s.send(ctx, "initialize", map[string]any{
 		"protocolVersion": "2024-11-05",
 		"capabilities":    map[string]any{},
-		"clientInfo":      map[string]string{"name": "agent-orc", "version": "v1alpha1"},
+		"clientInfo":      map[string]string{"name": "agent-orca", "version": "v1alpha1"},
 	})
 	if err != nil {
 		return fmt.Errorf("MCP initialize: %w", err)

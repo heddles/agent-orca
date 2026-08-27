@@ -1,5 +1,5 @@
 name: "Feature request"
-about: "Suggest an idea for agent-orc"
+about: "Suggest an idea for agent-orca"
 title: "[feat] "
 labels: ["enhancement", "status: triage"]
 assignees: []

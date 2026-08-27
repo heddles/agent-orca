@@ -64,10 +64,10 @@ type MCPServerSpec struct {
 	// permitted to use this MCP server. Access is denied by default — if this list is
 	// empty, no agent may access the server regardless of what tools it declares.
 	//
-	// The agent-orc operator enforces this at AgentRun creation time: if the agent
+	// The agent-orca operator enforces this at AgentRun creation time: if the agent
 	// running the run is not listed here, the run is failed before the pod is scheduled.
 	// At runtime, the model-router sidecar sends a short-lived Kubernetes ServiceAccount
-	// JWT (audience "agentorc/mcp") with every HTTP/SSE request to the MCP server so the
+	// JWT (audience "agentorca/mcp") with every HTTP/SSE request to the MCP server so the
 	// server can independently verify the caller's identity via the TokenReview API.
 	//
 	// Example — grant access to two agents:

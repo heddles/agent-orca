@@ -23,12 +23,12 @@ import (
 // TenantConfigSpec defines authentication and authorization for an enterprise tenant.
 type TenantConfigSpec struct {
 	// AuthMode selects the authentication strategy for this tenant.
-	// "issued" — agent-orc issues OAuth2 tokens via client_credentials grant.
-	// "federated" — agent-orc trusts JWTs from the tenant's external IdP.
+	// "issued" — agent-orca issues OAuth2 tokens via client_credentials grant.
+	// "federated" — agent-orca trusts JWTs from the tenant's external IdP.
 	// +kubebuilder:validation:Enum=issued;federated
 	AuthMode string `json:"authMode"`
 
-	// Issued configures agent-orc-issued OAuth2 client credentials.
+	// Issued configures agent-orca-issued OAuth2 client credentials.
 	// Required when AuthMode is "issued".
 	// +optional
 	Issued *IssuedAuthConfig `json:"issued,omitempty"`
@@ -59,7 +59,7 @@ type TenantConfigSpec struct {
 	BudgetPerDayUSD string `json:"budgetPerDayUSD,omitempty"`
 }
 
-// IssuedAuthConfig configures agent-orc as the OAuth2 token issuer.
+// IssuedAuthConfig configures agent-orca as the OAuth2 token issuer.
 // Enterprise customers use the client_credentials grant to obtain short-lived JWTs.
 type IssuedAuthConfig struct {
 	// ClientID is the OAuth2 client identifier for this tenant.
@@ -72,10 +72,10 @@ type IssuedAuthConfig struct {
 }
 
 // FederatedAuthConfig configures trust for an external OIDC identity provider.
-// agent-orc validates JWTs issued by the tenant's IdP and maps claims to tenant identity.
+// agent-orca validates JWTs issued by the tenant's IdP and maps claims to tenant identity.
 type FederatedAuthConfig struct {
 	// IssuerURL is the OIDC issuer URL (e.g. "https://acme.okta.com/oauth2/default").
-	// agent-orc fetches the JWKS from this issuer to verify token signatures.
+	// agent-orca fetches the JWKS from this issuer to verify token signatures.
 	// +kubebuilder:validation:MinLength=1
 	IssuerURL string `json:"issuerURL"`
 
@@ -128,7 +128,7 @@ type TenantConfigStatus struct {
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // TenantConfig defines authentication and authorization for an enterprise tenant
-// accessing agent-orc's external API.
+// accessing agent-orca's external API.
 type TenantConfig struct {
 	metav1.TypeMeta `json:",inline"`
 

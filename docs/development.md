@@ -61,7 +61,7 @@ Multi-group layout organizes APIs by group name (e.g., `batch`, `apps`). Check t
 | [redis.md](redis.md) | Operators | Redis setup and configuration |
 | [mcp-access-control.md](mcp-access-control.md) | Operators | MCP server access control |
 | [agentworkflow.md](agentworkflow.md) | Developers | AgentWorkflow CRD (declarative DAG) |
-| [alternatives.md](alternatives.md) | Architects | agent-orc vs OpenClaw comparison |
+| [alternatives.md](alternatives.md) | Architects | agent-orca vs OpenClaw comparison |
 | [cost-tracking.md](cost-tracking.md) | Operators | LLM spend tracking |
 | [demos.md](demos.md) | Developers | Demo catalog |
 | [local-model-selection.md](local-model-selection.md) | Developers | Local model selection |
@@ -203,9 +203,9 @@ deploys via Helm, and watches for file changes — rebuilding and redeploying au
 
 ### Prerequisites
 
-- A local Kind cluster named `agent-orc-dev`:
+- A local Kind cluster named `agent-orca-dev`:
   ```bash
-  kind create cluster --name agent-orc-dev
+  kind create cluster --name agent-orca-dev
   ```
 - [Skaffold](https://skaffold.dev/docs/install/) installed
 - API keys exported as environment variables (used by the `dev` profile):
@@ -221,8 +221,8 @@ deploys via Helm, and watches for file changes — rebuilding and redeploying au
 # Start the dev loop (builds, deploys, watches for changes, port-forwards UI to localhost:8080)
 skaffold dev
 
-# The 'dev' profile auto-activates on the kind-agent-orc-dev context.
-# It deploys: agent-orc operator + model-providers + UI, with webhooks in Ignore mode.
+# The 'dev' profile auto-activates on the kind-agent-orca-dev context.
+# It deploys: agent-orca operator + model-providers + UI, with webhooks in Ignore mode.
 ```
 
 Skaffold watches for Go and Dockerfile changes. When you save a file, it rebuilds
@@ -245,7 +245,7 @@ skaffold delete -p demo-escalation-chain
 skaffold delete -p demo-codebase-expert
 
 # Remove a demo using helm
-helm uninstall demo-soc-triage -n agent-orc-system
+helm uninstall demo-soc-triage -n agent-orca-system
 ```
 
 Each demo profile is documented in `skaffold.yaml` with its prerequisites.
@@ -253,7 +253,7 @@ Each demo profile is documented in `skaffold.yaml` with its prerequisites.
 #### The reference agent image
 
 Demos and `hack/test-agents.sh` run agents from the openai reference image
-`ghcr.io/agentorc/agent-orc/openai-reference:latest` — a minimal OpenAI-compatible
+`ghcr.io/agentorca/agent-orca/openai-reference:latest` — a minimal OpenAI-compatible
 agent (the model-router injects the system prompt, tools, prior context, and built-in
 tool resolution, so the image itself is persona-free). `skaffold dev` builds and kind-loads
 this image as `:latest` automatically (a non-fatal build hook; Skaffold's tag policy is
@@ -265,9 +265,9 @@ To run demos offline, or before the image has been published to a release, build
 it into Kind once (this is also the command to force a rebuild after editing `agent.py`):
 
 ```bash
-docker build -t ghcr.io/agentorc/agent-orc/openai-reference:latest \
+docker build -t ghcr.io/agentorca/agent-orca/openai-reference:latest \
   -f examples/agent-sdk-template/Dockerfile .
-kind load docker-image ghcr.io/agentorc/agent-orc/openai-reference:latest --name agent-orc-dev
+kind load docker-image ghcr.io/agentorca/agent-orca/openai-reference:latest --name agent-orca-dev
 ```
 
 To run your own agent image instead, replace `ociRef` in the `Agent` manifest and set
@@ -279,13 +279,13 @@ full contract (framework tiers, injected env vars, built-in tools).
 
 ```bash
 # Operator logs
-kubectl logs -n agent-orc-system deployment/agent-orc-operator -f
+kubectl logs -n agent-orca-system deployment/agent-orca-operator -f
 
 # Model-router sidecar logs for a specific run
-kubectl logs -n agent-orc-system <pod-name> -c model-router -f
+kubectl logs -n agent-orca-system <pod-name> -c model-router -f
 
 # Watch AgentRun status
-kubectl get agentrun -n agent-orc-system -w
+kubectl get agentrun -n agent-orca-system -w
 ```
 
 ### API Design
@@ -375,9 +375,9 @@ Helm values so you can point at an internal registry or pin specific versions.
 
 | Component | Helm Value | Env Var | Default |
 |-----------|-----------|---------|---------|
-| Operator | `operator.image.repository` / `tag` | — | `ghcr.io/agentorc/agent-orc/operator:latest` |
-| Model Router (sidecar) | `modelRouter.image.repository` / `tag` | `MODEL_ROUTER_IMAGE` | `ghcr.io/agentorc/agent-orc/model-router:latest` |
-| MCP Ingester (KB jobs) | `mcpIngester.image.repository` / `tag` | `MCP_INGESTER_IMAGE` | `ghcr.io/agentorc/mcp-ingester:latest` |
+| Operator | `operator.image.repository` / `tag` | — | `ghcr.io/agentorca/agent-orca/operator:latest` |
+| Model Router (sidecar) | `modelRouter.image.repository` / `tag` | `MODEL_ROUTER_IMAGE` | `ghcr.io/agentorca/agent-orca/model-router:latest` |
+| MCP Ingester (KB jobs) | `mcpIngester.image.repository` / `tag` | `MCP_INGESTER_IMAGE` | `ghcr.io/agentorca/mcp-ingester:latest` |
 | Qdrant (KB vector store) | `qdrant.image.repository` / `tag` | `QDRANT_IMAGE` | `qdrant/qdrant:v1.17.1` |
 
 All image references support `global.imageRegistry` as a prefix (e.g. set to
@@ -389,8 +389,8 @@ via `setValueTemplates` in `skaffold.yaml`. You do not need to configure them ma
 ### Production deployment
 
 ```bash
-helm install agent-orc charts/agent-orc \
-  --namespace agent-orc-system --create-namespace \
+helm install agent-orca charts/agent-orca \
+  --namespace agent-orca-system --create-namespace \
   --set mcpIngester.image.repository=my-registry/mcp-ingester \
   --set mcpIngester.image.tag=v0.2.0 \
   --set qdrant.image.tag=v1.13.0

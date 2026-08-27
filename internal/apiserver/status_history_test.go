@@ -31,8 +31,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	"github.com/floppyfish14/agent-orc/api/v1alpha1"
-	"github.com/floppyfish14/agent-orc/internal/egress"
+	"github.com/floppyfish14/agent-orca/api/v1alpha1"
+	"github.com/floppyfish14/agent-orca/internal/egress"
 )
 
 func statusTestScheme(t *testing.T) *runtime.Scheme {
@@ -186,7 +186,7 @@ func TestScrapeMetricsReadsEgressRegistry(t *testing.T) {
 type mockEgressPublisher struct{}
 
 func (mockEgressPublisher) Publish(context.Context, v1alpha1.EgressResult) error { return nil }
-func (mockEgressPublisher) Close() error                                               { return nil }
+func (mockEgressPublisher) Close() error                                         { return nil }
 
 // TestUIServerInstrumentationCountsRequests verifies the UI server (8083) is
 // wrapped with instrument() so browser-driven status/UI traffic populates the
@@ -199,7 +199,7 @@ func TestUIServerInstrumentationCountsRequests(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	before := getCounterValue(externalReg, "agentorc_external_requests_total")
+	before := getCounterValue(externalReg, "agentorca_external_requests_total")
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/system/status", nil)
 	h.ServeHTTP(rec, req)
@@ -207,7 +207,7 @@ func TestUIServerInstrumentationCountsRequests(t *testing.T) {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
 
-	after := getCounterValue(externalReg, "agentorc_external_requests_total")
+	after := getCounterValue(externalReg, "agentorca_external_requests_total")
 	if after <= before {
 		t.Fatalf("instrument(\"ui\") did not increment external_requests_total: before=%v after=%v", before, after)
 	}
@@ -247,8 +247,8 @@ func TestParseMetricRange(t *testing.T) {
 		"6h":   6 * time.Hour,
 		"24h":  24 * time.Hour,
 		"7d":   7 * 24 * time.Hour,
-		"":     24 * time.Hour,  // default
-		"junk": 24 * time.Hour,  // unknown -> default
+		"":     24 * time.Hour, // default
+		"junk": 24 * time.Hour, // unknown -> default
 	}
 	for in, want := range cases {
 		if got := parseMetricRange(in); got != want {
@@ -339,16 +339,16 @@ func TestScrapePromCounter(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 		body := strings.Join([]string{
-			"# HELP agentorc_modelrouter_tokens_total Output tokens streamed.",
-			"# TYPE agentorc_modelrouter_tokens_total counter",
-			`agentorc_modelrouter_tokens_total{run="r1"} 100`,
-			`agentorc_modelrouter_tokens_total{run="r2"} 250`,
+			"# HELP agentorca_modelrouter_tokens_total Output tokens streamed.",
+			"# TYPE agentorca_modelrouter_tokens_total counter",
+			`agentorca_modelrouter_tokens_total{run="r1"} 100`,
+			`agentorca_modelrouter_tokens_total{run="r2"} 250`,
 		}, "\n") + "\n"
 		_, _ = w.Write([]byte(body))
 	}))
 	defer srv.Close()
 
-	v, ok := scrapePromCounter(context.Background(), srv.URL, "agentorc_modelrouter_tokens_total")
+	v, ok := scrapePromCounter(context.Background(), srv.URL, "agentorca_modelrouter_tokens_total")
 	if !ok {
 		t.Fatal("expected ok for an existing counter")
 	}

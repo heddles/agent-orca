@@ -1,6 +1,6 @@
 # Upgrading Qdrant for KnowledgeBases
 
-The agent-orc operator deploys a dedicated Qdrant StatefulSet for each
+The agent-orca operator deploys a dedicated Qdrant StatefulSet for each
 KnowledgeBase. Starting with this release, the operator **automatically manages
 Qdrant version upgrades** using a sequential minor-version walk.
 
@@ -51,7 +51,7 @@ upgrades. The operator will still report the version gap via the
 `QdrantUpgradeAvailable` condition but will not modify the StatefulSet.
 
 ```yaml
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: KnowledgeBase
 metadata:
   name: my-kb

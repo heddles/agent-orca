@@ -1,4 +1,4 @@
-# Contributing to agent-orc
+# Contributing to agent-orca
 
 First off: thank you for taking the time to contribute! ❤️
 
@@ -55,8 +55,8 @@ sign-off in the PR that the schema is backward-compatible (additive) or that a
 Kubernetes operator consumed by tenants; breaking CRD changes are rare and
 reviewed carefully.
 
-[blank]: https://github.com/floppyfish14/agent-orc/issues/new/choose
-[discussions]: https://github.com/floppyfish14/agent-orc/discussions
+[blank]: https://github.com/floppyfish14/agent-orca/issues/new/choose
+[discussions]: https://github.com/floppyfish14/agent-orca/discussions
 
 ---
 
@@ -67,7 +67,7 @@ Minimum supported versions (newer is fine):
 | Tool       | Version | Notes |
 |------------|---------|-------|
 | Go         | 1.25+   | `go.mod` pins `1.25.3` (required by `k8s.io/* v0.35`). `go-version-file: go.mod` is used in CI. |
-| Node       | 20+     | Drives what's under `ui/` and `pkg/python/agentorc/`'s smoke tests. |
+| Node       | 20+     | Drives what's under `ui/` and `pkg/python/agentorca/`'s smoke tests. |
 | GNU Make   | 4.x     | The Makefile is the front door to everything. |
 | kind       | latest  | E2E and local dev clusters. |
 | kubectl    | latest  | Cluster interaction / goldens in `test/e2e`. |
@@ -93,7 +93,7 @@ make test-e2e           # Integration suite against an isolated kind cluster (sl
 make test-ui            # UI unit + component tests (Vitest)
 make test-ui-e2e        # Playwright browser tests (needs kind + built images)
 make lint               # golangci-lint (configs under .golangci*)
-make manifests          # Regenerate CRDs, RBAC, webhook manifests -> config/crd, config/rbac, charts/agent-orc/crds
+make manifests          # Regenerate CRDs, RBAC, webhook manifests -> config/crd, config/rbac, charts/agent-orca/crds
 make generate           # DeepCopy methods for CRD types
 ```
 
@@ -118,7 +118,7 @@ generated artifacts, so **every** change to a CRD type in `api/v1alpha1/` *must*
 be followed by regeneration, and the regenerated output must be in your PR:
 
 ```bash
-make manifests   # regenerates config/crd/bases/*.yaml, config/rbac/role.yaml, charts/agent-orc/crds/*.yaml
+make manifests   # regenerates config/crd/bases/*.yaml, config/rbac/role.yaml, charts/agent-orca/crds/*.yaml
 make generate    # regenerates api/v1alpha1/zz_generated.deepcopy.go (+ any other zz_generated.*)
 ```
 
@@ -154,7 +154,7 @@ by `make openapi`; editing Helm charts under `charts/` can be validated with
 ## Where to Start
 
 Got 30 minutes and new here? Pick an issue tagged
-[`good first issue`](https://github.com/floppyfish14/agent-orc/issues?q=is%3Aopen+is%3Aissue+label%3A%22good+first+issue%22).
+[`good first issue`](https://github.com/floppyfish14/agent-orca/issues?q=is%3Aopen+is%3Aissue+label%3A%22good+first+issue%22).
 Typical starter topics:
 
 - small bugfix in `aoctl` (`cmd/aoctl/`) or a doc gap,
@@ -169,15 +169,15 @@ point you at a starter task.
 ## Repository Layout at a Glance
 
 ```
-agent-orc/
+agent-orca/
 ├── cmd/                # Binaries: main (operator), aoctl, model-router, mcp-ingester, ui-proxy
 ├── api/v1alpha1/       # CRD types (+kubebuilder markers) + generated zz_*.deepcopy.go
 ├── internal/           # controllers, webhooks, apiserver, podbuilder, security, router, rag, mcp, ...
 ├── config/             # kustomize bases for CRDs, RBAC, webhook, manager, samples
-├── charts/             # Helm charts: agent-orc, model-providers, agent-orc-resources, demos/*
+├── charts/             # Helm charts: agent-orca, model-providers, agent-orca-resources, demos/*
 ├── test/               # test/e2e (integration), test/utils
 ├── ui/                 # React + Vite UI (Vitest + Playwright)
-├── pkg/python/         # Python SDK (agentorc) + smoke tests
+├── pkg/python/         # Python SDK (agentorca) + smoke tests
 ├── examples/           # terraform tenant example + agent-sdk-template
 ├── hack/               # dev scripts + license boilerplate.txt
 ├── docs/               # full documentation index

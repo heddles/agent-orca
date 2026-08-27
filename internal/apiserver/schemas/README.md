@@ -1,7 +1,7 @@
-# OpenAPI specs for the agent-orc external HTTP APIs
+# OpenAPI specs for the agent-orca external HTTP APIs
 
 These documents are the **authoritative, machine-readable contract** for integrating
-with agent-orc from external systems. They are embedded at build time into the
+with agent-orca from external systems. They are embedded at build time into the
 operator binary and served live at runtime:
 
 | API | Port | Spec file | Live URL |
@@ -24,7 +24,7 @@ make openapi-validate # validates the specs with redocly (if installed)
 
 Every endpoint except `POST /oauth/token` requires a bearer token (JWT or
 Kubernetes ServiceAccount token). See [docs/auth.md](../docs/auth.md) for the
-three accepted modes: agent-orc-issued JWTs (via this `/oauth/token`
+three accepted modes: agent-orca-issued JWTs (via this `/oauth/token`
 `client_credentials` exchange), federated OIDC tokens, and in-cluster K8s SA tokens.
 
 ```

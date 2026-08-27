@@ -39,9 +39,9 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"github.com/floppyfish14/agent-orc/internal/executor"
-	"github.com/floppyfish14/agent-orc/internal/router"
-	"github.com/floppyfish14/agent-orc/internal/state"
+	"github.com/floppyfish14/agent-orca/internal/executor"
+	"github.com/floppyfish14/agent-orca/internal/router"
+	"github.com/floppyfish14/agent-orca/internal/state"
 )
 
 func main() { //nolint:gocyclo

@@ -22,7 +22,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/floppyfish14/agent-orc/internal/state"
+	"github.com/floppyfish14/agent-orca/internal/state"
 )
 
 // Config holds all configuration injected into the model-router sidecar via environment variables
@@ -146,12 +146,12 @@ type Config struct {
 	SystemPrompt string
 
 	// OperatorAPIURL is the base URL of the operator's internal API server.
-	// Injected by the operator via OPERATOR_API_URL env var (e.g. http://agent-orc-internal-api.svc:8082).
+	// Injected by the operator via OPERATOR_API_URL env var (e.g. http://agent-orca-internal-api.svc:8082).
 	OperatorAPIURL string
 
 	// SATokenFile is the path to the projected ServiceAccount token used to authenticate
 	// requests to the operator's internal API.
-	// Defaults to /var/run/secrets/agentorc/token.
+	// Defaults to /var/run/secrets/agentorca/token.
 	SATokenFile string
 
 	// LLMRequestTimeout is the maximum time the model-router waits for a single LLM
@@ -385,11 +385,11 @@ type FunctionCall struct {
 }
 
 // ConfigFromEnv builds a Config from environment variables and the mounted config file.
-// The operator writes a JSON config file to /etc/agentorc/router-config.json at pod creation.
+// The operator writes a JSON config file to /etc/agentorca/router-config.json at pod creation.
 func ConfigFromEnv() (*Config, error) {
 	configPath := os.Getenv("AGENTORC_ROUTER_CONFIG")
 	if configPath == "" {
-		configPath = "/etc/agentorc/router-config.json"
+		configPath = "/etc/agentorca/router-config.json"
 	}
 
 	data, err := os.ReadFile(configPath)
@@ -416,7 +416,7 @@ func ConfigFromEnv() (*Config, error) {
 		cfg.OperatorAPIURL = "http://localhost:8082"
 	}
 	if cfg.SATokenFile == "" {
-		cfg.SATokenFile = "/var/run/secrets/agentorc/token"
+		cfg.SATokenFile = "/var/run/secrets/agentorca/token"
 	}
 	if cfg.Safeguards.MaxConsecutiveNoopTurns > 0 && cfg.Safeguards.MinSubstantiveTokens <= 0 {
 		cfg.Safeguards.MinSubstantiveTokens = 20

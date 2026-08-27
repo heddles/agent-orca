@@ -1,6 +1,6 @@
 # aoctl CLI Reference
 
-`aoctl` is the command-line client for agent-orc. It covers three surfaces:
+`aoctl` is the command-line client for agent-orca. It covers three surfaces:
 authentication/login, task management (External Task API), agent discovery
 (ACP API), and admin tenant lifecycle management.
 
@@ -90,7 +90,7 @@ Kubernetes ServiceAccount bearer token** — not an OAuth2 client_credentials
 JWT. Obtain one via:
 
 ```bash
-kubectl create token agentorc-admin -n agent-orc-system
+kubectl create token agentorca-admin -n agent-orca-system
 ```
 
 | Command | Description |
@@ -123,6 +123,6 @@ save it immediately; it is not retrievable afterwards.
 ## Using aoctl with Terraform
 
 For infrastructure-as-code tenant provisioning, you can use either `aoctl admin
-tenants create` or the [Terraform example](../examples/terraform/agentorc_tenant.tf).
+tenants create` or the [Terraform example](../examples/terraform/agentorca_tenant.tf).
 Both produce identical Kubernetes resources (`TenantConfig` + client-secret
 `Secret`).

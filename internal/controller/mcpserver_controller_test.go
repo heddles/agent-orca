@@ -29,7 +29,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
 )
 
 var _ = Describe("MCPServer Controller", func() {
@@ -62,29 +62,29 @@ var _ = Describe("MCPServer Controller", func() {
 		const serverName = "test-http-server"
 
 		AfterEach(func() {
-			deleteIfExists(&agentorcv1alpha1.MCPServer{
+			deleteIfExists(&agentorcav1alpha1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: serverName, Namespace: namespace},
 			})
 			// Child tools are garbage collected via owner references,
 			// but clean up explicitly in tests since envtest GC may be async.
-			deleteIfExists(&agentorcv1alpha1.Tool{
+			deleteIfExists(&agentorcav1alpha1.Tool{
 				ObjectMeta: metav1.ObjectMeta{Name: serverName + "-add", Namespace: namespace},
 			})
-			deleteIfExists(&agentorcv1alpha1.Tool{
+			deleteIfExists(&agentorcav1alpha1.Tool{
 				ObjectMeta: metav1.ObjectMeta{Name: serverName + "-multiply", Namespace: namespace},
 			})
 		})
 
 		It("should create child Tool CRs for each declared tool", func() {
-			server := &agentorcv1alpha1.MCPServer{
+			server := &agentorcav1alpha1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      serverName,
 					Namespace: namespace,
 				},
-				Spec: agentorcv1alpha1.MCPServerSpec{
+				Spec: agentorcav1alpha1.MCPServerSpec{
 					Transport: "http",
 					URL:       "http://calculator.default.svc:3000",
-					Tools: []agentorcv1alpha1.MCPServerTool{
+					Tools: []agentorcav1alpha1.MCPServerTool{
 						{
 							Name:        "add",
 							Description: "Add two numbers",
@@ -107,12 +107,12 @@ var _ = Describe("MCPServer Controller", func() {
 			reconcileAndExpectSuccess(serverName)
 
 			// Verify child Tools were created.
-			var addTool agentorcv1alpha1.Tool
+			var addTool agentorcav1alpha1.Tool
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name: serverName + "-add", Namespace: namespace,
 			}, &addTool)).To(Succeed())
 
-			Expect(addTool.Spec.Type).To(Equal(agentorcv1alpha1.ToolTypeMCP))
+			Expect(addTool.Spec.Type).To(Equal(agentorcav1alpha1.ToolTypeMCP))
 			Expect(addTool.Spec.MCPConfig).NotTo(BeNil())
 			Expect(addTool.Spec.MCPConfig.Transport).To(Equal("http"))
 			Expect(addTool.Spec.MCPConfig.URL).To(Equal("http://calculator.default.svc:3000"))
@@ -121,7 +121,7 @@ var _ = Describe("MCPServer Controller", func() {
 			Expect(addTool.Labels[LabelManagedBy]).To(Equal(LabelManagedByMCPServer))
 			Expect(addTool.Labels[LabelMCPServer]).To(Equal(serverName))
 
-			var mulTool agentorcv1alpha1.Tool
+			var mulTool agentorcav1alpha1.Tool
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name: serverName + "-multiply", Namespace: namespace,
 			}, &mulTool)).To(Succeed())
@@ -132,7 +132,7 @@ var _ = Describe("MCPServer Controller", func() {
 			Expect(addTool.OwnerReferences[0].Name).To(Equal(serverName))
 
 			// Verify MCPServer status.
-			var updated agentorcv1alpha1.MCPServer
+			var updated agentorcav1alpha1.MCPServer
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name: serverName, Namespace: namespace,
 			}, &updated)).To(Succeed())
@@ -145,26 +145,26 @@ var _ = Describe("MCPServer Controller", func() {
 		const serverName = "test-stdio-server"
 
 		AfterEach(func() {
-			deleteIfExists(&agentorcv1alpha1.MCPServer{
+			deleteIfExists(&agentorcav1alpha1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: serverName, Namespace: namespace},
 			})
-			deleteIfExists(&agentorcv1alpha1.Tool{
+			deleteIfExists(&agentorcav1alpha1.Tool{
 				ObjectMeta: metav1.ObjectMeta{Name: serverName + "-echo", Namespace: namespace},
 			})
 		})
 
 		It("should create a child Tool with the OCIRef and args", func() {
-			server := &agentorcv1alpha1.MCPServer{
+			server := &agentorcav1alpha1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      serverName,
 					Namespace: namespace,
 				},
-				Spec: agentorcv1alpha1.MCPServerSpec{
+				Spec: agentorcav1alpha1.MCPServerSpec{
 					Transport: "stdio",
 					OCIRef:    "ghcr.io/example/mcp-echo:v1",
 					Args:      []string{"/usr/local/bin/mcp-echo", "--mode=stdio"},
 					Env:       map[string]string{"LOG_LEVEL": "debug"},
-					Tools: []agentorcv1alpha1.MCPServerTool{
+					Tools: []agentorcav1alpha1.MCPServerTool{
 						{
 							Name:        "echo",
 							Description: "Echo input back",
@@ -176,12 +176,12 @@ var _ = Describe("MCPServer Controller", func() {
 
 			reconcileAndExpectSuccess(serverName)
 
-			var tool agentorcv1alpha1.Tool
+			var tool agentorcav1alpha1.Tool
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name: serverName + "-echo", Namespace: namespace,
 			}, &tool)).To(Succeed())
 
-			Expect(tool.Spec.Type).To(Equal(agentorcv1alpha1.ToolTypeMCP))
+			Expect(tool.Spec.Type).To(Equal(agentorcav1alpha1.ToolTypeMCP))
 			Expect(tool.Spec.OCIRef).To(Equal("ghcr.io/example/mcp-echo:v1"))
 			Expect(tool.Spec.MCPConfig.Transport).To(Equal("stdio"))
 			Expect(tool.Spec.MCPConfig.Args).To(Equal([]string{"/usr/local/bin/mcp-echo", "--mode=stdio"}))
@@ -193,21 +193,21 @@ var _ = Describe("MCPServer Controller", func() {
 		const serverName = "test-invalid-server"
 
 		AfterEach(func() {
-			deleteIfExists(&agentorcv1alpha1.MCPServer{
+			deleteIfExists(&agentorcav1alpha1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: serverName, Namespace: namespace},
 			})
 		})
 
 		It("should set Ready=false when http transport has no URL", func() {
-			server := &agentorcv1alpha1.MCPServer{
+			server := &agentorcav1alpha1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      serverName,
 					Namespace: namespace,
 				},
-				Spec: agentorcv1alpha1.MCPServerSpec{
+				Spec: agentorcav1alpha1.MCPServerSpec{
 					Transport: "http",
 					// URL intentionally omitted
-					Tools: []agentorcv1alpha1.MCPServerTool{
+					Tools: []agentorcav1alpha1.MCPServerTool{
 						{Name: "foo", Description: "A tool"},
 					},
 				},
@@ -216,7 +216,7 @@ var _ = Describe("MCPServer Controller", func() {
 
 			reconcileAndExpectSuccess(serverName)
 
-			var updated agentorcv1alpha1.MCPServer
+			var updated agentorcav1alpha1.MCPServer
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name: serverName, Namespace: namespace,
 			}, &updated)).To(Succeed())
@@ -225,15 +225,15 @@ var _ = Describe("MCPServer Controller", func() {
 		})
 
 		It("should set Ready=false when stdio transport has no OCIRef", func() {
-			server := &agentorcv1alpha1.MCPServer{
+			server := &agentorcav1alpha1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      serverName,
 					Namespace: namespace,
 				},
-				Spec: agentorcv1alpha1.MCPServerSpec{
+				Spec: agentorcav1alpha1.MCPServerSpec{
 					Transport: "stdio",
 					// OCIRef intentionally omitted
-					Tools: []agentorcv1alpha1.MCPServerTool{
+					Tools: []agentorcav1alpha1.MCPServerTool{
 						{Name: "bar", Description: "A tool"},
 					},
 				},
@@ -242,7 +242,7 @@ var _ = Describe("MCPServer Controller", func() {
 
 			reconcileAndExpectSuccess(serverName)
 
-			var updated agentorcv1alpha1.MCPServer
+			var updated agentorcav1alpha1.MCPServer
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name: serverName, Namespace: namespace,
 			}, &updated)).To(Succeed())
@@ -255,27 +255,27 @@ var _ = Describe("MCPServer Controller", func() {
 		const serverName = "test-stale-cleanup"
 
 		AfterEach(func() {
-			deleteIfExists(&agentorcv1alpha1.MCPServer{
+			deleteIfExists(&agentorcav1alpha1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: serverName, Namespace: namespace},
 			})
-			deleteIfExists(&agentorcv1alpha1.Tool{
+			deleteIfExists(&agentorcav1alpha1.Tool{
 				ObjectMeta: metav1.ObjectMeta{Name: serverName + "-keep", Namespace: namespace},
 			})
-			deleteIfExists(&agentorcv1alpha1.Tool{
+			deleteIfExists(&agentorcav1alpha1.Tool{
 				ObjectMeta: metav1.ObjectMeta{Name: serverName + "-remove", Namespace: namespace},
 			})
 		})
 
 		It("should delete the stale child Tool", func() {
-			server := &agentorcv1alpha1.MCPServer{
+			server := &agentorcav1alpha1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      serverName,
 					Namespace: namespace,
 				},
-				Spec: agentorcv1alpha1.MCPServerSpec{
+				Spec: agentorcav1alpha1.MCPServerSpec{
 					Transport: "http",
 					URL:       "http://example.svc:3000",
-					Tools: []agentorcv1alpha1.MCPServerTool{
+					Tools: []agentorcav1alpha1.MCPServerTool{
 						{Name: "keep", Description: "Stays"},
 						{Name: "remove", Description: "Will be removed"},
 					},
@@ -288,17 +288,17 @@ var _ = Describe("MCPServer Controller", func() {
 			// Both tools should exist.
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name: serverName + "-keep", Namespace: namespace,
-			}, &agentorcv1alpha1.Tool{})).To(Succeed())
+			}, &agentorcav1alpha1.Tool{})).To(Succeed())
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name: serverName + "-remove", Namespace: namespace,
-			}, &agentorcv1alpha1.Tool{})).To(Succeed())
+			}, &agentorcav1alpha1.Tool{})).To(Succeed())
 
 			// Remove one tool from the spec.
-			var current agentorcv1alpha1.MCPServer
+			var current agentorcav1alpha1.MCPServer
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name: serverName, Namespace: namespace,
 			}, &current)).To(Succeed())
-			current.Spec.Tools = []agentorcv1alpha1.MCPServerTool{
+			current.Spec.Tools = []agentorcav1alpha1.MCPServerTool{
 				{Name: "keep", Description: "Stays"},
 			}
 			Expect(k8sClient.Update(ctx, &current)).To(Succeed())
@@ -308,12 +308,12 @@ var _ = Describe("MCPServer Controller", func() {
 			// The kept tool should still exist.
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name: serverName + "-keep", Namespace: namespace,
-			}, &agentorcv1alpha1.Tool{})).To(Succeed())
+			}, &agentorcav1alpha1.Tool{})).To(Succeed())
 
 			// The removed tool should be gone.
 			err := k8sClient.Get(ctx, types.NamespacedName{
 				Name: serverName + "-remove", Namespace: namespace,
-			}, &agentorcv1alpha1.Tool{})
+			}, &agentorcav1alpha1.Tool{})
 			Expect(errors.IsNotFound(err)).To(BeTrue())
 
 			// Status should reflect the new count.
@@ -340,13 +340,13 @@ var _ = Describe("MCPServer Controller", func() {
 		const toolName = "test-managed-tool"
 
 		AfterEach(func() {
-			deleteIfExists(&agentorcv1alpha1.Tool{
+			deleteIfExists(&agentorcav1alpha1.Tool{
 				ObjectMeta: metav1.ObjectMeta{Name: toolName, Namespace: namespace},
 			})
 		})
 
 		It("should pass validation without spec.schema if managed by mcpserver", func() {
-			tool := &agentorcv1alpha1.Tool{
+			tool := &agentorcav1alpha1.Tool{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      toolName,
 					Namespace: namespace,
@@ -355,9 +355,9 @@ var _ = Describe("MCPServer Controller", func() {
 						LabelMCPServer: "some-server",
 					},
 				},
-				Spec: agentorcv1alpha1.ToolSpec{
-					Type: agentorcv1alpha1.ToolTypeMCP,
-					MCPConfig: &agentorcv1alpha1.MCPConfig{
+				Spec: agentorcav1alpha1.ToolSpec{
+					Type: agentorcav1alpha1.ToolTypeMCP,
+					MCPConfig: &agentorcav1alpha1.MCPConfig{
 						Transport: "http",
 						URL:       "http://example.svc:3000",
 					},
@@ -375,7 +375,7 @@ var _ = Describe("MCPServer Controller", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			var updated agentorcv1alpha1.Tool
+			var updated agentorcav1alpha1.Tool
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name: toolName, Namespace: namespace,
 			}, &updated)).To(Succeed())

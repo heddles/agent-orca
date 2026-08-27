@@ -38,9 +38,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/floppyfish14/agent-orc/internal/executor"
-	"github.com/floppyfish14/agent-orc/internal/mcp"
-	"github.com/floppyfish14/agent-orc/internal/state"
+	"github.com/floppyfish14/agent-orca/internal/executor"
+	"github.com/floppyfish14/agent-orca/internal/mcp"
+	"github.com/floppyfish14/agent-orca/internal/state"
 )
 
 // continuationKey is a context key used to mark recursive tool-call continuation
@@ -1162,7 +1162,7 @@ func (r *Router) forwardToProvider(ctx context.Context, provider *ProviderConfig
 	defer cancel()
 
 	// Anthropic requires its own wire format — handle separately before any generic logic.
-	// Skip when a custom BaseURL is set (e.g., Poolside proxy) since the proxy is
+	// Skip when a custom BaseURL is set since the proxy is
 	// OpenAI-compatible and expects the standard format regardless of model prefix.
 	if strings.HasPrefix(provider.LiteLLMModel, "anthropic/") && provider.BaseURL == "" {
 		key, err := readAPIKey(provider.APIKeyFile)
@@ -1174,7 +1174,7 @@ func (r *Router) forwardToProvider(ctx context.Context, provider *ProviderConfig
 
 	// Strip the "<provider>/" prefix so the downstream API receives a bare model name.
 	// e.g. "openai/gpt-4o" → "gpt-4o", "gemini/gemini-2.0-flash" → "gemini-2.0-flash"
-	// Exception: when a custom BaseURL is set (e.g., Poolside proxy), keep the full model name
+	// Exception: when a custom BaseURL is set keep the full model name
 	// since the proxy expects the complete identifier including provider prefix.
 	modelName := provider.LiteLLMModel
 	if provider.BaseURL == "" {
@@ -1778,7 +1778,7 @@ func lastUserMessage(msgs []Message) string {
 	return ""
 }
 
-// injectTools adds agent-orc tool definitions to the request if not already present.
+// injectTools adds agent-orca tool definitions to the request if not already present.
 func (r *Router) injectTools(chatReq ChatCompletionRequest) ChatCompletionRequest {
 	if len(chatReq.Tools) > 0 {
 		// Agent has its own tools — append ours (dedup by name).
@@ -2390,13 +2390,13 @@ func (r *Router) executeHandoff(ctx context.Context, args string) string {
 
 	successorName := fmt.Sprintf("%s-handoff-%d", r.cfg.RunName, time.Now().UnixNano()%1000000)
 	childRun := map[string]any{
-		"apiVersion": "agentorc.agentorc.io/v1alpha1",
+		"apiVersion": "agentorca.agentorca.io/v1alpha1",
 		"kind":       "AgentRun",
 		"metadata": map[string]any{
 			"name":      successorName,
 			"namespace": r.cfg.RunNamespace,
 			"labels": map[string]string{
-				"agentorc.io/handoff-from": r.cfg.RunName,
+				"agentorca.io/handoff-from": r.cfg.RunName,
 			},
 		},
 		"spec": map[string]any{
@@ -2734,7 +2734,7 @@ func (r *Router) executeSpawn(ctx context.Context, args string) string {
 
 	childName := fmt.Sprintf("%s-spawn-%d", r.cfg.RunName, time.Now().UnixNano()%1000000)
 	childRun := map[string]any{
-		"apiVersion": "agentorc.agentorc.io/v1alpha1",
+		"apiVersion": "agentorca.agentorca.io/v1alpha1",
 		"kind":       "AgentRun",
 		"metadata": map[string]any{
 			"name":      childName,
@@ -2871,7 +2871,7 @@ func (r *Router) executeCreateWorkflow(ctx context.Context, args string) string 
 
 	// Build workflow CRD
 	wf := map[string]any{
-		"apiVersion": "agentorc.agentorc.io/v1alpha1",
+		"apiVersion": "agentorca.agentorca.io/v1alpha1",
 		"kind":       "AgentWorkflow",
 		"metadata": map[string]any{
 			"name":      p.Name,
@@ -3219,17 +3219,17 @@ const maxKVValueSize = 1 << 20
 func (r *Router) resolveStateScope(scope string) (string, error) {
 	switch scope {
 	case "run":
-		return fmt.Sprintf("agentorc/runs/%s/kv", r.cfg.RunName), nil
+		return fmt.Sprintf("agentorca/runs/%s/kv", r.cfg.RunName), nil
 	case "workflow":
 		if r.cfg.WorkflowName == "" {
 			return "", fmt.Errorf("scope %q unavailable: this run is not part of a workflow", scope)
 		}
-		return fmt.Sprintf("agentorc/workflows/%s/kv", r.cfg.WorkflowName), nil
+		return fmt.Sprintf("agentorca/workflows/%s/kv", r.cfg.WorkflowName), nil
 	case "deployment":
 		if r.cfg.DeploymentName == "" {
 			return "", fmt.Errorf("scope %q unavailable: this run is not part of a deployment", scope)
 		}
-		return fmt.Sprintf("agentorc/deployments/%s/kv", r.cfg.DeploymentName), nil
+		return fmt.Sprintf("agentorca/deployments/%s/kv", r.cfg.DeploymentName), nil
 	default:
 		return "", fmt.Errorf("invalid scope %q: must be run, workflow, or deployment", scope)
 	}
@@ -3353,7 +3353,7 @@ func (r *Router) executeDeleteState(ctx context.Context, args string) string {
 // This is the warm-pool "look through the redis k/v cache or local emptyDir"
 // behaviour: the local cache is per-pod (scoped to this deployment by
 // construction because a warm pod serves exactly one deployment), and the
-// deployment run index (agentorc/deployments/<dep>/runs:<run>) keeps Redis
+// deployment run index (agentorca/deployments/<dep>/runs:<run>) keeps Redis
 // recall scoped to this deployment without scanning the whole keyspace.
 func (r *Router) executeSearchHistory(ctx context.Context, args string) string {
 	var p struct {
@@ -3377,7 +3377,7 @@ func (r *Router) executeSearchHistory(ctx context.Context, args string) string {
 	var runNames []string
 	currentRun := r.cfg.RunName
 	if dep := r.cfg.DeploymentName; dep != "" {
-		scope := fmt.Sprintf("agentorc/deployments/%s/runs", dep)
+		scope := fmt.Sprintf("agentorca/deployments/%s/runs", dep)
 		if names, err := r.store.ListKV(ctx, scope); err == nil {
 			runNames = names
 		} else {
@@ -3444,7 +3444,7 @@ func (r *Router) searchPriorTurns(ctx context.Context, runNames []string, curren
 		}
 		seen[runName] = true
 
-		key := fmt.Sprintf("agentorc/runs/%s/state", runName)
+		key := fmt.Sprintf("agentorca/runs/%s/state", runName)
 		// local-first via the cache decorator, falls back to Redis.
 		msgs, rErr := r.store.LoadMessages(ctx, key)
 		if rErr != nil || len(msgs) == 0 {
@@ -3509,9 +3509,9 @@ func (r *Router) searchPriorTurns(ctx context.Context, runNames []string, curren
 }
 
 // runNameFromCheckpointKey extracts the run name from a checkpoint key of the form
-// "agentorc/runs/<run>/state". Returns "" if the shape doesn't match.
+// "agentorca/runs/<run>/state". Returns "" if the shape doesn't match.
 func runNameFromCheckpointKey(key string) string {
-	const prefix = "agentorc/runs/"
+	const prefix = "agentorca/runs/"
 	const suffix = "/state"
 	if !strings.HasPrefix(key, prefix) || !strings.HasSuffix(key, suffix) {
 		return ""
@@ -4113,9 +4113,9 @@ func (r *Router) ClaimRun(input WarmRunInput) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.cfg.RunName = input.RunName
-	r.cfg.CheckpointKey = fmt.Sprintf("agentorc/runs/%s/state", input.RunName)
+	r.cfg.CheckpointKey = fmt.Sprintf("agentorca/runs/%s/state", input.RunName)
 	if input.PriorRunRef != "" {
-		r.cfg.ResumeCheckpointKey = fmt.Sprintf("agentorc/runs/%s/state", input.PriorRunRef)
+		r.cfg.ResumeCheckpointKey = fmt.Sprintf("agentorca/runs/%s/state", input.PriorRunRef)
 	} else {
 		r.cfg.ResumeCheckpointKey = ""
 	}
@@ -4144,7 +4144,7 @@ func (r *Router) ClaimRun(input WarmRunInput) {
 	// This mirrors the checkpoint loading done at startup in main.go, but for
 	// pods that are reused via the warm pool rather than freshly launched.
 	if input.PriorRunRef != "" {
-		resumeKey := fmt.Sprintf("agentorc/runs/%s/state", input.PriorRunRef)
+		resumeKey := fmt.Sprintf("agentorca/runs/%s/state", input.PriorRunRef)
 		rawMsgs, err := r.store.LoadMessages(context.Background(), resumeKey)
 		if err != nil {
 			slog.Warn("could not load prior run checkpoint for warm continuation",
@@ -4193,7 +4193,7 @@ func (r *Router) ClaimRun(input WarmRunInput) {
 	// Restore accumulated spend from the prior run so budget tracking and
 	// cost reporting remain accurate across warm-mode continuations.
 	if input.PriorRunRef != "" && r.store != nil {
-		resumeKey := fmt.Sprintf("agentorc/runs/%s/state", input.PriorRunRef)
+		resumeKey := fmt.Sprintf("agentorca/runs/%s/state", input.PriorRunRef)
 		if priorSpend, err := r.store.LoadSpend(context.Background(), resumeKey); err == nil && priorSpend > 0 {
 			r.spendUSD = priorSpend
 			r.ruleRouter.UpdateSpend(priorSpend)

@@ -91,7 +91,7 @@ All sizes assume ~3–4 GB consumed by the kind cluster and OS overhead.
 ## Changing the model
 
 1. Update `CHAT_MODEL_FILE` and `CHAT_MODEL_URL` in `scripts/start-llama-native.sh`
-2. Update `litellmModel` in `charts/agent-orc-resources/values-dev.yaml` under the chat model provider
+2. Update `litellmModel` in `charts/agent-orca-resources/values-dev.yaml` under the chat model provider
 3. Restart the llama server (`scripts/start-llama-native.sh`)
 4. Redeploy resources (`skaffold dev -p dev`)
 

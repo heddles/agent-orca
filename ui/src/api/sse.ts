@@ -4,7 +4,7 @@ export * from './traceStream'
 
 // ── Auth token ───────────────────────────────────────────────────────────────
 
-const TOKEN_KEY = 'agentorc_token'
+const TOKEN_KEY = 'agentorca_token'
 
 /** Persist a Kubernetes SA token for authenticating API requests. */
 export function setToken(token: string): void {

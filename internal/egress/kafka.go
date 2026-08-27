@@ -32,7 +32,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
 )
 
 // kafkaPublisher delivers results to a Kafka topic.
@@ -41,7 +41,7 @@ type kafkaPublisher struct {
 	topic  string
 }
 
-func newKafkaPublisher(ctx context.Context, cfg agentorcv1alpha1.EgressConfig, k8sClient client.Client, namespace string) (*kafkaPublisher, error) {
+func newKafkaPublisher(ctx context.Context, cfg agentorcav1alpha1.EgressConfig, k8sClient client.Client, namespace string) (*kafkaPublisher, error) {
 	if len(cfg.Brokers) == 0 {
 		return nil, fmt.Errorf("egress.kafka: brokers must be specified")
 	}
@@ -86,7 +86,7 @@ func newKafkaPublisher(ctx context.Context, cfg agentorcv1alpha1.EgressConfig, k
 	return &kafkaPublisher{writer: writer, topic: cfg.Topic}, nil
 }
 
-func (p *kafkaPublisher) Publish(ctx context.Context, result agentorcv1alpha1.EgressResult) error {
+func (p *kafkaPublisher) Publish(ctx context.Context, result agentorcav1alpha1.EgressResult) error {
 	payload, err := json.Marshal(result)
 	if err != nil {
 		return fmt.Errorf("marshaling egress result: %w", err)
@@ -101,8 +101,8 @@ func (p *kafkaPublisher) Publish(ctx context.Context, result agentorcv1alpha1.Eg
 		Key:   []byte(key),
 		Value: payload,
 		Headers: []kafka.Header{
-			{Key: "agentorc-run-id", Value: []byte(result.RunID)},
-			{Key: "agentorc-phase", Value: []byte(result.Phase)},
+			{Key: "agentorca-run-id", Value: []byte(result.RunID)},
+			{Key: "agentorca-phase", Value: []byte(result.Phase)},
 		},
 	}
 

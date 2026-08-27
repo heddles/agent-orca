@@ -25,20 +25,20 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
 )
 
 const (
 	// LabelAgentRunName is the pod label used to associate a pod with its AgentRun.
-	LabelAgentRunName = "agentorc.io/run"
+	LabelAgentRunName = "agentorca.io/run"
 	// LabelManagedBy is the standard managed-by label.
 	LabelManagedBy = "app.kubernetes.io/managed-by"
 	// ManagedByValue is the value for LabelManagedBy.
-	ManagedByValue = "agent-orc"
+	ManagedByValue = "agent-orca"
 
 	// LabelComponent identifies the role of a pod within a run (agent or router).
 	// Only set when split-pod topology is enabled (Agent.spec.networkIsolation.splitPod=true).
-	LabelComponent = "agentorc.io/component"
+	LabelComponent = "agentorca.io/component"
 	// LabelComponentAgent is the LabelComponent value for the agent pod in split-pod topology.
 	LabelComponentAgent = "agent"
 	// LabelComponentRouter is the LabelComponent value for the router pod in split-pod topology.
@@ -70,9 +70,9 @@ func SafeLabelValue(s string) string {
 //   - Allows egress to the operator's internal API on port 8082 (always — required for built-in router ops)
 //   - Denies all other egress
 func BuildNetworkPolicy(
-	run *agentorcv1alpha1.AgentRun,
+	run *agentorcav1alpha1.AgentRun,
 	namespace string,
-	toolEgressRules []agentorcv1alpha1.EgressRule,
+	toolEgressRules []agentorcav1alpha1.EgressRule,
 	stateRedisEnabled bool,
 ) *networkingv1.NetworkPolicy {
 	name := networkPolicyName(run.Name)
@@ -145,15 +145,15 @@ func BuildNetworkPolicy(
 // topology. It applies the same egress rules as BuildNetworkPolicy (provider HTTPS, K8s API,
 // Redis, tools, DNS) and adds ingress from the agent pod on ports 8080/8082.
 //
-// The PodSelector targets pods labeled agentorc.io/component=router for this run, so the
+// The PodSelector targets pods labeled agentorca.io/component=router for this run, so the
 // router and agent pods receive independent egress allowances.
 func BuildRouterPodNetworkPolicy(
-	run *agentorcv1alpha1.AgentRun,
+	run *agentorcav1alpha1.AgentRun,
 	namespace string,
-	toolEgressRules []agentorcv1alpha1.EgressRule,
+	toolEgressRules []agentorcav1alpha1.EgressRule,
 	stateRedisEnabled bool,
 ) *networkingv1.NetworkPolicy {
-	name := "agentorc-router-" + run.Name
+	name := "agentorca-router-" + run.Name
 	safeRunName := SafeLabelValue(run.Name)
 
 	// Egress rules identical to combined-pod policy.
@@ -222,12 +222,12 @@ func BuildRouterPodNetworkPolicy(
 // topology. The agent pod's egress is restricted to the router pod (ports 8080/8082) and
 // DNS — it cannot open arbitrary outbound connections to the internet.
 //
-// The PodSelector targets pods labeled agentorc.io/component=agent for this run.
+// The PodSelector targets pods labeled agentorca.io/component=agent for this run.
 func BuildAgentPodNetworkPolicy(
-	run *agentorcv1alpha1.AgentRun,
+	run *agentorcav1alpha1.AgentRun,
 	namespace string,
 ) *networkingv1.NetworkPolicy {
-	name := "agentorc-agent-" + run.Name
+	name := "agentorca-agent-" + run.Name
 	safeRunName := SafeLabelValue(run.Name)
 
 	// Egress to the router pod (same run, component=router) on ports 8080/8082.
@@ -283,7 +283,7 @@ func BuildAgentPodNetworkPolicy(
 }
 
 func networkPolicyName(runName string) string {
-	return "agentorc-run-" + runName
+	return "agentorca-run-" + runName
 }
 
 func egressToPort(port int32) networkingv1.NetworkPolicyEgressRule {

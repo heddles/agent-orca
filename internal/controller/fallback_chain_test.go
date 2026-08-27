@@ -14,49 +14,49 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
 )
 
 // fallbackFixture builds the fake client objects shared by both controller tests:
 // one primary provider, one fallback-only provider, one ModelSelector, one Agent.
 func fallbackFixture(scheme *runtime.Scheme) ( //nolint:unparam
 
-	primary *agentorcv1alpha1.ModelProvider,
-	fallback *agentorcv1alpha1.ModelProvider,
-	selector *agentorcv1alpha1.ModelSelector,
-	agent *agentorcv1alpha1.Agent,
+	primary *agentorcav1alpha1.ModelProvider,
+	fallback *agentorcav1alpha1.ModelProvider,
+	selector *agentorcav1alpha1.ModelSelector,
+	agent *agentorcav1alpha1.Agent,
 ) {
-	primary = &agentorcv1alpha1.ModelProvider{
+	primary = &agentorcav1alpha1.ModelProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: "primary-provider", Namespace: "default"},
-		Spec: agentorcv1alpha1.ModelProviderSpec{
+		Spec: agentorcav1alpha1.ModelProviderSpec{
 			LiteLLMModel: "openai/gpt-4o",
-			CredentialsRef: agentorcv1alpha1.SecretKeyRef{
+			CredentialsRef: agentorcav1alpha1.SecretKeyRef{
 				Name: "primary-secret",
 				Key:  "api-key",
 			},
 		},
 	}
-	fallback = &agentorcv1alpha1.ModelProvider{
+	fallback = &agentorcav1alpha1.ModelProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: "fallback-provider", Namespace: "default"},
-		Spec: agentorcv1alpha1.ModelProviderSpec{
+		Spec: agentorcav1alpha1.ModelProviderSpec{
 			LiteLLMModel: "anthropic/claude-haiku-4-5-20251001",
-			CredentialsRef: agentorcv1alpha1.SecretKeyRef{
+			CredentialsRef: agentorcav1alpha1.SecretKeyRef{
 				Name: "fallback-secret",
 				Key:  "api-key",
 			},
 		},
 	}
-	selector = &agentorcv1alpha1.ModelSelector{
+	selector = &agentorcav1alpha1.ModelSelector{
 		ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: "default"},
-		Spec: agentorcv1alpha1.ModelSelectorSpec{
+		Spec: agentorcav1alpha1.ModelSelectorSpec{
 			Strategy:      "rule-based",
-			Providers:     []agentorcv1alpha1.ProviderWeight{{Name: "primary-provider", Weight: 100}},
+			Providers:     []agentorcav1alpha1.ProviderWeight{{Name: "primary-provider", Weight: 100}},
 			FallbackChain: []string{"fallback-provider"},
 		},
 	}
-	agent = &agentorcv1alpha1.Agent{
+	agent = &agentorcav1alpha1.Agent{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "default"},
-		Spec: agentorcv1alpha1.AgentSpec{
+		Spec: agentorcav1alpha1.AgentSpec{
 			ModelSelectorRef: "default",
 		},
 	}
@@ -71,15 +71,15 @@ func fallbackFixture(scheme *runtime.Scheme) ( //nolint:unparam
 // Weight=0 so tryFallback can find them when the primary call fails.
 func TestBuildRouterConfig_FallbackProvidersLoadedWithZeroWeight(t *testing.T) {
 	scheme := runtime.NewScheme()
-	if err := agentorcv1alpha1.AddToScheme(scheme); err != nil {
+	if err := agentorcav1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
 
 	primary, fallback, selector, agent := fallbackFixture(scheme)
 
-	run := &agentorcv1alpha1.AgentRun{
+	run := &agentorcav1alpha1.AgentRun{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-run", Namespace: "default"},
-		Spec:       agentorcv1alpha1.AgentRunSpec{AgentRef: "test-agent", Input: "ping"},
+		Spec:       agentorcav1alpha1.AgentRunSpec{AgentRef: "test-agent", Input: "ping"},
 	}
 
 	cl := fake.NewClientBuilder().
@@ -113,36 +113,36 @@ func TestBuildRouterConfig_FallbackProvidersLoadedWithZeroWeight(t *testing.T) {
 // tryFallback tries providers in the intended priority sequence.
 func TestBuildRouterConfig_FallbackChainOrderPreserved(t *testing.T) {
 	scheme := runtime.NewScheme()
-	if err := agentorcv1alpha1.AddToScheme(scheme); err != nil {
+	if err := agentorcav1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
 
-	mkProvider := func(name string) *agentorcv1alpha1.ModelProvider {
-		return &agentorcv1alpha1.ModelProvider{
+	mkProvider := func(name string) *agentorcav1alpha1.ModelProvider {
+		return &agentorcav1alpha1.ModelProvider{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
-			Spec: agentorcv1alpha1.ModelProviderSpec{
+			Spec: agentorcav1alpha1.ModelProviderSpec{
 				LiteLLMModel:   "openai/gpt-4o-mini",
-				CredentialsRef: agentorcv1alpha1.SecretKeyRef{Name: name + "-secret", Key: "api-key"},
+				CredentialsRef: agentorcav1alpha1.SecretKeyRef{Name: name + "-secret", Key: "api-key"},
 			},
 		}
 	}
 
 	p1, p2, p3 := mkProvider("primary"), mkProvider("fallback-a"), mkProvider("fallback-b")
-	selector := &agentorcv1alpha1.ModelSelector{
+	selector := &agentorcav1alpha1.ModelSelector{
 		ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: "default"},
-		Spec: agentorcv1alpha1.ModelSelectorSpec{
+		Spec: agentorcav1alpha1.ModelSelectorSpec{
 			Strategy:      "rule-based",
-			Providers:     []agentorcv1alpha1.ProviderWeight{{Name: "primary", Weight: 100}},
+			Providers:     []agentorcav1alpha1.ProviderWeight{{Name: "primary", Weight: 100}},
 			FallbackChain: []string{"fallback-a", "fallback-b"},
 		},
 	}
-	agent := &agentorcv1alpha1.Agent{
+	agent := &agentorcav1alpha1.Agent{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "default"},
-		Spec:       agentorcv1alpha1.AgentSpec{ModelSelectorRef: "default"},
+		Spec:       agentorcav1alpha1.AgentSpec{ModelSelectorRef: "default"},
 	}
-	run := &agentorcv1alpha1.AgentRun{
+	run := &agentorcav1alpha1.AgentRun{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-run", Namespace: "default"},
-		Spec:       agentorcv1alpha1.AgentRunSpec{AgentRef: "test-agent", Input: "ping"},
+		Spec:       agentorcav1alpha1.AgentRunSpec{AgentRef: "test-agent", Input: "ping"},
 	}
 
 	cl := fake.NewClientBuilder().
@@ -165,15 +165,15 @@ func TestBuildRouterConfig_FallbackChainOrderPreserved(t *testing.T) {
 // TestBuildRouterConfig_FallbackProvidersLoadedWithZeroWeight for AgentDeployment.
 func TestBuildDeploymentRouterConfig_FallbackProvidersLoadedWithZeroWeight(t *testing.T) {
 	scheme := runtime.NewScheme()
-	if err := agentorcv1alpha1.AddToScheme(scheme); err != nil {
+	if err := agentorcav1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
 
 	primary, fallback, selector, agent := fallbackFixture(scheme)
 
-	deploy := &agentorcv1alpha1.AgentDeployment{
+	deploy := &agentorcav1alpha1.AgentDeployment{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-deploy", Namespace: "default"},
-		Spec: agentorcv1alpha1.AgentDeploymentSpec{
+		Spec: agentorcav1alpha1.AgentDeploymentSpec{
 			AgentRef: "test-agent",
 		},
 	}
@@ -210,32 +210,32 @@ func TestBuildDeploymentRouterConfig_FallbackProvidersLoadedWithZeroWeight(t *te
 // This is the exact scenario that caused "dependency not ready" log spam.
 func TestBuildRouterConfig_FallbackProviderNotDeployed_Skipped(t *testing.T) {
 	scheme := runtime.NewScheme()
-	if err := agentorcv1alpha1.AddToScheme(scheme); err != nil {
+	if err := agentorcav1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
 
-	primary := &agentorcv1alpha1.ModelProvider{
+	primary := &agentorcav1alpha1.ModelProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: "primary-provider", Namespace: "default"},
-		Spec: agentorcv1alpha1.ModelProviderSpec{
+		Spec: agentorcav1alpha1.ModelProviderSpec{
 			LiteLLMModel:   "openai/gpt-4o",
-			CredentialsRef: agentorcv1alpha1.SecretKeyRef{Name: "primary-secret", Key: "api-key"},
+			CredentialsRef: agentorcav1alpha1.SecretKeyRef{Name: "primary-secret", Key: "api-key"},
 		},
 	}
-	selector := &agentorcv1alpha1.ModelSelector{
+	selector := &agentorcav1alpha1.ModelSelector{
 		ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: "default"},
-		Spec: agentorcv1alpha1.ModelSelectorSpec{
+		Spec: agentorcav1alpha1.ModelSelectorSpec{
 			Strategy:      "rule-based",
-			Providers:     []agentorcv1alpha1.ProviderWeight{{Name: "primary-provider", Weight: 100}},
+			Providers:     []agentorcav1alpha1.ProviderWeight{{Name: "primary-provider", Weight: 100}},
 			FallbackChain: []string{"disabled-provider"}, // no CR in cluster
 		},
 	}
-	agent := &agentorcv1alpha1.Agent{
+	agent := &agentorcav1alpha1.Agent{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "default"},
-		Spec:       agentorcv1alpha1.AgentSpec{ModelSelectorRef: "default"},
+		Spec:       agentorcav1alpha1.AgentSpec{ModelSelectorRef: "default"},
 	}
-	run := &agentorcv1alpha1.AgentRun{
+	run := &agentorcav1alpha1.AgentRun{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-run", Namespace: "default"},
-		Spec:       agentorcv1alpha1.AgentRunSpec{AgentRef: "test-agent", Input: "ping"},
+		Spec:       agentorcav1alpha1.AgentRunSpec{AgentRef: "test-agent", Input: "ping"},
 	}
 
 	cl := fake.NewClientBuilder().
@@ -260,32 +260,32 @@ func TestBuildRouterConfig_FallbackProviderNotDeployed_Skipped(t *testing.T) {
 // cfg.Providers (de-duplicated by seenProviders).
 func TestBuildRouterConfig_PrimaryAlsoInFallback_NotDuplicated(t *testing.T) {
 	scheme := runtime.NewScheme()
-	if err := agentorcv1alpha1.AddToScheme(scheme); err != nil {
+	if err := agentorcav1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
 
-	provider := &agentorcv1alpha1.ModelProvider{
+	provider := &agentorcav1alpha1.ModelProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: "shared-provider", Namespace: "default"},
-		Spec: agentorcv1alpha1.ModelProviderSpec{
+		Spec: agentorcav1alpha1.ModelProviderSpec{
 			LiteLLMModel:   "openai/gpt-4o",
-			CredentialsRef: agentorcv1alpha1.SecretKeyRef{Name: "shared-secret", Key: "api-key"},
+			CredentialsRef: agentorcav1alpha1.SecretKeyRef{Name: "shared-secret", Key: "api-key"},
 		},
 	}
-	selector := &agentorcv1alpha1.ModelSelector{
+	selector := &agentorcav1alpha1.ModelSelector{
 		ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: "default"},
-		Spec: agentorcv1alpha1.ModelSelectorSpec{
+		Spec: agentorcav1alpha1.ModelSelectorSpec{
 			Strategy:      "rule-based",
-			Providers:     []agentorcv1alpha1.ProviderWeight{{Name: "shared-provider", Weight: 80}},
+			Providers:     []agentorcav1alpha1.ProviderWeight{{Name: "shared-provider", Weight: 80}},
 			FallbackChain: []string{"shared-provider"},
 		},
 	}
-	agent := &agentorcv1alpha1.Agent{
+	agent := &agentorcav1alpha1.Agent{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "default"},
-		Spec:       agentorcv1alpha1.AgentSpec{ModelSelectorRef: "default"},
+		Spec:       agentorcav1alpha1.AgentSpec{ModelSelectorRef: "default"},
 	}
-	run := &agentorcv1alpha1.AgentRun{
+	run := &agentorcav1alpha1.AgentRun{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-run", Namespace: "default"},
-		Spec:       agentorcv1alpha1.AgentRunSpec{AgentRef: "test-agent", Input: "ping"},
+		Spec:       agentorcav1alpha1.AgentRunSpec{AgentRef: "test-agent", Input: "ping"},
 	}
 
 	cl := fake.NewClientBuilder().

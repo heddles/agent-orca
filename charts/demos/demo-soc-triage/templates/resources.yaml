@@ -1,7 +1,7 @@
-{{- $ctx := dict "Values" (index .Values "agent-orc-resources") "Release" .Release "Chart" .Chart "Files" .Files "Template" .Template "Capabilities" .Capabilities }}
-{{ include "agent-orc-resources.agents" $ctx }}
-{{ include "agent-orc-resources.agentdeployments" $ctx }}
-{{ include "agent-orc-resources.tools" $ctx }}
-{{ include "agent-orc-resources.mcpservers" $ctx }}
-{{ include "agent-orc-resources.mcpserverdeployments" $ctx }}
-{{ include "agent-orc-resources.knowledgebases" $ctx }}
+{{- $ctx := dict "Values" (index .Values "agent-orca-resources") "Release" .Release "Chart" .Chart "Files" .Files "Template" .Template "Capabilities" .Capabilities }}
+{{ include "agent-orca-resources.agents" $ctx }}
+{{ include "agent-orca-resources.agentdeployments" $ctx }}
+{{ include "agent-orca-resources.tools" $ctx }}
+{{ include "agent-orca-resources.mcpservers" $ctx }}
+{{ include "agent-orca-resources.mcpserverdeployments" $ctx }}
+{{ include "agent-orca-resources.knowledgebases" $ctx }}

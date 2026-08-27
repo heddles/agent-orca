@@ -1,4 +1,4 @@
-"""Reference OpenAI-compatible agent image for agent-orc (`ghcr.io/agentorc/agent-orc/openai-reference`).
+"""Reference OpenAI-compatible agent image for agent-orca (`ghcr.io/agentorca/agent-orca/openai-reference`).
 
 A minimal, framework-agnostic transport — NOT a persona. It streams a chat request to the
 model-router and prints/returns the tokens. The model-router injects everything else:
@@ -16,7 +16,7 @@ the signal):
         GET  /healthz         -> 200 ok            (readiness)
         POST /invoke {"input"} -> 200 {"output":…}  (per-message execution)
 
-The `agentorc` Python SDK is installed in this image for users who want richer behavior
+The `agentorca` Python SDK is installed in this image for users who want richer behavior
 (custom `@agent.tool` registration, lifecycle methods, checkpoint helpers) — replace this
 file with your own SDK-based agent to customize; see docs/integrating.md and
 docs/agent-images.md.

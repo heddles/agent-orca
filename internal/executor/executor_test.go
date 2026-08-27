@@ -31,8 +31,8 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
-	"github.com/floppyfish14/agent-orc/internal/state"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
+	"github.com/floppyfish14/agent-orca/internal/state"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -181,19 +181,19 @@ func fakeOperatorServer(successAfter int, output string) (*httptest.Server, *ato
 		switch r.Method {
 		case http.MethodPost:
 			w.WriteHeader(http.StatusCreated)
-			var run agentorcv1alpha1.AgentRun
+			var run agentorcav1alpha1.AgentRun
 			_ = json.NewDecoder(r.Body).Decode(&run)
 			_ = json.NewEncoder(w).Encode(&run)
 
 		case http.MethodGet:
 			n := int(getCount.Add(1))
-			phase := agentorcv1alpha1.AgentRunPhaseRunning
+			phase := agentorcav1alpha1.AgentRunPhaseRunning
 			if n >= successAfter {
-				phase = agentorcv1alpha1.AgentRunPhaseSucceeded
+				phase = agentorcav1alpha1.AgentRunPhaseSucceeded
 			}
-			run := agentorcv1alpha1.AgentRun{
+			run := agentorcav1alpha1.AgentRun{
 				ObjectMeta: metav1.ObjectMeta{Name: "child"},
-				Status: agentorcv1alpha1.AgentRunStatus{
+				Status: agentorcav1alpha1.AgentRunStatus{
 					Phase:  phase,
 					Output: output,
 				},
@@ -376,18 +376,18 @@ var _ = Describe("Executor", func() {
 			mux.HandleFunc("/agentrun/", func(w http.ResponseWriter, r *http.Request) {
 				if r.Method == http.MethodPost {
 					w.WriteHeader(http.StatusCreated)
-					_ = json.NewEncoder(w).Encode(&agentorcv1alpha1.AgentRun{})
+					_ = json.NewEncoder(w).Encode(&agentorcav1alpha1.AgentRun{})
 					return
 				}
 				n := int(getN.Add(1))
-				phase := agentorcv1alpha1.AgentRunPhaseRunning
+				phase := agentorcav1alpha1.AgentRunPhaseRunning
 				reason := ""
 				if n >= 2 {
-					phase = agentorcv1alpha1.AgentRunPhaseFailed
+					phase = agentorcav1alpha1.AgentRunPhaseFailed
 					reason = "OOM killed"
 				}
-				_ = json.NewEncoder(w).Encode(&agentorcv1alpha1.AgentRun{
-					Status: agentorcv1alpha1.AgentRunStatus{Phase: phase, FailureReason: reason},
+				_ = json.NewEncoder(w).Encode(&agentorcav1alpha1.AgentRun{
+					Status: agentorcav1alpha1.AgentRunStatus{Phase: phase, FailureReason: reason},
 				})
 			})
 			failSrv := httptest.NewServer(mux)

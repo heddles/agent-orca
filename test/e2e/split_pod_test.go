@@ -28,7 +28,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/floppyfish14/agent-orc/test/utils"
+	"github.com/floppyfish14/agent-orca/test/utils"
 )
 
 // splitPodE2E groups the supporting resources and helpers for split-pod topology tests.
@@ -42,8 +42,8 @@ var _ = Describe("Split-pod egress isolation", Label("split-pod"), Ordered, func
 	)
 
 	BeforeAll(func() {
-		waitForCRDReady("agents.agentorc.agentorc.io")
-		waitForCRDReady("agentruns.agentorc.agentorc.io")
+		waitForCRDReady("agents.agentorca.agentorca.io")
+		waitForCRDReady("agentruns.agentorca.agentorca.io")
 
 		// Clean up from any previous run of this test.
 		for _, kind := range []string{"agentrun", "agent", "modelselector", "modelprovider"} {
@@ -70,7 +70,7 @@ stringData:
 `)).To(Succeed())
 
 		Expect(applyYAML(`
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: ModelProvider
 metadata:
   name: e2e-split-provider
@@ -90,7 +90,7 @@ spec:
 `)).To(Succeed())
 
 		Expect(applyYAML(`
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: ModelSelector
 metadata:
   name: e2e-split-selector
@@ -104,7 +104,7 @@ spec:
 
 		// Agent with splitPod enabled.
 		Expect(applyYAML(`
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: Agent
 metadata:
   name: e2e-split-agent
@@ -129,7 +129,7 @@ spec:
 
 		// AgentRun referencing the split-pod agent.
 		Expect(applyYAML(`
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: AgentRun
 metadata:
   name: ` + runName + `
@@ -149,7 +149,7 @@ spec:
 	})
 
 	It("creates the router Service for the split-pod run", func() {
-		svcName := "agentorc-router-" + runName
+		svcName := "agentorca-router-" + runName
 		Eventually(func(g Gomega) {
 			out, err := utils.Run(exec.Command(
 				"kubectl", "get", "service", svcName,
@@ -163,7 +163,7 @@ spec:
 	})
 
 	It("router Service exposes ports 8080 (openai) and 8082 (gemini)", func() {
-		svcName := "agentorc-router-" + runName
+		svcName := "agentorca-router-" + runName
 		Eventually(func(g Gomega) {
 			out, err := utils.Run(exec.Command(
 				"kubectl", "get", "service", svcName,
@@ -177,12 +177,12 @@ spec:
 	})
 
 	It("creates the router pod with component=router label", func() {
-		routerPodName := "agentorc-router-" + runName
+		routerPodName := "agentorca-router-" + runName
 		Eventually(func(g Gomega) {
 			out, err := utils.Run(exec.Command(
 				"kubectl", "get", "pod", routerPodName,
 				"-n", ns,
-				"-o", "jsonpath={.metadata.labels.agentorc\\.io/component}",
+				"-o", "jsonpath={.metadata.labels.agentorca\\.io/component}",
 			))
 			g.Expect(err).NotTo(HaveOccurred(), "router pod %s not found", routerPodName)
 			g.Expect(out).To(Equal("router"))
@@ -191,12 +191,12 @@ spec:
 	})
 
 	It("creates the agent pod with component=agent label", func() {
-		agentPodName := "agentorc-run-" + runName
+		agentPodName := "agentorca-run-" + runName
 		Eventually(func(g Gomega) {
 			out, err := utils.Run(exec.Command(
 				"kubectl", "get", "pod", agentPodName,
 				"-n", ns,
-				"-o", "jsonpath={.metadata.labels.agentorc\\.io/component}",
+				"-o", "jsonpath={.metadata.labels.agentorca\\.io/component}",
 			))
 			g.Expect(err).NotTo(HaveOccurred(), "agent pod %s not found", agentPodName)
 			g.Expect(out).To(Equal("agent"))
@@ -205,7 +205,7 @@ spec:
 	})
 
 	It("router pod has no agent container (single-container pod)", func() {
-		routerPodName := "agentorc-router-" + runName
+		routerPodName := "agentorca-router-" + runName
 		Eventually(func(g Gomega) {
 			out, err := utils.Run(exec.Command(
 				"kubectl", "get", "pod", routerPodName,
@@ -221,7 +221,7 @@ spec:
 	})
 
 	It("agent pod has no model-router init container (sidecar removed)", func() {
-		agentPodName := "agentorc-run-" + runName
+		agentPodName := "agentorca-run-" + runName
 		Eventually(func(g Gomega) {
 			out, err := utils.Run(exec.Command(
 				"kubectl", "get", "pod", agentPodName,
@@ -236,7 +236,7 @@ spec:
 	})
 
 	It("injects the router Service URL (not localhost) into the token secret as OPENAI_BASE_URL", func() {
-		secretName := "agentorc-run-" + runName + "-token"
+		secretName := "agentorca-run-" + runName + "-token"
 		Eventually(func(g Gomega) {
 			out, err := utils.Run(exec.Command(
 				"kubectl", "get", "secret", secretName,
@@ -253,15 +253,15 @@ spec:
 			// Must point at the router Service, not localhost.
 			g.Expect(url).NotTo(ContainSubstring("localhost"),
 				"OPENAI_BASE_URL should not be localhost in split-pod mode")
-			g.Expect(url).To(ContainSubstring("agentorc-router-"+runName),
+			g.Expect(url).To(ContainSubstring("agentorca-router-"+runName),
 				"OPENAI_BASE_URL should contain the router Service name")
 			g.Expect(url).To(ContainSubstring(":8080"),
 				"OPENAI_BASE_URL should target port 8080")
 		}, 60*time.Second, 2*time.Second).Should(Succeed())
 	})
 
-	It("creates a router-pod NetworkPolicy (agentorc-router-<run>) with egress and agent-ingress", func() {
-		npName := "agentorc-router-" + runName
+	It("creates a router-pod NetworkPolicy (agentorca-router-<run>) with egress and agent-ingress", func() {
+		npName := "agentorca-router-" + runName
 		Eventually(func(g Gomega) {
 			_, err := utils.Run(exec.Command(
 				"kubectl", "get", "networkpolicy", npName, "-n", ns,
@@ -282,14 +282,14 @@ spec:
 		sel, err := utils.Run(exec.Command(
 			"kubectl", "get", "networkpolicy", npName,
 			"-n", ns,
-			"-o", `jsonpath={.spec.podSelector.matchLabels.agentorc\.io/component}`,
+			"-o", `jsonpath={.spec.podSelector.matchLabels.agentorca\.io/component}`,
 		))
 		Expect(err).NotTo(HaveOccurred())
 		Expect(sel).To(Equal("router"), "router NP podSelector should match component=router")
 	})
 
-	It("creates an agent-pod NetworkPolicy (agentorc-agent-<run>) with restricted egress", func() {
-		npName := "agentorc-agent-" + runName
+	It("creates an agent-pod NetworkPolicy (agentorca-agent-<run>) with restricted egress", func() {
+		npName := "agentorca-agent-" + runName
 		Eventually(func(g Gomega) {
 			_, err := utils.Run(exec.Command(
 				"kubectl", "get", "networkpolicy", npName, "-n", ns,
@@ -312,15 +312,15 @@ spec:
 		sel, err := utils.Run(exec.Command(
 			"kubectl", "get", "networkpolicy", npName,
 			"-n", ns,
-			"-o", `jsonpath={.spec.podSelector.matchLabels.agentorc\.io/component}`,
+			"-o", `jsonpath={.spec.podSelector.matchLabels.agentorca\.io/component}`,
 		))
 		Expect(err).NotTo(HaveOccurred())
 		Expect(sel).To(Equal("agent"), "agent NP podSelector should match component=agent")
 	})
 
-	It("does NOT create the combined-pod NetworkPolicy (agentorc-run-<run>)", func() {
+	It("does NOT create the combined-pod NetworkPolicy (agentorca-run-<run>)", func() {
 		// In split-pod mode the controller creates two separate NPs, not the combined one.
-		combinedNP := "agentorc-run-" + runName
+		combinedNP := "agentorca-run-" + runName
 		// Give a moment in case the controller accidentally creates it.
 		Consistently(func(g Gomega) {
 			out, err := utils.Run(exec.Command(
@@ -341,7 +341,7 @@ spec:
 				"-o", "jsonpath={.status.routerPodName}",
 			))
 			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(out).To(ContainSubstring("agentorc-router-"),
+			g.Expect(out).To(ContainSubstring("agentorca-router-"),
 				"status.routerPodName should be set to the router pod name")
 		}, 60*time.Second, 2*time.Second).Should(Succeed())
 	})
@@ -356,13 +356,13 @@ spec:
 
 		BeforeEach(func() {
 			// Ensure the agent pod is Running before probing.
-			waitForPodPhase("agentorc-run-"+runName, ns, "Running", 4*time.Minute)
+			waitForPodPhase("agentorca-run-"+runName, ns, "Running", 4*time.Minute)
 		})
 
 		It("agent pod CANNOT connect to api.openai.com:443 (provider HTTPS blocked by NetworkPolicy)", func() {
 			// Core scenario from issue #13: an agent process must not be able to reach LLM
 			// providers directly — all traffic must go via the model-router pod.
-			agentPod := "agentorc-run-" + runName
+			agentPod := "agentorca-run-" + runName
 			_, err := execInPod(ns, agentPod, "agent",
 				"nc", "-z", "-w", probeTimeout, "api.openai.com", "443",
 			)
@@ -372,7 +372,7 @@ spec:
 		})
 
 		It("agent pod CANNOT connect to api.anthropic.com:443 (provider HTTPS blocked)", func() {
-			agentPod := "agentorc-run-" + runName
+			agentPod := "agentorca-run-" + runName
 			_, err := execInPod(ns, agentPod, "agent",
 				"nc", "-z", "-w", probeTimeout, "api.anthropic.com", "443",
 			)
@@ -383,7 +383,7 @@ spec:
 		It("agent pod has DNS configured (port 53 egress permitted by NetworkPolicy)", func() {
 			// Verify DNS is configured in the container and the cluster DNS server is reachable
 			// on port 53. Uses /etc/resolv.conf + nc since chainguard busybox lacks nslookup.
-			agentPod := "agentorc-run-" + runName
+			agentPod := "agentorca-run-" + runName
 			// Read the nameserver IP from resolv.conf.
 			dnsOut, err := execInPod(ns, agentPod, "agent",
 				"sh", "-c", `grep "^nameserver" /etc/resolv.conf | head -1`,
@@ -410,9 +410,9 @@ spec:
 	It("garbage-collects router Service and both pods when the AgentRun is deleted", func() {
 		deleteResource("agentrun", runName, ns)
 
-		routerSvc := "agentorc-router-" + runName
-		routerPod := "agentorc-router-" + runName
-		agentPod := "agentorc-run-" + runName
+		routerSvc := "agentorca-router-" + runName
+		routerPod := "agentorca-router-" + runName
+		agentPod := "agentorca-run-" + runName
 
 		Eventually(func(g Gomega) {
 			for _, name := range []string{routerSvc} {
@@ -450,7 +450,7 @@ spec:
 		combinedRun := "e2e-combined-run"
 
 		Expect(applyYAML(`
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: Agent
 metadata:
   name: e2e-combined-agent
@@ -472,7 +472,7 @@ spec:
 `)).To(Succeed())
 
 		Expect(applyYAML(`
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: AgentRun
 metadata:
   name: ` + combinedRun + `
@@ -487,7 +487,7 @@ spec:
 			deleteResource("agent", "e2e-combined-agent", ns)
 		})
 
-		combinedPodName := "agentorc-run-" + combinedRun
+		combinedPodName := "agentorca-run-" + combinedRun
 		Eventually(func(g Gomega) {
 			out, err := utils.Run(exec.Command(
 				"kubectl", "get", "pod", combinedPodName,
@@ -505,14 +505,14 @@ spec:
 		out, err := utils.Run(exec.Command(
 			"kubectl", "get", "pod", combinedPodName,
 			"-n", ns,
-			"-o", `jsonpath={.metadata.labels.agentorc\.io/component}`,
+			"-o", `jsonpath={.metadata.labels.agentorca\.io/component}`,
 		))
 		Expect(err).NotTo(HaveOccurred())
 		Expect(strings.TrimSpace(out)).To(BeEmpty(),
-			"combined pod should NOT have agentorc.io/component label")
+			"combined pod should NOT have agentorca.io/component label")
 
 		// Token secret must use localhost URL in combined-pod mode.
-		secretName := "agentorc-run-" + combinedRun + "-token"
+		secretName := "agentorca-run-" + combinedRun + "-token"
 		Eventually(func(g Gomega) {
 			raw, err := utils.Run(exec.Command(
 				"kubectl", "get", "secret", secretName,

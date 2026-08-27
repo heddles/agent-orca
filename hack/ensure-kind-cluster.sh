@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Ensures the local kind cluster used by Skaffold exists (same defaults as hack/dev-kind.sh).
-# Set SKIP_ENSURE_KIND=1 to skip. Override cluster name with KIND_CLUSTER (default: agent-orc-dev).
+# Set SKIP_ENSURE_KIND=1 to skip. Override cluster name with KIND_CLUSTER (default: agent-orca-dev).
 
 set -euo pipefail
 
@@ -8,7 +8,7 @@ if [[ -n "${SKIP_ENSURE_KIND:-}" ]]; then
   exit 0
 fi
 
-CLUSTER_NAME="${KIND_CLUSTER:-agent-orc-dev}"
+CLUSTER_NAME="${KIND_CLUSTER:-agent-orca-dev}"
 
 if ! command -v kind &>/dev/null; then
   echo "ensure-kind-cluster: 'kind' not found in PATH (install kind or set SKIP_ENSURE_KIND=1)" >&2

@@ -63,9 +63,9 @@ func writeOperatorAuthFailure(w http.ResponseWriter, missingToken bool, validate
 	writeAuthFailureJSON(w, msg)
 }
 
-// writeUIAuthFailure writes JSON deny for UI API auth (TokenReview audience agentorc/ui).
+// writeUIAuthFailure writes JSON deny for UI API auth (TokenReview audience agentorca/ui).
 func writeUIAuthFailure(w http.ResponseWriter, missingToken bool, validateErr error) {
-	w.Header().Set("WWW-Authenticate", `Bearer realm="agentorc-ui"`)
+	w.Header().Set("WWW-Authenticate", `Bearer realm="agentorca-ui"`)
 	if missingToken {
 		writeAuthFailureJSON(w, "authentication required")
 		return

@@ -31,7 +31,7 @@ type TopLevelTab = ResourceTab | 'home' | 'marketplace' | 'history' | 'status'
 // SessionStorage preserves the user's navigation across refreshes without
 // leaking across tabs/sessions. Only navigation-relevant state is saved;
 // transient UI state (create-agent panel, redis banner, cost view) resets.
-const NAV_STATE_KEY = 'agentorc-nav-state'
+const NAV_STATE_KEY = 'agentorca-nav-state'
 
 interface NavState {
   tab: TopLevelTab

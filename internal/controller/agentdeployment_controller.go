@@ -46,11 +46,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
-	"github.com/floppyfish14/agent-orc/internal/podbuilder"
-	"github.com/floppyfish14/agent-orc/internal/router"
-	"github.com/floppyfish14/agent-orc/internal/security"
-	"github.com/floppyfish14/agent-orc/internal/state"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
+	"github.com/floppyfish14/agent-orca/internal/podbuilder"
+	"github.com/floppyfish14/agent-orca/internal/router"
+	"github.com/floppyfish14/agent-orca/internal/security"
+	"github.com/floppyfish14/agent-orca/internal/state"
 )
 
 // AgentDeploymentReconciler reconciles an AgentDeployment object.
@@ -73,10 +73,10 @@ type AgentDeploymentReconciler struct {
 }
 
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
-// +kubebuilder:rbac:groups=agentorc.agentorc.io,resources=agentdeployments,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=agentorc.agentorc.io,resources=agentdeployments/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=agentorc.agentorc.io,resources=agentdeployments/finalizers,verbs=update
-// +kubebuilder:rbac:groups=agentorc.agentorc.io,resources=agents,verbs=get;list
+// +kubebuilder:rbac:groups=agentorca.agentorca.io,resources=agentdeployments,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=agentorca.agentorca.io,resources=agentdeployments/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=agentorca.agentorca.io,resources=agentdeployments/finalizers,verbs=update
+// +kubebuilder:rbac:groups=agentorca.agentorca.io,resources=agents,verbs=get;list
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=serviceaccounts,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get
@@ -85,7 +85,7 @@ type AgentDeploymentReconciler struct {
 func (r *AgentDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := slog.With("agentdeployment", req.NamespacedName)
 
-	var deployment agentorcv1alpha1.AgentDeployment
+	var deployment agentorcav1alpha1.AgentDeployment
 	if err := r.Get(ctx, req.NamespacedName, &deployment); err != nil {
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, nil
@@ -99,18 +99,18 @@ func (r *AgentDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 	// Set initial phase if not set
 	if deployment.Status.Phase == "" {
-		deployment.Status.Phase = agentorcv1alpha1.AgentDeploymentPhaseCreating
+		deployment.Status.Phase = agentorcav1alpha1.AgentDeploymentPhaseCreating
 		deployment.Status.LastUpdateTime = &metav1.Time{Time: time.Now()}
 	}
 
 	// Verify the referenced Agent exists
-	var agent agentorcv1alpha1.Agent
+	var agent agentorcav1alpha1.Agent
 	if err := r.Get(ctx, types.NamespacedName{
 		Name:      deployment.Spec.AgentRef,
 		Namespace: deployment.Namespace,
 	}, &agent); err != nil {
 		log.Error("referenced Agent not found", "agent", deployment.Spec.AgentRef)
-		deployment.Status.Phase = agentorcv1alpha1.AgentDeploymentPhaseFailed
+		deployment.Status.Phase = agentorcav1alpha1.AgentDeploymentPhaseFailed
 		deployment.Status.Message = fmt.Sprintf("Agent %s not found", deployment.Spec.AgentRef)
 		_ = r.Status().Patch(ctx, &deployment, client.MergeFrom(statusBase))
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
@@ -125,7 +125,7 @@ func (r *AgentDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	// so the binary path rewrites are available for the router config).
 	mcpBinVolumes, mcpBinMounts, binPathRewrites, err := podbuilder.ResolveMCPSidecarVolumes(ctx, r.Client, deployment.Namespace, &agent)
 	if err != nil {
-		deployment.Status.Phase = agentorcv1alpha1.AgentDeploymentPhaseFailed
+		deployment.Status.Phase = agentorcav1alpha1.AgentDeploymentPhaseFailed
 		deployment.Status.Message = fmt.Sprintf("resolving MCP sidecar volumes: %v", err)
 		_ = r.Status().Patch(ctx, &deployment, client.MergeFrom(statusBase))
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
@@ -134,7 +134,7 @@ func (r *AgentDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	// Resolve tool secret volumes (MCP envFrom secrets).
 	toolSecretVolumes, toolSecretMounts, err := podbuilder.ResolveToolSecretVolumes(ctx, r.Client, deployment.Namespace, &agent)
 	if err != nil {
-		deployment.Status.Phase = agentorcv1alpha1.AgentDeploymentPhaseFailed
+		deployment.Status.Phase = agentorcav1alpha1.AgentDeploymentPhaseFailed
 		deployment.Status.Message = fmt.Sprintf("resolving tool secret volumes: %v", err)
 		_ = r.Status().Patch(ctx, &deployment, client.MergeFrom(statusBase))
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
@@ -147,7 +147,7 @@ func (r *AgentDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 			log.Info("router config dependency not ready, retrying", "error", err)
 			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 		}
-		deployment.Status.Phase = agentorcv1alpha1.AgentDeploymentPhaseFailed
+		deployment.Status.Phase = agentorcav1alpha1.AgentDeploymentPhaseFailed
 		deployment.Status.Message = fmt.Sprintf("building router config: %v", err)
 		_ = r.Status().Patch(ctx, &deployment, client.MergeFrom(statusBase))
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
@@ -173,7 +173,7 @@ func (r *AgentDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	// Resolve provider secret volumes.
 	providerVolumes, providerMounts, err := podbuilder.ResolveProviderVolumes(ctx, r.Client, deployment.Namespace, &agent)
 	if err != nil {
-		deployment.Status.Phase = agentorcv1alpha1.AgentDeploymentPhaseFailed
+		deployment.Status.Phase = agentorcav1alpha1.AgentDeploymentPhaseFailed
 		deployment.Status.Message = fmt.Sprintf("resolving provider volumes: %v", err)
 		_ = r.Status().Patch(ctx, &deployment, client.MergeFrom(statusBase))
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
@@ -182,7 +182,7 @@ func (r *AgentDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	// Create or update the underlying Kubernetes Deployment.
 	if err := r.reconcileDeployment(ctx, &deployment, &agent, saName, tokenSecretName, routerConfigHash, providerVolumes, providerMounts, toolSecretVolumes, toolSecretMounts, mcpBinVolumes, mcpBinMounts); err != nil {
 		log.Error("failed to reconcile Deployment", "error", err)
-		deployment.Status.Phase = agentorcv1alpha1.AgentDeploymentPhaseFailed
+		deployment.Status.Phase = agentorcav1alpha1.AgentDeploymentPhaseFailed
 		deployment.Status.Message = err.Error()
 		_ = r.Status().Patch(ctx, &deployment, client.MergeFrom(statusBase))
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
@@ -208,7 +208,7 @@ func (r *AgentDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	restartPolicy := deployment.Spec.RestartPolicy
 	if restartPolicy != nil && restartPolicy.MaxConsecutiveFailures > 0 {
 		if deployment.Status.ConsecutiveFailures >= restartPolicy.MaxConsecutiveFailures {
-			deployment.Status.Phase = agentorcv1alpha1.AgentDeploymentPhasePaused
+			deployment.Status.Phase = agentorcav1alpha1.AgentDeploymentPhasePaused
 			deployment.Status.Message = fmt.Sprintf(
 				"Paused after %d consecutive failures (max: %d)",
 				deployment.Status.ConsecutiveFailures,
@@ -221,7 +221,7 @@ func (r *AgentDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 	// Update phase to Running if pods are ready
 	if deployment.Status.ReadyReplicas > 0 {
-		deployment.Status.Phase = agentorcv1alpha1.AgentDeploymentPhaseRunning
+		deployment.Status.Phase = agentorcav1alpha1.AgentDeploymentPhaseRunning
 		deployment.Status.Message = ""
 	}
 
@@ -238,8 +238,8 @@ func (r *AgentDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 // model-router sidecar, provider volumes, token secret, and security hardening.
 func (r *AgentDeploymentReconciler) reconcileDeployment(
 	ctx context.Context,
-	agentDeploy *agentorcv1alpha1.AgentDeployment,
-	agent *agentorcv1alpha1.Agent,
+	agentDeploy *agentorcav1alpha1.AgentDeployment,
+	agent *agentorcav1alpha1.Agent,
 	saName string,
 	tokenSecretName string,
 	routerConfigHash string,
@@ -273,20 +273,20 @@ func (r *AgentDeploymentReconciler) reconcileDeployment(
 	}
 
 	selector := map[string]string{
-		"app.kubernetes.io/name":      "agent-orc",
-		"app.kubernetes.io/component": "agent-deployment",
-		"agentdeployment.agentorc.io": agentDeploy.Name,
+		"app.kubernetes.io/name":       "agent-orca",
+		"app.kubernetes.io/component":  "agent-deployment",
+		"agentdeployment.agentorca.io": agentDeploy.Name,
 	}
 
 	labels := map[string]string{
-		"app.kubernetes.io/name":      "agent-orc",
-		"app.kubernetes.io/component": "agent-deployment",
-		"agentdeployment.agentorc.io": agentDeploy.Name,
-		"agent.agentorc.io":           agent.Name,
-		security.LabelManagedBy:       security.ManagedByValue,
+		"app.kubernetes.io/name":       "agent-orca",
+		"app.kubernetes.io/component":  "agent-deployment",
+		"agentdeployment.agentorca.io": agentDeploy.Name,
+		"agent.agentorca.io":           agent.Name,
+		security.LabelManagedBy:        security.ManagedByValue,
 	}
 
-	inputSourceType := agentorcv1alpha1.InputSourceChat
+	inputSourceType := agentorcav1alpha1.InputSourceChat
 	if agentDeploy.Spec.InputSource != nil {
 		inputSourceType = agentDeploy.Spec.InputSource.Type
 	}
@@ -303,7 +303,7 @@ func (r *AgentDeploymentReconciler) reconcileDeployment(
 		Namespace: namespace,
 		Labels:    labels,
 		Annotations: map[string]string{
-			"agentorc.io/router-config-hash": routerConfigHash,
+			"agentorca.io/router-config-hash": routerConfigHash,
 		},
 		Agent:              agent,
 		AgentEnv:           agentEnv,
@@ -311,7 +311,7 @@ func (r *AgentDeploymentReconciler) reconcileDeployment(
 		ServiceAccount:     saName,
 		RestartPolicy:      corev1.RestartPolicyAlways,
 		ModelRouterImage:   r.ModelRouterImage,
-		RouterConfigName:   "agentorc-deploy-" + agentDeploy.Name,
+		RouterConfigName:   "agentorca-deploy-" + agentDeploy.Name,
 		ProviderVolumes:    providerVolumes,
 		ProviderMounts:     providerMounts,
 		ToolSecretVolumes:  toolSecretVolumes,
@@ -330,7 +330,7 @@ func (r *AgentDeploymentReconciler) reconcileDeployment(
 				Namespace: namespace,
 				Labels:    labels,
 				OwnerReferences: []metav1.OwnerReference{
-					*metav1.NewControllerRef(agentDeploy, agentorcv1alpha1.GroupVersion.WithKind("AgentDeployment")),
+					*metav1.NewControllerRef(agentDeploy, agentorcav1alpha1.GroupVersion.WithKind("AgentDeployment")),
 				},
 			},
 			Spec: appsv1.DeploymentSpec{
@@ -367,7 +367,7 @@ func (r *AgentDeploymentReconciler) reconcileDeployment(
 // syncPodStatus reads the underlying Deployment's status and updates AgentDeployment.
 func (r *AgentDeploymentReconciler) syncPodStatus(
 	ctx context.Context,
-	agentDeploy *agentorcv1alpha1.AgentDeployment,
+	agentDeploy *agentorcav1alpha1.AgentDeployment,
 ) error {
 	var k8sDeploy appsv1.Deployment
 	if err := r.Get(ctx, types.NamespacedName{
@@ -386,7 +386,7 @@ func (r *AgentDeploymentReconciler) syncPodStatus(
 	if err := r.List(ctx, &pods,
 		client.InNamespace(agentDeploy.Namespace),
 		client.MatchingLabels{
-			"agentdeployment.agentorc.io": agentDeploy.Name,
+			"agentdeployment.agentorca.io": agentDeploy.Name,
 		},
 	); err != nil {
 		return err
@@ -417,12 +417,12 @@ func (r *AgentDeploymentReconciler) syncPodStatus(
 func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig( //nolint:gocyclo
 
 	ctx context.Context,
-	deploy *agentorcv1alpha1.AgentDeployment,
-	agent *agentorcv1alpha1.Agent,
+	deploy *agentorcav1alpha1.AgentDeployment,
+	agent *agentorcav1alpha1.Agent,
 	saName string,
 	binPathRewrites map[string]string,
 ) (*router.Config, error) {
-	var selector agentorcv1alpha1.ModelSelector
+	var selector agentorcav1alpha1.ModelSelector
 	if err := r.Get(ctx, client.ObjectKey{Name: agent.Spec.ModelSelectorRef, Namespace: deploy.Namespace}, &selector); err != nil {
 		return nil, fmt.Errorf("getting ModelSelector %q: %w", agent.Spec.ModelSelectorRef, err)
 	}
@@ -430,7 +430,7 @@ func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig( //nolint:gocycl
 	var providers []router.ProviderConfig
 	seenProviders := make(map[string]bool)
 	for _, pw := range selector.Spec.Providers {
-		var mp agentorcv1alpha1.ModelProvider
+		var mp agentorcav1alpha1.ModelProvider
 		if err := r.Get(ctx, client.ObjectKey{Name: pw.Name, Namespace: deploy.Namespace}, &mp); err != nil {
 			return nil, fmt.Errorf("getting ModelProvider %q: %w", pw.Name, err)
 		}
@@ -458,7 +458,7 @@ func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig( //nolint:gocycl
 			continue
 		}
 		seenProviders[name] = true
-		var mp agentorcv1alpha1.ModelProvider
+		var mp agentorcav1alpha1.ModelProvider
 		if err := r.Get(ctx, client.ObjectKey{Name: name, Namespace: deploy.Namespace}, &mp); err != nil {
 			if apierrors.IsNotFound(err) {
 				// Provider is listed in the fallback chain but not deployed (e.g. disabled
@@ -504,7 +504,7 @@ func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig( //nolint:gocycl
 		if builtinTools[toolName] {
 			continue
 		}
-		var tool agentorcv1alpha1.Tool
+		var tool agentorcav1alpha1.Tool
 		if err := r.Get(ctx, client.ObjectKey{Name: toolName, Namespace: deploy.Namespace}, &tool); err != nil {
 			return nil, fmt.Errorf("getting Tool %q: %w", toolName, err)
 		}
@@ -521,10 +521,10 @@ func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig( //nolint:gocycl
 			backendType = "regular"
 		}
 		backendRef := tool.Spec.OCIRef
-		if tool.Spec.Type == agentorcv1alpha1.ToolTypeAgent {
+		if tool.Spec.Type == agentorcav1alpha1.ToolTypeAgent {
 			backendRef = tool.Spec.AgentRef
 		}
-		if tool.Spec.Type == agentorcv1alpha1.ToolTypeMCP && tool.Spec.MCPConfig != nil {
+		if tool.Spec.Type == agentorcav1alpha1.ToolTypeMCP && tool.Spec.MCPConfig != nil {
 			serverName := tool.Labels[LabelMCPServer]
 			if serverName == "" || !seenMCPServers[serverName] {
 				if serverName != "" {
@@ -536,7 +536,7 @@ func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig( //nolint:gocycl
 					URL:       tool.Spec.MCPConfig.URL,
 				}
 				if serverName != "" {
-					var mcpServer agentorcv1alpha1.MCPServer
+					var mcpServer agentorcav1alpha1.MCPServer
 					if err := r.Get(ctx, client.ObjectKey{Name: serverName, Namespace: deploy.Namespace}, &mcpServer); err == nil {
 						mcpCfg.AllowApps = mcpServer.Spec.AllowApps
 					}
@@ -646,7 +646,7 @@ func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig( //nolint:gocycl
 	// Resolve KnowledgeBases from Agent spec and inject _rag tools.
 	var kbConfigs []router.KnowledgeBaseConfig
 	for _, kbName := range agent.Spec.KnowledgeBases {
-		var kb agentorcv1alpha1.KnowledgeBase
+		var kb agentorcav1alpha1.KnowledgeBase
 		if err := r.Get(ctx, client.ObjectKey{Name: kbName, Namespace: deploy.Namespace}, &kb); err != nil {
 			return nil, fmt.Errorf("getting KnowledgeBase %q: %w", kbName, err)
 		}
@@ -666,7 +666,7 @@ func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig( //nolint:gocycl
 			}
 			return nil, fmt.Errorf("KnowledgeBase %q is not ready", kbName)
 		}
-		var embMS agentorcv1alpha1.ModelSelector
+		var embMS agentorcav1alpha1.ModelSelector
 		if err := r.Get(ctx, client.ObjectKey{Name: kb.Spec.Embedding.ModelSelectorRef, Namespace: deploy.Namespace}, &embMS); err != nil {
 			return nil, fmt.Errorf("getting embedding ModelSelector for KB %q: %w", kbName, err)
 		}
@@ -674,7 +674,7 @@ func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig( //nolint:gocycl
 			return nil, fmt.Errorf("embedding ModelSelector %q for KB %q has no providers", kb.Spec.Embedding.ModelSelectorRef, kbName)
 		}
 		embPW := embMS.Spec.Providers[0]
-		var embMP agentorcv1alpha1.ModelProvider
+		var embMP agentorcav1alpha1.ModelProvider
 		if err := r.Get(ctx, client.ObjectKey{Name: embPW.Name, Namespace: deploy.Namespace}, &embMP); err != nil {
 			return nil, fmt.Errorf("getting embedding ModelProvider %q: %w", embPW.Name, err)
 		}
@@ -720,7 +720,7 @@ func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig( //nolint:gocycl
 	var longTermMemory router.LongTermMemoryConfig
 	if agent.Spec.Memory != nil && agent.Spec.Memory.LongTermMemoryRef != "" {
 		ltmKBName := agent.Spec.Memory.LongTermMemoryRef
-		var ltmKB agentorcv1alpha1.KnowledgeBase
+		var ltmKB agentorcav1alpha1.KnowledgeBase
 		var ltmErr error
 		if err := r.Get(ctx, client.ObjectKey{Name: ltmKBName, Namespace: deploy.Namespace}, &ltmKB); err != nil {
 			ltmErr = err
@@ -731,10 +731,10 @@ func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig( //nolint:gocycl
 			slog.Warn("long-term memory KnowledgeBase not ready; proceeding without it",
 				"knowledgeBase", ltmKBName, "deployment", deploy.Name, "error", ltmErr)
 		} else {
-			var ltmEmbMS agentorcv1alpha1.ModelSelector
+			var ltmEmbMS agentorcav1alpha1.ModelSelector
 			if err := r.Get(ctx, client.ObjectKey{Name: ltmKB.Spec.Embedding.ModelSelectorRef, Namespace: deploy.Namespace}, &ltmEmbMS); err == nil && len(ltmEmbMS.Spec.Providers) > 0 {
 				ltmPW := ltmEmbMS.Spec.Providers[0]
-				var ltmMP agentorcv1alpha1.ModelProvider
+				var ltmMP agentorcav1alpha1.ModelProvider
 				if err := r.Get(ctx, client.ObjectKey{Name: ltmPW.Name, Namespace: deploy.Namespace}, &ltmMP); err == nil {
 					dims := ltmKB.Status.EmbeddingDimensions
 					longTermMemory = router.LongTermMemoryConfig{
@@ -787,7 +787,7 @@ func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig( //nolint:gocycl
 		if summaryMSRef == "" {
 			summaryMSRef = agent.Spec.ModelSelectorRef
 		}
-		var summaryMS agentorcv1alpha1.ModelSelector
+		var summaryMS agentorcav1alpha1.ModelSelector
 		if summaryMSRef == agent.Spec.ModelSelectorRef {
 			summaryMS = selector // already loaded as the agent's ModelSelector
 		} else if err := r.Get(ctx, client.ObjectKey{Name: summaryMSRef, Namespace: deploy.Namespace}, &summaryMS); err != nil {
@@ -796,7 +796,7 @@ func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig( //nolint:gocycl
 		}
 		if len(summaryMS.Spec.Providers) > 0 {
 			sumPW := summaryMS.Spec.Providers[0]
-			var sumMP agentorcv1alpha1.ModelProvider
+			var sumMP agentorcav1alpha1.ModelProvider
 			if err := r.Get(ctx, client.ObjectKey{Name: sumPW.Name, Namespace: deploy.Namespace}, &sumMP); err == nil {
 				episodicMemory = router.EpisodicMemoryConfig{
 					SummaryEvery:        agent.Spec.Memory.EpisodicSummaryEvery,
@@ -823,7 +823,7 @@ func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig( //nolint:gocycl
 		ToolDefinitions:        toolDefs,
 		MCPServers:             mcpServers,
 		CheckpointEvery:        checkpointEvery,
-		CheckpointKey:          fmt.Sprintf("agentorc/deployments/%s/state", deploy.Name),
+		CheckpointKey:          fmt.Sprintf("agentorca/deployments/%s/state", deploy.Name),
 		StateConfig:            r.StateConfig,
 		EpisodicMemory:         episodicMemory,
 		KubeAPIURL:             "https://kubernetes.default.svc",
@@ -853,7 +853,7 @@ func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig( //nolint:gocycl
 // ensureDeploymentRouterConfigMap creates or updates the ConfigMap with the router config.
 func (r *AgentDeploymentReconciler) ensureDeploymentRouterConfigMap(
 	ctx context.Context,
-	deploy *agentorcv1alpha1.AgentDeployment,
+	deploy *agentorcav1alpha1.AgentDeployment,
 	cfg *router.Config,
 ) (string, error) {
 	data, err := json.Marshal(cfg)
@@ -864,7 +864,7 @@ func (r *AgentDeploymentReconciler) ensureDeploymentRouterConfigMap(
 	sum := sha256.Sum256(data)
 	configHash := hex.EncodeToString(sum[:])
 
-	cmName := "agentorc-deploy-" + deploy.Name
+	cmName := "agentorca-deploy-" + deploy.Name
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      cmName,
@@ -902,10 +902,10 @@ func (r *AgentDeploymentReconciler) ensureDeploymentRouterConfigMap(
 // ensureDeploymentTokenSecret creates the per-deployment Secret with OPENAI_BASE_URL and OPENAI_API_KEY.
 func (r *AgentDeploymentReconciler) ensureDeploymentTokenSecret(
 	ctx context.Context,
-	deploy *agentorcv1alpha1.AgentDeployment,
+	deploy *agentorcav1alpha1.AgentDeployment,
 	saName string,
 ) (string, error) {
-	secretName := "agentorc-deploy-" + deploy.Name + podbuilder.TokenSecretSuffix
+	secretName := "agentorca-deploy-" + deploy.Name + podbuilder.TokenSecretSuffix
 	var existing corev1.Secret
 	if err := r.Get(ctx, types.NamespacedName{Name: secretName, Namespace: deploy.Namespace}, &existing); err == nil {
 		return secretName, nil // already exists
@@ -949,7 +949,7 @@ func (r *AgentDeploymentReconciler) ensureDeploymentTokenSecret(
 // sidecar can validate SA tokens via the TokenReview API.
 func (r *AgentDeploymentReconciler) ensureDeploymentTokenReviewerBinding(
 	ctx context.Context,
-	deploy *agentorcv1alpha1.AgentDeployment,
+	deploy *agentorcav1alpha1.AgentDeployment,
 	saName string,
 ) error {
 	if r.TokenReviewerClusterRole == "" {
@@ -957,7 +957,7 @@ func (r *AgentDeploymentReconciler) ensureDeploymentTokenReviewerBinding(
 	}
 	crb := &rbacv1.ClusterRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "agentorc-deploy-" + deploy.Name,
+			Name: "agentorca-deploy-" + deploy.Name,
 			Labels: map[string]string{
 				security.LabelManagedBy: security.ManagedByValue,
 			},
@@ -982,14 +982,14 @@ func (r *AgentDeploymentReconciler) ensureDeploymentTokenReviewerBinding(
 }
 
 const (
-	labelWarmPool     = "agentorc.io/warm-pool"
-	labelWarmStatus   = "agentorc.io/warm-status"
+	labelWarmPool     = "agentorca.io/warm-pool"
+	labelWarmStatus   = "agentorca.io/warm-status"
 	warmStatusIdle    = "idle"
 	warmStatusClaimed = "claimed"
 	// labelWarmRequests records how many runs a warm pod has served. Incremented on
 	// each claim; when it reaches AgentDeployment.spec.maxRequestsPerPod the pod is
 	// recycled (else it is reused — returned to idle) after the run completes.
-	labelWarmRequests = "agentorc.io/warm-requests"
+	labelWarmRequests = "agentorca.io/warm-requests"
 
 	// Defaults/caps for warm-pod lifecycle recycling (see effectiveWarmPodMaxAge
 	// and warmPodTokenExpirySeconds).
@@ -1010,7 +1010,7 @@ const (
 // This is the desired default for chat/long-trajectory workloads — pods should
 // not be torn down mid-session. A user opts into age recycling by setting a
 // positive warmPodMaxAge explicitly.
-func effectiveWarmPodMaxAge(deploy *agentorcv1alpha1.AgentDeployment) time.Duration {
+func effectiveWarmPodMaxAge(deploy *agentorcav1alpha1.AgentDeployment) time.Duration {
 	if deploy == nil || deploy.Spec.WarmPodMaxAge == nil {
 		return 0
 	}
@@ -1020,7 +1020,7 @@ func effectiveWarmPodMaxAge(deploy *agentorcv1alpha1.AgentDeployment) time.Durat
 // recycleOnConfigDrift returns whether warm pods should be replaced when the
 // router config hash drifts from the snapshot the pod was created with.
 // Defaults to true (preserves existing behavior; a config change rolls the pool).
-func recycleOnConfigDrift(deploy *agentorcv1alpha1.AgentDeployment) bool {
+func recycleOnConfigDrift(deploy *agentorcav1alpha1.AgentDeployment) bool {
 	if deploy == nil || deploy.Spec.RecycleOnConfigDrift == nil {
 		return true
 	}
@@ -1030,7 +1030,7 @@ func recycleOnConfigDrift(deploy *agentorcv1alpha1.AgentDeployment) bool {
 // effectiveWarmLocalCache returns whether the per-warm-pod local disk cache (an
 // emptyDir that supplements Redis) should be attached. Defaults to true when a
 // warm pool is configured (WarmPoolSize > 0), false for one-shot deployments.
-func effectiveWarmLocalCache(deploy *agentorcv1alpha1.AgentDeployment) bool {
+func effectiveWarmLocalCache(deploy *agentorcav1alpha1.AgentDeployment) bool {
 	if deploy != nil && deploy.Spec.WarmLocalCache != nil {
 		return *deploy.Spec.WarmLocalCache
 	}
@@ -1039,7 +1039,7 @@ func effectiveWarmLocalCache(deploy *agentorcv1alpha1.AgentDeployment) bool {
 
 // warmLocalCacheSizeMi returns the emptyDir SizeLimit for the warm local cache.
 // Defaults to 256Mi when the field is zero.
-func warmLocalCacheSizeMi(deploy *agentorcv1alpha1.AgentDeployment) int { //nolint:unused
+func warmLocalCacheSizeMi(deploy *agentorcav1alpha1.AgentDeployment) int { //nolint:unused
 
 	if deploy != nil && deploy.Spec.WarmLocalCacheSizeMi > 0 {
 		return deploy.Spec.WarmLocalCacheSizeMi
@@ -1052,7 +1052,7 @@ func warmLocalCacheSizeMi(deploy *agentorcv1alpha1.AgentDeployment) int { //noli
 // pod would be recycled. When age recycling is disabled (max age == 0) a
 // long-lived token (the K8s cluster maximum) is minted so an indefinitely-lived
 // pod can keep authenticating claim-run POSTs until it is manually deleted.
-func warmPodTokenExpirySeconds(deploy *agentorcv1alpha1.AgentDeployment) int64 {
+func warmPodTokenExpirySeconds(deploy *agentorcav1alpha1.AgentDeployment) int64 {
 	maxAge := effectiveWarmPodMaxAge(deploy)
 	want := maxAge
 	if want <= 0 {
@@ -1094,7 +1094,7 @@ const (
 // Ordering mirrors the original inline logic: a terminal pod is reaped first,
 // in-use (claimed) pods are never recycled, then age / config-drift /
 // request-cap checks decide whether an idle pod is rotated.
-func classifyWarmPod(p *corev1.Pod, deploy *agentorcv1alpha1.AgentDeployment, routerConfigHash string, now time.Time) (disp warmPodDisposition, reason string) {
+func classifyWarmPod(p *corev1.Pod, deploy *agentorcav1alpha1.AgentDeployment, routerConfigHash string, now time.Time) (disp warmPodDisposition, reason string) {
 	if p.Status.Phase == corev1.PodSucceeded || p.Status.Phase == corev1.PodFailed {
 		return warmDisposeRecycle, "terminal-phase"
 	}
@@ -1111,7 +1111,7 @@ func classifyWarmPod(p *corev1.Pod, deploy *agentorcv1alpha1.AgentDeployment, ro
 	// Pods without the annotation are treated as stale (they predate this feature).
 	// Gated by RecycleOnConfigDrift so users can keep pods alive across drift.
 	if recycleOnConfigDrift(deploy) {
-		if podHash := p.Annotations["agentorc.io/router-config-hash"]; podHash != routerConfigHash {
+		if podHash := p.Annotations["agentorca.io/router-config-hash"]; podHash != routerConfigHash {
 			return warmDisposeRecycle, "stale-config"
 		}
 	}
@@ -1127,7 +1127,7 @@ func classifyWarmPod(p *corev1.Pod, deploy *agentorcv1alpha1.AgentDeployment, ro
 // recordWarmRecycle emits a Kubernetes Event on the AgentDeployment recording
 // that a warm pod was recycled and why, and stashes the reason/timestamp in
 // status (the caller's status patch persists these in-memory writes).
-func (r *AgentDeploymentReconciler) recordWarmRecycle(deploy *agentorcv1alpha1.AgentDeployment, p *corev1.Pod, reason string) {
+func (r *AgentDeploymentReconciler) recordWarmRecycle(deploy *agentorcav1alpha1.AgentDeployment, p *corev1.Pod, reason string) {
 	now := metav1.Now()
 	deploy.Status.WarmPoolLastRecycleReason = reason
 	deploy.Status.WarmPoolLastRecycleAt = &now
@@ -1140,8 +1140,8 @@ func (r *AgentDeploymentReconciler) recordWarmRecycle(deploy *agentorcv1alpha1.A
 // reconcileWarmPool ensures the pre-warmed pod pool is at the desired size.
 func (r *AgentDeploymentReconciler) reconcileWarmPool(
 	ctx context.Context,
-	deploy *agentorcv1alpha1.AgentDeployment,
-	agent *agentorcv1alpha1.Agent,
+	deploy *agentorcav1alpha1.AgentDeployment,
+	agent *agentorcav1alpha1.Agent,
 	saName string,
 	routerConfigHash string,
 	routerCfg *router.Config,
@@ -1311,7 +1311,7 @@ func (r *AgentDeploymentReconciler) reconcileWarmPool(
 // ensureWarmPoolRBAC creates the deployment-scoped Role and RoleBinding for warm pods.
 func (r *AgentDeploymentReconciler) ensureWarmPoolRBAC(
 	ctx context.Context,
-	deploy *agentorcv1alpha1.AgentDeployment,
+	deploy *agentorcav1alpha1.AgentDeployment,
 	saName string,
 ) error {
 	role := security.BuildDeploymentRole(deploy.Name, deploy.Namespace)
@@ -1335,8 +1335,8 @@ func (r *AgentDeploymentReconciler) ensureWarmPoolRBAC(
 // ensureWarmRouterConfigMap creates the ConfigMap used by warm pods (WarmMode: true).
 func (r *AgentDeploymentReconciler) ensureWarmRouterConfigMap(
 	ctx context.Context,
-	deploy *agentorcv1alpha1.AgentDeployment,
-	agent *agentorcv1alpha1.Agent,
+	deploy *agentorcav1alpha1.AgentDeployment,
+	agent *agentorcav1alpha1.Agent,
 	baseCfg *router.Config,
 ) error {
 	// Build warm config from the deployment config.
@@ -1371,7 +1371,7 @@ func (r *AgentDeploymentReconciler) ensureWarmRouterConfigMap(
 		return fmt.Errorf("marshaling warm router config: %w", err)
 	}
 
-	cmName := "agentorc-warm-" + deploy.Name
+	cmName := "agentorca-warm-" + deploy.Name
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      cmName,
@@ -1409,8 +1409,8 @@ func (r *AgentDeploymentReconciler) ensureWarmRouterConfigMap(
 // buildWarmPod constructs an idle warm pod for the given AgentDeployment.
 // Built via the shared podbuilder package so all agent pod types use one codepath.
 func (r *AgentDeploymentReconciler) buildWarmPod(
-	deploy *agentorcv1alpha1.AgentDeployment,
-	agent *agentorcv1alpha1.Agent,
+	deploy *agentorcav1alpha1.AgentDeployment,
+	agent *agentorcav1alpha1.Agent,
 	saName string,
 	tokenSecretName string,
 	routerConfigHash string,
@@ -1421,7 +1421,7 @@ func (r *AgentDeploymentReconciler) buildWarmPod(
 	mcpBinVolumes []corev1.Volume,
 	mcpBinMounts []corev1.VolumeMount,
 ) *corev1.Pod {
-	inputSourceType := agentorcv1alpha1.InputSourceChat
+	inputSourceType := agentorcav1alpha1.InputSourceChat
 	if deploy.Spec.InputSource != nil {
 		inputSourceType = deploy.Spec.InputSource.Type
 	}
@@ -1438,16 +1438,16 @@ func (r *AgentDeploymentReconciler) buildWarmPod(
 		GenerateName: "warm-" + deploy.Name + "-",
 		Namespace:    deploy.Namespace,
 		Labels: map[string]string{
-			"app.kubernetes.io/name":      "agent-orc",
-			"app.kubernetes.io/component": "warm-pod",
-			"agentdeployment.agentorc.io": deploy.Name,
-			"agent.agentorc.io":           agent.Name,
-			labelWarmPool:                 deploy.Name,
-			labelWarmStatus:               warmStatusIdle,
-			security.LabelManagedBy:       security.ManagedByValue,
+			"app.kubernetes.io/name":       "agent-orca",
+			"app.kubernetes.io/component":  "warm-pod",
+			"agentdeployment.agentorca.io": deploy.Name,
+			"agent.agentorca.io":           agent.Name,
+			labelWarmPool:                  deploy.Name,
+			labelWarmStatus:                warmStatusIdle,
+			security.LabelManagedBy:        security.ManagedByValue,
 		},
 		Annotations: map[string]string{
-			"agentorc.io/router-config-hash": routerConfigHash,
+			"agentorca.io/router-config-hash": routerConfigHash,
 		},
 		Agent:            agent,
 		AgentEnv:         agentEnv,
@@ -1455,7 +1455,7 @@ func (r *AgentDeploymentReconciler) buildWarmPod(
 		ServiceAccount:   saName,
 		RestartPolicy:    corev1.RestartPolicyNever,
 		ModelRouterImage: r.ModelRouterImage,
-		RouterConfigName: "agentorc-warm-" + deploy.Name,
+		RouterConfigName: "agentorca-warm-" + deploy.Name,
 		RouterExtraPorts: []corev1.ContainerPort{
 			{Name: "warm-mgmt", ContainerPort: 9090, Protocol: corev1.ProtocolTCP},
 		},
@@ -1478,14 +1478,14 @@ func (r *AgentDeploymentReconciler) buildWarmPod(
 
 // warmCacheSizeLimitQuantity builds the resource.Quantity SizeLimit for the warm
 // local cache emptyDir from the deployment spec (default 256Mi).
-func warmCacheSizeLimitQuantity(deploy *agentorcv1alpha1.AgentDeployment) *resource.Quantity {
+func warmCacheSizeLimitQuantity(deploy *agentorcav1alpha1.AgentDeployment) *resource.Quantity {
 	mi := warmLocalCacheSizeMiValue(deploy)
 	q := resource.MustParse(fmt.Sprintf("%dMi", mi))
 	return &q
 }
 
 // warmCacheSizeLimitValue returns the raw MiB value for the warm local cache.
-func warmLocalCacheSizeMiValue(deploy *agentorcv1alpha1.AgentDeployment) int {
+func warmLocalCacheSizeMiValue(deploy *agentorcav1alpha1.AgentDeployment) int {
 	if deploy != nil && deploy.Spec.WarmLocalCacheSizeMi > 0 {
 		return deploy.Spec.WarmLocalCacheSizeMi
 	}
@@ -1497,7 +1497,7 @@ func warmLocalCacheSizeMiValue(deploy *agentorcv1alpha1.AgentDeployment) int {
 // created fresh per warm pod so the token is never stale at the time the pod starts.
 func (r *AgentDeploymentReconciler) createWarmPodTokenSecret(
 	ctx context.Context,
-	deploy *agentorcv1alpha1.AgentDeployment,
+	deploy *agentorcav1alpha1.AgentDeployment,
 	saName string,
 ) (string, error) {
 	// Derive the token expiry from the pod's configured max age so the token
@@ -1519,7 +1519,7 @@ func (r *AgentDeploymentReconciler) createWarmPodTokenSecret(
 
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			GenerateName: "agentorc-warm-" + deploy.Name + "-token-",
+			GenerateName: "agentorca-warm-" + deploy.Name + "-token-",
 			Namespace:    deploy.Namespace,
 			Labels: map[string]string{
 				labelWarmPool:           deploy.Name,
@@ -1542,8 +1542,8 @@ func (r *AgentDeploymentReconciler) createWarmPodTokenSecret(
 
 // agentDeploymentsForAgent maps an Agent change to the AgentDeployments that reference it.
 func (r *AgentDeploymentReconciler) agentDeploymentsForAgent(ctx context.Context, obj client.Object) []reconcile.Request {
-	agent := obj.(*agentorcv1alpha1.Agent)
-	var list agentorcv1alpha1.AgentDeploymentList
+	agent := obj.(*agentorcav1alpha1.Agent)
+	var list agentorcav1alpha1.AgentDeploymentList
 	if err := r.List(ctx, &list, client.InNamespace(agent.Namespace)); err != nil {
 		return nil
 	}
@@ -1559,14 +1559,14 @@ func (r *AgentDeploymentReconciler) agentDeploymentsForAgent(ctx context.Context
 // agentDeploymentsForModelSelector maps a ModelSelector change to affected AgentDeployments.
 // The link is indirect: AgentDeployment → Agent → ModelSelector.
 func (r *AgentDeploymentReconciler) agentDeploymentsForModelSelector(ctx context.Context, obj client.Object) []reconcile.Request {
-	ms := obj.(*agentorcv1alpha1.ModelSelector)
-	var deployList agentorcv1alpha1.AgentDeploymentList
+	ms := obj.(*agentorcav1alpha1.ModelSelector)
+	var deployList agentorcav1alpha1.AgentDeploymentList
 	if err := r.List(ctx, &deployList, client.InNamespace(ms.Namespace)); err != nil {
 		return nil
 	}
 	var reqs []reconcile.Request
 	for _, d := range deployList.Items {
-		var agent agentorcv1alpha1.Agent
+		var agent agentorcav1alpha1.Agent
 		if err := r.Get(ctx, types.NamespacedName{Name: d.Spec.AgentRef, Namespace: d.Namespace}, &agent); err != nil {
 			continue
 		}
@@ -1580,9 +1580,9 @@ func (r *AgentDeploymentReconciler) agentDeploymentsForModelSelector(ctx context
 // agentDeploymentsForModelProvider maps a ModelProvider change to affected AgentDeployments.
 // The link is: AgentDeployment → Agent → ModelSelector → ModelProvider.
 func (r *AgentDeploymentReconciler) agentDeploymentsForModelProvider(ctx context.Context, obj client.Object) []reconcile.Request {
-	mp := obj.(*agentorcv1alpha1.ModelProvider)
+	mp := obj.(*agentorcav1alpha1.ModelProvider)
 	// Find ModelSelectors that reference this provider.
-	var selectorList agentorcv1alpha1.ModelSelectorList
+	var selectorList agentorcav1alpha1.ModelSelectorList
 	if err := r.List(ctx, &selectorList, client.InNamespace(mp.Namespace)); err != nil {
 		return nil
 	}
@@ -1602,13 +1602,13 @@ func (r *AgentDeploymentReconciler) agentDeploymentsForModelProvider(ctx context
 		return nil
 	}
 	// Find AgentDeployments whose Agent uses one of those selectors.
-	var deployList agentorcv1alpha1.AgentDeploymentList
+	var deployList agentorcav1alpha1.AgentDeploymentList
 	if err := r.List(ctx, &deployList, client.InNamespace(mp.Namespace)); err != nil {
 		return nil
 	}
 	var reqs []reconcile.Request
 	for _, d := range deployList.Items {
-		var agent agentorcv1alpha1.Agent
+		var agent agentorcav1alpha1.Agent
 		if err := r.Get(ctx, types.NamespacedName{Name: d.Spec.AgentRef, Namespace: d.Namespace}, &agent); err != nil {
 			continue
 		}
@@ -1621,9 +1621,9 @@ func (r *AgentDeploymentReconciler) agentDeploymentsForModelProvider(ctx context
 
 // agentDeploymentsForTool maps a Tool change to AgentDeployments whose Agent references it.
 func (r *AgentDeploymentReconciler) agentDeploymentsForTool(ctx context.Context, obj client.Object) []reconcile.Request {
-	tool := obj.(*agentorcv1alpha1.Tool)
+	tool := obj.(*agentorcav1alpha1.Tool)
 	// Find Agents that list this tool.
-	var agentList agentorcv1alpha1.AgentList
+	var agentList agentorcav1alpha1.AgentList
 	if err := r.List(ctx, &agentList, client.InNamespace(tool.Namespace)); err != nil {
 		return nil
 	}
@@ -1636,7 +1636,7 @@ func (r *AgentDeploymentReconciler) agentDeploymentsForTool(ctx context.Context,
 	if len(affectedAgents) == 0 {
 		return nil
 	}
-	var deployList agentorcv1alpha1.AgentDeploymentList
+	var deployList agentorcav1alpha1.AgentDeploymentList
 	if err := r.List(ctx, &deployList, client.InNamespace(tool.Namespace)); err != nil {
 		return nil
 	}
@@ -1651,8 +1651,8 @@ func (r *AgentDeploymentReconciler) agentDeploymentsForTool(ctx context.Context,
 
 // agentDeploymentsForKnowledgeBase maps a KnowledgeBase change to AgentDeployments whose Agent references it.
 func (r *AgentDeploymentReconciler) agentDeploymentsForKnowledgeBase(ctx context.Context, obj client.Object) []reconcile.Request {
-	kb := obj.(*agentorcv1alpha1.KnowledgeBase)
-	var agentList agentorcv1alpha1.AgentList
+	kb := obj.(*agentorcav1alpha1.KnowledgeBase)
+	var agentList agentorcav1alpha1.AgentList
 	if err := r.List(ctx, &agentList, client.InNamespace(kb.Namespace)); err != nil {
 		return nil
 	}
@@ -1665,7 +1665,7 @@ func (r *AgentDeploymentReconciler) agentDeploymentsForKnowledgeBase(ctx context
 	if len(affectedAgents) == 0 {
 		return nil
 	}
-	var deployList agentorcv1alpha1.AgentDeploymentList
+	var deployList agentorcav1alpha1.AgentDeploymentList
 	if err := r.List(ctx, &deployList, client.InNamespace(kb.Namespace)); err != nil {
 		return nil
 	}
@@ -1682,14 +1682,14 @@ func (r *AgentDeploymentReconciler) agentDeploymentsForKnowledgeBase(ctx context
 func (r *AgentDeploymentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.Recorder = mgr.GetEventRecorderFor("agentdeployment") //nolint:staticcheck
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&agentorcv1alpha1.AgentDeployment{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		For(&agentorcav1alpha1.AgentDeployment{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Pod{}).
-		Watches(&agentorcv1alpha1.Agent{}, handler.EnqueueRequestsFromMapFunc(r.agentDeploymentsForAgent)).
-		Watches(&agentorcv1alpha1.ModelSelector{}, handler.EnqueueRequestsFromMapFunc(r.agentDeploymentsForModelSelector)).
-		Watches(&agentorcv1alpha1.ModelProvider{}, handler.EnqueueRequestsFromMapFunc(r.agentDeploymentsForModelProvider)).
-		Watches(&agentorcv1alpha1.Tool{}, handler.EnqueueRequestsFromMapFunc(r.agentDeploymentsForTool)).
-		Watches(&agentorcv1alpha1.KnowledgeBase{}, handler.EnqueueRequestsFromMapFunc(r.agentDeploymentsForKnowledgeBase)).
+		Watches(&agentorcav1alpha1.Agent{}, handler.EnqueueRequestsFromMapFunc(r.agentDeploymentsForAgent)).
+		Watches(&agentorcav1alpha1.ModelSelector{}, handler.EnqueueRequestsFromMapFunc(r.agentDeploymentsForModelSelector)).
+		Watches(&agentorcav1alpha1.ModelProvider{}, handler.EnqueueRequestsFromMapFunc(r.agentDeploymentsForModelProvider)).
+		Watches(&agentorcav1alpha1.Tool{}, handler.EnqueueRequestsFromMapFunc(r.agentDeploymentsForTool)).
+		Watches(&agentorcav1alpha1.KnowledgeBase{}, handler.EnqueueRequestsFromMapFunc(r.agentDeploymentsForKnowledgeBase)).
 		Complete(r)
 }
 

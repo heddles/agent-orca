@@ -12,11 +12,11 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
 )
 
-func newTestRun(name string) *agentorcv1alpha1.AgentRun {
-	return &agentorcv1alpha1.AgentRun{
+func newTestRun(name string) *agentorcav1alpha1.AgentRun {
+	return &agentorcav1alpha1.AgentRun{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: "default",
@@ -28,7 +28,7 @@ func TestBuildNetworkPolicy_BasicNoToolsNoRedis(t *testing.T) {
 	run := newTestRun("test-run")
 	np := BuildNetworkPolicy(run, "default", nil, false)
 
-	if np.Name != "agentorc-run-test-run" {
+	if np.Name != "agentorca-run-test-run" {
 		t.Errorf("unexpected name: %s", np.Name)
 	}
 	if np.Namespace != "default" {
@@ -54,7 +54,7 @@ func TestBuildNetworkPolicy_WithRedis(t *testing.T) {
 }
 
 func TestBuildNetworkPolicy_WithToolEgress(t *testing.T) {
-	tools := []agentorcv1alpha1.EgressRule{
+	tools := []agentorcav1alpha1.EgressRule{
 		{Host: "api.example.com", Port: 443, Protocol: "TCP"},
 		{Host: "10.0.0.5", Port: 8080, Protocol: "TCP"},
 	}
@@ -83,7 +83,7 @@ func TestBuildRouterPodNetworkPolicy_Basic(t *testing.T) {
 	run := newTestRun("split-run")
 	np := BuildRouterPodNetworkPolicy(run, "default", nil, false)
 
-	if np.Name != "agentorc-router-split-run" {
+	if np.Name != "agentorca-router-split-run" {
 		t.Errorf("unexpected name: %s", np.Name)
 	}
 	// PodSelector must target the router component.
@@ -111,7 +111,7 @@ func TestBuildRouterPodNetworkPolicy_Basic(t *testing.T) {
 
 func TestBuildRouterPodNetworkPolicy_WithRedisAndTools(t *testing.T) {
 	run := newTestRun("split-redis-run")
-	tools := []agentorcv1alpha1.EgressRule{
+	tools := []agentorcav1alpha1.EgressRule{
 		{Host: "api.github.com", Port: 443, Protocol: "TCP"},
 	}
 	np := BuildRouterPodNetworkPolicy(run, "default", tools, true)
@@ -126,7 +126,7 @@ func TestBuildAgentPodNetworkPolicy_Basic(t *testing.T) {
 	run := newTestRun("split-agent-run")
 	np := BuildAgentPodNetworkPolicy(run, "default")
 
-	if np.Name != "agentorc-agent-split-agent-run" {
+	if np.Name != "agentorca-agent-split-agent-run" {
 		t.Errorf("unexpected name: %s", np.Name)
 	}
 	// PodSelector must target the agent component.

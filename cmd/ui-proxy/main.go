@@ -15,12 +15,12 @@ limitations under the License.
 */
 
 /*
-ui-proxy — Backend-for-Frontend for the agent-orc React UI.
+ui-proxy — Backend-for-Frontend for the agent-orca React UI.
 
 Serves the pre-built React SPA (embedded at compile time from ./dist) and
 reverse-proxies all /api/* requests to the operator's UI API server. Every
 proxied request is authenticated using a Kubernetes projected ServiceAccount
-token (audience: agentorc/ui) mounted into the pod at runtime.
+token (audience: agentorca/ui) mounted into the pod at runtime.
 
 Browser requests require no authentication — access control is enforced at
 the network layer (NetworkPolicy + Ingress). OIDC/SAML can be added later as
@@ -39,7 +39,7 @@ Flags:
 
 	--port           listening port (default 8080)
 	--operator-addr  upstream operator UI API (default http://localhost:8083)
-	--token-file     projected SA token path (default /var/run/secrets/agentorc/ui/token)
+	--token-file     projected SA token path (default /var/run/secrets/agentorca/ui/token)
 */
 package main
 
@@ -65,7 +65,7 @@ var embeddedUI embed.FS
 func main() {
 	port := flag.String("port", "8080", "Listening port")
 	operatorAddr := flag.String("operator-addr", "http://localhost:8083", "Upstream operator UI API address")
-	tokenFile := flag.String("token-file", "/var/run/secrets/agentorc/ui/token", "Path to projected SA token")
+	tokenFile := flag.String("token-file", "/var/run/secrets/agentorca/ui/token", "Path to projected SA token")
 	flag.Parse()
 
 	upstream, err := url.Parse(*operatorAddr)

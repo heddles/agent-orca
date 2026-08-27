@@ -22,7 +22,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
 )
 
 func newPod() *corev1.Pod {
@@ -116,7 +116,7 @@ func TestEnforcePodSecurity_DefaultRestricted(t *testing.T) {
 
 func TestEnforcePodSecurity_PrivilegedOverride(t *testing.T) {
 	pod := newPod()
-	override := &agentorcv1alpha1.PodSecurityOverride{
+	override := &agentorcav1alpha1.PodSecurityOverride{
 		Privileged: true,
 	}
 	EnforcePodSecurity(pod, override)
@@ -165,7 +165,7 @@ func TestEnforcePodSecurity_PrivilegedOverride(t *testing.T) {
 func TestEnforcePodSecurity_AddCapabilitiesOnly(t *testing.T) {
 	pod := newPod()
 	uid := int64(1000)
-	override := &agentorcv1alpha1.PodSecurityOverride{
+	override := &agentorcav1alpha1.PodSecurityOverride{
 		AddCapabilities: []string{"NET_ADMIN"},
 		RunAsUser:       &uid,
 	}
@@ -200,7 +200,7 @@ func TestEnforcePodSecurity_AddCapabilitiesOnly(t *testing.T) {
 func TestEnforcePodSecurity_ReadOnlyRootFilesystemOverride(t *testing.T) {
 	pod := newPod()
 	rofs := false
-	override := &agentorcv1alpha1.PodSecurityOverride{
+	override := &agentorcav1alpha1.PodSecurityOverride{
 		Privileged:             true,
 		ReadOnlyRootFilesystem: &rofs,
 	}

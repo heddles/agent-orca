@@ -45,7 +45,7 @@ help: ## Display this help.
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
 	"$(CONTROLLER_GEN)" rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
-	cp config/crd/bases/*.yaml charts/agent-orc/crds/
+	cp config/crd/bases/*.yaml charts/agent-orca/crds/
 
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
@@ -83,15 +83,15 @@ aoctl: ## Build the aoctl CLI (bin/aoctl).
 
 .PHONY: sdk-python-smoke
 sdk-python-smoke: ## Smoke-test the Python SDK against local stub servers.
-	cd pkg/python/agentorc && python3 -m unittest discover -s tests
+	cd pkg/python/agentorca && python3 -m unittest discover -s tests
 
 .PHONY: agent-sdk
-agent-sdk: ## Build and publish the Python agent SDK (pkg/agentorc/).
+agent-sdk: ## Build and publish the Python agent SDK (pkg/agentorca/).
 	@echo "Building Python SDK package..."
-	cd pkg/python/agentorc && python3 -m build --wheel 2>/dev/null || pip3 wheel . -w dist/
-	@echo "SDK package built in pkg/python/agentorc/dist/"
-	@echo "To install locally: pip3 install pkg/python/agentorc/dist/*.whl"
-	@echo "To publish: twine upload pkg/python/agentorc/dist/*"
+	cd pkg/python/agentorca && python3 -m build --wheel 2>/dev/null || pip3 wheel . -w dist/
+	@echo "SDK package built in pkg/python/agentorca/dist/"
+	@echo "To install locally: pip3 install pkg/python/agentorca/dist/*.whl"
+	@echo "To publish: twine upload pkg/python/agentorca/dist/*"
 
 .PHONY: egress
 egress: ## Build and run the egress package tests.
@@ -136,7 +136,7 @@ test: manifests generate fmt vet setup-envtest ## Run tests.
 # The default setup assumes Kind is pre-installed and builds/loads the Manager Docker image locally.
 # CertManager is installed by default; skip with:
 # - CERT_MANAGER_INSTALL_SKIP=true
-KIND_CLUSTER ?= agent-orc-test-e2e
+KIND_CLUSTER ?= agent-orca-test-e2e
 
 # test-e2e: unified suite — creates a Kind cluster, deploys the operator, and runs all tests.
 #
@@ -180,19 +180,19 @@ lint-demos: ## Validate all demo Helm charts render valid Kubernetes YAML.
 	@fail=0; \
 	for chart in charts/demos/*/; do \
 		name=$$(basename "$$chart"); \
-		if ! helm template "$$name" "$$chart" --namespace agent-orc-system > /tmp/agent-orc-lint-demo.yaml 2>&1; then \
+		if ! helm template "$$name" "$$chart" --namespace agent-orca-system > /tmp/agent-orca-lint-demo.yaml 2>&1; then \
 			echo "FAIL: $$name (helm template error)"; \
-			cat /tmp/agent-orc-lint-demo.yaml; \
+			cat /tmp/agent-orca-lint-demo.yaml; \
 			fail=1; \
-		elif ! kubectl apply --dry-run=client -f /tmp/agent-orc-lint-demo.yaml > /dev/null 2>&1; then \
+		elif ! kubectl apply --dry-run=client -f /tmp/agent-orca-lint-demo.yaml > /dev/null 2>&1; then \
 			echo "FAIL: $$name (kubectl dry-run error)"; \
-			kubectl apply --dry-run=client -f /tmp/agent-orc-lint-demo.yaml 2>&1 | grep -i error || true; \
+			kubectl apply --dry-run=client -f /tmp/agent-orca-lint-demo.yaml 2>&1 | grep -i error || true; \
 			fail=1; \
 		else \
 			echo "OK: $$name"; \
 		fi; \
 	done; \
-	rm -f /tmp/agent-orc-lint-demo.yaml; \
+	rm -f /tmp/agent-orca-lint-demo.yaml; \
 	if [ "$$fail" -ne 0 ]; then exit 1; fi
 
 .PHONY: cleanup-test-e2e
@@ -244,7 +244,7 @@ build-ui-proxy: ## Build the UIProxy binary (requires npm run build first).
 
 .PHONY: build-causal-ui
 build-causal-ui: ## Build the causal discovery UI Docker image locally.
-	$(CONTAINER_TOOL) build -t agent-orc/causal-discovery-ui:latest charts/demos/demo-causal-discovery
+	$(CONTAINER_TOOL) build -t agent-orca/causal-discovery-ui:latest charts/demos/demo-causal-discovery
 
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
@@ -276,10 +276,10 @@ PLATFORMS ?= linux/arm64,linux/amd64,linux/s390x,linux/ppc64le
 docker-buildx: ## Build and push docker image for the manager for cross-platform support
 	# copy existing Dockerfile and insert --platform=${BUILDPLATFORM} into Dockerfile.cross, and preserve the original Dockerfile
 	sed -e '1 s/\(^FROM\)/FROM --platform=\$$\{BUILDPLATFORM\}/; t' -e ' 1,// s//FROM --platform=\$$\{BUILDPLATFORM\}/' Dockerfile > Dockerfile.cross
-	- $(CONTAINER_TOOL) buildx create --name agent-orc-builder
-	$(CONTAINER_TOOL) buildx use agent-orc-builder
+	- $(CONTAINER_TOOL) buildx create --name agent-orca-builder
+	$(CONTAINER_TOOL) buildx use agent-orca-builder
 	- $(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) --tag ${IMG} -f Dockerfile.cross .
-	- $(CONTAINER_TOOL) buildx rm agent-orc-builder
+	- $(CONTAINER_TOOL) buildx rm agent-orca-builder
 	rm Dockerfile.cross
 
 .PHONY: build-installer

@@ -25,7 +25,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
 )
 
 // TenantRefresher is implemented by ExternalAuth to refresh the tenant cache.
@@ -41,12 +41,12 @@ type TenantConfigReconciler struct {
 	Refresher TenantRefresher
 }
 
-// +kubebuilder:rbac:groups=agentorc.agentorc.io,resources=tenantconfigs,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=agentorc.agentorc.io,resources=tenantconfigs/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=agentorc.agentorc.io,resources=tenantconfigs/finalizers,verbs=update
+// +kubebuilder:rbac:groups=agentorca.agentorca.io,resources=tenantconfigs,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=agentorca.agentorca.io,resources=tenantconfigs/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=agentorca.agentorca.io,resources=tenantconfigs/finalizers,verbs=update
 
 func (r *TenantConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	var tc agentorcv1alpha1.TenantConfig
+	var tc agentorcav1alpha1.TenantConfig
 	if err := r.Get(ctx, req.NamespacedName, &tc); err != nil {
 		// Deleted — refresh the cache to remove stale entries.
 		if r.Refresher != nil {
@@ -88,7 +88,7 @@ func (r *TenantConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	return ctrl.Result{}, nil
 }
 
-func (r *TenantConfigReconciler) validate(tc *agentorcv1alpha1.TenantConfig) (bool, string) {
+func (r *TenantConfigReconciler) validate(tc *agentorcav1alpha1.TenantConfig) (bool, string) {
 	if tc.Spec.TargetNamespace == "" {
 		return false, "spec.targetNamespace is required"
 	}
@@ -127,7 +127,7 @@ func (r *TenantConfigReconciler) validate(tc *agentorcv1alpha1.TenantConfig) (bo
 // SetupWithManager sets up the controller with the Manager.
 func (r *TenantConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&agentorcv1alpha1.TenantConfig{}).
+		For(&agentorcav1alpha1.TenantConfig{}).
 		Named("tenantconfig").
 		Complete(r)
 }

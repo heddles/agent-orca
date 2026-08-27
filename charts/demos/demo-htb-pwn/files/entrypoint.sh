@@ -20,7 +20,7 @@ if [ ! -f "$OVPN_FILE" ]; then
   echo "[pwnbox] ERROR: HTB OpenVPN config not found at $OVPN_FILE — tun0 will be down." >&2
   echo "[pwnbox] Ensure the htb-ovpn Secret is mounted at /etc/htb (secretRef name=htb-ovpn, mountPath=/etc/htb)." >&2
 elif [ ! -s "$OVPN_FILE" ]; then
-  echo "[pwnbox] ERROR: $OVPN_FILE exists but is EMPTY — check the AGENT_ORC_HTB_OVPN_CONFIG value / htb-ovpn Secret." >&2
+  echo "[pwnbox] ERROR: $OVPN_FILE exists but is EMPTY — check the AGENT_ORCA_HTB_OVPN_CONFIG value / htb-ovpn Secret." >&2
 fi
 
 try_openvpn() {

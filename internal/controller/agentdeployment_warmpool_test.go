@@ -28,7 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
@@ -44,7 +44,7 @@ func makeWarmPod(name, deployName, configHash string, createdAt time.Time, model
 				labelWarmStatus: warmStatusIdle,
 			},
 			Annotations: map[string]string{
-				"agentorc.io/router-config-hash": configHash,
+				"agentorca.io/router-config-hash": configHash,
 			},
 		},
 		Status: corev1.PodStatus{
@@ -71,7 +71,7 @@ func makeClaimedWarmPod(name, deployName, configHash string, createdAt time.Time
 func makeTerminatingWarmPod(name, deployName, configHash string, createdAt time.Time, ready bool) *corev1.Pod {
 	p := makeWarmPod(name, deployName, configHash, createdAt, ready)
 	p.DeletionTimestamp = &metav1.Time{Time: createdAt}
-	p.Finalizers = []string{"test.agentorc.io/warm-pool"} // required for a terminating object to be admitted by the fake client
+	p.Finalizers = []string{"test.agentorca.io/warm-pool"} // required for a terminating object to be admitted by the fake client
 	return p
 }
 
@@ -208,7 +208,7 @@ func TestScaleDownWarmPool(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			scheme := runtime.NewScheme()
 			_ = corev1.AddToScheme(scheme)
-			_ = agentorcv1alpha1.AddToScheme(scheme)
+			_ = agentorcav1alpha1.AddToScheme(scheme)
 
 			var deletedPods []string
 			objs := make([]client.Object, len(tt.pods))
@@ -218,7 +218,7 @@ func TestScaleDownWarmPool(t *testing.T) {
 			fakeClient := fake.NewClientBuilder().
 				WithScheme(scheme).
 				WithObjects(objs...).
-				WithStatusSubresource(&agentorcv1alpha1.AgentDeployment{}).
+				WithStatusSubresource(&agentorcav1alpha1.AgentDeployment{}).
 				WithInterceptorFuncs(interceptor.Funcs{
 					Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
 						if pod, ok := obj.(*corev1.Pod); ok {

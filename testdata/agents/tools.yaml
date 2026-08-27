@@ -19,7 +19,7 @@
 # The server exposes two tools: add and multiply.
 # ============================================================
 ---
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: Tool
 metadata:
   name: test-mcp-calculator
@@ -124,7 +124,7 @@ spec:
 # directly — it is exposed to the orchestrator via the Tool CRD below.
 # ============================================================
 ---
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: Agent
 metadata:
   name: test-summarizer-agent
@@ -187,7 +187,7 @@ spec:
 # test-summarizer-agent. The LLM calls this tool with {"task": "<text>"}.
 # ============================================================
 ---
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: Tool
 metadata:
   name: test-summarizer-tool
@@ -215,7 +215,7 @@ spec:
 # openai-compatible baseline; the model-router handles call/response loops.
 # ============================================================
 ---
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: Agent
 metadata:
   name: test-tools-orchestrator
@@ -282,7 +282,7 @@ spec:
 # Expected: the run succeeds and output contains "294" (42 * 7).
 # ============================================================
 ---
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: AgentRun
 metadata:
   name: test-mcp-run
@@ -301,7 +301,7 @@ spec:
 # Expected: the run succeeds and output is a one-sentence summary.
 # ============================================================
 ---
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: AgentRun
 metadata:
   name: test-agent-tool-run
@@ -335,7 +335,7 @@ type: Opaque
 stringData:
   api-key: "sf-test-key-placeholder"
 ---
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: Tool
 metadata:
   name: test-mcp-secret-env
@@ -402,7 +402,7 @@ type: Opaque
 stringData:
   token: "test-bearer-token-placeholder"
 ---
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: Tool
 metadata:
   name: test-mcp-http-auth
@@ -450,7 +450,7 @@ type: Opaque
 stringData:
   REDIS_URL: "redis://redis.example.com:6379"
 ---
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: Tool
 metadata:
   name: test-db-query-tool

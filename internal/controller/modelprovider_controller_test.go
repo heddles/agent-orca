@@ -27,7 +27,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
 )
 
 var _ = Describe("ModelProvider Controller", func() {
@@ -40,20 +40,20 @@ var _ = Describe("ModelProvider Controller", func() {
 			Name:      resourceName,
 			Namespace: "default", // TODO(user):Modify as needed
 		}
-		modelprovider := &agentorcv1alpha1.ModelProvider{}
+		modelprovider := &agentorcav1alpha1.ModelProvider{}
 
 		BeforeEach(func() {
 			By("creating the custom resource for the Kind ModelProvider")
 			err := k8sClient.Get(ctx, typeNamespacedName, modelprovider)
 			if err != nil && errors.IsNotFound(err) {
-				resource := &agentorcv1alpha1.ModelProvider{
+				resource := &agentorcav1alpha1.ModelProvider{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      resourceName,
 						Namespace: "default",
 					},
-					Spec: agentorcv1alpha1.ModelProviderSpec{
+					Spec: agentorcav1alpha1.ModelProviderSpec{
 						LiteLLMModel: "anthropic/claude-sonnet-4-6",
-						CredentialsRef: agentorcv1alpha1.SecretKeyRef{
+						CredentialsRef: agentorcav1alpha1.SecretKeyRef{
 							Name: "test-creds",
 							Key:  "api-key",
 						},
@@ -65,7 +65,7 @@ var _ = Describe("ModelProvider Controller", func() {
 
 		AfterEach(func() {
 			// TODO(user): Cleanup logic after each test, like removing the resource instance.
-			resource := &agentorcv1alpha1.ModelProvider{}
+			resource := &agentorcav1alpha1.ModelProvider{}
 			err := k8sClient.Get(ctx, typeNamespacedName, resource)
 			Expect(err).NotTo(HaveOccurred())
 

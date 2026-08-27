@@ -22,7 +22,7 @@ import (
 	"fmt"
 	"sync"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
 )
 
 // Store defines the interface for persisting and retrieving conversation checkpoints.
@@ -30,10 +30,10 @@ import (
 type Store interface {
 	// Load retrieves a checkpoint by session ID.
 	// Returns nil checkpoint and no error if not found (not an error condition).
-	Load(ctx context.Context, sessionID string) (*agentorcv1alpha1.Checkpoint, error)
+	Load(ctx context.Context, sessionID string) (*agentorcav1alpha1.Checkpoint, error)
 
 	// Save persists a checkpoint. Overwrites any existing checkpoint for the same sessionID.
-	Save(ctx context.Context, checkpoint *agentorcv1alpha1.Checkpoint) (checkpointRef string, error error)
+	Save(ctx context.Context, checkpoint *agentorcav1alpha1.Checkpoint) (checkpointRef string, error error)
 
 	// Delete removes a checkpoint by session ID.
 	Delete(ctx context.Context, sessionID string) error
@@ -46,25 +46,25 @@ type Store interface {
 // NOT suitable for production (data is lost on pod restart).
 type InMemoryStore struct {
 	mu          sync.RWMutex
-	checkpoints map[string]*agentorcv1alpha1.Checkpoint
+	checkpoints map[string]*agentorcav1alpha1.Checkpoint
 }
 
 // NewInMemoryStore creates a new in-memory checkpoint store.
 func NewInMemoryStore() *InMemoryStore {
 	return &InMemoryStore{
-		checkpoints: make(map[string]*agentorcv1alpha1.Checkpoint),
+		checkpoints: make(map[string]*agentorcav1alpha1.Checkpoint),
 	}
 }
 
 // Load retrieves a checkpoint from memory.
-func (s *InMemoryStore) Load(ctx context.Context, sessionID string) (*agentorcv1alpha1.Checkpoint, error) {
+func (s *InMemoryStore) Load(ctx context.Context, sessionID string) (*agentorcav1alpha1.Checkpoint, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	if cp, exists := s.checkpoints[sessionID]; exists {
 		// Return a deep copy to prevent external modification
 		cpCopy := *cp
-		cpCopy.ConversationHistory = make([]agentorcv1alpha1.ConversationMessage, len(cp.ConversationHistory))
+		cpCopy.ConversationHistory = make([]agentorcav1alpha1.ConversationMessage, len(cp.ConversationHistory))
 		copy(cpCopy.ConversationHistory, cp.ConversationHistory)
 		return &cpCopy, nil
 	}
@@ -72,13 +72,13 @@ func (s *InMemoryStore) Load(ctx context.Context, sessionID string) (*agentorcv1
 }
 
 // Save persists a checkpoint to memory.
-func (s *InMemoryStore) Save(ctx context.Context, checkpoint *agentorcv1alpha1.Checkpoint) (string, error) {
+func (s *InMemoryStore) Save(ctx context.Context, checkpoint *agentorcav1alpha1.Checkpoint) (string, error) {
 	if checkpoint == nil || checkpoint.SessionID == "" {
 		return "", fmt.Errorf("checkpoint requires SessionID")
 	}
 
 	cpCopy := *checkpoint
-	cpCopy.ConversationHistory = make([]agentorcv1alpha1.ConversationMessage, len(checkpoint.ConversationHistory))
+	cpCopy.ConversationHistory = make([]agentorcav1alpha1.ConversationMessage, len(checkpoint.ConversationHistory))
 	copy(cpCopy.ConversationHistory, checkpoint.ConversationHistory)
 
 	s.mu.Lock()
@@ -110,13 +110,13 @@ func (s *InMemoryStore) List(ctx context.Context) ([]string, error) {
 }
 
 // SerializeCheckpoint encodes a checkpoint to JSON (for storage).
-func SerializeCheckpoint(cp *agentorcv1alpha1.Checkpoint) ([]byte, error) {
+func SerializeCheckpoint(cp *agentorcav1alpha1.Checkpoint) ([]byte, error) {
 	return json.Marshal(cp)
 }
 
 // DeserializeCheckpoint decodes a checkpoint from JSON.
-func DeserializeCheckpoint(data []byte) (*agentorcv1alpha1.Checkpoint, error) {
-	var cp agentorcv1alpha1.Checkpoint
+func DeserializeCheckpoint(data []byte) (*agentorcav1alpha1.Checkpoint, error) {
+	var cp agentorcav1alpha1.Checkpoint
 	if err := json.Unmarshal(data, &cp); err != nil {
 		return nil, err
 	}

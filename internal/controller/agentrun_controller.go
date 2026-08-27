@@ -51,17 +51,17 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
-	"github.com/floppyfish14/agent-orc/internal/egress"
-	"github.com/floppyfish14/agent-orc/internal/podbuilder"
-	"github.com/floppyfish14/agent-orc/internal/postgresql"
-	"github.com/floppyfish14/agent-orc/internal/router"
-	"github.com/floppyfish14/agent-orc/internal/security"
-	"github.com/floppyfish14/agent-orc/internal/state"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
+	"github.com/floppyfish14/agent-orca/internal/egress"
+	"github.com/floppyfish14/agent-orca/internal/podbuilder"
+	"github.com/floppyfish14/agent-orca/internal/postgresql"
+	"github.com/floppyfish14/agent-orca/internal/router"
+	"github.com/floppyfish14/agent-orca/internal/security"
+	"github.com/floppyfish14/agent-orca/internal/state"
 )
 
 const (
-	agentRunFinalizer = "agentorc.io/agentrun-cleanup"
+	agentRunFinalizer = "agentorca.io/agentrun-cleanup"
 )
 
 // AgentRunReconciler reconciles a AgentRun object.
@@ -87,7 +87,7 @@ type AgentRunReconciler struct {
 	// OperatorAPIURL is the base URL of the operator's internal API server,
 	// injected from the OPERATOR_API_URL env var. Written into every router
 	// ConfigMap so sidecars can call /agentrun endpoints for handoff and child runs.
-	// Example: "http://agent-orc-internal-api.agent-orc-system.svc.cluster.local:8082"
+	// Example: "http://agent-orca-internal-api.agent-orca-system.svc.cluster.local:8082"
 	OperatorAPIURL string
 	// LLMRequestTimeout is the per-LLM-request timeout written into every router
 	// config (default 1h). Injected from the LLM_REQUEST_TIMEOUT env var.
@@ -95,9 +95,9 @@ type AgentRunReconciler struct {
 }
 
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
-// +kubebuilder:rbac:groups=agentorc.agentorc.io,resources=agentruns,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=agentorc.agentorc.io,resources=agentruns/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=agentorc.agentorc.io,resources=agentruns/finalizers,verbs=update
+// +kubebuilder:rbac:groups=agentorca.agentorca.io,resources=agentruns,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=agentorca.agentorca.io,resources=agentruns/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=agentorca.agentorca.io,resources=agentruns/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;create;delete
 // +kubebuilder:rbac:groups="",resources=pods/log,verbs=get
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
@@ -111,7 +111,7 @@ type AgentRunReconciler struct {
 func (r *AgentRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
-	var run agentorcv1alpha1.AgentRun
+	var run agentorcav1alpha1.AgentRun
 	if err := r.Get(ctx, req.NamespacedName, &run); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -136,7 +136,7 @@ func (r *AgentRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	// Fetch the referenced Agent.
-	var agent agentorcv1alpha1.Agent
+	var agent agentorcav1alpha1.Agent
 	if err := r.Get(ctx, client.ObjectKey{Name: run.Spec.AgentRef, Namespace: run.Namespace}, &agent); err != nil {
 		if errors.IsNotFound(err) {
 			return r.failRun(ctx, &run, fmt.Sprintf("agent %q not found", run.Spec.AgentRef))
@@ -150,11 +150,11 @@ func (r *AgentRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	switch run.Status.Phase {
-	case "", agentorcv1alpha1.AgentRunPhasePending:
+	case "", agentorcav1alpha1.AgentRunPhasePending:
 		return r.startRun(ctx, &run, &agent, saName)
-	case agentorcv1alpha1.AgentRunPhaseRunning:
+	case agentorcav1alpha1.AgentRunPhaseRunning:
 		return r.checkProgress(ctx, &run, &agent)
-	case agentorcv1alpha1.AgentRunPhaseWaitingForInput:
+	case agentorcav1alpha1.AgentRunPhaseWaitingForInput:
 		return r.checkClarifyTimeout(ctx, &run)
 	}
 
@@ -163,14 +163,14 @@ func (r *AgentRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 }
 
 // startRun creates all per-run resources and spawns the agent pod.
-func (r *AgentRunReconciler) startRun(ctx context.Context, run *agentorcv1alpha1.AgentRun, agent *agentorcv1alpha1.Agent, saName string) (ctrl.Result, error) { //nolint:gocyclo
+func (r *AgentRunReconciler) startRun(ctx context.Context, run *agentorcav1alpha1.AgentRun, agent *agentorcav1alpha1.Agent, saName string) (ctrl.Result, error) { //nolint:gocyclo
 
 	logger := log.FromContext(ctx)
 	logger.Info("starting AgentRun", "run", run.Name)
 
 	// Mark Pending immediately so we don't re-enter startRun on requeue.
 	if run.Status.Phase == "" {
-		if err := r.patchPhase(ctx, run, agentorcv1alpha1.AgentRunPhasePending); err != nil {
+		if err := r.patchPhase(ctx, run, agentorcav1alpha1.AgentRunPhasePending); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{Requeue: true}, nil
@@ -236,7 +236,7 @@ func (r *AgentRunReconciler) startRun(ctx context.Context, run *agentorcv1alpha1
 	// In split-pod topology, OPENAI_BASE_URL points at the router Service.
 	routerServiceURL := "http://localhost:8080/v1"
 	if splitPod {
-		routerServiceURL = "http://agentorc-router-" + run.Name + "." + run.Namespace + ":8080/v1"
+		routerServiceURL = "http://agentorca-router-" + run.Name + "." + run.Namespace + ":8080/v1"
 	}
 	tokenSecretName, err := r.ensureTokenSecret(ctx, run, saName, routerServiceURL)
 	if err != nil {
@@ -274,7 +274,7 @@ func (r *AgentRunReconciler) startRun(ctx context.Context, run *agentorcv1alpha1
 		}
 
 		// Router pod: model-router as standalone container with provider/tool mounts.
-		routerBaseURL := "http://agentorc-router-" + run.Name + "." + run.Namespace + ":8080"
+		routerBaseURL := "http://agentorca-router-" + run.Name + "." + run.Namespace + ":8080"
 		routerPod := r.buildRouterPod(run, agent, saName, providerVolumes, providerMounts, toolSecretVolumes, toolSecretMounts, mcpBinVolumes, mcpBinMounts)
 		if err := ctrl.SetControllerReference(run, routerPod, r.Scheme); err != nil {
 			return r.failRun(ctx, run, fmt.Sprintf("setting router pod owner ref: %v", err))
@@ -325,12 +325,12 @@ func (r *AgentRunReconciler) startRun(ctx context.Context, run *agentorcv1alpha1
 
 	// 9. Update status to Running with initial routing decision.
 	patch := client.MergeFrom(run.DeepCopy())
-	run.Status.Phase = agentorcv1alpha1.AgentRunPhaseRunning
+	run.Status.Phase = agentorcav1alpha1.AgentRunPhaseRunning
 	run.Status.PodName = podName
 	run.Status.RouterPodName = routerPodName
 	now := metav1.Now()
 	run.Status.StartTime = &now
-	run.Status.CheckpointRef = fmt.Sprintf("agentorc/runs/%s/state", run.Name)
+	run.Status.CheckpointRef = fmt.Sprintf("agentorca/runs/%s/state", run.Name)
 	run.Status.InputMode = agent.Spec.Runtime.InputMode
 
 	// Record the initial routing configuration on first start only (not restarts).
@@ -342,7 +342,7 @@ func (r *AgentRunReconciler) startRun(ctx context.Context, run *agentorcv1alpha1
 			if p.Weight <= 0 {
 				continue
 			}
-			run.Status.RoutingDecisions = append(run.Status.RoutingDecisions, agentorcv1alpha1.RoutingDecision{
+			run.Status.RoutingDecisions = append(run.Status.RoutingDecisions, agentorcav1alpha1.RoutingDecision{
 				Model:      p.LiteLLMModel,
 				Provider:   p.Name,
 				Strategy:   routerCfg.Strategy,
@@ -361,7 +361,7 @@ func (r *AgentRunReconciler) startRun(ctx context.Context, run *agentorcv1alpha1
 }
 
 // checkProgress polls the agent pod and advances the AgentRun phase when complete.
-func (r *AgentRunReconciler) checkProgress(ctx context.Context, run *agentorcv1alpha1.AgentRun, agent *agentorcv1alpha1.Agent) (ctrl.Result, error) {
+func (r *AgentRunReconciler) checkProgress(ctx context.Context, run *agentorcav1alpha1.AgentRun, agent *agentorcav1alpha1.Agent) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
 	if run.Status.PodName == "" {
@@ -373,7 +373,7 @@ func (r *AgentRunReconciler) checkProgress(ctx context.Context, run *agentorcv1a
 		if errors.IsNotFound(err) {
 			// Pod was deleted externally. If this is an http-mode run that already
 			// succeeded (we deleted the pod ourselves), there's nothing to do.
-			if run.Status.InputMode == "http" && run.Status.Phase == agentorcv1alpha1.AgentRunPhaseSucceeded { //nolint:goconst
+			if run.Status.InputMode == "http" && run.Status.Phase == agentorcav1alpha1.AgentRunPhaseSucceeded { //nolint:goconst
 
 				return ctrl.Result{}, nil
 			}
@@ -414,19 +414,19 @@ func (r *AgentRunReconciler) checkProgress(ctx context.Context, run *agentorcv1a
 	}
 }
 
-func (r *AgentRunReconciler) handlePodSuccess(ctx context.Context, run *agentorcv1alpha1.AgentRun, pod *corev1.Pod) (ctrl.Result, error) {
+func (r *AgentRunReconciler) handlePodSuccess(ctx context.Context, run *agentorcav1alpha1.AgentRun, pod *corev1.Pod) (ctrl.Result, error) {
 	// Re-fetch the run to handle the race where the model-router set WaitingForInput
 	// via the internal API just before the pod exited. If the phase is already
 	// WaitingForInput, the pod exit is expected — don't transition to Succeeded.
-	var latest agentorcv1alpha1.AgentRun
+	var latest agentorcav1alpha1.AgentRun
 	if err := r.Get(ctx, client.ObjectKeyFromObject(run), &latest); err == nil {
-		if latest.Status.Phase == agentorcv1alpha1.AgentRunPhaseWaitingForInput {
+		if latest.Status.Phase == agentorcav1alpha1.AgentRunPhaseWaitingForInput {
 			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 		}
 		// Explicit _done/_fail: the model-router already set the terminal phase via
 		// the internal API. The pod exit is expected — skip re-processing.
-		if latest.Status.Phase == agentorcv1alpha1.AgentRunPhaseSucceeded ||
-			latest.Status.Phase == agentorcv1alpha1.AgentRunPhaseFailed {
+		if latest.Status.Phase == agentorcav1alpha1.AgentRunPhaseSucceeded ||
+			latest.Status.Phase == agentorcav1alpha1.AgentRunPhaseFailed {
 			return ctrl.Result{}, nil
 		}
 		// Safeguard trip: the model-router set LoopDetected via the internal API
@@ -467,7 +467,7 @@ func (r *AgentRunReconciler) handlePodSuccess(ctx context.Context, run *agentorc
 
 		patch := client.MergeFrom(run.DeepCopy())
 		now := metav1.Now()
-		run.Status.Phase = agentorcv1alpha1.AgentRunPhaseWaitingForInput
+		run.Status.Phase = agentorcav1alpha1.AgentRunPhaseWaitingForInput
 		run.Status.ClarifyQuestion = finalOutput
 		run.Status.ClarifyAnswer = ""
 		run.Status.WaitingSince = &now
@@ -480,7 +480,7 @@ func (r *AgentRunReconciler) handlePodSuccess(ctx context.Context, run *agentorc
 	}
 
 	patch := client.MergeFrom(run.DeepCopy())
-	run.Status.Phase = agentorcv1alpha1.AgentRunPhaseSucceeded
+	run.Status.Phase = agentorcav1alpha1.AgentRunPhaseSucceeded
 	run.Status.Output = finalOutput
 	run.Status.RawOutput = raw
 	run.Status.SpendUSD = spendUSD
@@ -546,7 +546,7 @@ func looksLikeClarifyQuestion(text string) bool {
 	return false
 }
 
-func (r *AgentRunReconciler) handlePodFailure(ctx context.Context, run *agentorcv1alpha1.AgentRun, agent *agentorcv1alpha1.Agent, reason string) (ctrl.Result, error) { //nolint:unparam
+func (r *AgentRunReconciler) handlePodFailure(ctx context.Context, run *agentorcav1alpha1.AgentRun, agent *agentorcav1alpha1.Agent, reason string) (ctrl.Result, error) { //nolint:unparam
 
 	// Enrich the failure reason with container logs before the pod is deleted.
 	if run.Status.PodName != "" {
@@ -567,9 +567,9 @@ func (r *AgentRunReconciler) handlePodFailure(ctx context.Context, run *agentorc
 		run.Status.RestartCount++
 		run.Status.LastRestartReason = reason
 		run.Status.PodName = ""
-		run.Status.Phase = agentorcv1alpha1.AgentRunPhasePending
+		run.Status.Phase = agentorcav1alpha1.AgentRunPhasePending
 		// Set checkpoint so the model-router sidecar resumes from last state.
-		run.Status.CheckpointRef = fmt.Sprintf("agentorc/runs/%s/state", run.Name)
+		run.Status.CheckpointRef = fmt.Sprintf("agentorca/runs/%s/state", run.Name)
 		if err := r.Status().Patch(ctx, run, patch); err != nil {
 			return ctrl.Result{}, fmt.Errorf("patching restart status: %w", err)
 		}
@@ -583,13 +583,13 @@ func (r *AgentRunReconciler) handlePodFailure(ctx context.Context, run *agentorc
 func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 
 	ctx context.Context,
-	run *agentorcv1alpha1.AgentRun,
-	agent *agentorcv1alpha1.Agent,
+	run *agentorcav1alpha1.AgentRun,
+	agent *agentorcav1alpha1.Agent,
 	saName string,
 	binPathRewrites map[string]string,
-) (*router.Config, []agentorcv1alpha1.EgressRule, bool, error) {
+) (*router.Config, []agentorcav1alpha1.EgressRule, bool, error) {
 	// Resolve ModelSelector.
-	var selector agentorcv1alpha1.ModelSelector
+	var selector agentorcav1alpha1.ModelSelector
 	if err := r.Get(ctx, client.ObjectKey{Name: agent.Spec.ModelSelectorRef, Namespace: run.Namespace}, &selector); err != nil {
 		return nil, nil, false, fmt.Errorf("getting ModelSelector %q: %w", agent.Spec.ModelSelectorRef, err)
 	}
@@ -597,7 +597,7 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 	var providers []router.ProviderConfig
 	seenProviders := make(map[string]bool)
 	for _, pw := range selector.Spec.Providers {
-		var mp agentorcv1alpha1.ModelProvider
+		var mp agentorcav1alpha1.ModelProvider
 		if err := r.Get(ctx, client.ObjectKey{Name: pw.Name, Namespace: run.Namespace}, &mp); err != nil {
 			return nil, nil, false, fmt.Errorf("getting ModelProvider %q: %w", pw.Name, err)
 		}
@@ -625,7 +625,7 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 			continue
 		}
 		seenProviders[name] = true
-		var mp agentorcv1alpha1.ModelProvider
+		var mp agentorcav1alpha1.ModelProvider
 		if err := r.Get(ctx, client.ObjectKey{Name: name, Namespace: run.Namespace}, &mp); err != nil {
 			if errors.IsNotFound(err) {
 				// Provider is listed in the fallback chain but not deployed (e.g. disabled
@@ -656,12 +656,12 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 
 	// Resolve Tools.
 	var toolDefs []router.ToolDefinition
-	var egressRules []agentorcv1alpha1.EgressRule
+	var egressRules []agentorcav1alpha1.EgressRule
 
 	// Add egress rules for model provider endpoints.
 	for _, p := range providers {
 		if port := providerPort(p.BaseURL, p.LiteLLMModel); port != 443 {
-			egressRules = append(egressRules, agentorcv1alpha1.EgressRule{Port: int32(port), Protocol: "TCP"})
+			egressRules = append(egressRules, agentorcav1alpha1.EgressRule{Port: int32(port), Protocol: "TCP"})
 		}
 	}
 	var hasAgentTools bool
@@ -681,7 +681,7 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 		if builtinTools[toolName] {
 			continue
 		}
-		var tool agentorcv1alpha1.Tool
+		var tool agentorcav1alpha1.Tool
 		if err := r.Get(ctx, client.ObjectKey{Name: toolName, Namespace: run.Namespace}, &tool); err != nil {
 			return nil, nil, false, fmt.Errorf("getting Tool %q: %w", toolName, err)
 		}
@@ -699,11 +699,11 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 			backendType = "regular"
 		}
 		backendRef := tool.Spec.OCIRef
-		if tool.Spec.Type == agentorcv1alpha1.ToolTypeAgent {
+		if tool.Spec.Type == agentorcav1alpha1.ToolTypeAgent {
 			backendRef = tool.Spec.AgentRef
 			hasAgentTools = true
 		}
-		if tool.Spec.Type == agentorcv1alpha1.ToolTypeMCP && tool.Spec.MCPConfig != nil {
+		if tool.Spec.Type == agentorcav1alpha1.ToolTypeMCP && tool.Spec.MCPConfig != nil {
 			// MCPServer-managed tools share the same MCP server connection.
 			// Deduplicate by the MCPServer name so we only connect once per server.
 			if serverName := tool.Labels[LabelMCPServer]; serverName != "" && seenMCPServers[serverName] {
@@ -718,7 +718,7 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 					URL:       tool.Spec.MCPConfig.URL,
 				}
 				if serverName != "" {
-					var mcpServer agentorcv1alpha1.MCPServer
+					var mcpServer agentorcav1alpha1.MCPServer
 					if err := r.Get(ctx, client.ObjectKey{Name: serverName, Namespace: run.Namespace}, &mcpServer); err == nil {
 						mcpCfg.AllowApps = mcpServer.Spec.AllowApps
 					}
@@ -885,7 +885,7 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 	// Resolve KnowledgeBases from Agent spec.
 	var kbConfigs []router.KnowledgeBaseConfig
 	for _, kbName := range agent.Spec.KnowledgeBases {
-		var kb agentorcv1alpha1.KnowledgeBase
+		var kb agentorcav1alpha1.KnowledgeBase
 		if err := r.Get(ctx, client.ObjectKey{Name: kbName, Namespace: run.Namespace}, &kb); err != nil {
 			return nil, nil, false, fmt.Errorf("getting KnowledgeBase %q: %w", kbName, err)
 		}
@@ -905,7 +905,7 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 			return nil, nil, false, fmt.Errorf("KnowledgeBase %q is not ready", kbName)
 		}
 		// Resolve the embedding ModelSelector to get the provider's model string.
-		var embMS agentorcv1alpha1.ModelSelector
+		var embMS agentorcav1alpha1.ModelSelector
 		if err := r.Get(ctx, client.ObjectKey{Name: kb.Spec.Embedding.ModelSelectorRef, Namespace: run.Namespace}, &embMS); err != nil {
 			return nil, nil, false, fmt.Errorf("getting embedding ModelSelector for KB %q: %w", kbName, err)
 		}
@@ -913,7 +913,7 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 			return nil, nil, false, fmt.Errorf("embedding ModelSelector %q for KB %q has no providers", kb.Spec.Embedding.ModelSelectorRef, kbName)
 		}
 		embPW := embMS.Spec.Providers[0]
-		var embMP agentorcv1alpha1.ModelProvider
+		var embMP agentorcav1alpha1.ModelProvider
 		if err := r.Get(ctx, client.ObjectKey{Name: embPW.Name, Namespace: run.Namespace}, &embMP); err != nil {
 			return nil, nil, false, fmt.Errorf("getting embedding ModelProvider %q: %w", embPW.Name, err)
 		}
@@ -984,7 +984,7 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 	} else if run.Spec.PriorRunRef != "" {
 		// New turn in a chat session: load the previous run's accumulated history
 		// so the model-router starts with full multi-turn context.
-		resumeKey = fmt.Sprintf("agentorc/runs/%s/state", run.Spec.PriorRunRef)
+		resumeKey = fmt.Sprintf("agentorca/runs/%s/state", run.Spec.PriorRunRef)
 	}
 
 	// Resolve safeguards from AgentRun spec.
@@ -1008,13 +1008,13 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 		if summaryMSRef == "" {
 			summaryMSRef = agent.Spec.ModelSelectorRef
 		}
-		var summaryMS agentorcv1alpha1.ModelSelector
+		var summaryMS agentorcav1alpha1.ModelSelector
 		if err := r.Get(ctx, client.ObjectKey{Name: summaryMSRef, Namespace: run.Namespace}, &summaryMS); err != nil {
 			return nil, nil, false, fmt.Errorf("getting summary ModelSelector %q: %w", summaryMSRef, err)
 		}
 		if len(summaryMS.Spec.Providers) > 0 {
 			sumPW := summaryMS.Spec.Providers[0]
-			var sumMP agentorcv1alpha1.ModelProvider
+			var sumMP agentorcav1alpha1.ModelProvider
 			if err := r.Get(ctx, client.ObjectKey{Name: sumPW.Name, Namespace: run.Namespace}, &sumMP); err != nil {
 				return nil, nil, false, fmt.Errorf("getting summary ModelProvider %q: %w", sumPW.Name, err)
 			}
@@ -1029,7 +1029,7 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 	// Resolve long-term memory KB from Agent spec.
 	if agent.Spec.Memory != nil && agent.Spec.Memory.LongTermMemoryRef != "" {
 		ltmKBName := agent.Spec.Memory.LongTermMemoryRef
-		var ltmKB agentorcv1alpha1.KnowledgeBase
+		var ltmKB agentorcav1alpha1.KnowledgeBase
 		var ltmErr error
 		if err := r.Get(ctx, client.ObjectKey{Name: ltmKBName, Namespace: run.Namespace}, &ltmKB); err != nil {
 			ltmErr = err
@@ -1044,13 +1044,13 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 			// Use the pinned provider from status if available; fall back to Providers[0].
 			ltmEmbProviderName := ltmKB.Status.EmbeddingModelProvider
 			if ltmEmbProviderName == "" {
-				var ltmEmbMS agentorcv1alpha1.ModelSelector
+				var ltmEmbMS agentorcav1alpha1.ModelSelector
 				if err := r.Get(ctx, client.ObjectKey{Name: ltmKB.Spec.Embedding.ModelSelectorRef, Namespace: run.Namespace}, &ltmEmbMS); err == nil && len(ltmEmbMS.Spec.Providers) > 0 {
 					ltmEmbProviderName = ltmEmbMS.Spec.Providers[0].Name
 				}
 			}
 			if ltmEmbProviderName != "" {
-				var ltmMP agentorcv1alpha1.ModelProvider
+				var ltmMP agentorcav1alpha1.ModelProvider
 				if err := r.Get(ctx, client.ObjectKey{Name: ltmEmbProviderName, Namespace: run.Namespace}, &ltmMP); err == nil {
 					dims := ltmKB.Status.EmbeddingDimensions
 					longTermMemory = router.LongTermMemoryConfig{
@@ -1089,7 +1089,7 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 		ToolDefinitions:        toolDefs,
 		MCPServers:             mcpServers,
 		CheckpointEvery:        checkpointEvery,
-		CheckpointKey:          fmt.Sprintf("agentorc/runs/%s/state", run.Name),
+		CheckpointKey:          fmt.Sprintf("agentorca/runs/%s/state", run.Name),
 		ResumeCheckpointKey:    resumeKey,
 		StateConfig:            r.StateConfig,
 		KubeAPIURL:             "https://kubernetes.default.svc",
@@ -1097,8 +1097,8 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 		LLMRequestTimeout:      r.LLMRequestTimeout,
 		SystemPrompt:           agent.Spec.SystemPrompt,
 		ChatMode:               agent.Spec.Runtime.InputMode == "http" || agent.Spec.Runtime.InputMode == "chat",
-		WorkflowName:           run.Labels["agentorc.io/workflow"],
-		DeploymentName:         run.Labels["agentorc.io/deployment"],
+		WorkflowName:           run.Labels["agentorca.io/workflow"],
+		DeploymentName:         run.Labels["agentorca.io/deployment"],
 		KnowledgeBases:         kbConfigs,
 		Safeguards:             safeguards,
 		EpisodicMemory:         episodicMemory,
@@ -1131,7 +1131,7 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 }
 
 // ensureRole creates the per-run Role if it doesn't exist.
-func (r *AgentRunReconciler) ensureRole(ctx context.Context, run *agentorcv1alpha1.AgentRun) error {
+func (r *AgentRunReconciler) ensureRole(ctx context.Context, run *agentorcav1alpha1.AgentRun) error {
 	role := security.BuildRunRole(run)
 	if err := ctrl.SetControllerReference(run, role, r.Scheme); err != nil {
 		return fmt.Errorf("setting role owner ref: %w", err)
@@ -1143,7 +1143,7 @@ func (r *AgentRunReconciler) ensureRole(ctx context.Context, run *agentorcv1alph
 }
 
 // ensureRoleBinding creates the per-run RoleBinding if it doesn't exist.
-func (r *AgentRunReconciler) ensureRoleBinding(ctx context.Context, run *agentorcv1alpha1.AgentRun, saName string) error {
+func (r *AgentRunReconciler) ensureRoleBinding(ctx context.Context, run *agentorcav1alpha1.AgentRun, saName string) error {
 	rb := security.BuildRunRoleBinding(run, saName, run.Namespace)
 	if err := ctrl.SetControllerReference(run, rb, r.Scheme); err != nil {
 		return fmt.Errorf("setting rolebinding owner ref: %w", err)
@@ -1156,14 +1156,14 @@ func (r *AgentRunReconciler) ensureRoleBinding(ctx context.Context, run *agentor
 
 // ensureTokenReviewerBinding creates a ClusterRoleBinding that grants the agent SA
 // the "create tokenreviews" permission so the model-router sidecar can validate tokens.
-// The binding is named "agentorc-run-<run-name>" and is cleaned up after the run.
-func (r *AgentRunReconciler) ensureTokenReviewerBinding(ctx context.Context, run *agentorcv1alpha1.AgentRun, saName string) error {
+// The binding is named "agentorca-run-<run-name>" and is cleaned up after the run.
+func (r *AgentRunReconciler) ensureTokenReviewerBinding(ctx context.Context, run *agentorcav1alpha1.AgentRun, saName string) error {
 	if r.TokenReviewerClusterRole == "" {
 		return nil // skip if not configured (e.g. tests)
 	}
 	crb := &rbacv1.ClusterRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "agentorc-run-" + run.Name,
+			Name: "agentorca-run-" + run.Name,
 			Labels: map[string]string{
 				security.LabelAgentRunName: security.SafeLabelValue(run.Name),
 				security.LabelManagedBy:    security.ManagedByValue,
@@ -1189,7 +1189,7 @@ func (r *AgentRunReconciler) ensureTokenReviewerBinding(ctx context.Context, run
 }
 
 // ensureNetworkPolicy creates the per-run NetworkPolicy if it doesn't exist.
-func (r *AgentRunReconciler) ensureNetworkPolicy(ctx context.Context, run *agentorcv1alpha1.AgentRun, toolEgressRules []agentorcv1alpha1.EgressRule, hasAgentTools bool, hasKnowledgeBases bool) error { //nolint:unparam
+func (r *AgentRunReconciler) ensureNetworkPolicy(ctx context.Context, run *agentorcav1alpha1.AgentRun, toolEgressRules []agentorcav1alpha1.EgressRule, hasAgentTools bool, hasKnowledgeBases bool) error { //nolint:unparam
 
 	np := security.BuildNetworkPolicy(run, run.Namespace, toolEgressRules, r.StateConfig.Backend == "redis")
 	if err := ctrl.SetControllerReference(run, np, r.Scheme); err != nil {
@@ -1204,7 +1204,7 @@ func (r *AgentRunReconciler) ensureNetworkPolicy(ctx context.Context, run *agent
 // ensureSplitPodNetworkPolicies creates two NetworkPolicies for split-pod topology:
 //   - Router pod policy: full egress (providers, K8s API, Redis, tools) + ingress from agent pod
 //   - Agent pod policy: egress restricted to router pod ports 8080/8082 + DNS only
-func (r *AgentRunReconciler) ensureSplitPodNetworkPolicies(ctx context.Context, run *agentorcv1alpha1.AgentRun, toolEgressRules []agentorcv1alpha1.EgressRule) error {
+func (r *AgentRunReconciler) ensureSplitPodNetworkPolicies(ctx context.Context, run *agentorcav1alpha1.AgentRun, toolEgressRules []agentorcav1alpha1.EgressRule) error {
 	routerNP := security.BuildRouterPodNetworkPolicy(run, run.Namespace, toolEgressRules, r.StateConfig.Backend == "redis")
 	if err := ctrl.SetControllerReference(run, routerNP, r.Scheme); err != nil {
 		return fmt.Errorf("setting router networkpolicy owner ref: %w", err)
@@ -1225,10 +1225,10 @@ func (r *AgentRunReconciler) ensureSplitPodNetworkPolicies(ctx context.Context, 
 
 // ensureRouterService creates the ClusterIP Service that exposes the router pod in split-pod
 // topology. The agent pod reaches the model-router via this Service rather than localhost.
-func (r *AgentRunReconciler) ensureRouterService(ctx context.Context, run *agentorcv1alpha1.AgentRun) error {
+func (r *AgentRunReconciler) ensureRouterService(ctx context.Context, run *agentorcav1alpha1.AgentRun) error {
 	svc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "agentorc-router-" + run.Name,
+			Name:      "agentorca-router-" + run.Name,
 			Namespace: run.Namespace,
 			Labels: map[string]string{
 				security.LabelAgentRunName: security.SafeLabelValue(run.Name),
@@ -1259,8 +1259,8 @@ func (r *AgentRunReconciler) ensureRouterService(ctx context.Context, run *agent
 // buildRouterPod constructs a standalone router Pod for split-pod topology.
 // The router runs as a regular container (not a sidecar init container).
 func (r *AgentRunReconciler) buildRouterPod(
-	run *agentorcv1alpha1.AgentRun,
-	agent *agentorcv1alpha1.Agent,
+	run *agentorcav1alpha1.AgentRun,
+	agent *agentorcav1alpha1.Agent,
 	saName string,
 	providerVolumes []corev1.Volume,
 	providerMounts []corev1.VolumeMount,
@@ -1270,19 +1270,19 @@ func (r *AgentRunReconciler) buildRouterPod(
 	mcpBinMounts []corev1.VolumeMount,
 ) *corev1.Pod {
 	return podbuilder.BuildRouterOnly(podbuilder.PodConfig{
-		PodName:   "agentorc-router-" + run.Name,
+		PodName:   "agentorca-router-" + run.Name,
 		Namespace: run.Namespace,
 		Labels: map[string]string{
 			security.LabelAgentRunName: security.SafeLabelValue(run.Name),
 			security.LabelManagedBy:    security.ManagedByValue,
 			security.LabelComponent:    security.LabelComponentRouter,
-			"agentorc.io/agent":        agent.Name,
+			"agentorca.io/agent":       agent.Name,
 		},
 		Agent:             agent,
 		ServiceAccount:    saName,
 		RestartPolicy:     corev1.RestartPolicyNever,
 		ModelRouterImage:  r.ModelRouterImage,
-		RouterConfigName:  "agentorc-run-" + run.Name,
+		RouterConfigName:  "agentorca-run-" + run.Name,
 		ProviderVolumes:   providerVolumes,
 		ProviderMounts:    providerMounts,
 		ToolSecretVolumes: toolSecretVolumes,
@@ -1296,8 +1296,8 @@ func (r *AgentRunReconciler) buildRouterPod(
 // buildAgentOnlyPod constructs the agent Pod for split-pod topology.
 // The pod has only the agent container; no model-router sidecar.
 func (r *AgentRunReconciler) buildAgentOnlyPod(
-	run *agentorcv1alpha1.AgentRun,
-	agent *agentorcv1alpha1.Agent,
+	run *agentorcav1alpha1.AgentRun,
+	agent *agentorcav1alpha1.Agent,
 	saName string,
 	tokenSecretName string,
 	routerBaseURL string,
@@ -1314,10 +1314,10 @@ func (r *AgentRunReconciler) buildAgentOnlyPod(
 	if agent.Spec.Runtime.InputMode != "http" {
 		agentEnv = append(agentEnv, corev1.EnvVar{Name: "AGENTORC_INPUT", Value: run.Spec.Input})
 	}
-	if wf, ok := run.Labels["agentorc.io/workflow"]; ok && wf != "" {
+	if wf, ok := run.Labels["agentorca.io/workflow"]; ok && wf != "" {
 		agentEnv = append(agentEnv, corev1.EnvVar{Name: "AGENTORC_WORKFLOW_NAME", Value: wf})
 	}
-	if dep, ok := run.Labels["agentorc.io/deployment"]; ok && dep != "" {
+	if dep, ok := run.Labels["agentorca.io/deployment"]; ok && dep != "" {
 		agentEnv = append(agentEnv, corev1.EnvVar{Name: "AGENTORC_DEPLOYMENT_NAME", Value: dep})
 	}
 
@@ -1338,13 +1338,13 @@ func (r *AgentRunReconciler) buildAgentOnlyPod(
 	}
 
 	return podbuilder.BuildAgentOnly(podbuilder.PodConfig{
-		PodName:   "agentorc-run-" + run.Name,
+		PodName:   "agentorca-run-" + run.Name,
 		Namespace: run.Namespace,
 		Labels: map[string]string{
 			security.LabelAgentRunName: security.SafeLabelValue(run.Name),
 			security.LabelManagedBy:    security.ManagedByValue,
 			security.LabelComponent:    security.LabelComponentAgent,
-			"agentorc.io/agent":        agent.Name,
+			"agentorca.io/agent":       agent.Name,
 		},
 		Agent:               agent,
 		AgentEnv:            agentEnv,
@@ -1358,7 +1358,7 @@ func (r *AgentRunReconciler) buildAgentOnlyPod(
 }
 
 // ensureTracingPolicy creates the Tetragon TracingPolicy if Tetragon is installed.
-func (r *AgentRunReconciler) ensureTracingPolicy(ctx context.Context, run *agentorcv1alpha1.AgentRun) error {
+func (r *AgentRunReconciler) ensureTracingPolicy(ctx context.Context, run *agentorcav1alpha1.AgentRun) error {
 	if r.Dynamic == nil {
 		return fmt.Errorf("dynamic client not configured")
 	}
@@ -1373,7 +1373,7 @@ func (r *AgentRunReconciler) ensureTracingPolicy(ctx context.Context, run *agent
 }
 
 // ensureRouterConfigMap creates or updates the ConfigMap with the router.Config JSON.
-func (r *AgentRunReconciler) ensureRouterConfigMap(ctx context.Context, run *agentorcv1alpha1.AgentRun, cfg *router.Config) error {
+func (r *AgentRunReconciler) ensureRouterConfigMap(ctx context.Context, run *agentorcav1alpha1.AgentRun, cfg *router.Config) error {
 	data, err := json.Marshal(cfg)
 	if err != nil {
 		return fmt.Errorf("marshaling router config: %w", err)
@@ -1381,7 +1381,7 @@ func (r *AgentRunReconciler) ensureRouterConfigMap(ctx context.Context, run *age
 
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "agentorc-run-" + run.Name,
+			Name:      "agentorca-run-" + run.Name,
 			Namespace: run.Namespace,
 			Labels: map[string]string{
 				security.LabelAgentRunName: security.SafeLabelValue(run.Name),
@@ -1404,9 +1404,9 @@ func (r *AgentRunReconciler) ensureRouterConfigMap(ctx context.Context, run *age
 // ensureTokenSecret creates a per-run Secret containing the projected SA token via TokenRequest.
 // routerBaseURL is the model-router URL injected as OPENAI_BASE_URL into the agent container.
 // In combined-pod topology it is "http://localhost:8080/v1"; in split-pod topology it is the
-// router Service URL (e.g. "http://agentorc-router-<run>.<ns>:8080/v1").
-func (r *AgentRunReconciler) ensureTokenSecret(ctx context.Context, run *agentorcv1alpha1.AgentRun, saName string, routerBaseURL string) (string, error) {
-	secretName := "agentorc-run-" + run.Name + podbuilder.TokenSecretSuffix
+// router Service URL (e.g. "http://agentorca-router-<run>.<ns>:8080/v1").
+func (r *AgentRunReconciler) ensureTokenSecret(ctx context.Context, run *agentorcav1alpha1.AgentRun, saName string, routerBaseURL string) (string, error) {
+	secretName := "agentorca-run-" + run.Name + podbuilder.TokenSecretSuffix
 	var existing corev1.Secret
 	if err := r.Get(ctx, types.NamespacedName{Name: secretName, Namespace: run.Namespace}, &existing); err == nil {
 		return secretName, nil // already exists
@@ -1454,8 +1454,8 @@ func (r *AgentRunReconciler) ensureTokenSecret(ctx context.Context, run *agentor
 // The pod has two containers: the agent runtime and the model-router sidecar.
 // Built via the shared podbuilder package so all agent pod types use one codepath.
 func (r *AgentRunReconciler) buildAgentPod(
-	run *agentorcv1alpha1.AgentRun,
-	agent *agentorcv1alpha1.Agent,
+	run *agentorcav1alpha1.AgentRun,
+	agent *agentorcav1alpha1.Agent,
 	saName string,
 	tokenSecretName string,
 	providerVolumes []corev1.Volume,
@@ -1480,10 +1480,10 @@ func (r *AgentRunReconciler) buildAgentPod(
 		agentEnv = append(agentEnv, corev1.EnvVar{Name: "AGENTORC_INPUT", Value: run.Spec.Input})
 	}
 	// Inject workflow/deployment context so the model-router can scope shared state keys.
-	if wf, ok := run.Labels["agentorc.io/workflow"]; ok && wf != "" {
+	if wf, ok := run.Labels["agentorca.io/workflow"]; ok && wf != "" {
 		agentEnv = append(agentEnv, corev1.EnvVar{Name: "AGENTORC_WORKFLOW_NAME", Value: wf})
 	}
-	if dep, ok := run.Labels["agentorc.io/deployment"]; ok && dep != "" {
+	if dep, ok := run.Labels["agentorca.io/deployment"]; ok && dep != "" {
 		agentEnv = append(agentEnv, corev1.EnvVar{Name: "AGENTORC_DEPLOYMENT_NAME", Value: dep})
 	}
 
@@ -1509,12 +1509,12 @@ func (r *AgentRunReconciler) buildAgentPod(
 	agentSecretVolumes, agentSecretMounts := podbuilder.ResolveAgentSecretRefs(agent)
 
 	return podbuilder.Build(podbuilder.PodConfig{
-		PodName:   "agentorc-run-" + run.Name,
+		PodName:   "agentorca-run-" + run.Name,
 		Namespace: run.Namespace,
 		Labels: map[string]string{
 			security.LabelAgentRunName: security.SafeLabelValue(run.Name),
 			security.LabelManagedBy:    security.ManagedByValue,
-			"agentorc.io/agent":        agent.Name,
+			"agentorca.io/agent":       agent.Name,
 		},
 		Agent:               agent,
 		AgentEnv:            agentEnv,
@@ -1522,7 +1522,7 @@ func (r *AgentRunReconciler) buildAgentPod(
 		ServiceAccount:      saName,
 		RestartPolicy:       corev1.RestartPolicyNever,
 		ModelRouterImage:    r.ModelRouterImage,
-		RouterConfigName:    "agentorc-run-" + run.Name,
+		RouterConfigName:    "agentorca-run-" + run.Name,
 		AgentReadinessProbe: readinessProbe,
 		ProviderVolumes:     providerVolumes,
 		ProviderMounts:      providerMounts,
@@ -1539,7 +1539,7 @@ func (r *AgentRunReconciler) buildAgentPod(
 // ensureCleanup deletes per-run resources owned by the AgentRun on terminal state.
 // Resources with ownerReferences are garbage-collected automatically; this handles
 // any resources without owner references (e.g. TracingPolicy via dynamic client).
-func (r *AgentRunReconciler) ensureCleanup(ctx context.Context, run *agentorcv1alpha1.AgentRun) (ctrl.Result, error) {
+func (r *AgentRunReconciler) ensureCleanup(ctx context.Context, run *agentorcav1alpha1.AgentRun) (ctrl.Result, error) {
 	if r.Dynamic != nil {
 		tpName := security.TracingPolicyName(run.Name)
 		_ = r.Dynamic.Resource(security.TetragonGVR).Namespace(run.Namespace).Delete(
@@ -1550,7 +1550,7 @@ func (r *AgentRunReconciler) ensureCleanup(ctx context.Context, run *agentorcv1a
 	// delete it explicitly.
 	if r.TokenReviewerClusterRole != "" {
 		crb := &rbacv1.ClusterRoleBinding{}
-		crb.Name = "agentorc-run-" + run.Name
+		crb.Name = "agentorca-run-" + run.Name
 		_ = r.Delete(ctx, crb)
 	}
 	// Reconcile the run's pod on terminal state. One-shot AgentRun pods are deleted
@@ -1569,14 +1569,14 @@ func (r *AgentRunReconciler) ensureCleanup(ctx context.Context, run *agentorcv1a
 		_ = r.Delete(ctx, routerPod)
 	}
 	// Cascade cancellation to child runs when this run was cancelled.
-	// Child runs are identified by the label "agentorc.io/parent-run" set by the
+	// Child runs are identified by the label "agentorca.io/parent-run" set by the
 	// executor at child-run creation time.
 	reason := run.Status.LastRestartReason + " " + run.Status.FailureReason
-	if run.Status.Phase == agentorcv1alpha1.AgentRunPhaseFailed && strings.Contains(reason, "cancelled") {
-		var childRuns agentorcv1alpha1.AgentRunList
+	if run.Status.Phase == agentorcav1alpha1.AgentRunPhaseFailed && strings.Contains(reason, "cancelled") {
+		var childRuns agentorcav1alpha1.AgentRunList
 		if err := r.List(ctx, &childRuns,
 			client.InNamespace(run.Namespace),
-			client.MatchingLabels{"agentorc.io/parent-run": run.Name},
+			client.MatchingLabels{"agentorca.io/parent-run": run.Name},
 		); err == nil {
 			for i := range childRuns.Items {
 				child := &childRuns.Items[i]
@@ -1585,7 +1585,7 @@ func (r *AgentRunReconciler) ensureCleanup(ctx context.Context, run *agentorcv1a
 				}
 				patch := client.MergeFrom(child.DeepCopy())
 				now := metav1.Now()
-				child.Status.Phase = agentorcv1alpha1.AgentRunPhaseFailed
+				child.Status.Phase = agentorcav1alpha1.AgentRunPhaseFailed
 				child.Status.FailureReason = "cancelled: parent run cancelled"
 				child.Status.CompletionTime = &now
 				logger := log.FromContext(ctx)
@@ -1644,7 +1644,7 @@ func shouldDeletePodOnCompletion(pod *corev1.Pod) bool {
 // deployment's maxRequestsPerPod cap has been reached, in which case the pod is recycled.
 // The model-router's ClaimRun is re-entrant (it resets per-run state on each claim), so a
 // returned idle pod is safe to re-claim.
-func (r *AgentRunReconciler) reconcileRunPodOnTerminal(ctx context.Context, run *agentorcv1alpha1.AgentRun) {
+func (r *AgentRunReconciler) reconcileRunPodOnTerminal(ctx context.Context, run *agentorcav1alpha1.AgentRun) {
 	logger := log.FromContext(ctx)
 	if run.Status.PodName == "" {
 		return
@@ -1666,8 +1666,8 @@ func (r *AgentRunReconciler) reconcileRunPodOnTerminal(ctx context.Context, run 
 
 	// Warm pod: reuse it unless the owning deployment's request cap is reached.
 	maxRequests := 0
-	if deployName := run.Labels["agentorc.io/deployment"]; deployName != "" {
-		var dep agentorcv1alpha1.AgentDeployment
+	if deployName := run.Labels["agentorca.io/deployment"]; deployName != "" {
+		var dep agentorcav1alpha1.AgentDeployment
 		if err := r.Get(ctx, client.ObjectKey{Namespace: run.Namespace, Name: deployName}, &dep); err == nil {
 			maxRequests = dep.Spec.MaxRequestsPerPod
 		}
@@ -1684,7 +1684,7 @@ func (r *AgentRunReconciler) reconcileRunPodOnTerminal(ctx context.Context, run 
 	// Reuse: return the pod to the idle pool so it can be claimed by the next run.
 	patch := client.MergeFrom(pod.DeepCopy())
 	pod.Labels[labelWarmStatus] = warmStatusIdle
-	delete(pod.Labels, "agentorc.io/run")
+	delete(pod.Labels, "agentorca.io/run")
 	if err := r.Patch(ctx, &pod, patch); err != nil {
 		logger.Error(err, "failed to return warm pod to idle; deleting as fallback", "pod", pod.Name)
 		_ = r.Delete(ctx, &pod)
@@ -1716,7 +1716,7 @@ func warmPodOverCap(pod *corev1.Pod, maxRequests int) bool {
 }
 
 // handleRunDeletion cleans up before removing the finalizer.
-func (r *AgentRunReconciler) handleRunDeletion(ctx context.Context, run *agentorcv1alpha1.AgentRun) (ctrl.Result, error) {
+func (r *AgentRunReconciler) handleRunDeletion(ctx context.Context, run *agentorcav1alpha1.AgentRun) (ctrl.Result, error) {
 	if _, err := r.ensureCleanup(ctx, run); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -1725,12 +1725,12 @@ func (r *AgentRunReconciler) handleRunDeletion(ctx context.Context, run *agentor
 }
 
 // failRun sets the AgentRun to Failed with a reason message.
-func (r *AgentRunReconciler) failRun(ctx context.Context, run *agentorcv1alpha1.AgentRun, reason string) (ctrl.Result, error) {
+func (r *AgentRunReconciler) failRun(ctx context.Context, run *agentorcav1alpha1.AgentRun, reason string) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	logger.Error(nil, "failing AgentRun", "reason", reason)
 
 	patch := client.MergeFrom(run.DeepCopy())
-	run.Status.Phase = agentorcv1alpha1.AgentRunPhaseFailed
+	run.Status.Phase = agentorcav1alpha1.AgentRunPhaseFailed
 	run.Status.SpendUSD = r.loadSpendFromStore(ctx, run.Name)
 	now := metav1.Now()
 	run.Status.CompletionTime = &now
@@ -1754,12 +1754,12 @@ func (r *AgentRunReconciler) failRun(ctx context.Context, run *agentorcv1alpha1.
 // maybeArchiveRun snapshots a terminal-phase AgentRun to PostgreSQL if the
 // archival store is configured. Uses a non-blocking goroutine so DB latency
 // never delays reconciliation. Re-archiving is idempotent (UPSERT by name).
-func (r *AgentRunReconciler) maybeArchiveRun(ctx context.Context, run *agentorcv1alpha1.AgentRun) {
+func (r *AgentRunReconciler) maybeArchiveRun(ctx context.Context, run *agentorcav1alpha1.AgentRun) {
 	if r.PostgresStore == nil || !postgresql.IsTerminalPhase(run.Status.Phase) {
 		return
 	}
 	// Snapshot the run as-is (spec + status) into PostgreSQL.
-		go func() {
+	go func() {
 		archiveCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := r.PostgresStore.ArchiveRun(archiveCtx, run); err != nil {
@@ -1771,16 +1771,16 @@ func (r *AgentRunReconciler) maybeArchiveRun(ctx context.Context, run *agentorcv
 // fireCallback sends an HTTP POST to the configured callback URL when an AgentRun
 // reaches a terminal phase (Succeeded or Failed). This is fire-and-forget with a
 // 10-second timeout; failures are logged as Kubernetes Events on the run.
-func (r *AgentRunReconciler) fireCallback(ctx context.Context, run *agentorcv1alpha1.AgentRun) {
+func (r *AgentRunReconciler) fireCallback(ctx context.Context, run *agentorcav1alpha1.AgentRun) {
 	if run.Spec.Callbacks == nil {
 		return
 	}
 
 	var callbackURL string
 	switch run.Status.Phase {
-	case agentorcv1alpha1.AgentRunPhaseSucceeded:
+	case agentorcav1alpha1.AgentRunPhaseSucceeded:
 		callbackURL = run.Spec.Callbacks.OnComplete
-	case agentorcv1alpha1.AgentRunPhaseFailed:
+	case agentorcav1alpha1.AgentRunPhaseFailed:
 		callbackURL = run.Spec.Callbacks.OnFailed
 	default:
 		return
@@ -1817,12 +1817,12 @@ func (r *AgentRunReconciler) fireCallback(ctx context.Context, run *agentorcv1al
 
 		// Resolve the per-callback HMAC signing secret (if configured). The secret
 		// name is recorded by the external API at submission time under the
-		// `agentorc.io/callback-secret` annotation. The Secret must contain a
+		// `agentorca.io/callback-secret` annotation. The Secret must contain a
 		// `hmac-key` key whose value is the shared HMAC key. If absent or
 		// unreadable the callback is still delivered (unsigned) so existing
 		// customers are not broken — signing is opt-in via the shared secret.
 		var signingKey []byte
-		if secretName := run.Annotations["agentorc.io/callback-secret"]; secretName != "" {
+		if secretName := run.Annotations["agentorca.io/callback-secret"]; secretName != "" {
 			signingKey = r.resolveCallbackKey(callbackCtx, run.Namespace, secretName, run.Name)
 		}
 
@@ -1889,7 +1889,7 @@ func (r *AgentRunReconciler) deliverCallback(ctx context.Context, callbackURL st
 }
 
 // patchPhase is a helper to patch only the phase field.
-func (r *AgentRunReconciler) patchPhase(ctx context.Context, run *agentorcv1alpha1.AgentRun, phase agentorcv1alpha1.AgentRunPhase) error {
+func (r *AgentRunReconciler) patchPhase(ctx context.Context, run *agentorcav1alpha1.AgentRun, phase agentorcav1alpha1.AgentRunPhase) error {
 	patch := client.MergeFrom(run.DeepCopy())
 	run.Status.Phase = phase
 	return r.Status().Patch(ctx, run, patch)
@@ -1897,7 +1897,7 @@ func (r *AgentRunReconciler) patchPhase(ctx context.Context, run *agentorcv1alph
 
 // checkClarifyTimeout enforces a maximum waiting time when an AgentRun is paused
 // for human input. If the human does not respond within 30 minutes, the run is failed.
-func (r *AgentRunReconciler) checkClarifyTimeout(ctx context.Context, run *agentorcv1alpha1.AgentRun) (ctrl.Result, error) {
+func (r *AgentRunReconciler) checkClarifyTimeout(ctx context.Context, run *agentorcav1alpha1.AgentRun) (ctrl.Result, error) {
 	const maxWait = 30 * time.Minute
 	if run.Status.WaitingSince != nil && time.Since(run.Status.WaitingSince.Time) > maxWait {
 		return r.failRun(ctx, run, "clarification timeout: no human response within 30 minutes")
@@ -1906,10 +1906,10 @@ func (r *AgentRunReconciler) checkClarifyTimeout(ctx context.Context, run *agent
 }
 
 // isTerminal returns true if the phase is a terminal state.
-func isTerminal(phase agentorcv1alpha1.AgentRunPhase) bool {
-	return phase == agentorcv1alpha1.AgentRunPhaseSucceeded ||
-		phase == agentorcv1alpha1.AgentRunPhaseFailed ||
-		phase == agentorcv1alpha1.AgentRunPhaseHandedOff
+func isTerminal(phase agentorcav1alpha1.AgentRunPhase) bool {
+	return phase == agentorcav1alpha1.AgentRunPhaseSucceeded ||
+		phase == agentorcav1alpha1.AgentRunPhaseFailed ||
+		phase == agentorcav1alpha1.AgentRunPhaseHandedOff
 }
 
 // enrichFailureReason appends the tail of the agent and model-router container
@@ -1947,7 +1947,7 @@ func (r *AgentRunReconciler) loadSpendFromStore(ctx context.Context, runName str
 	if r.StateStore == nil {
 		return ""
 	}
-	key := fmt.Sprintf("agentorc/runs/%s/state", runName)
+	key := fmt.Sprintf("agentorca/runs/%s/state", runName)
 	usd, err := r.StateStore.LoadSpend(ctx, key)
 	if err != nil {
 		log.FromContext(ctx).Error(err, "failed to load spend from state store", "run", runName, "key", key)
@@ -1961,15 +1961,15 @@ func (r *AgentRunReconciler) loadSpendFromStore(ctx context.Context, runName str
 
 // recordRunInDeploymentIndex writes a marker KV entry under the deployment's run
 // index so the model-router can enumerate this deployment's prior runs
-// (agentorc/deployments/<dep>/runs:<runName>) for warm-pool history retrieval.
+// (agentorca/deployments/<dep>/runs:<runName>) for warm-pool history retrieval.
 // This is best-effort: if the state store is unavailable the run is simply not
 // indexed (search recall is narrowed), which is never a run-failure condition.
-func (r *AgentRunReconciler) recordRunInDeploymentIndex(ctx context.Context, run *agentorcv1alpha1.AgentRun) {
-	dep := run.Labels["agentorc.io/deployment"]
+func (r *AgentRunReconciler) recordRunInDeploymentIndex(ctx context.Context, run *agentorcav1alpha1.AgentRun) {
+	dep := run.Labels["agentorca.io/deployment"]
 	if dep == "" || r.StateStore == nil {
 		return
 	}
-	scope := fmt.Sprintf("agentorc/deployments/%s/runs", dep)
+	scope := fmt.Sprintf("agentorca/deployments/%s/runs", dep)
 	ttl := int64(21600) // 6h default beyond the run; mirrors run-checkpoint residency
 	if r.StateConfig.TTLSeconds > 0 {
 		ttl = int64(r.StateConfig.TTLSeconds)
@@ -2010,7 +2010,7 @@ func truncate(s string, n int) string {
 // claimWarmPod finds an idle warm pod for this run's AgentDeployment, POSTs /v1/claim-run
 // to it, and returns the pod name. Returns ("", nil) if no warm pod is available (caller
 // should fall through to normal pod creation).
-func (r *AgentRunReconciler) claimWarmPod(ctx context.Context, run *agentorcv1alpha1.AgentRun, agent *agentorcv1alpha1.Agent) (podName string, err error) {
+func (r *AgentRunReconciler) claimWarmPod(ctx context.Context, run *agentorcav1alpha1.AgentRun, agent *agentorcav1alpha1.Agent) (podName string, err error) {
 	logger := log.FromContext(ctx)
 
 	// Bounding the claim POST prevents a hung/unreachable warm-mgmt port from
@@ -2024,9 +2024,9 @@ func (r *AgentRunReconciler) claimWarmPod(ctx context.Context, run *agentorcv1al
 		logger.V(1).Info("warm pod claim skipped: agent is not http input mode", "agent", agent.Name)
 		return "", nil
 	}
-	deployName := run.Labels["agentorc.io/deployment"]
+	deployName := run.Labels["agentorca.io/deployment"]
 	if deployName == "" {
-		logger.V(1).Info("warm pod claim skipped: run has no agentorc.io/deployment label (created outside a chat/deployment path)")
+		logger.V(1).Info("warm pod claim skipped: run has no agentorca.io/deployment label (created outside a chat/deployment path)")
 		return "", nil
 	}
 
@@ -2109,7 +2109,7 @@ func (r *AgentRunReconciler) claimWarmPod(ctx context.Context, run *agentorcv1al
 		// per-pod served-request counter used by maxRequestsPerPod recycling.
 		patch := client.MergeFrom(pod.DeepCopy())
 		pod.Labels[labelWarmStatus] = warmStatusClaimed
-		pod.Labels["agentorc.io/run"] = security.SafeLabelValue(run.Name)
+		pod.Labels["agentorca.io/run"] = security.SafeLabelValue(run.Name)
 		pod.Labels[labelWarmRequests] = strconv.Itoa(warmRequestCount(pod) + 1)
 		if err := r.Patch(ctx, pod, patch); err != nil {
 			// Non-fatal — worst case another run also tries to claim this pod (the
@@ -2124,12 +2124,12 @@ func (r *AgentRunReconciler) claimWarmPod(ctx context.Context, run *agentorcv1al
 }
 
 // findClaimedWarmPod returns the name of a warm pod that has already bound this run
-// (via its agentorc.io/run label). This catches the race where /v1/claim-run succeeded
+// (via its agentorca.io/run label). This catches the race where /v1/claim-run succeeded
 // on the warm pod (so it is already serving the run) but the operator's claim POST
 // response was lost/retried — instead of spawning a second agent pod (split-brain),
 // we reuse the warm pod that owns the run.
-func (r *AgentRunReconciler) findClaimedWarmPod(ctx context.Context, run *agentorcv1alpha1.AgentRun) string {
-	deployName := run.Labels["agentorc.io/deployment"]
+func (r *AgentRunReconciler) findClaimedWarmPod(ctx context.Context, run *agentorcav1alpha1.AgentRun) string {
+	deployName := run.Labels["agentorca.io/deployment"]
 	if deployName == "" {
 		return ""
 	}
@@ -2137,8 +2137,8 @@ func (r *AgentRunReconciler) findClaimedWarmPod(ctx context.Context, run *agento
 	if err := r.List(ctx, &pods,
 		client.InNamespace(run.Namespace),
 		client.MatchingLabels{
-			labelWarmPool:     deployName,
-			"agentorc.io/run": security.SafeLabelValue(run.Name),
+			labelWarmPool:      deployName,
+			"agentorca.io/run": security.SafeLabelValue(run.Name),
 		},
 	); err != nil {
 		return ""
@@ -2182,8 +2182,8 @@ func providerPort(baseURL, litellmModel string) int { //nolint:unparam
 // agentRunsForAgent maps an Agent change to AgentRuns that reference it and are not yet running.
 // Already-running pods cannot benefit from a config update without a restart, so we skip them.
 func (r *AgentRunReconciler) agentRunsForAgent(ctx context.Context, obj client.Object) []reconcile.Request {
-	agent := obj.(*agentorcv1alpha1.Agent)
-	var list agentorcv1alpha1.AgentRunList
+	agent := obj.(*agentorcav1alpha1.Agent)
+	var list agentorcav1alpha1.AgentRunList
 	if err := r.List(ctx, &list, client.InNamespace(agent.Namespace)); err != nil {
 		return nil
 	}
@@ -2193,7 +2193,7 @@ func (r *AgentRunReconciler) agentRunsForAgent(ctx context.Context, obj client.O
 			continue
 		}
 		switch run.Status.Phase {
-		case agentorcv1alpha1.AgentRunPhasePending, agentorcv1alpha1.AgentRunPhaseWaitingForInput:
+		case agentorcav1alpha1.AgentRunPhasePending, agentorcav1alpha1.AgentRunPhaseWaitingForInput:
 			reqs = append(reqs, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&run)})
 		}
 	}
@@ -2202,19 +2202,19 @@ func (r *AgentRunReconciler) agentRunsForAgent(ctx context.Context, obj client.O
 
 // agentRunsForModelSelector maps a ModelSelector change to pending/waiting AgentRuns.
 func (r *AgentRunReconciler) agentRunsForModelSelector(ctx context.Context, obj client.Object) []reconcile.Request {
-	ms := obj.(*agentorcv1alpha1.ModelSelector)
-	var list agentorcv1alpha1.AgentRunList
+	ms := obj.(*agentorcav1alpha1.ModelSelector)
+	var list agentorcav1alpha1.AgentRunList
 	if err := r.List(ctx, &list, client.InNamespace(ms.Namespace)); err != nil {
 		return nil
 	}
 	var reqs []reconcile.Request
 	for _, run := range list.Items {
 		switch run.Status.Phase {
-		case agentorcv1alpha1.AgentRunPhasePending, agentorcv1alpha1.AgentRunPhaseWaitingForInput:
+		case agentorcav1alpha1.AgentRunPhasePending, agentorcav1alpha1.AgentRunPhaseWaitingForInput:
 		default:
 			continue
 		}
-		var agent agentorcv1alpha1.Agent
+		var agent agentorcav1alpha1.Agent
 		if err := r.Get(ctx, types.NamespacedName{Name: run.Spec.AgentRef, Namespace: run.Namespace}, &agent); err != nil {
 			continue
 		}
@@ -2229,15 +2229,15 @@ func (r *AgentRunReconciler) agentRunsForModelSelector(ctx context.Context, obj 
 func (r *AgentRunReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.Recorder = mgr.GetEventRecorderFor("agentrun") //nolint:staticcheck
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&agentorcv1alpha1.AgentRun{}).
+		For(&agentorcav1alpha1.AgentRun{}).
 		Owns(&corev1.Pod{}).
 		Owns(&corev1.ConfigMap{}).
 		Owns(&corev1.Secret{}).
 		Owns(&corev1.Service{}).
 		Owns(&rbacv1.Role{}).
 		Owns(&rbacv1.RoleBinding{}).
-		Watches(&agentorcv1alpha1.Agent{}, handler.EnqueueRequestsFromMapFunc(r.agentRunsForAgent)).
-		Watches(&agentorcv1alpha1.ModelSelector{}, handler.EnqueueRequestsFromMapFunc(r.agentRunsForModelSelector)).
+		Watches(&agentorcav1alpha1.Agent{}, handler.EnqueueRequestsFromMapFunc(r.agentRunsForAgent)).
+		Watches(&agentorcav1alpha1.ModelSelector{}, handler.EnqueueRequestsFromMapFunc(r.agentRunsForModelSelector)).
 		Named("agentrun").
 		Complete(r)
 }
@@ -2246,31 +2246,31 @@ func (r *AgentRunReconciler) SetupWithManager(mgr ctrl.Manager) error {
 // This is fire-and-forget: the publisher is created, the result is published,
 // and any errors are logged + recorded as metrics. Egress is independent of
 // webhook callbacks — both can be configured simultaneously.
-func (r *AgentRunReconciler) fireEgress(ctx context.Context, run *agentorcv1alpha1.AgentRun) {
+func (r *AgentRunReconciler) fireEgress(ctx context.Context, run *agentorcav1alpha1.AgentRun) {
 	if run.Spec.Egress == nil {
 		return
 	}
 
 	// Build the egress result payload from the run's terminal status.
-	result := agentorcv1alpha1.EgressResult{
+	result := agentorcav1alpha1.EgressResult{
 		RunID:         run.Name,
 		Agent:         run.Spec.AgentRef,
 		Phase:         string(run.Status.Phase),
 		Output:        run.Status.Output,
 		SpendUSD:      run.Status.SpendUSD,
 		FailureReason: run.Status.FailureReason,
-		Tenant:        run.Labels["agentorc.io/tenant"],
+		Tenant:        run.Labels["agentorca.io/tenant"],
 	}
 	if run.Status.CompletionTime != nil {
 		result.CompletedAt = run.Status.CompletionTime.Format(time.RFC3339)
 	}
 	// Include original metadata annotations as the result's metadata map.
 	for k, v := range run.Annotations {
-		if strings.HasPrefix(k, "agentorc.io/meta-") {
+		if strings.HasPrefix(k, "agentorca.io/meta-") {
 			if result.Metadata == nil {
 				result.Metadata = make(map[string]string)
 			}
-			result.Metadata[strings.TrimPrefix(k, "agentorc.io/meta-")] = v
+			result.Metadata[strings.TrimPrefix(k, "agentorca.io/meta-")] = v
 		}
 	}
 

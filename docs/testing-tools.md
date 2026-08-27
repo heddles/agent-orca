@@ -101,7 +101,7 @@ You applied `tools.yaml` without applying `shared.yaml` first. Run Step 2.
 Check operator logs and ensure the MCP sidecar image (`python:3.12-slim`) can be pulled:
 
 ```bash
-kubectl logs -n agent-orc-system deploy/agent-orc-controller-manager
+kubectl logs -n agent-orca-system deploy/agent-orca-controller-manager
 kubectl describe agentrun test-mcp-run -n default
 ```
 
@@ -109,7 +109,7 @@ kubectl describe agentrun test-mcp-run -n default
 Ensure the operator's internal API service exists:
 
 ```bash
-kubectl get svc -n agent-orc-system agent-orc-internal-api
+kubectl get svc -n agent-orca-system agent-orca-internal-api
 ```
 
 ## Cleanup

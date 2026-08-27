@@ -27,7 +27,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
 )
 
 // ModelProviderReconciler reconciles a ModelProvider object.
@@ -36,12 +36,12 @@ type ModelProviderReconciler struct {
 	Scheme *runtime.Scheme
 }
 
-// +kubebuilder:rbac:groups=agentorc.agentorc.io,resources=modelproviders,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=agentorc.agentorc.io,resources=modelproviders/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=agentorc.agentorc.io,resources=modelproviders/finalizers,verbs=update
+// +kubebuilder:rbac:groups=agentorca.agentorca.io,resources=modelproviders,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=agentorca.agentorca.io,resources=modelproviders/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=agentorca.agentorca.io,resources=modelproviders/finalizers,verbs=update
 
 func (r *ModelProviderReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	var mp agentorcv1alpha1.ModelProvider
+	var mp agentorcav1alpha1.ModelProvider
 	if err := r.Get(ctx, req.NamespacedName, &mp); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -74,7 +74,7 @@ func (r *ModelProviderReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 // validate checks the ModelProvider spec for obvious configuration errors.
 // Full health-checking (calling the provider API) is deferred to the model-router sidecar.
-func (r *ModelProviderReconciler) validate(mp *agentorcv1alpha1.ModelProvider) (bool, string) {
+func (r *ModelProviderReconciler) validate(mp *agentorcav1alpha1.ModelProvider) (bool, string) {
 	if mp.Spec.LiteLLMModel == "" {
 		return false, "spec.litellmModel is required"
 	}
@@ -93,7 +93,7 @@ func (r *ModelProviderReconciler) validate(mp *agentorcv1alpha1.ModelProvider) (
 // SetupWithManager sets up the controller with the Manager.
 func (r *ModelProviderReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&agentorcv1alpha1.ModelProvider{}).
+		For(&agentorcav1alpha1.ModelProvider{}).
 		Named("modelprovider").
 		Complete(r)
 }

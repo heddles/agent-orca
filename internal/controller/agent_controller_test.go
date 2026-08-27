@@ -27,7 +27,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
 )
 
 var _ = Describe("Agent Controller", func() {
@@ -40,20 +40,20 @@ var _ = Describe("Agent Controller", func() {
 			Name:      resourceName,
 			Namespace: "default", // TODO(user):Modify as needed
 		}
-		agent := &agentorcv1alpha1.Agent{}
+		agent := &agentorcav1alpha1.Agent{}
 
 		BeforeEach(func() {
 			By("creating the custom resource for the Kind Agent")
 			err := k8sClient.Get(ctx, typeNamespacedName, agent)
 			if err != nil && errors.IsNotFound(err) {
-				resource := &agentorcv1alpha1.Agent{
+				resource := &agentorcav1alpha1.Agent{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      resourceName,
 						Namespace: "default",
 					},
-					Spec: agentorcv1alpha1.AgentSpec{
+					Spec: agentorcav1alpha1.AgentSpec{
 						ModelSelectorRef: "test-selector",
-						Runtime: agentorcv1alpha1.AgentRuntime{
+						Runtime: agentorcav1alpha1.AgentRuntime{
 							OCIRef: "ghcr.io/test/agent:latest",
 						},
 					},
@@ -64,7 +64,7 @@ var _ = Describe("Agent Controller", func() {
 
 		AfterEach(func() {
 			// TODO(user): Cleanup logic after each test, like removing the resource instance.
-			resource := &agentorcv1alpha1.Agent{}
+			resource := &agentorcav1alpha1.Agent{}
 			err := k8sClient.Get(ctx, typeNamespacedName, resource)
 			Expect(err).NotTo(HaveOccurred())
 

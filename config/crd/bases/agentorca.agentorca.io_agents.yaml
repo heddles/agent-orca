@@ -1,0 +1,499 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: agents.agentorca.agentorca.io
+spec:
+  group: agentorca.agentorca.io
+  names:
+    kind: Agent
+    listKind: AgentList
+    plural: agents
+    singular: agent
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.modelSelectorRef
+      name: Selector
+      type: string
+    - jsonPath: .spec.runtime.framework
+      name: Framework
+      type: string
+    - jsonPath: .status.serviceAccountName
+      name: ServiceAccount
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Agent defines a reusable agent configuration that can be instantiated
+          as AgentRuns.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: AgentSpec defines the desired state of an Agent.
+            properties:
+              cloudAuth:
+                description: |-
+                  CloudAuth declares cloud-provider identity bindings.
+                  The operator applies the appropriate SA annotations automatically.
+                properties:
+                  aws:
+                    description: AWS configures EKS IRSA (IAM Roles for Service Accounts).
+                    properties:
+                      roleArn:
+                        description: |-
+                          RoleARN is the AWS IAM Role ARN to assume.
+                          Example: "arn:aws:iam::123456789012:role/my-agent-role"
+                        type: string
+                    required:
+                    - roleArn
+                    type: object
+                  azure:
+                    description: Azure configures AKS Azure Workload Identity.
+                    properties:
+                      clientId:
+                        description: ClientID is the Azure Managed Identity client
+                          ID.
+                        type: string
+                    required:
+                    - clientId
+                    type: object
+                  gcp:
+                    description: GCP configures GKE Workload Identity.
+                    properties:
+                      serviceAccount:
+                        description: |-
+                          ServiceAccount is the GCP Service Account email to impersonate.
+                          Example: "my-agent@myproject.iam.gserviceaccount.com"
+                        type: string
+                    required:
+                    - serviceAccount
+                    type: object
+                type: object
+              disableClarify:
+                default: false
+                description: |-
+                  DisableClarify prevents the auto-trigger clarify safety net from activating.
+                  Use this for autonomous agents that should not block waiting for human input.
+                  When true, the _clarify tool is still available but auto-detection is disabled.
+                type: boolean
+              guardrailPolicyRef:
+                description: |-
+                  GuardrailPolicyRef names the GuardrailPolicy (same namespace) applied to this agent's
+                  inputs and outputs. The model-router enforces the policy's filters on every LLM call.
+                type: string
+              knowledgeBaseRefs:
+                description: |-
+                  KnowledgeBaseRefs is the structured alternative to KnowledgeBases.
+                  When set, KnowledgeBases is ignored. Each ref supports per-KB options
+                  such as requiring user confirmation before ingesting fixes.
+                items:
+                  description: KnowledgeBaseRef references a KnowledgeBase with per-KB
+                    options.
+                  properties:
+                    confirmRequired:
+                      description: |-
+                        ConfirmRequired when true replaces the _rag_ingest tool with _propose_fix and
+                        _confirm_fix for this knowledge base. Fixes are staged in Redis and only promoted
+                        to the KnowledgeBase when the user explicitly confirms they worked.
+                      type: boolean
+                    name:
+                      description: Name is the KnowledgeBase CR name (same namespace).
+                      minLength: 1
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+              knowledgeBases:
+                description: |-
+                  KnowledgeBases lists KnowledgeBase names (same namespace) available to this agent.
+                  When non-empty, the model-router injects _rag_search and _rag_ingest as built-in tools.
+                  For finer control (e.g. confirmRequired), use KnowledgeBaseRefs instead.
+                items:
+                  type: string
+                type: array
+              memory:
+                description: Memory configures conversation state persistence and
+                  failure recovery.
+                properties:
+                  archiveOnCompletion:
+                    default: false
+                    description: ArchiveOnCompletion, when true, promotes state to
+                      object storage when the run succeeds.
+                    type: boolean
+                  checkpointEvery:
+                    default: 1
+                    description: |-
+                      CheckpointEvery controls how often (in LLM turns) the model-router writes a checkpoint.
+                      1 means every turn. Higher values reduce storage writes but increase recovery loss window.
+                    type: integer
+                  episodicSummaryEvery:
+                    description: |-
+                      EpisodicSummaryEvery summarizes the conversation every N LLM turns and injects
+                      the summary as context, keeping the active context window compact.
+                      0 disables episodic memory.
+                    type: integer
+                  longTermMemoryRef:
+                    description: |-
+                      LongTermMemoryRef names a KnowledgeBase (same namespace) used as persistent
+                      long-term memory. The model-router automatically retrieves semantically relevant
+                      memories before each turn and exposes a _memory_store tool so the agent can
+                      explicitly persist facts across sessions.
+                      If the KnowledgeBase is not Ready, the run proceeds without long-term memory
+                      and a MemoryUnavailable event is emitted.
+                    type: string
+                  resumeWindowSeconds:
+                    default: 3600
+                    description: |-
+                      ResumeWindowSeconds is how long to retain state after a failure for pod restart/resume.
+                      Defaults to 3600 (1 hour).
+                    type: integer
+                  summaryModelSelectorRef:
+                    description: |-
+                      SummaryModelSelectorRef names the ModelSelector used for summarization calls.
+                      Defaults to the agent's own ModelSelectorRef when unset.
+                    type: string
+                type: object
+              modelSelectorRef:
+                description: ModelSelectorRef names the ModelSelector that routes
+                  LLM calls for this agent.
+                minLength: 1
+                type: string
+              networkIsolation:
+                description: |-
+                  NetworkIsolation configures network-level isolation between the agent and model-router.
+                  When SplitPod is enabled, the agent and model-router run in separate Kubernetes Pods
+                  with distinct NetworkPolicies, providing network-level egress isolation that the
+                  default single-pod sidecar topology cannot enforce (containers in a Pod share a
+                  network namespace, so NetworkPolicy cannot differentiate them).
+                properties:
+                  splitPod:
+                    default: false
+                    description: |-
+                      SplitPod runs the agent and model-router in separate Pods with distinct NetworkPolicies.
+                      The agent pod's egress is restricted to the router Service (ports 8080/8082) and DNS.
+                      The router pod retains all required egress (provider HTTPS, Kubernetes API, Redis, tools).
+                      This provides a Kubernetes-level network guarantee that agent code cannot open arbitrary
+                      outbound connections when platform policy requires all LLM traffic to go via model-router.
+                    type: boolean
+                type: object
+              resources:
+                description: Resources sets default CPU/memory limits for AgentRun
+                  pods.
+                properties:
+                  claims:
+                    description: |-
+                      Claims lists the names of resources, defined in spec.resourceClaims,
+                      that are used by this container.
+
+                      This field depends on the
+                      DynamicResourceAllocation feature gate.
+
+                      This field is immutable. It can only be set for containers.
+                    items:
+                      description: ResourceClaim references one entry in PodSpec.ResourceClaims.
+                      properties:
+                        name:
+                          description: |-
+                            Name must match the name of one entry in pod.spec.resourceClaims of
+                            the Pod where this field is used. It makes that resource available
+                            inside a container.
+                          type: string
+                        request:
+                          description: |-
+                            Request is the name chosen for a request in the referenced claim.
+                            If empty, everything from the claim is made available, otherwise
+                            only the result of this request.
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
+                  limits:
+                    additionalProperties:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
+                    description: |-
+                      Limits describes the maximum amount of compute resources allowed.
+                      More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                    type: object
+                  requests:
+                    additionalProperties:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
+                    description: |-
+                      Requests describes the minimum amount of compute resources required.
+                      If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                      otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                      More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                    type: object
+                type: object
+              runtime:
+                description: Runtime defines the OCI image used to run the agent process.
+                properties:
+                  args:
+                    description: Args overrides the container command arguments.
+                    items:
+                      type: string
+                    type: array
+                  command:
+                    description: Command overrides the container entrypoint.
+                    items:
+                      type: string
+                    type: array
+                  framework:
+                    default: openai-compatible
+                    description: |-
+                      Framework hints to the operator which env var injection tier to use.
+                      Supported values:
+                        openai-compatible  - inject OPENAI_BASE_URL + OPENAI_API_KEY (default)
+                        autogen            - inject OAI_CONFIG_LIST via init container
+                        semantic-kernel    - inject appsettings via init container
+                        langgraph          - openai-compatible + inject LANGGRAPH_CHECKPOINT_URL
+                        shim               - hosts-file shim for frameworks that hardcode their endpoint
+                    enum:
+                    - openai-compatible
+                    - autogen
+                    - semantic-kernel
+                    - langgraph
+                    - shim
+                    type: string
+                  inputMode:
+                    description: |-
+                      InputMode controls how the operator delivers the run input to the agent.
+                      env  - inject AGENTORC_INPUT env var (default)
+                      http - POST the input as JSON to the agent's HTTP endpoint
+                    enum:
+                    - env
+                    - http
+                    type: string
+                  inputPath:
+                    description: |-
+                      InputPath is the HTTP path to POST the run input to (http mode only).
+                      Defaults to /invoke.
+                    type: string
+                  inputPort:
+                    description: |-
+                      InputPort is the TCP port the agent's HTTP server listens on (http mode only).
+                      Defaults to 8000.
+                    type: integer
+                  ociRef:
+                    description: |-
+                      OCIRef is the OCI image reference for the agent process.
+                      Must be signed with Cosign unless imageVerification.skip is set.
+                    minLength: 1
+                    type: string
+                  secretRefs:
+                    description: |-
+                      SecretRefs lists Kubernetes Secrets to mount into the agent container as volumes
+                      (or, if MountPath is empty, inject as env vars). Unlike Tool.spec.secretRefs —
+                      which target the model-router sidecar / tool pods — these mount directly into the
+                      agent container. Useful for agent containers that need an on-disk credential the
+                      agent code reads directly, e.g. an HTB OpenVPN ``.ovpn`` config mounted at
+                      ``/etc/htb``. Mounted read-only.
+                    items:
+                      description: SecretMount references a Kubernetes Secret to mount
+                        into a tool pod or sidecar.
+                      properties:
+                        mountPath:
+                          description: |-
+                            MountPath is the filesystem path where the Secret should be mounted.
+                            If empty, the Secret's keys are injected as environment variables instead.
+                          type: string
+                        name:
+                          description: Name of the Secret in the same namespace.
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    type: array
+                  securityContextOverride:
+                    description: |-
+                      SecurityContextOverride opts the agent container (only the "agent" container,
+                      never the model-router sidecar) out of the default restricted PodSecurityStandard.
+
+                      Intended ONLY for purpose-built agents that require elevated privileges the
+                      restricted baseline forbids — e.g. a red-team pwnbox that must bring up a VPN
+                      tun device (requires NET_ADMIN + /dev/net/tun). When set, the operator mounts
+                      /dev/net/tun into the agent container and applies the requested posture.
+
+                      Admission is gated by a validating webhook: the agent's namespace must carry the
+                      label `agentorca.io/enable-privileged-pods: "true"` AND the Agent must reference a
+                      GuardrailPolicyRef. These checks fail‑closed.
+                    properties:
+                      addCapabilities:
+                        description: |-
+                          AddCapabilities adds specific capabilities to the agent container while keeping
+                          the restricted profile otherwise (e.g. ["NET_ADMIN"] + a /dev/net/tun hostPath
+                          mount). Mutually exclusive with Privileged.
+                        items:
+                          type: string
+                        type: array
+                      privileged:
+                        description: |-
+                          Privileged grants the agent container full privileges (CAP_NET_ADMIN,
+                          /dev/net/tun device access, seccomp/capability enforcement disabled). Use this
+                          for tun-device VPNs. Mutually exclusive with AddCapabilities.
+                        type: boolean
+                      readOnlyRootFilesystem:
+                        description: |-
+                          ReadOnlyRootFilesystem overrides the default read-only root filesystem of the
+                          agent container. When omitted and Privileged is true, defaults to writable
+                          (false) since some security tooling writes helpers/logs to the root FS; when
+                          omitted and non-privileged, retains the restricted default (true).
+                        type: boolean
+                      runAsUser:
+                        description: |-
+                          RunAsUser overrides the default non-root UID (65532). 0 (root) is permitted only
+                          when Privileged is true or a capability that requires root (e.g. NET_ADMIN to
+                          create network interfaces) is added; the webhook enforces this.
+                        format: int64
+                        type: integer
+                    type: object
+                  shimTarget:
+                    description: |-
+                      ShimTarget is the hostname to intercept when Framework is "shim".
+                      Example: "api.openai.com", "generativelanguage.googleapis.com"
+                    type: string
+                required:
+                - ociRef
+                type: object
+              serviceAccountRef:
+                description: |-
+                  ServiceAccountRef references a pre-existing ServiceAccount to use for agent pods.
+                  If unset, the operator creates and manages "agentorca-agent-<name>".
+                  Use this when the SA already has cloud provider annotations (IRSA, Workload Identity).
+                properties:
+                  name:
+                    description: Name of the resource.
+                    type: string
+                required:
+                - name
+                type: object
+              systemPrompt:
+                description: |-
+                  SystemPrompt is the system-level instruction prepended to every conversation.
+                  Leave empty to use the agent's own system prompt.
+                type: string
+              tools:
+                description: |-
+                  Tools is the list of Tool names (in the same namespace) available to this agent.
+                  The model-router injects these as OpenAI function definitions for every run.
+                items:
+                  type: string
+                type: array
+            required:
+            - modelSelectorRef
+            - runtime
+            type: object
+          status:
+            description: |-
+              AgentStatus defines the observed state of an Agent.
+              Context tracking is handled at the AgentDeployment or AgentRun level,
+              not on the template Agent resource itself.
+            properties:
+              cloudProviderDetected:
+                description: CloudProviderDetected is the cloud provider the operator
+                  detected at startup.
+                type: string
+              conditions:
+                description: Conditions holds standard Kubernetes conditions.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              serviceAccountName:
+                description: ServiceAccountName is the name of the stable SA managed
+                  by the operator.
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

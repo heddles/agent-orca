@@ -34,7 +34,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/floppyfish14/agent-orc/test/utils"
+	"github.com/floppyfish14/agent-orca/test/utils"
 )
 
 // TestExternalAPIRateLimiting validates, against a live deployed operator, that a
@@ -53,7 +53,7 @@ var _ = Describe("External API tenant rate limiting", Label("ratelimit"), Ordere
 		providerName     = "rate-provider"
 		providerSecret   = "rate-provider-key"
 		apiLocalPort     = 19084
-		controllerDeploy = "agent-orc-controller-manager"
+		controllerDeploy = "agent-orca-controller-manager"
 	)
 
 	var (
@@ -114,7 +114,7 @@ stringData:
 `, secretName, namespace, clientSecret))).To(Succeed())
 
 		Expect(applyYAML(fmt.Sprintf(`
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: TenantConfig
 metadata:
   name: %s
@@ -158,7 +158,7 @@ stringData:
 `, providerSecret, tenantNS))).To(Succeed())
 
 		Expect(applyYAML(fmt.Sprintf(`
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: ModelProvider
 metadata:
   name: %s
@@ -176,7 +176,7 @@ spec:
 `, providerName, tenantNS, providerSecret))).To(Succeed())
 
 		Expect(applyYAML(fmt.Sprintf(`
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: ModelSelector
 metadata:
   name: %s
@@ -189,7 +189,7 @@ spec:
 `, selectorName, tenantNS, providerName))).To(Succeed())
 
 		Expect(applyYAML(fmt.Sprintf(`
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: Agent
 metadata:
   name: %s

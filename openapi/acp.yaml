@@ -1,15 +1,15 @@
 openapi: 3.1.0
 info:
-  title: agent-orc ACP API
+  title: agent-orca ACP API
   description: |
     A subset of the Agent Communication Protocol (ACP) 0.2.0 surface implemented by
-    agent-orc, exposing agent discovery and run execution over the model-router.
+    agent-orca, exposing agent discovery and run execution over the model-router.
 
-    Authentication: requires `Authorization: Bearer <token>` (agent-orc-issued JWT,
+    Authentication: requires `Authorization: Bearer <token>` (agent-orca-issued JWT,
     federated OIDC, or K8s SA token). See docs/auth.md.
   version: "1.0.0"
   contact:
-    name: agent-orc
+    name: agent-orca
   license:
     name: Apache-2.0
 servers:

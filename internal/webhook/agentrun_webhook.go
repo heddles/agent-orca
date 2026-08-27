@@ -14,9 +14,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package webhook provides the validating admission webhook for agent-orc CRDs.
-// The webhook is registered at /validate-agentorc-io-v1alpha1-agentrun and
-// /validate-agentorc-io-v1alpha1-agent. It enforces:
+// Package webhook provides the validating admission webhook for agent-orca CRDs.
+// The webhook is registered at /validate-agentorca-io-v1alpha1-agentrun and
+// /validate-agentorca-io-v1alpha1-agent. It enforces:
 //
 //   - Image registry allowlist: all ociRef fields must use an approved registry prefix.
 //   - Required field validation beyond what kubebuilder markers express.
@@ -39,8 +39,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
-	"github.com/floppyfish14/agent-orc/internal/security"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
+	"github.com/floppyfish14/agent-orca/internal/security"
 )
 
 // AgentRunValidator validates AgentRun resources on admission.
@@ -50,11 +50,11 @@ type AgentRunValidator struct {
 	AllowedRegistries []string // empty = allow all
 }
 
-// +kubebuilder:webhook:path=/validate-agentorc-agentorc-io-v1alpha1-agentrun,mutating=false,failurePolicy=fail,sideEffects=None,groups=agentorc.agentorc.io,resources=agentruns,verbs=create;update,versions=v1alpha1,name=vagentrun.kb.io,admissionReviewVersions=v1
+// +kubebuilder:webhook:path=/validate-agentorca-agentorca-io-v1alpha1-agentrun,mutating=false,failurePolicy=fail,sideEffects=None,groups=agentorca.agentorca.io,resources=agentruns,verbs=create;update,versions=v1alpha1,name=vagentrun.kb.io,admissionReviewVersions=v1
 
 // Handle implements admission.Handler.
 func (v *AgentRunValidator) Handle(ctx context.Context, req admission.Request) admission.Response {
-	var run agentorcv1alpha1.AgentRun
+	var run agentorcav1alpha1.AgentRun
 	if err := v.Decoder.DecodeRaw(req.Object, &run); err != nil {
 		return admission.Errored(http.StatusBadRequest, err)
 	}
@@ -70,7 +70,7 @@ func (v *AgentRunValidator) Handle(ctx context.Context, req admission.Request) a
 	return admission.Allowed("ok")
 }
 
-func (v *AgentRunValidator) validate(ctx context.Context, run *agentorcv1alpha1.AgentRun) error {
+func (v *AgentRunValidator) validate(ctx context.Context, run *agentorcav1alpha1.AgentRun) error {
 	if run.Spec.AgentRef == "" {
 		return fmt.Errorf("%s", "spec.agentRef is required")
 	}
@@ -79,7 +79,7 @@ func (v *AgentRunValidator) validate(ctx context.Context, run *agentorcv1alpha1.
 	}
 
 	// Verify the referenced Agent exists.
-	var agent agentorcv1alpha1.Agent
+	var agent agentorcav1alpha1.Agent
 	if err := v.Client.Get(ctx, client.ObjectKey{
 		Name:      run.Spec.AgentRef,
 		Namespace: run.Namespace,
@@ -102,11 +102,11 @@ type AgentValidator struct {
 	AllowedRegistries []string // empty = allow all
 }
 
-// +kubebuilder:webhook:path=/validate-agentorc-agentorc-io-v1alpha1-agent,mutating=false,failurePolicy=fail,sideEffects=None,groups=agentorc.agentorc.io,resources=agents,verbs=create;update,versions=v1alpha1,name=vagent.kb.io,admissionReviewVersions=v1
+// +kubebuilder:webhook:path=/validate-agentorca-agentorca-io-v1alpha1-agent,mutating=false,failurePolicy=fail,sideEffects=None,groups=agentorca.agentorca.io,resources=agents,verbs=create;update,versions=v1alpha1,name=vagent.kb.io,admissionReviewVersions=v1
 
 // Handle implements admission.Handler.
 func (v *AgentValidator) Handle(ctx context.Context, req admission.Request) admission.Response {
-	var agent agentorcv1alpha1.Agent
+	var agent agentorcav1alpha1.Agent
 	if err := v.Decoder.DecodeRaw(req.Object, &agent); err != nil {
 		return admission.Errored(http.StatusBadRequest, err)
 	}
@@ -117,7 +117,7 @@ func (v *AgentValidator) Handle(ctx context.Context, req admission.Request) admi
 	return admission.Allowed("ok")
 }
 
-func (v *AgentValidator) validate(ctx context.Context, agent *agentorcv1alpha1.Agent) error {
+func (v *AgentValidator) validate(ctx context.Context, agent *agentorcav1alpha1.Agent) error {
 	if agent.Spec.Runtime.OCIRef == "" {
 		return fmt.Errorf("%s", "spec.runtime.ociRef is required")
 	}
@@ -131,7 +131,7 @@ func (v *AgentValidator) validate(ctx context.Context, agent *agentorcv1alpha1.A
 	// Enforce the PodSecurityOverride safety contract before the pod is ever
 	// scheduled. An override (e.g. for a VPN pwnbox) grants the agent container
 	// capabilities the restricted baseline forbids, so it is gated on:
-	//  1. the namespace carrying the opt-in label agentorc.io/enable-privileged-pods=true
+	//  1. the namespace carrying the opt-in label agentorca.io/enable-privileged-pods=true
 	//  2. the Agent referencing a GuardrailPolicyRef (defense in depth), and
 	//  3. a small set of internal consistency rules on the override itself.
 	// Admission uses failurePolicy=Fail, so these check the role at admission time.
@@ -145,7 +145,7 @@ func (v *AgentValidator) validate(ctx context.Context, agent *agentorcv1alpha1.A
 
 // validateSecurityContextOverride enforces the gating + consistency rules for a
 // PodSecurityOverride on an Agent. See validate() for the full rationale.
-func (v *AgentValidator) validateSecurityContextOverride(ctx context.Context, agent *agentorcv1alpha1.Agent) error {
+func (v *AgentValidator) validateSecurityContextOverride(ctx context.Context, agent *agentorcav1alpha1.Agent) error {
 	override := agent.Spec.Runtime.SecurityContextOverride
 
 	// Require a GuardrailPolicyRef so privileged/elevated agents always run with
@@ -192,11 +192,11 @@ type ToolValidator struct {
 	AllowedRegistries []string
 }
 
-// +kubebuilder:webhook:path=/validate-agentorc-agentorc-io-v1alpha1-tool,mutating=false,failurePolicy=fail,sideEffects=None,groups=agentorc.agentorc.io,resources=tools,verbs=create;update,versions=v1alpha1,name=vtool.kb.io,admissionReviewVersions=v1
+// +kubebuilder:webhook:path=/validate-agentorca-agentorca-io-v1alpha1-tool,mutating=false,failurePolicy=fail,sideEffects=None,groups=agentorca.agentorca.io,resources=tools,verbs=create;update,versions=v1alpha1,name=vtool.kb.io,admissionReviewVersions=v1
 
 // Handle implements admission.Handler.
 func (v *ToolValidator) Handle(_ context.Context, req admission.Request) admission.Response {
-	var tool agentorcv1alpha1.Tool
+	var tool agentorcav1alpha1.Tool
 	if err := v.Decoder.DecodeRaw(req.Object, &tool); err != nil {
 		return admission.Errored(http.StatusBadRequest, err)
 	}
@@ -243,7 +243,7 @@ func checkRegistryAllowlist(ociRef string, allowedRegistries []string) error {
 // SetupAgentRunWebhook registers the AgentRun validating webhook with the manager.
 func SetupAgentRunWebhook(mgr ctrl.Manager, allowedRegistries []string) error {
 	decoder := admission.NewDecoder(mgr.GetScheme())
-	mgr.GetWebhookServer().Register("/validate-agentorc-agentorc-io-v1alpha1-agentrun",
+	mgr.GetWebhookServer().Register("/validate-agentorca-agentorca-io-v1alpha1-agentrun",
 		&admission.Webhook{
 			Handler: &AgentRunValidator{
 				Client:            mgr.GetClient(),
@@ -258,7 +258,7 @@ func SetupAgentRunWebhook(mgr ctrl.Manager, allowedRegistries []string) error {
 // SetupAgentWebhook registers the Agent validating webhook with the manager.
 func SetupAgentWebhook(mgr ctrl.Manager, allowedRegistries []string) error {
 	decoder := admission.NewDecoder(mgr.GetScheme())
-	mgr.GetWebhookServer().Register("/validate-agentorc-agentorc-io-v1alpha1-agent",
+	mgr.GetWebhookServer().Register("/validate-agentorca-agentorca-io-v1alpha1-agent",
 		&admission.Webhook{
 			Handler: &AgentValidator{
 				Client:            mgr.GetClient(),
@@ -273,7 +273,7 @@ func SetupAgentWebhook(mgr ctrl.Manager, allowedRegistries []string) error {
 // SetupToolWebhook registers the Tool validating webhook with the manager.
 func SetupToolWebhook(mgr ctrl.Manager, allowedRegistries []string) error {
 	decoder := admission.NewDecoder(mgr.GetScheme())
-	mgr.GetWebhookServer().Register("/validate-agentorc-agentorc-io-v1alpha1-tool",
+	mgr.GetWebhookServer().Register("/validate-agentorca-agentorca-io-v1alpha1-tool",
 		&admission.Webhook{
 			Handler: &ToolValidator{
 				Client:            mgr.GetClient(),

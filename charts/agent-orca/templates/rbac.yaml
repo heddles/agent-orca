@@ -1,0 +1,182 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "agent-orca.fullname" . }}-operator
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agent-orca.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "agent-orca.fullname" . }}-operator
+  labels:
+    {{- include "agent-orca.labels" . | nindent 4 }}
+rules:
+  # Own CRDs — explicitly enumerated to avoid granting access to future resources
+  - apiGroups: ["agentorca.agentorca.io"]
+    resources:
+      - agents
+      - agents/status
+      - agents/finalizers
+      - agentruns
+      - agentruns/status
+      - agentruns/finalizers
+      - agentdeployments
+      - agentdeployments/status
+      - agentdeployments/finalizers
+      - agentworkflows
+      - agentworkflows/status
+      - agentworkflows/finalizers
+      - guardrailpolicies
+      - guardrailpolicies/status
+      - guardrailpolicies/finalizers
+      - knowledgebases
+      - knowledgebases/status
+      - knowledgebases/finalizers
+      - mcpservers
+      - mcpservers/status
+      - mcpservers/finalizers
+      - modelproviders
+      - modelproviders/status
+      - modelproviders/finalizers
+      - modelselectors
+      - modelselectors/status
+      - modelselectors/finalizers
+      - tenantconfigs
+      - tenantconfigs/status
+      - tenantconfigs/finalizers
+      - tools
+      - tools/status
+      - tools/finalizers
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Create and manage workloads for AgentRuns
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "serviceaccounts", "configmaps", "events", "endpoints"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Secrets: read for client secret validation and JWT signing key, create/update for signing key persistence
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["serviceaccounts/token"]
+    verbs: ["create"]
+  # Manage Deployments for AgentDeployments and StatefulSets for KnowledgeBases (Qdrant)
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Manage Jobs for KnowledgeBase MCP ingestion
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  # Manage Services for KnowledgeBases (Qdrant headless service)
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Per-run RBAC: namespace-scoped roles and rolebindings only
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "rolebindings"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # ClusterRoleBindings: bind agent SAs to the shared token-reviewer ClusterRole
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterrolebindings"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["create"]
+  # Node list+watch for cloud provider detection (cache requires watch)
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["list", "watch"]
+  # Namespace label lookup used by the Agent admission webhook to gate
+  # PodSecurityOverride (privileged pwnbox containers) admission.
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get","list","watch"]
+  # Optional Tetragon eBPF policies
+  {{- if .Values.tetragon.enabled }}
+  - apiGroups: ["cilium.io"]
+    resources: ["tracingpoliciesnamespaced"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "agent-orca.fullname" . }}-operator
+  labels:
+    {{- include "agent-orca.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "agent-orca.fullname" . }}-operator
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "agent-orca.fullname" . }}-operator
+    namespace: {{ .Release.Namespace }}
+---
+# ServiceAccount for the UIProxy pod. No RBAC rules needed — it is only used for
+# identity proof via the projected SA token (audience: agentorca/ui).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "agent-orca.fullname" . }}-ui-proxy
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agent-orca.labels" . | nindent 4 }}
+---
+# ServiceAccount used by KnowledgeBase MCP ingestion Jobs.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: agentorca-mcp-ingester
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agent-orca.labels" . | nindent 4 }}
+---
+# Role granting MCP ingestion Jobs permission to update their results ConfigMap.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: agentorca-mcp-ingester
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agent-orca.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: agentorca-mcp-ingester
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agent-orca.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: agentorca-mcp-ingester
+subjects:
+  - kind: ServiceAccount
+    name: agentorca-mcp-ingester
+    namespace: {{ .Release.Namespace }}
+---
+# Shared ClusterRole that grants only the TokenReview create permission.
+# The agentrun controller binds each agent SA to this role at run start so
+# the model-router sidecar can validate incoming tokens via the k8s API.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "agent-orca.fullname" . }}-token-reviewer
+  labels:
+    {{- include "agent-orca.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["create"]

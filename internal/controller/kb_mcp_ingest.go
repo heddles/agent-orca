@@ -35,8 +35,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
-	"github.com/floppyfish14/agent-orc/internal/podbuilder"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
+	"github.com/floppyfish14/agent-orca/internal/podbuilder"
 )
 
 const (
@@ -51,10 +51,10 @@ const (
 	mcpIngestConfigDir = "/etc/mcp-ingest"
 
 	// defaultMCPIngesterImage is the fallback image for the mcp-ingester binary.
-	defaultMCPIngesterImage = "ghcr.io/agentorc/mcp-ingester:latest"
+	defaultMCPIngesterImage = "ghcr.io/agentorca/mcp-ingester:latest"
 
 	// labelKBMCPIngest marks resources created for MCP ingestion Jobs.
-	labelKBMCPIngest = "agentorc.io/kb-mcp-ingest"
+	labelKBMCPIngest = "agentorca.io/kb-mcp-ingest"
 )
 
 // mcpIngestConfig mirrors the IngestConfig struct in cmd/mcp-ingester/main.go.
@@ -105,14 +105,14 @@ type mcpIngestConfig struct {
 // interval not elapsed). Returns (false, nil) when a Job is still running.
 func (r *KnowledgeBaseReconciler) runMCPIngestion(
 	ctx context.Context,
-	kb *agentorcv1alpha1.KnowledgeBase,
-	src agentorcv1alpha1.MCPIngestionSource,
+	kb *agentorcav1alpha1.KnowledgeBase,
+	src agentorcav1alpha1.MCPIngestionSource,
 	idx int,
 ) (bool, error) {
 	logger := log.FromContext(ctx)
 
 	// Validate MCPServer exists and grants _controller access.
-	var server agentorcv1alpha1.MCPServer
+	var server agentorcav1alpha1.MCPServer
 	if err := r.Get(ctx, client.ObjectKey{Name: src.MCPServerRef, Namespace: kb.Namespace}, &server); err != nil {
 		return false, fmt.Errorf("getting MCPServer %q: %w", src.MCPServerRef, err)
 	}
@@ -152,7 +152,7 @@ func (r *KnowledgeBaseReconciler) runMCPIngestion(
 	if mpName == "" {
 		return false, fmt.Errorf("KnowledgeBase %q has no pinned embedding provider yet", kb.Name)
 	}
-	var mp agentorcv1alpha1.ModelProvider
+	var mp agentorcav1alpha1.ModelProvider
 	if err := r.Get(ctx, client.ObjectKey{Name: mpName, Namespace: kb.Namespace}, &mp); err != nil {
 		return false, fmt.Errorf("getting ModelProvider %q: %w", mpName, err)
 	}
@@ -202,7 +202,7 @@ func (r *KnowledgeBaseReconciler) runMCPIngestion(
 // Documents are already in Qdrant; the caller queries Qdrant for counts.
 func (r *KnowledgeBaseReconciler) handleExistingJob(
 	ctx context.Context,
-	kb *agentorcv1alpha1.KnowledgeBase,
+	kb *agentorcav1alpha1.KnowledgeBase,
 	job *batchv1.Job,
 ) (bool, error) {
 	logger := log.FromContext(ctx)
@@ -255,11 +255,11 @@ func (r *KnowledgeBaseReconciler) cleanupIngestResources(ctx context.Context, na
 func (r *KnowledgeBaseReconciler) buildIngestConfig(
 	ctx context.Context, //nolint:unparam
 
-	kb *agentorcv1alpha1.KnowledgeBase,
-	server *agentorcv1alpha1.MCPServer,
-	tool *agentorcv1alpha1.Tool,
-	mp *agentorcv1alpha1.ModelProvider,
-	src *agentorcv1alpha1.MCPIngestionSource,
+	kb *agentorcav1alpha1.KnowledgeBase,
+	server *agentorcav1alpha1.MCPServer,
+	tool *agentorcav1alpha1.Tool,
+	mp *agentorcav1alpha1.ModelProvider,
+	src *agentorcav1alpha1.MCPIngestionSource,
 ) (*mcpIngestConfig, error) { //nolint:unparam
 
 	embeddingEndpoint := mp.Spec.BaseURL
@@ -352,16 +352,16 @@ func (r *KnowledgeBaseReconciler) buildIngestConfig(
 
 // buildIngestJob constructs the Kubernetes Job spec for MCP ingestion.
 func (r *KnowledgeBaseReconciler) buildIngestJob(
-	kb *agentorcv1alpha1.KnowledgeBase,
-	tool *agentorcv1alpha1.Tool,
-	src *agentorcv1alpha1.MCPIngestionSource,
-	mp *agentorcv1alpha1.ModelProvider,
+	kb *agentorcav1alpha1.KnowledgeBase,
+	tool *agentorcav1alpha1.Tool,
+	src *agentorcav1alpha1.MCPIngestionSource,
+	mp *agentorcav1alpha1.ModelProvider,
 	jobName, configCMName string,
 ) *batchv1.Job {
 	labels := map[string]string{
 		labelKBMCPIngest:               kb.Name,
 		"app.kubernetes.io/name":       "mcp-ingester",
-		"app.kubernetes.io/managed-by": "agentorc",
+		"app.kubernetes.io/managed-by": "agentorca",
 	}
 
 	volumes := []corev1.Volume{
@@ -547,7 +547,7 @@ func (r *KnowledgeBaseReconciler) buildIngestJob(
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
 					RestartPolicy:      corev1.RestartPolicyNever,
-					ServiceAccountName: "agentorc-mcp-ingester",
+					ServiceAccountName: "agentorca-mcp-ingester",
 					Containers: []corev1.Container{
 						{
 							Name:         "ingester",
@@ -573,8 +573,8 @@ func (r *KnowledgeBaseReconciler) buildIngestJob(
 }
 
 // findMCPTool returns the first child Tool CR for the given MCPServer.
-func (r *KnowledgeBaseReconciler) findMCPTool(ctx context.Context, server *agentorcv1alpha1.MCPServer) (*agentorcv1alpha1.Tool, error) {
-	var tools agentorcv1alpha1.ToolList
+func (r *KnowledgeBaseReconciler) findMCPTool(ctx context.Context, server *agentorcav1alpha1.MCPServer) (*agentorcav1alpha1.Tool, error) {
+	var tools agentorcav1alpha1.ToolList
 	if err := r.List(ctx, &tools,
 		client.InNamespace(server.Namespace),
 		client.MatchingLabels{
@@ -591,7 +591,7 @@ func (r *KnowledgeBaseReconciler) findMCPTool(ctx context.Context, server *agent
 }
 
 // hasControllerAccess checks if the MCPServer grants access to the _controller principal.
-func hasControllerAccess(server *agentorcv1alpha1.MCPServer) bool {
+func hasControllerAccess(server *agentorcav1alpha1.MCPServer) bool {
 	return slices.Contains(server.Spec.AllowedAgents, ControllerPrincipal)
 }
 
@@ -615,9 +615,9 @@ func (r *KnowledgeBaseReconciler) mcpIngesterImageOrDefault() string {
 
 // knowledgeBasesForMCPServer maps an MCPServer change to KnowledgeBases that reference it.
 func (r *KnowledgeBaseReconciler) knowledgeBasesForMCPServer(ctx context.Context, obj client.Object) []reconcile.Request {
-	server := obj.(*agentorcv1alpha1.MCPServer)
+	server := obj.(*agentorcav1alpha1.MCPServer)
 
-	var kbList agentorcv1alpha1.KnowledgeBaseList
+	var kbList agentorcav1alpha1.KnowledgeBaseList
 	if err := r.List(ctx, &kbList, client.InNamespace(server.Namespace)); err != nil {
 		return nil
 	}

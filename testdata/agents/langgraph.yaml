@@ -8,7 +8,7 @@
 # Agent: LangGraph StateGraph with a single model node
 #        (https://github.com/langchain-ai/langgraph)
 ---
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: Agent
 metadata:
   name: test-langgraph
@@ -73,7 +73,7 @@ spec:
       cpu: 500m
       memory: 1Gi
 ---
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: AgentRun
 metadata:
   name: test-langgraph-run

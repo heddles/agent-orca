@@ -37,15 +37,15 @@ type Metrics struct {
 func NewMetrics(reg prometheus.Registerer) *Metrics {
 	m := &Metrics{
 		tokens: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "agentorc_modelrouter_tokens_total",
+			Name: "agentorca_modelrouter_tokens_total",
 			Help: "Output tokens streamed by this model-router.",
 		}),
 		toolCalls: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "agentorc_modelrouter_tool_calls_total",
+			Name: "agentorca_modelrouter_tool_calls_total",
 			Help: "Tool calls dispatched by this model-router.",
 		}),
 		streamDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
-			Name:    "agentorc_modelrouter_stream_duration_seconds",
+			Name:    "agentorca_modelrouter_stream_duration_seconds",
 			Help:    "Duration of a model-router streaming chat response.",
 			Buckets: []float64{0.1, 0.3, 0.5, 1, 2, 5, 10, 20, 60},
 		}),

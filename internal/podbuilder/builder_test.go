@@ -23,13 +23,13 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
 )
 
-func testAgent() *agentorcv1alpha1.Agent {
-	return &agentorcv1alpha1.Agent{
-		Spec: agentorcv1alpha1.AgentSpec{
-			Runtime: agentorcv1alpha1.AgentRuntime{
+func testAgent() *agentorcav1alpha1.Agent {
+	return &agentorcav1alpha1.Agent{
+		Spec: agentorcav1alpha1.AgentSpec{
+			Runtime: agentorcav1alpha1.AgentRuntime{
 				OCIRef:    "registry.example.com/my-agent:v1",
 				Framework: "openai-compatible",
 				Command:   []string{"/bin/agent"},
@@ -51,7 +51,7 @@ func testProviderVolumes() ([]corev1.Volume, []corev1.VolumeMount) {
 				Secret: &corev1.SecretVolumeSource{SecretName: "anthropic-key"},
 			}},
 		}, []corev1.VolumeMount{
-			{Name: "provider-anthropic", MountPath: "/etc/agentorc-providers/anthropic", ReadOnly: true},
+			{Name: "provider-anthropic", MountPath: "/etc/agentorca-providers/anthropic", ReadOnly: true},
 		}
 }
 
@@ -61,35 +61,35 @@ func TestBuild_AgentRunPod(t *testing.T) { //nolint:gocyclo
 	pvols, pmounts := testProviderVolumes()
 
 	pod := Build(PodConfig{
-		PodName:   "agentorc-run-test-run",
+		PodName:   "agentorca-run-test-run",
 		Namespace: "default",
 		Labels: map[string]string{
-			"agentorc.io/run":   "test-run",
-			"agentorc.io/agent": "test-agent",
+			"agentorca.io/run":   "test-run",
+			"agentorca.io/agent": "test-agent",
 		},
 		Agent: agent,
 		AgentEnv: []corev1.EnvVar{
 			{Name: "AGENTORC_RUN_ID", Value: "test-run"},
 			{Name: "AGENTORC_TIMEOUT_SEC", Value: "300"},
 		},
-		TokenSecretName:  "agentorc-run-test-run-token",
-		ServiceAccount:   "agentorc-agent-test-agent",
+		TokenSecretName:  "agentorca-run-test-run-token",
+		ServiceAccount:   "agentorca-agent-test-agent",
 		RestartPolicy:    corev1.RestartPolicyNever,
 		ModelRouterImage: "registry.example.com/model-router:v1",
-		RouterConfigName: "agentorc-run-test-run",
+		RouterConfigName: "agentorca-run-test-run",
 		ProviderVolumes:  pvols,
 		ProviderMounts:   pmounts,
 	})
 
 	// Pod metadata
-	if pod.Name != "agentorc-run-test-run" {
-		t.Errorf("expected pod name 'agentorc-run-test-run', got %q", pod.Name)
+	if pod.Name != "agentorca-run-test-run" {
+		t.Errorf("expected pod name 'agentorca-run-test-run', got %q", pod.Name)
 	}
 	if pod.Namespace != "default" {
 		t.Errorf("expected namespace 'default', got %q", pod.Namespace)
 	}
-	if pod.Labels["agentorc.io/run"] != "test-run" {
-		t.Errorf("expected label agentorc.io/run=test-run, got %q", pod.Labels["agentorc.io/run"])
+	if pod.Labels["agentorca.io/run"] != "test-run" {
+		t.Errorf("expected label agentorca.io/run=test-run, got %q", pod.Labels["agentorca.io/run"])
 	}
 
 	// RestartPolicy
@@ -98,8 +98,8 @@ func TestBuild_AgentRunPod(t *testing.T) { //nolint:gocyclo
 	}
 
 	// ServiceAccount
-	if pod.Spec.ServiceAccountName != "agentorc-agent-test-agent" {
-		t.Errorf("expected SA 'agentorc-agent-test-agent', got %q", pod.Spec.ServiceAccountName)
+	if pod.Spec.ServiceAccountName != "agentorca-agent-test-agent" {
+		t.Errorf("expected SA 'agentorca-agent-test-agent', got %q", pod.Spec.ServiceAccountName)
 	}
 
 	// Agent container
@@ -130,7 +130,7 @@ func TestBuild_AgentRunPod(t *testing.T) { //nolint:gocyclo
 		t.Error("expected AGENTORC_RUN_ID env var in agent container")
 	}
 	// EnvFrom should reference the token secret
-	if len(agentC.EnvFrom) != 1 || agentC.EnvFrom[0].SecretRef.Name != "agentorc-run-test-run-token" {
+	if len(agentC.EnvFrom) != 1 || agentC.EnvFrom[0].SecretRef.Name != "agentorca-run-test-run-token" {
 		t.Errorf("expected envFrom with token secret, got %+v", agentC.EnvFrom)
 	}
 	// Agent resources should be set
@@ -178,12 +178,12 @@ func TestBuild_AgentRunPod(t *testing.T) { //nolint:gocyclo
 	// Router config volume
 	foundRouterVol := false
 	for _, v := range pod.Spec.Volumes {
-		if v.Name == RouterConfigVolume && v.ConfigMap != nil && v.ConfigMap.Name == "agentorc-run-test-run" {
+		if v.Name == RouterConfigVolume && v.ConfigMap != nil && v.ConfigMap.Name == "agentorca-run-test-run" {
 			foundRouterVol = true
 		}
 	}
 	if !foundRouterVol {
-		t.Error("expected router config volume referencing ConfigMap 'agentorc-run-test-run'")
+		t.Error("expected router config volume referencing ConfigMap 'agentorca-run-test-run'")
 	}
 
 	// Provider volume should be present
@@ -212,21 +212,21 @@ func TestBuild_DeploymentPod(t *testing.T) {
 	pod := Build(PodConfig{
 		Namespace: "prod",
 		Labels: map[string]string{
-			"agentdeployment.agentorc.io": "my-deploy",
+			"agentdeployment.agentorca.io": "my-deploy",
 		},
 		Annotations: map[string]string{
-			"agentorc.io/router-config-hash": "abc123",
+			"agentorca.io/router-config-hash": "abc123",
 		},
 		Agent: agent,
 		AgentEnv: []corev1.EnvVar{
 			{Name: "AGENTORC_AGENT", Value: "my-agent"},
 			{Name: "AGENTORC_NAMESPACE", Value: "prod"},
 		},
-		TokenSecretName:  "agentorc-deploy-my-deploy-token",
-		ServiceAccount:   "agentorc-agent-my-agent",
+		TokenSecretName:  "agentorca-deploy-my-deploy-token",
+		ServiceAccount:   "agentorca-agent-my-agent",
 		RestartPolicy:    corev1.RestartPolicyAlways,
 		ModelRouterImage: "registry.example.com/model-router:v1",
-		RouterConfigName: "agentorc-deploy-my-deploy",
+		RouterConfigName: "agentorca-deploy-my-deploy",
 	})
 
 	// RestartPolicy should be Always
@@ -235,7 +235,7 @@ func TestBuild_DeploymentPod(t *testing.T) {
 	}
 
 	// Annotations should be set
-	if pod.Annotations["agentorc.io/router-config-hash"] != "abc123" {
+	if pod.Annotations["agentorca.io/router-config-hash"] != "abc123" {
 		t.Errorf("expected annotation, got %v", pod.Annotations)
 	}
 
@@ -270,18 +270,18 @@ func TestBuild_WarmPod(t *testing.T) {
 		GenerateName: "warm-my-deploy-",
 		Namespace:    "default",
 		Labels: map[string]string{
-			"agentorc.io/warm-pool":   "my-deploy",
-			"agentorc.io/warm-status": "idle",
+			"agentorca.io/warm-pool":   "my-deploy",
+			"agentorca.io/warm-status": "idle",
 		},
 		Agent: agent,
 		AgentEnv: []corev1.EnvVar{
 			{Name: "AGENTORC_AGENT", Value: "my-agent"},
 		},
 		TokenSecretName:  "warm-token-abc",
-		ServiceAccount:   "agentorc-agent-my-agent",
+		ServiceAccount:   "agentorca-agent-my-agent",
 		RestartPolicy:    corev1.RestartPolicyNever,
 		ModelRouterImage: "registry.example.com/model-router:v1",
-		RouterConfigName: "agentorc-warm-my-deploy",
+		RouterConfigName: "agentorca-warm-my-deploy",
 		RouterExtraPorts: []corev1.ContainerPort{
 			{Name: "warm-mgmt", ContainerPort: 9090, Protocol: corev1.ProtocolTCP},
 		},
@@ -456,7 +456,7 @@ func TestBuild_HTTPModeReadinessProbe(t *testing.T) {
 	}
 
 	pod := Build(PodConfig{
-		PodName:             "agentorc-run-http-run",
+		PodName:             "agentorca-run-http-run",
 		Namespace:           "default",
 		Agent:               agent,
 		TokenSecretName:     "token",
@@ -571,7 +571,7 @@ func TestSanitizeVolumeName(t *testing.T) {
 
 func TestToolSecretFilePath(t *testing.T) {
 	got := ToolSecretFilePath("github-mcp", "gh-token", "token")
-	expected := "/etc/agentorc-tool-secrets/github-mcp/gh-token/token"
+	expected := "/etc/agentorca-tool-secrets/github-mcp/gh-token/token"
 	if got != expected {
 		t.Errorf("ToolSecretFilePath = %q, want %q", got, expected)
 	}
@@ -603,7 +603,7 @@ func TestFrameworkEnvVars(t *testing.T) {
 		t.Errorf("autogen OPENAI_BASE_URL: got %q, want %q", vars[0].Value, localhost+"/v1")
 	}
 	// split-pod: service URL is forwarded correctly
-	svcURL := "http://agentorc-router-myrun.default:8080"
+	svcURL := "http://agentorca-router-myrun.default:8080"
 	vars = FrameworkEnvVars("langgraph", svcURL)
 	if vars[0].Value != svcURL {
 		t.Errorf("langgraph split-pod OPENAI_API_BASE: got %q, want %q", vars[0].Value, svcURL)

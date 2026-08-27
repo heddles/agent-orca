@@ -3,7 +3,7 @@
 #
 # AgentDeployment pods do NOT get an operator-generated per-pod NetworkPolicy (only
 # AgentRun pods do), so the chart authors one. The agent must NOT be privileged — it
-# only needs to: reach a Poolside model (via the model-router sidecar in-pod), call the
+# only needs to: reach a model provider model (via the model-router sidecar in-pod), call the
 # red-pwnbox MCP server, resolve DNS, checkpoint to Redis, and talk to the K8s API.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -15,8 +15,8 @@ metadata:
 spec:
   podSelector:
     matchLabels:
-      app.kubernetes.io/managed-by: agent-orc
-      agentdeployment.agentorc.io: red-commander
+      app.kubernetes.io/managed-by: agent-orca
+      agentdeployment.agentorca.io: red-commander
   policyTypes:
     - Ingress
     - Egress
@@ -24,7 +24,7 @@ spec:
   # (the warm-mgmt /v1/claim-run handshake) on warm pods. The Deployment's hot-replica
   # pods also match this policy but don't serve :9090, so the rule is a no-op for them.
   # Without this, claimWarmPod's POST to <warm-pod-ip>:9090 is dropped (deny-all ingress)
-  # and the run falls back to a fresh agentorc-run-* pod every time.
+  # and the run falls back to a fresh agentorca-run-* pod every time.
   ingress:
     - ports:
         - protocol: TCP
@@ -32,7 +32,7 @@ spec:
       from:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: {{ .Values.cluster.systemNamespace | default "agent-orc-system" }}
+              kubernetes.io/metadata.name: {{ .Values.cluster.systemNamespace | default "agent-orca-system" }}
   egress:
     # Kubernetes DNS.
     - ports:
@@ -46,7 +46,6 @@ spec:
           port: 443
         - protocol: TCP
           port: 6443
-    # Poolside LLM endpoint (HTTPS) — the model-router routes to inference.poolside.ai.
     - ports:
         - protocol: TCP
           port: 443
@@ -54,15 +53,15 @@ spec:
     - to:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: {{ .Values.cluster.systemNamespace | default "agent-orc-system" }}
+              kubernetes.io/metadata.name: {{ .Values.cluster.systemNamespace | default "agent-orca-system" }}
       ports:
         - protocol: TCP
           port: 6379
-    # agent-orc internal API (8082) used by the model-router for built-in ops.
+    # agent-orca internal API (8082) used by the model-router for built-in ops.
     - to:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: {{ .Values.cluster.systemNamespace | default "agent-orc-system" }}
+              kubernetes.io/metadata.name: {{ .Values.cluster.systemNamespace | default "agent-orca-system" }}
       ports:
         - protocol: TCP
           port: 8082

@@ -24,7 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
 )
 
 // CloudProvider identifies the detected or configured cloud environment.
@@ -82,7 +82,7 @@ func DetectCloudProvider(ctx context.Context, c client.Client) CloudProvider {
 // ApplyCloudAuthAnnotations annotates the ServiceAccount with the cloud-provider-specific
 // identity binding declared in the Agent's cloudAuth field.
 // The caller is responsible for updating the SA via the Kubernetes API.
-func ApplyCloudAuthAnnotations(sa *corev1.ServiceAccount, cloudAuth *agentorcv1alpha1.CloudAuthSpec, provider CloudProvider) {
+func ApplyCloudAuthAnnotations(sa *corev1.ServiceAccount, cloudAuth *agentorcav1alpha1.CloudAuthSpec, provider CloudProvider) {
 	if cloudAuth == nil {
 		return
 	}
@@ -128,8 +128,8 @@ func BuildManagedServiceAccount(agentName, namespace string) *corev1.ServiceAcco
 			Name:      AgentSAName(agentName),
 			Namespace: namespace,
 			Labels: map[string]string{
-				LabelManagedBy:      ManagedByValue,
-				"agentorc.io/agent": agentName,
+				LabelManagedBy:       ManagedByValue,
+				"agentorca.io/agent": agentName,
 			},
 		},
 	}

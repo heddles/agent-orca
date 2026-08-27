@@ -1,6 +1,6 @@
 # Rate Limiting & Budget Enforcement
 
-agent-orc enforces three per-tenant admission controls before a task is
+agent-orca enforces three per-tenant admission controls before a task is
 accepted. These are configured on the `TenantConfig` CRD and enforced by the
 `RateLimiter` in `internal/apiserver/rate_limit.go`.
 
@@ -9,11 +9,11 @@ accepted. These are configured on the `TenantConfig` CRD and enforced by the
 Set limits on the `TenantConfig` spec:
 
 ```yaml
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: TenantConfig
 metadata:
   name: acme-corp
-  namespace: agentorc-system
+  namespace: agentorca-system
 spec:
   authMode: issued
   issued:

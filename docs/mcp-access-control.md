@@ -1,6 +1,6 @@
 # MCP Server Access Control
 
-MCP servers in agent-orc have two complementary security layers:
+MCP servers in agent-orca have two complementary security layers:
 
 | Layer | Where enforced | Mechanism |
 |---|---|---|
@@ -16,7 +16,7 @@ Both layers work together: the operator prevents unauthorized runs from starting
 Access to an MCP server is **denied by default**. An agent must be explicitly listed in `MCPServer.spec.allowedAgents` for any AgentRun that uses it to be allowed to start.
 
 ```yaml
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: MCPServer
 metadata:
   name: code-tools
@@ -34,7 +34,7 @@ spec:
 
 ### Enforcement
 
-When an AgentRun transitions from `Pending` to `Running`, the controller resolves every MCP tool the agent declares. For each tool that is owned by an `MCPServer` (identified by the `agentorc.io/mcpserver` label on the child Tool CR), it checks whether the agent name appears in `MCPServer.spec.allowedAgents`.
+When an AgentRun transitions from `Pending` to `Running`, the controller resolves every MCP tool the agent declares. For each tool that is owned by an `MCPServer` (identified by the `agentorca.io/mcpserver` label on the child Tool CR), it checks whether the agent name appears in `MCPServer.spec.allowedAgents`.
 
 If the check fails, the run transitions immediately to `Failed` with a reason like:
 
@@ -81,16 +81,16 @@ The operator projects a second SA token into each agent pod at creation time:
 
 ```yaml
 volumes:
-  - name: agentorc-mcp-token
+  - name: agentorca-mcp-token
     projected:
       sources:
         - serviceAccountToken:
-            audience: agentorc/mcp
+            audience: agentorca/mcp
             expirationSeconds: 900
             path: token
 ```
 
-This token is mounted exclusively in the model-router sidecar at `/var/run/secrets/agentorc-mcp/token`. The kubelet rotates it automatically before it expires.
+This token is mounted exclusively in the model-router sidecar at `/var/run/secrets/agentorca-mcp/token`. The kubelet rotates it automatically before it expires.
 
 On every HTTP/SSE request to an MCP server, the model-router reads the current token from disk and adds:
 
@@ -113,7 +113,7 @@ Authorization: Bearer <mcp-server's own SA token>
   "kind": "TokenReview",
   "spec": {
     "token": "<value from X-Agentorc-Identity, strip 'Bearer ' prefix>",
-    "audiences": ["agentorc/mcp"]
+    "audiences": ["agentorca/mcp"]
   }
 }
 ```
@@ -123,10 +123,10 @@ A successful response confirms:
 | Field | Expected value |
 |---|---|
 | `status.authenticated` | `true` |
-| `status.audiences` | `["agentorc/mcp"]` |
-| `status.user.username` | `system:serviceaccount:<namespace>:agentorc-agent-<agentName>` |
+| `status.audiences` | `["agentorca/mcp"]` |
+| `status.user.username` | `system:serviceaccount:<namespace>:agentorca-agent-<agentName>` |
 
-The username encodes the agent identity. If you want to double-check the specific agent, parse `agentorc-agent-<agentName>` from the username and cross-reference against your own allowlist.
+The username encodes the agent identity. If you want to double-check the specific agent, parse `agentorca-agent-<agentName>` from the username and cross-reference against your own allowlist.
 
 For the TokenReview call to work, the MCP server's ServiceAccount needs permission to create TokenReviews:
 
@@ -168,7 +168,7 @@ Pod scheduled — model-router sidecar connects to MCP server
        │
        │  HTTP request:
        │    Authorization: Bearer <service-level secret>   (optional, from MCPConfig.auth)
-       │    X-Agentorc-Identity: Bearer <sa-jwt, aud: agentorc/mcp>
+       │    X-Agentorc-Identity: Bearer <sa-jwt, aud: agentorca/mcp>
        ▼
 MCP server (optional) calls k8s TokenReview
        │

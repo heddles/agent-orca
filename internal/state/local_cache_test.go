@@ -97,7 +97,7 @@ func TestLocalCacheWriteThroughAndLocalFirstRead(t *testing.T) {
 	store := NewLocalCacheStore(backing, dir)
 
 	ctx := context.Background()
-	key := "agentorc/runs/run-1/state"
+	key := "agentorca/runs/run-1/state"
 	msgs := []json.RawMessage{
 		json.RawMessage(`{"role":"user","content":"hello"}`),
 		json.RawMessage(`{"role":"assistant","content":"hi there"}`),
@@ -132,7 +132,7 @@ func TestLocalCacheLocalMissFallsBackToBacking(t *testing.T) {
 	store := NewLocalCacheStore(backing, dir)
 	ctx := context.Background()
 
-	key := "agentorc/runs/run-cold/state"
+	key := "agentorca/runs/run-cold/state"
 	want := []json.RawMessage{json.RawMessage(`{"role":"user","content":"cold start"}`)}
 	backing.messages[key] = want
 
@@ -159,7 +159,7 @@ func TestLocalCacheRejectsPathTraversal(t *testing.T) {
 	dir := t.TempDir()
 	store := NewLocalCacheStore(newMemStore(), dir).(*localCacheStore)
 
-	for _, bad := range []string{"../escape", "agentorc/../../etc/passwd", "foo/../../escape"} {
+	for _, bad := range []string{"../escape", "agentorca/../../etc/passwd", "foo/../../escape"} {
 		p, err := store.cachePath(bad)
 		if err == nil {
 			t.Errorf("expected path-traversal rejection for %q", bad)
@@ -179,16 +179,16 @@ func TestLocalCacheRejectsPathTraversal(t *testing.T) {
 
 func TestLocalCacheListMessageKeysMergesLocalAndRemote(t *testing.T) {
 	dir := t.TempDir()
-	backing := newMemStore("agentorc/runs/remote-run/state")
+	backing := newMemStore("agentorca/runs/remote-run/state")
 	store := NewLocalCacheStore(backing, dir)
 	ctx := context.Background()
 
-	localKey := "agentorc/runs/local-run/state"
+	localKey := "agentorca/runs/local-run/state"
 	if err := store.SaveMessages(ctx, localKey, []json.RawMessage{json.RawMessage(`{"role":"user"}`)}, 0); err != nil {
 		t.Fatal(err)
 	}
 
-	got, err := store.ListMessageKeys(ctx, "agentorc/runs/*/state")
+	got, err := store.ListMessageKeys(ctx, "agentorca/runs/*/state")
 	if err != nil {
 		t.Fatalf("ListMessageKeys: %v", err)
 	}
@@ -196,7 +196,7 @@ func TestLocalCacheListMessageKeysMergesLocalAndRemote(t *testing.T) {
 	if !contains(got, localKey) {
 		t.Errorf("local key missing from merged listing: %v", got)
 	}
-	if !contains(got, "agentorc/runs/remote-run/state") {
+	if !contains(got, "agentorca/runs/remote-run/state") {
 		t.Errorf("remote key missing from merged listing: %v", got)
 	}
 }
@@ -206,13 +206,13 @@ func TestRedisGlobMatch(t *testing.T) {
 		pat, name string
 		want      bool
 	}{
-		{"agentorc/runs/*/state", "agentorc/runs/run-1/state", true},
-		{"agentorc/runs/*/state", "agentorc/runs/run-1/extra", false},
-		{"agentorc/runs/*/state", "agentorc/runs/a/b/state", true}, // * crosses '/'
-		{"agentorc/runs/*/state", "agentorc/runs/", false},
+		{"agentorca/runs/*/state", "agentorca/runs/run-1/state", true},
+		{"agentorca/runs/*/state", "agentorca/runs/run-1/extra", false},
+		{"agentorca/runs/*/state", "agentorca/runs/a/b/state", true}, // * crosses '/'
+		{"agentorca/runs/*/state", "agentorca/runs/", false},
 		{"*", "anything/at/all", true},
-		{"agentorc/runs/r1/state", "agentorc/runs/r1/state", true},
-		{"agentorc/runs/r1/state", "agentorc/runs/r2/state", false},
+		{"agentorca/runs/r1/state", "agentorca/runs/r1/state", true},
+		{"agentorca/runs/r1/state", "agentorca/runs/r2/state", false},
 		{"a?c", "abc", true},
 		{"a?c", "ac", false},
 		{"", "", true},
@@ -239,7 +239,7 @@ func TestLocalCacheCorruptFileFallsBack(t *testing.T) {
 	backing := newMemStore()
 	store := NewLocalCacheStore(backing, dir).(*localCacheStore)
 	ctx := context.Background()
-	key := "agentorc/runs/run-x/state"
+	key := "agentorca/runs/run-x/state"
 
 	if err := store.SaveMessages(ctx, key, []json.RawMessage{json.RawMessage(`{"role":"user"}`)}, 0); err != nil {
 		t.Fatal(err)

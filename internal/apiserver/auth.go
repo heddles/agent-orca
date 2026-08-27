@@ -41,15 +41,15 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
 )
 
 const (
 	// ExternalAPITokenAudience is the audience for K8s SA tokens on the external API.
-	ExternalAPITokenAudience = "agentorc/external-api"
+	ExternalAPITokenAudience = "agentorca/external-api"
 
-	// jwtIssuer is the issuer claim for agent-orc-issued JWTs.
-	jwtIssuer = "agentorc"
+	// jwtIssuer is the issuer claim for agent-orca-issued JWTs.
+	jwtIssuer = "agentorca"
 
 	// jwtDefaultExpiry is the default expiry for issued tokens.
 	jwtDefaultExpiry = 1 * time.Hour
@@ -89,7 +89,7 @@ func TenantFromContext(ctx context.Context) (*TenantIdentity, bool) {
 
 // ExternalAuth handles authentication for the external API.
 // It supports three modes checked in order:
-//  1. agent-orc-issued JWTs (for authMode: issued tenants)
+//  1. agent-orca-issued JWTs (for authMode: issued tenants)
 //  2. Federated OIDC JWTs (for authMode: federated tenants)
 //  3. Kubernetes ServiceAccount tokens (for in-cluster callers)
 type ExternalAuth struct {
@@ -101,9 +101,9 @@ type ExternalAuth struct {
 
 	// mu protects tenantCache, tenantByName, and oidcVerifiers.
 	mu            sync.RWMutex
-	tenantCache   map[string]*agentorcv1alpha1.TenantConfig // clientID -> TenantConfig
-	tenantByName  map[string]*agentorcv1alpha1.TenantConfig // TenantConfig.name -> TenantConfig
-	oidcVerifiers map[string]*gooidc.IDTokenVerifier        // issuerURL -> verifier
+	tenantCache   map[string]*agentorcav1alpha1.TenantConfig // clientID -> TenantConfig
+	tenantByName  map[string]*agentorcav1alpha1.TenantConfig // TenantConfig.name -> TenantConfig
+	oidcVerifiers map[string]*gooidc.IDTokenVerifier         // issuerURL -> verifier
 
 	// rateLimiter enforces per-tenant request rate limits on token submission.
 	rateLimiter *RateLimiter
@@ -112,7 +112,7 @@ type ExternalAuth struct {
 const (
 	// signingKeySecretName is the name of the Kubernetes Secret used to persist the
 	// JWT signing key across operator restarts.
-	signingKeySecretName = "agentorc-jwt-signing-key"
+	signingKeySecretName = "agentorca-jwt-signing-key"
 	signingKeySecretKey  = "private-key.pem"
 )
 
@@ -122,7 +122,7 @@ const (
 func NewExternalAuth(k8s kubernetes.Interface, crdClient client.Client) (*ExternalAuth, error) {
 	namespace := os.Getenv("POD_NAMESPACE")
 	if namespace == "" {
-		namespace = "agent-orc-system" //nolint:goconst
+		namespace = "agent-orca-system" //nolint:goconst
 
 	}
 
@@ -135,8 +135,8 @@ func NewExternalAuth(k8s kubernetes.Interface, crdClient client.Client) (*Extern
 		k8s:           k8s,
 		crdClient:     crdClient,
 		signingKey:    key,
-		tenantCache:   make(map[string]*agentorcv1alpha1.TenantConfig),
-		tenantByName:  make(map[string]*agentorcv1alpha1.TenantConfig),
+		tenantCache:   make(map[string]*agentorcav1alpha1.TenantConfig),
+		tenantByName:  make(map[string]*agentorcav1alpha1.TenantConfig),
 		oidcVerifiers: make(map[string]*gooidc.IDTokenVerifier),
 		rateLimiter:   NewRateLimiter(),
 	}, nil
@@ -183,7 +183,7 @@ func loadOrCreateSigningKey(ctx context.Context, k8s kubernetes.Interface, names
 			Name:      signingKeySecretName,
 			Namespace: namespace,
 			Labels: map[string]string{
-				"app.kubernetes.io/managed-by": "agent-orc",
+				"app.kubernetes.io/managed-by": "agent-orca",
 				"app.kubernetes.io/component":  "jwt-signing-key",
 			},
 		},
@@ -207,13 +207,13 @@ func loadOrCreateSigningKey(ctx context.Context, k8s kubernetes.Interface, names
 // RefreshTenants reloads all TenantConfig CRs into the cache.
 // Called by the TenantConfig controller on reconcile.
 func (a *ExternalAuth) RefreshTenants(ctx context.Context) error {
-	var list agentorcv1alpha1.TenantConfigList
+	var list agentorcav1alpha1.TenantConfigList
 	if err := a.crdClient.List(ctx, &list); err != nil {
 		return fmt.Errorf("listing TenantConfigs: %w", err)
 	}
 
-	cache := make(map[string]*agentorcv1alpha1.TenantConfig, len(list.Items))
-	byName := make(map[string]*agentorcv1alpha1.TenantConfig, len(list.Items))
+	cache := make(map[string]*agentorcav1alpha1.TenantConfig, len(list.Items))
+	byName := make(map[string]*agentorcav1alpha1.TenantConfig, len(list.Items))
 	for i := range list.Items {
 		tc := &list.Items[i]
 		byName[tc.Name] = tc
@@ -258,7 +258,7 @@ func (a *ExternalAuth) Middleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// Try agent-orc-issued JWT first.
+		// Try agent-orca-issued JWT first.
 		if identity, err := a.validateIssuedToken(token); err == nil {
 			ctx := context.WithValue(r.Context(), tenantIdentityKey, identity)
 			next.ServeHTTP(w, r.WithContext(ctx))
@@ -294,7 +294,7 @@ func (a *ExternalAuth) Middleware(next http.Handler) http.Handler {
 // variant of Middleware, used by the UI API server as a fallback after K8s SA
 // token validation fails (enabling OIDC tenant JWT login from the browser).
 func (a *ExternalAuth) ValidateToken(ctx context.Context, token string) (*TenantIdentity, error) {
-	// Try agent-orc-issued JWT first.
+	// Try agent-orca-issued JWT first.
 	if identity, err := a.validateIssuedToken(token); err == nil {
 		return identity, nil
 	} else {
@@ -399,7 +399,7 @@ func (a *ExternalAuth) HandleTokenRequest(w http.ResponseWriter, r *http.Request
 	})
 }
 
-// validateIssuedToken verifies an agent-orc-issued JWT.
+// validateIssuedToken verifies an agent-orca-issued JWT.
 func (a *ExternalAuth) validateIssuedToken(tokenString string) (*TenantIdentity, error) {
 	token, err := jwt.Parse(tokenString, func(t *jwt.Token) (any, error) {
 		if _, ok := t.Method.(*jwt.SigningMethodRSA); !ok {
@@ -489,7 +489,7 @@ func (a *ExternalAuth) validateFederatedToken(ctx context.Context, tokenString s
 
 	// Search for a matching TenantConfig.
 	a.mu.RLock()
-	var matchedTC *agentorcv1alpha1.TenantConfig
+	var matchedTC *agentorcav1alpha1.TenantConfig
 	for key, tc := range a.tenantCache {
 		if !strings.HasPrefix(key, "federated:") {
 			continue
@@ -531,7 +531,7 @@ func (a *ExternalAuth) validateFederatedToken(ctx context.Context, tokenString s
 // attachQuotaFields copies the rate-limit and budget settings from a tenant's
 // TenantConfig into the resolved identity so callers can enforce them. nil tc
 // (e.g. in-cluster K8s SA callers) is tolerated and leaves quotas unset.
-func attachQuotaFields(id *TenantIdentity, tc *agentorcv1alpha1.TenantConfig) *TenantIdentity {
+func attachQuotaFields(id *TenantIdentity, tc *agentorcav1alpha1.TenantConfig) *TenantIdentity {
 	if id == nil {
 		return id
 	}
@@ -550,7 +550,7 @@ func attachQuotaFields(id *TenantIdentity, tc *agentorcv1alpha1.TenantConfig) *T
 }
 
 // tenantConfigFor returns the live TenantConfig for a tenant name, or nil.
-func (a *ExternalAuth) tenantConfigFor(name string) *agentorcv1alpha1.TenantConfig {
+func (a *ExternalAuth) tenantConfigFor(name string) *agentorcav1alpha1.TenantConfig {
 	if a == nil || name == "" {
 		return nil
 	}

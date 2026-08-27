@@ -26,8 +26,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
-	"github.com/floppyfish14/agent-orc/internal/security"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
+	"github.com/floppyfish14/agent-orca/internal/security"
 )
 
 func TestCheckRegistryAllowlist(t *testing.T) {
@@ -64,12 +64,12 @@ func TestCheckRegistryAllowlist(t *testing.T) {
 // --- SecurityContextOverride gating tests ---
 
 // baseAgent returns an Agent that passes the baseline (non-override) validation.
-func baseAgent(ns string, withGuardrail bool) agentorcv1alpha1.Agent {
-	a := agentorcv1alpha1.Agent{
+func baseAgent(ns string, withGuardrail bool) agentorcav1alpha1.Agent {
+	a := agentorcav1alpha1.Agent{
 		ObjectMeta: metav1.ObjectMeta{Name: "red-pwnbox", Namespace: ns},
-		Spec: agentorcv1alpha1.AgentSpec{
-			Runtime:          agentorcv1alpha1.AgentRuntime{OCIRef: "python:3.12-slim"},
-			ModelSelectorRef: "poolside-strategist",
+		Spec: agentorcav1alpha1.AgentSpec{
+			Runtime:          agentorcav1alpha1.AgentRuntime{OCIRef: "python:3.12-slim"},
+			ModelSelectorRef: "default",
 		},
 	}
 	if withGuardrail {
@@ -102,17 +102,17 @@ func TestAgentValidatorSecurityContextOverride(t *testing.T) {
 		name      string
 		labelled  bool
 		guardrail bool
-		override  *agentorcv1alpha1.PodSecurityOverride
+		override  *agentorcav1alpha1.PodSecurityOverride
 		wantErr   bool
 		errSubstr string
 	}{
 		{name: "no override: allowed even without label/guardrail", labelled: false, guardrail: false, override: nil, wantErr: false},
-		{name: "override without namespace label is denied", labelled: false, guardrail: true, override: &agentorcv1alpha1.PodSecurityOverride{Privileged: true}, wantErr: true, errSubstr: "not opted in"},
-		{name: "override without guardrail policy is denied", labelled: true, guardrail: false, override: &agentorcv1alpha1.PodSecurityOverride{Privileged: true}, wantErr: true, errSubstr: "guardrailPolicyRef is empty"},
-		{name: "privileged + addCapabilities both set is denied", labelled: true, guardrail: true, override: &agentorcv1alpha1.PodSecurityOverride{Privileged: true, AddCapabilities: []string{"NET_ADMIN"}}, wantErr: true, errSubstr: "mutually exclusive"},
-		{name: "runAsUser=0 without privileged is denied", labelled: true, guardrail: true, override: &agentorcv1alpha1.PodSecurityOverride{AddCapabilities: []string{"NET_ADMIN"}, RunAsUser: ptrTo[int64](0)}, wantErr: true, errSubstr: "requires privileged"},
-		{name: "labelled + guardrail + privileged is allowed", labelled: true, guardrail: true, override: &agentorcv1alpha1.PodSecurityOverride{Privileged: true}, wantErr: false},
-		{name: "labelled + guardrail + NET_ADMIN cap is allowed", labelled: true, guardrail: true, override: &agentorcv1alpha1.PodSecurityOverride{AddCapabilities: []string{"NET_ADMIN"}}, wantErr: false},
+		{name: "override without namespace label is denied", labelled: false, guardrail: true, override: &agentorcav1alpha1.PodSecurityOverride{Privileged: true}, wantErr: true, errSubstr: "not opted in"},
+		{name: "override without guardrail policy is denied", labelled: true, guardrail: false, override: &agentorcav1alpha1.PodSecurityOverride{Privileged: true}, wantErr: true, errSubstr: "guardrailPolicyRef is empty"},
+		{name: "privileged + addCapabilities both set is denied", labelled: true, guardrail: true, override: &agentorcav1alpha1.PodSecurityOverride{Privileged: true, AddCapabilities: []string{"NET_ADMIN"}}, wantErr: true, errSubstr: "mutually exclusive"},
+		{name: "runAsUser=0 without privileged is denied", labelled: true, guardrail: true, override: &agentorcav1alpha1.PodSecurityOverride{AddCapabilities: []string{"NET_ADMIN"}, RunAsUser: ptrTo[int64](0)}, wantErr: true, errSubstr: "requires privileged"},
+		{name: "labelled + guardrail + privileged is allowed", labelled: true, guardrail: true, override: &agentorcav1alpha1.PodSecurityOverride{Privileged: true}, wantErr: false},
+		{name: "labelled + guardrail + NET_ADMIN cap is allowed", labelled: true, guardrail: true, override: &agentorcav1alpha1.PodSecurityOverride{AddCapabilities: []string{"NET_ADMIN"}}, wantErr: false},
 	}
 
 	for _, tt := range tests {
@@ -137,7 +137,7 @@ func TestAgentValidatorSecurityContextOverride(t *testing.T) {
 func TestAgentValidatorOverrideMissingNamespace(t *testing.T) {
 	v := newValidator("red-team", true)
 	agent := baseAgent("does-not-exist", true)
-	agent.Spec.Runtime.SecurityContextOverride = &agentorcv1alpha1.PodSecurityOverride{Privileged: true}
+	agent.Spec.Runtime.SecurityContextOverride = &agentorcav1alpha1.PodSecurityOverride{Privileged: true}
 
 	err := v.validate(context.Background(), &agent)
 	if err == nil {

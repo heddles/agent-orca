@@ -27,7 +27,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
 )
 
 var _ = Describe("AgentRun Controller", func() {
@@ -40,18 +40,18 @@ var _ = Describe("AgentRun Controller", func() {
 			Name:      resourceName,
 			Namespace: "default", // TODO(user):Modify as needed
 		}
-		agentrun := &agentorcv1alpha1.AgentRun{}
+		agentrun := &agentorcav1alpha1.AgentRun{}
 
 		BeforeEach(func() {
 			By("creating the custom resource for the Kind AgentRun")
 			err := k8sClient.Get(ctx, typeNamespacedName, agentrun)
 			if err != nil && errors.IsNotFound(err) {
-				resource := &agentorcv1alpha1.AgentRun{
+				resource := &agentorcav1alpha1.AgentRun{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      resourceName,
 						Namespace: "default",
 					},
-					Spec: agentorcv1alpha1.AgentRunSpec{
+					Spec: agentorcav1alpha1.AgentRunSpec{
 						AgentRef: "test-agent",
 						Input:    "what is 2+2?",
 					},
@@ -62,7 +62,7 @@ var _ = Describe("AgentRun Controller", func() {
 
 		AfterEach(func() {
 			// TODO(user): Cleanup logic after each test, like removing the resource instance.
-			resource := &agentorcv1alpha1.AgentRun{}
+			resource := &agentorcav1alpha1.AgentRun{}
 			err := k8sClient.Get(ctx, typeNamespacedName, resource)
 			Expect(err).NotTo(HaveOccurred())
 

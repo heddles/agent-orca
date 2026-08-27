@@ -1,6 +1,6 @@
 # RAG Integration (KnowledgeBase)
 
-agent-orc provides native Retrieval-Augmented Generation through the **KnowledgeBase** CRD. When an Agent references a KnowledgeBase, the model-router automatically injects `_rag_search` and `_rag_ingest` as built-in tools, giving the LLM direct access to vector search and runtime document ingestion.
+agent-orca provides native Retrieval-Augmented Generation through the **KnowledgeBase** CRD. When an Agent references a KnowledgeBase, the model-router automatically injects `_rag_search` and `_rag_ingest` as built-in tools, giving the LLM direct access to vector search and runtime document ingestion.
 
 ---
 
@@ -46,7 +46,7 @@ flowchart TD
 ## KnowledgeBase CRD
 
 ```yaml
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: KnowledgeBase
 metadata:
   name: my-kb
@@ -87,7 +87,7 @@ status:
 Add the KnowledgeBase name to the Agent's `knowledgeBases` field:
 
 ```yaml
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: Agent
 metadata:
   name: research-agent
@@ -241,7 +241,7 @@ Each KnowledgeBase manages its own access list via `spec.allowedAgents`. Access 
 the list, regardless of what the agent's `spec.knowledgeBases` field declares.
 
 ```yaml
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: KnowledgeBase
 metadata:
   name: my-kb
@@ -261,7 +261,7 @@ The operator enforces this at two points:
 
 ## Migration from Shared Qdrant
 
-Prior to this change, all KnowledgeBases in a namespace shared a single `agentorc-qdrant`
+Prior to this change, all KnowledgeBases in a namespace shared a single `agentorca-qdrant`
 StatefulSet. The legacy StatefulSet is **not deleted** by the operator — existing clusters
 keep their data intact. New KnowledgeBases (and re-creates of existing ones) will receive
 their own dedicated `kb-qdrant-<name>` instance.
@@ -276,7 +276,7 @@ snapshot API, and import them into the new per-KB instance.
 For self-hosted models (Ollama, vLLM, etc.), set `baseURL` on the ModelProvider to override the default endpoint derived from the LiteLLM model prefix:
 
 ```yaml
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: ModelProvider
 metadata:
   name: ollama-embed
@@ -322,7 +322,7 @@ prefixes to produce retrieval-quality vectors. These models were trained with an
 prefix prepended to the input text; without it, the embedding space is shifted and similarity
 search quality degrades significantly (or the model may return degenerate vectors).
 
-agent-orc handles this via two optional fields on the **ModelProvider** CRD:
+agent-orca handles this via two optional fields on the **ModelProvider** CRD:
 
 | Field | Applied to | Example |
 |-------|-----------|---------|
@@ -336,13 +336,13 @@ sending it to the model's `/v1/embeddings` endpoint. Both ingestion and search u
 ### Configuration
 
 ```yaml
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: ModelProvider
 metadata:
   name: ollama-embed
 spec:
   litellmModel: "ollama/nomic-embed-text"
-  baseURL: "http://ollama-embed.agent-orc-system.svc:11434"
+  baseURL: "http://ollama-embed.agent-orca-system.svc:11434"
   credentialsRef:
     name: ollama-embed-credentials
     key: api-key

@@ -117,7 +117,7 @@ surface the results it receives:
 
 ## Checkpoints, spend, and resume (the state the image relies on)
 
-State is persisted to Redis under `agentorc/runs/<run>/state` by the model-router's
+State is persisted to Redis under `agentorca/runs/<run>/state` by the model-router's
 `state.Store` (see [README → How session state works](README.md#how-session-state-works-two-layers)).
 The image doesn't manage this, but it's why images can be stateless/restartable:
 
@@ -126,7 +126,7 @@ The image doesn't manage this, but it's why images can be stateless/restartable:
 - **Spend** is written after every LLM call (`SaveSpend` → `…/state:spend`); restored on
   cold start and on warm-pool reuse (`ClaimRun` → `PriorRunRef`).
 - A resumed run chains context through `PriorRunRef`↔`LastRunRef`, which the model-router
-  turns into `ResumeCheckpointKey = agentorc/runs/<prior-run>/state` to reload history.
+  turns into `ResumeCheckpointKey = agentorca/runs/<prior-run>/state` to reload history.
 - For chat deployments, the UI API also persists a session `Checkpoint{SessionID, Version,
   ConversationHistory, LastRunRef, Metadata{TotalCostUSD,…}}` via `internal/checkpoint`.
 - The live conversation buffer is **hard-capped** to 80% of the largest provider
@@ -141,17 +141,17 @@ Images that want explicit state can use the SDK's `agent.save_checkpoint()` /
 ## Minimal reference agent (Python, `openai-compatible`)
 
 This is what `examples/agent-sdk-template/` ships: a persona-free transport built on `python:3.12-alpine`
-that the `agentorc` SDK (`pkg/python/agentorc`, package `agentorc`) is also installed into for customization.
+that the `agentorca` SDK (`pkg/python/agentorca`, package `agentorca`) is also installed into for customization.
 `skaffold dev` builds and kind-loads it as `:latest` automatically (see [development.md](development.md));
 it is also published to GHCR on every release.
 
 `examples/agent-sdk-template/Dockerfile`:
 ```dockerfile
 FROM python:3.12-alpine
-# Install the agent-orc Python SDK (available for custom agents; the default
+# Install the agent-orca Python SDK (available for custom agents; the default
 # entrypoint below does not require it).
-COPY pkg/python/agentorc/ /tmp/agentorc-sdk/
-RUN pip install --no-cache-dir /tmp/agentorc-sdk/ && rm -rf /tmp/agentorc-sdk/
+COPY pkg/python/agentorca/ /tmp/agentorca-sdk/
+RUN pip install --no-cache-dir /tmp/agentorca-sdk/ && rm -rf /tmp/agentorca-sdk/
 COPY examples/agent-sdk-template/agent.py /app/agent.py
 USER 65534
 ENTRYPOINT ["python", "/app/agent.py"]
@@ -166,7 +166,7 @@ Deploy it (no per-agent `ociRef` needed — the Agent inherits the image; set `s
 and `tools` on the CR):
 
 ```yaml
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: Agent
 metadata:
   name: my-agent
@@ -174,7 +174,7 @@ spec:
   modelSelectorRef: default
   systemPrompt: "You are a helpful assistant."
   runtime:
-    ociRef: ghcr.io/agentorc/agent-orc/openai-reference:latest
+    ociRef: ghcr.io/agentorca/agent-orca/openai-reference:latest
     framework: openai-compatible
     inputMode: env
 ```
@@ -199,7 +199,7 @@ CR (the reference image ignores a baked prompt — the model-router injects the 
   (`/v1/chat/completions`); `anthropicToOpenAI` only normalizes *internal* responses. An
   Anthropic-native image needs `framework: shim` or a manually-pointed base URL — not a
   first-class surface worth a dedicated image yet.
-- Optionally ship two variants of the same image: `ghcr.io/agentorc/agent-orc/openai-reference:<version>`
+- Optionally ship two variants of the same image: `ghcr.io/agentorca/agent-orca/openai-reference:<version>`
   (minimal, `python:3.12-alpine`) and `:<version>-full` (SDK + common deps) for teams that
   want more out of box. Tag each per release; `:latest` tracks the newest for quick starts.
 

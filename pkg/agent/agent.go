@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package agent provides a Go SDK for writing agents that run on agent-orc.
+// Package agent provides a Go SDK for writing agents that run on agent-orca.
 //
 // The SDK wraps an OpenAI-compatible client pointed at the model-router sidecar
 // (http://localhost:8080 by default) and provides Go-idiomatic helpers for the
@@ -82,7 +82,7 @@ func (t *ToolSpec) toOpenAI() map[string]any { //nolint:unused
 	}
 }
 
-// Agent is the Go SDK for writing agents that run on agent-orc.
+// Agent is the Go SDK for writing agents that run on agent-orca.
 // It wraps an OpenAI-compatible client pointed at the model-router sidecar
 // and provides built-in lifecycle tool helpers.
 type Agent struct {
@@ -321,7 +321,7 @@ func (a *Agent) LoadCheckpoint(sessionID string) []map[string]string {
 // This is a stub — in production, the model-router handles checkpointing
 // automatically every N turns.
 func (a *Agent) SaveCheckpoint(sessionID string, messages []map[string]string) string {
-	return fmt.Sprintf("agentorc/runs/%s/state", sessionID)
+	return fmt.Sprintf("agentorca/runs/%s/state", sessionID)
 }
 
 // Run executes the agent on the given input until a terminal state.

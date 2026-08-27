@@ -562,7 +562,7 @@ func TestCreateTenant_Success(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte(`{"name":"acme","namespace":"agent-orc-system","clientID":"acme-client","clientSecret":"gen-secret","targetNamespace":"tenant-acme"}`)) //nolint:lll
+		_, _ = w.Write([]byte(`{"name":"acme","namespace":"agent-orca-system","clientID":"acme-client","clientSecret":"gen-secret","targetNamespace":"tenant-acme"}`)) //nolint:lll
 
 	}))
 	defer srv.Close()
@@ -631,7 +631,7 @@ func TestGetTenant_Success(t *testing.T) {
 			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"name":"acme","namespace":"agent-orc-system","clientID":"c1","targetNamespace":"tenant-acme"}`)) //nolint:lll
+		_, _ = w.Write([]byte(`{"name":"acme","namespace":"agent-orca-system","clientID":"c1","targetNamespace":"tenant-acme"}`)) //nolint:lll
 
 	}))
 	defer srv.Close()
@@ -745,7 +745,7 @@ func TestCmdAdminTenantsList(t *testing.T) {
 func TestCmdAdminTenantsGet(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"name":"acme","namespace":"agent-orc-system","clientID":"c1","targetNamespace":"tenant-acme"}`)) //nolint:lll
+		_, _ = w.Write([]byte(`{"name":"acme","namespace":"agent-orca-system","clientID":"c1","targetNamespace":"tenant-acme"}`)) //nolint:lll
 
 	}))
 	defer srv.Close()
@@ -767,7 +767,7 @@ func TestCmdAdminTenantsCreate(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte(`{"name":"acme","namespace":"agent-orc-system","clientID":"c1","clientSecret":"gen-secret","targetNamespace":"tenant-acme"}`)) //nolint:lll
+		_, _ = w.Write([]byte(`{"name":"acme","namespace":"agent-orca-system","clientID":"c1","clientSecret":"gen-secret","targetNamespace":"tenant-acme"}`)) //nolint:lll
 
 	}))
 	defer srv.Close()

@@ -23,19 +23,19 @@ import (
 	"log/slog"
 	"time"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
 )
 
 const (
 	// sessionScope is the KV scope under which session checkpoints are persisted.
-	sessionScope = "agentorc-session"
+	sessionScope = "agentorca-session"
 	// sessionCheckpointTTL is how long a persisted session checkpoint lives.
 	// ~30 days mirrors the operator's existing run-checkpoint residency and gives
 	// a warm pod plenty of time to resume a chat after a restart.
 	sessionCheckpointTTL = 30 * 24 * time.Hour
 	// maxSessionHistoryMessages caps the number of conversation messages retained in
 	// a persisted session checkpoint. The model-router's per-run Redis checkpoint
-	// (agentorc/runs/<run>/state) remains the full-fidelity source of truth for LLM
+	// (agentorca/runs/<run>/state) remains the full-fidelity source of truth for LLM
 	// context (it keeps tool-call results etc.); the session store owns the run-chain
 	// (LastRunRef -> PriorRunRef) and a bounded UI history. Capping keeps serialized
 	// checkpoints comfortably under the state store's 1MB-per-value limit.
@@ -67,7 +67,7 @@ type RedisStore struct {
 func NewRedisStore(kv kvStore) *RedisStore { return &RedisStore{kv: kv} }
 
 // Load retrieves a session checkpoint by ID. Returns (nil, nil) when not found.
-func (s *RedisStore) Load(ctx context.Context, sessionID string) (*agentorcv1alpha1.Checkpoint, error) {
+func (s *RedisStore) Load(ctx context.Context, sessionID string) (*agentorcav1alpha1.Checkpoint, error) {
 	if sessionID == "" || s.kv == nil {
 		return nil, nil
 	}
@@ -78,7 +78,7 @@ func (s *RedisStore) Load(ctx context.Context, sessionID string) (*agentorcv1alp
 	if len(b) == 0 {
 		return nil, nil // not found — not an error
 	}
-	var cp agentorcv1alpha1.Checkpoint
+	var cp agentorcav1alpha1.Checkpoint
 	if err := json.Unmarshal(b, &cp); err != nil {
 		return nil, fmt.Errorf("unmarshaling session checkpoint %q: %w", sessionID, err)
 	}
@@ -86,7 +86,7 @@ func (s *RedisStore) Load(ctx context.Context, sessionID string) (*agentorcv1alp
 }
 
 // Save persists (overwrites) a session checkpoint with a bounded TTL.
-func (s *RedisStore) Save(ctx context.Context, checkpoint *agentorcv1alpha1.Checkpoint) (string, error) {
+func (s *RedisStore) Save(ctx context.Context, checkpoint *agentorcav1alpha1.Checkpoint) (string, error) {
 	if checkpoint == nil || checkpoint.SessionID == "" {
 		return "", fmt.Errorf("checkpoint requires SessionID")
 	}
@@ -102,7 +102,7 @@ func (s *RedisStore) Save(ctx context.Context, checkpoint *agentorcv1alpha1.Chec
 		slog.Warn("truncating session checkpoint history before persistence",
 			"session", cp.SessionID, "had", n, "kept", maxSessionHistoryMessages)
 		tail := cp.ConversationHistory[n-maxSessionHistoryMessages:]
-		cp.ConversationHistory = append([]agentorcv1alpha1.ConversationMessage(nil), tail...)
+		cp.ConversationHistory = append([]agentorcav1alpha1.ConversationMessage(nil), tail...)
 	}
 
 	b, err := json.Marshal(cp)

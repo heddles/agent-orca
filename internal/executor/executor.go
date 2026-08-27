@@ -43,9 +43,9 @@ import (
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
-	"github.com/floppyfish14/agent-orc/internal/security"
-	"github.com/floppyfish14/agent-orc/internal/state"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
+	"github.com/floppyfish14/agent-orca/internal/security"
+	"github.com/floppyfish14/agent-orca/internal/state"
 )
 
 // ToolExecuteRequest is the JSON body sent to localhost:8081/execute.
@@ -178,7 +178,7 @@ func (e *Executor) executePodTool(ctx context.Context, req ToolExecuteRequest) (
 			Labels: map[string]string{
 				security.LabelAgentRunName: security.SafeLabelValue(e.runName),
 				security.LabelManagedBy:    security.ManagedByValue,
-				"agentorc.io/tool":         sanitizeName(req.Tool),
+				"agentorca.io/tool":        sanitizeName(req.Tool),
 			},
 		},
 		Spec: corev1.PodSpec{
@@ -278,16 +278,16 @@ func (e *Executor) executeAgentTool(ctx context.Context, req ToolExecuteRequest)
 	runName := fmt.Sprintf("%s-child-%d", parentPrefix, time.Now().UnixNano()%1000000)
 
 	timeout := metav1.Duration{Duration: 5 * time.Minute}
-	childRun := &agentorcv1alpha1.AgentRun{
+	childRun := &agentorcav1alpha1.AgentRun{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      runName,
 			Namespace: e.namespace,
 			Labels: map[string]string{
-				security.LabelManagedBy:  security.ManagedByValue,
-				"agentorc.io/parent-run": e.runName,
+				security.LabelManagedBy:   security.ManagedByValue,
+				"agentorca.io/parent-run": e.runName,
 			},
 		},
-		Spec: agentorcv1alpha1.AgentRunSpec{
+		Spec: agentorcav1alpha1.AgentRunSpec{
 			AgentRef:     req.Tool, // for agent-type tools, Tool = AgentRef
 			Input:        args.Task,
 			Timeout:      &timeout,
@@ -370,23 +370,23 @@ func (e *Executor) executeAgentTool(ctx context.Context, req ToolExecuteRequest)
 			if statusResp.StatusCode != http.StatusOK {
 				return false, nil
 			}
-			var run agentorcv1alpha1.AgentRun
+			var run agentorcav1alpha1.AgentRun
 			if err := json.NewDecoder(statusResp.Body).Decode(&run); err != nil {
 				return false, nil
 			}
 			switch run.Status.Phase {
-			case agentorcv1alpha1.AgentRunPhaseSucceeded:
+			case agentorcav1alpha1.AgentRunPhaseSucceeded:
 				output = run.Status.Output
 				childSpend = run.Status.SpendUSD
 				return true, nil
-			case agentorcv1alpha1.AgentRunPhaseFailed:
+			case agentorcav1alpha1.AgentRunPhaseFailed:
 				childSpend = run.Status.SpendUSD
 				reason := run.Status.FailureReason
 				if reason == "" {
 					reason = "no reason provided"
 				}
 				return true, fmt.Errorf("child AgentRun %s failed: %s", runName, reason)
-			case agentorcv1alpha1.AgentRunPhaseWaitingForInput:
+			case agentorcav1alpha1.AgentRunPhaseWaitingForInput:
 				// The child run needs human input. Surface the question back to the
 				// parent orchestrator as a tool error so its LLM can use _clarify
 				// to ask the human — the existing human-in-the-loop path.
@@ -426,7 +426,7 @@ func (e *Executor) waitForPod(ctx context.Context, podName string, timeout time.
 func (e *Executor) readSAToken() (string, error) {
 	tokenFile := e.saTokenFile
 	if tokenFile == "" {
-		tokenFile = "/var/run/secrets/agentorc/token"
+		tokenFile = "/var/run/secrets/agentorca/token"
 	}
 	data, err := os.ReadFile(tokenFile)
 	if err != nil {

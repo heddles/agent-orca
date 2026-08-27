@@ -38,23 +38,23 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
 )
 
 const (
 	// initConfigVolume is the emptyDir used by tier-2 init containers.
-	initConfigVolume = "agentorc-framework-config"
-	initConfigDir    = "/etc/agentorc-framework"
+	initConfigVolume = "agentorca-framework-config"
+	initConfigDir    = "/etc/agentorca-framework"
 
 	// hostsVolume is the emptyDir used by the tier-3 shim to override /etc/hosts.
-	hostsVolume = "agentorc-hosts"
+	hostsVolume = "agentorca-hosts"
 )
 
 // Inject mutates the pod spec to add tier-specific framework configuration.
 // routerBaseURL is the HTTP base URL the agent uses to reach the model-router
 // (e.g. "http://localhost:8080" for combined-pod topology, or the router Service URL
 // for split-pod topology). The port is extracted from this URL for the shim tier.
-func Inject(pod *corev1.Pod, runtime agentorcv1alpha1.AgentRuntime, routerBaseURL string) {
+func Inject(pod *corev1.Pod, runtime agentorcav1alpha1.AgentRuntime, routerBaseURL string) {
 	switch runtime.Framework {
 	case "autogen":
 		injectAutogen(pod, routerBaseURL)
@@ -90,7 +90,7 @@ func injectAutogen(pod *corev1.Pod, routerBaseURL string) {
 	})
 
 	pod.Spec.InitContainers = append(pod.Spec.InitContainers, corev1.Container{
-		Name:    "agentorc-autogen-config",
+		Name:    "agentorca-autogen-config",
 		Image:   "cgr.dev/chainguard/busybox:latest",
 		Command: []string{"/bin/sh", "-c"},
 		Args: []string{
@@ -138,7 +138,7 @@ func injectSemanticKernel(pod *corev1.Pod, routerBaseURL string) {
 	})
 
 	pod.Spec.InitContainers = append(pod.Spec.InitContainers, corev1.Container{
-		Name:    "agentorc-sk-config",
+		Name:    "agentorca-sk-config",
 		Image:   "cgr.dev/chainguard/busybox:latest",
 		Command: []string{"/bin/sh", "-c"},
 		Args: []string{
@@ -207,17 +207,17 @@ func injectShim(pod *corev1.Pod, shimTarget string, routerBaseURL string) {
 
 	// Init container copies /etc/hosts and appends the shim entry.
 	pod.Spec.InitContainers = append(pod.Spec.InitContainers, corev1.Container{
-		Name:    "agentorc-hosts-shim",
+		Name:    "agentorca-hosts-shim",
 		Image:   "cgr.dev/chainguard/busybox:latest",
 		Command: []string{"/bin/sh", "-c"},
 		Args: []string{
 			fmt.Sprintf(
-				`cp /etc/hosts /agentorc-hosts/hosts && printf '\n%s %s\n' >> /agentorc-hosts/hosts`,
+				`cp /etc/hosts /agentorca-hosts/hosts && printf '\n%s %s\n' >> /agentorca-hosts/hosts`,
 				shimIP, shimTarget,
 			),
 		},
 		VolumeMounts: []corev1.VolumeMount{
-			{Name: hostsVolume, MountPath: "/agentorc-hosts"},
+			{Name: hostsVolume, MountPath: "/agentorca-hosts"},
 		},
 	})
 

@@ -46,12 +46,12 @@ interface LocalMessage {
   traceEntries?: TraceEntry[]
 }
 
-const SESSION_KEY_PREFIX = 'agentorc-chat-session:'
-const MSGS_KEY_PREFIX = 'agentorc-chat-msgs:'
+const SESSION_KEY_PREFIX = 'agentorca-chat-session:'
+const MSGS_KEY_PREFIX = 'agentorca-chat-msgs:'
 
 /** Quick-prompt suggestions shown in the empty chat state (better-writing §11). */
 const QUICK_PROMPTS = [
-  'Summarize the key features of agent-orc',
+  'Summarize the key features of agent-orca',
   'What model is selected and why?',
   'Show me the cost breakdown',
 ]

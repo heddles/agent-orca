@@ -24,13 +24,13 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
 )
 
-func warmDeployForLifecycle(maxAge time.Duration, recycleOnDrift bool, maxRequests int) *agentorcv1alpha1.AgentDeployment {
-	return &agentorcv1alpha1.AgentDeployment{
+func warmDeployForLifecycle(maxAge time.Duration, recycleOnDrift bool, maxRequests int) *agentorcav1alpha1.AgentDeployment {
+	return &agentorcav1alpha1.AgentDeployment{
 		ObjectMeta: metav1.ObjectMeta{Name: "dep", Namespace: "default"},
-		Spec: agentorcv1alpha1.AgentDeploymentSpec{
+		Spec: agentorcav1alpha1.AgentDeploymentSpec{
 			WarmPodMaxAge:        &metav1.Duration{Duration: maxAge},
 			RecycleOnConfigDrift: &recycleOnDrift,
 			MaxRequestsPerPod:    maxRequests,
@@ -41,11 +41,11 @@ func warmDeployForLifecycle(maxAge time.Duration, recycleOnDrift bool, maxReques
 func TestEffectiveWarmPodMaxAge(t *testing.T) {
 	tests := []struct {
 		name   string
-		deploy *agentorcv1alpha1.AgentDeployment
+		deploy *agentorcav1alpha1.AgentDeployment
 		want   time.Duration
 	}{
 		{name: "nil deploy defaults to 0 (indefinite)", deploy: nil, want: 0},
-		{name: "nil spec max age defaults to 0 (indefinite)", deploy: &agentorcv1alpha1.AgentDeployment{}, want: 0},
+		{name: "nil spec max age defaults to 0 (indefinite)", deploy: &agentorcav1alpha1.AgentDeployment{}, want: 0},
 		{name: "explicit 2h", deploy: warmupDeploy(2 * time.Hour), want: 2 * time.Hour},
 		{name: "explicit 0 disables", deploy: warmupDeploy(0), want: 0},
 		{name: "explicit 10m below floor", deploy: warmupDeploy(10 * time.Minute), want: 10 * time.Minute},
@@ -61,9 +61,9 @@ func TestEffectiveWarmPodMaxAge(t *testing.T) {
 	}
 }
 
-func warmupDeploy(d time.Duration) *agentorcv1alpha1.AgentDeployment {
-	return &agentorcv1alpha1.AgentDeployment{
-		Spec: agentorcv1alpha1.AgentDeploymentSpec{
+func warmupDeploy(d time.Duration) *agentorcav1alpha1.AgentDeployment {
+	return &agentorcav1alpha1.AgentDeployment{
+		Spec: agentorcav1alpha1.AgentDeploymentSpec{
 			WarmPodMaxAge: &metav1.Duration{Duration: d},
 		},
 	}
@@ -72,14 +72,14 @@ func warmupDeploy(d time.Duration) *agentorcv1alpha1.AgentDeployment {
 func TestEffectiveWarmLocalCache(t *testing.T) {
 	tests := []struct {
 		name   string
-		deploy *agentorcv1alpha1.AgentDeployment
+		deploy *agentorcav1alpha1.AgentDeployment
 		want   bool
 	}{
 		{name: "nil deploy", deploy: nil, want: false},
-		{name: "no warm pool, no explicit setting -> disabled", deploy: &agentorcv1alpha1.AgentDeployment{}, want: false},
-		{name: "warm pool set, no explicit setting -> defaults on", deploy: &agentorcv1alpha1.AgentDeployment{Spec: agentorcv1alpha1.AgentDeploymentSpec{WarmPoolSize: 2}}, want: true},
-		{name: "warm pool set but explicit false -> disabled", deploy: &agentorcv1alpha1.AgentDeployment{Spec: agentorcv1alpha1.AgentDeploymentSpec{WarmPoolSize: 2, WarmLocalCache: ptr.To(false)}}, want: false},
-		{name: "no warm pool but explicit true -> still on", deploy: &agentorcv1alpha1.AgentDeployment{Spec: agentorcv1alpha1.AgentDeploymentSpec{WarmLocalCache: ptr.To(true)}}, want: true},
+		{name: "no warm pool, no explicit setting -> disabled", deploy: &agentorcav1alpha1.AgentDeployment{}, want: false},
+		{name: "warm pool set, no explicit setting -> defaults on", deploy: &agentorcav1alpha1.AgentDeployment{Spec: agentorcav1alpha1.AgentDeploymentSpec{WarmPoolSize: 2}}, want: true},
+		{name: "warm pool set but explicit false -> disabled", deploy: &agentorcav1alpha1.AgentDeployment{Spec: agentorcav1alpha1.AgentDeploymentSpec{WarmPoolSize: 2, WarmLocalCache: ptr.To(false)}}, want: false},
+		{name: "no warm pool but explicit true -> still on", deploy: &agentorcav1alpha1.AgentDeployment{Spec: agentorcav1alpha1.AgentDeploymentSpec{WarmLocalCache: ptr.To(true)}}, want: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -93,12 +93,12 @@ func TestEffectiveWarmLocalCache(t *testing.T) {
 func TestWarmLocalCacheSizeMiValue(t *testing.T) {
 	tests := []struct {
 		name   string
-		deploy *agentorcv1alpha1.AgentDeployment
+		deploy *agentorcav1alpha1.AgentDeployment
 		want   int
 	}{
 		{name: "nil deploy -> default 256", deploy: nil, want: 256},
-		{name: "zero -> default 256", deploy: &agentorcv1alpha1.AgentDeployment{}, want: 256},
-		{name: "explicit 512", deploy: &agentorcv1alpha1.AgentDeployment{Spec: agentorcv1alpha1.AgentDeploymentSpec{WarmLocalCacheSizeMi: 512}}, want: 512},
+		{name: "zero -> default 256", deploy: &agentorcav1alpha1.AgentDeployment{}, want: 256},
+		{name: "explicit 512", deploy: &agentorcav1alpha1.AgentDeployment{Spec: agentorcav1alpha1.AgentDeploymentSpec{WarmLocalCacheSizeMi: 512}}, want: 512},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -113,7 +113,7 @@ func TestRecycleOnConfigDrift(t *testing.T) {
 	if !recycleOnConfigDrift(nil) {
 		t.Fatal("nil deploy should default to recycling on config drift (true)")
 	}
-	if !recycleOnConfigDrift(&agentorcv1alpha1.AgentDeployment{}) {
+	if !recycleOnConfigDrift(&agentorcav1alpha1.AgentDeployment{}) {
 		t.Fatal("nil spec should default to recycling on config drift (true)")
 	}
 	if !recycleOnConfigDrift(warmupDeployWithDrift(true)) {
@@ -124,9 +124,9 @@ func TestRecycleOnConfigDrift(t *testing.T) {
 	}
 }
 
-func warmupDeployWithDrift(v bool) *agentorcv1alpha1.AgentDeployment {
-	return &agentorcv1alpha1.AgentDeployment{
-		Spec: agentorcv1alpha1.AgentDeploymentSpec{RecycleOnConfigDrift: ptr.To(v)},
+func warmupDeployWithDrift(v bool) *agentorcav1alpha1.AgentDeployment {
+	return &agentorcav1alpha1.AgentDeployment{
+		Spec: agentorcav1alpha1.AgentDeploymentSpec{RecycleOnConfigDrift: ptr.To(v)},
 	}
 }
 
@@ -135,11 +135,11 @@ func TestWarmPodTokenExpirySeconds(t *testing.T) {
 	const year = int64(8760 * 3600)
 	tests := []struct {
 		name   string
-		deploy *agentorcv1alpha1.AgentDeployment
+		deploy *agentorcav1alpha1.AgentDeployment
 		want   int64
 	}{
 		{name: "nil defaults to 1-year token", deploy: nil, want: year},
-		{name: "nil spec defaults to 1-year token", deploy: &agentorcv1alpha1.AgentDeployment{}, want: year},
+		{name: "nil spec defaults to 1-year token", deploy: &agentorcav1alpha1.AgentDeployment{}, want: year},
 		{name: "pod max age 2h -> 2h token", deploy: warmupDeploy(2 * time.Hour), want: int64((2 * time.Hour).Seconds())},
 		{name: "pod max age 5m (below 1h floor) -> 1h token", deploy: warmupDeploy(5 * time.Minute), want: hour},
 		{name: "disabled (0) -> 1 year token", deploy: warmupDeploy(0), want: year},
@@ -161,7 +161,7 @@ func TestClassifyWarmPod(t *testing.T) {
 
 	tests := []struct {
 		name       string
-		deploy     *agentorcv1alpha1.AgentDeployment
+		deploy     *agentorcav1alpha1.AgentDeployment
 		pod        *corev1.Pod
 		wantDisp   warmPodDisposition
 		wantReason string
@@ -200,7 +200,7 @@ func TestClassifyWarmPod(t *testing.T) {
 			// Regression: the DEFAULT (nil WarmPodMaxAge) must keep an old idle
 			// pod indefinitely — age recycling is opt-in, not opt-out.
 			name:     "default nil max age keeps old pod indefinitely",
-			deploy:   &agentorcv1alpha1.AgentDeployment{Spec: agentorcv1alpha1.AgentDeploymentSpec{RecycleOnConfigDrift: ptr.To(true), MaxRequestsPerPod: 0}},
+			deploy:   &agentorcav1alpha1.AgentDeployment{Spec: agentorcav1alpha1.AgentDeploymentSpec{RecycleOnConfigDrift: ptr.To(true), MaxRequestsPerPod: 0}},
 			pod:      makeWarmPod("p", "dep", hash, now.Add(-24*time.Hour), true),
 			wantDisp: warmDisposeIdle,
 		},

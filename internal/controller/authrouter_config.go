@@ -11,8 +11,8 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
-	"github.com/floppyfish14/agent-orc/internal/router"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
+	"github.com/floppyfish14/agent-orca/internal/router"
 )
 
 // mergeGuardrailPolicyIntoRouterConfig loads the named GuardrailPolicy CR and populates cfg.Guardrails.
@@ -21,7 +21,7 @@ func mergeGuardrailPolicyIntoRouterConfig(ctx context.Context, c client.Client, 
 	if policyName == "" || cfg == nil {
 		return
 	}
-	var gp agentorcv1alpha1.GuardrailPolicy
+	var gp agentorcav1alpha1.GuardrailPolicy
 	if err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: policyName}, &gp); err != nil {
 		return
 	}
@@ -39,7 +39,7 @@ func mergeGuardrailPolicyIntoRouterConfig(ctx context.Context, c client.Client, 
 	cfg.Guardrails = gc
 }
 
-func guardrailFilterToFilterConfig(f agentorcv1alpha1.GuardrailFilter) router.FilterConfig {
+func guardrailFilterToFilterConfig(f agentorcav1alpha1.GuardrailFilter) router.FilterConfig {
 	fc := router.FilterConfig{
 		Name:          f.Name,
 		Type:          f.Type,

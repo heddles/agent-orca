@@ -32,8 +32,8 @@ import (
 	"syscall"
 	"text/template"
 
-	"github.com/floppyfish14/agent-orc/internal/mcp"
-	"github.com/floppyfish14/agent-orc/internal/rag"
+	"github.com/floppyfish14/agent-orca/internal/mcp"
+	"github.com/floppyfish14/agent-orca/internal/rag"
 )
 
 // IngestConfig is the JSON configuration mounted from the config ConfigMap.
@@ -66,13 +66,13 @@ type IngestConfig struct {
 	DocumentIDTemplate string `json:"documentIDTemplate,omitempty"`
 
 	// Embedding configuration.
-	EmbeddingEndpoint string `json:"embeddingEndpoint"`
-	EmbeddingModel    string `json:"embeddingModel"`
-	EmbeddingKeyFile  string `json:"embeddingKeyFile"`
-	EmbeddingDims     int    `json:"embeddingDims"`
+	EmbeddingEndpoint  string `json:"embeddingEndpoint"`
+	EmbeddingModel     string `json:"embeddingModel"`
+	EmbeddingKeyFile   string `json:"embeddingKeyFile"`
+	EmbeddingDims      int    `json:"embeddingDims"`
 	EmbeddingDocPrompt string `json:"embeddingDocPrompt,omitempty"`
-	ChunkSize         int    `json:"chunkSize"`
-	ChunkOverlap      int    `json:"chunkOverlap"`
+	ChunkSize          int    `json:"chunkSize"`
+	ChunkOverlap       int    `json:"chunkOverlap"`
 
 	// Qdrant destination.
 	QdrantURL      string `json:"qdrantURL"`

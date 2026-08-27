@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package egress provides durable result delivery from the agent-orc controller
+// Package egress provides durable result delivery from the agent-orca controller
 // to external message buses (Kafka, Pub/Sub, Redis Streams).
 //
 // When an AgentRun reaches a terminal phase (Succeeded or Failed) and its
@@ -27,7 +27,7 @@ limitations under the License.
 //   - Pub/Sub: at-least-once (ack deadline = 10s), keyed by run ID.
 //   - Redis: XADD to a stream, at-most-once (fire-and-forget).
 //
-// All publishers include an "agentorc-run-id" header (or message attribute)
+// All publishers include an "agentorca-run-id" header (or message attribute)
 // so consumers can deduplicate.
 package egress
 
@@ -44,13 +44,13 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
 )
 
 // Publisher is the interface implemented by all egress sink publishers.
 type Publisher interface {
 	// Publish delivers the result payload to the external sink.
-	Publish(ctx context.Context, result agentorcv1alpha1.EgressResult) error
+	Publish(ctx context.Context, result agentorcav1alpha1.EgressResult) error
 	// Close releases any underlying connections.
 	Close() error
 }
@@ -65,24 +65,24 @@ var metrics = struct {
 	failed    prometheus.Counter
 }{
 	published: promauto.NewCounter(prometheus.CounterOpts{
-		Name: "agentorc_egress_published_total",
+		Name: "agentorca_egress_published_total",
 		Help: "Total number of results successfully published to egress sinks.",
 	}),
 	failed: promauto.NewCounter(prometheus.CounterOpts{
-		Name: "agentorc_egress_failed_total",
+		Name: "agentorca_egress_failed_total",
 		Help: "Total number of results that failed to publish to egress sinks.",
 	}),
 }
 
 // NewPublisher creates the appropriate Publisher for the given EgressConfig.
 // It reads credentials from the referenced Secret (if any) via the K8s client.
-func NewPublisher(ctx context.Context, cfg agentorcv1alpha1.EgressConfig, k8sClient client.Client, namespace string) (Publisher, error) {
+func NewPublisher(ctx context.Context, cfg agentorcav1alpha1.EgressConfig, k8sClient client.Client, namespace string) (Publisher, error) {
 	switch cfg.Type {
-	case agentorcv1alpha1.EgressSinkKafka:
+	case agentorcav1alpha1.EgressSinkKafka:
 		return newKafkaPublisher(ctx, cfg, k8sClient, namespace)
-	case agentorcv1alpha1.EgressSinkPubSub:
+	case agentorcav1alpha1.EgressSinkPubSub:
 		return newPubSubPublisher(ctx, cfg, k8sClient, namespace)
-	case agentorcv1alpha1.EgressSinkRedis:
+	case agentorcav1alpha1.EgressSinkRedis:
 		return newRedisPublisher(ctx, cfg, k8sClient, namespace)
 	default:
 		return nil, fmt.Errorf("unsupported egress sink type: %s", cfg.Type)
@@ -91,7 +91,7 @@ func NewPublisher(ctx context.Context, cfg agentorcv1alpha1.EgressConfig, k8sCli
 
 // PublishAndRecord publishes the result and updates metrics. It is the
 // convenience entry point used by the controller's terminal-phase handler.
-func PublishAndRecord(ctx context.Context, p Publisher, result agentorcv1alpha1.EgressResult) {
+func PublishAndRecord(ctx context.Context, p Publisher, result agentorcav1alpha1.EgressResult) {
 	payload, _ := json.Marshal(result)
 	slog.Info("egress: publishing result",
 		"runId", result.RunID,

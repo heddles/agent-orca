@@ -1,4 +1,4 @@
-# Terraform example: provision a tenant in agent-orc
+# Terraform example: provision a tenant in agent-orca
 #
 # This snippet shows how a platform team can onboard a new customer tenant
 # using the same Kubernetes resources the admin API (POST /admin/tenants)
@@ -45,9 +45,9 @@ variable "client_secret" {
 }
 
 variable "operator_namespace" {
-  description = "Namespace where the agent-orc operator runs (where TenantConfig lives)."
+  description = "Namespace where the agent-orca operator runs (where TenantConfig lives)."
   type        = string
-  default     = "agent-orc-system"
+  default     = "agent-orca-system"
 }
 
 variable "target_namespace" {
@@ -135,7 +135,7 @@ resource "kubernetes_secret" "client_secret" {
 # 2. Create the TenantConfig CR.
 resource "kubernetes_manifest" "tenant_config" {
   manifest = {
-    apiVersion = "agentorc.agentorc.io/v1alpha1"
+    apiVersion = "agentorca.agentorca.io/v1alpha1"
     kind       = "TenantConfig"
     metadata = {
       name      = var.tenant_name

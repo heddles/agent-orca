@@ -29,19 +29,19 @@ import (
 
 var _ = Describe("Token streaming", Label("streaming", "full-e2e"), Ordered, func() {
 	const ns = "default"
-	// UI API service port (agent-orc ui-proxy serves the run stream endpoint).
+	// UI API service port (agent-orca ui-proxy serves the run stream endpoint).
 	const uiAPILocalPort = 19083
 
 	BeforeAll(func() {
 		if !streamingE2E() {
 			Skip("requires STREAMING_E2E=true (model-router + LLM credentials needed)")
 		}
-		waitForCRDReady("agentruns.agentorc.agentorc.io")
+		waitForCRDReady("agentruns.agentorca.agentorca.io")
 		for _, name := range []string{"e2e-stream-single", "e2e-stream-parent"} {
 			deleteResource("agentrun", name, ns)
 		}
 		Expect(applyYAML(`
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: Agent
 metadata:
   name: e2e-streaming-agent
@@ -61,24 +61,24 @@ spec:
       cpu: 100m
       memory: 64Mi
 ---
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: AgentRun
 metadata:
   name: e2e-stream-single
   namespace: default
   annotations:
-    agentorc.io/enforcement-mode: "off"
+    agentorca.io/enforcement-mode: "off"
 spec:
   agentRef: e2e-streaming-agent
   input: "e2e streaming — single agent token stream validation"
 ---
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: AgentRun
 metadata:
   name: e2e-stream-parent
   namespace: default
   annotations:
-    agentorc.io/enforcement-mode: "off"
+    agentorca.io/enforcement-mode: "off"
 spec:
   agentRef: e2e-streaming-agent
   input: "e2e streaming — parent orchestrator token forwarding validation"
@@ -96,12 +96,12 @@ spec:
 	})
 
 	It("streams tokens from a single agent run", func() {
-		pod := "agentorc-run-e2e-stream-single"
+		pod := "agentorca-run-e2e-stream-single"
 		waitForPodRunning(pod, ns)
 		token := getRunToken("e2e-stream-single", ns)
 
 		// Port-forward to the UI API (run stream endpoint).
-		cleanupPF := portForward(ns, "svc/agent-orc-ui-proxy", uiAPILocalPort, 8083)
+		cleanupPF := portForward(ns, "svc/agent-orca-ui-proxy", uiAPILocalPort, 8083)
 		defer cleanupPF()
 
 		// Trigger inference via model-router.
@@ -121,11 +121,11 @@ spec:
 	})
 
 	It("forwards child tokens to the parent SSE stream", func() {
-		pod := "agentorc-run-e2e-stream-parent"
+		pod := "agentorca-run-e2e-stream-parent"
 		waitForPodRunning(pod, ns)
 		token := getRunToken("e2e-stream-parent", ns)
 
-		cleanupPF := portForward(ns, "svc/agent-orc-ui-proxy", uiAPILocalPort, 8083)
+		cleanupPF := portForward(ns, "svc/agent-orca-ui-proxy", uiAPILocalPort, 8083)
 		defer cleanupPF()
 
 		cleanupTrigger := portForward(ns, "pod/"+pod, 19081, 8080)

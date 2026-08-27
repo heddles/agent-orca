@@ -1,7 +1,7 @@
 ---
 # Privileged pwnbox pod: HTB OpenVPN tunnel + MCP toolbelt server.
 #
-# This is a PLAIN Kubernetes Deployment (not an agent-orc Agent), so its security
+# This is a PLAIN Kubernetes Deployment (not an agent-orca Agent), so its security
 # posture is declared directly in the pod spec — it does NOT use the operator's
 # PodSecurityOverride. The companion agent (red-commander) stays fully restricted
 # and calls these tools over the cluster network via the MCPServer CR.

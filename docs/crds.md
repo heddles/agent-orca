@@ -1,6 +1,6 @@
-# agent-orc CRDs
+# agent-orca CRDs
 
-agent-orc uses eight Custom Resource Definitions (CRDs) that form a layered model: from raw LLM endpoints at the bottom to long-running agent services at the top.
+agent-orca uses eight Custom Resource Definitions (CRDs) that form a layered model: from raw LLM endpoints at the bottom to long-running agent services at the top.
 
 ---
 
@@ -53,7 +53,7 @@ graph TD
 **Status:** Sets a `ready` boolean and re-validates every 5 minutes.
 
 ```yaml
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: ModelProvider
 metadata:
   name: claude-sonnet
@@ -87,7 +87,7 @@ spec:
 | `metaRouter` | Config for the LLM that decides routing (llm-meta/hybrid) |
 
 ```yaml
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: ModelSelector
 metadata:
   name: default
@@ -138,7 +138,7 @@ spec:
 | `cloudAuth` | Tool-specific cloud identity (GCP/AWS/Azure) |
 
 ```yaml
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: Tool
 metadata:
   name: web-search
@@ -192,10 +192,10 @@ spec:
 | 3 | `langgraph` | `LANGGRAPH_CHECKPOINT_URL` |
 | Shim | `shim` | `/etc/hosts` interception of `shimTarget` |
 
-**What the controller does:** Creates and manages a stable ServiceAccount (`agentorc-agent-<name>`) and annotates it for cloud identity federation.
+**What the controller does:** Creates and manages a stable ServiceAccount (`agentorca-agent-<name>`) and annotates it for cloud identity federation.
 
 ```yaml
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: Agent
 metadata:
   name: hello-agent
@@ -254,7 +254,7 @@ When `spec.egress` is set, the controller publishes the final `EgressResult` to 
 | Redis | `password` |
 
 ```yaml
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: AgentRun
 metadata:
   name: hello-run
@@ -276,8 +276,8 @@ spec:
 
 | Metric | Description |
 |---|---|
-| `agentorc_egress_published_total` | Counter of successfully published results |
-| `agentorc_egress_failed_total` | Counter of failed publishes |
+| `agentorca_egress_published_total` | Counter of successfully published results |
+| `agentorca_egress_failed_total` | Counter of failed publishes |
 
 **Phase lifecycle:**
 
@@ -414,7 +414,7 @@ the request cap, you delete it, or you opt into age recycling via a positive `wa
 **Agent integration:** Add KnowledgeBase names to `Agent.spec.knowledgeBases`. The operator injects `_rag_search` and `_rag_ingest` as built-in tools.
 
 ```yaml
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: KnowledgeBase
 metadata:
   name: project-docs
@@ -462,7 +462,7 @@ Each filter has:
 **Wiring in Agent:**
 
 ```yaml
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: Agent
 metadata:
   name: ehr-meds-agent
@@ -475,7 +475,7 @@ spec:
 **PHI redaction example** :
 
 ```yaml
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: GuardrailPolicy
 metadata:
   name: ehr-phi-redact

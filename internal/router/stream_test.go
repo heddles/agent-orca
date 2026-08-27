@@ -31,7 +31,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floppyfish14/agent-orc/internal/state"
+	"github.com/floppyfish14/agent-orca/internal/state"
 )
 
 // --- test store -------------------------------------------------------------
@@ -206,7 +206,7 @@ func consumeClientBody(t *testing.T, r *Router, reqBody []byte) (string, int, in
 }
 
 // toolCallTurnSSE is a canned streaming turn whose LLM emits a _write_state tool
-// call with finish_reason left null (the LiteLLM/Poolside shape that previously
+// call with finish_reason left null (the LiteLLM shape that previously
 // caused tool calls to be dropped).
 func toolCallTurnSSE() []byte {
 	return []byte(strings.Join([]string{
@@ -298,7 +298,7 @@ func TestStreamingToolCallWriteHeaderCalledOnce(t *testing.T) {
 func TestStreamingToolCallWithNullFinishReasonIsDispatched(t *testing.T) {
 	// Reproduces the bug: the provider streams a tool call but emits
 	// finish_reason: null (relying on `data: [DONE]` to signal completion), which
-	// is what OpenAI-compatible proxies like LiteLLM / Poolside actually do.
+	// is what OpenAI-compatible proxies like LiteLLM actually do.
 	//
 	// Before the fix, the streaming guard `len(toolCalls) > 0 && finishReason ==
 	// "tool_calls"` failed to dispatch the tool call even though [DONE] was
@@ -538,7 +538,7 @@ func writingToolCallTurnSSE() []byte {
 func TestStreamingMultiTurnLoopEmitsSingleDoneEvent(t *testing.T) {
 	// Regression for the live "UI exits prematurely" symptom on long agentic runs.
 	// The reference agent streams many tool-call turns (each with finish_reason:
-	// null, the LiteLLM/Poolside shape) before a final text turn. Exactly one
+	// null, the LiteLLM shape) before a final text turn. Exactly one
 	// terminal `done` trace event must be emitted — and only at the true end. A
 	// done event on any tool-call turn would make the UI's TailTokens close and the
 	// follow-up turns' tokens would never reach the browser.
@@ -613,7 +613,7 @@ func TestStreamingTerminalTurnEmitsDoneSSE(t *testing.T) {
 
 // textTurnSSENoFinishReason is a terminal text turn whose chunks carry no
 // finish_reason (only `data: [DONE]` marks completion) — the exact shape emitted by
-// OpenAI-compatible proxies like LiteLLM / Poolside.
+// OpenAI-compatible proxies like LiteLLM.
 func textTurnSSENoFinishReason() []byte {
 	return []byte(strings.Join([]string{
 		sseFrame(streamingChatCompletionChunk{

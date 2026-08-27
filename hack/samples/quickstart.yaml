@@ -1,4 +1,4 @@
-# agent-orc quickstart samples
+# agent-orca quickstart samples
 # Applied by hack/dev-kind.sh to exercise the full operator reconciliation loop.
 #
 # The agent uses python:3.12-slim with a stdlib urllib script that calls the
@@ -8,7 +8,7 @@
 # With a placeholder key the model-router returns an auth error from the provider
 # and the run completes with that error in status.output.
 ---
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: ModelProvider
 metadata:
   name: openai-gpt-oss-120b
@@ -28,7 +28,7 @@ spec:
     costPerMillionInputTokens: "3.00"
     costPerMillionOutputTokens: "12.00"
 ---
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: ModelSelector
 metadata:
   name: default
@@ -39,7 +39,7 @@ spec:
     - name: openai-gpt-oss-120b
       weight: 100
 ---
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: Agent
 metadata:
   name: hello-agent
@@ -53,7 +53,7 @@ spec:
     3. Recommend the best approach with a brief justification.
     Be specific and cite concrete technologies where relevant.
   runtime:
-    ociRef: "ghcr.io/agentorc/agent-orc/openai-reference:latest"
+    ociRef: "ghcr.io/agentorca/agent-orca/openai-reference:latest"
     framework: openai-compatible
   resources:
     requests:
@@ -63,7 +63,7 @@ spec:
       cpu: 200m
       memory: 128Mi
 ---
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: AgentRun
 metadata:
   name: hello-run-4

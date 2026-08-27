@@ -33,7 +33,7 @@ graph LR
 ## Schema reference
 
 ```yaml
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: AgentWorkflow
 metadata:
   name: my-workflow
@@ -132,8 +132,8 @@ For each step, the controller creates one `AgentRun` with:
 - Owner reference to the `AgentWorkflow` (so `kubectl delete agentworkflow` cascades)
 - Labels:
   ```
-  agentorc.io/workflow: <workflow-name>
-  agentorc.io/workflow-step: <step-name>
+  agentorca.io/workflow: <workflow-name>
+  agentorca.io/workflow-step: <step-name>
   ```
 
 The controller polls step AgentRuns every 10 seconds (no watch — polling keeps the controller simple).
@@ -145,7 +145,7 @@ The controller polls step AgentRuns every 10 seconds (no watch — polling keeps
 ### Linear chain: research → analyze → summarize
 
 ```yaml
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: AgentWorkflow
 metadata:
   name: research-pipeline
@@ -179,7 +179,7 @@ spec:
 ### Fan-out with conditional merge
 
 ```yaml
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: AgentWorkflow
 metadata:
   name: parallel-review

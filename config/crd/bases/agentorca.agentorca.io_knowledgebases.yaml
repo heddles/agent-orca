@@ -1,0 +1,634 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: knowledgebases.agentorca.agentorca.io
+spec:
+  group: agentorca.agentorca.io
+  names:
+    kind: KnowledgeBase
+    listKind: KnowledgeBaseList
+    plural: knowledgebases
+    singular: knowledgebase
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.ready
+      name: Ready
+      type: boolean
+    - jsonPath: .status.message
+      name: Message
+      type: string
+    - jsonPath: .status.documentCount
+      name: Docs
+      type: integer
+    - jsonPath: .status.chunkCount
+      name: Chunks
+      type: integer
+    - jsonPath: .status.storageUsedPercent
+      name: Storage%
+      type: integer
+    - jsonPath: .status.qdrantVersion
+      name: Qdrant
+      type: string
+    - jsonPath: .status.embeddingModelProvider
+      name: EmbedProvider
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          KnowledgeBase defines a vector store–backed knowledge base for RAG.
+          Agents reference KnowledgeBases by name and gain access to _rag_search
+          and _rag_ingest built-in tools. The operator auto-deploys a namespace-shared
+          Qdrant instance and manages document ingestion, chunking, and embedding.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              KnowledgeBaseSpec defines a vector store–backed knowledge base for RAG.
+              The operator auto-deploys a dedicated Qdrant instance per KnowledgeBase and manages
+              document ingestion, chunking, and embedding.
+            properties:
+              allowedAgents:
+                description: |-
+                  AllowedAgents is the explicit list of Agent names (in the same namespace) that are
+                  permitted to use this KnowledgeBase. When set to a non-nil list, only the named
+                  agents may access this KnowledgeBase. When omitted (nil), access is unrestricted
+                  (backward-compatible default for existing KnowledgeBases).
+
+                  To explicitly deny all agents, set this to an empty list: allowedAgents: [].
+
+                  The operator enforces this at AgentRun/AgentDeployment creation time.
+                  At runtime, the operator API verifies the calling agent's identity via
+                  TokenReview and rejects requests from agents not in this list.
+                items:
+                  type: string
+                type: array
+              description:
+                description: Description is a human-readable summary of this knowledge
+                  base.
+                type: string
+              embedding:
+                description: Embedding configures how documents are chunked and embedded.
+                properties:
+                  chunkOverlap:
+                    default: 64
+                    description: ChunkOverlap is the token overlap between adjacent
+                      chunks.
+                    type: integer
+                  chunkSize:
+                    default: 512
+                    description: ChunkSize is the maximum token count per document
+                      chunk.
+                    type: integer
+                  modelSelectorRef:
+                    description: |-
+                      ModelSelectorRef names the ModelSelector used for embedding calls.
+                      The selected model must support the /v1/embeddings endpoint.
+                    minLength: 1
+                    type: string
+                required:
+                - modelSelectorRef
+                type: object
+              ingestion:
+                description: |-
+                  Ingestion defines document sources. If nil, documents are only added
+                  at runtime via the _rag_ingest tool.
+                properties:
+                  configMapRefs:
+                    description: ConfigMapRefs lists ConfigMaps whose data keys are
+                      treated as documents.
+                    items:
+                      description: LocalObjectRef references a resource in the same
+                        namespace.
+                      properties:
+                        name:
+                          description: Name of the resource.
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    type: array
+                  mcp:
+                    description: |-
+                      MCP lists MCP servers to fetch documents from via Kubernetes Jobs.
+                      Each entry launches a Job that connects to the referenced MCPServer,
+                      runs an optional discover step to enumerate items, then fetches each
+                      item. Results are written to a ConfigMap and ingested by the controller.
+                    items:
+                      description: |-
+                        MCPIngestionSource configures document ingestion from an MCP server.
+                        The controller launches a Kubernetes Job that connects to the referenced
+                        MCPServer, runs an optional discover tool call to enumerate items, then
+                        calls the fetch tool for each item. Documents are returned via a ConfigMap
+                        and ingested through the standard chunking/embedding pipeline.
+                      properties:
+                        directoryFilter:
+                          description: |-
+                            DirectoryFilter identifies directory entries in discover results.
+                            Required when DiscoverRecursive is true. Objects matching this
+                            filter are queued for recursive discovery rather than fetched.
+                          properties:
+                            key:
+                              description: Key is the JSON field name to check (e.g.
+                                "type").
+                              minLength: 1
+                              type: string
+                            value:
+                              description: |-
+                                Value is the required value for the field (e.g. "file").
+                                Objects where the field does not equal this value are excluded.
+                              minLength: 1
+                              type: string
+                          required:
+                          - key
+                          - value
+                          type: object
+                        discover:
+                          description: |-
+                            Discover is an optional tool call that returns a list of items to iterate.
+                            If omitted, Fetch runs once with its static arguments.
+                          properties:
+                            arguments:
+                              description: |-
+                                Arguments is a JSON object of tool arguments.
+                                String values may contain "{{item}}" placeholders when used in
+                                the Fetch step of an MCPIngestionSource.
+                              type: object
+                              x-kubernetes-preserve-unknown-fields: true
+                            tool:
+                              description: Tool is the MCP tool name to call (e.g.
+                                "get_file_contents").
+                              minLength: 1
+                              type: string
+                          required:
+                          - tool
+                          type: object
+                        discoverRecursive:
+                          description: |-
+                            DiscoverRecursive enables recursive directory traversal. When true,
+                            items matching DirectoryFilter are re-discovered by calling the
+                            Discover tool with "{{item}}" in its arguments replaced by the
+                            directory path. Requires Discover.Arguments to contain "{{item}}".
+                          type: boolean
+                        documentIDTemplate:
+                          description: |-
+                            DocumentIDTemplate is a Go template for generating document IDs.
+                            Available variables: {{.Item}}, {{.MCPServer}}, {{.Tool}}.
+                            Defaults to "mcp/{{.MCPServer}}/{{.Item}}".
+                          type: string
+                        excludePatterns:
+                          description: |-
+                            ExcludePatterns is a list of glob patterns. Items matching any
+                            pattern are dropped (applied after IncludePatterns).
+                            Supports "**" for recursive matching (e.g. "vendor/**").
+                          items:
+                            type: string
+                          type: array
+                        fetch:
+                          description: |-
+                            Fetch is the tool call to execute for each discovered item (or once
+                            if no Discover step). String values in Arguments may contain
+                            "{{item}}" which is replaced with each discovered item.
+                          properties:
+                            arguments:
+                              description: |-
+                                Arguments is a JSON object of tool arguments.
+                                String values may contain "{{item}}" placeholders when used in
+                                the Fetch step of an MCPIngestionSource.
+                              type: object
+                              x-kubernetes-preserve-unknown-fields: true
+                            tool:
+                              description: Tool is the MCP tool name to call (e.g.
+                                "get_file_contents").
+                              minLength: 1
+                              type: string
+                          required:
+                          - tool
+                          type: object
+                        includePatterns:
+                          description: |-
+                            IncludePatterns is a list of glob patterns. If non-empty, only
+                            items matching at least one pattern are kept. Supports "**" for
+                            recursive matching (e.g. "**/*.go", "docs/**").
+                          items:
+                            type: string
+                          type: array
+                        itemExtractor:
+                          default: lines
+                          description: |-
+                            ItemExtractor configures how to extract individual items from the
+                            discover result:
+                              - "lines": split by newline, skip empty lines (default).
+                              - "jsonArray": parse as a JSON array of strings.
+                              - "jsonObjects": parse as a JSON array of objects; requires ItemField.
+                          enum:
+                          - lines
+                          - jsonArray
+                          - jsonObjects
+                          type: string
+                        itemField:
+                          description: |-
+                            ItemField selects which field to extract from each JSON object when
+                            ItemExtractor is "jsonObjects". For example, "path" extracts the
+                            "path" key from each object. Required when ItemExtractor is "jsonObjects".
+                          type: string
+                        itemFilter:
+                          description: |-
+                            ItemFilter optionally filters JSON objects before extraction (only
+                            applies to "jsonObjects"). Objects are included only when the named
+                            field equals the specified value. For example, setting key="type" and
+                            value="file" keeps only objects where type is "file".
+                          properties:
+                            key:
+                              description: Key is the JSON field name to check (e.g.
+                                "type").
+                              minLength: 1
+                              type: string
+                            value:
+                              description: |-
+                                Value is the required value for the field (e.g. "file").
+                                Objects where the field does not equal this value are excluded.
+                              minLength: 1
+                              type: string
+                          required:
+                          - key
+                          - value
+                          type: object
+                        maxItems:
+                          default: 500
+                          description: |-
+                            MaxItems caps the number of items processed from the discover step.
+                            Prevents runaway ingestion. 0 means unlimited.
+                          type: integer
+                        mcpServerRef:
+                          description: |-
+                            MCPServerRef names the MCPServer CR (same namespace) to use.
+                            The MCPServer must include "_controller" in its allowedAgents list.
+                          minLength: 1
+                          type: string
+                        resources:
+                          description: Resources sets CPU/memory for the ingestion
+                            Job pod.
+                          properties:
+                            claims:
+                              description: |-
+                                Claims lists the names of resources, defined in spec.resourceClaims,
+                                that are used by this container.
+
+                                This field depends on the
+                                DynamicResourceAllocation feature gate.
+
+                                This field is immutable. It can only be set for containers.
+                              items:
+                                description: ResourceClaim references one entry in
+                                  PodSpec.ResourceClaims.
+                                properties:
+                                  name:
+                                    description: |-
+                                      Name must match the name of one entry in pod.spec.resourceClaims of
+                                      the Pod where this field is used. It makes that resource available
+                                      inside a container.
+                                    type: string
+                                  request:
+                                    description: |-
+                                      Request is the name chosen for a request in the referenced claim.
+                                      If empty, everything from the claim is made available, otherwise
+                                      only the result of this request.
+                                    type: string
+                                required:
+                                - name
+                                type: object
+                              type: array
+                              x-kubernetes-list-map-keys:
+                              - name
+                              x-kubernetes-list-type: map
+                            limits:
+                              additionalProperties:
+                                anyOf:
+                                - type: integer
+                                - type: string
+                                pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                x-kubernetes-int-or-string: true
+                              description: |-
+                                Limits describes the maximum amount of compute resources allowed.
+                                More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                              type: object
+                            requests:
+                              additionalProperties:
+                                anyOf:
+                                - type: integer
+                                - type: string
+                                pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                x-kubernetes-int-or-string: true
+                              description: |-
+                                Requests describes the minimum amount of compute resources required.
+                                If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                                otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                                More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                              type: object
+                          type: object
+                      required:
+                      - fetch
+                      - mcpServerRef
+                      type: object
+                    type: array
+                  s3:
+                    description: S3 configures S3-compatible object storage as a document
+                      source.
+                    properties:
+                      bucket:
+                        description: Bucket is the S3 bucket name.
+                        type: string
+                      prefix:
+                        description: Prefix filters objects by key prefix.
+                        type: string
+                      region:
+                        description: Region is the AWS region (or S3-compatible endpoint
+                          region).
+                        type: string
+                      secretRef:
+                        description: |-
+                          SecretRef references a Secret containing AWS credentials.
+                          Expected keys: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY.
+                        properties:
+                          key:
+                            description: Key within the Secret.
+                            type: string
+                          name:
+                            description: Name of the Secret.
+                            type: string
+                          namespace:
+                            description: Namespace of the Secret. Defaults to the
+                              same namespace as the referencing resource.
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                    required:
+                    - bucket
+                    type: object
+                  syncIntervalSeconds:
+                    default: 0
+                    description: SyncIntervalSeconds re-ingests sources on a schedule.
+                      0 means one-shot.
+                    type: integer
+                  urls:
+                    description: URLs lists HTTP(S) endpoints to fetch and ingest
+                      as documents.
+                    items:
+                      type: string
+                    type: array
+                type: object
+              vectorStore:
+                description: VectorStore configures the backing vector database.
+                properties:
+                  autoUpgrade:
+                    default: true
+                    description: |-
+                      AutoUpgrade controls whether the operator automatically upgrades the
+                      Qdrant instance to match the operator's target version. When true
+                      (default), the operator walks through sequential minor versions with
+                      a snapshot before each step. Set to false to hold the current version.
+                    type: boolean
+                  collectionName:
+                    description: |-
+                      CollectionName overrides the Qdrant collection name.
+                      Defaults to the KnowledgeBase CR name.
+                    type: string
+                  provider:
+                    default: qdrant
+                    description: 'Provider is the vector store implementation: "qdrant"
+                      (default).'
+                    enum:
+                    - qdrant
+                    type: string
+                  resources:
+                    description: Resources overrides default CPU/memory for the Qdrant
+                      pod.
+                    properties:
+                      claims:
+                        description: |-
+                          Claims lists the names of resources, defined in spec.resourceClaims,
+                          that are used by this container.
+
+                          This field depends on the
+                          DynamicResourceAllocation feature gate.
+
+                          This field is immutable. It can only be set for containers.
+                        items:
+                          description: ResourceClaim references one entry in PodSpec.ResourceClaims.
+                          properties:
+                            name:
+                              description: |-
+                                Name must match the name of one entry in pod.spec.resourceClaims of
+                                the Pod where this field is used. It makes that resource available
+                                inside a container.
+                              type: string
+                            request:
+                              description: |-
+                                Request is the name chosen for a request in the referenced claim.
+                                If empty, everything from the claim is made available, otherwise
+                                only the result of this request.
+                              type: string
+                          required:
+                          - name
+                          type: object
+                        type: array
+                        x-kubernetes-list-map-keys:
+                        - name
+                        x-kubernetes-list-type: map
+                      limits:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        description: |-
+                          Limits describes the maximum amount of compute resources allowed.
+                          More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                        type: object
+                      requests:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        description: |-
+                          Requests describes the minimum amount of compute resources required.
+                          If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                          otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                          More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                        type: object
+                    type: object
+                  storageSize:
+                    default: 10Gi
+                    description: StorageSize is the PVC size for the Qdrant StatefulSet.
+                    type: string
+                type: object
+            required:
+            - embedding
+            type: object
+          status:
+            description: KnowledgeBaseStatus holds observed state for a KnowledgeBase.
+            properties:
+              chunkCount:
+                description: ChunkCount is the number of vector chunks stored.
+                type: integer
+              collectionName:
+                description: CollectionName is the resolved Qdrant collection name.
+                type: string
+              conditions:
+                description: Conditions holds standard Kubernetes conditions.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              documentCount:
+                description: DocumentCount is the number of source documents ingested.
+                type: integer
+              embeddingDimensions:
+                description: |-
+                  EmbeddingDimensions is the vector size discovered from the embedding model on first use.
+                  The controller probes the embedding API with a test string and records the actual output
+                  dimension here. This prevents the user from having to specify dimensions manually and
+                  eliminates Qdrant dimension-mismatch errors caused by mismatched configuration.
+                type: integer
+              embeddingModel:
+                description: |-
+                  EmbeddingModel is the LiteLLM model string (e.g. "openai/text-embedding-3-large")
+                  from the pinned ModelProvider.
+                type: string
+              embeddingModelProvider:
+                description: |-
+                  EmbeddingModelProvider is the name of the ModelProvider CR used when the
+                  Qdrant collection was first created. Once set, all subsequent embedding
+                  calls use this provider directly to prevent dimension mismatches caused
+                  by a ModelSelector routing to a different model between calls.
+                type: string
+              lastSyncTime:
+                description: LastSyncTime is when documents were last ingested.
+                format: date-time
+                type: string
+              message:
+                description: |-
+                  Message contains a human-readable status message. Populated on failure
+                  (e.g. "Qdrant pod failed to start: CrashLoopBackOff") or when waiting
+                  (e.g. "Qdrant pod not ready yet"). Empty once the KnowledgeBase is ready.
+                type: string
+              qdrantTargetVersion:
+                description: |-
+                  QdrantTargetVersion is the operator's desired Qdrant version for this
+                  KnowledgeBase. Derived from the operator build or Helm override.
+                type: string
+              qdrantUpgradeState:
+                description: |-
+                  QdrantUpgradeState tracks in-progress sequential upgrades.
+                  Empty when no upgrade is in progress.
+                enum:
+                - ""
+                - Snapshot
+                - WaitingForReady
+                - Failed
+                type: string
+              qdrantVersion:
+                description: |-
+                  QdrantVersion is the currently running Qdrant version as reported by
+                  the instance's HTTP API (e.g. "1.17.1"). Empty until the first probe.
+                type: string
+              ready:
+                description: Ready indicates the vector store is accessible and has
+                  been seeded.
+                type: boolean
+              storageUsedPercent:
+                description: StorageUsedPercent is the percentage of PVC storage consumed
+                  by Qdrant (0–100).
+                type: integer
+              vectorStoreURL:
+                description: VectorStoreURL is the resolved Qdrant endpoint.
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

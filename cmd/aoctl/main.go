@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Command aoctl is the CLI for integrating with agent-orc's external APIs.
+// Command aoctl is the CLI for integrating with agent-orca's external APIs.
 //
 // It targets the External Task API (default http://localhost:8084) for task
 // submission/polling/streaming and the ACP API (default http://localhost:8000)
@@ -151,7 +151,7 @@ type AdminTenantResponse struct {
 
 // --- HTTP client ---
 
-// Client talks to the agent-orc external task API and ACP API.
+// Client talks to the agent-orca external task API and ACP API.
 type Client struct {
 	Endpoint string
 	ACP      string
@@ -734,8 +734,8 @@ func newRootCmd() (*cobra.Command, *settings) { //nolint:gocyclo
 
 	root := &cobra.Command{
 		Use:   appName,
-		Short: "CLI for agent-orc's external APIs (tasks + agent discovery)",
-		Long:  `aoctl submits tasks to agent-orc and streams results. Run ` + "`aoctl login`" + ` first.`,
+		Short: "CLI for agent-orca's external APIs (tasks + agent discovery)",
+		Long:  `aoctl submits tasks to agent-orca and streams results. Run ` + "`aoctl login`" + ` first.`,
 	}
 	s.out = os.Stdout
 	s.errw = os.Stderr
@@ -949,7 +949,7 @@ func newRootCmd() (*cobra.Command, *settings) { //nolint:gocyclo
 		Short: "Admin operations (requires a Kubernetes ServiceAccount token)",
 		Long: `Admin operations target the /admin/* surface on the External Task API.
 These require a Kubernetes ServiceAccount bearer token (not an OAuth2 client_credentials JWT).
-Obtain one via 'kubectl create token agentorc-admin -n agent-orc-system' or the
+Obtain one via 'kubectl create token agentorca-admin -n agent-orca-system' or the
 --admin-bootstrap-token operator flag.`,
 	}
 	adminTenants := &cobra.Command{Use: "tenants", Short: "Manage tenants"}

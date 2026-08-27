@@ -42,9 +42,9 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
-	"github.com/floppyfish14/agent-orc/internal/rag"
-	"github.com/floppyfish14/agent-orc/internal/security"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
+	"github.com/floppyfish14/agent-orca/internal/rag"
+	"github.com/floppyfish14/agent-orca/internal/security"
 )
 
 // Server handles the operator's internal API for agent-to-agent communication.
@@ -125,7 +125,7 @@ func (s *Server) createAgentRun(w http.ResponseWriter, r *http.Request, namespac
 		return
 	}
 
-	var run agentorcv1alpha1.AgentRun
+	var run agentorcav1alpha1.AgentRun
 	if err := json.Unmarshal(body, &run); err != nil {
 		http.Error(w, fmt.Sprintf("invalid JSON: %v", err), http.StatusBadRequest)
 		return
@@ -156,7 +156,7 @@ func (s *Server) createAgentRun(w http.ResponseWriter, r *http.Request, namespac
 
 	// Update the parent's ChildRunRefs so the parent has an authoritative child list.
 	if run.Spec.ParentRunRef != "" {
-		var parent agentorcv1alpha1.AgentRun
+		var parent agentorcav1alpha1.AgentRun
 		if err := s.crdClient.Get(r.Context(), client.ObjectKey{
 			Name: run.Spec.ParentRunRef, Namespace: namespace,
 		}, &parent); err == nil {
@@ -174,7 +174,7 @@ func (s *Server) createAgentRun(w http.ResponseWriter, r *http.Request, namespac
 
 // getAgentRun retrieves an AgentRun by name and returns its current state.
 func (s *Server) getAgentRun(w http.ResponseWriter, r *http.Request, namespace, name string) {
-	var run agentorcv1alpha1.AgentRun
+	var run agentorcav1alpha1.AgentRun
 	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: name, Namespace: namespace}, &run); err != nil {
 		http.Error(w, fmt.Sprintf("getting AgentRun: %v", err), http.StatusNotFound)
 		return
@@ -199,13 +199,13 @@ func (s *Server) handoffAgentRun(w http.ResponseWriter, r *http.Request, namespa
 		return
 	}
 
-	var run agentorcv1alpha1.AgentRun
+	var run agentorcav1alpha1.AgentRun
 	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: name, Namespace: namespace}, &run); err != nil {
 		http.Error(w, fmt.Sprintf("getting AgentRun: %v", err), http.StatusNotFound)
 		return
 	}
 
-	run.Status.Phase = agentorcv1alpha1.AgentRunPhaseHandedOff
+	run.Status.Phase = agentorcav1alpha1.AgentRunPhaseHandedOff
 	run.Status.HandoffTarget = req.HandoffTarget
 	if err := s.crdClient.Status().Update(r.Context(), &run); err != nil {
 		http.Error(w, fmt.Sprintf("updating AgentRun status: %v", err), http.StatusInternalServerError)
@@ -232,7 +232,7 @@ func (s *Server) clarifyAgentRun(w http.ResponseWriter, r *http.Request, namespa
 		return
 	}
 
-	var run agentorcv1alpha1.AgentRun
+	var run agentorcav1alpha1.AgentRun
 	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: name, Namespace: namespace}, &run); err != nil {
 		http.Error(w, fmt.Sprintf("getting AgentRun: %v", err), http.StatusNotFound)
 		return
@@ -240,7 +240,7 @@ func (s *Server) clarifyAgentRun(w http.ResponseWriter, r *http.Request, namespa
 
 	patch := client.MergeFrom(run.DeepCopy())
 	now := metav1.Now()
-	run.Status.Phase = agentorcv1alpha1.AgentRunPhaseWaitingForInput
+	run.Status.Phase = agentorcav1alpha1.AgentRunPhaseWaitingForInput
 	run.Status.ClarifyQuestion = req.Question
 	run.Status.ClarifyAnswer = ""
 	run.Status.WaitingSince = &now
@@ -256,7 +256,7 @@ func (s *Server) clarifyAgentRun(w http.ResponseWriter, r *http.Request, namespa
 // loopDetectedAgentRun marks an AgentRun as Failed with LoopDetected info.
 // Called by the model-router sidecar when a safeguard trip is detected.
 func (s *Server) loopDetectedAgentRun(w http.ResponseWriter, r *http.Request, namespace, name string) {
-	var req agentorcv1alpha1.LoopDetectedInfo
+	var req agentorcav1alpha1.LoopDetectedInfo
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {
 		http.Error(w, "reading body", http.StatusBadRequest)
@@ -267,7 +267,7 @@ func (s *Server) loopDetectedAgentRun(w http.ResponseWriter, r *http.Request, na
 		return
 	}
 
-	var run agentorcv1alpha1.AgentRun
+	var run agentorcav1alpha1.AgentRun
 	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: name, Namespace: namespace}, &run); err != nil {
 		http.Error(w, fmt.Sprintf("getting AgentRun: %v", err), http.StatusNotFound)
 		return
@@ -299,7 +299,7 @@ func (s *Server) doneAgentRun(w http.ResponseWriter, r *http.Request, namespace,
 		return
 	}
 
-	var run agentorcv1alpha1.AgentRun
+	var run agentorcav1alpha1.AgentRun
 	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: name, Namespace: namespace}, &run); err != nil {
 		http.Error(w, fmt.Sprintf("getting AgentRun: %v", err), http.StatusNotFound)
 		return
@@ -307,7 +307,7 @@ func (s *Server) doneAgentRun(w http.ResponseWriter, r *http.Request, namespace,
 
 	patch := client.MergeFrom(run.DeepCopy())
 	now := metav1.Now()
-	run.Status.Phase = agentorcv1alpha1.AgentRunPhaseSucceeded
+	run.Status.Phase = agentorcav1alpha1.AgentRunPhaseSucceeded
 	if len(req.Output) > 10240 {
 		req.Output = req.Output[:10240]
 	}
@@ -339,7 +339,7 @@ func (s *Server) failAgentRun(w http.ResponseWriter, r *http.Request, namespace,
 		return
 	}
 
-	var run agentorcv1alpha1.AgentRun
+	var run agentorcav1alpha1.AgentRun
 	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: name, Namespace: namespace}, &run); err != nil {
 		http.Error(w, fmt.Sprintf("getting AgentRun: %v", err), http.StatusNotFound)
 		return
@@ -347,7 +347,7 @@ func (s *Server) failAgentRun(w http.ResponseWriter, r *http.Request, namespace,
 
 	patch := client.MergeFrom(run.DeepCopy())
 	now := metav1.Now()
-	run.Status.Phase = agentorcv1alpha1.AgentRunPhaseFailed
+	run.Status.Phase = agentorcav1alpha1.AgentRunPhaseFailed
 	run.Status.FailureReason = req.Reason
 	run.Status.CompletionTime = &now
 	if err := s.crdClient.Status().Patch(r.Context(), &run, patch); err != nil {
@@ -380,7 +380,7 @@ func (s *Server) recordRoutingDecision(w http.ResponseWriter, r *http.Request, n
 		return
 	}
 
-	var run agentorcv1alpha1.AgentRun
+	var run agentorcav1alpha1.AgentRun
 	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: name, Namespace: namespace}, &run); err != nil {
 		http.Error(w, fmt.Sprintf("getting AgentRun: %v", err), http.StatusNotFound)
 		return
@@ -388,7 +388,7 @@ func (s *Server) recordRoutingDecision(w http.ResponseWriter, r *http.Request, n
 
 	patch := client.MergeFrom(run.DeepCopy())
 	now := metav1.Now()
-	run.Status.RoutingDecisions = append(run.Status.RoutingDecisions, agentorcv1alpha1.RoutingDecision{
+	run.Status.RoutingDecisions = append(run.Status.RoutingDecisions, agentorcav1alpha1.RoutingDecision{
 		Model:      req.Model,
 		Provider:   req.Provider,
 		Strategy:   req.Strategy,
@@ -422,7 +422,7 @@ func (s *Server) updateContextAgentRun(w http.ResponseWriter, r *http.Request, n
 		return
 	}
 
-	var run agentorcv1alpha1.AgentRun
+	var run agentorcav1alpha1.AgentRun
 	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: name, Namespace: namespace}, &run); err != nil {
 		http.Error(w, fmt.Sprintf("getting AgentRun: %v", err), http.StatusNotFound)
 		return
@@ -437,8 +437,8 @@ func (s *Server) updateContextAgentRun(w http.ResponseWriter, r *http.Request, n
 	}
 
 	// Also update parent AgentDeployment's context if this is a chat run.
-	if deploymentName, ok := run.Labels["agentorc.io/deployment"]; ok && deploymentName != "" {
-		var deployment agentorcv1alpha1.AgentDeployment
+	if deploymentName, ok := run.Labels["agentorca.io/deployment"]; ok && deploymentName != "" {
+		var deployment agentorcav1alpha1.AgentDeployment
 		if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: deploymentName, Namespace: namespace}, &deployment); err == nil {
 			depPatch := client.MergeFrom(deployment.DeepCopy())
 			deployment.Status.ContextUsedTokens = req.ContextUsedTokens
@@ -469,7 +469,7 @@ func (s *Server) emitEventAgentRun(w http.ResponseWriter, r *http.Request, names
 		return
 	}
 
-	var run agentorcv1alpha1.AgentRun
+	var run agentorcav1alpha1.AgentRun
 	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: name, Namespace: namespace}, &run); err != nil {
 		http.Error(w, fmt.Sprintf("getting AgentRun: %v", err), http.StatusNotFound)
 		return
@@ -486,7 +486,7 @@ func (s *Server) emitEventAgentRun(w http.ResponseWriter, r *http.Request, names
 			Name:       name,
 			Namespace:  namespace,
 			UID:        run.UID,
-			APIVersion: "agentorc.agentorc.io/v1alpha1",
+			APIVersion: "agentorca.agentorca.io/v1alpha1",
 		},
 		Type:                corev1.EventTypeNormal,
 		Reason:              req.EventType,
@@ -494,7 +494,7 @@ func (s *Server) emitEventAgentRun(w http.ResponseWriter, r *http.Request, names
 		FirstTimestamp:      now,
 		LastTimestamp:       now,
 		Count:               1,
-		ReportingController: "agentorc.io/agent-orc",
+		ReportingController: "agentorca.io/agent-orca",
 		ReportingInstance:   name,
 	}
 	if _, err := s.k8s.CoreV1().Events(namespace).Create(r.Context(), event, metav1.CreateOptions{}); err != nil {
@@ -537,7 +537,7 @@ func (s *Server) handleWorkflow(w http.ResponseWriter, r *http.Request) {
 
 // getAgentWorkflow retrieves an AgentWorkflow by name and returns its current state.
 func (s *Server) getAgentWorkflow(w http.ResponseWriter, r *http.Request, namespace, name string) {
-	var wf agentorcv1alpha1.AgentWorkflow
+	var wf agentorcav1alpha1.AgentWorkflow
 	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: name, Namespace: namespace}, &wf); err != nil {
 		http.Error(w, fmt.Sprintf("getting AgentWorkflow: %v", err), http.StatusNotFound)
 		return
@@ -548,7 +548,7 @@ func (s *Server) getAgentWorkflow(w http.ResponseWriter, r *http.Request, namesp
 
 // listAgentWorkflows lists AgentWorkflows in a namespace.
 func (s *Server) listAgentWorkflows(w http.ResponseWriter, r *http.Request, namespace string) {
-	var wfList agentorcv1alpha1.AgentWorkflowList
+	var wfList agentorcav1alpha1.AgentWorkflowList
 	if err := s.crdClient.List(r.Context(), &wfList, client.InNamespace(namespace)); err != nil {
 		http.Error(w, fmt.Sprintf("listing AgentWorkflows: %v", err), http.StatusInternalServerError)
 		return
@@ -566,7 +566,7 @@ func (s *Server) createAgentWorkflow(w http.ResponseWriter, r *http.Request, nam
 		return
 	}
 
-	var wf agentorcv1alpha1.AgentWorkflow
+	var wf agentorcav1alpha1.AgentWorkflow
 	if err := json.Unmarshal(body, &wf); err != nil {
 		http.Error(w, fmt.Sprintf("invalid JSON: %v", err), http.StatusBadRequest)
 		return
@@ -607,7 +607,7 @@ func (s *Server) createAgentWorkflow(w http.ResponseWriter, r *http.Request, nam
 }
 
 // proposeWorkflowStep handles POST /agentrun/{namespace}/{name}/propose-step.
-// It looks up the parent AgentWorkflow via the agentorc.io/workflow label on the AgentRun,
+// It looks up the parent AgentWorkflow via the agentorca.io/workflow label on the AgentRun,
 // validates the proposal against the workflow's AdaptivePolicy, and either approves or rejects it.
 func (s *Server) proposeWorkflowStep(w http.ResponseWriter, r *http.Request, namespace, runName string) {
 	var proposal struct {
@@ -633,33 +633,33 @@ func (s *Server) proposeWorkflowStep(w http.ResponseWriter, r *http.Request, nam
 	}
 
 	// Look up the AgentRun to find its parent workflow.
-	var run agentorcv1alpha1.AgentRun
+	var run agentorcav1alpha1.AgentRun
 	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: runName, Namespace: namespace}, &run); err != nil {
 		http.Error(w, fmt.Sprintf("getting AgentRun: %v", err), http.StatusNotFound)
 		return
 	}
-	workflowName := run.Labels["agentorc.io/workflow"]
+	workflowName := run.Labels["agentorca.io/workflow"]
 	if workflowName == "" {
 		http.Error(w, "this run is not part of a workflow", http.StatusBadRequest)
 		return
 	}
-	stepName := run.Labels["agentorc.io/workflow-step"]
+	stepName := run.Labels["agentorca.io/workflow-step"]
 
 	// Get the workflow.
-	var wf agentorcv1alpha1.AgentWorkflow
+	var wf agentorcav1alpha1.AgentWorkflow
 	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: workflowName, Namespace: namespace}, &wf); err != nil {
 		http.Error(w, fmt.Sprintf("getting AgentWorkflow: %v", err), http.StatusNotFound)
 		return
 	}
 
 	now := metav1.Now()
-	proposedStep := agentorcv1alpha1.WorkflowStep{
+	proposedStep := agentorcav1alpha1.WorkflowStep{
 		Name:      proposal.Name,
 		AgentRef:  proposal.AgentRef,
 		Input:     proposal.Input,
 		DependsOn: proposal.DependsOn,
 	}
-	entry := agentorcv1alpha1.StepProposal{
+	entry := agentorcav1alpha1.StepProposal{
 		ProposingStep: stepName,
 		ProposedStep:  proposedStep,
 		Timestamp:     now,
@@ -753,9 +753,9 @@ func (s *Server) proposeWorkflowStep(w http.ResponseWriter, r *http.Request, nam
 	entry.Approved = true
 	entry.Reason = "policy check passed"
 	wf.Status.DynamicSteps = append(wf.Status.DynamicSteps, proposedStep)
-	wf.Status.DynamicStepStatuses = append(wf.Status.DynamicStepStatuses, agentorcv1alpha1.WorkflowStepStatus{
+	wf.Status.DynamicStepStatuses = append(wf.Status.DynamicStepStatuses, agentorcav1alpha1.WorkflowStepStatus{
 		Name:   proposedStep.Name,
-		Phase:  agentorcv1alpha1.WorkflowStepPhasePending,
+		Phase:  agentorcav1alpha1.WorkflowStepPhasePending,
 		Source: "dynamic",
 	})
 	wf.Status.ProposalLog = append(wf.Status.ProposalLog, entry)
@@ -788,7 +788,7 @@ func (s *Server) approveWorkflowProposal(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	var wf agentorcv1alpha1.AgentWorkflow
+	var wf agentorcav1alpha1.AgentWorkflow
 	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: workflowName, Namespace: namespace}, &wf); err != nil {
 		http.Error(w, fmt.Sprintf("getting AgentWorkflow: %v", err), http.StatusNotFound)
 		return
@@ -809,9 +809,9 @@ func (s *Server) approveWorkflowProposal(w http.ResponseWriter, r *http.Request,
 	if req.Approved {
 		proposal.Reason = "approved by human"
 		wf.Status.DynamicSteps = append(wf.Status.DynamicSteps, proposal.ProposedStep)
-		wf.Status.DynamicStepStatuses = append(wf.Status.DynamicStepStatuses, agentorcv1alpha1.WorkflowStepStatus{
+		wf.Status.DynamicStepStatuses = append(wf.Status.DynamicStepStatuses, agentorcav1alpha1.WorkflowStepStatus{
 			Name:   proposal.ProposedStep.Name,
-			Phase:  agentorcv1alpha1.WorkflowStepPhasePending,
+			Phase:  agentorcav1alpha1.WorkflowStepPhasePending,
 			Source: "dynamic",
 		})
 	} else {
@@ -867,7 +867,7 @@ func (s *Server) handleKnowledgeBase(w http.ResponseWriter, r *http.Request) {
 
 // authorizeKBAccess checks that the agent identified by saUsername is in KB.Spec.AllowedAgents.
 // saUsername is the TokenReview user — "system:serviceaccount:<ns>:<sa-name>".
-// The SA must carry the label agentorc.io/agent set by the operator when it creates the SA.
+// The SA must carry the label agentorca.io/agent set by the operator when it creates the SA.
 func (s *Server) authorizeKBAccess(ctx context.Context, saUsername, namespace, kbName string) error {
 	// Parse SA name from "system:serviceaccount:<ns>:<sa-name>".
 	userParts := strings.Split(saUsername, ":")
@@ -876,18 +876,18 @@ func (s *Server) authorizeKBAccess(ctx context.Context, saUsername, namespace, k
 	}
 	saName := userParts[3]
 
-	// Look up the SA to read the agentorc.io/agent label.
+	// Look up the SA to read the agentorca.io/agent label.
 	sa, err := s.k8s.CoreV1().ServiceAccounts(namespace).Get(ctx, saName, metav1.GetOptions{})
 	if err != nil {
 		return fmt.Errorf("looking up SA %q: %w", saName, err)
 	}
-	agentName := sa.Labels["agentorc.io/agent"]
+	agentName := sa.Labels["agentorca.io/agent"]
 	if agentName == "" {
-		return fmt.Errorf("SA %q has no agentorc.io/agent label", saName)
+		return fmt.Errorf("SA %q has no agentorca.io/agent label", saName)
 	}
 
 	// Look up the KnowledgeBase and check AllowedAgents.
-	var kb agentorcv1alpha1.KnowledgeBase
+	var kb agentorcav1alpha1.KnowledgeBase
 	if err := s.crdClient.Get(ctx, client.ObjectKey{Name: kbName, Namespace: namespace}, &kb); err != nil {
 		return fmt.Errorf("getting KnowledgeBase %q: %w", kbName, err)
 	}
@@ -922,7 +922,7 @@ func (s *Server) ragSearch(w http.ResponseWriter, r *http.Request, namespace, na
 	}
 
 	// Verify KnowledgeBase exists and is ready.
-	var kb agentorcv1alpha1.KnowledgeBase
+	var kb agentorcav1alpha1.KnowledgeBase
 	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: name, Namespace: namespace}, &kb); err != nil {
 		http.Error(w, fmt.Sprintf("getting KnowledgeBase: %v", err), http.StatusNotFound)
 		return
@@ -998,7 +998,7 @@ func (s *Server) ragIngest(w http.ResponseWriter, r *http.Request, namespace, na
 		return
 	}
 
-	var kb agentorcv1alpha1.KnowledgeBase
+	var kb agentorcav1alpha1.KnowledgeBase
 	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: name, Namespace: namespace}, &kb); err != nil {
 		http.Error(w, fmt.Sprintf("getting KnowledgeBase: %v", err), http.StatusNotFound)
 		return
@@ -1070,14 +1070,14 @@ func (s *Server) ragIngest(w http.ResponseWriter, r *http.Request, namespace, na
 // On first use it pins the resolved provider to kb.Status.EmbeddingModelProvider so that all
 // subsequent calls use the same provider, preventing Qdrant dimension mismatches when the
 // ModelSelector routes to different models with incompatible vector sizes.
-func (s *Server) resolveEmbedder(ctx context.Context, namespace string, kb *agentorcv1alpha1.KnowledgeBase) (*rag.EmbeddingClient, error) {
+func (s *Server) resolveEmbedder(ctx context.Context, namespace string, kb *agentorcav1alpha1.KnowledgeBase) (*rag.EmbeddingClient, error) {
 	var mpName string
 	if kb.Status.EmbeddingModelProvider != "" {
 		// Already pinned — use the recorded provider directly.
 		mpName = kb.Status.EmbeddingModelProvider
 	} else {
 		// First use — resolve from ModelSelector.
-		var ms agentorcv1alpha1.ModelSelector
+		var ms agentorcav1alpha1.ModelSelector
 		if err := s.crdClient.Get(ctx, client.ObjectKey{Name: kb.Spec.Embedding.ModelSelectorRef, Namespace: namespace}, &ms); err != nil {
 			return nil, fmt.Errorf("getting ModelSelector %q: %w", kb.Spec.Embedding.ModelSelectorRef, err)
 		}
@@ -1087,7 +1087,7 @@ func (s *Server) resolveEmbedder(ctx context.Context, namespace string, kb *agen
 		mpName = ms.Spec.Providers[0].Name
 	}
 
-	var mp agentorcv1alpha1.ModelProvider
+	var mp agentorcav1alpha1.ModelProvider
 	if err := s.crdClient.Get(ctx, client.ObjectKey{Name: mpName, Namespace: namespace}, &mp); err != nil {
 		return nil, fmt.Errorf("getting ModelProvider %q: %w", mpName, err)
 	}

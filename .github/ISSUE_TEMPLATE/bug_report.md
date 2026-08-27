@@ -1,5 +1,5 @@
 name: "Report a bug"
-about: "File a bug report for agent-orc"
+about: "File a bug report for agent-orca"
 title: "[bug] "
 labels: ["bug", "status: triage"]
 assignees: []
@@ -42,7 +42,7 @@ body:
   - type: input
     id: version
     attributes:
-      label: "agent-orc version / commit"
+      label: "agent-orca version / commit"
       description: "The tag or commit hash you're running (or `main`, or `skaffold dev`)."
       placeholder: "v0.1.0, or main@abc1234"
     validations:

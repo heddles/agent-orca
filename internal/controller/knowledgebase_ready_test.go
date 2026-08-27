@@ -33,7 +33,7 @@ func qdrantPod(name, ns, kb string, phase corev1.PodPhase, qdrantReady bool) *co
 	}
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns,
-			Labels: map[string]string{"agentorc.io/knowledgebase": kb}},
+			Labels: map[string]string{"agentorca.io/knowledgebase": kb}},
 		Status: corev1.PodStatus{
 			Phase:             phase,
 			ContainerStatuses: []corev1.ContainerStatus{cs},

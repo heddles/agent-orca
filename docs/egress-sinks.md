@@ -40,7 +40,7 @@ The `secretRef` Secret must be in the same namespace as the `AgentRun`.
 ### Kafka
 
 ```yaml
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: AgentRun
 metadata:
   name: hello-run
@@ -103,8 +103,8 @@ The `EgressResult` payload is self-contained (no HATEOAS links) and includes:
 
 | Metric | Type | Labels | Description |
 |---|---|---|---|
-| `agentorc_egress_published_total` | Counter | `sink_type` | Successfully published results |
-| `agentorc_egress_failed_total` | Counter | `sink_type` | Failed publishes |
+| `agentorca_egress_published_total` | Counter | `sink_type` | Successfully published results |
+| `agentorca_egress_failed_total` | Counter | `sink_type` | Failed publishes |
 
 ## AgentDeployment input sources
 
@@ -121,7 +121,7 @@ sources. This is configured via `spec.inputSource`:
 Example:
 
 ```yaml
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: AgentDeployment
 metadata:
   name: support-bot

@@ -49,7 +49,7 @@ type AgentSpec struct {
 	Resources *ResourceRequirements `json:"resources,omitempty"`
 
 	// ServiceAccountRef references a pre-existing ServiceAccount to use for agent pods.
-	// If unset, the operator creates and manages "agentorc-agent-<name>".
+	// If unset, the operator creates and manages "agentorca-agent-<name>".
 	// Use this when the SA already has cloud provider annotations (IRSA, Workload Identity).
 	// +optional
 	ServiceAccountRef *LocalObjectRef `json:"serviceAccountRef,omitempty"`
@@ -175,7 +175,7 @@ type AgentRuntime struct {
 	// /dev/net/tun into the agent container and applies the requested posture.
 	//
 	// Admission is gated by a validating webhook: the agent's namespace must carry the
-	// label `agentorc.io/enable-privileged-pods: "true"` AND the Agent must reference a
+	// label `agentorca.io/enable-privileged-pods: "true"` AND the Agent must reference a
 	// GuardrailPolicyRef. These checks fail‑closed.
 	// +optional
 	SecurityContextOverride *PodSecurityOverride `json:"securityContextOverride,omitempty"`

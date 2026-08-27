@@ -1,20 +1,20 @@
 nameOverride: ""
-agent-orc-resources:
+agent-orca-resources:
   # ── MCPServers ────────────────────────────────────────────────────────────────
   #
   # financial-mcp: in-cluster HTTP MCP server with allowApps: true.
   # Exposes forecast-impact and fetch-market-context. forecast-impact declares
-  # _meta.ui.resourceUri so the agent-orc UI renders an interactive Canvas-based
+  # _meta.ui.resourceUri so the agent-orca UI renders an interactive Canvas-based
   # dashboard with sliders for adjusting assumptions and live recalculation.
   mcpServers:
     - name: financial-mcp
       transport: http
-      url: "http://financial-mcp-server.agent-orc-system.svc.cluster.local:8080"
+      url: "http://financial-mcp-server.agent-orca-system.svc.cluster.local:8080"
       allowApps: true
       allowedAgents:
         - financial-analyst
       networkEgress:
-        - host: financial-mcp-server.agent-orc-system.svc.cluster.local
+        - host: financial-mcp-server.agent-orca-system.svc.cluster.local
           port: 8080
           protocol: TCP
       tools:
@@ -35,7 +35,7 @@ agent-orc-resources:
           memory: 128Mi
   # ── KnowledgeBases ──────────────────────────────────────────────────────────
   #
-  # Requires: 'embeddings' ModelSelector already deployed (agent-orc-resources).
+  # Requires: 'embeddings' ModelSelector already deployed (agent-orca-resources).
   # The financial planning content ConfigMap is created by kb-configmap.yaml.
   knowledgeBases:
     - name: financial-planning-kb
@@ -55,7 +55,7 @@ agent-orc-resources:
   # ── Agents ───────────────────────────────────────────────────────────────────
   agents:
     - name: financial-analyst
-      modelSelectorRef: poolside
+      modelSelectorRef: default
       systemPrompt: |
         You are a senior financial analyst specializing in multi-factor scenario analysis
         and commodity market dynamics. You help users understand how events cascade through
@@ -110,7 +110,7 @@ agent-orc-resources:
       knowledgeBases:
         - financial-planning-kb
       runtime:
-        ociRef: "ghcr.io/agentorc/agent-orc/openai-reference:latest"
+        ociRef: "ghcr.io/agentorca/agent-orca/openai-reference:latest"
         framework: openai-compatible
       memory:
         checkpointEvery: 1

@@ -18,9 +18,9 @@ updates:
       interval: weekly
     open-pull-requests-limit: 10
 
-  # Python SDK dependencies (pkg/python/agentorc/pyproject.toml).
+  # Python SDK dependencies (pkg/python/agentorca/pyproject.toml).
   - package-ecosystem: pip
-    directory: /pkg/python/agentorc
+    directory: /pkg/python/agentorca
     schedule:
       interval: weekly
     open-pull-requests-limit: 5

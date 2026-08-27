@@ -7,7 +7,7 @@
 # Image: python:3.12-slim (public Docker Hub)
 # Agent: minimal stdlib urllib script — no pip install required.
 ---
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: Agent
 metadata:
   name: test-openai-compat
@@ -61,7 +61,7 @@ spec:
       cpu: 200m
       memory: 128Mi
 ---
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: AgentRun
 metadata:
   name: test-openai-compat-run

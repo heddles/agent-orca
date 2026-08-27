@@ -33,7 +33,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
 )
 
 // tenantAuthModeIssued is the TenantConfig authMode value for issued JWTs.
@@ -73,7 +73,7 @@ type AdminTenantResponse struct {
 
 // requireAdminAuth gates the /admin/* surface: the caller must present a valid
 // Kubernetes ServiceAccount token whose SA carries the
-// `agentorc.io/admin: "true"` label.
+// `agentorca.io/admin: "true"` label.
 func (s *ExternalAPIServer) requireAdminAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token := extractBearer(r)
@@ -105,7 +105,7 @@ func (s *ExternalAPIServer) requireAdminAuth(next http.Handler) http.Handler {
 			return
 		}
 		if !allowed {
-			http.Error(w, `{"error":"forbidden: ServiceAccount must carry the agentorc.io/admin=true label"}`, http.StatusForbidden)
+			http.Error(w, `{"error":"forbidden: ServiceAccount must carry the agentorca.io/admin=true label"}`, http.StatusForbidden)
 			return
 		}
 		// Stash the admin identity for downstream handlers (audit/logging).
@@ -173,7 +173,7 @@ func (s *ExternalAPIServer) handleAdminTenantByID(w http.ResponseWriter, r *http
 // --- handlers ---
 
 func (s *ExternalAPIServer) listTenants(w http.ResponseWriter, _ *http.Request) {
-	var list agentorcv1alpha1.TenantConfigList
+	var list agentorcav1alpha1.TenantConfigList
 	if err := s.crdClient.List(context.Background(), &list); err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"listing tenants: %s"}`, err), http.StatusInternalServerError)
 		return
@@ -187,7 +187,7 @@ func (s *ExternalAPIServer) listTenants(w http.ResponseWriter, _ *http.Request) 
 }
 
 func (s *ExternalAPIServer) getTenant(w http.ResponseWriter, _ *http.Request, name string) {
-	var tc agentorcv1alpha1.TenantConfig
+	var tc agentorcav1alpha1.TenantConfig
 	if err := s.crdClient.Get(context.Background(), client.ObjectKey{Name: name, Namespace: s.adminNamespace()}, &tc); err != nil {
 		code := http.StatusInternalServerError
 		if k8serrors.IsNotFound(err) {
@@ -234,13 +234,13 @@ func (s *ExternalAPIServer) createTenant(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Create the TenantConfig (idempotent: re-GET and report if it already exists).
-	tc := &agentorcv1alpha1.TenantConfig{
+	tc := &agentorcav1alpha1.TenantConfig{
 		ObjectMeta: metav1.ObjectMeta{Name: req.Name, Namespace: ns},
-		Spec: agentorcv1alpha1.TenantConfigSpec{
+		Spec: agentorcav1alpha1.TenantConfigSpec{
 			AuthMode: tenantAuthModeIssued,
-			Issued: &agentorcv1alpha1.IssuedAuthConfig{
+			Issued: &agentorcav1alpha1.IssuedAuthConfig{
 				ClientID: req.ClientID,
-				ClientSecretRef: agentorcv1alpha1.SecretKeyRef{
+				ClientSecretRef: agentorcav1alpha1.SecretKeyRef{
 					Name: secretName,
 					Key:  "client-secret",
 				},
@@ -263,7 +263,7 @@ func (s *ExternalAPIServer) createTenant(w http.ResponseWriter, r *http.Request)
 
 func (s *ExternalAPIServer) rotateTenantSecret(w http.ResponseWriter, r *http.Request, name string) {
 	ctx := r.Context()
-	var tc agentorcv1alpha1.TenantConfig
+	var tc agentorcav1alpha1.TenantConfig
 	if err := s.crdClient.Get(ctx, client.ObjectKey{Name: name, Namespace: s.adminNamespace()}, &tc); err != nil {
 		code := http.StatusInternalServerError
 		if k8serrors.IsNotFound(err) {
@@ -292,7 +292,7 @@ func (s *ExternalAPIServer) rotateTenantSecret(w http.ResponseWriter, r *http.Re
 
 func (s *ExternalAPIServer) deleteTenant(w http.ResponseWriter, r *http.Request, name string) {
 	ctx := r.Context()
-	var tc agentorcv1alpha1.TenantConfig
+	var tc agentorcav1alpha1.TenantConfig
 	if err := s.crdClient.Get(ctx, client.ObjectKey{Name: name, Namespace: s.adminNamespace()}, &tc); err != nil {
 		code := http.StatusInternalServerError
 		if k8serrors.IsNotFound(err) {
@@ -338,7 +338,7 @@ func (s *ExternalAPIServer) upsertSecret(ctx context.Context, namespace, name, v
 
 // tenantToResponse converts a TenantConfig into the admin response. If secret is
 // non-empty it is included (create/rotate); otherwise it is omitted.
-func tenantToResponse(tc *agentorcv1alpha1.TenantConfig, secret string) AdminTenantResponse {
+func tenantToResponse(tc *agentorcav1alpha1.TenantConfig, secret string) AdminTenantResponse {
 	resp := AdminTenantResponse{
 		Name:            tc.Name,
 		Namespace:       tc.Namespace,
@@ -359,11 +359,11 @@ func tenantToResponse(tc *agentorcv1alpha1.TenantConfig, secret string) AdminTen
 }
 
 // toSpecRateLimit nil-maps to nil (omitted).
-func toSpecRateLimit(rl *AdminRateLimit) *agentorcv1alpha1.TenantRateLimit {
+func toSpecRateLimit(rl *AdminRateLimit) *agentorcav1alpha1.TenantRateLimit {
 	if rl == nil {
 		return nil
 	}
-	return &agentorcv1alpha1.TenantRateLimit{RequestsPerMinute: rl.RequestsPerMinute, ConcurrentRuns: rl.ConcurrentRuns}
+	return &agentorcav1alpha1.TenantRateLimit{RequestsPerMinute: rl.RequestsPerMinute, ConcurrentRuns: rl.ConcurrentRuns}
 }
 
 // generateSecret returns a URL-safe random secret (32 bytes of entropy).

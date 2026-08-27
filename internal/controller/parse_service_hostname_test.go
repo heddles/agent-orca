@@ -27,7 +27,7 @@ func TestParseServiceHostname(t *testing.T) {
 		{"my-svc.my-ns.svc.cluster.local", "my-svc", "my-ns"},
 		{"my-svc.my-ns.svc.cluster.local.", "my-svc", "my-ns"},
 		{"my-svc.my-ns.svc", "my-svc", "my-ns"},
-		{"health-mcp-server.agent-orc-system.svc.cluster.local", "health-mcp-server", "agent-orc-system"},
+		{"health-mcp-server.agent-orca-system.svc.cluster.local", "health-mcp-server", "agent-orca-system"},
 		{"example.com", "", ""},
 		{"10.0.0.1", "", ""},
 		{"", "", ""},

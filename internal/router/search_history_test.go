@@ -23,12 +23,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floppyfish14/agent-orc/internal/state"
+	"github.com/floppyfish14/agent-orca/internal/state"
 )
 
 // searchFakeStore is a minimal state.Store for exercising _search_history.
-// It holds a deployment run index (scope "agentorc/deployments/<dep>/runs"
-// → keys) plus message checkpoints keyed by "agentorc/runs/<run>/state".
+// It holds a deployment run index (scope "agentorca/deployments/<dep>/runs"
+// → keys) plus message checkpoints keyed by "agentorca/runs/<run>/state".
 type searchFakeStore struct {
 	index    map[string][]string          // scope -> keys  (only the runs scope is meaningful)
 	messages map[string][]json.RawMessage // checkpoint key -> messages
@@ -88,14 +88,14 @@ func msg(raw string) json.RawMessage { return json.RawMessage(raw) }
 func TestSearchHistoryFindsRelevantPriorTurns(t *testing.T) {
 	store := newSearchStore()
 	// Deployment run index advertises two prior runs.
-	store.index["agentorc/deployments/soc-runs/runs"] = []string{"run-1", "run-2"}
+	store.index["agentorca/deployments/soc-runs/runs"] = []string{"run-1", "run-2"}
 	// run-1 mentions the sought term "CVE-2024-9999".
-	store.messages["agentorc/runs/run-1/state"] = []json.RawMessage{
+	store.messages["agentorca/runs/run-1/state"] = []json.RawMessage{
 		msg(`{"role":"user","content":"investigate CVE-2024-9999 on the edge host"}`),
 		msg(`{"role":"assistant","content":"I could not find that CVE in any source."}`),
 	}
 	// run-2 is irrelevant.
-	store.messages["agentorc/runs/run-2/state"] = []json.RawMessage{
+	store.messages["agentorca/runs/run-2/state"] = []json.RawMessage{
 		msg(`{"role":"user","content":"what is the weather today"}`),
 	}
 
@@ -129,8 +129,8 @@ func TestSearchHistoryFindsRelevantPriorTurns(t *testing.T) {
 
 func TestSearchHistoryNotFoundReturnsFoundFalse(t *testing.T) {
 	store := newSearchStore()
-	store.index["agentorc/deployments/soc-runs/runs"] = []string{"run-1"}
-	store.messages["agentorc/runs/run-1/state"] = []json.RawMessage{
+	store.index["agentorca/deployments/soc-runs/runs"] = []string{"run-1"}
+	store.messages["agentorca/runs/run-1/state"] = []json.RawMessage{
 		msg(`{"role":"user","content":"talk about the weather"}`),
 	}
 	r := &Router{cfg: &Config{DeploymentName: "soc-runs", RunName: "run-2"}, store: store}

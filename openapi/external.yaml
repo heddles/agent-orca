@@ -1,24 +1,24 @@
 openapi: 3.1.0
 info:
-  title: agent-orc External Task API
+  title: agent-orca External Task API
   description: |
-    Programmable interface for submitting tasks to agent-orc from external systems.
+    Programmable interface for submitting tasks to agent-orca from external systems.
     Each task creates an `AgentRun` in the caller's tenant namespace and returns a
     task id that can be polled, streamed, answered (for clarification), or cancelled.
 
     Authentication: every endpoint except `/oauth/token` requires
-    `Authorization: Bearer <token>`, where the token is either an agent-orc-issued
+    `Authorization: Bearer <token>`, where the token is either an agent-orca-issued
     JWT (from the `client_credentials` exchange below), a federated OIDC JWT, or a
     Kubernetes ServiceAccount token. See docs/auth.md for the full model.
   version: "1.0.0"
   contact:
-    name: agent-orc
+    name: agent-orca
   license:
     name: Apache-2.0
 servers:
   - url: http://localhost:8084
     description: local dev / cluster-internal
-  - url: https://agent-orc.example.com:8084
+  - url: https://agent-orca.example.com:8084
     description: production (exposed via Ingress/Gateway + UIProxy BFF)
 tags:
   - name: authentication

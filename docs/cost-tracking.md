@@ -37,7 +37,7 @@ When a parent agent spawns a child (via `_spawn` or an agent-type tool), the chi
 
 ### Spend persistence and recovery
 
-Spend is persisted to Redis at key `agentorc/runs/<run>/state:spend` after every LLM call. This allows recovery in two scenarios:
+Spend is persisted to Redis at key `agentorca/runs/<run>/state:spend` after every LLM call. This allows recovery in two scenarios:
 
 - **Pod restart**: `New()` loads prior spend from the checkpoint key on startup.
 - **Warm-mode continuation**: `handleWarmModeClaim()` loads spend from the prior run's key when a warm pod is reused for a new turn.
@@ -93,7 +93,7 @@ Verify that spend is recovered from Redis after the pod is recreated.
 1. Start a long-running agent (one with tools that take time).
 2. Mid-run, note the spend in Redis:
    ```bash
-   redis-cli GET "agentorc/runs/<run-name>/state:spend"
+   redis-cli GET "agentorca/runs/<run-name>/state:spend"
    ```
 3. Kill the pod:
    ```bash
@@ -114,7 +114,7 @@ Verify that multi-turn chat sessions accumulate spend across turns.
 3. Send message 2 (creates a continuation run with `priorRunRef`).
 4. After message 2 completes:
    ```bash
-   redis-cli GET "agentorc/runs/<message2-run>/state:spend"
+   redis-cli GET "agentorca/runs/<message2-run>/state:spend"
    ```
 5. **Pass criteria**: The second run's spend includes the first run's accumulated spend.
 
@@ -140,7 +140,7 @@ Verify that parent runs include child agent costs.
 3. Compare parent and child spend:
    ```bash
    # Child runs
-   kubectl get agentrun -l agentorc.io/parent-run=<parent-run> \
+   kubectl get agentrun -l agentorca.io/parent-run=<parent-run> \
      -o custom-columns='NAME:.metadata.name,SPEND:.status.spendUSD'
 
    # Parent run (should include child spend)
@@ -188,7 +188,7 @@ Run a single chat session against an AgentDeployment with:
 
 After completion:
 ```bash
-kubectl get agentrun -n <ns> -l agentorc.io/session=<session-id> \
+kubectl get agentrun -n <ns> -l agentorca.io/session=<session-id> \
   -o custom-columns='NAME:.metadata.name,PHASE:.status.phase,SPEND:.status.spendUSD'
 
 redis-cli GET "checkpoint:<session-id>" | python3 -m json.tool | grep totalCostUSD

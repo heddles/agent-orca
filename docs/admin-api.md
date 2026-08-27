@@ -7,18 +7,18 @@ The Admin API provides tenant lifecycle management. It is exposed on the
 
 The Admin API does **not** accept OAuth2 client_credentials JWTs. It requires
 a **Kubernetes ServiceAccount bearer token** whose SA carries the
-`agentorc.io/admin: "true"` label.
+`agentorca.io/admin: "true"` label.
 
 ```bash
 # Obtain an admin SA token
-kubectl create token agentorc-admin -n agent-orc-system
+kubectl create token agentorca-admin -n agent-orca-system
 
 # Use it with aoctl
-aoctl admin tenants list --token $(kubectl create token agentorc-admin -n agent-orc-system)
+aoctl admin tenants list --token $(kubectl create token agentorca-admin -n agent-orca-system)
 ```
 
 The operator validates the SA token via the Kubernetes TokenReview API and
-checks the `agentorc.io/admin` label on the ServiceAccount. Unlabeled SAs
+checks the `agentorca.io/admin` label on the ServiceAccount. Unlabeled SAs
 receive `403 Forbidden`.
 
 ## Endpoints
@@ -42,7 +42,7 @@ List all tenants.
   "tenants": [
     {
       "name": "acme",
-      "namespace": "agentorc-system",
+      "namespace": "agentorca-system",
       "clientID": "acme-client",
       "targetNamespace": "tenant-acme",
       "allowedAgents": ["support-bot"],
@@ -56,7 +56,7 @@ List all tenants.
 ### POST /admin/tenants
 
 Create a new tenant. This writes a `TenantConfig` CRD and a client-secret
-`Secret` in the `agentorc-system` namespace.
+`Secret` in the `agentorca-system` namespace.
 
 **Request body:**
 
@@ -76,7 +76,7 @@ Create a new tenant. This writes a `TenantConfig` CRD and a client-secret
 ```json
 {
   "name": "acme",
-  "namespace": "agentorc-system",
+  "namespace": "agentorca-system",
   "clientID": "acme-client",
   "clientSecret": "auto-generated-secret-abc123",
   "targetNamespace": "tenant-acme",
@@ -148,7 +148,7 @@ aoctl admin tenants delete acme --token $SA_TOKEN
 ## Using Terraform
 
 For infrastructure-as-code, you can provision tenants using the
-[Terraform example](../examples/terraform/agentorc_tenant.tf) instead of the
+[Terraform example](../examples/terraform/agentorca_tenant.tf) instead of the
 admin API. Both approaches produce identical Kubernetes resources.
 
 ```bash

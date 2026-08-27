@@ -31,7 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
 )
 
 const workflowPollInterval = 10 * time.Second
@@ -42,16 +42,16 @@ type AgentWorkflowReconciler struct {
 	Scheme *runtime.Scheme
 }
 
-// +kubebuilder:rbac:groups=agentorc.agentorc.io,resources=agentworkflows,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=agentorc.agentorc.io,resources=agentworkflows/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=agentorc.agentorc.io,resources=agentworkflows/finalizers,verbs=update
-// +kubebuilder:rbac:groups=agentorc.agentorc.io,resources=agentruns,verbs=get;list;watch;create;delete
+// +kubebuilder:rbac:groups=agentorca.agentorca.io,resources=agentworkflows,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=agentorca.agentorca.io,resources=agentworkflows/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=agentorca.agentorca.io,resources=agentworkflows/finalizers,verbs=update
+// +kubebuilder:rbac:groups=agentorca.agentorca.io,resources=agentruns,verbs=get;list;watch;create;delete
 
 func (r *AgentWorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) { //nolint:gocyclo
 
 	logger := log.FromContext(ctx)
 
-	var wf agentorcv1alpha1.AgentWorkflow
+	var wf agentorcav1alpha1.AgentWorkflow
 	if err := r.Get(ctx, req.NamespacedName, &wf); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -71,7 +71,7 @@ func (r *AgentWorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	// Build a fast lookup: step name → current status entry.
-	statusIndex := make(map[string]*agentorcv1alpha1.WorkflowStepStatus, len(wf.Status.Steps))
+	statusIndex := make(map[string]*agentorcav1alpha1.WorkflowStepStatus, len(wf.Status.Steps))
 	for i := range wf.Status.Steps {
 		statusIndex[wf.Status.Steps[i].Name] = &wf.Status.Steps[i]
 	}
@@ -79,31 +79,31 @@ func (r *AgentWorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// Ensure every spec step has a status entry (first reconcile).
 	for _, step := range wf.Spec.Steps {
 		if _, ok := statusIndex[step.Name]; !ok {
-			wf.Status.Steps = append(wf.Status.Steps, agentorcv1alpha1.WorkflowStepStatus{
+			wf.Status.Steps = append(wf.Status.Steps, agentorcav1alpha1.WorkflowStepStatus{
 				Name:   step.Name,
-				Phase:  agentorcv1alpha1.WorkflowStepPhasePending,
+				Phase:  agentorcav1alpha1.WorkflowStepPhasePending,
 				Source: "static",
 			})
 		}
 	}
 
 	// Ensure every dynamic step has a status entry in DynamicStepStatuses.
-	dynStatusIndex := make(map[string]*agentorcv1alpha1.WorkflowStepStatus, len(wf.Status.DynamicStepStatuses))
+	dynStatusIndex := make(map[string]*agentorcav1alpha1.WorkflowStepStatus, len(wf.Status.DynamicStepStatuses))
 	for i := range wf.Status.DynamicStepStatuses {
 		dynStatusIndex[wf.Status.DynamicStepStatuses[i].Name] = &wf.Status.DynamicStepStatuses[i]
 	}
 	for _, step := range wf.Status.DynamicSteps {
 		if _, ok := dynStatusIndex[step.Name]; !ok {
-			wf.Status.DynamicStepStatuses = append(wf.Status.DynamicStepStatuses, agentorcv1alpha1.WorkflowStepStatus{
+			wf.Status.DynamicStepStatuses = append(wf.Status.DynamicStepStatuses, agentorcav1alpha1.WorkflowStepStatus{
 				Name:   step.Name,
-				Phase:  agentorcv1alpha1.WorkflowStepPhasePending,
+				Phase:  agentorcav1alpha1.WorkflowStepPhasePending,
 				Source: "dynamic",
 			})
 		}
 	}
 
 	// Rebuild indices after potential slice growth to avoid dangling pointers.
-	statusIndex = make(map[string]*agentorcv1alpha1.WorkflowStepStatus, len(wf.Status.Steps)+len(wf.Status.DynamicStepStatuses))
+	statusIndex = make(map[string]*agentorcav1alpha1.WorkflowStepStatus, len(wf.Status.Steps)+len(wf.Status.DynamicStepStatuses))
 	for i := range wf.Status.Steps {
 		statusIndex[wf.Status.Steps[i].Name] = &wf.Status.Steps[i]
 	}
@@ -112,7 +112,7 @@ func (r *AgentWorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	// Merge spec steps and dynamic steps into a unified list for scheduling.
-	allSteps := make([]agentorcv1alpha1.WorkflowStep, 0, len(wf.Spec.Steps)+len(wf.Status.DynamicSteps))
+	allSteps := make([]agentorcav1alpha1.WorkflowStep, 0, len(wf.Spec.Steps)+len(wf.Status.DynamicSteps))
 	allSteps = append(allSteps, wf.Spec.Steps...)
 	allSteps = append(allSteps, wf.Status.DynamicSteps...)
 
@@ -124,10 +124,10 @@ func (r *AgentWorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		ss := statusIndex[step.Name]
 
 		switch ss.Phase {
-		case agentorcv1alpha1.WorkflowStepPhaseSucceeded, agentorcv1alpha1.WorkflowStepPhaseSkipped:
+		case agentorcav1alpha1.WorkflowStepPhaseSucceeded, agentorcav1alpha1.WorkflowStepPhaseSkipped:
 			continue
 
-		case agentorcv1alpha1.WorkflowStepPhaseFailed:
+		case agentorcav1alpha1.WorkflowStepPhaseFailed:
 			anyFailed = true
 			if wf.Spec.OnStepFailure != "continue" { //nolint:goconst
 
@@ -135,7 +135,7 @@ func (r *AgentWorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 				return ctrl.Result{}, r.Status().Update(ctx, &wf)
 			}
 
-		case agentorcv1alpha1.WorkflowStepPhaseRunning, agentorcv1alpha1.WorkflowStepPhaseWaitingForInput:
+		case agentorcav1alpha1.WorkflowStepPhaseRunning, agentorcav1alpha1.WorkflowStepPhaseWaitingForInput:
 			// Check the underlying AgentRun. All mutations stay in-memory; no Status().Update
 			// is called here so that the wf.Status.Steps slice is never replaced mid-loop.
 			result, err := r.checkStepRun(ctx, &wf, &allSteps[i], ss)
@@ -148,22 +148,22 @@ func (r *AgentWorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			}
 			// Step has transitioned — handle the new phase.
 			switch ss.Phase {
-			case agentorcv1alpha1.WorkflowStepPhaseSucceeded:
+			case agentorcav1alpha1.WorkflowStepPhaseSucceeded:
 				if overage := r.budgetExceeded(&wf); overage != "" {
 					r.failWorkflow(ctx, &wf, overage)
 					return ctrl.Result{}, r.Status().Update(ctx, &wf)
 				}
-			case agentorcv1alpha1.WorkflowStepPhaseFailed:
+			case agentorcav1alpha1.WorkflowStepPhaseFailed:
 				anyFailed = true
 				if wf.Spec.OnStepFailure != "continue" {
 					r.failWorkflow(ctx, &wf, fmt.Sprintf("step %q failed", step.Name))
 					return ctrl.Result{}, r.Status().Update(ctx, &wf)
 				}
-			case agentorcv1alpha1.WorkflowStepPhaseRunning, agentorcv1alpha1.WorkflowStepPhaseWaitingForInput:
+			case agentorcav1alpha1.WorkflowStepPhaseRunning, agentorcav1alpha1.WorkflowStepPhaseWaitingForInput:
 				anyRunning = true
 			}
 
-		case agentorcv1alpha1.WorkflowStepPhasePending:
+		case agentorcav1alpha1.WorkflowStepPhasePending:
 			// Check if the step is eligible to start.
 			if !r.depsReady(step, statusIndex, wf.Spec.OnStepFailure) {
 				continue
@@ -175,7 +175,7 @@ func (r *AgentWorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 					logger.Error(err, "evaluating step condition", "step", step.Name)
 				}
 				if !pass {
-					ss.Phase = agentorcv1alpha1.WorkflowStepPhaseSkipped
+					ss.Phase = agentorcav1alpha1.WorkflowStepPhaseSkipped
 					continue
 				}
 			}
@@ -192,9 +192,9 @@ func (r *AgentWorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	allDone := true
 	allStatuses := append(wf.Status.Steps, wf.Status.DynamicStepStatuses...)
 	for _, ss := range allStatuses {
-		if ss.Phase == agentorcv1alpha1.WorkflowStepPhasePending ||
-			ss.Phase == agentorcv1alpha1.WorkflowStepPhaseRunning ||
-			ss.Phase == agentorcv1alpha1.WorkflowStepPhaseWaitingForInput {
+		if ss.Phase == agentorcav1alpha1.WorkflowStepPhasePending ||
+			ss.Phase == agentorcav1alpha1.WorkflowStepPhaseRunning ||
+			ss.Phase == agentorcav1alpha1.WorkflowStepPhaseWaitingForInput {
 			allDone = false
 			break
 		}
@@ -202,7 +202,7 @@ func (r *AgentWorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 	if allDone && !anyFailed {
 		now := metav1.Now()
-		wf.Status.Phase = agentorcv1alpha1.AgentWorkflowPhaseSucceeded
+		wf.Status.Phase = agentorcav1alpha1.AgentWorkflowPhaseSucceeded
 		wf.Status.CompletionTime = &now
 		wf.Status.TotalSpendUSD = r.sumSpend(allStatuses)
 		return ctrl.Result{}, r.Status().Update(ctx, &wf)
@@ -218,9 +218,9 @@ func (r *AgentWorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 // The caller is responsible for persisting via Status().Update.
 func (r *AgentWorkflowReconciler) startStep(
 	ctx context.Context,
-	wf *agentorcv1alpha1.AgentWorkflow,
-	step *agentorcv1alpha1.WorkflowStep,
-	ss *agentorcv1alpha1.WorkflowStepStatus,
+	wf *agentorcav1alpha1.AgentWorkflow,
+	step *agentorcav1alpha1.WorkflowStep,
+	ss *agentorcav1alpha1.WorkflowStepStatus,
 ) error {
 	// Resolve template variables in the input (from both static and dynamic step outputs).
 	allStatuses := append(wf.Status.Steps, wf.Status.DynamicStepStatuses...)
@@ -242,16 +242,16 @@ func (r *AgentWorkflowReconciler) startStep(
 	}
 
 	runName := fmt.Sprintf("%s-%s", wf.Name, step.Name)
-	run := &agentorcv1alpha1.AgentRun{
+	run := &agentorcav1alpha1.AgentRun{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      runName,
 			Namespace: wf.Namespace,
 			Labels: map[string]string{
-				"agentorc.io/workflow":      wf.Name,
-				"agentorc.io/workflow-step": step.Name,
+				"agentorca.io/workflow":      wf.Name,
+				"agentorca.io/workflow-step": step.Name,
 			},
 		},
-		Spec: agentorcv1alpha1.AgentRunSpec{
+		Spec: agentorcav1alpha1.AgentRunSpec{
 			AgentRef: step.AgentRef,
 			Input:    input,
 			Timeout:  timeout,
@@ -268,13 +268,13 @@ func (r *AgentWorkflowReconciler) startStep(
 	}
 
 	now := metav1.Now()
-	ss.Phase = agentorcv1alpha1.WorkflowStepPhaseRunning
+	ss.Phase = agentorcav1alpha1.WorkflowStepPhaseRunning
 	ss.AgentRunRef = runName
 	ss.StartTime = &now
 
 	// Set workflow phase to Running and record StartTime on first step launch.
-	if wf.Status.Phase != agentorcv1alpha1.AgentWorkflowPhaseRunning {
-		wf.Status.Phase = agentorcv1alpha1.AgentWorkflowPhaseRunning
+	if wf.Status.Phase != agentorcav1alpha1.AgentWorkflowPhaseRunning {
+		wf.Status.Phase = agentorcav1alpha1.AgentWorkflowPhaseRunning
 		wf.Status.StartTime = &now
 	}
 
@@ -285,21 +285,21 @@ func (r *AgentWorkflowReconciler) startStep(
 // It does not call Status().Update — the caller is responsible for persisting.
 func (r *AgentWorkflowReconciler) checkStepRun(
 	ctx context.Context,
-	wf *agentorcv1alpha1.AgentWorkflow,
-	step *agentorcv1alpha1.WorkflowStep, //nolint:unparam
+	wf *agentorcav1alpha1.AgentWorkflow,
+	step *agentorcav1alpha1.WorkflowStep, //nolint:unparam
 
-	ss *agentorcv1alpha1.WorkflowStepStatus,
+	ss *agentorcav1alpha1.WorkflowStepStatus,
 ) (ctrl.Result, error) {
 	if ss.AgentRunRef == "" {
 		return ctrl.Result{RequeueAfter: workflowPollInterval}, nil
 	}
 
-	var run agentorcv1alpha1.AgentRun
+	var run agentorcav1alpha1.AgentRun
 	if err := r.Get(ctx, client.ObjectKey{Name: ss.AgentRunRef, Namespace: wf.Namespace}, &run); err != nil {
 		if apierrors.IsNotFound(err) {
 			// AgentRun was deleted externally; treat as failure.
 			now := metav1.Now()
-			ss.Phase = agentorcv1alpha1.WorkflowStepPhaseFailed
+			ss.Phase = agentorcav1alpha1.WorkflowStepPhaseFailed
 			ss.CompletionTime = &now
 			ss.FailureReason = "AgentRun was deleted"
 			return ctrl.Result{}, nil
@@ -308,15 +308,15 @@ func (r *AgentWorkflowReconciler) checkStepRun(
 	}
 
 	switch run.Status.Phase {
-	case agentorcv1alpha1.AgentRunPhaseSucceeded:
+	case agentorcav1alpha1.AgentRunPhaseSucceeded:
 		now := metav1.Now()
-		ss.Phase = agentorcv1alpha1.WorkflowStepPhaseSucceeded
+		ss.Phase = agentorcav1alpha1.WorkflowStepPhaseSucceeded
 		ss.CompletionTime = &now
 		ss.Output = run.Status.Output
 		ss.SpendUSD = run.Status.SpendUSD
 		return ctrl.Result{}, nil
 
-	case agentorcv1alpha1.AgentRunPhaseFailed:
+	case agentorcav1alpha1.AgentRunPhaseFailed:
 		now := metav1.Now()
 		failureReason := run.Status.RawOutput
 		if failureReason == "" {
@@ -325,22 +325,22 @@ func (r *AgentWorkflowReconciler) checkStepRun(
 		ss.CompletionTime = &now
 		if wf.Spec.OnStepFailure == "continue" {
 			// Mark as Skipped so dependents can still be evaluated.
-			ss.Phase = agentorcv1alpha1.WorkflowStepPhaseSkipped
+			ss.Phase = agentorcav1alpha1.WorkflowStepPhaseSkipped
 			ss.FailureReason = failureReason
 			return ctrl.Result{}, nil
 		}
-		ss.Phase = agentorcv1alpha1.WorkflowStepPhaseFailed
+		ss.Phase = agentorcav1alpha1.WorkflowStepPhaseFailed
 		ss.FailureReason = failureReason
 		return ctrl.Result{}, nil
 
-	case agentorcv1alpha1.AgentRunPhaseWaitingForInput:
+	case agentorcav1alpha1.AgentRunPhaseWaitingForInput:
 		// If the human answered and a continuation run was created, follow it.
 		if run.Status.ContinuationRunRef != "" {
 			ss.AgentRunRef = run.Status.ContinuationRunRef
-			ss.Phase = agentorcv1alpha1.WorkflowStepPhaseRunning
+			ss.Phase = agentorcav1alpha1.WorkflowStepPhaseRunning
 			return ctrl.Result{Requeue: true}, nil
 		}
-		ss.Phase = agentorcv1alpha1.WorkflowStepPhaseWaitingForInput
+		ss.Phase = agentorcav1alpha1.WorkflowStepPhaseWaitingForInput
 		return ctrl.Result{RequeueAfter: workflowPollInterval}, nil
 	}
 
@@ -350,8 +350,8 @@ func (r *AgentWorkflowReconciler) checkStepRun(
 
 // depsReady returns true when all DependsOn steps are in a terminal-eligible state.
 func (r *AgentWorkflowReconciler) depsReady(
-	step agentorcv1alpha1.WorkflowStep,
-	index map[string]*agentorcv1alpha1.WorkflowStepStatus,
+	step agentorcav1alpha1.WorkflowStep,
+	index map[string]*agentorcav1alpha1.WorkflowStepStatus,
 	onFailure string,
 ) bool {
 	for _, dep := range step.DependsOn {
@@ -359,10 +359,10 @@ func (r *AgentWorkflowReconciler) depsReady(
 		if !ok {
 			return false
 		}
-		if s.Phase == agentorcv1alpha1.WorkflowStepPhaseSucceeded {
+		if s.Phase == agentorcav1alpha1.WorkflowStepPhaseSucceeded {
 			continue
 		}
-		if s.Phase == agentorcv1alpha1.WorkflowStepPhaseSkipped && onFailure == "continue" {
+		if s.Phase == agentorcav1alpha1.WorkflowStepPhaseSkipped && onFailure == "continue" {
 			continue
 		}
 		return false
@@ -372,16 +372,16 @@ func (r *AgentWorkflowReconciler) depsReady(
 
 // failWorkflow marks the workflow as Failed in-memory.
 // The caller is responsible for persisting via Status().Update.
-func (r *AgentWorkflowReconciler) failWorkflow(ctx context.Context, wf *agentorcv1alpha1.AgentWorkflow, reason string) {
+func (r *AgentWorkflowReconciler) failWorkflow(ctx context.Context, wf *agentorcav1alpha1.AgentWorkflow, reason string) {
 	log.FromContext(ctx).Info("workflow failed", "reason", reason)
 	now := metav1.Now()
-	wf.Status.Phase = agentorcv1alpha1.AgentWorkflowPhaseFailed
+	wf.Status.Phase = agentorcav1alpha1.AgentWorkflowPhaseFailed
 	wf.Status.CompletionTime = &now
 	wf.Status.TotalSpendUSD = r.sumSpend(wf.Status.Steps)
 }
 
 // budgetExceeded returns a non-empty reason string if the workflow-level budget is exceeded.
-func (r *AgentWorkflowReconciler) budgetExceeded(wf *agentorcv1alpha1.AgentWorkflow) string {
+func (r *AgentWorkflowReconciler) budgetExceeded(wf *agentorcav1alpha1.AgentWorkflow) string {
 	if wf.Spec.BudgetCap == nil || wf.Spec.BudgetCap.Total == "" {
 		return ""
 	}
@@ -400,7 +400,7 @@ func (r *AgentWorkflowReconciler) budgetExceeded(wf *agentorcv1alpha1.AgentWorkf
 }
 
 // sumSpend returns the total spend across all steps as a formatted string.
-func (r *AgentWorkflowReconciler) sumSpend(steps []agentorcv1alpha1.WorkflowStepStatus) string {
+func (r *AgentWorkflowReconciler) sumSpend(steps []agentorcav1alpha1.WorkflowStepStatus) string {
 	total := 0.0
 	for _, ss := range steps {
 		total += parseFloatSafe(ss.SpendUSD)
@@ -412,7 +412,7 @@ func (r *AgentWorkflowReconciler) sumSpend(steps []agentorcv1alpha1.WorkflowStep
 }
 
 // resolveTemplates replaces {{steps.<name>.output}} placeholders in input.
-func resolveTemplates(input string, steps []agentorcv1alpha1.WorkflowStepStatus) string {
+func resolveTemplates(input string, steps []agentorcav1alpha1.WorkflowStepStatus) string {
 	for _, ss := range steps {
 		placeholder := fmt.Sprintf("{{steps.%s.output}}", ss.Name)
 		input = strings.ReplaceAll(input, placeholder, ss.Output)
@@ -423,7 +423,7 @@ func resolveTemplates(input string, steps []agentorcv1alpha1.WorkflowStepStatus)
 // evalCondition evaluates a simple CEL-like condition string.
 // Currently supports expressions of the form: steps["<name>"].phase == "<value>"
 // A full CEL library can be wired in without changing the call sites.
-func evalCondition(condition string, index map[string]*agentorcv1alpha1.WorkflowStepStatus) (bool, error) {
+func evalCondition(condition string, index map[string]*agentorcav1alpha1.WorkflowStepStatus) (bool, error) {
 	// Simple built-in evaluator: steps["<name>"].phase == "<phase>"
 	// Format: steps["gather"].phase == "Succeeded"
 	cond := strings.TrimSpace(condition)
@@ -450,10 +450,10 @@ func evalCondition(condition string, index map[string]*agentorcv1alpha1.Workflow
 	return true, fmt.Errorf("unsupported condition expression: %q (only steps[\"name\"].phase == \"value\" is supported)", condition)
 }
 
-func isWorkflowTerminal(phase agentorcv1alpha1.AgentWorkflowPhase) bool {
-	return phase == agentorcv1alpha1.AgentWorkflowPhaseSucceeded ||
-		phase == agentorcv1alpha1.AgentWorkflowPhaseFailed ||
-		phase == agentorcv1alpha1.AgentWorkflowPhaseCancelled
+func isWorkflowTerminal(phase agentorcav1alpha1.AgentWorkflowPhase) bool {
+	return phase == agentorcav1alpha1.AgentWorkflowPhaseSucceeded ||
+		phase == agentorcav1alpha1.AgentWorkflowPhaseFailed ||
+		phase == agentorcav1alpha1.AgentWorkflowPhaseCancelled
 }
 
 func parseFloatSafe(s string) float64 {
@@ -467,8 +467,8 @@ func parseFloatSafe(s string) float64 {
 // SetupWithManager registers the controller with the Manager.
 func (r *AgentWorkflowReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&agentorcv1alpha1.AgentWorkflow{}).
-		Owns(&agentorcv1alpha1.AgentRun{}).
+		For(&agentorcav1alpha1.AgentWorkflow{}).
+		Owns(&agentorcav1alpha1.AgentRun{}).
 		Named("agentworkflow").
 		Complete(r)
 }

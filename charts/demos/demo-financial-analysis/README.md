@@ -17,5 +17,5 @@ skaffold run -p demo-financial-analysis
 ## Cleanup
 
 ```bash
-helm uninstall demo-financial-analysis -n agent-orc-system
+helm uninstall demo-financial-analysis -n agent-orca-system
 ```

@@ -4,7 +4,7 @@ pwnbox-mcp-server: MCP (JSON-RPC over HTTP) server for the HTB pwnbox.
 
 Runs INSIDE the privileged red-pwnbox pod, AFTER entrypoint.sh has brought up the
 HTB OpenVPN tunnel on tun0. Exposes the pentest toolbelt as MCP tools so the
-agent-orc model-router (in the *separate, restricted* red-commander agent pod)
+agent-orca model-router (in the *separate, restricted* red-commander agent pod)
 discovers and calls them; the tools themselves execute here, over tun0, with the
 real nmap/enum4linux-ng/impacket/nuclei binaries.
 
@@ -187,7 +187,7 @@ TOOLS = [
         },
     },
     # ── SESSION / TCP ──────────────────────────────────────────────────────────────
-    # These bridge agent-orc's request/response tool model to persistent, interactive
+    # These bridge agent-orca's request/response tool model to persistent, interactive
     # tooling (Sliver TUI, raw C2 sockets). Output is returned as the tool-result
     # string (NOT files) — see docs/redis.md / entrypoint runbook note: "logging all
     # output to files will not work for kubernetes".
@@ -1247,7 +1247,7 @@ def _redis_xadd(addr, password, stream, payload):
 
 # ── Session / TCP handlers ───────────────────────────────────────────────────────
 # Persistent interactive sessions (tmux) + raw TCP (ncat). These bridge the gap
-# between agent-orc's one-shot tool model and long-lived/interactive red-teaming
+# between agent-orca's one-shot tool model and long-lived/interactive red-teaming
 # tooling (Sliver TUI, C2 sockets). Output is returned as the tool-result string —
 # never written to disk (filesystem is unreliable in Kubernetes).
 

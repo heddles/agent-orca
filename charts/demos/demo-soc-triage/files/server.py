@@ -2,7 +2,7 @@
 """
 soc-apps-server: MCP HTTP transport server for the SOC Triage demo.
 
-Exposes three tools with _meta.ui.resourceUri so the agent-orc UI renders
+Exposes three tools with _meta.ui.resourceUri so the agent-orca UI renders
 a sandboxed HTML panel below each tool result:
 
   cmdb-user-lookup(user_id)       → soc://cmdb        — personnel directory cards

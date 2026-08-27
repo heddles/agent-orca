@@ -3,9 +3,9 @@
 #
 # The Agent admission webhook rejects any Agent whose
 # spec.runtime.securityContextOverride is set unless the namespace carries:
-#   agentorc.io/enable-privileged-pods: "true"
+#   agentorca.io/enable-privileged-pods: "true"
 # Set create=false if you manage this namespace externally and apply the label
-# yourself: kubectl label namespace {{ .Values.namespace.name }} agentorc.io/enable-privileged-pods=true
+# yourself: kubectl label namespace {{ .Values.namespace.name }} agentorca.io/enable-privileged-pods=true
 {{- if .Values.namespace.create }}
 ---
 apiVersion: v1
@@ -15,8 +15,8 @@ metadata:
   labels:
     {{- include "demo.labels" . | nindent 4 }}
     # REQUIRED opt-in for privileged pwnbox pods in this namespace.
-    agentorc.io/enable-privileged-pods: "true"
+    agentorca.io/enable-privileged-pods: "true"
 {{- else }}
 # namespace.create=false: ensure the label is applied to {{ .Values.namespace.name }}:
-#   kubectl label namespace {{ .Values.namespace.name }} agentorc.io/enable-privileged-pods=true
+#   kubectl label namespace {{ .Values.namespace.name }} agentorca.io/enable-privileged-pods=true
 {{- end }}

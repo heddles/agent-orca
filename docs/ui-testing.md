@@ -66,7 +66,7 @@ npx playwright install --with-deps chromium
 1. Start the dev cluster and deploy (if not already running):
 
    ```bash
-   kind create cluster --name agent-orc-dev
+   kind create cluster --name agent-orca-dev
    skaffold dev
    ```
 

@@ -1,6 +1,6 @@
 name: Build & Publish Component Images
 
-# Builds and publishes the agent-orc component container images (operator,
+# Builds and publishes the agent-orca component container images (operator,
 # model-router, mcp-ingester, ui-proxy) alongside GitHub Releases.
 # Release Drafter drafts a release on push to main; a maintainer publishes it,
 # which fires `release: published` -> this workflow builds each component image
@@ -18,7 +18,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_REPO: ghcr.io/agentorc/agent-orc
+  IMAGE_REPO: ghcr.io/agentorca/agent-orca
 
 permissions:
   contents: read

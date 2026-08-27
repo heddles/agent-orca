@@ -1,4 +1,4 @@
-# Dockerfile for the agent-orc model-router sidecar.
+# Dockerfile for the agent-orca model-router sidecar.
 FROM golang:1.25 AS builder
 ARG TARGETOS
 ARG TARGETARCH

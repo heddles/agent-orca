@@ -27,7 +27,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
 )
 
 var _ = Describe("ModelSelector Controller", func() {
@@ -40,19 +40,19 @@ var _ = Describe("ModelSelector Controller", func() {
 			Name:      resourceName,
 			Namespace: "default", // TODO(user):Modify as needed
 		}
-		modelselector := &agentorcv1alpha1.ModelSelector{}
+		modelselector := &agentorcav1alpha1.ModelSelector{}
 
 		BeforeEach(func() {
 			By("creating the custom resource for the Kind ModelSelector")
 			err := k8sClient.Get(ctx, typeNamespacedName, modelselector)
 			if err != nil && errors.IsNotFound(err) {
-				resource := &agentorcv1alpha1.ModelSelector{
+				resource := &agentorcav1alpha1.ModelSelector{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      resourceName,
 						Namespace: "default",
 					},
-					Spec: agentorcv1alpha1.ModelSelectorSpec{
-						Providers: []agentorcv1alpha1.ProviderWeight{
+					Spec: agentorcav1alpha1.ModelSelectorSpec{
+						Providers: []agentorcav1alpha1.ProviderWeight{
 							{Name: "test-provider", Weight: 100},
 						},
 					},
@@ -63,7 +63,7 @@ var _ = Describe("ModelSelector Controller", func() {
 
 		AfterEach(func() {
 			// TODO(user): Cleanup logic after each test, like removing the resource instance.
-			resource := &agentorcv1alpha1.ModelSelector{}
+			resource := &agentorcav1alpha1.ModelSelector{}
 			err := k8sClient.Get(ctx, typeNamespacedName, resource)
 			Expect(err).NotTo(HaveOccurred())
 

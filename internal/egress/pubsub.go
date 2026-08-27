@@ -26,7 +26,7 @@ import (
 	"google.golang.org/api/option"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
 )
 
 // pubsubPublisher delivers results to a Google Cloud Pub/Sub topic.
@@ -35,7 +35,7 @@ type pubsubPublisher struct {
 	topic  *pubsub.Topic
 }
 
-func newPubSubPublisher(ctx context.Context, cfg agentorcv1alpha1.EgressConfig, k8sClient client.Client, namespace string) (*pubsubPublisher, error) {
+func newPubSubPublisher(ctx context.Context, cfg agentorcav1alpha1.EgressConfig, k8sClient client.Client, namespace string) (*pubsubPublisher, error) {
 	if cfg.Topic == "" {
 		return nil, fmt.Errorf("egress.pubsub: topic must be specified")
 	}
@@ -67,7 +67,7 @@ func newPubSubPublisher(ctx context.Context, cfg agentorcv1alpha1.EgressConfig, 
 	return &pubsubPublisher{client: psClient, topic: topic}, nil
 }
 
-func (p *pubsubPublisher) Publish(ctx context.Context, result agentorcv1alpha1.EgressResult) error {
+func (p *pubsubPublisher) Publish(ctx context.Context, result agentorcav1alpha1.EgressResult) error {
 	if p.topic == nil {
 		return fmt.Errorf("pubsub publisher not initialized")
 	}
@@ -84,10 +84,10 @@ func (p *pubsubPublisher) Publish(ctx context.Context, result agentorcv1alpha1.E
 	res := p.topic.Publish(ctx, &pubsub.Message{
 		Data: payload,
 		Attributes: map[string]string{
-			"agentorc-run-id": result.RunID,
-			"agentorc-phase":  result.Phase,
-			"agentorc-tenant": result.Tenant,
-			"agentorc-key":    key,
+			"agentorca-run-id": result.RunID,
+			"agentorca-phase":  result.Phase,
+			"agentorca-tenant": result.Tenant,
+			"agentorca-key":    key,
 		},
 	})
 

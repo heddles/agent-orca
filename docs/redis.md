@@ -1,6 +1,6 @@
 # Redis Setup
 
-Redis is an optional but strongly recommended dependency for agent-orc. Without it, two features are silently degraded:
+Redis is an optional but strongly recommended dependency for agent-orca. Without it, two features are silently degraded:
 
 | Feature | Without Redis | With Redis |
 |---------|--------------|------------|
@@ -30,7 +30,7 @@ env:
   - name: REDIS_URL
     valueFrom:
       secretKeyRef:
-        name: agent-orc-redis
+        name: agent-orca-redis
         key: url
 ```
 
@@ -48,16 +48,16 @@ The operator propagates `STATE_BACKEND` and `REDIS_URL` into the `router-config.
 Create a Kubernetes Secret in the same namespace as the operator:
 
 ```bash
-kubectl create secret generic agent-orc-redis \
-  --namespace agent-orc-system \
+kubectl create secret generic agent-orca-redis \
+  --namespace agent-orca-system \
   --from-literal=url='redis://:<password>@redis.example.com:6379/0'
 ```
 
 For TLS connections (recommended for external Redis):
 
 ```bash
-kubectl create secret generic agent-orc-redis \
-  --namespace agent-orc-system \
+kubectl create secret generic agent-orca-redis \
+  --namespace agent-orca-system \
   --from-literal=url='rediss://:<password>@redis.example.com:6380/0'
 ```
 
@@ -96,7 +96,7 @@ Redis credentials never leave the operator namespace. Agent pods receive only th
 
 When `AgentDeployment.spec.warmPoolSize > 0`, each warm pod additionally gets a
 **disk-backed `emptyDir`** mounted into the model-router sidecar at
-`/var/lib/agentorc/warm-cache`. The model-router layers a local L1 cache on top of
+`/var/lib/agentorca/warm-cache`. The model-router layers a local L1 cache on top of
 Redis:
 
 - **Write-through:** every checkpoint is written to the local emptyDir *and* to Redis.
@@ -129,7 +129,7 @@ The cache defaults **on** for any `AgentDeployment` with a warm pool. To disable
 cap its disk use, set:
 
 ```yaml
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: AgentDeployment
 metadata:
   name: soc-triage

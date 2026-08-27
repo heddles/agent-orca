@@ -31,7 +31,7 @@ func TestSanitizeKBError(t *testing.T) {
 		{"empty", "", ""},
 		{
 			"DNS resolution failure (no such host)",
-			`dial tcp: lookup ollama-embed.agent-orc-system.svc on 10.96.0.10:53: no such host`,
+			`dial tcp: lookup ollama-embed.agent-orca-system.svc on 10.96.0.10:53: no such host`,
 			"embedding model provider is unreachable (DNS resolution failed)",
 		},
 		{
@@ -96,12 +96,12 @@ func TestSanitizeKBError(t *testing.T) {
 		},
 		{
 			"fallback strips internal DNS (svc)",
-			`error at ollama-embed.agent-orc-system.svc`,
+			`error at ollama-embed.agent-orca-system.svc`,
 			"error at <host>",
 		},
 		{
 			"fallback strips internal DNS (svc.cluster.local)",
-			`error at ollama-embed.agent-orc-system.svc.cluster.local`,
+			`error at ollama-embed.agent-orca-system.svc.cluster.local`,
 			"error at <host>",
 		},
 		{
@@ -122,7 +122,7 @@ func TestSanitizeKBError(t *testing.T) {
 
 func TestSanitizeKBErrorPreservesOperationContext(t *testing.T) {
 	// Verify the call-site pattern: operation prefix + sanitized error
-	rawErr := `dial tcp: lookup ollama-embed.agent-orc-system.svc on 10.96.0.10:53: no such host`
+	rawErr := `dial tcp: lookup ollama-embed.agent-orca-system.svc on 10.96.0.10:53: no such host`
 	sanitized := sanitizeKBError(rawErr)
 	result := "discovering embedding dimension: " + sanitized
 	want := "discovering embedding dimension: embedding model provider is unreachable (DNS resolution failed)"

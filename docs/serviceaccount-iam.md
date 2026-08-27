@@ -2,11 +2,11 @@
 
 ## How the stable ServiceAccount works
 
-The `Agent` controller creates a single, long-lived ServiceAccount per Agent resource named `agentorc-agent-<agent-name>`. This SA is **agent-scoped, not run-scoped** — it persists across all AgentRuns and AgentDeployments that reference that Agent, which is what makes cloud IAM bindings stable.
+The `Agent` controller creates a single, long-lived ServiceAccount per Agent resource named `agentorca-agent-<agent-name>`. This SA is **agent-scoped, not run-scoped** — it persists across all AgentRuns and AgentDeployments that reference that Agent, which is what makes cloud IAM bindings stable.
 
 ```
 Agent "hello-agent"
-  └─ ServiceAccount "agentorc-agent-hello-agent"  ← created once, lives forever
+  └─ ServiceAccount "agentorca-agent-hello-agent"  ← created once, lives forever
        ├─ AgentRun "hello-run-1"    pod runs as this SA
        ├─ AgentRun "hello-run-2"    pod runs as this SA
        └─ AgentDeployment "hello"   deployment runs as this SA
@@ -19,7 +19,7 @@ Both the `AgentReconciler` (creator) and the execution controllers (consumers) d
 ```go
 // internal/security/rbac.go
 func AgentSAName(agentName string) string {
-    return "agentorc-agent-" + agentName
+    return "agentorca-agent-" + agentName
 }
 ```
 
@@ -45,7 +45,7 @@ The `saName` is then used in **three places** per execution:
 If you need the Agent to use a pre-existing SA (e.g. one already bound to a cloud IAM role), set `spec.serviceAccountRef`:
 
 ```yaml
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: Agent
 metadata:
   name: my-agent
@@ -80,7 +80,7 @@ Bind on the GCP side:
 gcloud iam service-accounts add-iam-policy-binding \
   my-agent@my-project.iam.gserviceaccount.com \
   --role roles/iam.workloadIdentityUser \
-  --member "serviceAccount:PROJECT.svc.id.goog[NAMESPACE/agentorc-agent-my-agent]"
+  --member "serviceAccount:PROJECT.svc.id.goog[NAMESPACE/agentorca-agent-my-agent]"
 ```
 
 ### AWS IRSA
@@ -107,7 +107,7 @@ Trust policy on the role must allow the SA:
   "Action": "sts:AssumeRoleWithWebIdentity",
   "Condition": {
     "StringEquals": {
-      "oidc.eks.REGION.amazonaws.com/id/CLUSTER_ID:sub": "system:serviceaccount:NAMESPACE:agentorc-agent-my-agent"
+      "oidc.eks.REGION.amazonaws.com/id/CLUSTER_ID:sub": "system:serviceaccount:NAMESPACE:agentorca-agent-my-agent"
     }
   }
 }
@@ -132,7 +132,7 @@ azure.workload.identity/client-id: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 Tools can specify their own `cloudAuth`, which is independent of the Agent's SA. When a tool pod runs with `executionMode: pod`, the tool pod gets its own cloud identity — useful when a tool needs different IAM permissions from the agent.
 
 ```yaml
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: Tool
 metadata:
   name: gcs-reader
@@ -155,11 +155,11 @@ In practice this is safe as long as `internal/security/rbac.go:AgentSAName` is t
 
 ```
 spec.cloudAuth (Agent CRD)
-    └─ AgentReconciler annotates SA "agentorc-agent-<name>"
+    └─ AgentReconciler annotates SA "agentorca-agent-<name>"
          └─ Cloud provider maps annotation → IAM role/binding
               └─ AgentRunReconciler / AgentDeploymentReconciler
-                   set pod.spec.serviceAccountName = "agentorc-agent-<name>"
+                   set pod.spec.serviceAccountName = "agentorca-agent-<name>"
                         └─ Pod inherits cloud identity automatically
 ```
 
-Your cloud IAM bindings target `agentorc-agent-<agent-name>` and they will be honoured by every AgentRun and AgentDeployment that references that Agent.
+Your cloud IAM bindings target `agentorca-agent-<agent-name>` and they will be honoured by every AgentRun and AgentDeployment that references that Agent.

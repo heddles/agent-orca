@@ -30,7 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
 )
 
 func TestWarmRequestCount(t *testing.T) {
@@ -78,10 +78,10 @@ func TestShouldDeletePodOnCompletion(t *testing.T) {
 // newWarmPodForReuse builds a warm pod in the claimed state with a served-request count.
 func newWarmPodForReuse(name, deployName string, served int) *corev1.Pod {
 	labels := map[string]string{
-		labelWarmPool:     deployName,
-		labelWarmStatus:   warmStatusClaimed,
-		labelWarmRequests: strconv.Itoa(served),
-		"agentorc.io/run": name,
+		labelWarmPool:      deployName,
+		labelWarmStatus:    warmStatusClaimed,
+		labelWarmRequests:  strconv.Itoa(served),
+		"agentorca.io/run": name,
 	}
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default", Labels: labels},
@@ -110,7 +110,7 @@ func TestReconcileRunPodOnTerminal(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			scheme := runtime.NewScheme()
 			_ = corev1.AddToScheme(scheme)
-			_ = agentorcv1alpha1.AddToScheme(scheme)
+			_ = agentorcav1alpha1.AddToScheme(scheme)
 
 			podName := "warm-1"
 			var pod *corev1.Pod
@@ -120,16 +120,16 @@ func TestReconcileRunPodOnTerminal(t *testing.T) {
 				pod = &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: podName, Namespace: "default"}}
 			}
 
-			dep := &agentorcv1alpha1.AgentDeployment{
+			dep := &agentorcav1alpha1.AgentDeployment{
 				ObjectMeta: metav1.ObjectMeta{Name: "red-commander", Namespace: "default"},
-				Spec:       agentorcv1alpha1.AgentDeploymentSpec{MaxRequestsPerPod: tt.maxRequests},
+				Spec:       agentorcav1alpha1.AgentDeploymentSpec{MaxRequestsPerPod: tt.maxRequests},
 			}
 
 			var deleted []string
 			fc := fake.NewClientBuilder().
 				WithScheme(scheme).
 				WithObjects(pod, dep).
-				WithStatusSubresource(&agentorcv1alpha1.AgentDeployment{}).
+				WithStatusSubresource(&agentorcav1alpha1.AgentDeployment{}).
 				WithInterceptorFuncs(interceptor.Funcs{
 					Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
 						if p, ok := obj.(*corev1.Pod); ok {
@@ -141,10 +141,10 @@ func TestReconcileRunPodOnTerminal(t *testing.T) {
 				Build()
 
 			r := &AgentRunReconciler{Client: fc, Scheme: scheme}
-			run := &agentorcv1alpha1.AgentRun{
+			run := &agentorcav1alpha1.AgentRun{
 				ObjectMeta: metav1.ObjectMeta{Name: "run-1", Namespace: "default",
-					Labels: map[string]string{"agentorc.io/deployment": "red-commander"}},
-				Status: agentorcv1alpha1.AgentRunStatus{PodName: podName},
+					Labels: map[string]string{"agentorca.io/deployment": "red-commander"}},
+				Status: agentorcav1alpha1.AgentRunStatus{PodName: podName},
 			}
 
 			r.reconcileRunPodOnTerminal(context.Background(), run)
@@ -159,8 +159,8 @@ func TestReconcileRunPodOnTerminal(t *testing.T) {
 				if got.Labels[labelWarmStatus] != warmStatusIdle {
 					t.Fatalf("warm pod warm-status = %q, want idle", got.Labels[labelWarmStatus])
 				}
-				if _, ok := got.Labels["agentorc.io/run"]; ok {
-					t.Fatalf("warm pod should have agentorc.io/run label removed on return-to-idle, got %v", got.Labels)
+				if _, ok := got.Labels["agentorca.io/run"]; ok {
+					t.Fatalf("warm pod should have agentorca.io/run label removed on return-to-idle, got %v", got.Labels)
 				}
 				if !tt.wantReturnedToIdle {
 					t.Fatalf("pod %q was returned to idle, but test expected deletion", podName)

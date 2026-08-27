@@ -42,8 +42,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
-	"github.com/floppyfish14/agent-orc/internal/rag"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
+	"github.com/floppyfish14/agent-orca/internal/rag"
 )
 
 const (
@@ -79,21 +79,21 @@ type KnowledgeBaseReconciler struct {
 	QdrantImage      string
 }
 
-// +kubebuilder:rbac:groups=agentorc.agentorc.io,resources=knowledgebases,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=agentorc.agentorc.io,resources=knowledgebases/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=agentorc.agentorc.io,resources=knowledgebases/finalizers,verbs=update
+// +kubebuilder:rbac:groups=agentorca.agentorca.io,resources=knowledgebases,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=agentorca.agentorca.io,resources=knowledgebases/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=agentorca.agentorca.io,resources=knowledgebases/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;delete
-// +kubebuilder:rbac:groups=agentorc.agentorc.io,resources=mcpservers,verbs=get;list;watch
-// +kubebuilder:rbac:groups=agentorc.agentorc.io,resources=tools,verbs=get;list;watch
+// +kubebuilder:rbac:groups=agentorca.agentorca.io,resources=mcpservers,verbs=get;list;watch
+// +kubebuilder:rbac:groups=agentorca.agentorca.io,resources=tools,verbs=get;list;watch
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;delete
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 
 func (r *KnowledgeBaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
-	var kb agentorcv1alpha1.KnowledgeBase
+	var kb agentorcav1alpha1.KnowledgeBase
 	if err := r.Get(ctx, req.NamespacedName, &kb); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -213,8 +213,8 @@ func (r *KnowledgeBaseReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 // error — the original error is what drives requeue behaviour.
 func (r *KnowledgeBaseReconciler) patchKBStatus(
 	ctx context.Context,
-	kb *agentorcv1alpha1.KnowledgeBase,
-	base *agentorcv1alpha1.KnowledgeBase,
+	kb *agentorcav1alpha1.KnowledgeBase,
+	base *agentorcav1alpha1.KnowledgeBase,
 	ready bool,
 	message string,
 ) {
@@ -262,7 +262,7 @@ func (r *KnowledgeBaseReconciler) qdrantReady(ctx context.Context, namespace, kb
 	var pods corev1.PodList
 	if err := r.List(ctx, &pods,
 		client.InNamespace(namespace),
-		client.MatchingLabels{"agentorc.io/knowledgebase": kbName},
+		client.MatchingLabels{"agentorca.io/knowledgebase": kbName},
 	); err != nil {
 		return false
 	}
@@ -284,7 +284,7 @@ func (r *KnowledgeBaseReconciler) qdrantReady(ctx context.Context, namespace, kb
 // For existing StatefulSets, it checks for version upgrades and walks through sequential
 // minor versions when autoUpgrade is enabled. Returns the Qdrant gRPC URL and an optional
 // upgradeResult indicating the reconcile should pause.
-func (r *KnowledgeBaseReconciler) ensureQdrant(ctx context.Context, namespace string, kb *agentorcv1alpha1.KnowledgeBase) (string, *upgradeResult, error) {
+func (r *KnowledgeBaseReconciler) ensureQdrant(ctx context.Context, namespace string, kb *agentorcav1alpha1.KnowledgeBase) (string, *upgradeResult, error) {
 	logger := log.FromContext(ctx)
 
 	resourceName := qdrantResourceName(kb.Name)
@@ -297,8 +297,8 @@ func (r *KnowledgeBaseReconciler) ensureQdrant(ctx context.Context, namespace st
 	// Per-KB pod selector labels — unique to this KB's Qdrant pod.
 	podLabels := map[string]string{
 		"app.kubernetes.io/name":       "qdrant",
-		"app.kubernetes.io/managed-by": "agentorc",
-		"agentorc.io/knowledgebase":    kb.Name,
+		"app.kubernetes.io/managed-by": "agentorca",
+		"agentorca.io/knowledgebase":   kb.Name,
 	}
 
 	grpcURL := fmt.Sprintf("%s.%s.svc.cluster.local:%d", resourceName, namespace, qdrantPort)
@@ -463,7 +463,7 @@ const (
 // an upgrade is needed. If autoUpgrade is enabled, it delegates to stepQdrantUpgrade.
 func (r *KnowledgeBaseReconciler) checkQdrantUpgrade(
 	ctx context.Context,
-	kb *agentorcv1alpha1.KnowledgeBase,
+	kb *agentorcav1alpha1.KnowledgeBase,
 	sts *appsv1.StatefulSet,
 	httpAddr string,
 ) (*upgradeResult, error) {
@@ -537,7 +537,7 @@ func (r *KnowledgeBaseReconciler) checkQdrantUpgrade(
 // It advances one minor version per call, creating a snapshot before each step.
 func (r *KnowledgeBaseReconciler) stepQdrantUpgrade(
 	ctx context.Context,
-	kb *agentorcv1alpha1.KnowledgeBase,
+	kb *agentorcav1alpha1.KnowledgeBase,
 	sts *appsv1.StatefulSet,
 	current, target qdrantVersion,
 ) (*upgradeResult, error) {
@@ -728,7 +728,7 @@ func (r *KnowledgeBaseReconciler) collectionStats(ctx context.Context, qdrantURL
 // estimateStoragePercent estimates the percentage of PVC storage used by Qdrant
 // based on point count, vector dimensions, and the configured PVC size.
 // Each point stores: vector (dims * 4 bytes) + payload (~1KB avg) + index overhead (~20%).
-func (r *KnowledgeBaseReconciler) estimateStoragePercent(kb *agentorcv1alpha1.KnowledgeBase, dims uint64) int {
+func (r *KnowledgeBaseReconciler) estimateStoragePercent(kb *agentorcav1alpha1.KnowledgeBase, dims uint64) int {
 	if kb.Status.ChunkCount == 0 {
 		return 0
 	}
@@ -754,7 +754,7 @@ func (r *KnowledgeBaseReconciler) estimateStoragePercent(kb *agentorcv1alpha1.Kn
 
 // runIngestion processes configured ingestion sources (ConfigMaps, URLs) and upserts documents.
 // embedder must already be resolved and the dimension probed (kb.Status.EmbeddingDimensions > 0).
-func (r *KnowledgeBaseReconciler) runIngestion(ctx context.Context, kb *agentorcv1alpha1.KnowledgeBase, embedder *rag.EmbeddingClient) error {
+func (r *KnowledgeBaseReconciler) runIngestion(ctx context.Context, kb *agentorcav1alpha1.KnowledgeBase, embedder *rag.EmbeddingClient) error {
 	logger := log.FromContext(ctx)
 
 	if kb.Spec.Ingestion == nil {
@@ -850,14 +850,14 @@ func (r *KnowledgeBaseReconciler) runIngestion(ctx context.Context, kb *agentorc
 // kb.Status.EmbeddingModelProvider so that all future calls use the same provider,
 // preventing Qdrant dimension mismatches when the ModelSelector has multiple providers
 // with different vector sizes.
-func (r *KnowledgeBaseReconciler) resolveEmbedder(ctx context.Context, kb *agentorcv1alpha1.KnowledgeBase) (*rag.EmbeddingClient, error) {
+func (r *KnowledgeBaseReconciler) resolveEmbedder(ctx context.Context, kb *agentorcav1alpha1.KnowledgeBase) (*rag.EmbeddingClient, error) {
 	var mpName string
 	if kb.Status.EmbeddingModelProvider != "" {
 		// Already pinned — use the recorded provider directly.
 		mpName = kb.Status.EmbeddingModelProvider
 	} else {
 		// First use — resolve from ModelSelector.
-		var ms agentorcv1alpha1.ModelSelector
+		var ms agentorcav1alpha1.ModelSelector
 		if err := r.Get(ctx, client.ObjectKey{Name: kb.Spec.Embedding.ModelSelectorRef, Namespace: kb.Namespace}, &ms); err != nil {
 			return nil, fmt.Errorf("getting ModelSelector %q: %w", kb.Spec.Embedding.ModelSelectorRef, err)
 		}
@@ -867,7 +867,7 @@ func (r *KnowledgeBaseReconciler) resolveEmbedder(ctx context.Context, kb *agent
 		mpName = ms.Spec.Providers[0].Name
 	}
 
-	var mp agentorcv1alpha1.ModelProvider
+	var mp agentorcav1alpha1.ModelProvider
 	if err := r.Get(ctx, client.ObjectKey{Name: mpName, Namespace: kb.Namespace}, &mp); err != nil {
 		return nil, fmt.Errorf("getting ModelProvider %q: %w", mpName, err)
 	}
@@ -884,7 +884,7 @@ func (r *KnowledgeBaseReconciler) resolveEmbedder(ctx context.Context, kb *agent
 	}
 
 	// Write key to a temp file for the embedding client.
-	keyDir := fmt.Sprintf("/tmp/agentorc-embed-%s", mpName)
+	keyDir := fmt.Sprintf("/tmp/agentorca-embed-%s", mpName)
 	if err := os.MkdirAll(keyDir, 0700); err != nil {
 		return nil, err
 	}
@@ -970,7 +970,7 @@ func durationFromSeconds(s int) time.Duration {
 func (r *KnowledgeBaseReconciler) knowledgeBasesForConfigMap(ctx context.Context, obj client.Object) []reconcile.Request {
 	cm := obj.(*corev1.ConfigMap)
 
-	var kbList agentorcv1alpha1.KnowledgeBaseList
+	var kbList agentorcav1alpha1.KnowledgeBaseList
 	if err := r.List(ctx, &kbList, client.InNamespace(cm.Namespace)); err != nil {
 		return nil
 	}
@@ -1003,7 +1003,7 @@ func (r *KnowledgeBaseReconciler) qdrantImageOrDefault() string {
 // SetupWithManager registers the controller with the Manager.
 func (r *KnowledgeBaseReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&agentorcv1alpha1.KnowledgeBase{}).
+		For(&agentorcav1alpha1.KnowledgeBase{}).
 		Owns(&appsv1.StatefulSet{}).
 		Owns(&corev1.Service{}).
 		Owns(&batchv1.Job{}).
@@ -1012,7 +1012,7 @@ func (r *KnowledgeBaseReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.knowledgeBasesForConfigMap),
 		).
 		Watches(
-			&agentorcv1alpha1.MCPServer{},
+			&agentorcav1alpha1.MCPServer{},
 			handler.EnqueueRequestsFromMapFunc(r.knowledgeBasesForMCPServer),
 		).
 		Named("knowledgebase").

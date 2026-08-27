@@ -5,7 +5,7 @@ description: |
   as a sandboxed iframe with live-recalculation sliders.
 
   An MCP server exposes two tools: forecast-impact and fetch-market-context.
-  forecast-impact declares _meta.ui.resourceUri so the agent-orc UI renders an
+  forecast-impact declares _meta.ui.resourceUri so the agent-orca UI renders an
   interactive Canvas-based dashboard below the plain-text tool result — showing
   projected price trajectories for correlated assets over 10 years with confidence
   bands, a factor sensitivity heatmap, and adjustable assumption sliders.
@@ -20,16 +20,16 @@ description: |
     3. forecast-impact with enriched scenario → interactive iframe dashboard
     4. User adjusts sliders to explore alternative assumptions in real time
 
-  Requires: agent-orc operator + 'default' ModelSelector + 'embeddings' ModelSelector.
+  Requires: agent-orca operator + 'default' ModelSelector + 'embeddings' ModelSelector.
   No external API keys needed — the MCP server generates realistic synthetic data.
 
 type: application
 version: 0.1.0
 appVersion: "0.1.0"
 dependencies:
-  - name: agent-orc-resources
+  - name: agent-orca-resources
     version: "0.2.0"
-    repository: "file://../../agent-orc-resources"
+    repository: "file://../../agent-orca-resources"
 keywords:
   - demo
   - mcp

@@ -27,7 +27,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
 )
 
 var _ = Describe("Tool Controller", func() {
@@ -40,13 +40,13 @@ var _ = Describe("Tool Controller", func() {
 			Name:      resourceName,
 			Namespace: "default", // TODO(user):Modify as needed
 		}
-		tool := &agentorcv1alpha1.Tool{}
+		tool := &agentorcav1alpha1.Tool{}
 
 		BeforeEach(func() {
 			By("creating the custom resource for the Kind Tool")
 			err := k8sClient.Get(ctx, typeNamespacedName, tool)
 			if err != nil && errors.IsNotFound(err) {
-				resource := &agentorcv1alpha1.Tool{
+				resource := &agentorcav1alpha1.Tool{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      resourceName,
 						Namespace: "default",
@@ -59,7 +59,7 @@ var _ = Describe("Tool Controller", func() {
 
 		AfterEach(func() {
 			// TODO(user): Cleanup logic after each test, like removing the resource instance.
-			resource := &agentorcv1alpha1.Tool{}
+			resource := &agentorcav1alpha1.Tool{}
 			err := k8sClient.Get(ctx, typeNamespacedName, resource)
 			Expect(err).NotTo(HaveOccurred())
 

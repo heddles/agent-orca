@@ -10,4 +10,4 @@ spec:
       - name: manager
         env:
         - name: TOKEN_REVIEWER_CLUSTER_ROLE
-          value: agent-orc-token-reviewer
+          value: agent-orca-token-reviewer

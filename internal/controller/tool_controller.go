@@ -25,7 +25,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
 )
 
 // ToolReconciler reconciles a Tool object.
@@ -34,12 +34,12 @@ type ToolReconciler struct {
 	Scheme *runtime.Scheme
 }
 
-// +kubebuilder:rbac:groups=agentorc.agentorc.io,resources=tools,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=agentorc.agentorc.io,resources=tools/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=agentorc.agentorc.io,resources=tools/finalizers,verbs=update
+// +kubebuilder:rbac:groups=agentorca.agentorca.io,resources=tools,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=agentorca.agentorca.io,resources=tools/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=agentorca.agentorca.io,resources=tools/finalizers,verbs=update
 
 func (r *ToolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	var tool agentorcv1alpha1.Tool
+	var tool agentorcav1alpha1.Tool
 	if err := r.Get(ctx, req.NamespacedName, &tool); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -71,24 +71,24 @@ func (r *ToolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 
 // validate checks the Tool spec based on its type.
 // Full OCI signature verification is performed at AgentRun creation time.
-func (r *ToolReconciler) validate(_ context.Context, tool *agentorcv1alpha1.Tool) (bool, string) {
+func (r *ToolReconciler) validate(_ context.Context, tool *agentorcav1alpha1.Tool) (bool, string) {
 	switch tool.Spec.Type {
-	case agentorcv1alpha1.ToolTypeAgent, "":
-		if tool.Spec.Type == agentorcv1alpha1.ToolTypeAgent && tool.Spec.AgentRef == "" {
+	case agentorcav1alpha1.ToolTypeAgent, "":
+		if tool.Spec.Type == agentorcav1alpha1.ToolTypeAgent && tool.Spec.AgentRef == "" {
 			return false, "spec.agentRef is required for type=agent"
 		}
 		fallthrough
-	case agentorcv1alpha1.ToolTypeRegular:
-		if tool.Spec.Type != agentorcv1alpha1.ToolTypeAgent && tool.Spec.OCIRef == "" {
+	case agentorcav1alpha1.ToolTypeRegular:
+		if tool.Spec.Type != agentorcav1alpha1.ToolTypeAgent && tool.Spec.OCIRef == "" {
 			return false, "spec.ociRef is required for type=regular"
 		}
 
-	case agentorcv1alpha1.ToolTypeWasm:
+	case agentorcav1alpha1.ToolTypeWasm:
 		if tool.Spec.OCIRef == "" {
 			return false, "spec.ociRef is required for type=wasm"
 		}
 
-	case agentorcv1alpha1.ToolTypeMCP:
+	case agentorcav1alpha1.ToolTypeMCP:
 		if tool.Spec.MCPConfig == nil {
 			return false, "spec.mcpConfig is required for type=mcp"
 		}
@@ -115,7 +115,7 @@ func (r *ToolReconciler) validate(_ context.Context, tool *agentorcv1alpha1.Tool
 // SetupWithManager sets up the controller with the Manager.
 func (r *ToolReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&agentorcv1alpha1.Tool{}).
+		For(&agentorcav1alpha1.Tool{}).
 		Named("tool").
 		Complete(r)
 }

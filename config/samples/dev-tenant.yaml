@@ -12,15 +12,15 @@ stringData:
 ---
 # Developer TenantConfig for ACP API access
 # Allows local development with clientId "dev" and secret "password"
-# Uses the agent-orc-system namespace
+# Uses the agent-orca-system namespace
 # All agents in the default namespace are accessible (allowedAgents omitted = allow all)
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: TenantConfig
 metadata:
   name: dev
 spec:
   authMode: issued
-  targetNamespace: agent-orc-system
+  targetNamespace: agent-orca-system
   issued:
     clientID: dev
     clientSecretRef:

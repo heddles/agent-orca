@@ -25,12 +25,12 @@ import (
 
 	"k8s.io/client-go/kubernetes"
 
-	"github.com/floppyfish14/agent-orc/internal/state"
+	"github.com/floppyfish14/agent-orca/internal/state"
 )
 
 // Version is the operator build version. Set at link time via:
 //
-//	go build -ldflags "-X github.com/floppyfish14/agent-orc/internal/apiserver.Version=<v>"
+//	go build -ldflags "-X github.com/floppyfish14/agent-orca/internal/apiserver.Version=<v>"
 //
 // or left as "dev" for local builds.
 var Version = "dev"

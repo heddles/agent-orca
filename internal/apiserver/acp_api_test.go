@@ -31,15 +31,15 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
 )
 
-// acpScheme builds a runtime.Scheme with agent-orc CRDs + corev1 for fake client.
+// acpScheme builds a runtime.Scheme with agent-orca CRDs + corev1 for fake client.
 func acpScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	s := runtime.NewScheme()
-	if err := agentorcv1alpha1.AddToScheme(s); err != nil {
-		t.Fatalf("add agentorc scheme: %v", err)
+	if err := agentorcav1alpha1.AddToScheme(s); err != nil {
+		t.Fatalf("add agentorca scheme: %v", err)
 	}
 	if err := corev1.AddToScheme(s); err != nil {
 		t.Fatalf("add core scheme: %v", err)
@@ -52,7 +52,7 @@ func acpScheme(t *testing.T) *runtime.Scheme {
 // via a custom auth middleware wrapper.
 func newACPServer(t *testing.T, objs ...client.Object) *ACPServer {
 	t.Helper()
-	t.Setenv("POD_NAMESPACE", "agent-orc-system")
+	t.Setenv("POD_NAMESPACE", "agent-orca-system")
 	cl := fake.NewClientBuilder().WithScheme(acpScheme(t)).WithObjects(objs...).Build()
 	return &ACPServer{
 		k8s:       nil,
@@ -94,19 +94,19 @@ func testTenant() *TenantIdentity {
 
 func TestHandleAgentManifest(t *testing.T) {
 	// Set up an Agent with tools, knowledge bases, and guardrail.
-	agent := &agentorcv1alpha1.Agent{
+	agent := &agentorcav1alpha1.Agent{
 		ObjectMeta: metav1.ObjectMeta{Name: "support-bot", Namespace: "tenant-acme"},
-		Spec: agentorcv1alpha1.AgentSpec{
+		Spec: agentorcav1alpha1.AgentSpec{
 			SystemPrompt:       "You are a helpful support bot.",
 			Tools:              []string{"web-search"},
 			KnowledgeBases:     []string{"project-docs"},
 			GuardrailPolicyRef: "phi-redact",
 		},
 	}
-	tool := &agentorcv1alpha1.Tool{
+	tool := &agentorcav1alpha1.Tool{
 		ObjectMeta: metav1.ObjectMeta{Name: "web-search", Namespace: "tenant-acme"},
-		Spec: agentorcv1alpha1.ToolSpec{
-			Schema: &agentorcv1alpha1.ToolSchema{
+		Spec: agentorcav1alpha1.ToolSpec{
+			Schema: &agentorcav1alpha1.ToolSchema{
 				Description: "Search the web",
 				Input: &runtime.RawExtension{
 					Raw: []byte(`{"type":"object","properties":{"query":{"type":"string"}}}`),
@@ -186,9 +186,9 @@ func TestHandleAgentManifestNotFound(t *testing.T) {
 }
 
 func TestHandleAgentManifestNotAllowed(t *testing.T) {
-	agent := &agentorcv1alpha1.Agent{
+	agent := &agentorcav1alpha1.Agent{
 		ObjectMeta: metav1.ObjectMeta{Name: "bot-a", Namespace: "tenant-acme"},
-		Spec:       agentorcv1alpha1.AgentSpec{SystemPrompt: "hello"},
+		Spec:       agentorcav1alpha1.AgentSpec{SystemPrompt: "hello"},
 	}
 	s := newACPServer(t, agent)
 	// Tenant with allowed agents that don't include bot-a
@@ -222,9 +222,9 @@ func TestHandleAgentManifestNoAuth(t *testing.T) {
 }
 
 func TestHandleAgentManifestDisableClarify(t *testing.T) {
-	agent := &agentorcv1alpha1.Agent{
+	agent := &agentorcav1alpha1.Agent{
 		ObjectMeta: metav1.ObjectMeta{Name: "auto-bot", Namespace: "tenant-acme"},
-		Spec: agentorcv1alpha1.AgentSpec{
+		Spec: agentorcav1alpha1.AgentSpec{
 			SystemPrompt:   "Autonomous agent",
 			DisableClarify: true,
 		},
@@ -249,9 +249,9 @@ func TestHandleAgentManifestDisableClarify(t *testing.T) {
 }
 
 func TestHandleAgentRun(t *testing.T) {
-	agent := &agentorcv1alpha1.Agent{
+	agent := &agentorcav1alpha1.Agent{
 		ObjectMeta: metav1.ObjectMeta{Name: "support-bot", Namespace: "tenant-acme"},
-		Spec:       agentorcv1alpha1.AgentSpec{SystemPrompt: "You are a helpful support bot."},
+		Spec:       agentorcav1alpha1.AgentSpec{SystemPrompt: "You are a helpful support bot."},
 	}
 	s := newACPServer(t, agent)
 	h := s.withTenant(testTenant())
@@ -297,9 +297,9 @@ func TestHandleAgentRunNotFound(t *testing.T) {
 }
 
 func TestHandleAgentRunNotAllowed(t *testing.T) {
-	agent := &agentorcv1alpha1.Agent{
+	agent := &agentorcav1alpha1.Agent{
 		ObjectMeta: metav1.ObjectMeta{Name: "bot-a", Namespace: "tenant-acme"},
-		Spec:       agentorcv1alpha1.AgentSpec{SystemPrompt: "hello"},
+		Spec:       agentorcav1alpha1.AgentSpec{SystemPrompt: "hello"},
 	}
 	s := newACPServer(t, agent)
 	tenant := &TenantIdentity{
@@ -321,9 +321,9 @@ func TestHandleAgentRunNotAllowed(t *testing.T) {
 }
 
 func TestHandleAgentRunMissingInput(t *testing.T) {
-	agent := &agentorcv1alpha1.Agent{
+	agent := &agentorcav1alpha1.Agent{
 		ObjectMeta: metav1.ObjectMeta{Name: "bot", Namespace: "tenant-acme"},
-		Spec:       agentorcv1alpha1.AgentSpec{SystemPrompt: "hello"},
+		Spec:       agentorcav1alpha1.AgentSpec{SystemPrompt: "hello"},
 	}
 	s := newACPServer(t, agent)
 	h := s.withTenant(testTenant())
@@ -340,9 +340,9 @@ func TestHandleAgentRunMissingInput(t *testing.T) {
 }
 
 func TestHandleAgentRunEmptyInput(t *testing.T) {
-	agent := &agentorcv1alpha1.Agent{
+	agent := &agentorcav1alpha1.Agent{
 		ObjectMeta: metav1.ObjectMeta{Name: "bot", Namespace: "tenant-acme"},
-		Spec:       agentorcv1alpha1.AgentSpec{SystemPrompt: "hello"},
+		Spec:       agentorcav1alpha1.AgentSpec{SystemPrompt: "hello"},
 	}
 	s := newACPServer(t, agent)
 	h := s.withTenant(testTenant())
@@ -359,9 +359,9 @@ func TestHandleAgentRunEmptyInput(t *testing.T) {
 }
 
 func TestHandleAgentRunInvalidJSON(t *testing.T) {
-	agent := &agentorcv1alpha1.Agent{
+	agent := &agentorcav1alpha1.Agent{
 		ObjectMeta: metav1.ObjectMeta{Name: "bot", Namespace: "tenant-acme"},
-		Spec:       agentorcv1alpha1.AgentSpec{SystemPrompt: "hello"},
+		Spec:       agentorcav1alpha1.AgentSpec{SystemPrompt: "hello"},
 	}
 	s := newACPServer(t, agent)
 	h := s.withTenant(testTenant())
@@ -377,9 +377,9 @@ func TestHandleAgentRunInvalidJSON(t *testing.T) {
 }
 
 func TestHandleAgentRunWrongMethod(t *testing.T) {
-	agent := &agentorcv1alpha1.Agent{
+	agent := &agentorcav1alpha1.Agent{
 		ObjectMeta: metav1.ObjectMeta{Name: "bot", Namespace: "tenant-acme"},
-		Spec:       agentorcv1alpha1.AgentSpec{SystemPrompt: "hello"},
+		Spec:       agentorcav1alpha1.AgentSpec{SystemPrompt: "hello"},
 	}
 	s := newACPServer(t, agent)
 	h := s.withTenant(testTenant())
@@ -394,9 +394,9 @@ func TestHandleAgentRunWrongMethod(t *testing.T) {
 }
 
 func TestHandleAgentRunWithSession(t *testing.T) {
-	agent := &agentorcv1alpha1.Agent{
+	agent := &agentorcav1alpha1.Agent{
 		ObjectMeta: metav1.ObjectMeta{Name: "bot", Namespace: "tenant-acme"},
-		Spec:       agentorcv1alpha1.AgentSpec{SystemPrompt: "hello"},
+		Spec:       agentorcav1alpha1.AgentSpec{SystemPrompt: "hello"},
 	}
 	s := newACPServer(t, agent)
 	h := s.withTenant(testTenant())
@@ -419,20 +419,20 @@ func TestHandleAgentRunWithSession(t *testing.T) {
 	}
 
 	// Verify the AgentRun was created with the session label.
-	var run agentorcv1alpha1.AgentRun
+	var run agentorcav1alpha1.AgentRun
 	runName := resp.RunID
 	if err := s.crdClient.Get(context.Background(), types.NamespacedName{Name: runName, Namespace: "tenant-acme"}, &run); err != nil {
 		t.Fatalf("getting run: %v", err)
 	}
-	if run.Labels["agentorc.io/session-id"] != "sess-123" {
-		t.Fatalf("expected session label 'sess-123', got %q", run.Labels["agentorc.io/session-id"])
+	if run.Labels["agentorca.io/session-id"] != "sess-123" {
+		t.Fatalf("expected session label 'sess-123', got %q", run.Labels["agentorca.io/session-id"])
 	}
 }
 
 func TestHandleAgentRoutesUnknownSubpath(t *testing.T) {
-	agent := &agentorcv1alpha1.Agent{
+	agent := &agentorcav1alpha1.Agent{
 		ObjectMeta: metav1.ObjectMeta{Name: "bot", Namespace: "tenant-acme"},
-		Spec:       agentorcv1alpha1.AgentSpec{SystemPrompt: "hello"},
+		Spec:       agentorcav1alpha1.AgentSpec{SystemPrompt: "hello"},
 	}
 	s := newACPServer(t, agent)
 	h := s.withTenant(testTenant())
@@ -460,9 +460,9 @@ func TestHandleAgentRoutesMissingName(t *testing.T) {
 }
 
 func TestHandleListAgentsEnriched(t *testing.T) {
-	agent := &agentorcv1alpha1.Agent{
+	agent := &agentorcav1alpha1.Agent{
 		ObjectMeta: metav1.ObjectMeta{Name: "bot-a", Namespace: "tenant-acme"},
-		Spec: agentorcv1alpha1.AgentSpec{
+		Spec: agentorcav1alpha1.AgentSpec{
 			SystemPrompt:       "Bot A description",
 			KnowledgeBases:     []string{"kb1"},
 			GuardrailPolicyRef: "guard-1",
@@ -497,16 +497,16 @@ func TestHandleListAgentsEnriched(t *testing.T) {
 }
 
 func TestBuildAllowedTools(t *testing.T) {
-	agent := &agentorcv1alpha1.Agent{
+	agent := &agentorcav1alpha1.Agent{
 		ObjectMeta: metav1.ObjectMeta{Name: "bot", Namespace: "tenant-acme"},
-		Spec: agentorcv1alpha1.AgentSpec{
+		Spec: agentorcav1alpha1.AgentSpec{
 			Tools: []string{"web-search", "missing-tool"},
 		},
 	}
-	tool := &agentorcv1alpha1.Tool{
+	tool := &agentorcav1alpha1.Tool{
 		ObjectMeta: metav1.ObjectMeta{Name: "web-search", Namespace: "tenant-acme"},
-		Spec: agentorcv1alpha1.ToolSpec{
-			Schema: &agentorcv1alpha1.ToolSchema{
+		Spec: agentorcav1alpha1.ToolSpec{
+			Schema: &agentorcav1alpha1.ToolSchema{
 				Description: "Search the web",
 				Input: &runtime.RawExtension{
 					Raw: []byte(`{"type":"object","properties":{"query":{"type":"string"}}}`),

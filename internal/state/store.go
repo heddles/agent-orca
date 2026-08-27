@@ -54,7 +54,7 @@ type Config struct {
 	TTLSeconds int `json:"ttlSeconds,omitempty"`
 
 	// CheckpointKey is the Redis key prefix for this run.
-	// Format: "agentorc/runs/<run-id>/state"
+	// Format: "agentorca/runs/<run-id>/state"
 	CheckpointKey string `json:"checkpointKey,omitempty"`
 }
 
@@ -296,12 +296,12 @@ func (s *redisStore) LoadAnswer(ctx context.Context, key string) (string, error)
 }
 
 func (s *redisStore) SaveHTTPOutput(ctx context.Context, runName string, output string) error {
-	key := "agentorc:runs:" + runName + ":http-output"
+	key := "agentorca:runs:" + runName + ":http-output"
 	return s.client.Set(ctx, key, output, time.Hour).Err()
 }
 
 func (s *redisStore) LoadHTTPOutput(ctx context.Context, runName string) (string, error) {
-	key := "agentorc:runs:" + runName + ":http-output"
+	key := "agentorca:runs:" + runName + ":http-output"
 	val, err := s.client.Get(ctx, key).Result()
 	if err == redis.Nil {
 		return "", nil
@@ -513,7 +513,7 @@ func (s *redisStore) ListKV(ctx context.Context, scope string) ([]string, error)
 // ListMessageKeys enumerates conversation-checkpoint keys matching the Redis SCAN
 // MATCH glob. The model-router uses this to discover prior-run checkpoints for the
 // warm-pool history retrieval (the checkpoint keys use slash-delimited paths like
-// "agentorc/runs/<run>/state", so '*' must match across slashes — SCAN semantics).
+// "agentorca/runs/<run>/state", so '*' must match across slashes — SCAN semantics).
 func (s *redisStore) ListMessageKeys(ctx context.Context, pattern string) ([]string, error) {
 	var keys []string
 	iter := s.client.Scan(ctx, 0, pattern, 0).Iterator()

@@ -1,6 +1,6 @@
 # Enterprise Integration
 
-agent-orc supports enterprise customers who want to deploy AI agents and integrate them with their existing software. The enterprise integration layer provides a REST API for task submission, multi-tenant authentication, response guardrails, and confirmed-fix knowledge ingestion.
+agent-orca supports enterprise customers who want to deploy AI agents and integrate them with their existing software. The enterprise integration layer provides a REST API for task submission, multi-tenant authentication, response guardrails, and confirmed-fix knowledge ingestion.
 
 > **Admin operations** (tenant lifecycle management) are documented separately in
 > [docs/admin-api.md](admin-api.md). **Rate limiting and budget enforcement**
@@ -34,12 +34,12 @@ GET    /v1/tasks?agent=X&status=Y         List/filter tasks
 
 ```bash
 # 1. Obtain an access token (for issued-mode tenants)
-TOKEN=$(curl -s -X POST http://agent-orc:8084/oauth/token \
+TOKEN=$(curl -s -X POST http://agent-orca:8084/oauth/token \
   -d "grant_type=client_credentials&client_id=acme-client&client_secret=secret123" \
   | jq -r .access_token)
 
 # 2. Submit a task
-curl -s -X POST http://agent-orc:8084/v1/tasks \
+curl -s -X POST http://agent-orca:8084/v1/tasks \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -47,7 +47,7 @@ curl -s -X POST http://agent-orc:8084/v1/tasks \
     "input": "How do I reset my password?",
     "timeout": "5m",
     "callback": {
-      "url": "https://customer.example.com/webhooks/agent-orc"
+      "url": "https://customer.example.com/webhooks/agent-orca"
     },
     "metadata": {
       "ticketId": "TICKET-1234",
@@ -74,14 +74,14 @@ Response:
 ### Polling for results
 
 ```bash
-curl -s http://agent-orc:8084/v1/tasks/task-support-bot-abc123 \
+curl -s http://agent-orca:8084/v1/tasks/task-support-bot-abc123 \
   -H "Authorization: Bearer $TOKEN"
 ```
 
 ### Streaming tokens (SSE)
 
 ```bash
-curl -N http://agent-orc:8084/v1/tasks/task-support-bot-abc123/stream \
+curl -N http://agent-orca:8084/v1/tasks/task-support-bot-abc123/stream \
   -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -109,8 +109,8 @@ When an AgentRun reaches a terminal phase (Succeeded or Failed), the controller 
 ### Webhook signature verification (HMAC)
 
 By default callbacks are delivered unsigned. To verify that a callback genuinely
-originated from agent-orc (and not an impersonator on the network path), attach a
-shared secret to the callback. agent-orc then signs every delivery with
+originated from agent-orca (and not an impersonator on the network path), attach a
+shared secret to the callback. agent-orca then signs every delivery with
 HMAC-SHA256 and the receiver can verify it in constant time.
 
 1. Create a Kubernetes Secret in the **tenant's target namespace** (e.g.
@@ -133,13 +133,13 @@ stringData:
   "agent": "support-bot",
   "input": "My app crashes on startup",
   "callback": {
-    "url": "https://helpdesk.acme.com/webhooks/agent-orc",
+    "url": "https://helpdesk.acme.com/webhooks/agent-orca",
     "secretRef": "support-callback-secret"
   }
 }
 ```
 
-3. Verify the signature on receipt. agent-orc sends:
+3. Verify the signature on receipt. agent-orca sends:
 
 ```
 X-Agentorc-Signature: sha256=<hex>
@@ -182,7 +182,7 @@ delivered **unsigned** — receivers that don't verify behave exactly as before.
 When the agent asks the user a question (via the `_clarify` built-in tool), the task enters `WaitingForInput`. Submit the answer via the external API:
 
 ```bash
-curl -s -X POST http://agent-orc:8084/v1/tasks/task-support-bot-abc123/answer \
+curl -s -X POST http://agent-orca:8084/v1/tasks/task-support-bot-abc123/answer \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"answer": "I am using the web app, not the mobile app"}'
@@ -194,16 +194,16 @@ curl -s -X POST http://agent-orc:8084/v1/tasks/task-support-bot-abc123/answer \
 
 Enterprise tenants authenticate via the **TenantConfig** CRD, which supports two modes:
 
-### Mode 1: agent-orc-issued tokens (turnkey)
+### Mode 1: agent-orca-issued tokens (turnkey)
 
-agent-orc acts as an OAuth2 authorization server. Enterprise customers register as clients and use the `client_credentials` grant to obtain short-lived JWTs.
+agent-orca acts as an OAuth2 authorization server. Enterprise customers register as clients and use the `client_credentials` grant to obtain short-lived JWTs.
 
 ```yaml
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: TenantConfig
 metadata:
   name: acme-corp
-  namespace: agentorc-system
+  namespace: agentorca-system
 spec:
   authMode: issued
   issued:
@@ -223,7 +223,7 @@ spec:
 The token exchange flow:
 
 ```
-Enterprise System                    agent-orc
+Enterprise System                    agent-orca
       |                                  |
       |-- POST /oauth/token ------------>|
       |   grant_type=client_credentials  |
@@ -241,14 +241,14 @@ Issued JWTs contain `tenant`, `namespace`, and `allowed_agents` claims. They exp
 
 ### Mode 2: Federated OIDC (bring-your-own IdP)
 
-Enterprise customers who have an existing identity provider (Okta, Azure AD, Google Workspace) can configure agent-orc to trust tokens from their IdP.
+Enterprise customers who have an existing identity provider (Okta, Azure AD, Google Workspace) can configure agent-orca to trust tokens from their IdP.
 
 ```yaml
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: TenantConfig
 metadata:
   name: bigco-inc
-  namespace: agentorc-system
+  namespace: agentorca-system
 spec:
   authMode: federated
   federated:
@@ -262,7 +262,7 @@ spec:
     - "code-reviewer"
 ```
 
-agent-orc verifies the JWT signature against the IdP's JWKS endpoint and maps the `matchClaim` value to a tenant namespace.
+agent-orca verifies the JWT signature against the IdP's JWKS endpoint and maps the `matchClaim` value to a tenant namespace.
 
 ### Mode 3: Kubernetes SA tokens (in-cluster)
 
@@ -271,7 +271,7 @@ For workloads running inside the same cluster, existing Kubernetes ServiceAccoun
 ### Auth middleware flow
 
 ```
-1. Try agent-orc-issued JWT → verify RSA signature, extract tenant claims
+1. Try agent-orca-issued JWT → verify RSA signature, extract tenant claims
 2. Try federated OIDC JWT   → verify against external JWKS, match claim to tenant
 3. Try K8s SA token          → TokenReview API, namespace from SA identity
 4. Return 401 if none match
@@ -286,7 +286,7 @@ After authentication, the middleware injects the tenant's namespace and allowed 
 The **GuardrailPolicy** CRD defines content filtering rules enforced by the model-router sidecar on every LLM call. Guardrails run inline — they filter inputs before they reach the LLM and filter outputs before they reach the agent/caller.
 
 ```yaml
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: GuardrailPolicy
 metadata:
   name: enterprise-default
@@ -330,7 +330,7 @@ spec:
 Reference the policy from the Agent:
 
 ```yaml
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: Agent
 metadata:
   name: support-bot
@@ -380,7 +380,7 @@ For support scenarios where the agent suggests fixes to customers, you often wan
 Use `knowledgeBaseRefs` instead of `knowledgeBases` on the Agent spec, with `confirmRequired: true`:
 
 ```yaml
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: Agent
 metadata:
   name: support-bot
@@ -448,11 +448,11 @@ A complete end-to-end example of an enterprise support bot with all four feature
 ### 1. Create the tenant
 
 ```yaml
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: TenantConfig
 metadata:
   name: acme-corp
-  namespace: agentorc-system
+  namespace: agentorca-system
 spec:
   authMode: issued
   issued:
@@ -472,7 +472,7 @@ apiVersion: v1
 kind: Secret
 metadata:
   name: acme-credentials
-  namespace: agentorc-system
+  namespace: agentorca-system
 stringData:
   client-secret: "acme-secret-value-change-me"
 ```
@@ -480,7 +480,7 @@ stringData:
 ### 2. Create the guardrail policy
 
 ```yaml
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: GuardrailPolicy
 metadata:
   name: support-guardrails
@@ -518,7 +518,7 @@ spec:
 ### 3. Create the knowledge base
 
 ```yaml
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: KnowledgeBase
 metadata:
   name: support-kb
@@ -544,7 +544,7 @@ spec:
 ### 4. Create the agent
 
 ```yaml
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: Agent
 metadata:
   name: support-bot
@@ -569,12 +569,12 @@ spec:
 ```python
 import requests
 
-AGENT_ORC_URL = "https://agent-orc.acme-internal.com:8084"
+AGENT_ORCA_URL = "https://agent-orca.acme-internal.com:8084"
 CLIENT_ID = "acme-client"
 CLIENT_SECRET = "acme-secret-value-change-me"
 
 # Authenticate
-token_resp = requests.post(f"{AGENT_ORC_URL}/oauth/token", data={
+token_resp = requests.post(f"{AGENT_ORCA_URL}/oauth/token", data={
     "grant_type": "client_credentials",
     "client_id": CLIENT_ID,
     "client_secret": CLIENT_SECRET,
@@ -583,11 +583,11 @@ token = token_resp.json()["access_token"]
 headers = {"Authorization": f"Bearer {token}"}
 
 # Submit a support task
-task_resp = requests.post(f"{AGENT_ORC_URL}/v1/tasks", headers=headers, json={
+task_resp = requests.post(f"{AGENT_ORCA_URL}/v1/tasks", headers=headers, json={
     "agent": "support-bot",
     "input": "My app crashes on startup after the latest update",
     "callback": {
-        "url": "https://helpdesk.acme.com/webhooks/agent-orc"
+        "url": "https://helpdesk.acme.com/webhooks/agent-orca"
     },
     "metadata": {
         "ticketId": "TICKET-5678",
@@ -599,7 +599,7 @@ task_id = task_resp.json()["id"]
 # Poll for completion (or use SSE streaming / webhook callback)
 import time
 while True:
-    status = requests.get(f"{AGENT_ORC_URL}/v1/tasks/{task_id}", headers=headers).json()
+    status = requests.get(f"{AGENT_ORCA_URL}/v1/tasks/{task_id}", headers=headers).json()
     if status["status"] in ("Succeeded", "Failed"):
         print(f"Result: {status['output']}")
         break
@@ -607,7 +607,7 @@ while True:
         # Agent needs customer input — forward the question to the customer
         # and submit their answer back
         answer = get_customer_answer(status)  # your helpdesk logic
-        requests.post(f"{AGENT_ORC_URL}/v1/tasks/{task_id}/answer",
+        requests.post(f"{AGENT_ORCA_URL}/v1/tasks/{task_id}/answer",
                        headers=headers, json={"answer": answer})
     time.sleep(2)
 ```
@@ -623,7 +623,7 @@ For high-volume async workloads, enterprise customers can push tasks to a messag
 Create an `AgentDeployment` with `inputSource.type: queue` pointing at the enterprise customer's Redis or Kafka:
 
 ```yaml
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: AgentDeployment
 metadata:
   name: support-bot-queue
@@ -640,7 +640,7 @@ spec:
 
 ### Option 2: Queue bridge adapter
 
-Deploy a thin adapter that reads from the enterprise queue (SQS, GCP Pub/Sub, Azure Service Bus) and calls `POST /v1/tasks` on the external API. This keeps the enterprise customer's queue technology decoupled from agent-orc.
+Deploy a thin adapter that reads from the enterprise queue (SQS, GCP Pub/Sub, Azure Service Bus) and calls `POST /v1/tasks` on the external API. This keeps the enterprise customer's queue technology decoupled from agent-orca.
 
 ---
 

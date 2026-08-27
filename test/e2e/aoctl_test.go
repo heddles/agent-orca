@@ -33,7 +33,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/floppyfish14/agent-orc/test/utils"
+	"github.com/floppyfish14/agent-orca/test/utils"
 )
 
 // TestAOCTL validates the aoctl CLI end-to-end against a live operator:
@@ -66,7 +66,7 @@ var _ = Describe("aoctl CLI", Label("aoctl"), Ordered, func() {
 	startPortForward := func() func() {
 		GinkgoHelper()
 		cmd := exec.Command("kubectl", "port-forward",
-			"deployment/agent-orc-controller-manager",
+			"deployment/agent-orca-controller-manager",
 			fmt.Sprintf("%d:%d", apiLocalPort, 8084),
 			"-n", namespace)
 		logf, _ := os.CreateTemp("", "e2e-pf-aoctl-*.log")
@@ -131,7 +131,7 @@ stringData:
 
 		By("registering the TenantConfig (issued, no rate limit so submit is allowed)")
 		Expect(applyYAML(fmt.Sprintf(`
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: TenantConfig
 metadata:
   name: %s
@@ -167,7 +167,7 @@ stringData:
   api-key: "e2e-placeholder"
 `, providerKey, tenantNS))).To(Succeed())
 		Expect(applyYAML(fmt.Sprintf(`
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: ModelProvider
 metadata:
   name: %s
@@ -184,7 +184,7 @@ spec:
     costPerMillionOutputTokens: "12.00"
 `, providerName, tenantNS, providerKey))).To(Succeed())
 		Expect(applyYAML(fmt.Sprintf(`
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: ModelSelector
 metadata:
   name: %s
@@ -196,7 +196,7 @@ spec:
       weight: 100
 `, selectorName, tenantNS, providerName))).To(Succeed())
 		Expect(applyYAML(fmt.Sprintf(`
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: Agent
 metadata:
   name: %s

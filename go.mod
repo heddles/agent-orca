@@ -1,4 +1,4 @@
-module github.com/floppyfish14/agent-orc
+module github.com/floppyfish14/agent-orca
 
 go 1.25.3
 

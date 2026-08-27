@@ -1,5 +1,5 @@
 /**
- * Design system for agent-orc UI — legacy facade.
+ * Design system for agent-orca UI — legacy facade.
  *
  * The canonical design system now lives in `./designSystem.ts` which registers
  * CSS custom properties on `:root` and exposes the `DESIGN` token object.

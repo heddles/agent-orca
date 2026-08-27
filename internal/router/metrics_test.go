@@ -28,8 +28,8 @@ func TestNewMetricsRegistersAndCounts(t *testing.T) {
 	}
 
 	want := map[string]float64{
-		"agentorc_modelrouter_tokens_total":   350,
-		"agentorc_modelrouter_tool_calls_total": 1,
+		"agentorca_modelrouter_tokens_total":     350,
+		"agentorca_modelrouter_tool_calls_total": 1,
 	}
 	for name, expect := range want {
 		var val float64
@@ -56,7 +56,7 @@ func TestNewMetricsRegistersAndCounts(t *testing.T) {
 	// stream_duration_seconds histogram should have 1 observation.
 	var histSamples uint64
 	for _, mf := range gathered {
-		if mf.GetName() == "agentorc_modelrouter_stream_duration_seconds" {
+		if mf.GetName() == "agentorca_modelrouter_stream_duration_seconds" {
 			for _, met := range mf.GetMetric() {
 				if h := met.GetHistogram(); h != nil {
 					histSamples = h.GetSampleCount()

@@ -3,55 +3,55 @@
 # and allow the plugins properly work.
 # More info: https://book.kubebuilder.io/reference/project-config.html
 cliVersion: 4.13.0
-domain: agentorc.io
+domain: agentorca.io
 layout:
 - go.kubebuilder.io/v4
-projectName: agent-orc
-repo: github.com/floppyfish14/agent-orc
+projectName: agent-orca
+repo: github.com/floppyfish14/agent-orca
 resources:
 - api:
     crdVersion: v1
     namespaced: true
   controller: true
-  domain: agentorc.io
-  group: agentorc
+  domain: agentorca.io
+  group: agentorca
   kind: ModelProvider
-  path: github.com/floppyfish14/agent-orc/api/v1alpha1
+  path: github.com/floppyfish14/agent-orca/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
     namespaced: true
   controller: true
-  domain: agentorc.io
-  group: agentorc
+  domain: agentorca.io
+  group: agentorca
   kind: ModelSelector
-  path: github.com/floppyfish14/agent-orc/api/v1alpha1
+  path: github.com/floppyfish14/agent-orca/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
     namespaced: true
   controller: true
-  domain: agentorc.io
-  group: agentorc
+  domain: agentorca.io
+  group: agentorca
   kind: Tool
-  path: github.com/floppyfish14/agent-orc/api/v1alpha1
+  path: github.com/floppyfish14/agent-orca/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
     namespaced: true
   controller: true
-  domain: agentorc.io
-  group: agentorc
+  domain: agentorca.io
+  group: agentorca
   kind: Agent
-  path: github.com/floppyfish14/agent-orc/api/v1alpha1
+  path: github.com/floppyfish14/agent-orca/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
     namespaced: true
   controller: true
-  domain: agentorc.io
-  group: agentorc
+  domain: agentorca.io
+  group: agentorca
   kind: AgentRun
-  path: github.com/floppyfish14/agent-orc/api/v1alpha1
+  path: github.com/floppyfish14/agent-orca/api/v1alpha1
   version: v1alpha1
 version: "3"

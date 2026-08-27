@@ -101,7 +101,7 @@ TOOLS = [
 def fetch_url(url, timeout=REQUEST_TIMEOUT):
     """Fetch URL content with proper headers."""
     headers = {
-        "User-Agent": "Mozilla/5.0 (Research Agent; agent-orc demo)",
+        "User-Agent": "Mozilla/5.0 (Research Agent; agent-orca demo)",
         "Accept": "text/html,application/pdf,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     }
     req = Request(url, headers=headers)

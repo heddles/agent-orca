@@ -1,24 +1,24 @@
 nameOverride: ""
-agent-orc-resources:
+agent-orca-resources:
   # ── MCPServers ────────────────────────────────────────────────────────────────
   #
   # soc-apps: in-cluster HTTP MCP server with allowApps: true.
   # Exposes cmdb-user-lookup, cmdb-ip-lookup (replacing the old stdio sidecar), and
   # render-incident-report (new).  Each tool declares _meta.ui.resourceUri so the
-  # agent-orc UI renders a sandboxed HTML panel below the tool result:
+  # agent-orca UI renders a sandboxed HTML panel below the tool result:
   #   cmdb-user-lookup       → soc://cmdb         personnel directory cards
   #   cmdb-ip-lookup         → soc://threat-intel  IP classification panel
   #   render-incident-report → soc://incident      styled incident report card
   mcpServers:
     - name: soc-apps
       transport: http
-      url: "http://soc-apps-server.agent-orc-system.svc.cluster.local:8080"
+      url: "http://soc-apps-server.agent-orca-system.svc.cluster.local:8080"
       allowApps: true
       allowedAgents:
         - soc-enricher-agent
         - soc-orchestrator-agent
       networkEgress:
-        - host: soc-apps-server.agent-orc-system.svc.cluster.local
+        - host: soc-apps-server.agent-orca-system.svc.cluster.local
           port: 8080
           protocol: TCP
       tools:
@@ -44,7 +44,7 @@ agent-orc-resources:
   # ── KnowledgeBases ──────────────────────────────────────────────────────────
   #
   # ollama-embed: local in-cluster Ollama for embeddings.
-  # Requires: 'ollama-embed' ModelSelector already deployed (agent-orc-resources).
+  # Requires: 'ollama-embed' ModelSelector already deployed (agent-orca-resources).
   # The runbooks ConfigMap is created by configmap.yaml in this chart.
   knowledgeBases:
     - name: soc-runbooks
@@ -104,7 +104,7 @@ agent-orc-resources:
     # for every entity mentioned, searches the soc-runbooks KB for matching procedures,
     # and returns structured enrichment JSON. Called as a tool by soc-orchestrator.
     - name: soc-enricher-agent
-      modelSelectorRef: "poolside"
+      modelSelectorRef: "default"
       systemPrompt: |
         You are a security alert enrichment specialist for Acme Corp. You will receive a raw security alert.
 
@@ -134,7 +134,7 @@ agent-orc-resources:
       knowledgeBases:
         - soc-runbooks
       runtime:
-        ociRef: "ghcr.io/agentorc/agent-orc/openai-reference:latest"
+        ociRef: "ghcr.io/agentorca/agent-orca/openai-reference:latest"
         framework: openai-compatible
       memory:
         checkpointEvery: 1
@@ -148,7 +148,7 @@ agent-orc-resources:
     # Step 2 sub-agent: given the enriched context JSON, scores the risk and
     # recommends an action. No tools needed — pure LLM reasoning.
     - name: soc-risk-assessor-agent
-      modelSelectorRef: "poolside"
+      modelSelectorRef: "default"
       systemPrompt: |
         You are a senior security analyst performing risk assessment.
         You will receive structured enrichment data about a security alert.
@@ -172,7 +172,7 @@ agent-orc-resources:
 
         Output ONLY valid JSON. No preamble, no markdown fences.
       runtime:
-        ociRef: "ghcr.io/agentorc/agent-orc/openai-reference:latest"
+        ociRef: "ghcr.io/agentorca/agent-orca/openai-reference:latest"
         framework: openai-compatible
       memory:
         checkpointEvery: 1
@@ -187,7 +187,7 @@ agent-orc-resources:
     # soc-enricher and soc-risk-assessor as tools, uses _clarify to get human
     # approval on HIGH/CRITICAL actions, then outputs the final incident report.
     - name: soc-orchestrator-agent
-      modelSelectorRef: "poolside"
+      modelSelectorRef: "default"
       systemPrompt: |
         You are an automated security operations orchestrator for Acme Corp.
         Your job is to triage security alerts end-to-end.
@@ -246,7 +246,7 @@ agent-orc-resources:
         - soc-apps-render-incident-report
       runtime:
         inputMode: http
-        ociRef: "ghcr.io/agentorc/agent-orc/openai-reference:latest"
+        ociRef: "ghcr.io/agentorca/agent-orca/openai-reference:latest"
         framework: openai-compatible
       memory:
         checkpointEvery: 1
@@ -261,7 +261,7 @@ agent-orc-resources:
   # ── AgentDeployments ─────────────────────────────────────────────────────────
   agentDeployments:
     # Chat with the SOC orchestrator at:
-    #   POST /api/deployments/agent-orc-system/soc-triage/execute
+    #   POST /api/deployments/agent-orca-system/soc-triage/execute
     - name: soc-triage
       agentRef: soc-orchestrator-agent
       inputSource:

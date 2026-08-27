@@ -13,12 +13,11 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Additional Namespaces
 # ModelSelector CRs are always created in .Release.Namespace (typically
-# agent-orc-system).  List any extra namespaces here that also need the
+# agent-orca-system).  List any extra namespaces here that also need the
 # selectors — for example, the `default` namespace so that agents deployed
 # there can reference `modelSelectorRef: default` without a namespace hop.
 # ─────────────────────────────────────────────────────────────────────────────
-additionalNamespaces:
-  - default
+additionalNamespaces: []
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Provider Secrets
@@ -44,8 +43,8 @@ providerSecrets:
     apiKey: ""            # AIza...
     existingSecret: ""
 
-  # ── Poolside ───────────────────────────────────────────────────────────────
-  - name: poolside-api-key
+  # ── default ───────────────────────────────────────────────────────────────
+  - name: default-api-key
     enabled: true
     apiKey: ""            # ps-...
     existingSecret: ""
@@ -120,17 +119,10 @@ providerSecrets:
 # ─────────────────────────────────────────────────────────────────────────────
 modelProviders:
 
-  # ════════════════════════════════════════════════════════════════════════════
-  # Poolside
-  # https://inference.poolside.ai/v1
-  # agent-orc appends /v1 to the baseURL, so we put https://inference.poolside.ai as the modelProvider baseURL.
-  # ════════════════════════════════════════════════════════════════════════════
-
-  # laguna-m-e0419-polaris-t3-mh-s700-ctx256k — Laguna M.1 ctx256k with 262k context
   - name: poolside-laguna-s-2.1
     enabled: true
-    litellmModel: "riemann1_turbo4"
-    baseURL: "https://api.poolsi.de/openai"
+    litellmModel: "poolside/laguna-s-2.1"
+    baseURL: "https://inference.poolside.ai"
     credentialsRef:
       existingSecret: "poolside-api-key"
       key: "api-key"
@@ -902,7 +894,7 @@ modelProviders:
   - name: ollama-nomic-embed-text
     enabled: false
     litellmModel: "ollama/nomic-embed-text"
-    baseURL: "http://ollama-embed.agent-orc-system.svc:11434"
+    baseURL: "http://ollama-embed.agent-orca-system.svc:11434"
     credentialsRef:
       existingSecret: "ollama-embed-credentials"
       key: "api-key"
@@ -928,9 +920,11 @@ modelSelectors:
   # default — balanced quality/cost, multi-provider fallback
   # Enable if you have at least one of: claude-sonnet-4-6, gpt-4o, gemini-2.0-flash
   - name: default
-    enabled: false
+    enabled: true
     strategy: rule-based
     providers:
+      - name: poolside-laguna-s-2.1
+        weight: 80
       - name: anthropic-claude-sonnet-4-6
         weight: 60
       - name: openai-gpt-4o
@@ -939,6 +933,7 @@ modelSelectors:
       - google-gemini-2-5-flash
       - anthropic-claude-haiku-4-5
       - groq-llama-3-3-70b
+      - poolside-laguna-s-2.1
 
   # fast — lowest latency, optimised for interactive / high-volume workloads
   - name: fast
@@ -1046,10 +1041,3 @@ modelSelectors:
     fallbackChain:
       - openai-gpt-4o-mini
       - mistral-small
-
-  # poolside — all poolside API models
-  - name: poolside
-    enabled: true
-    strategy: rule-based
-    providers:
-      - name: poolside-laguna-s-2.1

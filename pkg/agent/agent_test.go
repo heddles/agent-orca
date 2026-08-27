@@ -469,7 +469,7 @@ func TestCheckpointHelpers(t *testing.T) {
 		t.Fatalf("expected nil, got %v", msgs)
 	}
 	ref := a.SaveCheckpoint("test-session", nil)
-	if ref != "agentorc/runs/test-session/state" {
+	if ref != "agentorca/runs/test-session/state" {
 		t.Fatalf("unexpected checkpoint ref: %s", ref)
 	}
 }

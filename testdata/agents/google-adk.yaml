@@ -11,7 +11,7 @@
 # Agent: google-genai Client via google-adk dependency, using GOOGLE_API_BASE
 #        (https://github.com/google/adk-python)
 ---
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: Agent
 metadata:
   name: test-google-adk
@@ -71,7 +71,7 @@ spec:
       cpu: 200m
       memory: 128Mi
 ---
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: AgentRun
 metadata:
   name: test-google-adk-run

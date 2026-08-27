@@ -1,7 +1,7 @@
 name: Build & Publish Reference Agent Image
 
 # Builds and publishes the reference OpenAI-compatible agent image
-# (ghcr.io/agentorc/agent-orc/openai-reference) alongside GitHub Releases.
+# (ghcr.io/agentorca/agent-orca/openai-reference) alongside GitHub Releases.
 #
 # Release Drafter drafts a release on push to main; a maintainer publishes it,
 # which fires `release: published` and builds the image for that tag.
@@ -19,7 +19,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ghcr.io/agentorc/agent-orc/openai-reference
+  IMAGE_NAME: ghcr.io/agentorca/agent-orca/openai-reference
 
 permissions:
   contents: read
@@ -60,7 +60,7 @@ jobs:
 
       - name: Build and push multi-arch reference image
         # Build context is the repository root — the Dockerfile copies from
-        # ./pkg/python/agentorc and ./examples/agent-sdk-template.
+        # ./pkg/python/agentorca and ./examples/agent-sdk-template.
         uses: docker/build-push-action@v6
         with:
           context: .

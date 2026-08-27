@@ -22,7 +22,7 @@
 # the model-router (check STATE_BACKEND / REDIS_URL on the operator).
 
 ---
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: Agent
 metadata:
   name: test-context-agent
@@ -86,7 +86,7 @@ spec:
       memory: 128Mi
 
 ---
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: AgentDeployment
 metadata:
   name: test-context-agent-deployment

@@ -25,7 +25,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
 )
 
 // redisPublisher delivers results to a Redis stream via XADD.
@@ -36,7 +36,7 @@ type redisPublisher struct {
 	stream string
 }
 
-func newRedisPublisher(ctx context.Context, cfg agentorcv1alpha1.EgressConfig, k8sClient client.Client, namespace string) (*redisPublisher, error) {
+func newRedisPublisher(ctx context.Context, cfg agentorcav1alpha1.EgressConfig, k8sClient client.Client, namespace string) (*redisPublisher, error) {
 	if cfg.Topic == "" {
 		return nil, fmt.Errorf("egress.redis: topic (stream name) must be specified")
 	}
@@ -65,7 +65,7 @@ func newRedisPublisher(ctx context.Context, cfg agentorcv1alpha1.EgressConfig, k
 	return &redisPublisher{client: rdb, stream: cfg.Topic}, nil
 }
 
-func (p *redisPublisher) Publish(ctx context.Context, result agentorcv1alpha1.EgressResult) error {
+func (p *redisPublisher) Publish(ctx context.Context, result agentorcav1alpha1.EgressResult) error {
 	if p.client == nil {
 		return fmt.Errorf("redis publisher not initialized")
 	}

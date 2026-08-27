@@ -33,20 +33,20 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/floppyfish14/agent-orc/test/utils"
+	"github.com/floppyfish14/agent-orca/test/utils"
 )
 
 // TestAdminAPI validates the tenant lifecycle admin API (POST /admin/tenants,
 // GET /admin/tenants, GET /admin/tenants/{name}, POST /admin/tenants/{name}/rotate-secret,
 // DELETE /admin/tenants/{name}) end-to-end against a live operator.
 //
-// The test creates an admin ServiceAccount (with the agentorc.io/admin=true label),
+// The test creates an admin ServiceAccount (with the agentorca.io/admin=true label),
 // obtains a bearer token via `kubectl create token`, and exercises the full
 // tenant lifecycle: create → list → get → rotate-secret → delete.
 // It also verifies that requests without a token are rejected with 401.
 var _ = Describe("Admin API (tenant lifecycle)", Label("admin"), Ordered, func() {
 	const (
-		adminSAName  = "agentorc-admin-e2e"
+		adminSAName  = "agentorca-admin-e2e"
 		tenantName   = "admin-e2e-tenant"
 		clientID     = "admin-e2e-client"
 		secretName   = "admin-e2e-tenant-client-secret"
@@ -62,7 +62,7 @@ var _ = Describe("Admin API (tenant lifecycle)", Label("admin"), Ordered, func()
 	startPortForward := func() func() {
 		GinkgoHelper()
 		cmd := exec.Command("kubectl", "port-forward",
-			"deployment/agent-orc-controller-manager",
+			"deployment/agent-orca-controller-manager",
 			fmt.Sprintf("%d:%d", apiLocalPort, 8084),
 			"-n", namespace,
 		)
@@ -122,7 +122,7 @@ metadata:
   name: %s
   namespace: %s
   labels:
-    agentorc.io/admin: "true"
+    agentorca.io/admin: "true"
 `, adminSAName, namespace))).To(Succeed())
 
 		By("obtaining a bearer token for the admin SA")

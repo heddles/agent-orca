@@ -23,25 +23,25 @@ import (
 	"sync"
 	"time"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // runTerminalPhases are the AgentRun phases considered "done" for spend/budget
 // accounting. A run in one of these phases has finished accruing cost.
-var runTerminalPhases = map[agentorcv1alpha1.AgentRunPhase]bool{ //nolint:unused
+var runTerminalPhases = map[agentorcav1alpha1.AgentRunPhase]bool{ //nolint:unused
 
-	agentorcv1alpha1.AgentRunPhaseSucceeded:       true,
-	agentorcv1alpha1.AgentRunPhaseFailed:          true,
-	agentorcv1alpha1.AgentRunPhaseHandedOff:       true,
-	agentorcv1alpha1.AgentRunPhaseWaitingForInput: true,
+	agentorcav1alpha1.AgentRunPhaseSucceeded:       true,
+	agentorcav1alpha1.AgentRunPhaseFailed:          true,
+	agentorcav1alpha1.AgentRunPhaseHandedOff:       true,
+	agentorcav1alpha1.AgentRunPhaseWaitingForInput: true,
 }
 
 // activePhases are AgentRun phases that consume a concurrent-run slot.
-var activePhases = map[agentorcv1alpha1.AgentRunPhase]bool{
-	agentorcv1alpha1.AgentRunPhasePending:         true,
-	agentorcv1alpha1.AgentRunPhaseRunning:         true,
-	agentorcv1alpha1.AgentRunPhaseWaitingForInput: true,
+var activePhases = map[agentorcav1alpha1.AgentRunPhase]bool{
+	agentorcav1alpha1.AgentRunPhasePending:         true,
+	agentorcav1alpha1.AgentRunPhaseRunning:         true,
+	agentorcav1alpha1.AgentRunPhaseWaitingForInput: true,
 }
 
 // QuotaError is returned by enforceQuotas and maps directly to an HTTP response
@@ -176,10 +176,10 @@ func enforceQuotas(
 // countActiveExternalRuns counts AgentRuns in ns that are active (holding a
 // concurrent-run slot), selected by the external-task label.
 func countActiveExternalRuns(ctx context.Context, kube client.Client, ns string) (int, error) {
-	var list agentorcv1alpha1.AgentRunList
+	var list agentorcav1alpha1.AgentRunList
 	if err := kube.List(ctx, &list,
 		client.InNamespace(ns),
-		client.MatchingLabels{"agentorc.io/external-task": "true"},
+		client.MatchingLabels{"agentorca.io/external-task": "true"},
 	); err != nil {
 		return 0, err
 	}
@@ -196,9 +196,9 @@ func countActiveExternalRuns(ctx context.Context, kube client.Client, ns string)
 // tenant (by label) that were created today. Runs still in-flight contribute
 // their last-reported status.spendUSD; runs with no spend field contribute 0.
 func sumTodayTenantSpend(ctx context.Context, kube client.Client, tenantName string) (float64, error) {
-	var list agentorcv1alpha1.AgentRunList
+	var list agentorcav1alpha1.AgentRunList
 	if err := kube.List(ctx, &list,
-		client.MatchingLabels{"agentorc.io/tenant": tenantName},
+		client.MatchingLabels{"agentorca.io/tenant": tenantName},
 	); err != nil {
 		return 0, err
 	}

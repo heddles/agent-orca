@@ -27,7 +27,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/floppyfish14/agent-orc/internal/state"
+	"github.com/floppyfish14/agent-orca/internal/state"
 )
 
 // AlertState describes whether an alert is actively firing or has been resolved.
@@ -59,8 +59,8 @@ type Alert struct {
 // AlertWebhook configures webhook delivery for alert state transitions.
 // The webhook receives a JSON payload signed with HMAC-SHA256 using HMACKey.
 type AlertWebhook struct {
-	URL      string `json:"url"`
-	HMACKey  []byte `json:"-"` // raw HMAC key (resolved from K8s Secret by caller)
+	URL     string `json:"url"`
+	HMACKey []byte `json:"-"` // raw HMAC key (resolved from K8s Secret by caller)
 }
 
 // AlertManager evaluates subsystem health checks and fires webhooks on state
@@ -80,7 +80,7 @@ func NewAlertManager(store state.Store, webhooks []AlertWebhook) *AlertManager {
 
 // alertKey builds the Redis key for a given alert ID.
 func alertKey(id string) string {
-	return "agentorc:alerts:" + id
+	return "agentorca:alerts:" + id
 }
 
 // Evaluate checks a subsystem's health and records any state transition.
@@ -108,7 +108,7 @@ func (am *AlertManager) Evaluate(ctx context.Context, name, detail string, up bo
 	// Load previous state from Redis.
 	var prevAlert *Alert
 	if am.store != nil {
-		if data, err := am.store.LoadKV(ctx, "agentorc:alerts", alertID); err == nil && data != nil {
+		if data, err := am.store.LoadKV(ctx, "agentorca:alerts", alertID); err == nil && data != nil {
 			_ = json.Unmarshal(data, &prevAlert)
 		}
 	}
@@ -154,7 +154,7 @@ func (am *AlertManager) Evaluate(ctx context.Context, name, detail string, up bo
 	// Persist current state.
 	if am.store != nil {
 		data, _ := json.Marshal(alert)
-		_ = am.store.SaveKV(ctx, "agentorc:alerts", alertID, data, 7*24*time.Hour)
+		_ = am.store.SaveKV(ctx, "agentorca:alerts", alertID, data, 7*24*time.Hour)
 	}
 
 	// Fire webhook on transition (newly firing, or newly resolved).
@@ -177,13 +177,13 @@ func (am *AlertManager) fireWebhook(ctx context.Context, alert *Alert) {
 	}
 
 	payload, _ := json.Marshal(map[string]any{
-		"subsystem":      alert.SubSystem,
-		"state":          alert.State,
-		"message":        alert.Message,
-		"firstSeen":      alert.FirstSeen.Format(time.RFC3339),
-		"lastSeen":       alert.LastSeen.Format(time.RFC3339),
-		"resolvedAt":     alert.ResolvedAt,
-		"timestamp":      time.Now().UTC().Format(time.RFC3339),
+		"subsystem":  alert.SubSystem,
+		"state":      alert.State,
+		"message":    alert.Message,
+		"firstSeen":  alert.FirstSeen.Format(time.RFC3339),
+		"lastSeen":   alert.LastSeen.Format(time.RFC3339),
+		"resolvedAt": alert.ResolvedAt,
+		"timestamp":  time.Now().UTC().Format(time.RFC3339),
 	})
 
 	for _, wh := range am.webhooks {
@@ -222,14 +222,14 @@ func (am *AlertManager) ListAlerts(ctx context.Context) []*Alert {
 	if am == nil || am.store == nil {
 		return nil
 	}
-	keys, err := am.store.ListKV(ctx, "agentorc:alerts")
+	keys, err := am.store.ListKV(ctx, "agentorca:alerts")
 	if err != nil || len(keys) == 0 {
 		return nil
 	}
 	// ListKV strips the scope prefix, so keys are bare alert IDs (e.g. "redis-down").
 	var alerts []*Alert
 	for _, id := range keys {
-		data, err := am.store.LoadKV(ctx, "agentorc:alerts", id)
+		data, err := am.store.LoadKV(ctx, "agentorca:alerts", id)
 		if err != nil || data == nil {
 			continue
 		}

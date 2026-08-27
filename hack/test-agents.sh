@@ -97,7 +97,7 @@ create_agent() {
 
   # Use a temp file to avoid YAML escaping issues with multiline Python
   cat > /tmp/agent-yaml-$TIMESTAMP.yaml <<'YAML'
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: Agent
 metadata:
   name: AGENT_NAME_PLACEHOLDER
@@ -106,7 +106,7 @@ spec:
   modelSelectorRef: default
   systemPrompt: "You are a helpful assistant. Answer concisely."
   runtime:
-    ociRef: "ghcr.io/agentorc/agent-orc/openai-reference:latest"
+    ociRef: "ghcr.io/agentorca/agent-orca/openai-reference:latest"
     framework: openai-compatible
   resources:
     requests:
@@ -136,7 +136,7 @@ test_agentrun() {
   log_step "Creating AgentRun '$run_name'"
 
   printf '%s\n' \
-    'apiVersion: agentorc.agentorc.io/v1alpha1' \
+    'apiVersion: agentorca.agentorca.io/v1alpha1' \
     'kind: AgentRun' \
     'metadata:' \
     "  name: $run_name" \
@@ -165,7 +165,7 @@ test_agentdeployment() {
   log_step "Creating AgentDeployment '$deploy_name'"
 
   printf '%s\n' \
-    'apiVersion: agentorc.agentorc.io/v1alpha1' \
+    'apiVersion: agentorca.agentorca.io/v1alpha1' \
     'kind: AgentDeployment' \
     'metadata:' \
     "  name: $deploy_name" \
@@ -189,7 +189,7 @@ test_agentdeployment() {
   else
     log_info "Check status with: kubectl get agentdeployment $deploy_name -n $NAMESPACE"
     log_info "Watch with: kubectl get agentdeployment $deploy_name -n $NAMESPACE -w"
-    log_info "Watch pods with: kubectl get pods -n $NAMESPACE -l agentdeployment.agentorc.io=$deploy_name -w"
+    log_info "Watch pods with: kubectl get pods -n $NAMESPACE -l agentdeployment.agentorca.io=$deploy_name -w"
   fi
 }
 
@@ -199,7 +199,7 @@ create_agent_only() {
   agent_name=$(create_agent)
   log_info "Created agent: $agent_name"
   log_info "Create a run: kubectl apply -f - <<'EOF'"
-  log_info "apiVersion: agentorc.agentorc.io/v1alpha1"
+  log_info "apiVersion: agentorca.agentorca.io/v1alpha1"
   log_info "kind: AgentRun"
   log_info "metadata:"
   log_info "  name: my-run"

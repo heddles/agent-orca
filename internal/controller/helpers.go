@@ -42,8 +42,8 @@ func setCondition(conditions *[]metav1.Condition, desired metav1.Condition) {
 // ipAddrRe matches IPv4 addresses with optional port (e.g. 10.96.0.10:53).
 var ipAddrRe = regexp.MustCompile(`\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(:\d+)?\b`)
 
-// k8sDNSToRe matches Kubernetes internal DNS names (e.g. ollama-embed.agent-orc-system.svc
-// or ollama-embed.agent-orc-system.svc.cluster.local).
+// k8sDNSToRe matches Kubernetes internal DNS names (e.g. ollama-embed.agent-orca-system.svc
+// or ollama-embed.agent-orca-system.svc.cluster.local).
 var k8sDNSToRe = regexp.MustCompile(`[a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)*\.svc(\.cluster\.local)?`)
 
 // sanitizeKBError strips internal infrastructure details (IPs, Kubernetes DNS

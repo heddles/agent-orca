@@ -34,7 +34,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
 )
 
 // capturedHeaders returns an httptest.Server that records the headers of the
@@ -175,19 +175,19 @@ func TestFireCallback_SignedEndToEnd(t *testing.T) {
 		Data:       map[string][]byte{"hmac-key": []byte("top-secret")},
 	})
 
-	run := &agentorcv1alpha1.AgentRun{
+	run := &agentorcav1alpha1.AgentRun{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "run-1",
 			Namespace: "tenant-ns",
 			Annotations: map[string]string{
-				"agentorc.io/callback-secret": "cb-secret",
+				"agentorca.io/callback-secret": "cb-secret",
 			},
 		},
-		Spec: agentorcv1alpha1.AgentRunSpec{
-			Callbacks: &agentorcv1alpha1.CallbackConfig{OnComplete: srv.URL},
+		Spec: agentorcav1alpha1.AgentRunSpec{
+			Callbacks: &agentorcav1alpha1.CallbackConfig{OnComplete: srv.URL},
 		},
-		Status: agentorcv1alpha1.AgentRunStatus{
-			Phase:    agentorcv1alpha1.AgentRunPhaseSucceeded,
+		Status: agentorcav1alpha1.AgentRunStatus{
+			Phase:    agentorcav1alpha1.AgentRunPhaseSucceeded,
 			SpendUSD: "0.042000",
 		},
 	}
@@ -221,13 +221,13 @@ func TestFireCallback_UnsignedEndToEnd(t *testing.T) {
 	srv, h := capturedHeaders(t)
 	defer srv.Close()
 
-	run := &agentorcv1alpha1.AgentRun{
+	run := &agentorcav1alpha1.AgentRun{
 		ObjectMeta: metav1.ObjectMeta{Name: "run-2", Namespace: "tenant-ns"},
-		Spec: agentorcv1alpha1.AgentRunSpec{
-			Callbacks: &agentorcv1alpha1.CallbackConfig{OnComplete: srv.URL},
+		Spec: agentorcav1alpha1.AgentRunSpec{
+			Callbacks: &agentorcav1alpha1.CallbackConfig{OnComplete: srv.URL},
 		},
-		Status: agentorcv1alpha1.AgentRunStatus{
-			Phase: agentorcv1alpha1.AgentRunPhaseSucceeded,
+		Status: agentorcav1alpha1.AgentRunStatus{
+			Phase: agentorcav1alpha1.AgentRunPhaseSucceeded,
 		},
 	}
 
@@ -261,18 +261,18 @@ func TestFireCallback_NonTerminalPhase(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "cb-secret", Namespace: "tenant-ns"},
 		Data:       map[string][]byte{"hmac-key": []byte("top-secret")},
 	})
-	run := &agentorcv1alpha1.AgentRun{
+	run := &agentorcav1alpha1.AgentRun{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "run-4",
 			Namespace: "tenant-ns",
 			Annotations: map[string]string{
-				"agentorc.io/callback-secret": "cb-secret",
+				"agentorca.io/callback-secret": "cb-secret",
 			},
 		},
-		Spec: agentorcv1alpha1.AgentRunSpec{
-			Callbacks: &agentorcv1alpha1.CallbackConfig{OnComplete: srv.URL, OnFailed: srv.URL},
+		Spec: agentorcav1alpha1.AgentRunSpec{
+			Callbacks: &agentorcav1alpha1.CallbackConfig{OnComplete: srv.URL, OnFailed: srv.URL},
 		},
-		Status: agentorcv1alpha1.AgentRunStatus{Phase: agentorcv1alpha1.AgentRunPhaseRunning},
+		Status: agentorcav1alpha1.AgentRunStatus{Phase: agentorcav1alpha1.AgentRunPhaseRunning},
 	}
 	r := &AgentRunReconciler{K8s: clientset}
 	r.fireCallback(context.Background(), run)
@@ -293,16 +293,16 @@ func TestFireCallback_NoCallbacksAndEmptyURL(t *testing.T) {
 	r := &AgentRunReconciler{K8s: fake.NewSimpleClientset()} //nolint:staticcheck
 
 	// nil Callbacks -> immediate return, no delivery.
-	r.fireCallback(context.Background(), &agentorcv1alpha1.AgentRun{
+	r.fireCallback(context.Background(), &agentorcav1alpha1.AgentRun{
 		ObjectMeta: metav1.ObjectMeta{Name: "run-nocb", Namespace: "tenant-ns"},
-		Status:     agentorcv1alpha1.AgentRunStatus{Phase: agentorcv1alpha1.AgentRunPhaseSucceeded},
+		Status:     agentorcav1alpha1.AgentRunStatus{Phase: agentorcav1alpha1.AgentRunPhaseSucceeded},
 	})
 
 	// Succeeded but OnComplete empty -> return before delivery.
-	r.fireCallback(context.Background(), &agentorcv1alpha1.AgentRun{
+	r.fireCallback(context.Background(), &agentorcav1alpha1.AgentRun{
 		ObjectMeta: metav1.ObjectMeta{Name: "run-emptyurl", Namespace: "tenant-ns"},
-		Spec:       agentorcv1alpha1.AgentRunSpec{Callbacks: &agentorcv1alpha1.CallbackConfig{}},
-		Status:     agentorcv1alpha1.AgentRunStatus{Phase: agentorcv1alpha1.AgentRunPhaseSucceeded},
+		Spec:       agentorcav1alpha1.AgentRunSpec{Callbacks: &agentorcav1alpha1.CallbackConfig{}},
+		Status:     agentorcav1alpha1.AgentRunStatus{Phase: agentorcav1alpha1.AgentRunPhaseSucceeded},
 	})
 
 	time.Sleep(200 * time.Millisecond)
@@ -318,19 +318,19 @@ func TestFireCallback_FailedPhase(t *testing.T) {
 	srv, h := capturedHeaders(t)
 	defer srv.Close()
 
-	run := &agentorcv1alpha1.AgentRun{
+	run := &agentorcav1alpha1.AgentRun{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "run-3",
 			Namespace: "tenant-ns",
 			Annotations: map[string]string{
-				"agentorc.io/callback-secret": "cb-secret",
+				"agentorca.io/callback-secret": "cb-secret",
 			},
 		},
-		Spec: agentorcv1alpha1.AgentRunSpec{
-			Callbacks: &agentorcv1alpha1.CallbackConfig{OnFailed: srv.URL},
+		Spec: agentorcav1alpha1.AgentRunSpec{
+			Callbacks: &agentorcav1alpha1.CallbackConfig{OnFailed: srv.URL},
 		},
-		Status: agentorcv1alpha1.AgentRunStatus{
-			Phase:         agentorcv1alpha1.AgentRunPhaseFailed,
+		Status: agentorcav1alpha1.AgentRunStatus{
+			Phase:         agentorcav1alpha1.AgentRunPhaseFailed,
 			FailureReason: "boom",
 		},
 	}
@@ -363,7 +363,7 @@ func TestFireCallback_FailedPhase(t *testing.T) {
 
 // makeCallbackPayload reconstructs the exact JSON body fireCallback sends, so a
 // test can verify the HMAC over that body without inspecting the server.
-func makeCallbackPayload(run *agentorcv1alpha1.AgentRun) []byte {
+func makeCallbackPayload(run *agentorcav1alpha1.AgentRun) []byte {
 	payload := map[string]any{
 		"taskId":    run.Name,
 		"agent":     run.Spec.AgentRef,

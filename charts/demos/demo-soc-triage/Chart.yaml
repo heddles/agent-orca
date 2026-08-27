@@ -8,16 +8,16 @@ description: |
   context, and an orchestrator coordinates both and uses _clarify to get
   human approval before acting on HIGH/CRITICAL findings.
 
-  Requires: agent-orc operator deployed with 'default' and 'embeddings'
+  Requires: agent-orca operator deployed with 'default' and 'embeddings'
   ModelSelectors (provided by model-providers chart).
   No custom images — uses python:3.12-slim for all agent runtimes.
 type: application
 version: 0.1.0
 appVersion: "0.1.0"
 dependencies:
-  - name: agent-orc-resources
+  - name: agent-orca-resources
     version: "0.2.0"
-    repository: "file://../../agent-orc-resources"
+    repository: "file://../../agent-orca-resources"
 keywords:
   - demo
   - agents

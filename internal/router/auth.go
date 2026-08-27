@@ -52,7 +52,7 @@ var globalTokenCache = &tokenCache{entries: make(map[string]tokenCacheEntry)}
 // The model-router sidecar uses this to authenticate every incoming request.
 //
 // Token flow:
-//  1. Agent pod has a projected SA token at /var/run/secrets/agentorc/token
+//  1. Agent pod has a projected SA token at /var/run/secrets/agentorca/token
 //  2. Agent framework sends it as "Authorization: Bearer <token>" (via OPENAI_API_KEY env var)
 //  3. Authenticator calls k8s TokenReview API to validate the token
 //  4. Validates the SA name matches the expected Agent SA
@@ -69,7 +69,7 @@ const (
 )
 
 // NewAuthenticator creates an Authenticator configured for the given run.
-// saName is "agentorc-agent-<agent-name>" in the run's namespace.
+// saName is "agentorca-agent-<agent-name>" in the run's namespace.
 func NewAuthenticator(kubeAPIURL, namespace, saName string) *Authenticator {
 	a := &Authenticator{
 		kubeAPIURL:  kubeAPIURL,
@@ -127,7 +127,7 @@ func (a *Authenticator) reviewToken(ctx context.Context, token string) (string, 
 		"kind":       "TokenReview",
 		"spec": map[string]any{
 			"token":     token,
-			"audiences": []string{"agentorc/model-router"},
+			"audiences": []string{"agentorca/model-router"},
 		},
 	})
 

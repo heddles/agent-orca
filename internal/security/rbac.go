@@ -20,28 +20,28 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	agentorcv1alpha1 "github.com/floppyfish14/agent-orc/api/v1alpha1"
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
 )
 
 // AgentSAName returns the deterministic ServiceAccount name for a managed Agent SA.
 // The SA is stable (Agent-scoped, not run-scoped) to support cloud IAM bindings.
 func AgentSAName(agentName string) string {
-	return "agentorc-agent-" + agentName
+	return "agentorca-agent-" + agentName
 }
 
 // RunRoleName returns the deterministic Role name for a per-run RBAC Role.
 func RunRoleName(runName string) string {
-	return "agentorc-run-" + runName
+	return "agentorca-run-" + runName
 }
 
 // RunRoleBindingName returns the deterministic RoleBinding name for a per-run binding.
 func RunRoleBindingName(runName string) string {
-	return "agentorc-run-" + runName
+	return "agentorca-run-" + runName
 }
 
 // BuildRunRole constructs a minimal Role for a specific AgentRun.
 // The role allows the agent pod to read its own AgentRun object and create events.
-func BuildRunRole(run *agentorcv1alpha1.AgentRun) *rbacv1.Role {
+func BuildRunRole(run *agentorcav1alpha1.AgentRun) *rbacv1.Role {
 	return &rbacv1.Role{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      RunRoleName(run.Name),
@@ -54,7 +54,7 @@ func BuildRunRole(run *agentorcv1alpha1.AgentRun) *rbacv1.Role {
 		Rules: []rbacv1.PolicyRule{
 			{
 				// Allow the agent pod to read its own AgentRun status.
-				APIGroups:     []string{"agentorc.agentorc.io"},
+				APIGroups:     []string{"agentorca.agentorca.io"},
 				Resources:     []string{"agentruns"},
 				ResourceNames: []string{run.Name},
 				Verbs:         []string{"get"},
@@ -85,12 +85,12 @@ func BuildRunRole(run *agentorcv1alpha1.AgentRun) *rbacv1.Role {
 // DeploymentRoleName returns the deterministic Role name for a deployment-scoped RBAC Role.
 // This role is used by warm pods, which are not scoped to a single run.
 func DeploymentRoleName(deploymentName string) string {
-	return "agentorc-deploy-" + deploymentName
+	return "agentorca-deploy-" + deploymentName
 }
 
 // DeploymentRoleBindingName returns the deterministic RoleBinding name for a deployment-scoped binding.
 func DeploymentRoleBindingName(deploymentName string) string {
-	return "agentorc-deploy-" + deploymentName
+	return "agentorca-deploy-" + deploymentName
 }
 
 // BuildDeploymentRole constructs a Role scoped to an AgentDeployment for use by warm pods.
@@ -106,7 +106,7 @@ func BuildDeploymentRole(deploymentName, namespace string) *rbacv1.Role {
 		},
 		Rules: []rbacv1.PolicyRule{
 			{
-				APIGroups: []string{"agentorc.agentorc.io"},
+				APIGroups: []string{"agentorca.agentorca.io"},
 				Resources: []string{"agentruns"},
 				Verbs:     []string{"get"},
 			},
@@ -158,7 +158,7 @@ func BuildDeploymentRoleBinding(deploymentName, saName, namespace string) *rbacv
 // BuildRunRoleBinding constructs a RoleBinding that grants the per-run Role to the
 // Agent's stable ServiceAccount. This is what scopes each run's access without
 // requiring a new SA per run.
-func BuildRunRoleBinding(run *agentorcv1alpha1.AgentRun, saName, namespace string) *rbacv1.RoleBinding {
+func BuildRunRoleBinding(run *agentorcav1alpha1.AgentRun, saName, namespace string) *rbacv1.RoleBinding {
 	return &rbacv1.RoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      RunRoleBindingName(run.Name),

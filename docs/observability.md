@@ -1,6 +1,6 @@
 # Observability
 
-agent-orc exposes standard Kubernetes-style probes, Prometheus metrics, and
+agent-orca exposes standard Kubernetes-style probes, Prometheus metrics, and
 structured audit logging on every external HTTP surface.
 
 ## Health probes
@@ -31,16 +31,16 @@ controller-runtime manager metrics on `:8443`.
 
 | Metric | Type | Labels | Description |
 |---|---|---|---|
-| `agentorc_external_requests_total` | Counter | `server`, `path`, `method`, `status` | Total HTTP requests to external API surfaces |
-| `agentorc_external_request_duration_seconds` | Histogram | `server`, `path` | Request latency distribution |
-| `agentorc_external_auth_failures_total` | Counter | `server` | Failed authentication attempts |
+| `agentorca_external_requests_total` | Counter | `server`, `path`, `method`, `status` | Total HTTP requests to external API surfaces |
+| `agentorca_external_request_duration_seconds` | Histogram | `server`, `path` | Request latency distribution |
+| `agentorca_external_auth_failures_total` | Counter | `server` | Failed authentication attempts |
 
 ### Egress metrics
 
 | Metric | Type | Labels | Description |
 |---|---|---|---|
-| `agentorc_egress_published_total` | Counter | `sink_type` | Successfully published results to egress sinks |
-| `agentorc_egress_failed_total` | Counter | `sink_type` | Failed egress publishes |
+| `agentorca_egress_published_total` | Counter | `sink_type` | Successfully published results to egress sinks |
+| `agentorca_egress_failed_total` | Counter | `sink_type` | Failed egress publishes |
 
 ### Controller metrics
 
@@ -73,9 +73,9 @@ Example log line:
 
 ```yaml
 scrape_configs:
-  - job_name: "agent-orc-external"
+  - job_name: "agent-orca-external"
     static_configs:
-      - targets: ["agent-orc-external.default.svc:8084"]
+      - targets: ["agent-orca-external.default.svc:8084"]
     metrics_path: /metrics
 ```
 

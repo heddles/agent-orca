@@ -5,11 +5,11 @@
 
 
 [![Go](https://img.shields.io/badge/go-1.25-00ADD8?logo=go)](https://go.dev/)
-[![Tests](https://github.com/floppyfish14/agent-orc/actions/workflows/test.yml/badge.svg)](https://github.com/floppyfish14/agent-orc/actions/workflows/test.yml)
-[![Lint](https://github.com/floppyfish14/agent-orc/actions/workflows/lint.yml/badge.svg)](https://github.com/floppyfish14/agent-orc/actions/workflows/lint.yml)
-[![E2E](https://github.com/floppyfish14/agent-orc/actions/workflows/test-e2e.yml/badge.svg)](https://github.com/floppyfish14/agent-orc/actions/workflows/test-e2e.yml)
-[![License: Apache 2.0](https://img.shields.io/github/license/floppyfish14/agent-orc)](LICENSE)
-[![Release](https://img.shields.io/github/v/release/floppyfish14/agent-orc?display_name=tag)](https://github.com/floppyfish14/agent-orc/releases)
+[![Tests](https://github.com/floppyfish14/agent-orca/actions/workflows/test.yml/badge.svg)](https://github.com/floppyfish14/agent-orca/actions/workflows/test.yml)
+[![Lint](https://github.com/floppyfish14/agent-orca/actions/workflows/lint.yml/badge.svg)](https://github.com/floppyfish14/agent-orca/actions/workflows/lint.yml)
+[![E2E](https://github.com/floppyfish14/agent-orca/actions/workflows/test-e2e.yml/badge.svg)](https://github.com/floppyfish14/agent-orca/actions/workflows/test-e2e.yml)
+[![License: Apache 2.0](https://img.shields.io/github/license/floppyfish14/agent-orca)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/floppyfish14/agent-orca?display_name=tag)](https://github.com/floppyfish14/agent-orca/releases)
 
 Agent orcastrator is a Kubernetes-native platform for deploying, managing, and running AI agents at scale. It lets you declaratively define agents, route them to the correct LLM, equip them with tools, and execute them as one-off jobs or long-running services with checkpoints, cost tracking, guardrails, and RAG built in.
 
@@ -24,16 +24,13 @@ Agent orcastrator is a Kubernetes-native platform for deploying, managing, and r
 From zero to a chatting agent on your laptop in ~3 commands:
 
 ```bash
-kind create cluster --name agent-orc-dev   # 1. local Kubernetes
+kind create cluster --name agent-orca-dev   # 1. local Kubernetes
 export OPENAI_API_KEY=sk-...               # 2. one model-provider key
+kubectl apply -f config/samples/ollama-embedding-cluster.yaml -n agent-orca-system
 skaffold dev -p dev                        # 3. builds images + deploys the stack
+skaffold dev -p demo-financial-analysis
 ```
-
-Leave that terminal running — it watches for file changes and rebuilds automatically. Then drive an agent:
-
-```bash
-./hack/test-agents.sh run --watch          # creates an AgentRun and runs it
-```
+Now go to `http://localhost:8080` to chat with your agent. We recommend asking: `What will happen to the economy in 5 years if there is a shortage of wheat for one year?` or similar questions; the output should be an interactive user interface.
 
 **Quick-start prerequisites:** [`kind`](https://kind.sigs.k8s.io/docs/user/quick-start/#installation), [`kubectl`](https://kubernetes.io/docs/tasks/tools/), [`skaffold`](https://skaffold.dev/docs/install/), [Docker](https://docs.docker.com/get-docker/) running, and an API key for at least one model provider (OpenAI, Anthropic, Google, or **Poolside**; providers are [LiteLLM-compatible](https://docs.litellm.ai/docs/providers)).
 
@@ -49,35 +46,30 @@ Leave that terminal running — it watches for file changes and rebuilds automat
 
 ### Detailed walkthrough
 
-The `dev` profile builds all images (operator, model-router, MCP-ingester, UI, UIProxy) and deploys the full stack to the `agent-orc-system` namespace via the Helm chart + the `model-providers` chart. It forwards `8080`/`8000`/`8084` to localhost and creates `ModelProvider` + `ModelSelector` CRs for OpenAI, Anthropic, Google, and Poolside, taking each key from your shell env (never committed). First run takes ~2 minutes.
+The `dev` profile builds all images (operator, model-router, MCP-ingester, UI, UIProxy) and deploys the full stack to the `agent-orca-system` namespace via the Helm chart + the `model-providers` chart. It forwards `8080`/`8000`/`8084` to localhost and creates `ModelProvider` + `ModelSelector` CRs for OpenAI, Anthropic, Google, etc. taking each key from your shell env (never committed). First run takes ~2 minutes.
 
 ```bash
 # 1. Create a local cluster
-kind create cluster --name agent-orc-dev
+kind create cluster --name agent-orca-dev
 
 # 2. Start development (builds, deploys, forwards ports — leave running)
 export OPENAI_API_KEY=sk-...your-key-here...
 skaffold dev -p dev
 
-# 3. Test agent execution
-./hack/test-agents.sh run --watch
-
 # 4. Run a demo (optional)
 skaffold run -p demo-soc-triage      # security-operations triage demo
 skaffold run -p demo-htb-pwn         # autonomous red-team pwnbox (privileged)
 skaffold run -p demo-llm-research    # arxiv research agent
-skaffold run -p demo-financial-analysis
+skaffold run -p demo-financial-analysis # financial analysis demo
 
 # 5. Clean up
 kind delete cluster
 ```
 
-> The test agent and demos run from `ghcr.io/agentorc/agent-orc/openai-reference:latest` (pulled
-> from GHCR; no credentials needed; offline? `docker build -t …:latest -f examples/agent-sdk-template/Dockerfile . && kind load docker-image …:latest --name agent-orc-dev`).
+> The test agent and demos run from `ghcr.io/agentorca/agent-orca/openai-reference:latest` (pulled
+> from GHCR; no credentials needed; offline? `docker build -t …:latest -f examples/agent-sdk-template/Dockerfile . && kind load docker-image …:latest --name agent-orca-dev`).
 
-> Need Ollama/local models, a static Redis password, or the privileged HTB pwnbox? See the profile headers in [skaffold.yaml](skaffold.yaml) and [docs/local-model-selection.md](docs/local-model-selection.md). For faster UI iteration you can also use the provided **devcontainer** (`.devcontainer/`, ships Docker-in-Docker + kind) — open the repo in VS Code/Codespaces and run the steps above directly.
-
-If you'd rather read before running, the in-depth developer guides are linked in the [Documentation](#documentation) table below — start with [Development Guide](docs/development.md), [Integrating with agent-orc](docs/integrating.md), [aoctl CLI Reference](docs/aoctl-reference.md), and [Cost Tracking](docs/cost-tracking.md).
+If you'd rather read before running, the in-depth developer guides are linked in the [Documentation](#documentation) table below — start with [Development Guide](docs/development.md), [Integrating with agent-orca](docs/integrating.md), [aoctl CLI Reference](docs/aoctl-reference.md), and [Cost Tracking](docs/cost-tracking.md).
 
 ---
 
@@ -88,7 +80,7 @@ In-depth guides, organized by audience. **Developers** start with the first bloc
 | Doc | Audience | What it covers |
 |---|---|---|
 | [Development Guide](docs/development.md) | Developers | Project structure, build/test commands, critical rules, devcontainer |
-| [Integrating with agent-orc](docs/integrating.md) | Developers / integrators | End-to-end integration (CLI, SDKs, ACP API, observability) |
+| [Integrating with agent-orca](docs/integrating.md) | Developers / integrators | End-to-end integration (CLI, SDKs, ACP API, observability) |
 | [Agent Images](docs/agent-images.md) | Developers | What an agent image must do; framework tiers, injected env vars, built-in tools |
 | [aoctl CLI Reference](docs/aoctl-reference.md) | Developers | Complete `aoctl` command reference |
 | [ACP API](docs/acp-api.md) | Developers | Agent discovery, manifest introspection, self-service run execution |
@@ -220,16 +212,16 @@ graph TD
 
 ### How session state works (two layers)
 
-agent-orc keeps two layers of state, both backed by the same Redis `state.Store` (`internal/state`):
+agent-orca keeps two layers of state, both backed by the same Redis `state.Store` (`internal/state`):
 
-1. **Run state** — the model-router's per-run conversation checkpoint, keyed `agentorc/runs/<run>/state` and persisted in `internal/state/store.go`. Stores:
+1. **Run state** — the model-router's per-run conversation checkpoint, keyed `agentorca/runs/<run>/state` and persisted in `internal/state/store.go`. Stores:
    - messages (`SaveMessages`/`LoadMessages`, zstd-compressed `[]json.RawMessage` with a TTL),
    - cumulative spend (`SaveSpend`/`LoadSpend`, keyed `…/state:spend`) — so cost survives pod crashes,
    - per-token + trace-event streams (`SaveToken`/`SaveTraceEvent`/`TailTokens`) for live streaming,
    - ephemeral key/value (`SaveKV`/`LoadKV`) used for episodic summaries,
    - a short-lived cancel flag (`SignalCancel`/`IsCancelled`).
    The store is a **shared singleton**: the `Router`, `ACPServer`, `UIServer`, `ExternalAPIServer`, `AgentRunReconciler`, and `Executor` all reference the same instance, so every component sees the same bytes. On cold start (`router.New()`) and on warm-pool reuse (`ClaimRun` → `PriorRunRef`) the router reloads prior spend and prior messages, so a resumed run picks up where it left off.
-2. **Chat-session checkpoint** — used by the UI's chat API (`POST …/execute` → `POST …/complete` → `GET …/history`). The `internal/checkpoint` Store persists a `Checkpoint{SessionID, Version, ConversationHistory, LastRunRef, Metadata{TotalCostUSD,…}}`, backed by Redis when a state backend is configured, else an in-memory store. Each message increments `Version`, and runs chain across turns via `LastRunRef`↔`PriorRunRef` (the model-router turns `PriorRunRef` into its `ResumeCheckpointKey` = `agentorc/runs/<prior-run>/state` to reload context).
+2. **Chat-session checkpoint** — used by the UI's chat API (`POST …/execute` → `POST …/complete` → `GET …/history`). The `internal/checkpoint` Store persists a `Checkpoint{SessionID, Version, ConversationHistory, LastRunRef, Metadata{TotalCostUSD,…}}`, backed by Redis when a state backend is configured, else an in-memory store. Each message increments `Version`, and runs chain across turns via `LastRunRef`↔`PriorRunRef` (the model-router turns `PriorRunRef` into its `ResumeCheckpointKey` = `agentorca/runs/<prior-run>/state` to reload context).
 
 The conversation buffer is **hard-capped, not unbounded**: `priorMessages` is folded and truncated to `checkpointBudget()` (80% of the largest provider's `contextWindow`, see `ContextWindowReserve`) on each turn, and prior turns are condensed into an **episodic summary** (`maybeRunEpisodicSummary`) that replaces the collapsed turns in memory and is persisted to the `episodic:<run>:<n>` KV scope. See [docs/cost-tracking.md](docs/cost-tracking.md) and [docs/redis.md](docs/redis.md).
 
@@ -237,7 +229,7 @@ The conversation buffer is **hard-capped, not unbounded**: `priorMessages` is fo
 
 ## API Endpoints
 
-agent-orc exposes three HTTP surfaces. Pick the right one for your integration:
+agent-orca exposes three HTTP surfaces. Pick the right one for your integration:
 
 | Surface | Port | Purpose | Auth |
 |---------|------|---------|------|
@@ -368,7 +360,7 @@ curl http://localhost:8080/api/deployments/default/support-bot
 
 ## Example: Long-Running Support Bot
 
-> This example uses the **openai reference image** `ghcr.io/agentorc/agent-orc/openai-reference:latest`
+> This example uses the **openai reference image** `ghcr.io/agentorca/agent-orca/openai-reference:latest`
 > — a minimal OpenAI-compatible agent that streams input to the model-router and returns the
 > output. The model-router injects `systemPrompt`, `tools`, prior context, and built-in tool
 > resolution, so this image needs no baked-in persona. Published with each release; pin to
@@ -379,7 +371,7 @@ curl http://localhost:8080/api/deployments/default/support-bot
 ```yaml
 ---
 # 1. Register the LLM provider
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: ModelProvider
 metadata:
   name: gpt4-provider
@@ -398,7 +390,7 @@ spec:
 
 ---
 # 2. Create a router
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: ModelSelector
 metadata:
   name: support-router
@@ -410,12 +402,12 @@ spec:
 
 ---
 # 3. Define a support agent
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: Agent
 metadata:
   name: support-agent
 spec:
-  modelSelectorRef: support-router
+  modelSelectorRef: default
   tools:
     - lookup-order
     - refund-tool
@@ -423,12 +415,12 @@ spec:
     You are a helpful support agent for our e-commerce platform.
     Help customers with orders, refunds, and billing.
   runtime:
-    ociRef: ghcr.io/agentorc/agent-orc/openai-reference:latest
+    ociRef: ghcr.io/agentorca/agent-orca/openai-reference:latest
     framework: openai-compatible
 
 ---
 # 4. Deploy as a long-running service
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: AgentDeployment
 metadata:
   name: support-bot
@@ -465,7 +457,7 @@ curl -s -X POST http://localhost:8080/api/deployments/default/support-bot/execut
 curl http://localhost:8080/api/deployments/default/support-bot/history?sessionId=customer-12345
 ```
 
-The agent pod can crash and restart — checkpoints (messages, spend, episodic summaries) are persisted to Redis, and on resume the model-router reloads them under `agentorc/runs/<run>/state` and chains context through `PriorRunRef`/`LastRunRef` (`ClaimRun` → `LoadMessages`).
+The agent pod can crash and restart — checkpoints (messages, spend, episodic summaries) are persisted to Redis, and on resume the model-router reloads them under `agentorca/runs/<run>/state` and chains context through `PriorRunRef`/`LastRunRef` (`ClaimRun` → `LoadMessages`).
 
 ---
 
@@ -526,6 +518,6 @@ make test-ui-e2e    # UI end-to-end tests (Playwright)
 
 ## Development
 
-[Skaffold](https://skaffold.dev/) is the standard way to run agent-orc locally. It builds all images, deploys via Helm, watches for file changes, and automatically rebuilds and redeploys only the affected component. For faster UI iteration, use the provided **devcontainer** (`.devcontainer/`, ships Docker-in-Docker + kind) — open the repo in VS Code/Codespaces and run the Quick Start directly.
+[Skaffold](https://skaffold.dev/) is the standard way to run agent-orca locally. It builds all images, deploys via Helm, watches for file changes, and automatically rebuilds and redeploys only the affected component. For faster UI iteration, use the provided **devcontainer** (`.devcontainer/`, ships Docker-in-Docker + kind) — open the repo in VS Code/Codespaces and run the Quick Start directly.
 
 Full command reference in [docs/development.md](docs/development.md): `make run`, `make manifests`, `make build`, `make build-model-router`, `make build-ui-proxy`, `make docker-build`, `make install`, `make deploy`, and more.

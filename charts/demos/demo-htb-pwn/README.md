@@ -1,7 +1,7 @@
 # demo-htb-pwn — Autonomous HTB Red Team (MCP toolbelt)
 
 A **privileged pwnbox pod** (HTB OpenVPN + a pentest toolbelt exposed as an **MCP
-server**) is orchestrated by a **restricted** openai-compatible agent (Poolside LLM via the
+server**) is orchestrated by a **restricted** openai-compatible agent (model provider LLM via the
 model-router) that calls the tools over the cluster network. The agent is never
 privileged — only the dedicated pwnbox pod is.
 
@@ -14,7 +14,7 @@ privileged — only the dedicated pwnbox pod is.
 ## Architecture
 
 ```
-red-team namespace (label: agentorc.io/enable-privileged-pods=true  [chart-managed])
+red-team namespace (label: agentorca.io/enable-privileged-pods=true  [chart-managed])
 ├─ Namespace  (chart creates this with the opt-in label)
 ├─ Secret htb-ovpn  ← your htbea.ovpn (createSecret or kubectl create secret)
 ├─ Deployment red-pwnbox   (privileged: NET_ADMIN + /dev/net/tun)
@@ -27,7 +27,7 @@ red-team namespace (label: agentorc.io/enable-privileged-pods=true  [chart-manag
 │                                + shell-exploit / submit-findings)
 ├─ Service red-pwnbox :8080
 ├─ NetworkPolicy red-pwnbox-egress   (HTB VPN + DNS + K8s API only)
-├─ NetworkPolicy red-commander-egress (Poolside + pwnbox svc + DNS + Redis + K8s API)
+├─ NetworkPolicy red-commander-egress (model providers + pwnbox svc + DNS + Redis + K8s API)
 ├─ MCPServer red-pwnbox-mcp  → child Tools red-pwnbox-mcp-* (allowedAgents: red-commander)
 ├─ Agent red-commander-agent (python:3.12-slim, openai-compatible, http mode, RESTRICTED)
 └─ AgentDeployment red-commander (chat, warm pool, replicas:1)
@@ -52,23 +52,23 @@ the cluster storage). If local kind still can't ingest 8GB, build the slim varia
 ```bash
 # slim variant:
 docker build -t red-pwnbox:slim -f charts/demos/demo-htb-pwn/files/Dockerfile.pwnbox .
-kind load docker-image red-pwnbox:slim --name agent-orc-dev
+kind load docker-image red-pwnbox:slim --name agent-orca-dev
 # then point the chart at it: skaffold run -p demo-htb-pwn -s pwnbox.image.tag=slim
 docker build -t red-pwnbox:latest -f charts/demos/demo-htb-pwn/files/Dockerfile.pwnbox.blackcart .
 # deploy that image (set pwnbox.image.tag accordingly) into a cluster with a large node.
 
 ## Prerequisites
 
-- agent-orc operator v0.2+ deployed (`skaffold dev -p dev`) with a Poolside API key.
+- agent-orca operator v0.2+ deployed (`skaffold dev -p dev`) with a model provider API key.
 - An HTB account + `.ovpn`.
 
 ## Quick start (local kind)
 
 ```bash
-skaffold dev -p dev                                  # operator + poolside providers (leave running)
-export AGENT_ORC_POOLSIDE_API_KEY="ps-..."
-export AGENT_ORC_HTB_OVPN_CONFIG="$(cat ~/htb.ovpn)"      # or create the secret yourself (see below)
-export AGENT_ORC_HTB_OVPN_ENDPOINT="nl.free.hackthebox.com:1194"
+skaffold dev -p dev                                  # operator + model provider providers (leave running)
+export AGENT_ORCA_DEFAULT_API_KEY="ps-..."
+export AGENT_ORCA_HTB_OVPN_CONFIG="$(cat ~/htb.ovpn)"      # or create the secret yourself (see below)
+export AGENT_ORCA_HTB_OVPN_ENDPOINT="nl.free.hackthebox.com:1194" # endpoint will be different by region
 skaffold run -p demo-htb-pwn                         # builds slim red-pwnbox image, kind-loads, deploys to red-team
 ```
 
@@ -96,7 +96,7 @@ kubectl -n red-team logs deploy/red-pwnbox -c pwnbox -f        # OpenVPN + MCP t
 kubectl -n red-team logs deploy/red-commander -c agent -f      # LLM tool calls
 kubectl -n red-team get pods -l app=red-pwnbox -o jsonpath='{.items[0].spec.containers[0].securityContext}'
 #   -> privileged:true, NET_ADMIN, runAsUser:0  + /dev/net/tun mounted
-kubectl -n red-team get pods -l agentdeployment.agentorc.io=red-commander -o jsonpath='{.items[0].spec.containers[0].securityContext}'
+kubectl -n red-team get pods -l agentdeployment.agentorca.io=red-commander -o jsonpath='{.items[0].spec.containers[0].securityContext}'
 #   -> restricted (runAsNonRoot, readOnlyRootFilesystem, DROP ALL)
 ```
 
@@ -113,16 +113,16 @@ not-yet-ready pod). If it still won't come up:
 2. **Memory** — Qdrant defaults to 512Mi req / **1Gi limit** (wirable). On a
    memory-constrained kind node it can OOM-restart before `/readyz`. Override it:
    ```yaml
-   agent-orc-resources:
+   agent-orca-resources:
      knowledgeBases:
        - name: red-tactics
          vectorStore:
            storageSize: 1Gi
            resources: { requests: {memory: 512Mi, cpu: 100m}, limits: {memory: 2Gi} }
    ```
-3. Inspect: `kubectl -n red-team describe pod -l agentorc.io/knowledgebase=red-tactics`
+3. Inspect: `kubectl -n red-team describe pod -l agentorca.io/knowledgebase=red-tactics`
    (look for `OOMKilled`, `ImagePullBackOff`, or `unbound PVC`) and
-   `kubectl -n red-team logs -l agentorc.io/knowledgebase=red-tactics`.
+   `kubectl -n red-team logs -l agentorca.io/knowledgebase=red-tactics`.
 
 ### pwnbox container exits immediately (exit code 1, "Starting OpenVPN…")
 This was the upstream cause of the KB 143-churn: a crashing pwnbox Deployment never
@@ -134,7 +134,7 @@ server**, so the pod stays up and you can inspect the failure:
 kubectl -n red-team logs deploy/red-pwnbox -c pwnbox -f   # shows the openvpn log tail
 ```
 Common reasons `openvpn` exits 1:
-- **Empty/invalid `.ovpn`** — the chart injects `AGENT_ORC_HTB_OVPN_CONFIG`; if unset, the
+- **Empty/invalid `.ovpn`** — the chart injects `AGENT_ORCA_HTB_OVPN_CONFIG`; if unset, the
   `htb-ovpn` Secret value is empty. Prefer creating the secret directly:
   `kubectl -n red-team create secret generic htb-ovpn --from-file=htbea.ovpn=~/htb.ovpn`
   then `skaffold run -p demo-htb-pwn -s openvpn.createSecret=false`.

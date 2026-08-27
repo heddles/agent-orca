@@ -11,7 +11,7 @@ stringData:
 
 ---
 # ModelProvider for Ollama's nomic-embed-text embedding model
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: ModelProvider
 metadata:
   name: ollama-embed
@@ -35,7 +35,7 @@ spec:
 
 ---
 # ModelSelector for embedding calls
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: ModelSelector
 metadata:
   name: local-embeddings
@@ -65,8 +65,8 @@ data:
     dense vectors, and stored in a vector database like Qdrant. At query time,
     the user's question is embedded and used to find the most similar document
     chunks, which are then provided as context to a language model.
-  agent-orc.txt: |
-    Agent-orc is a Kubernetes-native agent orchestration platform. It manages
+  agent-orca.txt: |
+    Agent-orca is a Kubernetes-native agent orchestration platform. It manages
     AI agents as custom resources, handles model routing through ModelSelectors,
     and provides tools, knowledge bases, and workflow orchestration. The
     model-router sidecar intercepts LLM calls and applies routing, budgeting,
@@ -74,7 +74,7 @@ data:
 
 ---
 # KnowledgeBase using Ollama for embeddings and local Qdrant
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: KnowledgeBase
 metadata:
   name: demo-kb
@@ -100,7 +100,7 @@ spec:
 ---
 # ModelProvider for Ollama chat completions (e.g. mistral or llama3)
 # Pull the model first: ollama pull mistral
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: ModelProvider
 metadata:
   name: ollama-chat
@@ -123,7 +123,7 @@ spec:
 
 ---
 # ModelSelector for chat completions
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: ModelSelector
 metadata:
   name: local-chat
@@ -136,7 +136,7 @@ spec:
 
 ---
 # Agent that uses the demo KnowledgeBase for RAG
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: Agent
 metadata:
   name: rag-demo-agent
@@ -199,7 +199,7 @@ spec:
             while True:
                 time.sleep(60)
         else:
-            handle_request("What is agent-orc?")
+            handle_request("What is agent-orca?")
   memory:
     checkpointEvery: 1
     resumeWindowSeconds: 3600
@@ -213,7 +213,7 @@ spec:
 
 ---
 # AgentDeployment: long-running chat service backed by RAG
-apiVersion: agentorc.agentorc.io/v1alpha1
+apiVersion: agentorca.agentorca.io/v1alpha1
 kind: AgentDeployment
 metadata:
   name: rag-demo-deployment

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# hack/dev-kind.sh — test, build, and deploy agent-orc into a local kind cluster.
+# hack/dev-kind.sh — test, build, and deploy agent-orca into a local kind cluster.
 #
 # Usage:
 #   ./hack/dev-kind.sh [cluster|local] [--skip-tests] [--skip-build] [--no-cert-manager] [--reset]
@@ -24,12 +24,12 @@
 set -euo pipefail
 
 # ── configuration ────────────────────────────────────────────────────────────
-CLUSTER_NAME="${KIND_CLUSTER:-agent-orc-dev}"
-NAMESPACE="agent-orc-system"
-OPERATOR_IMG="agent-orc/operator:dev"
-MODEL_ROUTER_IMG="agent-orc/model-router:dev"
-UI_IMG="agent-orc/ui:dev"
-HELM_RELEASE="agent-orc"
+CLUSTER_NAME="${KIND_CLUSTER:-agent-orca-dev}"
+NAMESPACE="agent-orca-system"
+OPERATOR_IMG="agent-orca/operator:dev"
+MODEL_ROUTER_IMG="agent-orca/model-router:dev"
+UI_IMG="agent-orca/ui:dev"
+HELM_RELEASE="agent-orca"
 CERT_MANAGER_VERSION="v1.20.0"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HOST_ARCH="$(uname -m)"
@@ -146,9 +146,9 @@ if [[ "$MODE" == "local" ]]; then
 
   # Webhook validation is out-of-cluster so it won't be reached from the API server.
   # Patch the ValidatingWebhookConfiguration to Ignore so CRD creates succeed.
-  if kubectl ${KUBECONFIG_FLAG} get validatingwebhookconfiguration 2>/dev/null | grep -q agent-orc; then
+  if kubectl ${KUBECONFIG_FLAG} get validatingwebhookconfiguration 2>/dev/null | grep -q agent-orca; then
     warn "Patching ValidatingWebhookConfiguration to failurePolicy=Ignore for local mode"
-    for wh in $(kubectl ${KUBECONFIG_FLAG} get validatingwebhookconfiguration -o name | grep agent-orc); do
+    for wh in $(kubectl ${KUBECONFIG_FLAG} get validatingwebhookconfiguration -o name | grep agent-orca); do
       kubectl ${KUBECONFIG_FLAG} patch "$wh" \
         --type='json' \
         -p='[{"op":"replace","path":"/webhooks/0/failurePolicy","value":"Ignore"},{"op":"replace","path":"/webhooks/1/failurePolicy","value":"Ignore"},{"op":"replace","path":"/webhooks/2/failurePolicy","value":"Ignore"}]' \
@@ -184,10 +184,10 @@ esac
 # ── buildx setup ──────────────────────────────────────────────────────────────
 if [[ "$SKIP_BUILD" == "false" ]]; then
   step "Ensuring buildx builder (${BUILD_PLATFORM})"
-  if docker buildx inspect agent-orc-builder &>/dev/null; then
-    docker buildx use agent-orc-builder
+  if docker buildx inspect agent-orca-builder &>/dev/null; then
+    docker buildx use agent-orca-builder
   else
-    docker buildx create --name agent-orc-builder \
+    docker buildx create --name agent-orca-builder \
       --driver docker-container \
       --platform "${BUILD_PLATFORM}" \
       --use
@@ -196,10 +196,10 @@ if [[ "$SKIP_BUILD" == "false" ]]; then
   ok "Buildx builder ready (${BUILD_PLATFORM})"
 
   # Build each image as an OCI tar then load into kind.
-  OPERATOR_TAR="$(mktemp /tmp/agent-orc-operator-XXXXXX)"
-  ROUTER_TAR="$(mktemp /tmp/agent-orc-router-XXXXXX)"
-  UI_TAR="$(mktemp /tmp/agent-orc-ui-XXXXXX)"
-  # DEMO_AGENT_TAR="$(mktemp /tmp/agent-orc-demo-agent-XXXXXX)"
+  OPERATOR_TAR="$(mktemp /tmp/agent-orca-operator-XXXXXX)"
+  ROUTER_TAR="$(mktemp /tmp/agent-orca-router-XXXXXX)"
+  UI_TAR="$(mktemp /tmp/agent-orca-ui-XXXXXX)"
+  # DEMO_AGENT_TAR="$(mktemp /tmp/agent-orca-demo-agent-XXXXXX)"
   # Ensure temp files are removed even on error.
   trap 'rm -f "${OPERATOR_TAR}" "${ROUTER_TAR}" "${UI_TAR}"' EXIT
 
@@ -232,7 +232,7 @@ if [[ "$SKIP_BUILD" == "false" ]]; then
   # step "Building demo-agent image (${BUILD_PLATFORM})"
   # docker buildx build \
   #   --platform "${BUILD_PLATFORM}" \
-  #   --tag "agent-orc/demo-agent:dev" \
+  #   --tag "agent-orca/demo-agent:dev" \
   #   --output "type=oci,dest=${DEMO_AGENT_TAR}" \
   #   -f Dockerfile.demo-agent \
   #   .
@@ -270,8 +270,8 @@ else
 fi
 
 # ── helm deploy ───────────────────────────────────────────────────────────────
-step "Deploying agent-orc via Helm (namespace: ${NAMESPACE})"
-helm upgrade --install "${HELM_RELEASE}" ./charts/agent-orc \
+step "Deploying agent-orca via Helm (namespace: ${NAMESPACE})"
+helm upgrade --install "${HELM_RELEASE}" ./charts/agent-orca \
   --namespace "${NAMESPACE}" --create-namespace \
   --kube-context "kind-${CLUSTER_NAME}" \
   --set operator.image.repository="$(echo ${OPERATOR_IMG} | cut -d: -f1)" \
@@ -286,7 +286,7 @@ helm upgrade --install "${HELM_RELEASE}" ./charts/agent-orc \
   --set operator.leaderElection=false \
   --set webhook.certManager="${USE_CERT_MANAGER}" \
   --wait --timeout=120s
-ok "agent-orc deployed"
+ok "agent-orca deployed"
 
 # ── wait for operator ─────────────────────────────────────────────────────────
 step "Waiting for operator and UI pods to be ready"

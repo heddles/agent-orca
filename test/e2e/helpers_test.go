@@ -34,7 +34,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/floppyfish14/agent-orc/test/utils"
+	"github.com/floppyfish14/agent-orca/test/utils"
 )
 
 // streamingE2E returns true when streaming tests should run.
@@ -105,7 +105,7 @@ func waitForPodRunning(name, ns string) {
 // base64-decoded OPENAI_API_KEY value.
 func getRunToken(runName, ns string) string {
 	GinkgoHelper()
-	secret := "agentorc-run-" + runName + "-token"
+	secret := "agentorca-run-" + runName + "-token"
 	var token string
 	Eventually(func(g Gomega) {
 		out, err := utils.Run(exec.Command(
@@ -284,7 +284,7 @@ func getRouterConfigJSON(runName, ns string) map[string]interface{} {
 	GinkgoHelper()
 	out, err := utils.Run(exec.Command(
 		"kubectl", "get", "configmap",
-		"agentorc-run-"+runName,
+		"agentorca-run-"+runName,
 		"-n", ns,
 		"-o", "go-template={{index .data \"router-config.json\"}}",
 	))
