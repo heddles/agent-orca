@@ -23,6 +23,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -134,8 +135,11 @@ func TestOIDCLogin_PickerListsLoginCapableTenants(t *testing.T) {
 		tenantByName: map[string]*agentorcav1alpha1.TenantConfig{login.Name: login, bearer.Name: bearer},
 		tenantCache:  map[string]*agentorcav1alpha1.TenantConfig{},
 	}
+	// Stub the logo resolver so the picker test stays network-free and deterministic.
 	h := NewOIDCLoginHandler(auth,
-		WithOIDCProviderFactory(factoryReturning(nil, nil)), WithOIDCCookieSecure(false))
+		WithOIDCProviderFactory(factoryReturning(nil, nil)),
+		WithOIDCLogoResolver(func(_ context.Context, _ string) string { return "" }),
+		WithOIDCCookieSecure(false))
 
 	rec := httptest.NewRecorder()
 	h.handleLogin(rec, httptest.NewRequest("GET", "/oauth/login", nil))
@@ -143,9 +147,29 @@ func TestOIDCLogin_PickerListsLoginCapableTenants(t *testing.T) {
 		t.Fatalf("picker status = %d, want 200", rec.Code)
 	}
 	body := rec.Body.String()
+
+	// Esthetic: branded, dark-themed, design-system page.
+	if !strings.Contains(body, "Sign in to agent-orca") {
+		t.Fatalf("picker missing branded heading")
+	}
+	if !strings.Contains(body, "Choose your identity provider") {
+		t.Fatalf("picker missing subtitle")
+	}
+	if rec.Header().Get("Content-Security-Policy") == "" {
+		t.Fatalf("picker missing CSP header")
+	}
+
+	// Login-capable tenant is listed with a working sign-in link.
 	if !strings.Contains(body, "github-oidc") {
 		t.Fatalf("picker missing login-capable tenant: %s", body)
 	}
+	if !strings.Contains(body, `/oauth/login?tenant=github-oidc`) {
+		t.Fatalf("picker missing sign-in link for tenant")
+	}
+	if !strings.Contains(body, "https://idp.example.com") {
+		t.Fatalf("picker missing issuer URL")
+	}
+	// A bearer-only tenant must never appear on the login picker.
 	if strings.Contains(body, "bearer-only") {
 		t.Fatalf("picker should not list bearer-only tenant: %s", body)
 	}
@@ -360,6 +384,111 @@ func TestUIRunAuth_AcceptsSessionCookie(t *testing.T) {
 	}
 	if got == nil || got.UserID != "sub-1" {
 		t.Fatalf("identity not injected into context: %+v", got)
+	}
+}
+
+func TestSafeLogoURL(t *testing.T) {
+	issuer, err := url.Parse("https://idp.example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		logo string
+		want bool
+	}{
+		{"https://idp.example.com/favicon.ico", true},
+		{"https://idp.example.com/brand.png", true},
+		{"http://idp.example.com/favicon.ico", false}, // must be HTTPS
+		{"https://evil.com/track.png", false},         // cross-host: tracking risk
+		{"javascript:alert(1)", false},                // scripty scheme
+		{"https://idp.example.com/x\"y", false},       // quote breakout
+		{"https://idp.example.com/x;y", false},        // semicolon
+		{"https://idp.example.com/x(y)", false},       // parentheses
+		{"", false},                                   // empty
+		{"/favicon.ico", false},                       // relative (no scheme/host)
+	}
+	for _, c := range cases {
+		if got := safeLogoURL(issuer, c.logo); got != c.want {
+			t.Errorf("safeLogoURL(%q) = %v, want %v", c.logo, got, c.want)
+		}
+	}
+}
+
+func TestPickerRendersIssuerLogo(t *testing.T) {
+	key := testRSAKey(t)
+	tc := loginTenant("acme-oidc", "repository_owner", "acme")
+	tc.Spec.Federated.IssuerURL = "https://acme.okta.com"
+	auth := testAuth(t, key, tc)
+	wantLogo := "https://acme.okta.com/brand.svg"
+	h := NewOIDCLoginHandler(auth,
+		WithOIDCProviderFactory(factoryReturning(nil, nil)),
+		WithOIDCLogoResolver(func(_ context.Context, issuer string) string {
+			if issuer == tc.Spec.Federated.IssuerURL {
+				return wantLogo
+			}
+			return ""
+		}),
+		WithOIDCCookieSecure(false))
+
+	rec := httptest.NewRecorder()
+	h.handleLogin(rec, httptest.NewRequest("GET", "/oauth/login", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("picker status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `background-image:url('`+wantLogo+`')`) {
+		t.Fatalf("picker did not render issuer logo as background-image:\n%s", body)
+	}
+	if !strings.Contains(body, `/oauth/login?tenant=acme-oidc`) {
+		t.Fatalf("picker missing sign-in link for tenant")
+	}
+	// The picker must also set the hardening headers.
+	if rec.Header().Get("Content-Security-Policy") == "" {
+		t.Fatalf("picker missing CSP header")
+	}
+}
+
+func TestDefaultLogoResolverDiscovery(t *testing.T) {
+	// A TLS test server plays the IdP: its well-known doc advertises a logo
+	// hosted on the issuer's own origin.
+	var srv *httptest.Server
+	srv = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/.well-known/openid-configuration" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"issuer":"` + srv.URL + `","logo_uri":"/brand/logo.png"}`))
+	}))
+	defer srv.Close()
+
+	// The discovery client is a package var so we can point it at the test server.
+	oldClient := logoHTTP
+	logoHTTP = srv.Client()
+	t.Cleanup(func() { logoHTTP = oldClient })
+
+	// The test-server URL is unique per run, so the per-issuer cache is cold.
+	logo := defaultLogoResolver(context.Background(), srv.URL)
+	want := srv.URL + "/brand/logo.png"
+	if logo != want {
+		t.Fatalf("defaultLogoResolver = %q, want %q (discovery logo)", logo, want)
+	}
+
+	// When discovery is unavailable (404 on a different issuer path), we must
+	// still return a safe favicon-derived URL rather than erroring.
+	noLogo := defaultLogoResolver(context.Background(), srv.URL+"/tenant/x")
+	if !strings.HasPrefix(noLogo, "https://") || !strings.HasSuffix(noLogo, "/favicon.ico") {
+		t.Fatalf("favicon fallback = %q, want an https issuer favicon", noLogo)
+	}
+}
+
+func TestDefaultLogoResolverRejectsNonHTTPSIssuer(t *testing.T) {
+	// Local-dev HTTP issuers must never emit an image URL (no mixed content,
+	// no tracking over plain HTTP); the picker falls back to an inline icon.
+	for _, issuer := range []string{"http://idp.example.com", "not-a-url", ""} {
+		if got := defaultLogoResolver(context.Background(), issuer); got != "" {
+			t.Errorf("defaultLogoResolver(%q) = %q, want empty (icon fallback)", issuer, got)
+		}
 	}
 }
 
