@@ -386,7 +386,7 @@ profiles:
               providerSecrets[0].apiKey: "{{.OPENAI_API_KEY}}"
               providerSecrets[1].apiKey: "{{.ANTHROPIC_API_KEY}}"
               providerSecrets[2].apiKey: "{{.GOOGLE_API_KEY}}"
-              providerSecrets[3].apiKey: "{{.DEFUALT_API_KEY}}"
+              providerSecrets[3].apiKey: "{{.POOLSIDE_API_KEY}}"
 
 
   # dev-oidc: OIDC login is OFF by default in the dev profile. To enable it for a

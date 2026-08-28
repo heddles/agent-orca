@@ -43,8 +43,8 @@ providerSecrets:
     apiKey: ""            # AIza...
     existingSecret: ""
 
-  # ── default ───────────────────────────────────────────────────────────────
-  - name: default-api-key
+  # ── poolside ───────────────────────────────────────────────────────────────
+  - name: poolside-api-key
     enabled: true
     apiKey: ""            # ps-...
     existingSecret: ""
