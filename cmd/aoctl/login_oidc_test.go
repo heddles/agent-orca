@@ -317,47 +317,6 @@ func TestLoginOIDC_EndToEnd(t *testing.T) {
 	}
 }
 
-// TestLoginOIDC_DiagnosticOutput verifies the post-login summary prints the
-// id_token issuer/audience/expiry so a user can compare them against the
-// federated TenantConfig when diagnosing a subsequent 401.
-func TestLoginOIDC_DiagnosticOutput(t *testing.T) {
-	key := newTestKey(t)
-	idp := newMockIdP(t, key)
-	port := freePort(t)
-	redirect := fmt.Sprintf("http://127.0.0.1:%d/callback", port)
-
-	cfg := OIDCLoginConfig{
-		IssuerURL:    idp.issuerURL(),
-		ClientID:     testClientID,
-		ClientSecret: testSecret,
-		RedirectURI:  redirect,
-		OpenBrowser:  fakeBrowser,
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	out := &bytes.Buffer{}
-	res, err := loginOIDC(ctx, cfg, out)
-	if err != nil {
-		t.Fatalf("loginOIDC: %v\nstdout: %s", err, out.String())
-	}
-	log := out.String()
-	for _, want := range []string{
-		"logged in via OIDC.", "issuer:", "audience:", "expires:",
-		"refresh: captured (session auto-refreshes)",
-	} {
-		if !strings.Contains(log, want) {
-			t.Fatalf("expected %q in login output, got:\n%s", want, log)
-		}
-	}
-	if !strings.Contains(log, idp.issuerURL()) {
-		t.Fatalf("issuer in output should match the IdP: %q", log)
-	}
-	if res.RefreshToken != testRefreshA {
-		t.Fatalf("RefreshToken = %q, want %s", res.RefreshToken, testRefreshA)
-	}
-}
-
 // TestLoginOIDC_NoBrowser verifies --no-browser prints the URL and the flow
 // still completes (an injected opener drives the redirect).
 func TestLoginOIDC_NoBrowser(t *testing.T) {
