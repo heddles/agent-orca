@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: agent-orca ACP API
   description: |
-    A subset of the Agent Communication Protocol (ACP) 0.2.0 surface implemented by
+    A subset of the Agent Communication Protocol (ACP) v1 surface implemented by
     agent-orca, exposing agent discovery and run execution over the model-router.
 
     Authentication: requires `Authorization: Bearer <token>` (agent-orca-issued JWT,
@@ -112,7 +112,7 @@ components:
       properties: { required: { type: string } }
     ACPErr:
       $ref: '#/components/schemas/Error'
-    ACRRun:
+    ACPRun:
       type: object
       required: [agent_name, run_id, status, created_at]
       properties:
@@ -217,7 +217,7 @@ paths:
             schema: { $ref: '#/components/schemas/ACPRunCreateRequest' }
       responses:
         '201':
-          content: { application/json: { schema: { $ref: '#/components/schemas/ACRRun' } } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/ACPRun' } } }
         '404':
           description: Agent not found / not allowed.
           content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
@@ -234,7 +234,7 @@ paths:
           schema: { type: string }
       responses:
         '200':
-          content: { application/json: { schema: { $ref: '#/components/schemas/ACRRun' } } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/ACPRun' } } }
         '404':
           content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
     post:
@@ -254,7 +254,7 @@ paths:
             schema: { $ref: '#/components/schemas/ACPRunCreateRequest' }
       responses:
         '200':
-          content: { application/json: { schema: { $ref: '#/components/schemas/ACRRun' } } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/ACPRun' } } }
   /runs/{run_id}/cancel:
     post:
       tags: [runs]
@@ -268,7 +268,7 @@ paths:
           schema: { type: string }
       responses:
         '202':
-          content: { application/json: { schema: { $ref: '#/components/schemas/ACRRun' } } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/ACPRun' } } }
         '409':
           description: Run already terminal.
           content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
@@ -285,7 +285,7 @@ paths:
           schema: { type: string }
       responses:
         '200':
-          description: SSE event stream (`message_created`, `message_part`, `message_completed`, `run.completed`, `run.failed`, ...).
+          description: SSE event stream (`message_created`, `message_part`, `message_completed`, `run.completed`, `run.failed`, `run.awaiting`...).
           content:
             text/event-stream:
               schema: { $ref: '#/components/schemas/EventBatch' }

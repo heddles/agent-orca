@@ -612,6 +612,57 @@ func TestTenantCanAccessAgent(t *testing.T) {
 	}
 }
 
+func TestGetACPRun_AwaitingSurfacesQuestion(t *testing.T) {
+	now := metav1.Now()
+	run := &agentorcav1alpha1.AgentRun{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "run-test-await",
+			Namespace:         "tenant-acme",
+			CreationTimestamp: now,
+			Labels: map[string]string{
+				"agentorca.io/tenant":      "acme",
+				"agentorca.io/session-id":  "sess-123",
+			},
+		},
+		Spec: agentorcav1alpha1.AgentRunSpec{
+			AgentRef: "support-bot",
+		},
+		Status: agentorcav1alpha1.AgentRunStatus{
+			Phase:           agentorcav1alpha1.AgentRunPhaseWaitingForInput,
+			ClarifyQuestion: "Which password? The email or SSO one?",
+			WaitingSince:    &now,
+		},
+	}
+	s := newACPServer(t, run)
+	h := s.withTenant(testTenant())
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/runs/run-test-await", nil)
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp ACPRun
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("bad json: %v", err)
+	}
+	if resp.Status != ACPRunAwaiting {
+		t.Fatalf("expected status 'awaiting', got %q", resp.Status)
+	}
+	if resp.AwaitRequest == nil || resp.AwaitRequest.Question != "Which password? The email or SSO one?" {
+		t.Fatalf("expected await_request.question to be the clarification question, got %+v", resp.AwaitRequest)
+	}
+	// The run's clarification question must be surfaced as output so clients can
+	// display it without a separate tool call.
+	if len(resp.Output) == 0 || len(resp.Output[0].Parts) == 0 {
+		t.Fatal("expected output to contain the clarification question")
+	}
+	if got := resp.Output[0].Parts[0].Content; got != "Which password? The email or SSO one?" {
+		t.Fatalf("expected output content to be the question, got %q", got)
+	}
+}
+
 func TestRawExtensionToMap(t *testing.T) {
 	// Valid JSON
 	re := &runtime.RawExtension{Raw: []byte(`{"type":"object","properties":{"q":{"type":"string"}}}`)}

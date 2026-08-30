@@ -168,9 +168,12 @@ type ACPRunCreateRequest struct {
 	Mode      ACPRunMode   `json:"mode,omitempty"`
 }
 
-// ACPAwaitRequest describes what is awaited from the client.
+// ACPAwaitRequest describes what the client should provide next when a run is
+// awaiting human input (e.g. the answer to a _clarify question).
 type ACPAwaitRequest struct {
-	// Extend with actual fields as needed
+	// Question is the human-readable clarifying question the agent asked,
+	// copied from the AgentRun's ClarifyQuestion status field.
+	Question string `json:"question,omitempty"`
 }
 
 // ACPRun is the response body for run operations.
@@ -980,14 +983,27 @@ func (s *ACPServer) handleListRunEvents(w http.ResponseWriter, r *http.Request, 
 			},
 		})
 	} else if run.Status.Phase == agentorcav1alpha1.AgentRunPhaseWaitingForInput {
+		awaitingRun := ACPRun{
+			AgentName: run.Spec.AgentRef,
+			RunID:     run.Name,
+			Status:    ACPRunAwaiting,
+			CreatedAt: run.CreationTimestamp.Format(time.RFC3339),
+			AwaitRequest: &ACPAwaitRequest{
+				Question: run.Status.ClarifyQuestion,
+			},
+		}
+		if run.Status.ClarifyQuestion != "" {
+			awaitingRun.Output = []ACPMessage{{
+				Role: "agent",
+				Parts: []ACPMessagePart{{
+					ContentType: "text/plain",
+					Content:     run.Status.ClarifyQuestion,
+				}},
+			}}
+		}
 		events = append(events, ACPRunAwaitingEvent{
 			Type: "run.awaiting",
-			Run: ACPRun{
-				AgentName: run.Spec.AgentRef,
-				RunID:     run.Name,
-				Status:    ACPRunAwaiting,
-				CreatedAt: run.CreationTimestamp.Format(time.RFC3339),
-			},
+			Run:  awaitingRun,
 		})
 	}
 
@@ -1080,7 +1096,18 @@ func (s *ACPServer) getACPRun(w http.ResponseWriter, r *http.Request, run *agent
 
 	if run.Status.Phase == agentorcav1alpha1.AgentRunPhaseWaitingForInput {
 		resp.Status = ACPRunAwaiting
-		resp.AwaitRequest = &ACPAwaitRequest{}
+		resp.AwaitRequest = &ACPAwaitRequest{Question: run.Status.ClarifyQuestion}
+		// Surface the clarification question as agent output so clients/bridges
+		// can display it without a separate tool call.
+		if run.Status.ClarifyQuestion != "" {
+			resp.Output = []ACPMessage{{
+				Role: "agent",
+				Parts: []ACPMessagePart{{
+					ContentType: "text/plain",
+					Content:     run.Status.ClarifyQuestion,
+				}},
+			}}
+		}
 	}
 
 	jsonResponse(w, resp)
@@ -1177,6 +1204,18 @@ func (s *ACPServer) streamACPRun(w http.ResponseWriter, r *http.Request, run *ag
 			}
 		}
 
+		// Surface the clarification question as output for awaiting runs so the
+		// client can display it even when consuming the SSE stream.
+		if run.Status.Phase == agentorcav1alpha1.AgentRunPhaseWaitingForInput && run.Status.ClarifyQuestion != "" {
+			acpRun.Output = []ACPMessage{{
+				Role: "agent",
+				Parts: []ACPMessagePart{{
+					ContentType: "text/plain",
+					Content:     run.Status.ClarifyQuestion,
+				}},
+			}}
+		}
+
 		_, _ = fmt.Fprintf(w, "event: message.completed\ndata: %s\n\n", mustJSON(ACPMessageCompletedEvent{Type: "message.completed", Message: msg}))
 		flusher.Flush()
 
@@ -1185,6 +1224,8 @@ func (s *ACPServer) streamACPRun(w http.ResponseWriter, r *http.Request, run *ag
 			_, _ = fmt.Fprintf(w, "event: run.completed\ndata: %s\n\n", mustJSON(ACPRunCompletedEvent{Type: "run.completed", Run: acpRun}))
 		case ACPRunFailed:
 			_, _ = fmt.Fprintf(w, "event: run.failed\ndata: %s\n\n", mustJSON(ACPRunFailedEvent{Type: "run.failed", Run: acpRun}))
+		case ACPRunAwaiting:
+			_, _ = fmt.Fprintf(w, "event: run.awaiting\ndata: %s\n\n", mustJSON(ACPRunAwaitingEvent{Type: "run.awaiting", Run: acpRun}))
 		}
 		flusher.Flush()
 	}
