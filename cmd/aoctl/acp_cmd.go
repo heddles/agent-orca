@@ -165,11 +165,7 @@ func (s *settings) setupZed(agentName string) error {
 		}
 		agents, err := c.ListAgents(context.Background())
 		if err != nil {
-			return fmt.Errorf("listing agents via ACP API (%s): %w — "+
-				"your --acp-endpoint should be the host root only (e.g. "+
-				"http://agent-orca.local); the CLI appends /agents automatically. "+
-				"If omitted, it is derived from --endpoint",
-				s.acp, err)
+			return fmt.Errorf("listing agents: %w", err)
 		}
 		if len(agents) == 0 {
 			return errors.New("no agents found for your tenant")
@@ -193,7 +189,7 @@ func (s *settings) setupZed(agentName string) error {
 	}
 
 	if s.token == "" {
-		_, _ = fmt.Fprintln(s.errw, "Warning: no bearer token is cached. Run `aoctl login` (or pass --token) before using the agent in Zed.")
+		_, _ = fmt.Fprintln(s.errw, "Warning: no bearer token is cached. Run `aoctl login` before using the agent in Zed.")
 	}
 
 	path, err := zedSettingsPath()
@@ -214,19 +210,6 @@ func (s *settings) setupZed(agentName string) error {
 		settings = map[string]any{}
 	}
 
-	// Build the env map for the Zed-launched `aoctl acp serve` subprocess.
-	// Propagate the resolved endpoints so the subprocess reaches the same
-	// agent-orca instance without relying on inherited shell env vars. The
-	// token is included only when explicitly provided (flag / AOCTL_TOKEN env /
-	// resolved from config during login) so the subprocess is self-contained.
-	env := map[string]any{
-		"AOCTL_ENDPOINT":     s.endpoint,
-		"AOCTL_ACP_ENDPOINT": s.acp,
-	}
-	if s.token != "" {
-		env["AOCTL_TOKEN"] = s.token
-	}
-
 	// Merge or overwrite the agent_servers entry for this agent.
 	agentServers, _ := settings["agent_servers"].(map[string]any)
 	if agentServers == nil {
@@ -236,7 +219,7 @@ func (s *settings) setupZed(agentName string) error {
 		"type":    "custom",
 		"command": "aoctl",
 		"args":    []string{"acp", "serve", "--agent", agentName},
-		"env":     env,
+		"env":     map[string]any{},
 	}
 	settings["agent_servers"] = agentServers
 

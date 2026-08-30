@@ -792,6 +792,7 @@ type settings struct {
 	issuerURL    string
 	redirectURI  string
 	noBrowser    bool
+	jsonOut      bool                      // --json / AOCTL_OUTPUT_FORMAT: emit JSON instead of human tables
 	stdin        *bufio.Reader             // interactive stdin (shared reader)
 	isTerminal   func() bool               // true when stdin is a TTY (default: real check)
 	readPassword func(int) ([]byte, error) // reads a secret without echo (default: term.ReadPassword)
@@ -1049,6 +1050,7 @@ func newRootCmd() (*cobra.Command, *settings) { //nolint:gocyclo
 	root.PersistentFlags().StringVar(&s.token, "token", "", "Bearer token (default: saved config)")
 	root.PersistentFlags().BoolVar(&s.insecure, "insecure", false, "skip TLS verification (local dev only)")
 	root.PersistentFlags().DurationVar(&s.timeout, "timeout", defaultTimeout, "HTTP timeout")
+	root.PersistentFlags().BoolVar(&s.jsonOut, "json", false, "emit machine-readable JSON instead of human-readable tables (env: AOCTL_OUTPUT_FORMAT=json)") //nolint:lll
 	root.PersistentPreRunE = func(cmd *cobra.Command, _ []string) error {
 		// Resolve endpoint/acp-token from env or saved config when not given on the flag.
 		if s.endpoint == "" {
@@ -1056,6 +1058,10 @@ func newRootCmd() (*cobra.Command, *settings) { //nolint:gocyclo
 		}
 		if s.acp == "" {
 			s.acp = os.Getenv("AOCTL_ACP_ENDPOINT")
+		}
+		if os.Getenv("AOCTL_OUTPUT_FORMAT") != "" && !root.PersistentFlags().Changed("json") {
+			s.jsonOut = strings.EqualFold(os.Getenv("AOCTL_OUTPUT_FORMAT"), "json") ||
+				strings.EqualFold(os.Getenv("AOCTL_OUTPUT_FORMAT"), "true")
 		}
 		tokenFromFlag := s.token != ""
 		cfg, err := loadConfig()

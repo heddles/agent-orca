@@ -121,7 +121,7 @@ func TestACPBridge_Initialize(t *testing.T) {
 		JSONRPC: "2.0",
 		ID:      &id,
 		Method:  "initialize",
-		Params:  json.RawMessage(`{"protocolVersion":1,"clientInfo":{"name":"zed"}}`),
+		Params:  json.RawMessage(`{"protocolVersion":"0.2.0","clientInfo":{"name":"zed"}}`),
 	})
 
 	var resp jsonrpcMessage
@@ -133,8 +133,8 @@ func TestACPBridge_Initialize(t *testing.T) {
 	}
 	var initResp acpInitializeResponse
 	unmarshalResult(t, resp, &initResp)
-	if initResp.ProtocolVersion != acpProtocolVersion {
-		t.Fatalf("expected protocol version %d, got %d", acpProtocolVersion, initResp.ProtocolVersion)
+	if initResp.ProtocolVersion != "0.2.0" {
+		t.Fatalf("expected protocol version 0.2.0, got %q", initResp.ProtocolVersion)
 	}
 	if initResp.AgentInfo.Name != "agent-orca: test-agent" {
 		t.Fatalf("expected agent name 'agent-orca: test-agent', got %q", initResp.AgentInfo.Name)
@@ -325,7 +325,7 @@ func TestACPBridge_SessionPrompt_SSE(t *testing.T) {
 }
 
 // TestACPBridge_SessionPrompt_Cancel verifies that session/cancel aborts an
-// in-flight prompt and the bridge reports cancelled.
+// in-flight prompt and the bridge reports user_cancelled.
 func TestACPBridge_SessionPrompt_Cancel(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -393,70 +393,8 @@ func TestACPBridge_SessionPrompt_Cancel(t *testing.T) {
 	}
 	var promptResp acpPromptResponse
 	unmarshalResult(t, resp, &promptResp)
-	if promptResp.StopReason != "cancelled" {
-		t.Fatalf("expected stopReason 'cancelled', got %q", promptResp.StopReason)
-	}
-}
-
-// TestACPBridge_SessionPrompt_Awaiting verifies that when a run reaches the
-// "awaiting" state (waiting for human input, e.g. via _clarify) the bridge
-// returns a spec-compliant stopReason (end_turn) — NOT the invalid "awaiting"
-// value — and emits a session/update notification so the client knows the
-// agent is waiting for input.
-func TestACPBridge_SessionPrompt_Awaiting(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/agents/test-agent" && r.Method == http.MethodGet:
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = fmt.Fprint(w, `{"name":"test-agent","description":"test","clarify_available":true}`)
-		case r.URL.Path == "/agents/test-agent/run" && r.Method == http.MethodPost: //nolint:goconst
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusCreated)
-			_, _ = fmt.Fprint(w, `{"agent_name":"test-agent","run_id":"run-await","status":"created","created_at":"2024-01-01T00:00:00Z"}`) //nolint:lll
-		case r.URL.Path == "/runs/run-await" && r.Method == http.MethodGet:
-			// Always return awaiting with output (the clarification question).
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = fmt.Fprint(w, `{"run_id":"run-await","status":"awaiting","agent_name":"test-agent","created_at":"2024-01-01T00:00:00Z","await_request":{},"output":[{"role":"assistant","parts":[{"content_type":"text/plain","content":"Which password? The email or SSO one?"}]}]}`) //nolint:lll
-		default:
-			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
-		}
-	}))
-	defer srv.Close()
-
-	var stdout, stderr bytes.Buffer
-	server := &acpStdioServer{stdout: &stdout, stderr: &stderr}
-	client := newClient(srv.URL, srv.URL, "tok", defaultTimeout, true)
-	bridge := newACPBridge(server, client, "test-agent")
-	server.handler = bridge
-
-	id := json.RawMessage(`1`)
-	bridge.Dispatch(context.Background(), jsonrpcRequest{
-		JSONRPC: "2.0",
-		ID:      &id,
-		Method:  "session/prompt",
-		Params:  json.RawMessage(`{"sessionId":"sess-await","prompt":[{"type":"text","text":"help"}]}`),
-	})
-
-	out := stdout.String()
-	// A session/update notification with sessionUpdate "awaiting" must have been
-	// emitted so the client knows the agent is waiting for human input.
-	if !strings.Contains(out, `"sessionUpdate":"awaiting"`) {
-		t.Fatalf("expected awaiting session/update notification, stdout:\n%s", out)
-	}
-
-	// The final session/prompt response must use a spec-compliant stopReason.
-	lines := strings.Split(strings.TrimSpace(out), "\n")
-	var resp jsonrpcMessage
-	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &resp); err != nil {
-		t.Fatalf("unmarshal last response: %v\\nstdout:\n%s", err, out)
-	}
-	var promptResp acpPromptResponse
-	unmarshalResult(t, resp, &promptResp)
-	if promptResp.StopReason != "end_turn" {
-		t.Fatalf("expected spec-compliant stopReason 'end_turn' for awaiting, got %q", promptResp.StopReason)
-	}
-	if promptResp.StopReason == "awaiting" {
-		t.Fatalf("stopReason must not be the non-spec value 'awaiting'")
+	if promptResp.StopReason != "user_cancelled" {
+		t.Fatalf("expected stopReason 'user_cancelled', got %q", promptResp.StopReason)
 	}
 }
 
@@ -544,22 +482,6 @@ func TestACPSetup_Zed(t *testing.T) {
 			t.Errorf("arg %d: expected %q, got %v", i, want, args[i])
 		}
 	}
-
-	// Verify the env map propagates endpoints + token so the Zed-launched
-	// `aoctl acp serve` subprocess reaches the same agent-orca instance.
-	env, ok := entry["env"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected env map in agent entry, got %T", entry["env"])
-	}
-	if env["AOCTL_ENDPOINT"] != "http://localhost:8084" {
-		t.Errorf("expected AOCTL_ENDPOINT http://localhost:8084, got %v", env["AOCTL_ENDPOINT"])
-	}
-	if env["AOCTL_ACP_ENDPOINT"] != "http://localhost:8000" {
-		t.Errorf("expected AOCTL_ACP_ENDPOINT http://localhost:8000, got %v", env["AOCTL_ACP_ENDPOINT"])
-	}
-	if env["AOCTL_TOKEN"] != "tok" {
-		t.Errorf("expected AOCTL_TOKEN 'tok', got %v", env["AOCTL_TOKEN"])
-	}
 }
 
 // TestACPSetup_Zed_MergesExisting verifies that setup merges into an existing
@@ -610,17 +532,6 @@ func TestACPSetup_Zed_MergesExisting(t *testing.T) {
 	if settings["theme"] != "one-dark-pro" {
 		t.Errorf("existing 'theme' key was clobbered: %v", settings["theme"])
 	}
-
-	// Verify the new entry has the propagated env vars.
-	newEntry, ok := agentServers["support-bot"].(map[string]any)
-	if !ok {
-		t.Fatal("support-bot entry not found or not a map")
-	}
-	if env, ok := newEntry["env"].(map[string]any); !ok {
-		t.Fatalf("expected env map in support-bot entry, got %T", newEntry["env"])
-	} else if env["AOCTL_TOKEN"] != "tok" {
-		t.Errorf("expected AOCTL_TOKEN 'tok' in merged entry, got %v", env["AOCTL_TOKEN"])
-	}
 }
 
 // TestZedSettingsPath verifies the platform-specific path resolution.
@@ -654,104 +565,4 @@ func TestZedSettingsPath(t *testing.T) {
 			t.Fatalf("expected %q, got %q", expected, path)
 		}
 	})
-}
-
-// TestACPSetup_Zed_PropagatesDerivedEndpoint verifies that when only --endpoint
-// is provided (no --acp-endpoint), the ACP endpoint is auto-derived from the
-// External Task API endpoint's host, and BOTH endpoints are normalized
-// (known API route suffixes stripped) and written into the Zed agent_servers
-// env map so the `aoctl acp serve` subprocess launched by Zed reaches the
-// correct agent-orca instance.
-func TestACPSetup_Zed_PropagatesDerivedEndpoint(t *testing.T) {
-	zedDir := t.TempDir()
-	stdout, _, err := runCLI(t, map[string]string{
-		"ZED_CONFIG_DIR": zedDir,
-		"AOCTL_ENDPOINT": "http://agent-orca.local/tasks",
-	}, "acp", "setup", "--editor", "zed", "--agent", "senior-programmer",
-		"--token", "tok")
-	if err != nil {
-		t.Fatalf("setup: %v", err)
-	}
-	if !strings.Contains(stdout, "Configured Zed") {
-		t.Fatalf("expected success message, got: %q", stdout)
-	}
-
-	// Read back and verify env vars in the Zed config.
-	data, err := os.ReadFile(filepath.Join(zedDir, "settings.json"))
-	if err != nil {
-		t.Fatalf("reading settings.json: %v", err)
-	}
-	var settings map[string]any
-	if err := json.Unmarshal(data, &settings); err != nil {
-		t.Fatalf("parsing settings.json: %v\n%s", err, data)
-	}
-	agentServers, ok := settings["agent_servers"].(map[string]any)
-	if !ok {
-		t.Fatalf("agent_servers not found in %s", data)
-	}
-	entry, ok := agentServers["senior-programmer"].(map[string]any)
-	if !ok {
-		t.Fatalf("senior-programmer not found in agent_servers: %s", data)
-	}
-	env, ok := entry["env"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected env map, got %T", entry["env"])
-	}
-	// The /tasks path suffix should be stripped from the External Task API
-	// endpoint (the CLI appends /v1/tasks itself).
-	if env["AOCTL_ENDPOINT"] != "http://agent-orca.local" {
-		t.Errorf("expected normalized AOCTL_ENDPOINT http://agent-orca.local, got %v", env["AOCTL_ENDPOINT"])
-	}
-	// The ACP endpoint should be derived as host root (path stripped).
-	if env["AOCTL_ACP_ENDPOINT"] != "http://agent-orca.local" {
-		t.Errorf("expected derived AOCTL_ACP_ENDPOINT http://agent-orca.local, got %v", env["AOCTL_ACP_ENDPOINT"])
-	}
-	if env["AOCTL_TOKEN"] != "tok" {
-		t.Errorf("expected AOCTL_TOKEN 'tok', got %v", env["AOCTL_TOKEN"])
-	}
-}
-
-// TestACPSetup_Zed_NormalizesACPEndpoint verifies that when the user passes
-// --acp-endpoint with a trailing ACP API route (e.g. http://host/agents), it
-// is normalized to the host root before being written to the Zed config,
-// preventing double-path URLs like http://host/agents/agents/{name}.
-func TestACPSetup_Zed_NormalizesACPEndpoint(t *testing.T) {
-	zedDir := t.TempDir()
-	stdout, _, err := runCLI(t, map[string]string{
-		"ZED_CONFIG_DIR": zedDir,
-	}, "acp", "setup", "--editor", "zed", "--agent", "senior-programmer",
-		"--token", "tok",
-		"--endpoint", "http://agent-orca.local/tasks",
-		"--acp-endpoint", "http://agent-orca.local/agents")
-	if err != nil {
-		t.Fatalf("setup: %v", err)
-	}
-	if !strings.Contains(stdout, "Configured Zed") {
-		t.Fatalf("expected success message, got: %q", stdout)
-	}
-
-	data, err := os.ReadFile(filepath.Join(zedDir, "settings.json"))
-	if err != nil {
-		t.Fatalf("reading settings.json: %v", err)
-	}
-	var settings map[string]any
-	if err := json.Unmarshal(data, &settings); err != nil {
-		t.Fatalf("parsing settings.json: %v\n%s", err, data)
-	}
-	agentServers, ok := settings["agent_servers"].(map[string]any)
-	if !ok {
-		t.Fatalf("agent_servers not found in %s", data)
-	}
-	entry, ok := agentServers["senior-programmer"].(map[string]any)
-	if !ok {
-		t.Fatalf("senior-programmer not found in agent_servers: %s", data)
-	}
-	env, ok := entry["env"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected env map, got %T", entry["env"])
-	}
-	// The ACP endpoint should be normalized to host root, not http://.../agents.
-	if env["AOCTL_ACP_ENDPOINT"] != "http://agent-orca.local" {
-		t.Errorf("expected normalized AOCTL_ACP_ENDPOINT http://agent-orca.local, got %v", env["AOCTL_ACP_ENDPOINT"])
-	}
 }

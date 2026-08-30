@@ -78,6 +78,37 @@ aoctl login --auth-method oidc \
   --client-secret <your-client-secret>   # omit for public clients
 ```
 
+## Using OIDC for `aoctl admin`
+
+OIDC id_tokens authenticate the **task and agent** surfaces (they are tenant-scoped
+to the federated `TenantConfig` the user logged in through). The `/admin/*`
+surface is ServiceAccount-only by default — *except* that a federated id_token
+may read **its own** tenant config:
+
+| Command | OIDC id_token | SA admin token |
+|---|---|---|
+| `aoctl admin tenants get <name>` (where `<name>` is *your* federated tenant) | ✅ 200 (read-only, no secret) | ✅ |
+| `aoctl admin tenants list` / `create` / `delete` / `rotate-secret` | ❌ 401 (SA-only) | ✅ |
+
+So a human who logged in with `aoctl login --auth-method oidc` can inspect the
+`TenantConfig` they authenticated via, but tenant lifecycle (create/delete/rotate,
+listed to all tenants) still requires a ServiceAccount:
+
+```bash
+# After `aoctl login --auth-method oidc`:
+aoctl admin tenants get <my-federated-tenant-name>   # works with the OIDC id_token
+
+# Cluster-wide admin still needs a SA token:
+SA_TOKEN=$(kubectl create token agentorca-admin -n agent-orca-system)
+aoctl admin tenants list --token "$SA_TOKEN"
+```
+
+The server authorizes the self-tenant read by matching the bearer id_token's
+resolved tenant (via `validateFederatedToken`) against the `<name>` in the path,
+so a valid token for tenant A gets a `403` against `/admin/tenants/b`. Per-tenant
+RBAC (groups → admin role) drops in later as a one-line role check on the same
+`TenantIdentity`; see [Future RBAC design](#future-rbac-design).
+
 ## How a browser logs in
 
 ```

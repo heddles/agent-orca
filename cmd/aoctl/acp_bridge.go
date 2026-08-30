@@ -19,7 +19,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -40,13 +39,8 @@ import (
 // turns via LastRunRef<->PriorRunRef (the model-router reloads the prior
 // checkpoint). The bridge pins Zed's sessionId to agent-orca's session_id.
 
-// acpProtocolVersion is the ACP protocol MAJOR version this bridge supports,
-// sent as a uint16 in initialize responses per the ACP spec
-// (https://agentclientprotocol.com/protocol/v1/). Currently v1.
-const acpProtocolVersion uint16 = 1
-
 // acpBridgeVersion is the ACP protocol-bridge version reported in initialize
-// responses. It is independent of the ACP protocol version (1) and tracks the
+// responses. It is independent of the ACP spec version (0.2.0) and tracks the
 // aoctl bridge implementation.
 const acpBridgeVersion = "0.1.0"
 
@@ -144,16 +138,13 @@ func handleInitialize(ctx context.Context, b *acpBridge, req jsonrpcRequest) (an
 	// agent, and so we can validate the agent name up front.
 	man, err := b.client.GetAgentManifest(ctx, b.agentName)
 	if err != nil {
-		return nil, fmt.Errorf("fetching agent manifest for %q via ACP API (%s): %w — "+
-			"ensure --acp-endpoint points to the agent-orca ACP API host root", b.agentName, b.client.ACP, err)
+		return nil, err
 	}
 	b.manifest = man
 
 	version := p.ProtocolVersion
-	if version == 0 || version != acpProtocolVersion {
-		// Client omitted protocolVersion (or sent an unparseable value), or
-		// requested a version we don't support: negotiate down to our latest.
-		version = acpProtocolVersion
+	if version == "" {
+		version = "0.2.0"
 	}
 	return acpInitializeResponse{
 		ProtocolVersion: version,
@@ -272,7 +263,7 @@ func (b *acpBridge) awaitCompletion(ctx context.Context, runID, sessionID string
 				SessionID: sessionID,
 				Update:    acpUpdate{SessionUpdate: acpStatusAwaiting},
 			})
-			return acpStopReasonEndTurn
+			return acpStatusAwaiting
 		default: // created / pending
 			b.srv.notify(acpMethodSessionUpdate, acpUpdateParams{
 				SessionID: sessionID,
@@ -357,15 +348,11 @@ func (b *acpBridge) handleEvent(ev Event, sessionID, msgID string, emitted *bool
 		if err := json.Unmarshal([]byte(ev.Data), &payload); err == nil {
 			b.emitTerminalOutput(payload.Run, sessionID)
 		}
-		return acpStopReasonEndTurn
+		return acpStopReasonError
 	case "run.cancelled":
 		return acpStopReasonUserCancel
 	case "run.awaiting":
-		b.srv.notify(acpMethodSessionUpdate, acpUpdateParams{
-			SessionID: sessionID,
-			Update:    acpUpdate{SessionUpdate: acpStatusAwaiting},
-		})
-		return acpStopReasonEndTurn
+		return acpStatusAwaiting
 		// run.created / run.in-progress / message.created / message.completed are
 		// either already announced or folded into the chunk stream; ignore them so
 		// we don't emit spurious empty notifications.
@@ -411,7 +398,7 @@ func (b *acpBridge) pollToCompletion(ctx context.Context, runID, sessionID strin
 				b.emitTerminalOutput(run, sessionID)
 				return runStatusToStopReason(run.Status)
 			case acpStatusAwaiting:
-				return acpStopReasonEndTurn
+				return acpStatusAwaiting
 			}
 		}
 		if !b.retryWait(ctx, 300*time.Millisecond) {

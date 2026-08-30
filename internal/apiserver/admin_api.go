@@ -84,14 +84,6 @@ func saUsernameParts(username string) (namespace, name string, ok bool) {
 	return parts[2], parts[3], true
 }
 
-// adminRequiresSAHint is the 401 message returned when a non-ServiceAccount
-// caller (e.g. an OIDC id_token) hits a full-admin /admin/* operation. It tells
-// them which token type is required and what their OIDC token CAN do, instead
-// of a bare "unauthorized".
-const adminRequiresSAHint = "unauthorized: list/create/delete/rotate-secret on /admin/* " +
-	"require a Kubernetes ServiceAccount token carrying agentorca.io/admin=true; " +
-	"an OIDC id_token may only read its own tenant via GET /admin/tenants/<name>"
-
 // requireAdminAuth gates the /admin/* surface: the caller must present a valid
 // Kubernetes ServiceAccount token whose SA carries the
 // `agentorca.io/admin: "true"` label.
@@ -139,17 +131,16 @@ func (s *ExternalAPIServer) requireAdminAuth(next http.Handler) http.Handler {
 
 // requireSAOrSelfTenant grants access on the admin surface to either:
 //   - an admin ServiceAccount token (full, unchanged access), or
-//   - a federated OIDC id_token belonging to the caller's OWN federated tenant,
-//     for one of the self-tenant capabilities in selfTenantAdminOps (today: only
-//     GET /admin/tenants/<name> read, where <name> is the TenantConfig the
+//   - a federated OIDC id_token belonging to the caller's OWN federated tenant
+//     (read-only: GET /admin/tenants/<name> where <name> is the TenantConfig the
 //     caller's id_token resolved to).
 //
-// This is the human-OIDC bridge that lets a `aoctl login --auth-method oidc` user
+// It is the human-OIDC bridge that lets a `aoctl login --auth-method oidc` user
 // read their own tenant config without a service-account token, ahead of
-// per-tenant RBAC (group/role mapping). A valid token aimed at a different
-// tenant returns 404 (to avoid leaking which tenants exist); a token the server
-// cannot attribute to a SA or tenant is 401.
-func (s *ExternalAPIServer) requireSAOrSelfTenant(name string, capability adminCapability, next http.Handler) http.Handler {
+// per-tenant RBAC (group/role mapping). Mismatched tenants are 403 (so the user
+// knows their token is valid but not authorized for *that* tenant); missing/invalid
+// tokens are 401.
+func (s *ExternalAPIServer) requireSAOrSelfTenant(name string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token := extractBearer(r)
 		// 1) ServiceAccount admin token → full access (unchanged requirement).
@@ -162,45 +153,23 @@ func (s *ExternalAPIServer) requireSAOrSelfTenant(name string, capability adminC
 				}
 			}
 		}
-		// 2) Federated id_token → scoped to the caller's OWN tenant. ValidateToken
-		//    resolves a federated id_token to a TenantIdentity whose TenantName is
-		//    the matched TenantConfig name.
+		// 2) Federated/issued bearer id_token → read-only access to the caller's
+		//    OWN tenant. ValidateToken resolves a federated id_token to a
+		//    TenantIdentity whose TenantName is the matched TenantConfig name.
 		if ident, err := s.auth.ValidateToken(r.Context(), token); err == nil && ident != nil {
-			// TODO(per-tenant-RBAC): once IdP groups are mapped to roles, gate the
-			//   additional selfTenantAdminOps (e.g. rotate-secret) on
-			//   capability.role and ident.Roles here; deny with 404 when the role is
-			//   absent. Today capability.role is always empty, so any valid id_token
-			//   for the caller's own tenant is admitted.
-			if capability.role != "" && !identityHasRole(ident, capability.role) {
-				writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+			if ident.TenantName == name {
+				r = r.WithContext(withAdminIdentity(r.Context(), adminIdentity{
+					Namespace: ident.Namespace, Name: "oidc:" + ident.TenantName,
+				}))
+				next.ServeHTTP(w, r)
 				return
 			}
-			if ident.TenantName != name {
-				// Valid token, different tenant → 404 (do not reveal existence).
-				writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
-				return
-			}
-			r = r.WithContext(withAdminIdentity(r.Context(), adminIdentity{
-				Namespace: ident.Namespace, Name: "oidc:" + ident.TenantName,
-			}))
-			next.ServeHTTP(w, r)
+			http.Error(w, `{"error":"forbidden: you may only view your own tenant; cluster-wide admin requires a ServiceAccount token"}`, http.StatusForbidden) //nolint:lll
 			return
 		}
-		// 3) No recognizable admin or federated token at all.
+		// 3) No recognizable token at all.
 		writeAuthFailureJSON(w, "unauthorized")
 	})
-}
-
-// identityHasRole reports whether identity carries the given IdP-derived role.
-// Roles are populated from a tenant's group/role mapping; empty until the
-// per-tenant RBAC layer lands. Used by the capability.role gate above.
-func identityHasRole(ident *TenantIdentity, role string) bool {
-	for _, r := range ident.Roles {
-		if r == role {
-			return true
-		}
-	}
-	return false
 }
 
 // --- admin identity context ---

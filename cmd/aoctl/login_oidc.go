@@ -155,6 +155,21 @@ func loginOIDC(ctx context.Context, cfg OIDCLoginConfig, out io.Writer) (*OIDCLo
 		}
 		exp, _ := jwtExpiry(principal.RawIDToken) // best-effort; expiry is optional for the caller
 		_, _ = fmt.Fprintln(out, "logged in via OIDC.")
+		// Diagnostic summary so the user can confirm the federated TenantConfig on
+		// the operator matches the token the IdP issued (a mismatch here is the
+		// usual cause of a 401 after a successful login).
+		_, _ = fmt.Fprintf(out, "  issuer:  %s\n", principal.Issuer)
+		if aud := audClaim(principal.Claims); aud != "" {
+			_, _ = fmt.Fprintf(out, "  audience: %s\n", aud)
+		}
+		if !exp.IsZero() {
+			_, _ = fmt.Fprintf(out, "  expires: %s\n", exp.UTC().Format(time.RFC3339))
+		}
+		if principal.RefreshToken != "" {
+			_, _ = fmt.Fprintln(out, "  refresh: captured (session auto-refreshes)")
+		} else {
+			_, _ = fmt.Fprintln(out, "  refresh: none (re-login before expiry)")
+		}
 		return &OIDCLoginResult{
 			IDToken:      principal.RawIDToken,
 			RefreshToken: principal.RefreshToken,
@@ -287,8 +302,6 @@ func randomState() string {
 // jwtExpiry parses the unverified `exp` claim of a JWT. It is used to decide
 // when an OIDC id_token is close enough to expiry to refresh. Verification of
 // the token is performed elsewhere (ExchangeAndVerify / validateFederatedToken).
-//
-//nolint:unparam
 func jwtExpiry(token string) (time.Time, error) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
@@ -308,4 +321,25 @@ func jwtExpiry(token string) (time.Time, error) {
 		return time.Time{}, errors.New("jwt has no exp claim")
 	}
 	return time.Unix(claims.Exp, 0), nil
+}
+
+// audClaim renders the `aud` claim of an id_token for the login diagnostic. The
+// audience is either a single string or a list of strings (per OIDC spec).
+func audClaim(claims map[string]any) string {
+	if claims == nil {
+		return ""
+	}
+	switch v := claims["aud"].(type) {
+	case string:
+		return v
+	case []any:
+		parts := make([]string, 0, len(v))
+		for _, e := range v {
+			if s, ok := e.(string); ok {
+				parts = append(parts, s)
+			}
+		}
+		return strings.Join(parts, ", ")
+	}
+	return ""
 }
