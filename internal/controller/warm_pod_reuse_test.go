@@ -178,3 +178,85 @@ func TestReconcileRunPodOnTerminal(t *testing.T) {
 		})
 	}
 }
+
+// TestFindClaimedWarmPod verifies the split-brain safeguard: when a prior
+// claim succeeded on a warm pod but the operator's POST response was lost
+// (client-side timeout), findClaimedWarmPod locates the pod that already owns
+// this run via its agentorca.io/run label, preventing a second pod from being
+// created for the same run.
+func TestFindClaimedWarmPod(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = agentorcav1alpha1.AddToScheme(scheme)
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "warm-1",
+			Namespace: "default",
+			Labels: map[string]string{
+				labelWarmPool:      "dep-1",
+				"agentorca.io/run": "run-1",
+			},
+		},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning},
+	}
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pod).Build()
+
+	r := &AgentRunReconciler{Client: cl, Scheme: scheme}
+	run := &agentorcav1alpha1.AgentRun{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "run-1",
+			Namespace: "default",
+			Labels:    map[string]string{"agentorca.io/deployment": "dep-1"},
+		},
+	}
+
+	got := r.findClaimedWarmPod(context.Background(), run)
+	if got != "warm-1" {
+		t.Errorf("expected 'warm-1', got %q", got)
+	}
+
+	// A run with no deployment label should get no result.
+	run2 := &agentorcav1alpha1.AgentRun{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "run-2",
+			Namespace: "default",
+		},
+	}
+	if got := r.findClaimedWarmPod(context.Background(), run2); got != "" {
+		t.Errorf("expected empty for no-label run, got %q", got)
+	}
+}
+
+// TestClaimWarmPod_SkipsWithoutDeploymentLabel verifies that claimWarmPod
+// returns early (no HTTP call) when the run lacks the deployment label — this
+// is the bug that caused ACP runs to always create fresh ephemeral pods instead
+// of reusing warm ones.
+func TestClaimWarmPod_SkipsWithoutDeploymentLabel(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = agentorcav1alpha1.AddToScheme(scheme)
+	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
+	r := &AgentRunReconciler{Client: cl, Scheme: scheme}
+
+	agent := &agentorcav1alpha1.Agent{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "default"},
+		Spec: agentorcav1alpha1.AgentSpec{
+			Runtime: agentorcav1alpha1.AgentRuntime{InputMode: "http"},
+		},
+	}
+	run := &agentorcav1alpha1.AgentRun{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "run-1",
+			Namespace: "default",
+			Labels:    map[string]string{}, // no deployment label
+		},
+	}
+
+	podName, err := r.claimWarmPod(context.Background(), run, agent)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if podName != "" {
+		t.Errorf("expected no pod claim without deployment label, got %q", podName)
+	}
+}

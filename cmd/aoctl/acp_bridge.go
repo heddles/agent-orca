@@ -265,11 +265,14 @@ func handleSessionPrompt(ctx context.Context, b *acpBridge, req jsonrpcRequest) 
 // stream; if SSE is unavailable (e.g. no state store in local dev) it falls
 // back to polling.
 func (b *acpBridge) awaitCompletion(ctx context.Context, runID, sessionID string) string {
+	// currentRunID tracks the run we're polling. It may switch to a
+	// continuation run after a clarify/resume cycle.
+	currentRunID := runID
 	for {
 		if err := ctx.Err(); err != nil {
 			return acpStopReasonUserCancel
 		}
-		run, err := b.client.GetACPRun(ctx, runID)
+		run, err := b.client.GetACPRun(ctx, currentRunID)
 		if err != nil {
 			b.srv.logf("acp: poll run error: %v\n", err)
 			if !b.retryWait(ctx, 200*time.Millisecond) {
@@ -279,7 +282,7 @@ func (b *acpBridge) awaitCompletion(ctx context.Context, runID, sessionID string
 		}
 		switch run.Status {
 		case acpStatusInProgress:
-			term := b.streamRunEvents(ctx, runID, sessionID)
+			term := b.streamRunEvents(ctx, currentRunID, sessionID)
 			if term == acpPendingAwaiting {
 				// SSE stream surfaced an awaiting state; loop to re-poll — the
 				// next iteration will hit the acpStatusAwaiting case below and
@@ -288,12 +291,19 @@ func (b *acpBridge) awaitCompletion(ctx context.Context, runID, sessionID string
 			}
 			return term
 		case acpStatusCompleted, acpStatusFailed, acpStatusCancelled:
+			// If the server created a continuation run (e.g. via clarify/resume),
+			// follow it instead of ending the turn.
+			if run.ContinuationRunRef != "" {
+				currentRunID = run.ContinuationRunRef
+				continue
+			}
 			b.emitTerminalOutput(run, sessionID)
 			return runStatusToStopReason(run.Status)
 		case acpStatusAwaiting:
-			if b.handleAwaitingRun(ctx, run, sessionID, runID) {
-				// Run was resumed with the user's answer; re-poll for the
-				// next phase (should be in-progress → streaming).
+			if contID, resumed := b.handleAwaitingRun(ctx, run, sessionID, currentRunID); resumed {
+				// Run was resumed with the user's answer; switch to the
+				// continuation run (if one was created) and re-poll.
+				currentRunID = contID
 				if !b.retryWait(ctx, 200*time.Millisecond) {
 					return acpStopReasonUserCancel
 				}
@@ -424,10 +434,10 @@ func (b *acpBridge) emitTerminalOutput(run acpRun, sessionID string) {
 // handleAwaitingRun processes a run in the "awaiting" state. It emits the
 // clarification question as agent_message_chunk notifications, then sends an
 // elicitation/create request to the client asking for the user's input. If the
-// user accepts, it resumes the run with the answer. Returns true if the run was
-// resumed (the caller should loop and re-poll); false if the user declined, the
-// elicitation failed, or an error occurred.
-func (b *acpBridge) handleAwaitingRun(ctx context.Context, run acpRun, sessionID, runID string) bool {
+// user accepts, it resumes the run (creating a continuation run via the ACP
+// server) and returns the continuation run ID. Returns ("", false) if the user
+// declined, the elicitation failed, or an error occurred.
+func (b *acpBridge) handleAwaitingRun(ctx context.Context, run acpRun, sessionID, runID string) (string, bool) {
 	// Emit the clarification question as agent output so the user can see what
 	// was asked before the elicitation form appears.
 	b.emitTerminalOutput(run, sessionID)
@@ -458,27 +468,33 @@ func (b *acpBridge) handleAwaitingRun(ctx context.Context, run acpRun, sessionID
 	})
 	if err != nil {
 		b.srv.logf("acp: elicitation/create failed: %v\n", err)
-		return false
+		return "", false
 	}
 
 	var elicit acpElicitResponse
 	raw, _ := json.Marshal(resp.Result)
 	if err := json.Unmarshal(raw, &elicit); err != nil {
 		b.srv.logf("acp: unmarshal elicitation response: %v\n", err)
-		return false
+		return "", false
 	}
 
 	if elicit.Action != "accept" {
 		b.srv.logf("acp: elicitation %s by user\n", elicit.Action)
-		return false
+		return "", false
 	}
 
 	answer, _ := elicit.Content["answer"].(string)
-	if err := b.client.ResumeRun(ctx, runID, answer); err != nil {
+	continuationID, err := b.client.ResumeRun(ctx, runID, answer)
+	if err != nil {
 		b.srv.logf("acp: resume run %s: %v\n", runID, err)
-		return false
+		return "", false
 	}
-	return true
+	if continuationID == "" {
+		// No continuation run returned — the server may have resumed in place.
+		// Fall back to polling the original run.
+		return runID, true
+	}
+	return continuationID, true
 }
 
 // tryResumeAwaiting checks whether the session has a prior run still in the
@@ -506,9 +522,13 @@ func (b *acpBridge) tryResumeAwaiting(ctx context.Context, sessionID string, pro
 	}
 	answer := strings.Join(parts, "\n")
 
-	if err := b.client.ResumeRun(ctx, sess.RunID, answer); err != nil {
+	continuationID, err := b.client.ResumeRun(ctx, sess.RunID, answer)
+	if err != nil {
 		b.srv.logf("acp: resume awaiting run %s: %v\n", sess.RunID, err)
 		return "", false
+	}
+	if continuationID != "" {
+		return continuationID, true
 	}
 	return sess.RunID, true
 }

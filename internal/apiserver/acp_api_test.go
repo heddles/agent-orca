@@ -53,12 +53,14 @@ func acpScheme(t *testing.T) *runtime.Scheme {
 func newACPServer(t *testing.T, objs ...client.Object) *ACPServer {
 	t.Helper()
 	t.Setenv("POD_NAMESPACE", "agent-orca-system")
-	cl := fake.NewClientBuilder().WithScheme(acpScheme(t)).WithObjects(objs...).Build()
+	cl := fake.NewClientBuilder().WithScheme(acpScheme(t)).WithObjects(objs...).
+		WithStatusSubresource(&agentorcav1alpha1.AgentRun{}).Build()
 	return &ACPServer{
-		k8s:       nil,
-		crdClient: cl,
-		auth:      &ExternalAuth{},
-		store:     nil,
+		k8s:        nil,
+		crdClient:  cl,
+		auth:       &ExternalAuth{},
+		store:      nil,
+		checkpoint: checkpointStore(nil), // in-memory checkpoint for session chaining
 	}
 }
 
@@ -620,8 +622,8 @@ func TestGetACPRun_AwaitingSurfacesQuestion(t *testing.T) {
 			Namespace:         "tenant-acme",
 			CreationTimestamp: now,
 			Labels: map[string]string{
-				"agentorca.io/tenant":      "acme",
-				"agentorca.io/session-id":  "sess-123",
+				"agentorca.io/tenant":     "acme",
+				"agentorca.io/session-id": "sess-123",
 			},
 		},
 		Spec: agentorcav1alpha1.AgentRunSpec{
@@ -685,5 +687,181 @@ func TestRawExtensionToMap(t *testing.T) {
 	m = rawExtensionToMap(re)
 	if m != nil {
 		t.Fatalf("expected nil for invalid JSON, got %v", m)
+	}
+}
+
+// TestACPCreateRun_SetsWarmPodLabels verifies that a run created via the ACP API
+// gets the agentorca.io/deployment and agentorca.io/session labels when a
+// matching AgentDeployment exists, enabling warm-pod claiming by the controller.
+func TestACPCreateRun_SetsWarmPodLabels(t *testing.T) {
+	agent := &agentorcav1alpha1.Agent{
+		ObjectMeta: metav1.ObjectMeta{Name: "support-bot", Namespace: "tenant-acme"},
+		Spec:       agentorcav1alpha1.AgentSpec{SystemPrompt: "test"},
+	}
+	dep := &agentorcav1alpha1.AgentDeployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "dep-support", Namespace: "tenant-acme"},
+		Spec:       agentorcav1alpha1.AgentDeploymentSpec{AgentRef: "support-bot"},
+	}
+	s := newACPServer(t, agent, dep)
+	h := s.withTenant(testTenant())
+
+	body := `{"agent_name":"support-bot","input":[{"role":"user","parts":[{"content_type":"text/plain","content":"hello"}]}],"session_id":"sess-labels"}` //nolint:lll
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/runs", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp ACPRun
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("bad json: %v", err)
+	}
+
+	var created agentorcav1alpha1.AgentRun
+	if err := s.crdClient.Get(context.Background(),
+		types.NamespacedName{Name: resp.RunID, Namespace: "tenant-acme"}, &created); err != nil {
+		t.Fatalf("getting created run: %v", err)
+	}
+	if got := created.Labels["agentorca.io/deployment"]; got != "dep-support" {
+		t.Errorf("expected deployment label 'dep-support', got %q", got)
+	}
+	if got := created.Labels["agentorca.io/session"]; got != "sess-labels" {
+		t.Errorf("expected session label 'sess-labels', got %q", got)
+	}
+	if got := created.Labels["agentorca.io/source"]; got != "acp" {
+		t.Errorf("expected source label 'acp', got %q", got)
+	}
+}
+
+// TestACPCreateRun_PriorRunRefChains verifies that the second ACP run for the
+// same session sets PriorRunRef to the first run's name (loaded from the
+// checkpoint's LastRunRef), enabling multi-turn context chaining via warm pods.
+func TestACPCreateRun_PriorRunRefChains(t *testing.T) {
+	agent := &agentorcav1alpha1.Agent{
+		ObjectMeta: metav1.ObjectMeta{Name: "chain-bot", Namespace: "tenant-acme"},
+		Spec:       agentorcav1alpha1.AgentSpec{SystemPrompt: "test"},
+	}
+	dep := &agentorcav1alpha1.AgentDeployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "dep-chain", Namespace: "tenant-acme"},
+		Spec:       agentorcav1alpha1.AgentDeploymentSpec{AgentRef: "chain-bot"},
+	}
+	s := newACPServer(t, agent, dep)
+	h := s.withTenant(testTenant())
+
+	// First run — no prior context.
+	body1 := `{"agent_name":"chain-bot","input":[{"role":"user","parts":[{"content_type":"text/plain","content":"first"}]}],"session_id":"sess-chain"}` //nolint:lll
+	rec1 := httptest.NewRecorder()
+	req1 := httptest.NewRequest(http.MethodPost, "/runs", strings.NewReader(body1))
+	req1.Header.Set("Content-Type", "application/json")
+	h.ServeHTTP(rec1, req1)
+	if rec1.Code != http.StatusCreated {
+		t.Fatalf("expected 201 for first run, got %d: %s", rec1.Code, rec1.Body.String())
+	}
+	var resp1 ACPRun
+	_ = json.Unmarshal(rec1.Body.Bytes(), &resp1)
+	if resp1.RunID == "" {
+		t.Fatal("expected non-empty run ID for first run")
+	}
+
+	// Second run — should chain to the first via PriorRunRef.
+	body2 := `{"agent_name":"chain-bot","input":[{"role":"user","parts":[{"content_type":"text/plain","content":"second"}]}],"session_id":"sess-chain"}` //nolint:lll
+	rec2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest(http.MethodPost, "/runs", strings.NewReader(body2))
+	req2.Header.Set("Content-Type", "application/json")
+	h.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusCreated {
+		t.Fatalf("expected 201 for second run, got %d: %s", rec2.Code, rec2.Body.String())
+	}
+	var resp2 ACPRun
+	_ = json.Unmarshal(rec2.Body.Bytes(), &resp2)
+
+	var run2 agentorcav1alpha1.AgentRun
+	if err := s.crdClient.Get(context.Background(),
+		types.NamespacedName{Name: resp2.RunID, Namespace: "tenant-acme"}, &run2); err != nil {
+		t.Fatalf("getting second run: %v", err)
+	}
+	if run2.Spec.PriorRunRef != resp1.RunID {
+		t.Errorf("expected PriorRunRef %q (first run), got %q", resp1.RunID, run2.Spec.PriorRunRef)
+	}
+}
+
+// TestACPPresumeRun_CreatesContinuation verifies that resuming a WaitingForInput
+// run creates a continuation run (not in-place patch) and marks the original Succeeded.
+func TestACPPresumeRun_CreatesContinuation(t *testing.T) {
+	now := metav1.Now()
+	original := &agentorcav1alpha1.AgentRun{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "run-resume-test",
+			Namespace:         "tenant-acme",
+			CreationTimestamp: now,
+			Labels: map[string]string{
+				"agentorca.io/tenant":     "acme",
+				"agentorca.io/session":    "sess-resume",
+				"agentorca.io/deployment": "dep-resume",
+				"agentorca.io/session-id": "sess-resume",
+			},
+		},
+		Spec: agentorcav1alpha1.AgentRunSpec{
+			AgentRef: "support-bot",
+			Input:    "What is my password?",
+		},
+		Status: agentorcav1alpha1.AgentRunStatus{
+			Phase:           agentorcav1alpha1.AgentRunPhaseWaitingForInput,
+			ClarifyQuestion: "Which password? The email or SSO one?",
+			WaitingSince:    &now,
+		},
+	}
+	s := newACPServer(t, original)
+	h := s.withTenant(testTenant())
+
+	body := `{"await_resume":{"answer":"email account"}}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/runs/run-resume-test", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp ACPRun
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("bad json: %v", err)
+	}
+	if resp.ContinuationRunRef == "" {
+		t.Fatal("expected continuationRunRef in resume response")
+	}
+	if resp.RunID == "" {
+		t.Fatal("expected non-empty RunID (continuation run) in response")
+	}
+	if resp.RunID == "run-resume-test" {
+		t.Fatal("response RunID should be the continuation, not the original")
+	}
+
+	// Original run must be marked Succeeded.
+	var orig agentorcav1alpha1.AgentRun
+	if err := s.crdClient.Get(context.Background(),
+		types.NamespacedName{Name: "run-resume-test", Namespace: "tenant-acme"}, &orig); err != nil {
+		t.Fatalf("getting original run: %v", err)
+	}
+	if orig.Status.Phase != agentorcav1alpha1.AgentRunPhaseSucceeded {
+		t.Errorf("expected original run phase Succeeded, got %q", orig.Status.Phase)
+	}
+	if orig.Status.ContinuationRunRef != resp.ContinuationRunRef {
+		t.Errorf("expected ContinuationRunRef %q, got %q", resp.ContinuationRunRef, orig.Status.ContinuationRunRef)
+	}
+
+	// Continuation run must inherit labels and have PriorRunRef set.
+	var cont agentorcav1alpha1.AgentRun
+	if err := s.crdClient.Get(context.Background(),
+		types.NamespacedName{Name: resp.ContinuationRunRef, Namespace: "tenant-acme"}, &cont); err != nil {
+		t.Fatalf("getting continuation run: %v", err)
+	}
+	if cont.Spec.PriorRunRef != "run-resume-test" {
+		t.Errorf("expected PriorRunRef 'run-resume-test', got %q", cont.Spec.PriorRunRef)
+	}
+	if cont.Labels["agentorca.io/deployment"] != "dep-resume" {
+		t.Errorf("expected continuation to inherit deployment label, got %q", cont.Labels["agentorca.io/deployment"])
 	}
 }

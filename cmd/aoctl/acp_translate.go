@@ -216,15 +216,16 @@ type acpAwaitRequest struct {
 
 // acpRun mirrors internal/apiserver.ACPRun for the GET /runs/{run_id} response.
 type acpRun struct {
-	AgentName    string           `json:"agent_name"`
-	SessionID    string           `json:"session_id,omitempty"`
-	RunID        string           `json:"run_id"`
-	Status       string           `json:"status"`
-	AwaitRequest *acpAwaitRequest `json:"await_request,omitempty"`
-	Output       []ACPMessage     `json:"output,omitempty"`
-	Error        *acpErr          `json:"error,omitempty"`
-	CreatedAt    string           `json:"created_at"`
-	FinishedAt   string           `json:"finished_at,omitempty"`
+	AgentName          string           `json:"agent_name"`
+	SessionID          string           `json:"session_id,omitempty"`
+	RunID              string           `json:"run_id"`
+	Status             string           `json:"status"`
+	AwaitRequest       *acpAwaitRequest `json:"await_request,omitempty"`
+	Output             []ACPMessage     `json:"output,omitempty"`
+	Error              *acpErr          `json:"error,omitempty"`
+	CreatedAt          string           `json:"created_at"`
+	FinishedAt         string           `json:"finished_at,omitempty"`
+	ContinuationRunRef string           `json:"continuationRunRef,omitempty"`
 }
 
 type acpErr struct {
@@ -379,25 +380,28 @@ func (c *Client) CancelACPRun(ctx context.Context, runID string) error {
 }
 
 // ResumeRun resumes an awaiting run by answering the human input request via
-// POST /runs/{run_id} with an await_resume.answer body.
-func (c *Client) ResumeRun(ctx context.Context, runID, answer string) error {
+// POST /runs/{run_id} with an await_resume.answer body. The ACP server creates
+// a continuation run and returns its ID; the caller should poll the returned
+// run ID going forward. Returns the continuation run ID (empty if none was
+// returned by the server).
+func (c *Client) ResumeRun(ctx context.Context, runID, answer string) (continuationRunID string, err error) { //nolint:revive
 	body, err := json.Marshal(map[string]any{
 		"await_resume": map[string]any{"answer": answer},
 	})
 	if err != nil {
-		return err
+		return "", err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		fmt.Sprintf("%s/runs/%s", strings.TrimRight(c.ACP, "/"), url.PathEscape(runID)), bodyReader(body))
 	if err != nil {
-		return err
+		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	c.tokenAuth(req)
 
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
@@ -411,7 +415,11 @@ func (c *Client) ResumeRun(ctx context.Context, runID, answer string) error {
 		if acpErr.Code != "" || acpErr.Message != "" {
 			detail = fmt.Sprintf("[%s] %s", acpErr.Code, acpErr.Message)
 		}
-		return fmt.Errorf("resume run %q failed (HTTP %d): %s", runID, resp.StatusCode, detail)
+		return "", fmt.Errorf("resume run %q failed (HTTP %d): %s", runID, resp.StatusCode, detail)
 	}
-	return nil
+	var out acpRun
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", fmt.Errorf("decoding resume response: %w", err)
+	}
+	return out.ContinuationRunRef, nil
 }
