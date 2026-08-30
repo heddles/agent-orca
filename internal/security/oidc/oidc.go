@@ -76,6 +76,11 @@ type IDTokenPrincipal struct {
 	Groups     []string       // mapped from ClaimMappings.Groups
 	Claims     map[string]any // raw verified claims
 	RawIDToken string         // the raw id_token (logging/auditing only)
+	// RefreshToken is the refresh_token returned alongside the id_token (if any).
+	// It lets the caller (e.g. the aoctl CLI) refresh the session without
+	// re-prompting for IdP credentials. The server-side browser flow does not
+	// need it and ignores it; it is purely a CLI convenience.
+	RefreshToken string
 }
 
 // PrincipalProvider is the surface handlers depend on; *Provider satisfies it and
@@ -183,7 +188,50 @@ func (p *Provider) ExchangeAndVerify(ctx context.Context, code, nonce, codeVerif
 	if g, ok := principal.Claims[p.cfg.ClaimMappings.Groups]; ok {
 		principal.Groups = toStringSlice(g)
 	}
+	// Capture the refresh token (if the IdP issued one) so the CLI can refresh
+	// the session later without re-entering credentials.
+	principal.RefreshToken = token.RefreshToken
 	return principal, nil
+}
+
+// Refresh exchanges a refresh_token for a fresh id_token at the IdP, verifies it
+// (signature via JWKS, iss, aud — nonce is not bound across a refresh) and
+// returns the new id_token plus any rotated refresh token. It is the path the
+// aoctl CLI uses to keep a federated session alive beyond the id_token's short
+// lifetime without re-prompting for credentials.
+//
+// Returns an error if the IdP did not return a new id_token (some providers omit
+// it on refresh); in that case the caller should re-authenticate.
+func (p *Provider) Refresh(ctx context.Context, refreshToken string) (idToken, newRefreshToken string, err error) {
+	if refreshToken == "" {
+		return "", "", errors.New("oidc: refresh token is empty")
+	}
+	// oauth2.TokenSource triggers a refresh grant when the supplied token has no
+	// valid access token; the response is parsed into *oauth2.Token, whose Extra()
+	// surfaces the new id_token (and rotated refresh_token).
+	src := p.oauth2.TokenSource(ctx, &oauth2.Token{RefreshToken: refreshToken})
+	tok, err := src.Token()
+	if err != nil {
+		return "", "", fmt.Errorf("oidc: refreshing token: %w", err)
+	}
+	newRefreshToken = tok.RefreshToken
+	if newRefreshToken == "" {
+		// Some IdPs rotate; some echo nothing on refresh. Keep the existing one
+		// so the caller can keep trying.
+		newRefreshToken = refreshToken
+	}
+	rawIDToken, _ := tok.Extra("id_token").(string)
+	if rawIDToken == "" {
+		return "", "", errors.New("oidc: refresh response did not include an id_token")
+	}
+	// Re-verify the freshly issued id_token (signature, iss, aud, exp). Nonce is
+	// intentionally NOT checked here — refresh responses don't carry the original
+	// nonce, and refresh is a trusted continuation of an already-verified session.
+	verifier := p.oidc.Verifier(&gooidc.Config{ClientID: p.cfg.ClientID})
+	if _, err := verifier.Verify(ctx, rawIDToken); err != nil {
+		return "", "", fmt.Errorf("oidc: verifying refreshed id token: %w", err)
+	}
+	return rawIDToken, newRefreshToken, nil
 }
 
 // claimString reads a claim as a string (returns "" if absent or non-string).

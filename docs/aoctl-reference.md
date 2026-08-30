@@ -24,21 +24,56 @@ These flags are available on every subcommand:
 | `--insecure` | — | `false` | Skip TLS verification (local dev only) |
 | `--config-dir` | `AOCTL_CONFIG_DIR` | `~/.aoctl` | Override config directory |
 
-`aoctl` caches your token in `~/.aoctl/config.json`. Subsequent commands pick
-it up automatically.
+`aoctl` caches your token (and, for OIDC, the refresh material) in
+`~/.aoctl/config.json` (mode `0600`). Subsequent commands pick it up
+automatically.
 
 ## Commands
 
 ### `aoctl login`
 
-Authenticate and cache a bearer token.
+Authenticate and cache a bearer token. Two auth methods are supported:
+
+| Method | Flag | How it works |
+|---|---|---|
+| `oauth` | `--auth-method oauth` | OAuth2 `client_credentials` exchange at `POST /oauth/token` (agent-orca-issued tenant JWT). Needs `--client-id` + `--client-secret`. |
+| `oidc`  | `--auth-method oidc`  | OIDC authorization-code flow: `aoctl` opens your browser at the IdP, catches the loopback redirect on `--redirect-uri`, exchanges the code for an id_token (PKCE), and uses the id_token directly as the bearer token. The session is refreshed automatically using the refresh token. Needs `--issuer-url` + `--client-id`; `--client-secret` is optional (public clients). |
+
+`aoctl login` (with no method and no credentials) presents an **interactive
+selection menu** — the CLI analogue of the UI's `/oauth/login` picker — so you
+can choose OAuth or OIDC and be prompted for the fields you haven't supplied.
 
 ```bash
+# OAuth (non-interactive)
 aoctl login \
   --endpoint http://localhost:8084 \
   --client-id acme-client \
   --client-secret secret123
+
+# OIDC (non-interactive; opens your browser)
+aoctl login \
+  --endpoint http://localhost:8084 \
+  --auth-method oidc \
+  --issuer-url https://accounts.google.com \
+  --client-id <your-oauth-web-client-id> \
+  --client-secret <your-oauth-client-secret>   # omit for a public/PKCE client
+
+# Interactive picker (no flags)
+aoctl login
 ```
+
+The id_token obtained via OIDC is accepted directly by the External/ACP APIs as a
+federated bearer token (verified via the issuer's JWKS by
+`TenantConfig.spec.federated`). This requires a `federated` `TenantConfig` whose
+`issuerURL` + `clientID` match the IdP you sign in with — see
+[OIDC Login](oauth-login.md). The OIDC config (`issuerURL`, `clientID`,
+`clientSecret`, `redirectURI`) is cached alongside the token so sessions refresh
+without re-prompting.
+
+> **--no-browser** prints the authorization URL instead of opening a browser
+> (useful for SSH/headless sessions). **--redirect-uri** defaults to
+> `http://127.0.0.1:8765/callback` (loopback only) — register the same value
+> with your IdP.
 
 For cluster-internal use, you can pass a Kubernetes ServiceAccount token
 directly with `--token` instead of running `login`.

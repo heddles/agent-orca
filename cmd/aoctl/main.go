@@ -18,9 +18,15 @@ limitations under the License.
 //
 // It targets the External Task API (default http://localhost:8084) for task
 // submission/polling/streaming and the ACP API (default http://localhost:8000)
-// for agent discovery. Both accept the same bearer token (issued via the
-// /oauth/token client_credentials exchange), so a single `aoctl login` covers
-// both surfaces.
+// for agent discovery. Authentication is pluggable:
+//   - `oauth` — OAuth2 client_credentials exchange at POST /oauth/token
+//     (agent-orca-issued tenant JWT).
+//   - `oidc` — OIDC authorization-code flow (browser + loopback callback).
+//     The resulting id_token is presented directly as a bearer token; the
+//     server validates it via the federated issuer's JWKS.
+//
+// `aoctl login` (with no credentials) presents an interactive selection menu so
+// users can pick their login method; pass --auth-method to run non-interactively.
 package main
 
 import (
@@ -38,6 +44,9 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
+
+	"github.com/floppyfish14/agent-orca/internal/security/oidc"
 )
 
 const (
@@ -57,6 +66,9 @@ const (
 
 // configFileName is the on-disk config file name within configDir().
 const configFileName = "config.json"
+
+// loginCmd is the cobra command name used to skip token refresh during login.
+const loginCmd = "login"
 
 // --- API types (mirror internal/apiserver external_api.go + acp_api.go) ---
 
@@ -633,6 +645,23 @@ type Config struct {
 	Endpoint string `json:"endpoint"`
 	ACP      string `json:"acp_endpoint"`
 	Token    string `json:"token"`
+
+	// AuthMethod is "oauth" (client_credentials) or "oidc" (authorization code).
+	// Empty defaults to "oauth" for backward compatibility with configs written
+	// before OIDC login existed.
+	AuthMethod string `json:"authMethod,omitempty"`
+
+	// The fields below are populated only for authMethod == "oidc" and are used
+	// to (re)build the OIDC provider for session refresh. ClientSecret is
+	// persisted at the same 0600 file perms as the token (see saveConfig) so
+	// refresh grants succeed for confidential clients; a future improvement may
+	// move long-lived secrets into a system keyring.
+	IssuerURL     string `json:"issuerURL,omitempty"`
+	ClientID      string `json:"clientID,omitempty"`
+	ClientSecret  string `json:"clientSecret,omitempty"`
+	RedirectURI   string `json:"redirectURI,omitempty"`
+	RefreshToken  string `json:"refreshToken,omitempty"`
+	IDTokenExpiry string `json:"idTokenExpiry,omitempty"` // RFC3339; empty => not refreshed
 }
 
 func configDir() (string, error) {
@@ -720,10 +749,244 @@ type settings struct {
 	concurrent      int
 	budgetPerDay    string
 	out, errw       io.Writer
+
+	// OIDC interactive-login fields. authMethod/issuerURL/redirectURI/noBrowser
+	// mirror the login flags; `in`, `isTerminal` and `openBrowser` are the
+	// injectable seams that let login prompts + browser opening be unit-tested.
+	authMethod   string
+	issuerURL    string
+	redirectURI  string
+	noBrowser    bool
+	stdin        *bufio.Reader             // interactive stdin (shared reader)
+	isTerminal   func() bool               // true when stdin is a TTY (default: real check)
+	readPassword func(int) ([]byte, error) // reads a secret without echo (default: term.ReadPassword)
+	openBrowser  func(string) error        // launches the system browser (default: cross-platform opener)
 }
 
 func (s *settings) client() *Client {
 	return newClient(s.endpoint, s.acp, s.token, s.timeout, s.insecure)
+}
+
+// runLogin resolves the requested auth method and dispatches to the right
+// sub-flow. With no --auth-method and no credential hints it presents an
+// interactive selection menu (the CLI analogue of the UI's /oauth/login picker)
+// when stdin is a terminal; in a non-interactive context it errors with a clear
+// hint instead of blocking on stdin.
+func (s *settings) runLogin() error {
+	method := s.authMethod
+	if method == "" {
+		switch {
+		case s.issuerURL != "":
+			method = loginMethodOIDC
+		case s.clientID != "" && s.secret != "":
+			method = loginMethodOAuth
+		default:
+			// No hints at all → interactive picker (requires a TTY).
+			if s.isTerminal == nil || !s.isTerminal() {
+				return errors.New("no login method specified\nrun `aoctl login` in a terminal for the interactive picker, or pass --auth-method=oauth|oidc with the relevant credentials") //nolint:lll
+			}
+			m, err := promptSelection(s.out, s.stdin, "How would you like to log in?", []promptOption{
+				{Value: loginMethodOAuth, Label: "OAuth (client credentials) — machine-to-machine; needs client id + secret"},
+				{Value: loginMethodOIDC, Label: "OIDC (authorization code) — interactive login via an identity provider"},
+			})
+			if err != nil {
+				return err
+			}
+			method = m
+		}
+	}
+	switch method {
+	case loginMethodOAuth:
+		return s.loginOAuth()
+	case loginMethodOIDC:
+		return s.loginOIDCInteractive()
+	default:
+		return fmt.Errorf("unknown --auth-method %q (use oauth or oidc)", method)
+	}
+}
+
+// loginOAuth performs the OAuth2 client_credentials exchange. If credentials
+// are missing it prompts for them (interactive only).
+func (s *settings) loginOAuth() error {
+	interactive := s.isTerminal == nil || s.isTerminal()
+	if s.clientID == "" {
+		v, err := s.promptRequired("client-id", "OAuth client ID: ", interactive)
+		if err != nil {
+			return err
+		}
+		s.clientID = v
+	}
+	if s.secret == "" {
+		v, err := s.promptRequiredSecret("client-secret", "OAuth client secret: ", interactive)
+		if err != nil {
+			return err
+		}
+		s.secret = v
+	}
+	if s.clientID == "" || s.secret == "" {
+		return errors.New("--client-id and --client-secret are required for oauth")
+	}
+	c := newClient(s.endpoint, s.acp, "", s.timeout, s.insecure)
+	tok, err := c.Login(context.Background(), s.clientID, s.secret)
+	if err != nil {
+		return err
+	}
+	s.token = tok
+	s.authMethod = loginMethodOAuth
+	if err := saveLoginConfig(s.endpoint, s.acp, tok, s.authMethod); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintln(s.out, "logged in to", s.endpoint)
+	return nil
+}
+
+// loginOIDCInteractive drives the interactive OIDC authorization-code flow,
+// prompting for any missing parameters, then runs the browser + loopback
+// callback exchange.
+func (s *settings) loginOIDCInteractive() error {
+	interactive := s.isTerminal == nil || s.isTerminal()
+	if s.issuerURL == "" {
+		if !interactive {
+			return errors.New("--issuer-url is required for --auth-method=oidc (or run interactively in a terminal)")
+		}
+		v, err := promptLine(s.out, s.stdin, "OIDC issuer URL (e.g. https://accounts.google.com): ")
+		if err != nil {
+			return err
+		}
+		s.issuerURL = v
+	}
+	if s.clientID == "" {
+		v, err := s.promptRequired("client-id", "OIDC client ID: ", interactive)
+		if err != nil {
+			return err
+		}
+		s.clientID = v
+	}
+	// Client secret is optional for public (PKCE-only) clients.
+	if s.secret == "" && interactive {
+		v, err := promptSecret(s.out, s.stdin, "OIDC client secret (blank=public): ", s.isTerminal, s.readPassword)
+		if err != nil {
+			return err
+		}
+		s.secret = v
+	}
+	if s.issuerURL == "" || s.clientID == "" {
+		return errors.New("--issuer-url and --client-id are required for oidc")
+	}
+	cfg := OIDCLoginConfig{
+		IssuerURL:    s.issuerURL,
+		ClientID:     s.clientID,
+		ClientSecret: s.secret,
+		RedirectURI:  s.redirectURI,
+		NoBrowser:    s.noBrowser,
+		OpenBrowser:  s.openBrowser,
+	}
+	res, err := loginOIDC(context.Background(), cfg, s.out)
+	if err != nil {
+		return err
+	}
+	s.token = res.IDToken
+	s.authMethod = loginMethodOIDC
+	return saveOIDCLoginConfig(s, s.endpoint, s.acp, res)
+}
+
+// promptRequired reads a labelled value interactively; when not a terminal it
+// returns an error telling the user to supply the matching flag.
+func (s *settings) promptRequired(flag, label string, interactive bool) (string, error) {
+	if !interactive {
+		return "", fmt.Errorf("--%s is required (or run `aoctl login` in a terminal to be prompted)", flag)
+	}
+	return promptLine(s.out, s.stdin, label)
+}
+
+// promptRequiredSecret is the no-echo variant of promptRequired. When a terminal
+// is attached it reads the secret without echo; otherwise it errors with a hint
+// (so non-TTY callers must pass the flag).
+func (s *settings) promptRequiredSecret(flag, label string, interactive bool) (string, error) {
+	if !interactive {
+		return "", fmt.Errorf("--%s is required (or run `aoctl login` in a terminal to be prompted)", flag)
+	}
+	return promptSecret(s.out, s.stdin, label, s.isTerminal, s.readPassword)
+}
+
+// refreshOIDCIfNeeded refreshes an expired OIDC id_token using the cached refresh
+// token. It is best-effort: a failure returns an error (logged by the caller)
+// but never panics. Returns (newToken, refreshed, err).
+func (s *settings) refreshOIDCIfNeeded(cfg *Config) (string, bool, error) {
+	// Decide whether the id_token is expired (with grace).
+	expStr := cfg.IDTokenExpiry
+	var exp time.Time
+	if expStr != "" {
+		if e, err := time.Parse(time.RFC3339, expStr); err == nil {
+			exp = e
+		}
+	} else if e, err := jwtExpiry(cfg.Token); err == nil {
+		exp = e
+	}
+	if !exp.IsZero() && time.Now().Before(exp.Add(-oidcLoginGracePeriod)) {
+		return "", false, nil // still valid
+	}
+	if cfg.RefreshToken == "" {
+		return "", false, nil // nothing to refresh with
+	}
+	redirectURI := cfg.RedirectURI
+	if redirectURI == "" {
+		redirectURI = defaultOIDCRedirectURI
+	}
+	provider, err := oidc.NewProvider(context.Background(), oidc.Config{
+		IssuerURL:    cfg.IssuerURL,
+		ClientID:     cfg.ClientID,
+		ClientSecret: cfg.ClientSecret,
+		RedirectURI:  redirectURI,
+	})
+	if err != nil {
+		return "", false, fmt.Errorf("discovering OIDC provider: %w", err)
+	}
+	newID, newRefresh, err := provider.Refresh(context.Background(), cfg.RefreshToken)
+	if err != nil {
+		return "", false, err
+	}
+	newExp, _ := jwtExpiry(newID)
+	updated := *cfg
+	updated.Token = newID
+	updated.RefreshToken = newRefresh
+	if !newExp.IsZero() {
+		updated.IDTokenExpiry = newExp.UTC().Format(time.RFC3339)
+	}
+	if err := saveConfig(&updated); err != nil {
+		// Non-fatal: the in-memory token is still returned to the caller.
+		_, _ = fmt.Fprintf(s.errw, "warning: could not persist refreshed OIDC token: %v\n", err)
+	}
+	return newID, true, nil
+}
+
+// saveLoginConfig persists an OAuth login (token only).
+func saveLoginConfig(endpoint, acp, token, authMethod string) error {
+	return saveConfig(&Config{
+		Endpoint:   endpoint,
+		ACP:        acp,
+		Token:      token,
+		AuthMethod: authMethod,
+	})
+}
+
+// saveOIDCLoginConfig persists an OIDC login (token + refresh material).
+func saveOIDCLoginConfig(s *settings, endpoint, acp string, res *OIDCLoginResult) error {
+	cfg := &Config{
+		Endpoint:     endpoint,
+		ACP:          acp,
+		Token:        res.IDToken,
+		AuthMethod:   loginMethodOIDC,
+		IssuerURL:    s.issuerURL,
+		ClientID:     s.clientID,
+		ClientSecret: s.secret,
+		RedirectURI:  s.redirectURI,
+		RefreshToken: res.RefreshToken,
+	}
+	if !res.ExpiresAt.IsZero() {
+		cfg.IDTokenExpiry = res.ExpiresAt.UTC().Format(time.RFC3339)
+	}
+	return saveConfig(cfg)
 }
 
 // newRootCmd builds the command tree and returns it. Split out so tests can
@@ -739,13 +1002,19 @@ func newRootCmd() (*cobra.Command, *settings) { //nolint:gocyclo
 	}
 	s.out = os.Stdout
 	s.errw = os.Stderr
+	// Interactive-login seams. Tests override these; production uses the real
+	// terminal detector / cross-platform browser opener / os.Stdin.
+	s.stdin = bufio.NewReader(os.Stdin)
+	s.isTerminal = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
+	s.readPassword = term.ReadPassword
+	s.openBrowser = defaultOpenBrowser
 	root.PersistentFlags().StringVar(&s.endpoint, "endpoint", "", "External Task API base URL (default: $AOCTL_ENDPOINT or http://localhost:8084)") //nolint:lll
 
 	root.PersistentFlags().StringVar(&s.acp, "acp-endpoint", "", "ACP API base URL (default: http://localhost:8000)")
 	root.PersistentFlags().StringVar(&s.token, "token", "", "Bearer token (default: saved config)")
 	root.PersistentFlags().BoolVar(&s.insecure, "insecure", false, "skip TLS verification (local dev only)")
 	root.PersistentFlags().DurationVar(&s.timeout, "timeout", defaultTimeout, "HTTP timeout")
-	root.PersistentPreRunE = func(_ *cobra.Command, _ []string) error {
+	root.PersistentPreRunE = func(cmd *cobra.Command, _ []string) error {
 		// Resolve endpoint/acp-token from env or saved config when not given on the flag.
 		if s.endpoint == "" {
 			s.endpoint = os.Getenv("AOCTL_ENDPOINT")
@@ -753,19 +1022,33 @@ func newRootCmd() (*cobra.Command, *settings) { //nolint:gocyclo
 		if s.acp == "" {
 			s.acp = os.Getenv("AOCTL_ACP_ENDPOINT")
 		}
-		if s.endpoint == "" || s.token == "" || s.acp == "" {
-			cfg, err := loadConfig()
-			if err != nil {
-				return err
-			}
-			if s.endpoint == "" {
-				s.endpoint = cfg.Endpoint
-			}
-			if s.acp == "" {
-				s.acp = cfg.ACP
-			}
-			if s.token == "" {
-				s.token = cfg.Token
+		tokenFromFlag := s.token != ""
+		cfg, err := loadConfig()
+		if err != nil {
+			return err
+		}
+		if s.endpoint == "" {
+			s.endpoint = cfg.Endpoint
+		}
+		if s.acp == "" {
+			s.acp = cfg.ACP
+		}
+		if s.token == "" {
+			s.token = cfg.Token
+		}
+		// Best-effort OIDC session refresh: when the cached token is an OIDC
+		// id_token that is expired (or close to it) and a refresh token is
+		// available, mint a fresh one. Skipped for `login` (which establishes a
+		// new session) and when a token was supplied via --token (untouched).
+		// Refresh failures are non-fatal — the API call surfaces a clear 401.
+		// NOTE: we read cfg.AuthMethod here (NOT s.authMethod) so a --auth-method
+		// flag on the current command is never clobbered by the saved config.
+		if cmd.Name() != loginCmd && !tokenFromFlag && s.token != "" &&
+			cfg.AuthMethod == loginMethodOIDC && cfg.RefreshToken != "" {
+			if fresh, refreshed, rerr := s.refreshOIDCIfNeeded(cfg); rerr != nil {
+				_, _ = fmt.Fprintf(s.errw, "warning: OIDC token refresh failed: %v\n", rerr)
+			} else if refreshed {
+				s.token = fresh
 			}
 		}
 		return nil
@@ -774,32 +1057,37 @@ func newRootCmd() (*cobra.Command, *settings) { //nolint:gocyclo
 	// login
 	login := &cobra.Command{
 		Use:   "login",
-		Short: "Exchange client credentials for a bearer token and cache it",
+		Short: "Authenticate (OAuth client_credentials or OIDC authorization code) and cache a bearer token",
+		Long: `Authenticate to agent-orca and cache a bearer token for subsequent commands.
+
+Two methods are supported:
+  oauth — OAuth2 client_credentials exchange (POST /oauth/token). Supplied with
+          --client-id + --client-secret, or prompted for interactively.
+  oidc  — OIDC authorization-code flow: the CLI opens your browser at the IdP,
+          catches the loopback redirect, exchanges the code for an id_token, and
+          uses it directly as a bearer token. The id_token is refreshed behind
+          the scenes using the refresh token so the session survives its short
+          lifetime.
+
+With no --auth-method (and no credentials) aoctl presents an interactive
+selection menu — the CLI analogue of the UI's /oauth/login tenant picker.
+`,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			if s.clientID == "" || s.secret == "" {
-				return errors.New("--client-id and --client-secret are required")
-			}
 			if s.endpoint == "" {
 				s.endpoint = defaultEndpoint
 			}
-			c := newClient(s.endpoint, s.acp, "", s.timeout, s.insecure)
-			tok, err := c.Login(context.Background(), s.clientID, s.secret)
-			if err != nil {
-				return err
-			}
-			s.token = tok
 			if s.acp == "" {
 				s.acp = defaultACP
 			}
-			if err := saveConfig(&Config{Endpoint: s.endpoint, ACP: s.acp, Token: tok}); err != nil {
-				return err
-			}
-			_, _ = fmt.Fprintln(s.out, "logged in to", s.endpoint)
-			return nil
+			return s.runLogin()
 		},
 	}
-	login.Flags().StringVar(&s.clientID, "client-id", "", "OAuth2 client id")
-	login.Flags().StringVar(&s.secret, "client-secret", "", "OAuth2 client secret")
+	login.Flags().StringVar(&s.authMethod, "auth-method", "", "auth method: 'oauth' (client_credentials) or 'oidc' (authorization code); empty = interactive picker") //nolint:lll
+	login.Flags().StringVar(&s.clientID, "client-id", "", "OAuth2 client id (oauth) or OIDC client id (oidc)")
+	login.Flags().StringVar(&s.secret, "client-secret", "", "OAuth2 client secret (oauth) or OIDC client secret (oidc); empty is allowed for public clients") //nolint:lll
+	login.Flags().StringVar(&s.issuerURL, "issuer-url", "", "OIDC issuer URL (required for --auth-method=oidc)")
+	login.Flags().StringVar(&s.redirectURI, "redirect-uri", defaultOIDCRedirectURI, "OIDC loopback callback URL the CLI listens on") //nolint:lll
+	login.Flags().BoolVar(&s.noBrowser, "no-browser", false, "print the authorization URL instead of opening a browser")
 
 	// tasks
 	tasks := &cobra.Command{Use: "tasks", Short: "Manage agent tasks"}

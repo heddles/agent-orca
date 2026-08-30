@@ -21,6 +21,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -30,6 +31,9 @@ import (
 	"github.com/go-jose/go-jose/v4"
 	"github.com/golang-jwt/jwt/v5"
 )
+
+// testNonce is the fixed nonce reused across mintIDToken call sites in these tests.
+const testNonce = "nonce1"
 
 func newTestKey(t *testing.T) *rsa.PrivateKey {
 	t.Helper()
@@ -69,9 +73,7 @@ func mintIDToken(t *testing.T, key *rsa.PrivateKey, issuer, aud, nonce string, e
 		"jti":   "test-jti",
 		"nonce": nonce,
 	}
-	for k, v := range extra {
-		claims[k] = v
-	}
+	maps.Copy(claims, extra)
 	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
 	s, err := tok.SignedString(key)
 	if err != nil {
@@ -101,14 +103,30 @@ func newMockIdP(t *testing.T, key *rsa.PrivateKey, idTokenFn func() string) stri
 			},
 		})
 	})
-	mux.HandleFunc("/oauth/token", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/oauth/token", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"id_token":     idTokenFn(),
-			"access_token": "mock-access-token",
-			"token_type":   "Bearer",
-			"expires_in":   3600,
-		})
+		switch r.FormValue("grant_type") {
+		case "refresh_token":
+			// Issue a fresh id_token (no nonce — refresh isn't nonce-bound) and a
+			// rotated refresh token so Provider.Refresh can be exercised.
+			issuer := "http://" + r.Host
+			fresh := mintIDToken(t, key, issuer, "agent-orca-dev", "", nil)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id_token":      fresh,
+				"access_token":  "refreshed-access-token",
+				"refresh_token": "rotated-refresh-token",
+				"token_type":    "Bearer",
+				"expires_in":    3600,
+			})
+		default: // authorization_code (used by ExchangeAndVerify)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id_token":      idTokenFn(),
+				"access_token":  "mock-access-token",
+				"refresh_token": "test-refresh-token",
+				"token_type":    "Bearer",
+				"expires_in":    3600,
+			})
+		}
 	})
 	mux.HandleFunc("/.well-known/jwks", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -146,7 +164,7 @@ func TestProvider_AuthCodeURL_GeneratesPKCE(t *testing.T) {
 	issuer := newMockIdP(t, key, func() string { return idToken })
 	p := newTestProvider(t, issuer)
 
-	authURL, codeVerifier := p.AuthCodeURL("state1", "nonce1")
+	authURL, codeVerifier := p.AuthCodeURL("state1", testNonce)
 	if !strings.Contains(authURL, "code_challenge=") {
 		t.Fatalf("auth URL missing code_challenge: %s", authURL)
 	}
@@ -161,13 +179,90 @@ func TestProvider_AuthCodeURL_GeneratesPKCE(t *testing.T) {
 	}
 }
 
+func TestExchangeAndVerify_CapturesRefreshToken(t *testing.T) {
+	key := newTestKey(t)
+	var idToken string
+	issuer := newMockIdP(t, key, func() string { return idToken })
+	p := newTestProvider(t, issuer)
+
+	_, verifier := p.AuthCodeURL("s", testNonce)
+	idToken = mintIDToken(t, key, issuer, "agent-orca-dev", testNonce, nil)
+
+	principal, err := p.ExchangeAndVerify(context.Background(), "any-code", testNonce, verifier)
+	if err != nil {
+		t.Fatalf("expected success, got: %v", err)
+	}
+	if principal.RefreshToken != "test-refresh-token" {
+		t.Fatalf("RefreshToken = %q, want test-refresh-token", principal.RefreshToken)
+	}
+}
+
+func TestRefresh_Positive(t *testing.T) {
+	key := newTestKey(t)
+	var idToken string
+	issuer := newMockIdP(t, key, func() string { return idToken })
+	p := newTestProvider(t, issuer)
+
+	// First do a normal exchange to obtain a refresh token.
+	_, verifier := p.AuthCodeURL("s", testNonce)
+	idToken = mintIDToken(t, key, issuer, "agent-orca-dev", testNonce, nil)
+	principal, err := p.ExchangeAndVerify(context.Background(), "any-code", testNonce, verifier)
+	if err != nil {
+		t.Fatalf("initial exchange: %v", err)
+	}
+	if principal.RefreshToken != "test-refresh-token" {
+		t.Fatalf("RefreshToken = %q, want test-refresh-token", principal.RefreshToken)
+	}
+
+	// Now refresh — the mock mints a fresh id_token + rotated refresh token.
+	newID, newRefresh, err := p.Refresh(context.Background(), principal.RefreshToken)
+	if err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if newID == "" || newID == principal.RawIDToken {
+		t.Fatalf("expected a fresh, different id_token; got empty or unchanged")
+	}
+	if newRefresh != "rotated-refresh-token" {
+		t.Fatalf("rotated RefreshToken = %q, want rotated-refresh-token", newRefresh)
+	}
+}
+
+func TestRefresh_EmptyToken(t *testing.T) {
+	key := newTestKey(t)
+	var idToken string
+	issuer := newMockIdP(t, key, func() string { return idToken })
+	p := newTestProvider(t, issuer)
+	if _, _, err := p.Refresh(context.Background(), ""); err == nil {
+		t.Fatal("expected error for empty refresh token")
+	}
+}
+
+func TestRefresh_WithoutNonce(t *testing.T) {
+	// A refresh-token grant response does not carry the original nonce; Refresh
+	// must still verify the minted id_token by iss/aud/exp only.
+	key := newTestKey(t)
+	var idToken string
+	issuer := newMockIdP(t, key, func() string { return idToken })
+	p := newTestProvider(t, issuer)
+
+	_, verifier := p.AuthCodeURL("s", testNonce)
+	idToken = mintIDToken(t, key, issuer, "agent-orca-dev", testNonce, nil)
+	principal, err := p.ExchangeAndVerify(context.Background(), "any-code", testNonce, verifier)
+	if err != nil {
+		t.Fatalf("initial exchange: %v", err)
+	}
+	if _, _, err := p.Refresh(context.Background(), principal.RefreshToken); err != nil {
+		t.Fatalf("Refresh without nonce should succeed: %v", err)
+	}
+}
+
 func TestExchangeAndVerify_Positive(t *testing.T) {
 	key := newTestKey(t)
 	var idToken string
 	issuer := newMockIdP(t, key, func() string { return idToken })
 	p := newTestProvider(t, issuer)
 
-	nonce := "nonce1"
+	nonce := testNonce
 	_, codeVerifier := p.AuthCodeURL("state1", nonce)
 
 	idToken = mintIDToken(t, key, issuer, "agent-orca-dev", nonce, map[string]any{
@@ -218,7 +313,7 @@ func TestExchangeAndVerify_WrongAudience(t *testing.T) {
 	var idToken string
 	issuer := newMockIdP(t, key, func() string { return idToken })
 	p := newTestProvider(t, issuer)
-	nonce := "nonce1"
+	nonce := testNonce
 	_, codeVerifier := p.AuthCodeURL("s", nonce)
 	idToken = mintIDToken(t, key, issuer, "wrong-audience", nonce, nil)
 	_, err := p.ExchangeAndVerify(context.Background(), "code", nonce, codeVerifier)
@@ -232,7 +327,7 @@ func TestExchangeAndVerify_ExpiredToken(t *testing.T) {
 	var idToken string
 	issuer := newMockIdP(t, key, func() string { return idToken })
 	p := newTestProvider(t, issuer)
-	nonce := "nonce1"
+	nonce := testNonce
 	_, codeVerifier := p.AuthCodeURL("s", nonce)
 
 	claims := jwt.MapClaims{
@@ -263,7 +358,7 @@ func TestExchangeAndVerify_TamperedSignature(t *testing.T) {
 	var idToken string
 	issuer := newMockIdP(t, key, func() string { return idToken })
 	p := newTestProvider(t, issuer)
-	nonce := "nonce1"
+	nonce := testNonce
 	_, codeVerifier := p.AuthCodeURL("s", nonce)
 	// Sign with a *different* key than the one advertised in the JWKS.
 	idToken = mintIDToken(t, other, issuer, "agent-orca-dev", nonce, nil)

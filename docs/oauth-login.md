@@ -27,6 +27,57 @@ OIDC bearer tokens they accept come from a `federated` `TenantConfig` (issuer + 
 verification). Interactive *browser* login is a UI-only feature; programmatic callers
 use `/oauth/token` (client_credentials) or a federated bearer JWT.
 
+## `aoctl` CLI login
+
+`aoctl login` offers the same two surfaces — OAuth `client_credentials` and OIDC
+authorization-code — via an **interactive selection menu** when no credentials are
+passed (the CLI analogue of the UI picker). The OIDC flow is driven end-to-end by
+`aoctl` itself (using the shared `internal/security/oidc` package), not by the
+operator's `/oauth/login` handler:
+
+```
+aoctl  -> * discover IdP via <issuerURL>/.well-known/openid-configuration
+aoctl  * build auth code URL (PKCE + nonce), open system browser (or --no-browser)
+aoctl  * start a loopback HTTP server on --redirect-uri (default 127.0.0.1:8765/callback)
+Browser<-> Idp login (Google/Keycloak/…)
+IdP    -> 302 redirect to the loopback callback with ?code=…&state=…
+aoctl  * verify state (CSRF), POST code+code_verifier -> id_token (+ refresh_token)
+aoctl  * verify id_token (JWKS signature, iss, aud, exp, nonce)
+aoctl  * persist id_token as the bearer token + refresh_token for automatic refresh
+aoctl  -> External/ACP API: Authorization: Bearer <id_token>
+operator * validateFederatedToken verifies the id_token against the federated TenantConfig's JWKS
+```
+
+Key points:
+
+- **No server-side OIDC changes are required** for this path. `aoctl` obtains a
+  standard OIDC id_token and presents it directly; the operator already validates
+  federated bearer JWTs via the issuer's public JWKS (`validateFederatedToken`).
+- The id_token's `iss`/`aud` must match a `federated` `TenantConfig` (issuer-only
+  trust admits any verified token from that issuer; `matchClaim`/`matchValue` adds
+  a claim gate). The `--client-id` you log in with is the same `clientID` configured
+  on the tenant.
+- `--client-secret` is optional: public/PKCE clients (e.g. a GitHub App, a
+  Google "Web client" used from a native context) omit it. Confidential clients
+  supply it (it is cached at `0600`, same as the token — see
+  [aoctl CLI Reference](aoctl-reference.md#aoctl-login)).
+- The cached `refreshToken` is used to **automatically refresh** the id_token when
+  it nears expiry, so `aoctl` keeps working without re-login. The OIDC config
+  (`issuerURL`, `clientID`, `clientSecret`, `redirectURI`) is also cached so the
+  refresh needs no further input. Refresh is skipped during `aoctl login` (which
+  establishes a fresh session) and when a token is supplied via `--token`.
+
+```bash
+# Interactive picker (recommended for first run)
+aoctl login
+
+# Non-interactive OIDC
+aoctl login --auth-method oidc \
+  --issuer-url https://accounts.google.com \
+  --client-id <your-client-id> \
+  --client-secret <your-client-secret>   # omit for public clients
+```
+
 ## How a browser logs in
 
 ```

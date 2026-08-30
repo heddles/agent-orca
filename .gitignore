@@ -11,6 +11,7 @@ Dockerfile.cross
 /main
 /model-router
 /mcp-ingester
+/aoctl
 
 # Test binary, built with `go test -c`
 *.test
