@@ -1098,6 +1098,13 @@ func newRootCmd() (*cobra.Command, *settings) { //nolint:gocyclo
 		if s.acp == "" {
 			s.acp = defaultACP
 		}
+		// Normalize both endpoints: strip any trailing known API route path
+		// (e.g. /agents, /v1/tasks) to prevent double-path URLs like
+		// http://host/agents/agents/{name}. This is idempotent for
+		// already-clean endpoints. Also applied in newClient for callers that
+		// construct a Client directly (e.g. tests, login).
+		s.endpoint = normalizeEndpoint(strings.TrimRight(s.endpoint, "/"))
+		s.acp = normalizeEndpoint(strings.TrimRight(s.acp, "/"))
 		if s.token == "" {
 			s.token = cfg.Token
 		}

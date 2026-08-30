@@ -272,7 +272,7 @@ func (b *acpBridge) awaitCompletion(ctx context.Context, runID, sessionID string
 				SessionID: sessionID,
 				Update:    acpUpdate{SessionUpdate: acpStatusAwaiting},
 			})
-			return acpStatusAwaiting
+			return acpStopReasonEndTurn
 		default: // created / pending
 			b.srv.notify(acpMethodSessionUpdate, acpUpdateParams{
 				SessionID: sessionID,
@@ -357,11 +357,15 @@ func (b *acpBridge) handleEvent(ev Event, sessionID, msgID string, emitted *bool
 		if err := json.Unmarshal([]byte(ev.Data), &payload); err == nil {
 			b.emitTerminalOutput(payload.Run, sessionID)
 		}
-		return acpStopReasonError
+		return acpStopReasonEndTurn
 	case "run.cancelled":
 		return acpStopReasonUserCancel
 	case "run.awaiting":
-		return acpStatusAwaiting
+		b.srv.notify(acpMethodSessionUpdate, acpUpdateParams{
+			SessionID: sessionID,
+			Update:    acpUpdate{SessionUpdate: acpStatusAwaiting},
+		})
+		return acpStopReasonEndTurn
 		// run.created / run.in-progress / message.created / message.completed are
 		// either already announced or folded into the chunk stream; ignore them so
 		// we don't emit spurious empty notifications.
@@ -407,7 +411,7 @@ func (b *acpBridge) pollToCompletion(ctx context.Context, runID, sessionID strin
 				b.emitTerminalOutput(run, sessionID)
 				return runStatusToStopReason(run.Status)
 			case acpStatusAwaiting:
-				return acpStatusAwaiting
+				return acpStopReasonEndTurn
 			}
 		}
 		if !b.retryWait(ctx, 300*time.Millisecond) {

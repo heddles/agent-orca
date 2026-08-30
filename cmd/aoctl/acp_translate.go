@@ -57,13 +57,21 @@ const (
 // ACP JSON-RPC protocol version string used in every message envelope.
 const acpJSONRPCVersion = "2.0"
 
-// ACP stop-reason constants returned in session/prompt results. These also
-// double as the acpStatusAwaiting value ("awaiting") when the run is waiting
-// for human input.
+// ACP stop-reason constants returned in session/prompt (PromptResponse)
+// results. Per the ACP spec
+// (https://agentclientprotocol.com/protocol/v1/prompt-turn#stop-reasons)
+// the stopReason field MUST be one of the StopReason enum:
+//
+//	end_turn | max_tokens | max_turn_requests | refusal | cancelled
+//
+// agent-orca run statuses that have no direct StopReason equivalent —
+// "awaiting" (waiting for the user, e.g. via _clarify) and "failed" — are
+// mapped to end_turn. The awaiting state is additionally surfaced to the
+// client through a session/update notification (see acpStatusAwaiting) so the
+// client can prompt the user for input even though the turn itself has ended.
 const (
 	acpStopReasonEndTurn    = "end_turn"
-	acpStopReasonError      = "error"
-	acpStopReasonUserCancel = "user_cancelled"
+	acpStopReasonUserCancel = "cancelled"
 )
 
 // ACP JSON-RPC notification method names.
@@ -216,17 +224,18 @@ func toAgentOrcaInput(blocks []acpContentBlock) []ACPMessage {
 	return []ACPMessage{{Role: "user", Parts: parts}}
 }
 
-// runStatusToStopReason maps an agent-orca ACP run status to an ACP stopReason.
+// runStatusToStopReason maps an agent-orca ACP run status to a valid ACP
+// StopReason. The ACP StopReason enum (end_turn | max_tokens |
+// max_turn_requests | refusal | cancelled) has no entry for "awaiting" or
+// "failed", so both map to end_turn. The awaiting state is signalled to the
+// client separately via a session/update notification; failed runs surface
+// their diagnostics through message chunks.
 func runStatusToStopReason(status string) string {
 	switch status {
-	case acpStatusCompleted:
+	case acpStatusCompleted, acpStatusFailed, acpStatusAwaiting:
 		return acpStopReasonEndTurn
-	case acpStatusFailed:
-		return acpStopReasonError
 	case acpStatusCancelled, acpStatusCancelling:
 		return acpStopReasonUserCancel
-	case acpStatusAwaiting:
-		return acpStatusAwaiting
 	default:
 		return acpStopReasonEndTurn
 	}

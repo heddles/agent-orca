@@ -132,6 +132,7 @@ agent-orca-resources:
   agents:
     - name: senior-programmer
       modelSelectorRef: "default"
+      disableClarify: true # fully autonomous — never blocks on a human
       systemPrompt: |
         You are a senior software engineer for the agent-orca project. You are precise,
         methodical, and thrifty with model spend. You know the codebase's architecture,
