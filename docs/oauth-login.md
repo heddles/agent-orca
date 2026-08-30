@@ -105,9 +105,15 @@ aoctl admin tenants list --token "$SA_TOKEN"
 
 The server authorizes the self-tenant read by matching the bearer id_token's
 resolved tenant (via `validateFederatedToken`) against the `<name>` in the path,
-so a valid token for tenant A gets a `403` against `/admin/tenants/b`. Per-tenant
-RBAC (groups → admin role) drops in later as a one-line role check on the same
-`TenantIdentity`; see [Future RBAC design](#future-rbac-design).
+so a valid token for tenant A gets a `404` against `/admin/tenants/b` (hidden
+rather than `403`, so cross-tenant enumeration is not revealed). Full-admin
+operations (list/create/delete/rotate-secret) still require a ServiceAccount; an
+OIDC id_token hitting one of those now receives a `401` with a hint naming the
+SA-token path and the single OIDC-allowed op, instead of a bare `unauthorized`.
+The allowed self-tenant operations live in a small, method-keyed capability table
+(`selfTenantAdminOps` in `internal/apiserver/external_api.go`); future per-tenant
+RBAC appends entries there, gated on a role resolved onto `TenantIdentity.Roles`;
+see [Future RBAC design](#future-rbac-design).
 
 ## How a browser logs in
 

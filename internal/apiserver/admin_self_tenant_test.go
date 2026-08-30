@@ -48,7 +48,13 @@ func federatedAuthForTest(t *testing.T) (*ExternalAuth, string, *rsa.PrivateKey)
 
 func doRequestWithPath(t *testing.T, h http.Handler, path, token string) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodGet, "http://example"+path, nil)
+	return doRequestWithMethod(t, h, http.MethodGet, path, token)
+}
+
+// doRequestWithMethod issues a request with the given method and bearer token.
+func doRequestWithMethod(t *testing.T, h http.Handler, method, path, token string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(method, "http://example"+path, nil)
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
@@ -68,24 +74,26 @@ func saAdminReviewer(username, token string) func(context.Context, string) (stri
 	}
 }
 
-func TestSingleTenantGet(t *testing.T) {
+func TestSelfTenantOp(t *testing.T) {
 	cases := []struct {
-		path string
-		name string
-		ok   bool
+		method string
+		path   string
+		name   string
+		ok     bool
 	}{
-		{"/admin/tenants/acme", "acme", true},
-		{"/admin/tenants", "", false},                    // list — SA-only
-		{"/admin/tenants/", "", false},                   // empty name — SA-only
-		{"/admin/tenants/acme/rotate-secret", "", false}, // mutation — SA-only
-		{"/admin/tenants/acme/sub", "", false},           // multi-segment — SA-only
-		{"/admin/agents", "", false},                     // wrong resource
-		{"/v1/tasks", "", false},
+		{http.MethodGet, "/admin/tenants/acme", "acme", true},             // self read
+		{http.MethodPost, "/admin/tenants/acme/rotate-secret", "", false}, // mutation - SA-only
+		{http.MethodDelete, "/admin/tenants/acme", "", false},             // delete - SA-only
+		{http.MethodGet, "/admin/tenants", "", false},                     // list - SA-only
+		{http.MethodGet, "/admin/tenants/", "", false},                    // empty name
+		{http.MethodGet, "/admin/tenants/acme/sub", "", false},            // multi-segment
+		{http.MethodGet, "/admin/agents", "", false},                      // wrong resource
+		{http.MethodGet, "/v1/tasks", "", false},
 	}
 	for _, c := range cases {
-		name, ok := singleTenantGet(c.path)
+		name, _, ok := selfTenantOp(c.method, c.path)
 		if ok != c.ok || name != c.name {
-			t.Errorf("singleTenantGet(%q) = (%q,%v), want (%q,%v)", c.path, name, ok, c.name, c.ok)
+			t.Errorf("selfTenantOp(%q,%q) = (%q,%v), want (%q,%v)", c.method, c.path, name, ok, c.name, c.ok)
 		}
 	}
 }
@@ -109,6 +117,10 @@ func TestRequireSAOrSelfTenant_Unit(t *testing.T) {
 		_, _ = w.Write([]byte("ok"))
 	})
 
+	// readCap mirrors the entry in selfTenantAdminOps today; the role-gated
+	// variant below is built from it to exercise the RBAC hook.
+	readCap := adminCapability{method: http.MethodGet, pathPrefix: "/admin/tenants/"}
+
 	base := &ExternalAPIServer{
 		auth:          auth,
 		reviewSAToken: func(context.Context, string) (string, bool, error) { return "", false, nil },
@@ -119,35 +131,55 @@ func TestRequireSAOrSelfTenant_Unit(t *testing.T) {
 		sa := *base
 		sa.reviewSAToken = saAdminReviewer("system:serviceaccount:agent-orca-system:agentorca-admin", saAdminToken)
 		sa.isAdminSA = func(context.Context, string, string) (bool, error) { return true, nil }
-		rr := doRequestWithPath(t, sa.requireSAOrSelfTenant("github-oidc", stub), "/admin/tenants/github-oidc", saAdminToken)
+		rr := doRequestWithPath(t, sa.requireSAOrSelfTenant("github-oidc", readCap, stub), "/admin/tenants/github-oidc", saAdminToken)
 		if rr.Code != http.StatusOK {
 			t.Fatalf("SA admin: expected 200, got %d %q", rr.Code, rr.Body.String())
 		}
 	})
 
 	t.Run("federated own tenant allowed", func(t *testing.T) {
-		rr := doRequestWithPath(t, base.requireSAOrSelfTenant("github-oidc", stub), "/admin/tenants/github-oidc", ownToken)
+		rr := doRequestWithPath(t, base.requireSAOrSelfTenant("github-oidc", readCap, stub), "/admin/tenants/github-oidc", ownToken)
 		if rr.Code != http.StatusOK {
 			t.Fatalf("federated own tenant: expected 200, got %d %q", rr.Code, rr.Body.String())
 		}
 	})
 
-	t.Run("federated other tenant forbidden", func(t *testing.T) {
-		rr := doRequestWithPath(t, base.requireSAOrSelfTenant("some-other-tenant", stub), "/admin/tenants/some-other-tenant", ownToken)
-		if rr.Code != http.StatusForbidden {
-			t.Fatalf("federated other tenant: expected 403, got %d %q", rr.Code, rr.Body.String())
+	t.Run("federated other tenant hidden", func(t *testing.T) {
+		rr := doRequestWithPath(t, base.requireSAOrSelfTenant("some-other-tenant", readCap, stub), "/admin/tenants/some-other-tenant", ownToken)
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("federated other tenant: expected 404, got %d %q", rr.Code, rr.Body.String())
+		}
+	})
+
+	t.Run("federated missing required role denied", func(t *testing.T) {
+		// Future-RBAC hook: a capability gated on a role the caller lacks is denied.
+		gated := adminCapability{method: http.MethodPost, pathPrefix: "/admin/tenants/", role: "tenant-admin"}
+		rr := doRequestWithPath(t, base.requireSAOrSelfTenant("github-oidc", gated, stub), "/admin/tenants/github-oidc", ownToken)
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("missing required role: expected 404, got %d %q", rr.Code, rr.Body.String())
+		}
+	})
+
+	t.Run("SA admin bypasses role gate", func(t *testing.T) {
+		sa := *base
+		sa.reviewSAToken = saAdminReviewer("system:serviceaccount:agent-orca-system:agentorca-admin", saAdminToken)
+		sa.isAdminSA = func(context.Context, string, string) (bool, error) { return true, nil }
+		gated := adminCapability{method: http.MethodPost, pathPrefix: "/admin/tenants/", role: "tenant-admin"}
+		rr := doRequestWithPath(t, sa.requireSAOrSelfTenant("github-oidc", gated, stub), "/admin/tenants/github-oidc", saAdminToken)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("SA admin with role gate: expected 200, got %d %q", rr.Code, rr.Body.String())
 		}
 	})
 
 	t.Run("no token unauthorized", func(t *testing.T) {
-		rr := doRequestWithPath(t, base.requireSAOrSelfTenant("github-oidc", stub), "/admin/tenants/github-oidc", "")
+		rr := doRequestWithPath(t, base.requireSAOrSelfTenant("github-oidc", readCap, stub), "/admin/tenants/github-oidc", "")
 		if rr.Code != http.StatusUnauthorized {
 			t.Fatalf("no token: expected 401, got %d", rr.Code)
 		}
 	})
 
 	t.Run("garbage token unauthorized", func(t *testing.T) {
-		rr := doRequestWithPath(t, base.requireSAOrSelfTenant("github-oidc", stub), "/admin/tenants/github-oidc", "not-a-jwt")
+		rr := doRequestWithPath(t, base.requireSAOrSelfTenant("github-oidc", readCap, stub), "/admin/tenants/github-oidc", "not-a-jwt")
 		if rr.Code != http.StatusUnauthorized {
 			t.Fatalf("garbage token: expected 401, got %d", rr.Code)
 		}
@@ -204,10 +236,19 @@ func TestHandler_AdminSelfTenantRoute(t *testing.T) {
 		}
 	})
 
-	t.Run("federated other tenant forbidden", func(t *testing.T) {
+	t.Run("federated other tenant hidden", func(t *testing.T) {
 		rr := doRequestWithPath(t, h, "/admin/tenants/other-tenant", ownerToken)
-		if rr.Code != http.StatusForbidden {
-			t.Fatalf("expected 403 for other tenant, got %d: %s", rr.Code, rr.Body.String())
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("expected 404 to hide other tenant, got %d: %s", rr.Code, rr.Body.String())
+		}
+	})
+
+	t.Run("federated cannot rotate own secret", func(t *testing.T) {
+		// rotate-secret is not in selfTenantAdminOps today, so it stays SA-only
+		// and an OIDC token is rejected with 401 before reaching the handler.
+		rr := doRequestWithMethod(t, h, http.MethodPost, "/admin/tenants/github-oidc/rotate-secret", ownerToken)
+		if rr.Code != http.StatusUnauthorized {
+			t.Fatalf("rotate must stay SA-only; expected 401 for OIDC, got %d: %s", rr.Code, rr.Body.String())
 		}
 	})
 
