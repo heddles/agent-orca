@@ -17,9 +17,11 @@ limitations under the License.
 package apiserver
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"os"
+	"time"
 )
 
 // corsMiddleware wraps an http.Handler with CORS headers.
@@ -75,4 +77,17 @@ func writeUIAuthFailure(w http.ResponseWriter, missingToken bool, validateErr er
 		msg = validateErr.Error()
 	}
 	writeAuthFailureJSON(w, msg)
+}
+
+// requestTimeoutMiddleware wraps an http.Handler with a per-request context
+// timeout. This bounds how long a single request (including auth + handler)
+// can take, preventing slow K8s API calls or unreachable OIDC providers from
+// hanging connections indefinitely behind an ingress (which manifests as a
+// 504 Gateway Time-out).
+func requestTimeoutMiddleware(next http.Handler, timeout time.Duration) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), timeout)
+		defer cancel()
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
 }

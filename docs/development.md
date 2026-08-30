@@ -224,6 +224,8 @@ skaffold dev
 
 # The 'dev' profile auto-activates on the kind-agent-orca-dev context.
 # It deploys: agent-orca operator + model-providers + UI, with webhooks in Ignore mode.
+# It also deploys an in-cluster Ollama (nomic-embed-text) for local embeddings
+# via config/samples/ollama-embedding-cluster.yaml (applied as raw manifests).
 ```
 
 Skaffold watches for Go and Dockerfile changes. When you save a file, it rebuilds

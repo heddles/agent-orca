@@ -477,7 +477,7 @@ func main() {
 	// Start the internal API server (port 8082) for agent-to-agent communication.
 	internalAPI := apiserver.New(k8sClient, mgr.GetClient())
 	go func() {
-		srv := &http.Server{Addr: ":8082", Handler: internalAPI.Handler()}
+		srv := newHTTPServer(":8082", internalAPI.Handler())
 		setupLog.Info("Starting internal API server", "addr", srv.Addr, "tls", internalAPICert != "")
 		if err := listenAndServeOptionalTLS(srv, internalAPICert, internalAPIKey); err != nil && err != http.ErrServerClosed {
 			setupLog.Error(err, "Internal API server failed")
@@ -523,7 +523,7 @@ func main() {
 		uiAPI.SetOIDCLogin(uiOIDC)
 	}
 	go func() {
-		srv := &http.Server{Addr: ":8083", Handler: uiAPI.Handler()}
+		srv := newHTTPServer(":8083", uiAPI.Handler())
 		setupLog.Info("Starting UI API server", "addr", srv.Addr, "tls", internalAPICert != "")
 		if err := listenAndServeOptionalTLS(srv, internalAPICert, internalAPIKey); err != nil && err != http.ErrServerClosed {
 			setupLog.Error(err, "UI API server failed")
@@ -534,7 +534,7 @@ func main() {
 	externalAPI := apiserver.NewExternalAPIServer(k8sClient, mgr.GetClient(), externalAuth, stateConfig.Backend != "", stateStore) //nolint:lll
 
 	go func() {
-		srv := &http.Server{Addr: ":8084", Handler: externalAPI.Handler()}
+		srv := newHTTPServer(":8084", externalAPI.Handler())
 		setupLog.Info("Starting external API server", "addr", srv.Addr, "tls", internalAPICert != "")
 		if err := listenAndServeOptionalTLS(srv, internalAPICert, internalAPIKey); err != nil && err != http.ErrServerClosed {
 			setupLog.Error(err, "External API server failed")
@@ -553,9 +553,9 @@ func main() {
 	// Start the ACP API server (port 8000) for ACP-compatible clients.
 	acpAPI := apiserver.NewACPServer(k8sClient, mgr.GetClient(), externalAuth, stateStore)
 	go func() {
-		srv := &http.Server{Addr: ":8000", Handler: acpAPI.Handler()}
-		setupLog.Info("Starting ACP API server", "addr", srv.Addr)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		srv := newHTTPServer(":8000", acpAPI.Handler())
+		setupLog.Info("Starting ACP API server", "addr", srv.Addr, "tls", internalAPICert != "")
+		if err := listenAndServeOptionalTLS(srv, internalAPICert, internalAPIKey); err != nil && err != http.ErrServerClosed {
 			setupLog.Error(err, "ACP API server failed")
 		}
 	}()
@@ -574,6 +574,22 @@ func listenAndServeOptionalTLS(srv *http.Server, certFile, keyFile string) error
 		return srv.ListenAndServeTLS(certFile, keyFile)
 	}
 	return srv.ListenAndServe()
+}
+
+// newHTTPServer creates an http.Server with sensible timeouts. Without
+// ReadTimeout/WriteTimeout, a handler that blocks indefinitely (e.g. a slow
+// K8s API call or unreachable OIDC provider during auth) holds the connection
+// open until the ingress/proxy gives up — surfacing as a 504 Gateway
+// Time-out with no server-side error. The 120 s write timeout accommodates
+// SSE token streams, which can be long-lived between flushes.
+func newHTTPServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:         addr,
+		Handler:      handler,
+		ReadTimeout:  120 * time.Second,
+		WriteTimeout: 120 * time.Second,
+		IdleTimeout:  120 * time.Second,
+	}
 }
 
 // bootstrapAdminSA creates (or ensures) an admin ServiceAccount in the operator

@@ -1,0 +1,48 @@
+apiVersion: v2
+name: programming-agent
+description: |
+  A senior programming agent for the agent-orca codebase. The agent is a "senior
+  software engineer on the agent-orca project" persona: it answers architecture
+  questions from a curated engineering KnowledgeBase (RAG), then drills into live
+  source via a read-only GitHub MCP server (stdio sidecar) when RAG results are
+  insufficient — back-filling what it reads into the KB with _rag_ingest so the vector
+  store grows richer with each session.
+
+  Components:
+    1. github-mcp  — MCPServer running the official GitHub MCP server
+       (ghcr.io/github/github-mcp-server) as a stdio sidecar, read-only, exposing
+       get_file_contents / search_code / list_commits / get_commit / list_branches /
+       search_commits. The GitHub PAT is injected from the github-mcp-token Secret
+       (read-only `repo` scope) — never baked into the chart.
+    2. agent-orca-codebase — KnowledgeBase ingested from a handbook ConfigMap,
+       embedded via the ollama-embed ModelSelector (local in-cluster embeddings).
+    3. senior-programmer — the Agent (openai-reference image) with a senior-engineer
+       system prompt and the GitHub MCP tools.
+    4. senior-programmer-chat — chat AgentDeployment with a warm pool of 1.
+
+  Requires:
+    - agent-orca operator + model-providers with the 'default' ModelSelector and
+      'ollama-embed' embedding selector deployed (skaffold dev -p dev, with
+      ollama-embeddings enabled for local embeddings).
+    - GitHub PAT with repo (read) scope, injected via the githubToken value
+      (AGENT_ORCA_GITHUB_TOKEN env var under skaffold).
+
+  The agent image is the OpenAI-compatible reference agent
+  ghcr.io/agentorca/agent-orca/openai-reference:latest (built + kind-loaded by
+  `skaffold dev`; also publicly pullable from GHCR).
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - demo
+  - agents
+  - programming
+  - github-mcp
+  - mcp
+  - rag
+  - knowledgebase
+  - codebase
+dependencies:
+  - name: agent-orca-resources
+    version: "0.2.0"
+    repository: "file://../../agent-orca-resources"

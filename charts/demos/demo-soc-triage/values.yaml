@@ -60,7 +60,7 @@ agent-orca-resources:
       ingestion:
         configMapRefs:
           - name: soc-runbooks-content
-        syncIntervalSeconds: 0
+        syncIntervalSeconds: 3600
   # ── Tools ────────────────────────────────────────────────────────────────────
   #
   # cmdb-user-lookup, cmdb-ip-lookup, and render-incident-report are provided by

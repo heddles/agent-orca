@@ -111,6 +111,7 @@ type Event struct {
 // ACPAgentManifest mirrors the ACP GET /agents manifest for `aoctl agents list`.
 type ACPAgentManifest struct {
 	Name               string         `json:"name"`
+	Namespace          string         `json:"namespace,omitempty"`
 	Description        string         `json:"description"`
 	InputContentTypes  []string       `json:"input_content_types"`
 	OutputContentTypes []string       `json:"output_content_types"`
@@ -173,8 +174,8 @@ type Client struct {
 
 func newClient(endpoint, acp, token string, timeout time.Duration, insecure bool) *Client {
 	c := &Client{
-		Endpoint: strings.TrimRight(endpoint, "/"),
-		ACP:      strings.TrimRight(acp, "/"),
+		Endpoint: normalizeEndpoint(strings.TrimRight(endpoint, "/")),
+		ACP:      normalizeEndpoint(strings.TrimRight(acp, "/")),
 		Token:    token,
 		HTTP:     &http.Client{Timeout: timeout},
 	}
@@ -185,6 +186,38 @@ func newClient(endpoint, acp, token string, timeout time.Duration, insecure bool
 		c.HTTP.Transport = insecureTransport()
 	}
 	return c
+}
+
+// normalizeEndpoint strips a trailing known API route path from the endpoint
+// URL to prevent double-path issues. Users sometimes include a route segment
+// (e.g. "http://host/agents" or "http://host/tasks") when the base URL should
+// be just the host root, because the client appends routes like /agents/{name}
+// or /v1/tasks itself.
+//
+// Only exact trailing route matches are stripped, so legitimate proxy prefixes
+// (e.g. "http://host/acp") are preserved.
+func normalizeEndpoint(ep string) string {
+	u, err := url.Parse(ep)
+	if err != nil || u.Host == "" {
+		return ep
+	}
+	for _, route := range apiPathSuffixes {
+		if u.Path == route {
+			u.Path = ""
+			return u.String()
+		}
+	}
+	return ep
+}
+
+// apiPathSuffixes are route prefixes used by either the ACP API or the External
+// Task API. If a user includes one of these as a trailing path component in
+// --endpoint or --acp-endpoint, it is stripped to prevent double-path URLs.
+var apiPathSuffixes = []string{
+	// ACP API routes (cmd/aoctl/acp_translate.go appends these)
+	"/agents", "/runs", "/sessions", "/session",
+	// External Task API routes (cmd/aoctl/main.go appends these)
+	"/v1/tasks", "/tasks", "/admin/tenants", "/admin", "/oauth/token",
 }
 
 // tokenAuth attaches the bearer token if the caller supplied one.
@@ -248,13 +281,9 @@ func (c *Client) SubmitTask(ctx context.Context, sub TaskSubmission) (TaskRespon
 		return TaskResponse{}, 0, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusCreated {
-		return TaskResponse{}, resp.StatusCode, fmt.Errorf("%s", strings.TrimSpace(string(respBody)))
-	}
 	var tr TaskResponse
-	if err := json.Unmarshal(respBody, &tr); err != nil {
-		return TaskResponse{}, resp.StatusCode, fmt.Errorf("decoding task response: %w", err)
+	if err := decodeJSON(resp, &tr, http.StatusCreated); err != nil {
+		return TaskResponse{}, resp.StatusCode, err
 	}
 	return tr, resp.StatusCode, nil
 }
@@ -272,11 +301,11 @@ func (c *Client) GetTask(ctx context.Context, id string) (TaskResponse, error) {
 		return TaskResponse{}, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return TaskResponse{}, fmt.Errorf("get task failed (HTTP %d)", resp.StatusCode)
-	}
 	var tr TaskResponse
-	return tr, json.NewDecoder(resp.Body).Decode(&tr)
+	if err := decodeJSON(resp, &tr, http.StatusOK); err != nil {
+		return TaskResponse{}, err
+	}
+	return tr, nil
 }
 
 // ListTasks lists the caller's tasks, optionally filtered.
@@ -303,14 +332,11 @@ func (c *Client) ListTasks(ctx context.Context, agent, status string) ([]TaskRes
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("list tasks failed (HTTP %d)", resp.StatusCode)
-	}
 	var out struct {
 		Tasks []TaskResponse `json:"tasks"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, fmt.Errorf("decoding task list: %w", err)
+	if err := decodeJSON(resp, &out, http.StatusOK); err != nil {
+		return nil, err
 	}
 	return out.Tasks, nil
 }
@@ -421,14 +447,11 @@ func (c *Client) ListAgents(ctx context.Context) ([]ACPAgentManifest, error) {
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("list agents failed (HTTP %d)", resp.StatusCode)
-	}
 	var out struct {
 		Agents []ACPAgentManifest `json:"agents"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, fmt.Errorf("decoding agents list: %w", err)
+	if err := decodeJSON(resp, &out, http.StatusOK); err != nil {
+		return nil, err
 	}
 	return out.Agents, nil
 }
@@ -447,35 +470,42 @@ func (c *Client) GetAgentManifest(ctx context.Context, name string) (ACPAgentMan
 		return ACPAgentManifest{}, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return ACPAgentManifest{}, fmt.Errorf("get agent manifest failed (HTTP %d)", resp.StatusCode)
-	}
 	var m ACPAgentManifest
-	if err := json.NewDecoder(resp.Body).Decode(&m); err != nil {
-		return ACPAgentManifest{}, fmt.Errorf("decoding manifest: %w", err)
+	if err := decodeJSON(resp, &m, http.StatusOK); err != nil {
+		return ACPAgentManifest{}, err
 	}
 	return m, nil
 }
 
-// ACPRunRequest is the body for POST /agents/{name}/run.
-type ACPRunRequest struct {
-	Input     []ACPMessagePart `json:"input"`
-	SessionID string           `json:"session_id,omitempty"`
+// ACPMessagePart mirrors the ACP spec message part. A message is made of one or
+// more parts, each with a content_type and inline content (or a content_url).
+type ACPMessagePart struct {
+	Name        string `json:"name,omitempty"`
+	ContentType string `json:"content_type"`
+	Content     string `json:"content,omitempty"`
+	ContentURL  string `json:"content_url,omitempty"`
 }
 
-// ACPMessagePart is a single part of an ACP message.
-type ACPMessagePart struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+// ACPMessage mirrors the ACP spec message: a role plus an array of parts.
+type ACPMessage struct {
+	Role  string           `json:"role"`
+	Parts []ACPMessagePart `json:"parts"`
+}
+
+// ACPRunRequest is the body for POST /agents/{name}/run.
+type ACPRunRequest struct {
+	Input     []ACPMessage `json:"input"`
+	SessionID string       `json:"session_id,omitempty"`
 }
 
 // ACPRunResponse is the response from POST /agents/{name}/run.
 type ACPRunResponse struct {
-	AgentName string `json:"agent_name"`
-	SessionID string `json:"session_id,omitempty"`
-	RunID     string `json:"run_id"`
-	Status    string `json:"status"`
-	CreatedAt string `json:"created_at"`
+	AgentName  string `json:"agent_name"`
+	SessionID  string `json:"session_id,omitempty"`
+	RunID      string `json:"run_id"`
+	Status     string `json:"status"`
+	CreatedAt  string `json:"created_at"`
+	FinishedAt string `json:"finished_at,omitempty"`
 }
 
 // CreateAgentRun creates a new run for an agent via the ACP API.
@@ -498,9 +528,23 @@ func (c *Client) CreateAgentRun(ctx context.Context, agentName string, req ACPRu
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusCreated {
-		respBody, _ := io.ReadAll(resp.Body)
-		return ACPRunResponse{}, fmt.Errorf("create agent run failed (HTTP %d): %s", resp.StatusCode, strings.TrimSpace(string(respBody))) //nolint:lll
-
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxJSONBodyBytes))
+		// Try to parse an ACP error body ({code, message}) for a friendlier message.
+		var acpErr struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		}
+		_ = json.Unmarshal(respBody, &acpErr)
+		detail := strings.TrimSpace(string(respBody))
+		if acpErr.Code != "" || acpErr.Message != "" {
+			detail = fmt.Sprintf("[%s] %s", acpErr.Code, acpErr.Message)
+		}
+		hint := ""
+		if strings.Contains(string(respBody), "input content is required") {
+			hint = "\nHint: the server expects ACP-format input (messages with parts). " +
+				"Run `aoctl agents describe " + agentName + "` to see the expected input schema."
+		}
+		return ACPRunResponse{}, fmt.Errorf("create agent run %q failed (HTTP %d): %s%s", agentName, resp.StatusCode, detail, hint) //nolint:lll
 	}
 	var out ACPRunResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
@@ -555,15 +599,12 @@ func (c *Client) ListTenants(ctx context.Context) ([]AdminTenantResponse, error)
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("list tenants failed (HTTP %d)", resp.StatusCode)
-	}
 	var out struct {
 		Tenants []AdminTenantResponse `json:"tenants"`
 		Count   int                   `json:"count"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, fmt.Errorf("decoding tenants list: %w", err)
+	if err := decodeJSON(resp, &out, http.StatusOK); err != nil {
+		return nil, err
 	}
 	return out.Tenants, nil
 }
@@ -582,12 +623,9 @@ func (c *Client) GetTenant(ctx context.Context, name string) (AdminTenantRespons
 		return AdminTenantResponse{}, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return AdminTenantResponse{}, fmt.Errorf("get tenant failed (HTTP %d)", resp.StatusCode)
-	}
 	var out AdminTenantResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return AdminTenantResponse{}, fmt.Errorf("decoding get tenant response: %w", err)
+	if err := decodeJSON(resp, &out, http.StatusOK); err != nil {
+		return AdminTenantResponse{}, err
 	}
 	return out, nil
 }
@@ -605,15 +643,11 @@ func (c *Client) RotateTenantSecret(ctx context.Context, name string) (string, e
 		return "", err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("rotate secret failed (HTTP %d): %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
-	}
 	var out struct {
 		ClientSecret string `json:"clientSecret"`
 	}
-	if err := json.Unmarshal(respBody, &out); err != nil {
-		return "", fmt.Errorf("decoding rotate response: %w", err)
+	if err := decodeJSON(resp, &out, http.StatusOK); err != nil {
+		return "", err
 	}
 	return out.ClientSecret, nil
 }
@@ -684,6 +718,10 @@ func configPath() (string, error) {
 }
 
 // loadConfig reads the saved config, returning an empty Config if absent.
+// Defaults for Endpoint/ACP are intentionally NOT applied here — the caller
+// (PersistentPreRunE) needs to distinguish "not set" from "explicitly set to
+// the default" so it can derive the ACP endpoint from the External Task API
+// endpoint when only one was configured.
 func loadConfig() (*Config, error) {
 	p, err := configPath()
 	if err != nil {
@@ -692,19 +730,13 @@ func loadConfig() (*Config, error) {
 	b, err := os.ReadFile(p)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return &Config{Endpoint: defaultEndpoint, ACP: defaultACP}, nil
+			return &Config{}, nil
 		}
 		return nil, err
 	}
 	var cfg Config
 	if err := json.Unmarshal(b, &cfg); err != nil {
 		return nil, err
-	}
-	if cfg.Endpoint == "" {
-		cfg.Endpoint = defaultEndpoint
-	}
-	if cfg.ACP == "" {
-		cfg.ACP = defaultACP
 	}
 	return &cfg, nil
 }
@@ -748,6 +780,9 @@ type settings struct {
 	rpm             int
 	concurrent      int
 	budgetPerDay    string
+	file            string // --file: read input from a file instead of --input/stdin
+	contentType     string // --content-type: MIME type for the message part (default text/plain)
+	editor          string // --editor: editor to configure for `acp setup` (e.g. zed)
 	out, errw       io.Writer
 
 	// OIDC interactive-login fields. authMethod/issuerURL/redirectURI/noBrowser
@@ -757,6 +792,7 @@ type settings struct {
 	issuerURL    string
 	redirectURI  string
 	noBrowser    bool
+	jsonOut      bool                      // --json / AOCTL_OUTPUT_FORMAT: emit JSON instead of human tables
 	stdin        *bufio.Reader             // interactive stdin (shared reader)
 	isTerminal   func() bool               // true when stdin is a TTY (default: real check)
 	readPassword func(int) ([]byte, error) // reads a secret without echo (default: term.ReadPassword)
@@ -1014,6 +1050,7 @@ func newRootCmd() (*cobra.Command, *settings) { //nolint:gocyclo
 	root.PersistentFlags().StringVar(&s.token, "token", "", "Bearer token (default: saved config)")
 	root.PersistentFlags().BoolVar(&s.insecure, "insecure", false, "skip TLS verification (local dev only)")
 	root.PersistentFlags().DurationVar(&s.timeout, "timeout", defaultTimeout, "HTTP timeout")
+	root.PersistentFlags().BoolVar(&s.jsonOut, "json", false, "emit machine-readable JSON instead of human-readable tables (env: AOCTL_OUTPUT_FORMAT=json)") //nolint:lll
 	root.PersistentPreRunE = func(cmd *cobra.Command, _ []string) error {
 		// Resolve endpoint/acp-token from env or saved config when not given on the flag.
 		if s.endpoint == "" {
@@ -1022,7 +1059,17 @@ func newRootCmd() (*cobra.Command, *settings) { //nolint:gocyclo
 		if s.acp == "" {
 			s.acp = os.Getenv("AOCTL_ACP_ENDPOINT")
 		}
+		if os.Getenv("AOCTL_OUTPUT_FORMAT") != "" && !root.PersistentFlags().Changed("json") {
+			s.jsonOut = strings.EqualFold(os.Getenv("AOCTL_OUTPUT_FORMAT"), "json") ||
+				strings.EqualFold(os.Getenv("AOCTL_OUTPUT_FORMAT"), "true")
+		}
 		tokenFromFlag := s.token != ""
+		// Also accept the bearer token via AOCTL_TOKEN env var (useful for the
+		// Zed-launched `aoctl acp serve` subprocess which receives it via the
+		// agent_servers env map written by `setup`).
+		if s.token == "" {
+			s.token = os.Getenv("AOCTL_TOKEN")
+		}
 		cfg, err := loadConfig()
 		if err != nil {
 			return err
@@ -1033,6 +1080,31 @@ func newRootCmd() (*cobra.Command, *settings) { //nolint:gocyclo
 		if s.acp == "" {
 			s.acp = cfg.ACP
 		}
+		// If the ACP endpoint was never explicitly configured (flag, env, or
+		// saved config), derive it from the External Task API endpoint by
+		// stripping any path component to get just scheme://host[:port]. In
+		// most deployments (including the Helm ingress) both APIs are served
+		// from the same host but at different root paths (/v1/tasks vs
+		// /agents), so the ACP base URL is the host root of the task endpoint.
+		if s.acp == "" && s.endpoint != "" {
+			if u, err := url.Parse(s.endpoint); err == nil && u.Host != "" {
+				s.acp = u.Scheme + "://" + u.Host
+			}
+		}
+		// Apply hard defaults for both endpoints if still unset.
+		if s.endpoint == "" {
+			s.endpoint = defaultEndpoint
+		}
+		if s.acp == "" {
+			s.acp = defaultACP
+		}
+		// Normalize both endpoints: strip any trailing known API route path
+		// (e.g. /agents, /v1/tasks) to prevent double-path URLs like
+		// http://host/agents/agents/{name}. This is idempotent for
+		// already-clean endpoints. Also applied in newClient for callers that
+		// construct a Client directly (e.g. tests, login).
+		s.endpoint = normalizeEndpoint(strings.TrimRight(s.endpoint, "/"))
+		s.acp = normalizeEndpoint(strings.TrimRight(s.acp, "/"))
 		if s.token == "" {
 			s.token = cfg.Token
 		}
@@ -1073,12 +1145,6 @@ With no --auth-method (and no credentials) aoctl presents an interactive
 selection menu — the CLI analogue of the UI's /oauth/login tenant picker.
 `,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			if s.endpoint == "" {
-				s.endpoint = defaultEndpoint
-			}
-			if s.acp == "" {
-				s.acp = defaultACP
-			}
 			return s.runLogin()
 		},
 	}
@@ -1127,10 +1193,17 @@ selection menu — the CLI analogue of the UI's /oauth/login tenant picker.
 			if err != nil {
 				return err
 			}
-			for _, t := range tasks {
-				_ = printTask(s.out, t)
-			}
-			return nil
+			return s.render(tasks, func(w io.Writer) error {
+				if len(tasks) == 0 {
+					_, _ = fmt.Fprintln(w, "No tasks found.")
+					return nil
+				}
+				tw := newTableWriter().header("ID", "AGENT", "STATUS")
+				for _, t := range tasks {
+					tw.row(t.ID, t.Agent, t.Status)
+				}
+				return tw.render(w)
+			})
 		},
 	}
 	list.Flags().StringVar(&s.agent, "agent", "", "filter by agent")
@@ -1184,10 +1257,17 @@ selection menu — the CLI analogue of the UI's /oauth/login tenant picker.
 			if err != nil {
 				return err
 			}
-			for _, a := range agentList {
-				_, _ = fmt.Fprintf(s.out, "%-30s %s\n", a.Name, a.Description)
-			}
-			return nil
+			return s.render(agentList, func(w io.Writer) error {
+				if len(agentList) == 0 {
+					_, _ = fmt.Fprintln(w, "No agents found.")
+					return nil
+				}
+				tw := newTableWriter().header("NAME", "NAMESPACE")
+				for _, a := range agentList {
+					tw.row(a.Name, a.Namespace)
+				}
+				return tw.render(w)
+			})
 		},
 	})
 
@@ -1200,33 +1280,89 @@ selection menu — the CLI analogue of the UI's /oauth/login tenant picker.
 			if err != nil {
 				return err
 			}
-			return printJSON(s.out, manifest)
+			return s.render(manifest, func(w io.Writer) error {
+				return printAgentManifestHuman(w, manifest)
+			})
 		},
 	})
 
 	agentRun := &cobra.Command{
 		Use:   "run <name>",
 		Short: "Run an agent (POST /agents/{name}/run)",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
-			if s.input == "" {
-				return errors.New("--input is required")
+		Long: `Launch a run against an ACP agent and get a run ID back.
+
+The agent name is the first positional argument.  The task input can be
+supplied three ways (checked in this order):
+
+  1. --input <text> … inline text.                  (most common)
+  2. --file <path>  … read input from a file.
+  3. stdin         … when --input is omitted and stdin is NOT a terminal,
+                       the command reads piped content.
+
+The input is wrapped as an ACP "user" message with a single text part whose
+content-type defaults to text/plain (override with --content-type).  The run is
+created asynchronously: the server returns a run_id immediately that you can
+poll with GET /runs/{run_id} or stream with GET /runs/{run_id}/events.
+
+For conversation continuity, pass the same --session-id across successive
+calls so context chains.
+
+Examples:
+
+  # Simple one-liner
+  aoctl agents run support-bot --input "How do I reset my password?"
+
+  # Read the prompt from a file
+  aoctl agents run support-bot --file prompt.txt
+
+  # Pipe input from another command
+  cat alert.txt | aoctl agents run soc-enricher-agent
+
+  # Chain a conversation
+  aoctl agents run support-bot --input "Hello, I'm Matthew" --session-id chat-1
+  aoctl agents run support-bot --input "Follow up please"  --session-id chat-1
+
+  # Machine-readable output
+  aoctl agents run support-bot --input "hi" --json
+`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			agentName := args[0]
+
+			inputText, err := resolveRunInput(s, cmd)
+			if err != nil {
+				return err
 			}
+			if inputText == "" {
+				return fmt.Errorf("--input, --file, or piped stdin is required for `aoctl agents run %s`", agentName) //nolint:lll
+			}
+
 			req := ACPRunRequest{
-				Input: []ACPMessagePart{{Role: "user", Content: s.input}},
+				Input: []ACPMessage{{
+					Role: "user",
+					Parts: []ACPMessagePart{{
+						ContentType: s.contentType,
+						Content:     inputText,
+					}},
+				}},
 			}
 			if s.sessionID != "" {
 				req.SessionID = s.sessionID
 			}
-			resp, err := s.client().CreateAgentRun(context.Background(), args[0], req)
+
+			resp, err := s.client().CreateAgentRun(context.Background(), agentName, req)
 			if err != nil {
 				return err
 			}
-			return printJSON(s.out, resp)
+			return s.render(resp, func(w io.Writer) error {
+				return printAgentRunHuman(w, resp)
+			})
 		},
 	}
-	agentRun.Flags().StringVar(&s.input, "input", "", "task input (required)")
+	agentRun.Flags().StringVar(&s.input, "input", "", "task input (inline text)")
+	agentRun.Flags().StringVar(&s.file, "file", "", "read input from a file (alternative to --input)")
 	agentRun.Flags().StringVar(&s.sessionID, "session-id", "", "session ID for conversation continuity")
+	agentRun.Flags().StringVar(&s.contentType, "content-type", "text/plain", "MIME type of the input (e.g. text/plain, application/json)") //nolint:lll
 	agents.AddCommand(agentRun)
 
 	root.AddCommand(login, tasks, agents)
@@ -1251,10 +1387,17 @@ Obtain one via 'kubectl create token agentorca-admin -n agent-orca-system' or th
 			if err != nil {
 				return err
 			}
-			for _, t := range tenants {
-				_, _ = fmt.Fprintf(s.out, "%-30s %-20s %s\n", t.Name, t.ClientID, t.TargetNamespace)
-			}
-			return nil
+			return s.render(tenants, func(w io.Writer) error {
+				if len(tenants) == 0 {
+					_, _ = fmt.Fprintln(w, "No tenants found.")
+					return nil
+				}
+				tw := newTableWriter().header("NAME", "CLIENT ID", "NAMESPACE")
+				for _, t := range tenants {
+					tw.row(t.Name, t.ClientID, t.TargetNamespace)
+				}
+				return tw.render(w)
+			})
 		},
 	}
 
@@ -1345,6 +1488,10 @@ Obtain one via 'kubectl create token agentorca-admin -n agent-orca-system' or th
 	adminTenants.AddCommand(adminList, adminGet, adminCreate, adminRotate, adminDelete)
 	admin.AddCommand(adminTenants)
 	root.AddCommand(admin)
+
+	// ACP bridge: expose agent-orca agents to editors (Zed/ACP) over stdio.
+	root.AddCommand(newACPCommand(s))
+
 	return root, s
 }
 
@@ -1386,6 +1533,127 @@ func printTask(w io.Writer, tr TaskResponse) error {
 	return nil
 }
 
+// resolveRunInput determines the task input text from --input, --file, or piped
+// stdin.  It returns an error when the combination is ambiguous or when stdin
+// is a terminal (i.e. the user forgot to supply input interactively).
+func resolveRunInput(s *settings, cmd *cobra.Command) (string, error) {
+	inputSet := cmd.Flags().Changed("input")
+	fileSet := cmd.Flags().Changed("file")
+
+	if inputSet && fileSet {
+		return "", errors.New("--input and --file are mutually exclusive; use one or the other")
+	}
+
+	if s.input != "" {
+		return s.input, nil
+	}
+
+	if s.file != "" {
+		b, err := os.ReadFile(s.file)
+		if err != nil {
+			return "", fmt.Errorf("reading input file %q: %w", s.file, err)
+		}
+		return string(b), nil
+	}
+
+	// Neither flag was set — try stdin (works for `echo ... | aoctl agents run ...`).
+	if s.stdin != nil && !s.isTerminal() {
+		data, err := io.ReadAll(s.stdin)
+		if err != nil {
+			return "", fmt.Errorf("reading stdin: %w", err)
+		}
+		text := strings.TrimSpace(string(data))
+		if text != "" {
+			return text, nil
+		}
+	}
+
+	// Fall through: no input anywhere.
+	return "", nil
+}
+
+// printAgentRunHuman renders an agent-run response in a friendly, multi-line
+// format rather than raw JSON.
+func printAgentRunHuman(w io.Writer, resp ACPRunResponse) error {
+	_, _ = fmt.Fprintln(w, "✓ Run created")
+	_, _ = fmt.Fprintf(w, "  Agent:     %s\n", resp.AgentName)
+	_, _ = fmt.Fprintf(w, "  Run ID:    %s\n", resp.RunID)
+	_, _ = fmt.Fprintf(w, "  Status:    %s\n", resp.Status)
+	_, _ = fmt.Fprintf(w, "  Created:   %s\n", resp.CreatedAt)
+	if resp.SessionID != "" {
+		_, _ = fmt.Fprintf(w, "  Session:   %s\n", resp.SessionID)
+	}
+	if resp.FinishedAt != "" {
+		_, _ = fmt.Fprintf(w, "  Finished:  %s\n", resp.FinishedAt)
+	}
+	_, _ = fmt.Fprintln(w)
+	_, _ = fmt.Fprintf(w, "  Poll:  aoctl tasks get %s  (External Task API)\n", resp.RunID)
+	_, _ = fmt.Fprintf(w, "  Or query: GET /runs/%s  (ACP API on --acp-endpoint)\n", resp.RunID)
+	return nil
+}
+
+// printAgentManifestHuman renders an ACP agent manifest in a human-readable form:
+// a header (name + namespace) followed by labelled sections (content types,
+// tools, knowledge bases, guardrails, clarify) and pretty-printed schemas.
+func printAgentManifestHuman(w io.Writer, m ACPAgentManifest) error {
+	_, _ = fmt.Fprintf(w, "Name:        %s\n", m.Name)
+	if m.Namespace != "" {
+		_, _ = fmt.Fprintf(w, "Namespace:   %s\n", m.Namespace)
+	}
+	_, _ = fmt.Fprintf(w, "Description: %s\n", m.Description)
+	_, _ = fmt.Fprintln(w)
+
+	if len(m.InputContentTypes) > 0 || len(m.OutputContentTypes) > 0 {
+		_, _ = fmt.Fprintf(w, "Input content types:  %s\n", strings.Join(m.InputContentTypes, ", "))
+		_, _ = fmt.Fprintf(w, "Output content types: %s\n\n", strings.Join(m.OutputContentTypes, ", "))
+	}
+
+	if len(m.AllowedTools) > 0 {
+		_, _ = fmt.Fprintln(w, "Tools:")
+		tw := newTableWriter().header("NAME", "DESCRIPTION")
+		for _, t := range m.AllowedTools {
+			desc := t.Description
+			if len(desc) > 60 {
+				desc = desc[:57] + "..."
+			}
+			tw.row(t.Name, desc)
+		}
+		if err := tw.render(w); err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintln(w)
+	}
+
+	if len(m.KnowledgeBases) > 0 {
+		_, _ = fmt.Fprintf(w, "Knowledge bases: %s\n\n", strings.Join(m.KnowledgeBases, ", "))
+	}
+	if m.GuardrailPolicy != "" {
+		_, _ = fmt.Fprintf(w, "Guardrail policy: %s\n\n", m.GuardrailPolicy)
+	}
+	_, _ = fmt.Fprintf(w, "Clarify available: %t\n", m.ClarifyAvailable)
+
+	if err := printSchema(w, "Input schema", m.InputSchema); err != nil {
+		return err
+	}
+	if err := printSchema(w, "Output schema", m.OutputSchema); err != nil {
+		return err
+	}
+	return nil
+}
+
+// printSchema pretty-prints a JSON schema map under a label, skipping empty maps.
+func printSchema(w io.Writer, label string, schema map[string]any) error {
+	if len(schema) == 0 {
+		return nil
+	}
+	b, err := json.MarshalIndent(schema, "", "  ")
+	if err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(w, "%s:\n%s\n", label, string(b))
+	return nil
+}
+
 // printJSON marshals v as indented JSON and writes it to w.
 func printJSON(w io.Writer, v any) error {
 	out, err := json.MarshalIndent(v, "", "  ")
@@ -1394,6 +1662,16 @@ func printJSON(w io.Writer, v any) error {
 	}
 	_, _ = fmt.Fprintln(w, string(out))
 	return nil
+}
+
+// render prints v as JSON when --json is requested, otherwise delegates to the
+// human-readable formatter. It is the single switch every list/describe command
+// uses to support machine-readable output (note 3).
+func (s *settings) render(v any, human func(io.Writer) error) error {
+	if s.jsonOut {
+		return printJSON(s.out, v)
+	}
+	return human(s.out)
 }
 
 // Execute runs the root command.

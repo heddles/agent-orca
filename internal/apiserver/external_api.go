@@ -133,23 +133,85 @@ func (s *ExternalAPIServer) Handler() http.Handler {
 	mux.HandleFunc("/v1/tasks", s.handleTasks)
 	mux.HandleFunc("/v1/tasks/", s.handleTaskByID)
 
-	// /admin/* is a separate surface: authenticated by Kubernetes ServiceAccount
-	// token + the `agentorca.io/admin` label (requireAdminAuth), NOT by the tenant
-	// JWT middleware above.
+	// /admin/* is the cluster-wide admin surface. Two auth layers are stacked in
+	// front of it:
+	//
+	//   - requireAdminAuth: a Kubernetes ServiceAccount token with the
+	//     `agentorca.io/admin` label. Full access (list/create/delete/rotate,
+	//     any tenant).
+	//   - requireSAOrSelfTenant: the same SA-token path, PLUS a federated OIDC
+	//     id_token that may only touch ITS OWN tenant for the operations listed
+	//     in selfTenantAdminOps (today: GET /admin/tenants/<own>). This is the
+	//     human-OIDC bridge: `aoctl login --auth-method oidc` can read its own
+	//     tenant config without a service-account token.
+	//
+	// Per-tenant RBAC (granting mutations via IdP roles) is intentionally not
+	// wired yet — see the `role` field on adminCapability and the TODO in
+	// requireSAOrSelfTenant. Mutating/list-all admin ops stay SA-only.
 	adminMux := http.NewServeMux()
 	adminMux.HandleFunc("/admin/tenants", s.handleAdminTenants)
 	adminMux.HandleFunc("/admin/tenants/", s.handleAdminTenantByID)
 
 	// instrument sits INSIDE the auth middleware so authenticated requests carry
 	// the tenant identity into the audit log. /admin/* is wrapped by the admin
-	// SA auth layer instead.
+	// auth layer instead.
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/admin/") {
+			// An OIDC id_token may perform the self-tenant capabilities in
+			// selfTenantAdminOps for its OWN tenant. Everything else (list/
+			// create/delete/rotate) is SA-only.
+			if name, capability, ok := selfTenantOp(r.Method, r.URL.Path); ok {
+				corsMiddleware(instrument("admin", s.requireSAOrSelfTenant(name, capability, adminMux))).ServeHTTP(w, r)
+				return
+			}
 			corsMiddleware(instrument("admin", s.requireAdminAuth(adminMux))).ServeHTTP(w, r)
 			return
 		}
 		corsMiddleware(s.auth.Middleware(instrument("external", mux))).ServeHTTP(w, r)
 	})
+}
+
+// adminCapability describes one /admin/* operation an OIDC id_token may perform
+// on its OWN tenant. ServiceAccount admin tokens bypass these entirely (full
+// access via requireAdminAuth).
+//
+// role is the reserved IdP-derived role required for this capability via
+// federated login; empty means "any authenticated id_token for the matching
+// tenant" (no RBAC today). Future per-tenant RBAC maps IdP groups → roles and
+// fills in role for mutations such as rotate-secret.
+type adminCapability struct {
+	method     string
+	pathPrefix string // tenant name = the single segment immediately after this
+	role       string // empty == no IdP-role gate (current default)
+}
+
+// selfTenantAdminOps is the explicit, RBAC-extensible allow-list of admin
+// operations an OIDC id_token may perform on the tenant it authenticated as.
+// Operations NOT listed here (GET /admin/tenants list, POST create, DELETE,
+// POST .../rotate-secret, and any cross-tenant target) fall through to
+// requireAdminAuth and stay SA-only.
+var selfTenantAdminOps = []adminCapability{
+	{method: http.MethodGet, pathPrefix: "/admin/tenants/"}, // read own tenant config
+}
+
+// selfTenantOp maps an admin (method, path) to the tenant name plus the matched
+// capability. It returns ok=true only for a SELF-tenant operation: the tenant
+// name must be exactly one path segment (no "/"), so /admin/tenants (list) and
+// /admin/tenants/<name>/rotate-secret (mutation) return ok=false and are routed
+// to requireAdminAuth instead. Method-aware so future POST/DELETE self-tenant
+// caps can be appended to the table without touching routing.
+func selfTenantOp(method, p string) (tenant string, capability adminCapability, ok bool) {
+	for _, c := range selfTenantAdminOps {
+		if c.method != method || !strings.HasPrefix(p, c.pathPrefix) {
+			continue
+		}
+		name := strings.TrimPrefix(p, c.pathPrefix)
+		if name == "" || strings.Contains(name, "/") {
+			return "", adminCapability{}, false
+		}
+		return name, c, true
+	}
+	return "", adminCapability{}, false
 }
 
 // TaskSubmission is the request body for POST /v1/tasks.

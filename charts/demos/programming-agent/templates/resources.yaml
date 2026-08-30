@@ -1,0 +1,12 @@
+{{- /*
+Render all agent-orca resources for the senior programming agent demo from the
+`agent-orca-resources` values block. The helper templates emit one CR per list
+entry; the operator reconciles each CR independently, so document order does not
+affect correctness — the MCPServer's tools are auto-created as child Tool CRs by
+the MCPServer controller ahead of any AgentRun.
+*/ -}}
+{{- $ctx := dict "Values" (index .Values "agent-orca-resources") "Release" .Release "Chart" .Chart "Files" .Files "Template" .Template "Capabilities" .Capabilities }}
+{{ include "agent-orca-resources.mcpservers" $ctx }}
+{{ include "agent-orca-resources.knowledgebases" $ctx }}
+{{ include "agent-orca-resources.agents" $ctx }}
+{{ include "agent-orca-resources.agentdeployments" $ctx }}

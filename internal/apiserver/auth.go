@@ -131,6 +131,12 @@ const (
 	// JWT signing key across operator restarts.
 	signingKeySecretName = "agentorca-jwt-signing-key"
 	signingKeySecretKey  = "private-key.pem"
+
+	// authNetworkTimeout bounds network calls made during token validation
+	// (K8s TokenReview and OIDC JWKS discovery). Without this, an unreachable
+	// API server or OIDC provider causes handlers to block indefinitely,
+	// surfacing as 504 Gateway Time-outs behind an ingress.
+	authNetworkTimeout = 10 * time.Second
 )
 
 // NewExternalAuth creates a new ExternalAuth middleware.
@@ -275,7 +281,7 @@ func (a *ExternalAuth) Middleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// Try agent-orca-issued JWT first.
+		// Try agent-orca-issued JWT first (fast, local signature check).
 		if identity, err := a.validateIssuedToken(token); err == nil {
 			ctx := context.WithValue(r.Context(), tenantIdentityKey, identity)
 			next.ServeHTTP(w, r.WithContext(ctx))
@@ -284,26 +290,71 @@ func (a *ExternalAuth) Middleware(next http.Handler) http.Handler {
 			slog.Debug("issued token validation failed", "path", r.URL.Path, "err", err)
 		}
 
-		// Try federated OIDC JWT.
-		if identity, err := a.validateFederatedToken(r.Context(), token); err == nil {
+		// Try federated OIDC and K8s SA validation concurrently — either may
+		// be the correct method, and neither should block the other. A slow
+		// or unreachable OIDC provider or K8s API server would otherwise hold
+		// the request open until its timeout before the other method is even
+		// attempted, causing 504 Gateway Time-outs behind an ingress.
+		if identity, err := a.validateTokenParallel(r.Context(), token); err == nil {
 			ctx := context.WithValue(r.Context(), tenantIdentityKey, identity)
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		} else {
-			slog.Warn("federated token validation failed", "path", r.URL.Path, "err", err)
-		}
-
-		// Fall back to Kubernetes SA token.
-		if identity, err := a.validateK8sToken(r.Context(), token); err == nil {
-			ctx := context.WithValue(r.Context(), tenantIdentityKey, identity)
-			next.ServeHTTP(w, r.WithContext(ctx))
-			return
-		} else {
-			slog.Debug("k8s token validation failed", "path", r.URL.Path, "err", err)
+			slog.Warn("token validation failed", "path", r.URL.Path, "err", err)
 		}
 
 		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 	})
+}
+
+// validateTokenParallel runs federated OIDC and K8s SA token validation
+// concurrently, returning the first successful identity. This prevents a
+// slow/unreachable IdP or K8s API server from delaying the other auth method,
+// which was the root cause of 504 Gateway Time-outs when one validation path's
+// network call blocked until timeout before the other could be attempted.
+//
+// Both validateFederatedToken and validateK8sToken already apply their own
+// authNetworkTimeout (10 s); the parent context deadline (from
+// requestTimeoutMiddleware, 30–60 s) bounds the overall wait.
+func (a *ExternalAuth) validateTokenParallel(ctx context.Context, token string) (*TenantIdentity, error) {
+	type authResult struct {
+		identity *TenantIdentity
+		err      error
+	}
+
+	fedCh := make(chan authResult, 1)
+	k8sCh := make(chan authResult, 1)
+
+	go func() {
+		identity, err := a.validateFederatedToken(ctx, token)
+		fedCh <- authResult{identity, err}
+	}()
+	go func() {
+		identity, err := a.validateK8sToken(ctx, token)
+		k8sCh <- authResult{identity, err}
+	}()
+
+	var fedErr, k8sErr error
+	for i := 0; i < 2; i++ {
+		select {
+		case res := <-fedCh:
+			if res.err == nil {
+				return res.identity, nil
+			}
+			slog.Debug("federated token validation failed", "err", res.err)
+			fedErr = res.err
+		case res := <-k8sCh:
+			if res.err == nil {
+				return res.identity, nil
+			}
+			slog.Debug("k8s token validation failed", "err", res.err)
+			k8sErr = res.err
+		case <-ctx.Done():
+			return nil, fmt.Errorf("auth validation timed out: %w (federated: %v, k8s: %v)", ctx.Err(), fedErr, k8sErr)
+		}
+	}
+
+	return nil, fmt.Errorf("no auth method succeeded (federated: %w; k8s: %v)", fedErr, k8sErr)
 }
 
 // ValidateToken attempts to validate a bearer token against all three supported
@@ -311,28 +362,15 @@ func (a *ExternalAuth) Middleware(next http.Handler) http.Handler {
 // variant of Middleware, used by the UI API server as a fallback after K8s SA
 // token validation fails (enabling OIDC tenant JWT login from the browser).
 func (a *ExternalAuth) ValidateToken(ctx context.Context, token string) (*TenantIdentity, error) {
-	// Try agent-orca-issued JWT first.
+	// Try agent-orca-issued JWT first (fast, local signature check).
 	if identity, err := a.validateIssuedToken(token); err == nil {
 		return identity, nil
 	} else {
 		slog.Debug("issued token validation failed", "err", err)
 	}
 
-	// Try federated OIDC JWT.
-	if identity, err := a.validateFederatedToken(ctx, token); err == nil {
-		return identity, nil
-	} else {
-		slog.Debug("federated token validation failed", "err", err)
-	}
-
-	// Fall back to Kubernetes SA token.
-	if identity, err := a.validateK8sToken(ctx, token); err == nil {
-		return identity, nil
-	} else {
-		slog.Debug("k8s token validation failed", "err", err)
-	}
-
-	return nil, fmt.Errorf("unauthorized")
+	// Try federated OIDC and K8s SA validation concurrently.
+	return a.validateTokenParallel(ctx, token)
 }
 
 // HandleTokenRequest handles POST /oauth/token for client_credentials grant.
@@ -455,6 +493,9 @@ func (a *ExternalAuth) MintSessionForIdentity(ident *TenantIdentity) (string, er
 
 // validateIssuedToken verifies an agent-orca-issued JWT.
 func (a *ExternalAuth) validateIssuedToken(tokenString string) (*TenantIdentity, error) {
+	if a.signingKey == nil {
+		return nil, fmt.Errorf("no signing key configured")
+	}
 	token, err := jwt.Parse(tokenString, func(t *jwt.Token) (any, error) {
 		if _, ok := t.Method.(*jwt.SigningMethodRSA); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
@@ -553,6 +594,11 @@ func (a *ExternalAuth) getOrCreateVerifier(ctx context.Context, issuerURL, clien
 // validateFederatedToken verifies a JWT from an external OIDC provider using
 // the issuer's JWKS for cryptographic signature verification.
 func (a *ExternalAuth) validateFederatedToken(ctx context.Context, tokenString string) (*TenantIdentity, error) {
+	// Bound the OIDC discovery / JWKS fetch so an unreachable IdP doesn't hold
+	// the request open past the ingress timeout (504).
+	ctx, cancel := context.WithTimeout(ctx, authNetworkTimeout)
+	defer cancel()
+
 	// Parse without verification to inspect the issuer claim only — we need
 	// it to look up the matching TenantConfig before we can verify.
 	parser := jwt.NewParser(jwt.WithoutClaimsValidation())
@@ -735,6 +781,13 @@ func (a *ExternalAuth) tenantConfigFor(name string) *agentorcav1alpha1.TenantCon
 
 // validateK8sToken authenticates a Kubernetes ServiceAccount token.
 func (a *ExternalAuth) validateK8sToken(ctx context.Context, token string) (*TenantIdentity, error) {
+	if a.k8s == nil {
+		return nil, fmt.Errorf("no kubernetes client configured for K8s token validation")
+	}
+	// Bound the TokenReview call so an unreachable API server doesn't hold the
+	// request open past the ingress timeout (504).
+	ctx, cancel := context.WithTimeout(ctx, authNetworkTimeout)
+	defer cancel()
 	tr := &authv1.TokenReview{
 		Spec: authv1.TokenReviewSpec{
 			Token:     token,

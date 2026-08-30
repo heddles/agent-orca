@@ -94,69 +94,69 @@ deploy:
                   --from-literal=password="$PG_PW" \
                   --dry-run=client -o yaml | kubectl apply -f -
             os: [darwin, linux]
-    releases:
+    # releases:
       # CloudNativePG operator — installs CRDs + operator Deployment.
       # Deployed FIRST (before the cluster and agent-orca) so CRDs are established.
       # wait: true ensures CRDs are established before the next release.
-      - name: cloudnative-pg-operator
-        chartPath: charts/cloudnative-pg
-        namespace: agent-orca-system
-        createNamespace: true
-        wait: true
-        setValues:
-          crds.create: "true"
-          config.clusterWide: "true"
-          image.tag: "1.30.0"
-          replicaCount: "1"
-          resources.requests.cpu: "100m"
-          resources.requests.memory: "128Mi"
-          resources.limits.cpu: "500m"
-          resources.limits.memory: "512Mi"
+      # - name: cloudnative-pg-operator
+      #   chartPath: charts/cloudnative-pg
+      #   namespace: agent-orca-system
+      #   createNamespace: true
+      #   wait: true
+      #   setValues:
+      #     crds.create: "true"
+      #     config.clusterWide: "true"
+      #     image.tag: "1.30.0"
+      #     replicaCount: "1"
+      #     resources.requests.cpu: "100m"
+      #     resources.requests.memory: "128Mi"
+      #     resources.limits.cpu: "500m"
+      #     resources.limits.memory: "512Mi"
 
       # CloudNativePG cluster — creates the Cluster CR (kind: Cluster).
       # Deployed AFTER the operator so the CRD is established.
       # wait: true ensures the Cluster is ready before agent-orca starts.
-      - name: cloudnative-pg-cluster
-        chartPath: charts/cluster
-        namespace: agent-orca-system
-        wait: true
-        setValues:
-          fullnameOverride: "postgres"
-          cluster.instances: "1"
-          cluster.imageName: "ghcr.io/cloudnative-pg/postgresql:16"
-          cluster.storage.size: "10Gi"
-          cluster.initdb.database: "agentorca"
-          cluster.initdb.owner: "agentorca"
-          cluster.enableSuperuserAccess: "true"
-          cluster.superuserSecret: "postgres-superuser"
-          cluster.enablePDB: "true"
+      # - name: cloudnative-pg-cluster
+      #   chartPath: charts/cluster
+      #   namespace: agent-orca-system
+      #   wait: true
+      #   setValues:
+      #     fullnameOverride: "postgres"
+      #     cluster.instances: "1"
+      #     cluster.imageName: "ghcr.io/cloudnative-pg/postgresql:16"
+      #     cluster.storage.size: "10Gi"
+      #     cluster.initdb.database: "agentorca"
+      #     cluster.initdb.owner: "agentorca"
+      #     cluster.enableSuperuserAccess: "true"
+      #     cluster.superuserSecret: "postgres-superuser"
+      #     cluster.enablePDB: "true"
 
-      - name: agent-orca
-        chartPath: charts/agent-orca
-        namespace: agent-orca-system
-        createNamespace: true
-        setValues:
-          operator.image.pullPolicy: Never
-          modelRouter.image.pullPolicy: Never
-          ui.image.pullPolicy: Never
-          operator.leaderElection: false
-          webhook.certManager: true
-          database.enabled: "true"
-        setValueTemplates:
-          operator.image.repository: "{{.IMAGE_REPO_agent_orca_operator}}"
-          operator.image.tag: "{{.IMAGE_TAG_agent_orca_operator}}"
-          mcpIngester.image.repository: "{{.IMAGE_REPO_agent_orca_mcp_ingester}}"
-          mcpIngester.image.tag: "{{.IMAGE_TAG_agent_orca_mcp_ingester}}"
-          modelRouter.image.repository: "{{.IMAGE_REPO_agent_orca_model_router}}"
-          modelRouter.image.tag: "{{.IMAGE_TAG_agent_orca_model_router}}"
-          ui.image.repository: "{{.IMAGE_REPO_agent_orca_ui}}"
-          ui.image.tag: "{{.IMAGE_TAG_agent_orca_ui}}"
-          # Static Redis password for the bundled Redis (opt-in). When unset the
-          # operator auto-generates a random password (checkpointing still works —
-          # the model-router gets it via the operator-propagated REDIS_URL); setting
-          # this to a known value lets the red-pwnbox publish arena-events findings
-          # against the same Redis. Provide via env, never commit a real password.
-          redis.auth.password: "{{.AGENT_ORCA_REDIS_PASSWORD}}"
+      # - name: agent-orca
+      #   chartPath: charts/agent-orca
+      #   namespace: agent-orca-system
+      #   createNamespace: true
+      #   setValues:
+      #     operator.image.pullPolicy: Never
+      #     modelRouter.image.pullPolicy: Never
+      #     ui.image.pullPolicy: Never
+      #     operator.leaderElection: false
+      #     webhook.certManager: true
+      #     database.enabled: "true"
+      #   setValueTemplates:
+      #     operator.image.repository: "{{.IMAGE_REPO_agent_orca_operator}}"
+      #     operator.image.tag: "{{.IMAGE_TAG_agent_orca_operator}}"
+      #     mcpIngester.image.repository: "{{.IMAGE_REPO_agent_orca_mcp_ingester}}"
+      #     mcpIngester.image.tag: "{{.IMAGE_TAG_agent_orca_mcp_ingester}}"
+      #     modelRouter.image.repository: "{{.IMAGE_REPO_agent_orca_model_router}}"
+      #     modelRouter.image.tag: "{{.IMAGE_TAG_agent_orca_model_router}}"
+      #     ui.image.repository: "{{.IMAGE_REPO_agent_orca_ui}}"
+      #     ui.image.tag: "{{.IMAGE_TAG_agent_orca_ui}}"
+      #     # Static Redis password for the bundled Redis (opt-in). When unset the
+      #     # operator auto-generates a random password (checkpointing still works —
+      #     # the model-router gets it via the operator-propagated REDIS_URL); setting
+      #     # this to a known value lets the red-pwnbox publish arena-events findings
+      #     # against the same Redis. Provide via env, never commit a real password.
+      #     redis.auth.password: "{{.AGENT_ORCA_REDIS_PASSWORD}}"
 portForward:
   - resourceType: service
     resourceName: agent-orca-ui
@@ -189,11 +189,11 @@ profiles:
   - name: demo-mcp-apps
     build:
       artifacts: []
-      hooks:
-        before: *ensure_kind_build_before
+      # hooks:
+      #   before: *ensure_kind_build_before
     deploy:
       helm:
-        hooks: *ensure_kind_deploy_hooks
+        # hooks: *ensure_kind_deploy_hooks
         releases:
           - name: demo-mcp-apps
             chartPath: charts/demos/demo-mcp-apps
@@ -206,11 +206,11 @@ profiles:
   - name: demo-soc-triage
     build:
       artifacts: []
-      hooks:
-        before: *ensure_kind_build_before
+      # hooks:
+      #   before: *ensure_kind_build_before
     deploy:
       helm:
-        hooks: *ensure_kind_deploy_hooks
+        # hooks: *ensure_kind_deploy_hooks
         releases:
           - name: demo-soc-triage
             chartPath: charts/demos/demo-soc-triage
@@ -223,11 +223,11 @@ profiles:
   - name: demo-escalation-chain
     build:
       artifacts: []
-      hooks:
-        before: *ensure_kind_build_before
+      # hooks:
+      #   before: *ensure_kind_build_before
     deploy:
       helm:
-        hooks: *ensure_kind_deploy_hooks
+        # hooks: *ensure_kind_deploy_hooks
         releases:
           - name: demo-escalation-chain
             chartPath: charts/demos/demo-escalation-chain
@@ -240,11 +240,11 @@ profiles:
   - name: demo-parallel-swarm
     build:
       artifacts: []
-      hooks:
-        before: *ensure_kind_build_before
+      # hooks:
+      #   before: *ensure_kind_build_before
     deploy:
       helm:
-        hooks: *ensure_kind_deploy_hooks
+        # hooks: *ensure_kind_deploy_hooks
         releases:
           - name: demo-parallel-swarm
             chartPath: charts/demos/demo-parallel-swarm
@@ -258,11 +258,11 @@ profiles:
   - name: demo-codebase-expert
     build:
       artifacts: []
-      hooks:
-        before: *ensure_kind_build_before
+      # hooks:
+      #   before: *ensure_kind_build_before
     deploy:
       helm:
-        hooks: *ensure_kind_deploy_hooks
+        # hooks: *ensure_kind_deploy_hooks
         releases:
           - name: demo-codebase-expert
             chartPath: charts/demos/demo-codebase-expert
@@ -277,11 +277,11 @@ profiles:
   - name: demo-financial-analysis
     build:
       artifacts: []
-      hooks:
-        before: *ensure_kind_build_before
+      # hooks:
+      #   before: *ensure_kind_build_before
     deploy:
       helm:
-        hooks: *ensure_kind_deploy_hooks
+        # hooks: *ensure_kind_deploy_hooks
         releases:
           - name: demo-financial-analysis
             chartPath: charts/demos/demo-financial-analysis
@@ -305,26 +305,60 @@ profiles:
             after:
               - command: ["sh", "-c", "kind load docker-image ${IMAGE:-$SKAFFOLD_IMAGE} --name agent-orca-dev"]
                 os: [darwin, linux]
-      hooks:
-        before: *ensure_kind_build_before
+      # hooks:
+        # before: *ensure_kind_build_before
     deploy:
       helm:
-        hooks: *ensure_kind_deploy_hooks
+        # hooks: *ensure_kind_deploy_hooks
         releases:
           - name: demo-llm-research
             chartPath: charts/demos/demo-llm-research
             namespace: agent-orca-system
 
+  # demo-programming-agent: deploys the Senior Programming Agent demo — a senior
+  # software-engineer persona for the agent-orca codebase backed by a handbook RAG
+  # KnowledgeBase and a read-only GitHub MCP stdio sidecar.
+  # Requires: agent-orca + model-providers (with 'default' ModelSelector and
+  # 'ollama-embed' embedding selector) already deployed (skaffold dev -p dev, with
+  # ollama-embeddings enabled for local embeddings).
+  # Requires: GitHub PAT with repo (read) scope — set via AGENT_ORCA_GITHUB_TOKEN.
+  # The agent image is the pre-built reference agent
+  # (ghcr.io/agentorca/agent-orca/openai-reference:latest), built + kind-loaded by
+  # `skaffold dev`; the GitHub MCP image (ghcr.io/github/github-mcp-server) is pulled
+  # from GHCR at runtime. No local artifacts are built by this profile.
+  # Deploy: skaffold run -p demo-programming-agent
+  # Remove:  helm uninstall programming-agent -n agent-orca-system
+  - name: demo-programming-agent
+    build:
+      artifacts: []
+      # hooks:
+      #   before: *ensure_kind_build_before
+    deploy:
+      helm:
+        # hooks: *ensure_kind_deploy_hooks
+        releases:
+          - name: programming-agent
+            chartPath: charts/demos/programming-agent
+            namespace: agent-orca-system
+            setValueTemplates:
+              # GitHub PAT (repo read scope). Read from env, never committed.
+              githubToken: "{{.AGENT_ORCA_GITHUB_TOKEN}}"
+
   # dev: inference runs natively on macOS with Metal GPU acceleration.
   # Start the native servers before deploying:
   #   scripts/start-llama-native.sh
   - name: dev
-    activation:
-      - kubeContext: kind-agent-orca-dev
-        command: dev
+    # activation:
+    #   - kubeContext: kind-agent-orca-dev
+    #     command: dev
+    # In-cluster Ollama for local embeddings (nomic-embed-text). Applied as raw
+    # manifests via the kubectl deployer below so skaffold tracks them for cleanup.
+    manifests:
+      rawYaml:
+        - config/samples/ollama-embedding-cluster.yaml
     deploy:
       helm:
-        hooks: *ensure_kind_deploy_hooks
+        # hooks: *ensure_kind_deploy_hooks
         releases:
           # CloudNativePG operator — installs CRDs + operator Deployment (first).
           - name: cloudnative-pg-operator
@@ -376,6 +410,7 @@ profiles:
               modelRouter.image.tag: "{{.IMAGE_TAG_agent_orca_model_router}}"
               ui.image.repository: "{{.IMAGE_REPO_agent_orca_ui}}"
               ui.image.tag: "{{.IMAGE_TAG_agent_orca_ui}}"
+              ingress.enabled: "true"
           - name: model-providers
             chartPath: charts/model-providers
             namespace: agent-orca-system
@@ -387,6 +422,18 @@ profiles:
               providerSecrets[1].apiKey: "{{.ANTHROPIC_API_KEY}}"
               providerSecrets[2].apiKey: "{{.GOOGLE_API_KEY}}"
               providerSecrets[3].apiKey: "{{.POOLSIDE_API_KEY}}"
+
+              # The ollama-embed-credentials Secret is provided by
+              # ollama-embedding-cluster.yaml (applied via the kubectl deployer
+              # below), so disable the chart's duplicate to avoid a reconcile fight.
+              providerSecrets[11].enabled: "false"
+      # Apply the in-cluster Ollama embedding manifests (PVC, Deployment,
+      # Service, pull Job, Secret, ModelProvider, ModelSelector) via the kubectl
+      # deployer. Helm (above) deploys first and installs the agent-orca CRDs,
+      # then kubectl applies the ModelProvider/ModelSelector CRs — so they resolve.
+      # defaultNamespace matches the README's `-n agent-orca-system` for this sample.
+      kubectl:
+        defaultNamespace: agent-orca-system
 
 
   # dev-oidc: OIDC login is OFF by default in the dev profile. To enable it for a
@@ -442,11 +489,11 @@ profiles:
             after:
               - command: ["sh", "-c", "kind load docker-image ${IMAGE:-$SKAFFOLD_IMAGE} --name agent-orca-dev"]
                 os: [darwin, linux]
-      hooks:
-        before: *ensure_kind_build_before
+      # hooks:
+      #   before: *ensure_kind_build_before
     deploy:
       helm:
-        hooks: *ensure_kind_deploy_hooks
+        # hooks: *ensure_kind_deploy_hooks
         releases:
           - name: demo-htb-pwn
             chartPath: charts/demos/demo-htb-pwn

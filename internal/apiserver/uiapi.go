@@ -47,6 +47,13 @@ import (
 	"github.com/floppyfish14/agent-orca/internal/state"
 )
 
+// uiAPIRequestTimeout bounds the total time for a UI API request (auth +
+// handler). The UI API serves the React frontend and is the most tolerant of
+// slow queries (e.g. historical run scanning), but a stuck K8s API call or
+// OIDC provider fetch should still be bounded to avoid 504 responses behind
+// the ingress.
+const uiAPIRequestTimeout = 60 * time.Second
+
 // UIServer serves the REST API consumed by the React UI.
 //
 // When authEnabled is true every request must carry a valid Kubernetes SA token
@@ -205,7 +212,7 @@ func (s *UIServer) Handler() http.Handler {
 	// Previously only the external Task API (8084) was instrumented, so the UI
 	// server's own traffic never incremented external_requests_total / the
 	// request-duration histogram — the status page always showed zeros.
-	return corsMiddleware(instrument("ui", s.requireAuth(mux)))
+	return corsMiddleware(requestTimeoutMiddleware(instrument("ui", s.requireAuth(mux)), uiAPIRequestTimeout))
 }
 
 // requireAuth wraps next with Kubernetes TokenReview authentication.

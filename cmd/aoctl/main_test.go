@@ -17,6 +17,7 @@ limitations under the License.
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -46,6 +47,52 @@ func TestParseSSE(t *testing.T) {
 	}
 	if events[2].Data != `{"id":"t1"}` {
 		t.Fatalf("bad event 2: %+v", events[2])
+	}
+}
+
+// TestNormalizeEndpoint verifies that known API route suffixes are stripped
+// from endpoint URLs to prevent double-path issues, while legitimate proxy
+// prefixes and bare host URLs are preserved.
+func TestNormalizeACPEndpoint(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"bare host", "http://agent-orca.local", "http://agent-orca.local"},
+		{"with /agents", "http://agent-orca.local/agents", "http://agent-orca.local"},
+		{"with /runs", "http://agent-orca.local/runs", "http://agent-orca.local"},
+		{"with /sessions", "http://agent-orca.local/sessions", "http://agent-orca.local"},
+		{"with /session", "http://agent-orca.local/session", "http://agent-orca.local"},
+		{"with trailing slash /agents/", "http://agent-orca.local/agents/", "http://agent-orca.local"},
+		{"with proxy prefix /acp", "http://agent-orca.local/acp", "http://agent-orca.local/acp"},
+		{"localhost:8000", "http://localhost:8000", "http://localhost:8000"},
+		{"localhost:8000/agents", "http://localhost:8000/agents", "http://localhost:8000"},
+		{"endpoint with /tasks", "http://host/tasks", "http://host"},
+		{"endpoint with /v1/tasks", "http://host/v1/tasks", "http://host"},
+		{"endpoint with /admin/tenants", "http://host/admin/tenants", "http://host"},
+		{"endpoint with /admin", "http://host/admin", "http://host"},
+		{"endpoint with /oauth/token", "http://host/oauth/token", "http://host"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := normalizeEndpoint(strings.TrimRight(tc.in, "/"))
+			if got != tc.want {
+				t.Errorf("normalizeEndpoint(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestNewClient_NormalizesEndpoints verifies that newClient strips known API
+// route suffixes from both the External Task API and ACP endpoints.
+func TestNewClient_NormalizesACPEndpoint(t *testing.T) {
+	c := newClient("http://host/tasks", "http://host/agents", "tok", defaultTimeout, false)
+	if c.Endpoint != "http://host" {
+		t.Fatalf("expected Endpoint http://host, got %q", c.Endpoint)
+	}
+	if c.ACP != "http://host" {
+		t.Fatalf("expected ACP endpoint http://host, got %q", c.ACP)
 	}
 }
 
@@ -261,14 +308,18 @@ func TestConfigSaveLoadRoundTrip(t *testing.T) {
 	}
 }
 
+// TestConfigLoadDefaultsWhenAbsent verifies that loadConfig returns an empty
+// Config (not defaults) when no config file exists. Defaults are now applied
+// centrally in PersistentPreRunE so that the ACP endpoint can be derived from
+// the External Task API endpoint when only one is configured.
 func TestConfigLoadDefaultsWhenAbsent(t *testing.T) {
 	t.Setenv("AOCTL_CONFIG_DIR", t.TempDir())
 	cfg, err := loadConfig()
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if cfg.Endpoint != defaultEndpoint || cfg.ACP != defaultACP {
-		t.Fatalf("bad defaults: %+v", cfg)
+	if cfg.Endpoint != "" || cfg.ACP != "" {
+		t.Fatalf("expected empty config when absent, got: %+v", cfg)
 	}
 }
 
@@ -367,6 +418,55 @@ func TestCmdAgentsList(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "my-agent") {
 		t.Fatalf("expected agent in output, got %q", stdout)
+	}
+}
+
+// TestCmdACPEndpointDerivedFromEndpoint verifies that when AOCTL_ACP_ENDPOINT is
+// not set, the ACP API endpoint is derived from AOCTL_ENDPOINT by stripping the
+// path component (only scheme://host[:port] is kept). This mirrors real
+// deployments where both APIs live behind the same ingress host.
+func TestCmdACPEndpointDerivedFromEndpoint(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/agents" || r.Method != http.MethodGet {
+			t.Errorf("unexpected %s %s (expected /agents)", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"agents":[{"name":"derived-agent","description":"d"}]}`))
+	}))
+	defer srv.Close()
+
+	// Only set AOCTL_ENDPOINT (with a path prefix, as it would be behind an
+	// ingress). The ACP endpoint should be derived as scheme://host only.
+	stdout, _, err := runCLI(t, map[string]string{
+		"AOCTL_ENDPOINT": "http://" + srv.Listener.Addr().String() + "/tasks/v1",
+	}, "agents", "list", "--token", "tok")
+	if err != nil {
+		t.Fatalf("agents list with derived ACP endpoint: %v", err)
+	}
+	if !strings.Contains(stdout, "derived-agent") {
+		t.Fatalf("expected agent from derived ACP endpoint, got %q", stdout)
+	}
+}
+
+// TestCmdACPEndpointExplicitStaysIntact verifies that when AOCTL_ACP_ENDPOINT is
+// explicitly set, it is used as-is and NOT overwritten by the derivation logic.
+func TestCmdACPEndpointExplicitStaysIntact(t *testing.T) {
+	acpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"agents":[{"name":"explicit-agent","description":"d"}]}`))
+	}))
+	defer acpSrv.Close()
+
+	// Set a bogus task endpoint but the correct ACP endpoint explicitly.
+	stdout, _, err := runCLI(t, map[string]string{
+		"AOCTL_ENDPOINT":   "http://127.0.0.1:1/tasks/v1",
+		"AOCTL_ACP_ENDPOINT": acpSrv.URL,
+	}, "agents", "list", "--token", "tok")
+	if err != nil {
+		t.Fatalf("agents list with explicit ACP endpoint: %v", err)
+	}
+	if !strings.Contains(stdout, "explicit-agent") {
+		t.Fatalf("expected agent from explicit ACP endpoint, got %q", stdout)
 	}
 }
 
@@ -863,8 +963,23 @@ func TestCmdAgentsRun(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Errorf("decoding body: %v", err)
 		}
-		if len(req.Input) != 1 || req.Input[0].Content != "hello" {
-			t.Errorf("bad input: %+v", req.Input)
+		// Verify the ACP-spec format: input[0] should be a message with role "user"
+		// and one part with content_type "text/plain" and the expected content.
+		if len(req.Input) != 1 {
+			t.Fatalf("expected 1 message, got %d", len(req.Input))
+		}
+		msg := req.Input[0]
+		if msg.Role != "user" {
+			t.Errorf("expected role 'user', got %q", msg.Role)
+		}
+		if len(msg.Parts) != 1 {
+			t.Fatalf("expected 1 part, got %d", len(msg.Parts))
+		}
+		if msg.Parts[0].ContentType != "text/plain" {
+			t.Errorf("expected content_type 'text/plain', got %q", msg.Parts[0].ContentType)
+		}
+		if msg.Parts[0].Content != "hello" {
+			t.Errorf("expected content 'hello', got %q", msg.Parts[0].Content)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
@@ -882,15 +997,128 @@ func TestCmdAgentsRun(t *testing.T) {
 	}
 }
 
-// TestCmdAgentsRunMissingInput verifies that --input is required.
+// TestCmdAgentsRunStdin verifies that input can be piped via stdin.
+func TestCmdAgentsRunStdin(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req ACPRunRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decoding body: %v", err)
+		}
+		if len(req.Input) != 1 || len(req.Input[0].Parts) != 1 ||
+			req.Input[0].Parts[0].Content != "piped input" {
+			t.Errorf("bad input: %+v", req.Input)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"agent_name":"bot","run_id":"run-stdin","status":"created","created_at":"2024-01-01T00:00:00Z"}`)) //nolint:lll
+
+	}))
+	defer srv.Close()
+
+	root, s := newRootCmd()
+	var out, errb bytes.Buffer
+	s.out = &out
+	s.errw = &errb
+	s.endpoint = srv.URL
+	s.acp = srv.URL
+	s.token = "tok"
+	s.timeout = defaultTimeout
+	s.isTerminal = func() bool { return false }                 // stdin is NOT a terminal
+	s.stdin = bufio.NewReader(strings.NewReader("piped input")) // simulate piped input
+	root.SetArgs([]string{"agents", "run", "bot"})
+	err := root.Execute()
+	if err != nil {
+		t.Fatalf("agents run (stdin): %v", err)
+	}
+	if !strings.Contains(out.String(), "run-stdin") {
+		t.Fatalf("expected run ID in output, got %q", out.String())
+	}
+}
+
+// TestCmdAgentsRunFile verifies that input can be read from a file.
+func TestCmdAgentsRunFile(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req ACPRunRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decoding body: %v", err)
+		}
+		if len(req.Input) != 1 || len(req.Input[0].Parts) != 1 ||
+			req.Input[0].Parts[0].Content != "file contents" {
+			t.Errorf("bad input: %+v", req.Input)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"agent_name":"bot","run_id":"run-file","status":"created","created_at":"2024-01-01T00:00:00Z"}`)) //nolint:lll
+
+	}))
+	defer srv.Close()
+
+	tmp := t.TempDir() + "/input.txt"
+	if err := os.WriteFile(tmp, []byte("file contents"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stdout, _, err := runCLI(t, map[string]string{"AOCTL_ENDPOINT": srv.URL, "AOCTL_ACP_ENDPOINT": srv.URL},
+		"agents", "run", "bot", "--file", tmp, "--token", "tok")
+	if err != nil {
+		t.Fatalf("agents run (file): %v", err)
+	}
+	if !strings.Contains(stdout, "run-file") {
+		t.Fatalf("expected run ID in output, got %q", stdout)
+	}
+}
+
+// TestCmdAgentsRunContentType verifies the --content-type flag is sent correctly.
+func TestCmdAgentsRunContentType(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req ACPRunRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decoding body: %v", err)
+		}
+		if len(req.Input) != 1 || len(req.Input[0].Parts) != 1 ||
+			req.Input[0].Parts[0].ContentType != "application/json" {
+			t.Errorf("expected content_type 'application/json', got %+v", req.Input)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"agent_name":"bot","run_id":"run-ct","status":"created","created_at":"2024-01-01T00:00:00Z"}`)) //nolint:lll
+
+	}))
+	defer srv.Close()
+	stdout, _, err := runCLI(t, map[string]string{"AOCTL_ENDPOINT": srv.URL, "AOCTL_ACP_ENDPOINT": srv.URL},
+		"agents", "run", "bot", "--input", "hello", "--content-type", "application/json", "--token", "tok")
+	if err != nil {
+		t.Fatalf("agents run (content-type): %v", err)
+	}
+	if !strings.Contains(stdout, "run-ct") {
+		t.Fatalf("expected run ID in output, got %q", stdout)
+	}
+}
+
+// TestCmdAgentsRunMissingInput verifies that input is required.
 func TestCmdAgentsRunMissingInput(t *testing.T) {
 	_, _, err := runCLI(t, map[string]string{"AOCTL_ENDPOINT": "http://localhost:8084"},
 		"agents", "run", "support-bot", "--token", "tok")
 	if err == nil {
 		t.Fatal("expected error for missing --input")
 	}
-	if !strings.Contains(err.Error(), "--input is required") {
-		t.Fatalf("expected --input is required error, got: %v", err)
+	if !strings.Contains(err.Error(), "is required") {
+		t.Fatalf("expected 'required' error, got: %v", err)
+	}
+}
+
+// TestCmdAgentsRunInputAndFileMutuallyExclusive verifies error when both --input and --file given.
+func TestCmdAgentsRunInputAndFileMutuallyExclusive(t *testing.T) {
+	tmp := t.TempDir() + "/input.txt"
+	if err := os.WriteFile(tmp, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := runCLI(t, map[string]string{"AOCTL_ENDPOINT": "http://localhost:8084"},
+		"agents", "run", "bot", "--input", "hello", "--file", tmp, "--token", "tok")
+	if err == nil {
+		t.Fatal("expected error for --input + --file")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("expected 'mutually exclusive' error, got: %v", err)
 	}
 }
 
@@ -923,6 +1151,14 @@ func TestCreateAgentRun(t *testing.T) {
 		if r.URL.Path != "/agents/bot/run" || r.Method != http.MethodPost {
 			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
 		}
+		var req ACPRunRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decoding body: %v", err)
+		}
+		if len(req.Input) != 1 || req.Input[0].Role != "user" ||
+			len(req.Input[0].Parts) != 1 || req.Input[0].Parts[0].Content != "hello" {
+			t.Errorf("bad input: %+v", req.Input)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
 		_, _ = w.Write([]byte(`{"agent_name":"bot","run_id":"run-xyz","status":"created","created_at":"2024-01-01T00:00:00Z"}`)) //nolint:lll
@@ -931,7 +1167,13 @@ func TestCreateAgentRun(t *testing.T) {
 	defer srv.Close()
 	c := newClient(srv.URL, srv.URL, "tok", defaultTimeout, true)
 	resp, err := c.CreateAgentRun(context.Background(), "bot", ACPRunRequest{
-		Input: []ACPMessagePart{{Role: "user", Content: "hello"}},
+		Input: []ACPMessage{{
+			Role: "user",
+			Parts: []ACPMessagePart{{
+				ContentType: "text/plain",
+				Content:     "hello",
+			}},
+		}},
 	})
 	if err != nil {
 		t.Fatalf("create agent run: %v", err)
@@ -941,19 +1183,33 @@ func TestCreateAgentRun(t *testing.T) {
 	}
 }
 
-// TestCreateAgentRunError verifies error handling for CreateAgentRun.
+// TestCreateAgentRunError verifies error handling for CreateAgentRun, including
+// parsing of ACP-structured error responses.
 func TestCreateAgentRunError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-		_, _ = w.Write([]byte(`{"error":"not found"}`))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"code":"invalid_input","message":"input content is required"}`)) //nolint:lll
 	}))
 	defer srv.Close()
 	c := newClient(srv.URL, srv.URL, "tok", defaultTimeout, true)
 	_, err := c.CreateAgentRun(context.Background(), "nonexistent", ACPRunRequest{
-		Input: []ACPMessagePart{{Role: "user", Content: "hello"}},
+		Input: []ACPMessage{{
+			Role:  "user",
+			Parts: []ACPMessagePart{{ContentType: "text/plain", Content: "hello"}},
+		}},
 	})
 	if err == nil {
-		t.Fatal("expected error for 404")
+		t.Fatal("expected error for 400")
+	}
+	if !strings.Contains(err.Error(), "invalid_input") {
+		t.Fatalf("expected ACP error code in error message, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "input content is required") {
+		t.Fatalf("expected ACP error message in error message, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "Hint:") {
+		t.Fatalf("expected remediation hint in error message, got: %v", err)
 	}
 }
 

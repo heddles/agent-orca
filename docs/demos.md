@@ -63,6 +63,7 @@ UI available at [http://localhost:8080](http://localhost:8080) (skaffold port-fo
 | `demo-escalation-chain` | `platform-deploys` | Child-run restrictions · `_fail` → `_clarify` escalation · continuation runs | `coding` |
 | `demo-parallel-swarm` | `research-swarm` | Parallel child AgentRuns · per-agent spend · swarm synthesis | `default` |
 | `demo-codebase-expert` | `codebase-expert` | GitHub MCP · RAG KnowledgeBase · live code search · `_rag_ingest` back-fill | `codebase-expert`, `codebase-expert-embeddings` + GitHub PAT |
+| `programming-agent` | `senior-programmer-chat` | Senior engineer persona · read-only GitHub MCP stdio sidecar · handbook RAG + live code search · `_rag_ingest` back-fill · warm-pool chat | `default`, `ollama-embed` + GitHub PAT |
 | `demo-pen-test` | `pentest-chat` | Autonomous pentesting · CVE correlation · safe vulnerability validation · executive report dashboard | `default`, `embeddings` |
 
 ---
@@ -813,6 +814,87 @@ kubectl describe knowledgebase agent-orca-codebase -n agent-orca-system
 | `codebase-expert-embeddings` | ModelSelector | Embeddings selector (OpenAI `text-embedding-3-large`, Gemini fallback) |
 | `codebase-expert-agent` | Agent | Expert agent with `_rag_search`, `_rag_ingest`, and GitHub MCP tools |
 | `codebase-expert` | AgentDeployment | Chat endpoint, warm pool 1 |
+
+---
+
+## Senior Programming Agent
+
+A senior software-engineer persona for the agent-orca codebase. The `senior-programmer`
+agent answers architecture questions from a curated engineering KnowledgeBase first, then
+drills into live source via a **read-only GitHub MCP server** (stdio sidecar) when RAG
+results are insufficient — back-filling what it reads into the KB with `_rag_ingest` so the
+vector store grows richer with each session.
+
+```
+User (chat UI)
+    │  POST /api/deployments/agent-orca-system/senior-programmer-chat/execute
+    ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│  senior-programmer  (AgentDeployment: chat, warm pool 1)              │
+│  tools: github-mcp-get-file-contents, github-mcp-search-code,        │
+│         github-mcp-list-commits, github-mcp-get-commit, …            │
+│                                                                      │
+│  1. _rag_search(agent-orca-codebase, query) ────────────────────────┐ │
+│  2. If needed: search_code / get_file_contents (live)              │ │
+│  3. _rag_ingest(read content)  ←───────────────────────────────────┘ │
+│                                                                      │
+│  agent-orca-codebase KnowledgeBase (Qdrant, 2Gi)                     │
+│    ingested at deploy from a handbook ConfigMap; re-synced hourly    │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+**What it shows**
+- **MCP stdio sidecar**: the official GitHub MCP server (`ghcr.io/github/github-mcp-server`)
+  runs read-only inside the agent pod (`--read-only --tools <allow-list>`). The model-router
+  mounts the image via an image volume and fork/execs the binary; credentials
+  (`GITHUB_PERSONAL_ACCESS_TOKEN`) are injected through `envFrom` (secretKeyRef), never
+  `mcpConfig.auth` (rejected by the webhook for stdio transport).
+- **`_rag_search` + GitHub MCP combination**: the agent consults the handbook KB first and
+  falls back to live `search_code`/`get_file_contents` only when RAG is insufficient.
+- **`_rag_ingest` back-fill**: after reading a file via the GitHub MCP, the agent persists a
+  summary into the KB so subsequent turns hit RAG first.
+- **Warm-pool chat agent**: `inputMode: http`, `warmPoolSize: 1`, with checkpoint/resume.
+
+### Prerequisites
+
+- GitHub PAT with `repo` (read) scope. Set via the `AGENT_ORCA_GITHUB_TOKEN` env var
+  (Skaffold) or `--set githubToken=ghp_...` (Helm). The token is placed in the
+  `github-mcp-token` Secret and never committed.
+- `default` ModelSelector + `ollama-embed` embedding selector (enable `ollama-embeddings`
+  in `charts/model-providers/values.yaml` and deploy Ollama — same prerequisite as the
+  other RAG demos).
+- The `openai-reference:latest` agent image (built + kind-loaded by `skaffold dev`).
+
+### Deploy / Remove
+
+```bash
+# Skaffold (token read from AGENT_ORCA_GITHUB_TOKEN env var)
+export AGENT_ORCA_GITHUB_TOKEN=ghp_YOUR_TOKEN
+skaffold run -p demo-programming-agent
+
+# or Helm
+helm install programming-agent charts/demos/programming-agent -n agent-orca-system \
+  --set githubToken=ghp_YOUR_TOKEN
+
+kubectl get knowledgebase agent-orca-codebase -n agent-orca-system -w
+kubectl get pods -n agent-orca-system -l agentorca.io/deployment=senior-programmer-chat -w
+
+helm uninstall programming-agent -n agent-orca-system
+```
+
+Chat endpoint: `POST /api/deployments/agent-orca-system/senior-programmer-chat/execute`
+
+### Resources
+
+| Name | Kind | Purpose |
+|---|---|---|
+| `github-mcp-token` | Secret | GitHub PAT (repo read scope) from `githubToken` value |
+| `programming-agent-handbook` | ConfigMap | Engineering handbook ingested into the KB |
+| `github-mcp` | MCPServer | Read-only GitHub MCP stdio sidecar |
+| `github-mcp-<tool>` | Tool (×6) | Auto-created child Tool CRs |
+| `agent-orca-codebase` | KnowledgeBase | Qdrant vector store of the handbook (`ollama-embed`) |
+| `senior-programmer` | Agent | Senior-engineer persona, openai-reference, http warm-pool |
+| `senior-programmer-chat` | AgentDeployment | Chat endpoint, warm pool 1 |
 
 ---
 

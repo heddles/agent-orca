@@ -166,20 +166,21 @@ ui:
     limits:
       cpu: 200m
       memory: 256Mi
-  ingress:
-    enabled: false
-    className: ""  # e.g., "nginx"
-    annotations: {}
-    # annotations:
-    #   cert-manager.io/cluster-issuer: letsencrypt-prod
-    hosts: []
-    # - host: agent-orca.example.com
-    #   path: /
-    #   pathType: Prefix
-    tls: []
-    # - secretName: agent-orca-ui-tls
-    #   hosts:
-    #     - agent-orca.example.com
+
+ingress:
+  enabled: false
+  className: ""  # e.g., "nginx"
+  annotations: {}
+  # annotations:
+  #   cert-manager.io/cluster-issuer: letsencrypt-prod
+  hosts: []
+  # - host: agent-orca.example.com
+  #   path: /
+  #   pathType: Prefix
+  tls: []
+  # - secretName: agent-orca-ui-tls
+  #   hosts:
+  #     - agent-orca.example.com
 
 # PostgreSQL archival store (optional).
 # When enabled, completed AgentRuns are snapshotted here for long-term

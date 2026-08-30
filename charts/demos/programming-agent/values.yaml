@@ -1,0 +1,223 @@
+nameOverride: ""
+
+# GitHub PAT (repo read scope) for the GitHub MCP server. NOT committed — injected
+# at deploy time. Under Skaffold: skaffold wires AGENT_ORCA_GITHUB_TOKEN into this
+# value via a setValueTemplate. With plain Helm: --set githubToken=ghp_xxx
+githubToken: ""
+
+agent-orca-resources:
+  # ── MCPServers ────────────────────────────────────────────────────────────────
+  #
+  # github-mcp: the official GitHub MCP server (ghcr.io/github/github-mcp-server)
+  # running as a read-only stdio sidecar injected into the senior-programmer agent
+  # pod. The model-router mounts the image via an image volume and fork/execs the
+  # binary at args[0] (the absolute path inside the image); every subsequent arg is
+  # a server flag. `envFrom` injects GH_TOKEN from the github-mcp-token Secret
+  # (created from .githubToken by github-token-secret.yaml).
+  #
+  # NAMING CONVENTION (three forms — keep them straight):
+  #   * MCPServer.tools[].name / agent.tools  -> HYPHENATED K8s resource names
+  #     (regex ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$). These become Tool CR names
+  #     <github-mcp-<name>> used by the operator for lookup. So if the server
+  #     exposes get_file_contents (underscore), the MCPServer tool name here is
+  #     get-file-contents and the agent references github-mcp-get-file-contents.
+  #   * --tools arg / GITHUB_TOKEN env        -> the server's REAL tool names
+  #     (get_file_contents, underscore) — these are what the server expects.
+  #   * System-prompt tool call names         -> the REAL names the LLM actually
+  #     calls. At runtime the model-router runs tools/list against the server
+  #     (mergeMCPToolDefs) and exposes the server's real names to the LLM, so the
+  #     prompt must use get_file_contents (not github-mcp-get-file-contents).
+  #
+  # Allowed tools (all read-only, from the `repos` toolset):
+  #   get-file-contents  read a file/directory at path in owner/repo
+  #   search-code        GitHub code search (qualifiers: repo:, org:, language:, path:, filename:, extension:)
+  #   list-commits       list commits on owner/repo (optionally by path/sha/since/until)
+  #   get-commit         details for a single commit (owner/repo/commit_sha)
+  #   list-branches      list branches on owner/repo
+  #   search-commits     GitHub commit search (repo:owner/repo, author:, etc.)
+  mcpServers:
+    - name: github-mcp
+      transport: stdio
+      ociRef: "ghcr.io/github/github-mcp-server:latest"
+      # args[0] is the binary path inside the image (model-router rewrites it into
+      # the /mcp-img/<tool> image-volume mount before fork/exec). `stdio` is the
+      # server subcommand; --read-only blocks all mutating tools; --tools restricts
+      # to the read-only allow-list using the server's REAL (underscore) tool names.
+      args:
+        - /server/github-mcp-server
+        - stdio
+        - --read-only
+        - --tools
+        - "get_file_contents,search_code,list_commits,get_commit,list_branches,search_commits"
+      envFrom:
+        - name: GITHUB_PERSONAL_ACCESS_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: github-mcp-token
+              key: token
+      # The agent may call these tools directly; the _controller principal is
+      # required so the KnowledgeBase MCP-ingestion Jobs (if enabled later) can too.
+      allowedAgents:
+        - senior-programmer
+        - _controller
+      # GitHub MCP is reached over the public API; the per-run NetworkPolicy needs
+      # an explicit egress rule to allow it.
+      networkEgress:
+        - host: api.github.com
+          port: 443
+          protocol: TCP
+      tools:
+        # Hyphenated (K8s-valid) — these become Tool CRs github-mcp-<name>.
+        - name: get-file-contents
+          description: >
+            Read a file or directory from a GitHub repository (owner/repo). Returns file content (with a
+            base64 blob + text) for files or a JSON array of entries (name, type, path) for directories.
+            Parameters: owner, repo, path, ref (optional).
+        - name: search-code
+          description: >
+            Search GitHub code. Supports qualifiers repo:, org:, language:, path:, filename:, extension:,
+            in:file, size:, is:archived. Returns matching files with repository, path, html_url, and
+            a text_matches snippet. Parameters: query, owner (optional), repo (optional), page, perPage.
+        - name: list-commits
+          description: >
+            List commits for owner/repo, optionally filtered by path, sha (branch/tag), since/until.
+            Returns sha, author, message, and date for each commit.
+        - name: get-commit
+          description: >
+            Get full details (metadata, author, committer, files changed) for a single commit.
+            Parameters: owner, repo, commit_sha.
+        - name: list-branches
+          description: >
+            List branches on owner/repo with pagination. Returns branch name and latest commit info.
+        - name: search-commits
+          description: >
+            Search GitHub commits via the official search syntax. Scope with repo:owner/repo, author:,
+            committer-date:, hash:. Returns sha, repo, author, message.
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+  # ── KnowledgeBases ──────────────────────────────────────────────────────────
+  #
+  # agent-orca-codebase: a curated engineering handbook (created by
+  # kb-handbook-configmap.yaml) ingested via the ConfigMap source and embedded with
+  # the ollama-embed ModelSelector (local in-cluster Ollama embeddings).
+  #
+  # Requires: 'ollama-embed' ModelSelector deployed (enable ollama-embeddings in the
+  # model-providers chart and run the Ollama cluster — see docs/development.md).
+  # Re-ingested hourly (syncIntervalSeconds: 3600) so edits to the ConfigMap take effect.
+  knowledgeBases:
+    - name: agent-orca-codebase
+      description: "agent-orca engineering handbook — architecture, request lifecycle, debugging, and coding conventions for the senior programmer agent."
+      allowedAgents:
+        - senior-programmer
+      embedding:
+        modelSelectorRef: ollama-embed
+        chunkSize: 512
+        chunkOverlap: 64
+      vectorStore:
+        storageSize: 2Gi
+      ingestion:
+        configMapRefs:
+          - name: programming-agent-handbook
+        syncIntervalSeconds: 3600
+  # ── Agents ───────────────────────────────────────────────────────────────────
+  #
+  # senior-programmer: a senior software engineer persona for the agent-orca project.
+  # It consults the handbook KB first, then falls back to live GitHub MCP tools,
+  # back-filling read content into the KB with _rag_ingest.
+  agents:
+    - name: senior-programmer
+      modelSelectorRef: "default"
+      disableClarify: true # fully autonomous — never blocks on a human
+      systemPrompt: |
+        You are a senior software engineer for the agent-orca project. You are precise,
+        methodical, and thrifty with model spend. You know the codebase's architecture,
+        its Go controllers, the model-router sidecar contract, the KnowledgeBase/Qdrant
+        pipeline, and how MCP stdio sidecars are mounted into agent pods.
+
+        Your toolkit (call these by their real names as exposed by the MCP server):
+          _rag_search          — search the agent-orca-codebase handbook KB
+          _rag_ingest          — persist text into the KB so it improves over time
+          get_file_contents    — read a file/dir from a GitHub repo (owner, repo, path)
+          search_code          — GitHub code search (repo:, org:, language:, path:, filename:, ...)
+          list_commits         — list commits on a repo
+          get_commit           — inspect a single commit
+          list_branches        — list branches
+          search_commits       — GitHub commit search
+          _done                — finish a turn and return your answer
+          _clarify             — ask the user a focused clarifying question
+          _fail                — fail a turn with a message (use for errors)
+
+        WORKFLOW for every request:
+          1. SEARCH THE HANDBOOK FIRST. Call _rag_search for the relevant section
+             (architecture / agent-lifecycle / debugging / coding-conventions). Summary is
+             your grounding before touching live code.
+          2. IF RAG IS INSUFFICIENT, go live. Use search_code / get_file_contents on
+             owner/repo (the agent-orca repo: floopyfish14/agent-orca — substitute the
+             correct repo for other projects). search_code qualifiers (language:, path:,
+             repo:) narrow results fast; never call get_file_contents on the repo root.
+          3. BACK-FILL. After reading a file via get_file_contents that resolves the
+             question, call _rag_ingest with a concise summary so future turns hit the KB first.
+          4. ANSWER precisely. Cite file paths (e.g. internal/controller/knowledgebase_controller.go),
+             include short relevant snippets (≤5 lines), explain the how and why, and
+             note caveats (e.g. "the dev profile disables leader election"; "webhooks are
+             Ignore in dev"). If the question is out of scope for this repo, politely say
+             so and ask for the target repo (owner/repo).
+
+        CODE REVIEW mode: when asked to review a diff, search the relevant package, read
+        the surrounding code, then comment on correctness, idiomatic Go, RBAC alignment,
+        webhook gating, and NetworkPolicy implications. Never praise junk; be blunt and fair.
+
+        DEBUGGING mode: when asked why something is broken, search the handbook debugging
+        section, inspect recent commits (list_commits / get_commit), then read the suspect
+        controller/tool. Form a hypothesis, point at the most likely root cause, and give a
+        reproducible kubectl incantation to confirm.
+
+        Output style: technical, terse but complete. Use short markdown sections with
+        file-path citations. Do not fluff.
+      # Tool CR references (hyphenated; the operator looks these up by name). At runtime the
+      # model-router discovers the server's real tool names and exposes those to the LLM, so
+      # the system prompt above uses the real names (get_file_contents, etc.).
+      tools:
+        - github-mcp-get-file-contents
+        - github-mcp-search-code
+        - github-mcp-list-commits
+        - github-mcp-get-commit
+        - github-mcp-list-branches
+        - github-mcp-search-commits
+      knowledgeBases:
+        - agent-orca-codebase
+      runtime:
+        ociRef: "ghcr.io/agentorca/agent-orca/openai-reference:latest"
+        framework: openai-compatible
+        # http mode keeps warm-pool pods alive and reusable for low-latency chat.
+        inputMode: http
+      memory:
+        checkpointEvery: 5
+        resumeWindowSeconds: 3600
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          cpu: 1000m
+          memory: 2Gi
+  # ── AgentDeployments ─────────────────────────────────────────────────────────
+  #
+  # senior-programmer-chat: chat-mode deployment backing the request:
+  #   POST /api/deployments/agent-orca-system/senior-programmer-chat/execute
+  agentDeployments:
+    - name: senior-programmer-chat
+      agentRef: senior-programmer
+      inputSource:
+        type: chat
+      replicas: 1
+      warmPoolSize: 1
+      restartPolicy:
+        minBackoffSeconds: 5
+        maxBackoffSeconds: 300
+        maxConsecutiveFailures: 10

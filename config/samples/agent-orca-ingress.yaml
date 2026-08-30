@@ -1,3 +1,57 @@
+# Expose agent-orca through a single host (`agent-orca.local`) with TWO Ingress
+# objects. This split is required because
+# `nginx.ingress.kubernetes.io/rewrite-target` is Ingress-scoped: it applies to
+# EVERY path defined in the same Ingress, not just the one you annotate.
+#
+#  1. `agent-orca-internal-api` (below) owns the prefix-stripping rewrite. It is
+#     the ONLY Ingress that carries the `rewrite-target`/`use-regex` annotations,
+#     so only `/tasks/v1` and `/acp/v1` are rewritten — they get their prefix
+#     stripped (`/$2`) and land on the operator's :8084 (`/v1/tasks`,
+#     `/admin/*`, `/oauth/token`) and :8000 (`/agents`, ...) routes. This is what
+#     `aoctl` expects: its task endpoint is `http://<host>/tasks/v1`.
+#
+#  2. `agent-orca` (below) has NO rewrite annotations. Its catch-all `/` forwards
+#     `/`, `/assets/*`, `/api/*`, `/oauth/*` and `/favicon.ico` VERBATIM to the
+#     UIProxy. Static asset paths are preserved, so the proxy serves the JS bundle
+#     with `Content-Type: text/javascript` instead of falling back to
+#     `index.html` (which previously made the entry bundle load as `text/html` →
+#     `NS_ERROR_CORRUPTED_CONTENT` / "disallowed MIME type" → blank page).
+#
+# DO NOT merge these back into a single Ingress under one `rewrite-target`:
+# doing so rewrites `/` (and therefore `/assets/*.js`) to `/` and breaks the UI.
+
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: agent-orca-internal-api
+  namespace: agent-orca-system
+  annotations:
+    # Strip the /tasks/v1 and /acp/v1 prefixes -> /v1/tasks, /agents, etc.
+    # SCOPED to this Ingress only; it does not touch the UI Ingress below.
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+    nginx.ingress.kubernetes.io/use-regex: "true"
+spec:
+  rules:
+  - host: "agent-orca.local"
+    http:
+      paths:
+      - path: /tasks/v1(/|$)(.*)
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: agent-orca-internal-api
+            port:
+              number: 8084
+      - path: /acp/v1(/|$)(.*)
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: agent-orca-internal-api
+            port:
+              number: 8000
+
+---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:

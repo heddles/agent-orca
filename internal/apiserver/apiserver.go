@@ -35,6 +35,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"time"
 
 	authv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -58,13 +59,18 @@ func New(k8s kubernetes.Interface, crdClient client.Client) *Server {
 	return &Server{k8s: k8s, crdClient: crdClient}
 }
 
+// internalAPIRequestTimeout bounds the total time for an internal API request.
+// Agent pods communicate with the operator over this server; a stuck handler
+// should not hold connections open indefinitely.
+const internalAPIRequestTimeout = 60 * time.Second
+
 // Handler returns an http.Handler for the internal API.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/agentrun/", s.handleAgentRun)
 	mux.HandleFunc("/workflow/", s.handleWorkflow)
 	mux.HandleFunc("/knowledgebase/", s.handleKnowledgeBase)
-	return mux
+	return requestTimeoutMiddleware(mux, internalAPIRequestTimeout)
 }
 
 // handleAgentRun dispatches POST (create) and GET (status) for AgentRun resources.

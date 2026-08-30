@@ -1,4 +1,5 @@
-{{- if .Values.ui.ingress.enabled }}
+---
+{{- if .Values.ingress.enabled }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -6,18 +7,17 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "agent-orca.labels" . | nindent 4 }}
-    app.kubernetes.io/component: ui
-  {{- with .Values.ui.ingress.annotations }}
+  {{- with .Values.ingress.annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
   {{- end }}
 spec:
-  {{- if .Values.ui.ingress.className }}
-  ingressClassName: {{ .Values.ui.ingress.className }}
+  {{- if .Values.ingress.ingressClassName }}
+  ingressClassName: {{ .Values.ingress.ingressClassName }}
   {{- end }}
-  {{- if .Values.ui.ingress.tls }}
+  {{- if .Values.ingress.tls }}
   tls:
-    {{- range .Values.ui.ingress.tls }}
+    {{- range .Values.ingress.tls }}
     - hosts:
         {{- range .hosts }}
         - {{ . | quote }}
@@ -26,16 +26,83 @@ spec:
     {{- end }}
   {{- end }}
   rules:
-    {{- range .Values.ui.ingress.hosts }}
-    - host: {{ .host | quote }}
+    - host: {{ .Values.ingress.host | quote }}
       http:
         paths:
-          - path: {{ .path | default "/" }}
-            pathType: {{ .pathType | default "Prefix" }}
+          # UI proxy / React SPA (catch-all).
+          - path: /
+            pathType: Prefix
             backend:
               service:
                 name: {{ include "agent-orca.fullname" . }}-ui
                 port:
-                  number: {{ $.Values.ui.service.port }}
-    {{- end }}
+                  number: 80
+          # External Task API: /v1/tasks (and /v1/tasks/{id}, /v1/tasks/{id}/stream).
+          # The aoctl CLI appends /v1/tasks to --endpoint, so the ingress path
+          # must be /v1/tasks (not /tasks) to match the server's mux route.
+          - path: /v1/tasks
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "agent-orca.fullname" . }}-internal-api
+                port:
+                  number: {{ .Values.externalAPI.port }}
+          # External Task API: admin surface.
+          - path: /admin/
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "agent-orca.fullname" . }}-internal-api
+                port:
+                  number: {{ .Values.externalAPI.port }}
+          # External Task API / ACP API: /oauth/token (shared route; both servers
+          # use the same ExternalAuth middleware). Route to the External API.
+          # - path: /oauth/login
+          #   pathType: Prefix
+          #   backend:
+          #     service:
+          #       name: {{ include "agent-orca.fullname" . }}-ui
+          #       port:
+          #         number: 80
+          # - path: /oauth/token
+          #   pathType: Prefix
+          #   backend:
+          #     service:
+          #       name: {{ include "agent-orca.fullname" . }}-internal-api
+          #       port:
+          #         number: {{ .Values.externalAPI.port }}
+          # ACP API: agent discovery (/agents, /agents/{name}, /agents/{name}/run).
+          - path: /agents
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "agent-orca.fullname" . }}-internal-api
+                port:
+                  number: 8000
+          # ACP API: run management (/runs, /runs/{id}, /runs/{id}/cancel,
+          # /runs/{id}/stream) — required by `aoctl acp serve` for run status
+          # polling and SSE streaming.
+          - path: /runs
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "agent-orca.fullname" . }}-internal-api
+                port:
+                  number: 8000
+          # ACP API: session management (/sessions, /sessions/{id}).
+          - path: /sessions
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "agent-orca.fullname" . }}-internal-api
+                port:
+                  number: 8000
+          # ACP API: session management (/session/{id}).
+          - path: /session/
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "agent-orca.fullname" . }}-internal-api
+                port:
+                  number: 8000
 {{- end }}

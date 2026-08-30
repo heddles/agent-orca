@@ -62,6 +62,15 @@ spec:
         - port: {{ .Values.externalAPI.port | default 8084 }}
           protocol: TCP
     {{- end }}
+    # Port 8000: ACP API — allow from any source (same as External API on :8084).
+    # The Ingress routes /agents, /runs, /sessions, /session/ to this port for
+    # aoctl and ACP-compatible editor integrations (see ui-ingress.yaml). Without
+    # this rule the nginx ingress controller cannot reach the ACP API server and
+    # requests to /agents, /runs, etc. hang until proxy-connect-timeout expires
+    # (504 Gateway Timeout "while connecting to upstream").
+    - ports:
+        - port: 8000
+          protocol: TCP
     {{- if .Values.operator.networkPolicy.oidcEgress.enabled }}
   # Egress: allow the operator to reach its OIDC IdP(s) for JWKS discovery and
   # token introspection. K8s NetworkPolicy is CIDR-only (no URL/hostname egress),

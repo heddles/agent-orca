@@ -317,7 +317,7 @@ modelProviders:
 
   # claude-haiku-4-5 — fastest and most compact Claude model
   - name: anthropic-claude-haiku-4-5
-    enabled: false
+    enabled: true
     litellmModel: "anthropic/claude-haiku-4-5-20251001"
     credentialsRef:
       existingSecret: "anthropic-api-key"
@@ -932,7 +932,6 @@ modelSelectors:
     fallbackChain:
       - google-gemini-2-5-flash
       - anthropic-claude-haiku-4-5
-      - groq-llama-3-3-70b
       - poolside-laguna-s-2.1
 
   # fast — lowest latency, optimised for interactive / high-volume workloads

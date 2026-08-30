@@ -40,6 +40,14 @@ import (
 
 // ACPServer implements the Agent Communication Protocol (ACP) API.
 // ACP is a standardized RESTful API for agent interaction.
+
+// acpAPIRequestTimeout bounds the total time for an ACP API request (auth +
+// handler). The auth middleware adds its own authNetworkTimeout (10 s) for K8s
+// TokenReview and OIDC JWKS calls; this timeout is the outer safety net that
+// prevents a stuck handler (e.g. a slow CRD lookup) from holding the connection
+// open until the ingress gives up with a 504.
+const acpAPIRequestTimeout = 30 * time.Second
+
 type ACPServer struct {
 	k8s       kubernetes.Interface
 	crdClient client.Client
@@ -83,10 +91,10 @@ func (s *ACPServer) Handler() http.Handler {
 	mux.HandleFunc("/runs", s.handleCreateRun)
 	mux.HandleFunc("/runs/", s.handleRunByID)
 	mux.HandleFunc("/session/", s.handleGetSession)
-	return corsMiddleware(s.auth.Middleware(instrument("acp", mux)))
+	return corsMiddleware(requestTimeoutMiddleware(s.auth.Middleware(instrument("acp", mux)), acpAPIRequestTimeout))
 }
 
-// ACP types aligned with ACP 0.2.0 spec from https://agentcommunicationprotocol.dev
+// ACP types aligned with ACP v1 spec from https://agentclientprotocol.com/protocol/v1/
 
 // ACPMessagePart represents a part of a message per ACP spec.
 type ACPMessagePart struct {
@@ -198,6 +206,7 @@ type ACPAgentMetadata struct {
 // ACPAgentManifest is the response body for GET /agents/{name}.
 type ACPAgentManifest struct {
 	Name               string            `json:"name"`
+	Namespace          string            `json:"namespace,omitempty"`
 	Description        string            `json:"description"`
 	InputContentTypes  []string          `json:"input_content_types"`
 	OutputContentTypes []string          `json:"output_content_types"`
@@ -382,6 +391,7 @@ func (s *ACPServer) handleListAgents(w http.ResponseWriter, r *http.Request) {
 	for _, agent := range filteredAgents[offset:end] {
 		manifest := ACPAgentManifest{
 			Name:               agent.Name,
+			Namespace:          tenant.Namespace,
 			Description:        agent.Spec.SystemPrompt,
 			InputContentTypes:  []string{"text/plain", "application/json"},
 			OutputContentTypes: []string{"text/plain", "application/json"},
@@ -438,7 +448,7 @@ func (s *ACPServer) handleAgentRoutes(w http.ResponseWriter, r *http.Request) {
 			writeACPError(w, "invalid_input", "GET required", http.StatusMethodNotAllowed)
 			return
 		}
-		s.writeAgentManifest(w, r, &agent)
+		s.writeAgentManifest(w, r, &agent, tenant.Namespace)
 	case "run":
 		if r.Method != http.MethodPost {
 			writeACPError(w, "invalid_input", "POST required", http.StatusMethodNotAllowed)
@@ -460,9 +470,10 @@ func tenantCanAccessAgent(tenant *TenantIdentity, name string) bool {
 }
 
 // writeAgentManifest builds and writes the enriched agent manifest.
-func (s *ACPServer) writeAgentManifest(w http.ResponseWriter, r *http.Request, agent *agentorcav1alpha1.Agent) {
+func (s *ACPServer) writeAgentManifest(w http.ResponseWriter, r *http.Request, agent *agentorcav1alpha1.Agent, namespace string) {
 	manifest := ACPAgentManifest{
 		Name:               agent.Name,
+		Namespace:          namespace,
 		Description:        agent.Spec.SystemPrompt,
 		InputContentTypes:  []string{"text/plain", "application/json"},
 		OutputContentTypes: []string{"text/plain", "application/json"},

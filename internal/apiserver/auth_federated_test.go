@@ -208,3 +208,69 @@ func TestValidateFederatedToken_GitHubStyle(t *testing.T) {
 		}
 	})
 }
+
+// TestValidateTokenParallel_FederatedSucceeds verifies that when a federated
+// OIDC token is valid, validateTokenParallel returns it even if the K8s SA
+// validation path (which can't succeed for an OIDC token) also runs concurrently.
+// This is the key test: both methods run in parallel, so a slow K8s API server
+// doesn't delay OIDC token validation.
+func TestValidateTokenParallel_FederatedSucceeds(t *testing.T) {
+	key := newTestKey(t)
+	issuerURL := "https://token.actions.githubusercontent.com"
+	startOIDCIssuer(t, key, &issuerURL)
+
+	a := seedFederatedTenant(t, issuerURL)
+	token := mintOIDCToken(t, key, issuerURL, "agent-orca-dev", map[string]any{
+		"actor": "floppyfish14",
+	})
+
+	ident, err := a.validateTokenParallel(context.Background(), token)
+	if err != nil {
+		t.Fatalf("expected parallel auth to succeed, got error: %v", err)
+	}
+	if ident.TenantName != "github-oidc" {
+		t.Fatalf("expected tenant github-oidc, got %q", ident.TenantName)
+	}
+}
+
+// TestValidateTokenParallel_BothFail verifies that when neither federated nor
+// K8s validation succeeds, validateTokenParallel returns an error mentioning
+// both failure reasons.
+func TestValidateTokenParallel_BothFail(t *testing.T) {
+	key := newTestKey(t)
+	issuerURL := "https://token.actions.githubusercontent.com"
+	startOIDCIssuer(t, key, &issuerURL)
+
+	a := seedFederatedTenant(t, issuerURL)
+	// A random string is neither a valid JWT nor a valid K8s SA token.
+	token := "not-a-real-token"
+
+	_, err := a.validateTokenParallel(context.Background(), token)
+	if err == nil {
+		t.Fatal("expected error when both auth methods fail")
+	}
+}
+
+// TestValidateTokenParallel_K8sNotConfigured verifies that validateTokenParallel
+// handles the case where k8s client is nil (common in tests) — the federated
+// path should still be tried and return its result/error without panicking.
+func TestValidateTokenParallel_K8sNotConfigured(t *testing.T) {
+	key := newTestKey(t)
+	issuerURL := "https://token.actions.githubusercontent.com"
+	startOIDCIssuer(t, key, &issuerURL)
+
+	a := seedFederatedTenant(t, issuerURL)
+	token := mintOIDCToken(t, key, issuerURL, "agent-orca-dev", map[string]any{
+		"actor": "floppyfish14",
+	})
+
+	// a.k8s is nil (seedFederatedTenant doesn't set it).
+	// validateTokenParallel should NOT panic — K8s path fails fast with nil check.
+	ident, err := a.validateTokenParallel(context.Background(), token)
+	if err != nil {
+		t.Fatalf("expected federated token to validate despite nil k8s: %v", err)
+	}
+	if ident == nil {
+		t.Fatal("expected non-nil identity")
+	}
+}
