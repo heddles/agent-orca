@@ -108,15 +108,17 @@ type acpSessionNewResponse struct {
 
 // acpInitializeParams is the params of an initialize request.
 type acpInitializeParams struct {
-	ProtocolVersion    string          `json:"protocolVersion"`
+	ProtocolVersion    uint16          `json:"protocolVersion"`
 	ClientInfo         json.RawMessage `json:"clientInfo,omitempty"`
 	ClientCapabilities json.RawMessage `json:"clientCapabilities,omitempty"`
 }
 
 // acpInitializeResponse negotiates the connection and advertises capabilities.
 // Field names follow ACP v1 (agentCapabilities / agentInfo / authMethods).
+// ProtocolVersion is a uint16 per the ACP spec — a single integer identifying a
+// MAJOR protocol version (currently 1), NOT a semver string.
 type acpInitializeResponse struct {
-	ProtocolVersion   string            `json:"protocolVersion"`
+	ProtocolVersion   uint16            `json:"protocolVersion"`
 	AgentCapabilities acpAgentCaps      `json:"agentCapabilities"`
 	AgentInfo         acpImplementation `json:"agentInfo,omitempty"`
 	AuthMethods       []any             `json:"authMethods,omitempty"` // empty => pre-authenticated

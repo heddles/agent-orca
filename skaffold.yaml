@@ -331,11 +331,11 @@ profiles:
   - name: demo-programming-agent
     build:
       artifacts: []
-      hooks:
-        before: *ensure_kind_build_before
+      # hooks:
+      #   before: *ensure_kind_build_before
     deploy:
       helm:
-        hooks: *ensure_kind_deploy_hooks
+        # hooks: *ensure_kind_deploy_hooks
         releases:
           - name: programming-agent
             chartPath: charts/demos/programming-agent
@@ -348,9 +348,9 @@ profiles:
   # Start the native servers before deploying:
   #   scripts/start-llama-native.sh
   - name: dev
-    activation:
-      - kubeContext: kind-agent-orca-dev
-        command: dev
+    # activation:
+    #   - kubeContext: kind-agent-orca-dev
+    #     command: dev
     # In-cluster Ollama for local embeddings (nomic-embed-text). Applied as raw
     # manifests via the kubectl deployer below so skaffold tracks them for cleanup.
     manifests:
@@ -422,7 +422,7 @@ profiles:
               providerSecrets[1].apiKey: "{{.ANTHROPIC_API_KEY}}"
               providerSecrets[2].apiKey: "{{.GOOGLE_API_KEY}}"
               providerSecrets[3].apiKey: "{{.POOLSIDE_API_KEY}}"
-              
+
               # The ollama-embed-credentials Secret is provided by
               # ollama-embedding-cluster.yaml (applied via the kubectl deployer
               # below), so disable the chart's duplicate to avoid a reconcile fight.

@@ -72,6 +72,9 @@ func TestDecodeJSON_HTML(t *testing.T) {
 	if !strings.Contains(msg, "UI proxy") || !strings.Contains(msg, ":8084") {
 		t.Fatalf("expected endpoint hint, got: %q", msg)
 	}
+	if !strings.Contains(msg, "--acp-endpoint") {
+		t.Fatalf("expected --acp-endpoint hint in diagnostic, got: %q", msg)
+	}
 	if !strings.Contains(msg, "127.0.0.1:8084/v1/tasks") {
 		t.Fatalf("expected URL in error, got: %q", msg)
 	}

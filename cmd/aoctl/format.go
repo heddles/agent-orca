@@ -55,8 +55,8 @@ func decodeJSON(resp *http.Response, v any, wantStatus int) error {
 	// the JSON decoder emit "invalid character '<'".
 	if !strings.HasPrefix(ct, "application/json") {
 		return fmt.Errorf("non-JSON response (HTTP %d, Content-Type %q) from %s; "+
-			"is --endpoint correct? the External Task API is :8084 and the ACP API is :8000 "+
-			"(the UI proxy on :8080 serves HTML, not JSON)", resp.StatusCode, ct, u) //nolint:lll
+			"is --endpoint or --acp-endpoint correct? the External Task API is :8084 and the "+
+			"ACP API is :8000 (the UI proxy on :8080 serves HTML, not JSON)", resp.StatusCode, ct, u) //nolint:lll
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(v); err != nil {

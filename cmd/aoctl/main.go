@@ -1064,6 +1064,12 @@ func newRootCmd() (*cobra.Command, *settings) { //nolint:gocyclo
 				strings.EqualFold(os.Getenv("AOCTL_OUTPUT_FORMAT"), "true")
 		}
 		tokenFromFlag := s.token != ""
+		// Also accept the bearer token via AOCTL_TOKEN env var (useful for the
+		// Zed-launched `aoctl acp serve` subprocess which receives it via the
+		// agent_servers env map written by `setup`).
+		if s.token == "" {
+			s.token = os.Getenv("AOCTL_TOKEN")
+		}
 		cfg, err := loadConfig()
 		if err != nil {
 			return err
@@ -1073,6 +1079,24 @@ func newRootCmd() (*cobra.Command, *settings) { //nolint:gocyclo
 		}
 		if s.acp == "" {
 			s.acp = cfg.ACP
+		}
+		// If the ACP endpoint was never explicitly configured (flag, env, or
+		// saved config), derive it from the External Task API endpoint by
+		// stripping any path component to get just scheme://host[:port]. In
+		// most deployments (including the Helm ingress) both APIs are served
+		// from the same host but at different root paths (/v1/tasks vs
+		// /agents), so the ACP base URL is the host root of the task endpoint.
+		if s.acp == "" && s.endpoint != "" {
+			if u, err := url.Parse(s.endpoint); err == nil && u.Host != "" {
+				s.acp = u.Scheme + "://" + u.Host
+			}
+		}
+		// Apply hard defaults for both endpoints if still unset.
+		if s.endpoint == "" {
+			s.endpoint = defaultEndpoint
+		}
+		if s.acp == "" {
+			s.acp = defaultACP
 		}
 		if s.token == "" {
 			s.token = cfg.Token
@@ -1114,12 +1138,6 @@ With no --auth-method (and no credentials) aoctl presents an interactive
 selection menu — the CLI analogue of the UI's /oauth/login tenant picker.
 `,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			if s.endpoint == "" {
-				s.endpoint = defaultEndpoint
-			}
-			if s.acp == "" {
-				s.acp = defaultACP
-			}
 			return s.runLogin()
 		},
 	}
