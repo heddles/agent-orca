@@ -263,9 +263,6 @@ func (h *OIDCLoginHandler) resolveLogos(ctx context.Context, tenants []*agentorc
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	for _, tc := range tenants {
-		// Capture range variable explicitly for clarity (Go 1.22+ hoists it, but
-		// the loop var here is a pointer read under the lock below).
-		tc := tc
 		wg.Add(1)
 		go func(tc *agentorcav1alpha1.TenantConfig) {
 			defer wg.Done()
@@ -355,12 +352,10 @@ func defaultLogoResolver(ctx context.Context, issuerURL string) string {
 
 // resolveLogoFromDiscovery fetches <issuer>/.well-known/openid-configuration and
 // returns the first valid, issuer-hosted HTTPS "logo" field, or "". The OIDC
-// Discovery 1.0 spec does not define a logo field, but some providers publish one
-// (commonly "logo_uri"); we honor a small set of common names.
-// resolveLogoFromDiscovery fetches <issuer>/.well-known/openid-configuration and
-// returns the first valid, issuer-hosted HTTPS "logo" field, or "". The OIDC
 // well-known document lives at {IssuerURL}/.well-known/openid-configuration,
 // which preserves the issuer's path (e.g. https://idp/oauth2/default/.well-known/...).
+// The OIDC Discovery 1.0 spec does not define a logo field, but some providers
+// publish one (commonly "logo_uri"); we honor a small set of common names.
 func resolveLogoFromDiscovery(ctx context.Context, issuer *url.URL) string {
 	wellKnown := strings.TrimRight(issuer.String(), "/") + "/.well-known/openid-configuration"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, wellKnown, nil)

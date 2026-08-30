@@ -32,8 +32,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-var errProvider = errors.New("provider unavailable")
-
 // fakeProvider implements oidc.PrincipalProvider for tests (no network/K8s).
 type fakeProvider struct {
 	principal *oidc.IDTokenPrincipal
