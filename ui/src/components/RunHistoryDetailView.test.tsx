@@ -43,21 +43,18 @@ function makeTraceEntries(): TraceEntry[] {
       event: { type: STREAM_EVENT_TYPE.toolResult, name: 'search', result: 'found 3 results' },
       ts: '2026-01-15T12:00:02.000Z',
     },
+    // Consolidated token burst carrying the full output text (no separate
+    // finalOutput event is archived — the token burst has the output).
     {
       id: 2,
-      event: { type: 'token', content: 'The answer is' },
+      event: { type: 'token', content: 'The answer is 42' },
       ts: '2026-01-15T12:00:03.000Z',
-    },
-    {
-      id: 3,
-      event: { type: STREAM_EVENT_TYPE.finalOutput, output: 'The answer is 42' },
-      ts: '2026-01-15T12:00:04.000Z',
     },
   ]
 }
 
 // openTraceAccordion expands the TraceAccordion header (the button whose
-// accessible name includes the event-count badge, e.g. "4 events").
+// accessible name includes the event-count badge, e.g. "3 events").
 async function openTraceAccordion() {
   await userEvent.click(screen.getByRole('button', { name: /events/ }))
 }
@@ -93,7 +90,7 @@ describe('RunHistoryDetailView', () => {
     expect(screen.getByText(/found 3 results/)).toBeInTheDocument()
     expect(screen.getByText('The answer is 42')).toBeInTheDocument()
     // Event count badge in the header
-    expect(screen.getByText('4 events')).toBeInTheDocument()
+    expect(screen.getByText('3 events')).toBeInTheDocument()
   })
 
   it('hides Execution Trace tab when no trace data is available', async () => {

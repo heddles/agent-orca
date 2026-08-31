@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -278,5 +279,35 @@ func TestGetRunScansTraceEvents(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+// TestMigrationSQLIncludesCompression verifies that the migration SQL
+// enables lz4 TOAST compression on the trace_events and other large JSONB/TEXT
+// columns, keeping archived trace data compact.
+func TestMigrationSQLIncludesCompression(t *testing.T) {
+	mustContain := []string{
+		"ALTER TABLE archived_runs ALTER COLUMN trace_events SET COMPRESSION lz4",
+		"ALTER TABLE archived_runs ALTER COLUMN routing_decisions SET COMPRESSION lz4",
+		"ALTER TABLE archived_runs ALTER COLUMN output SET COMPRESSION lz4",
+		"ALTER TABLE archived_runs ALTER COLUMN raw_output SET COMPRESSION lz4",
+		"ALTER TABLE archived_runs ALTER COLUMN input SET COMPRESSION lz4",
+		"ALTER TABLE archived_runs ADD COLUMN IF NOT EXISTS trace_events",
+	}
+	for _, needle := range mustContain {
+		if !strings.Contains(MigrationSQL, needle) {
+			t.Errorf("MigrationSQL missing required statement:\n  %s", needle)
+		}
+	}
+}
+
+// TestMigrationSQLTraceEventsColumn verifies the trace_events column is declared
+// in both the CREATE TABLE and the back-fill ALTER TABLE.
+func TestMigrationSQLTraceEventsColumn(t *testing.T) {
+	if !strings.Contains(MigrationSQL, "trace_events JSONB") {
+		t.Error("MigrationSQL missing trace_events JSONB in CREATE TABLE")
+	}
+	if !strings.Contains(MigrationSQL, "ADD COLUMN IF NOT EXISTS trace_events") {
+		t.Error("MigrationSQL missing back-fill ALTER TABLE for trace_events")
 	}
 }

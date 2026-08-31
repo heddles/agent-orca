@@ -280,3 +280,51 @@ func TestRedisReadTraceEventsEmptyStream(t *testing.T) {
 		t.Fatalf("expected nil entries for missing stream, got %d entries", len(entries))
 	}
 }
+
+// TestRedisReadTraceEventsLargeTokenBurst verifies that 500 individual token
+// deltas are consolidated into a single TraceEntry, keeping the archival
+// footprint small even for very long outputs.
+func TestRedisReadTraceEventsLargeTokenBurst(t *testing.T) {
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("starting miniredis: %v", err)
+	}
+	defer mr.Close()
+
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	store := &redisStore{client: rdb}
+
+	key := "tokens:default:long-run"
+	ctx := context.Background()
+
+	// Write 500 individual token deltas followed by a toolCall.
+	for i := 0; i < 500; i++ {
+		addXAdd(t, rdb, key, "t", "x")
+	}
+	addXAdd(t, rdb, key, "ev", `{"type":"toolCall","name":"finish","arguments":"{}"}`)
+
+	entries, err := store.ReadTraceEvents(ctx, key)
+	if err != nil {
+		t.Fatalf("ReadTraceEvents: %v", err)
+	}
+
+	// Expect exactly 2 entries: one consolidated token burst, one toolCall.
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 entries (1 token burst + 1 toolCall), got %d", len(entries))
+	}
+
+	var tokEvent map[string]any
+	if err := json.Unmarshal(entries[0].Event, &tokEvent); err != nil {
+		t.Fatalf("unmarshal entry 0: %v", err)
+	}
+	if tokEvent["type"] != "token" {
+		t.Errorf("entry 0: expected 'token', got %v", tokEvent["type"])
+	}
+	expected := ""
+	for i := 0; i < 500; i++ {
+		expected += "x"
+	}
+	if tokEvent["content"] != expected {
+		t.Errorf("entry 0: expected content of 500 'x' chars, got %d chars", len(tokEvent["content"].(string)))
+	}
+}

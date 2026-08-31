@@ -1836,23 +1836,10 @@ func (r *AgentRunReconciler) loadTraceEventsForArchive(ctx context.Context, run 
 		})
 	}
 
-	// Synthesise a finalOutput event from the run's captured output so the
-	// archive's trace ends with the consolidated result (matching the live
-	// stream handler, which emits finalOutput from accumulated tokens).
-	if run.Status.Output != "" {
-		eventJSON, _ := json.Marshal(map[string]string{
-			"type":   "finalOutput",
-			"output": run.Status.Output,
-		})
-		ts := ""
-		if run.Status.CompletionTime != nil {
-			ts = run.Status.CompletionTime.UTC().Format(time.RFC3339)
-		}
-		entries = append(entries, state.TraceEntry{
-			Event: json.RawMessage(eventJSON),
-			TS:    ts,
-		})
-	}
+	// The run's full output is already captured in the last consolidated token
+	// burst (or available via detail.output / the Output tab), so we deliberately
+	// do NOT synthesise a redundant finalOutput event here — doing so would
+	// duplicate the output text in the archive, inflating storage.
 
 	if len(entries) == 0 {
 		return nil

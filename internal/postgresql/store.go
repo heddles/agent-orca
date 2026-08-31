@@ -388,6 +388,17 @@ CREATE INDEX IF NOT EXISTS idx_archived_runs_name      ON archived_runs(name);
 -- execution-trace archival feature shipped. ADD COLUMN IF NOT EXISTS is a no-op
 -- for fresh tables (which already declare the column above).
 ALTER TABLE archived_runs ADD COLUMN IF NOT EXISTS trace_events JSONB;
+
+-- Enable lz4 TOAST compression on columns that can hold large values
+-- (trace events, routing decisions, output). PostgreSQL automatically TOASTs
+-- values > 2KB; SET COMPRESSION controls the algorithm. lz4 is fast and gives
+-- a good ratio. A VACUUM (FULL if possible) is needed in production to
+-- retroactively compress existing rows; new inserts use lz4 automatically.
+ALTER TABLE archived_runs ALTER COLUMN trace_events SET COMPRESSION lz4;
+ALTER TABLE archived_runs ALTER COLUMN routing_decisions SET COMPRESSION lz4;
+ALTER TABLE archived_runs ALTER COLUMN output SET COMPRESSION lz4;
+ALTER TABLE archived_runs ALTER COLUMN raw_output SET COMPRESSION lz4;
+ALTER TABLE archived_runs ALTER COLUMN input SET COMPRESSION lz4;
 `
 
 // ApplyMigration runs the schema migration SQL against the store.
