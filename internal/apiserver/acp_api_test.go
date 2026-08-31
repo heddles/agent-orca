@@ -548,6 +548,43 @@ func TestBuildAllowedTools(t *testing.T) {
 	}
 }
 
+// TestBuildAllowedToolsNilSchema verifies that a Tool CR with a nil Schema
+// (i.e. no schema defined) does not cause a nil pointer dereference panic.
+// Previously the code accessed tool.Spec.Schema.Description before checking
+// whether tool.Spec.Schema was nil.
+func TestBuildAllowedToolsNilSchema(t *testing.T) {
+	agent := &agentorcav1alpha1.Agent{
+		ObjectMeta: metav1.ObjectMeta{Name: "bot", Namespace: "tenant-acme"},
+		Spec: agentorcav1alpha1.AgentSpec{
+			Tools: []string{"no-schema-tool"},
+		},
+	}
+	tool := &agentorcav1alpha1.Tool{
+		ObjectMeta: metav1.ObjectMeta{Name: "no-schema-tool", Namespace: "tenant-acme"},
+		Spec: agentorcav1alpha1.ToolSpec{
+			// Schema intentionally left nil
+		},
+	}
+	s := newACPServer(t, agent, tool)
+	tools := buildAllowedTools(context.Background(), s.crdClient, agent)
+
+	// Should have: _clarify, _rag_search, _rag_ingest, no-schema-tool
+	if len(tools) != 4 {
+		t.Fatalf("expected 4 tools, got %d", len(tools))
+	}
+
+	for _, ti := range tools {
+		if ti.Name == "no-schema-tool" {
+			if ti.Description != "" {
+				t.Fatalf("expected empty description for nil-schema tool, got %q", ti.Description)
+			}
+			if ti.InputSchema != nil {
+				t.Fatalf("expected nil input schema for nil-schema tool, got %v", ti.InputSchema)
+			}
+		}
+	}
+}
+
 func TestBuildInputSchema(t *testing.T) {
 	tools := []ACPToolInfo{
 		{Name: "_clarify"},

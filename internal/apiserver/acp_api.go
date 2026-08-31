@@ -624,11 +624,13 @@ func buildAllowedTools(ctx context.Context, k8sClient client.Client, agent *agen
 			continue
 		}
 		info := ACPToolInfo{
-			Name:        toolName,
-			Description: tool.Spec.Schema.Description,
+			Name: toolName,
 		}
-		if tool.Spec.Schema != nil && tool.Spec.Schema.Input != nil {
-			info.InputSchema = rawExtensionToMap(tool.Spec.Schema.Input)
+		if tool.Spec.Schema != nil {
+			info.Description = tool.Spec.Schema.Description
+			if tool.Spec.Schema.Input != nil {
+				info.InputSchema = rawExtensionToMap(tool.Spec.Schema.Input)
+			}
 		}
 		tools = append(tools, info)
 	}
