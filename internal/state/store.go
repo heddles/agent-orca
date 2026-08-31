@@ -58,6 +58,16 @@ type Config struct {
 	// CheckpointKey is the Redis key prefix for this run.
 	// Format: "agentorca/runs/<run-id>/state"
 	CheckpointKey string `json:"checkpointKey,omitempty"`
+
+	// MaxTokenStreamLen is the Redis XADD MAXLEN (APPROX) applied to each run's token
+	// and trace-event stream ("tokens:<ns>:<run>"). The stream holds one entry per
+	// streamed token delta + trace event, so long-running/Reasoning-heavy runs can
+	// exceed the historical 10k cap and silently lose the OLDEST tokens on replay.
+	// 0 (default) = 100000 (~10x the old floor), enough headroom for very long runs
+	// while still bounding per-run memory. Tools/agents reading the stream via
+	// TailTokens keep the newest entries; set higher per-deployment if you run
+	// extremely long sessions. Not related to output truncation mid-stream.
+	MaxTokenStreamLen int `json:"maxTokenStreamLen,omitempty"`
 }
 
 // TraceEntry is a single timestamped entry in a run's execution trace, mirroring
@@ -228,9 +238,10 @@ func (nopStore) Close() error                                             { retu
 
 // redisStore implements Store using Redis with zstd compression.
 type redisStore struct {
-	client  *redis.Client
-	encoder *zstd.Encoder
-	decoder *zstd.Decoder
+	client            *redis.Client
+	encoder           *zstd.Encoder
+	decoder           *zstd.Decoder
+	tokenStreamMaxLen int64 // XADD MAXLEN(APPROX) for tokens:<ns>:<run> streams
 }
 
 func (s *redisStore) Ping(ctx context.Context) error {
@@ -238,6 +249,23 @@ func (s *redisStore) Ping(ctx context.Context) error {
 		return errors.New("redis store not initialized")
 	}
 	return s.client.Ping(ctx).Err()
+}
+
+// defaultTokenStreamMaxLen bounds each run's token/trace-event Redis stream. Raised
+// from the old hard-coded 10000 so very long / Reasoning-heavy sessions don't silently
+// shed their oldest streamed tokens when the user refreshes to replay. Each XADD entry is
+// small (a token delta or a short trace event), so ~100k entries is negligible memory per
+// run and still auto-expires on the 24h sliding TTL.
+const defaultTokenStreamMaxLen = 100000
+
+// resolveTokenStreamCap returns the effective MAXLEN for the per-run token stream: an
+// explicit Config.MaxTokenStreamLen (if >0) or the package default. Factored out so it can
+// be unit-tested without a live Redis connection.
+func resolveTokenStreamCap(n int) int64 {
+	if n > 0 {
+		return int64(n)
+	}
+	return defaultTokenStreamMaxLen
 }
 
 func newRedisStore(cfg Config) (*redisStore, error) {
@@ -265,7 +293,12 @@ func newRedisStore(cfg Config) (*redisStore, error) {
 	enc, _ := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedDefault))
 	dec, _ := zstd.NewReader(nil)
 
-	return &redisStore{client: client, encoder: enc, decoder: dec}, nil
+	return &redisStore{
+		client:            client,
+		encoder:           enc,
+		decoder:           dec,
+		tokenStreamMaxLen: resolveTokenStreamCap(cfg.MaxTokenStreamLen),
+	}, nil
 }
 
 func (s *redisStore) SaveMessages(ctx context.Context, key string, messages []json.RawMessage, ttl time.Duration) error {
@@ -345,7 +378,7 @@ func (s *redisStore) SaveTraceEvent(ctx context.Context, key string, eventJSON s
 	expiry := 24 * time.Hour
 	if err := s.client.XAdd(ctx, &redis.XAddArgs{
 		Stream: key,
-		MaxLen: 10000,
+		MaxLen: s.tokenStreamMaxLen,
 		Approx: true,
 		Values: map[string]any{"ev": eventJSON},
 	}).Err(); err != nil {
@@ -363,7 +396,7 @@ func (s *redisStore) SaveToken(ctx context.Context, key string, token string) er
 	expiry := 24 * time.Hour
 	if err := s.client.XAdd(ctx, &redis.XAddArgs{
 		Stream: key,
-		MaxLen: 10000,
+		MaxLen: s.tokenStreamMaxLen,
 		Approx: true,
 		Values: map[string]any{"t": token},
 	}).Err(); err != nil {
