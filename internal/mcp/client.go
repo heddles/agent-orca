@@ -30,6 +30,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -76,6 +77,13 @@ type ServerConfig struct {
 	AuthHeaderFiles []AuthHeaderFile
 	// AllowApps enables MCP App iframe rendering for tools from this server.
 	AllowApps bool
+	// IncludePatterns and ExcludePatterns filter the tool names the model-router
+	// exposes to the LLM after discovering them via tools/list. When IncludePatterns
+	// is non-empty, only tools matching at least one pattern are kept. ExcludePatterns
+	// always wins. Empty (both unset) means no filtering — all discovered tools are
+	// exposed (backward compatible).
+	IncludePatterns []string
+	ExcludePatterns []string
 }
 
 // Tool is a tool discovered from an MCP server.
@@ -186,9 +194,11 @@ func (c *Client) Close() {
 // --- serverConn: manages a connection to a single MCP server ---
 
 type serverConn struct {
-	name           string
-	transport      Transport
-	availableTools []string
+	name            string
+	transport       Transport
+	includePatterns []string // glob filters applied to discovered tool names
+	excludePatterns []string
+	availableTools  []string
 	// stdio fields
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser
@@ -222,7 +232,12 @@ type jsonrpcError struct {
 }
 
 func connect(ctx context.Context, cfg ServerConfig) (*serverConn, error) {
-	conn := &serverConn{name: cfg.Name, transport: cfg.Transport}
+	conn := &serverConn{
+		name:            cfg.Name,
+		transport:       cfg.Transport,
+		includePatterns: cfg.IncludePatterns,
+		excludePatterns: cfg.ExcludePatterns,
+	}
 
 	// Resolve auth header files into in-memory map for HTTP/SSE transports.
 	if len(cfg.AuthHeaderFiles) > 0 {
@@ -322,8 +337,8 @@ func (s *serverConn) listTools(ctx context.Context) ([]Tool, error) {
 		return nil, fmt.Errorf("parsing tools/list response: %w", err)
 	}
 
-	tools := make([]Tool, len(resp.Tools))
-	for i, t := range resp.Tools {
+	tools := make([]Tool, 0, len(resp.Tools))
+	for _, t := range resp.Tools {
 		tool := Tool{
 			Name:        t.Name,
 			Description: t.Description,
@@ -332,10 +347,44 @@ func (s *serverConn) listTools(ctx context.Context) ([]Tool, error) {
 		if t.Meta.UI != nil {
 			tool.AppResourceURI = t.Meta.UI.ResourceURI
 		}
-		tools[i] = tool
+		tools = append(tools, tool)
 		s.availableTools = append(s.availableTools, t.Name)
 	}
+	// Apply name-based include/exclude filters, keeping the availableTools
+	// name list in sync with the surviving tools.
+	kept := len(tools)
+	tools, s.availableTools = filterTools(tools, s.availableTools, s.includePatterns, s.excludePatterns)
+	if dropped := kept - len(tools); dropped > 0 {
+		slog.Info("MCP tools filtered by name patterns", "server", s.name,
+			"discovered", len(resp.Tools), "kept", len(tools), "dropped", dropped)
+	}
 	return tools, nil
+}
+
+// filterTools applies the include/exclude glob patterns to discovered tools.
+// It drops tools whose name does not pass matchToolName and keeps the parallel
+// availableToolNames list in sync with the surviving tools. When no patterns are
+// configured it returns the inputs unchanged.
+func filterTools(tools []Tool, availableToolNames []string, include, exclude []string) ([]Tool, []string) {
+	if len(include) == 0 && len(exclude) == 0 {
+		return tools, availableToolNames
+	}
+	kept := make(map[string]struct{}, len(tools))
+	out := make([]Tool, 0, len(tools))
+	for _, t := range tools {
+		if !matchToolName(t.Name, include, exclude) {
+			continue
+		}
+		out = append(out, t)
+		kept[t.Name] = struct{}{}
+	}
+	names := make([]string, 0, len(availableToolNames))
+	for _, n := range availableToolNames {
+		if _, ok := kept[n]; ok {
+			names = append(names, n)
+		}
+	}
+	return out, names
 }
 
 // FetchResource fetches a ui:// resource from the named MCP server via resources/read
@@ -594,4 +643,73 @@ func parseToolName(name string) (serverName, localName string) {
 		return before, after
 	}
 	return "", name
+}
+
+// matchToolName reports whether a discovered tool name should be exposed to the
+// LLM given the configured include/exclude glob patterns. Semantics mirror the
+// includePatterns/excludePatterns convention used by KnowledgeBase ingestion:
+//   - If includePatterns is non-empty, the name must match at least one pattern.
+//   - If the name matches any excludePatterns entry, it is dropped even if it was
+//     admitted by includePatterns (exclude always wins).
+//
+// An empty pattern set (the default) admits everything.
+func matchToolName(name string, includePatterns, excludePatterns []string) bool {
+	if len(includePatterns) > 0 && !matchesAny(name, includePatterns) {
+		return false
+	}
+	if matchesAny(name, excludePatterns) {
+		return false
+	}
+	return true
+}
+
+// matchesAny reports whether name matches at least one pattern.
+func matchesAny(name string, patterns []string) bool {
+	for _, p := range patterns {
+		if matchGlob(p, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// matchGlob supports standard glob patterns ("*" and "?") plus "**" for
+// multi-segment matching, mirroring cmd/mcp-ingester's matchGlob. Tool names are
+// single-segment identifiers, so the "**" branch only matters for completeness.
+func matchGlob(pattern, name string) bool {
+	if strings.Contains(pattern, "**") {
+		return matchDoublestar(pattern, name)
+	}
+	if matched, _ := filepath.Match(pattern, name); matched {
+		return true
+	}
+	// Also match against the base name, so a bare "*.go"-style pattern works even
+	// if the path were to contain separators.
+	if matched, _ := filepath.Match(pattern, filepath.Base(name)); matched {
+		return true
+	}
+	return false
+}
+
+// matchDoublestar supports "**" for recursive multi-segment matching, porting
+// cmd/mcp-ingester's matchDoublestar. This mirrors the project's existing glob
+// convention so MCP tool filtering behaves identically to KnowledgeBase ingestion
+// (e.g. "internal/**" matches "internal" and anything nested under it).
+func matchDoublestar(pattern, name string) bool {
+	parts := strings.SplitN(pattern, "**", 2)
+	prefix := strings.TrimSuffix(parts[0], "/")
+	suffix := strings.TrimPrefix(parts[1], "/")
+
+	// Prefix must match the start of the name as a path segment.
+	if prefix != "" && !strings.HasPrefix(name, prefix+"/") && name != prefix {
+		return false
+	}
+
+	// If no suffix, ** matches everything remaining after the prefix.
+	if suffix == "" {
+		return true
+	}
+
+	// Otherwise the name must end with the suffix.
+	return strings.HasSuffix(name, suffix)
 }

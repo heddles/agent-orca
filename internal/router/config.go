@@ -213,6 +213,16 @@ type MCPServerConfig struct {
 	AuthHeaderFiles []AuthHeaderFile `json:"authHeaderFiles,omitempty"`
 	// AllowApps enables MCP App iframe rendering for tools from this server.
 	AllowApps bool `json:"allowApps,omitempty"`
+	// IncludePatterns is a list of glob patterns used to filter the tools the
+	// model-router discovers at runtime (mirrors MCPServer.spec.includePatterns).
+	// When non-empty, only discovered tools whose name matches at least one pattern
+	// are exposed to the LLM. Empty means "all discovered tools" (no filtering).
+	// +optional
+	IncludePatterns []string `json:"includePatterns,omitempty"`
+	// ExcludePatterns hides discovered tools matching any glob, even if they
+	// matched IncludePatterns (mirrors MCPServer.spec.excludePatterns).
+	// +optional
+	ExcludePatterns []string `json:"excludePatterns,omitempty"`
 }
 
 // EnvFileMapping maps an environment variable name to a file containing its secret value.

@@ -506,7 +506,7 @@ func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig( //nolint:gocycl
 		}
 		var tool agentorcav1alpha1.Tool
 		if err := r.Get(ctx, client.ObjectKey{Name: toolName, Namespace: deploy.Namespace}, &tool); err != nil {
-			return nil, fmt.Errorf("getting Tool %q: %w", toolName, err)
+			return nil, annotatedToolError(ctx, r.Client, deploy.Namespace, toolName, err)
 		}
 		var params json.RawMessage
 		if tool.Spec.Schema != nil && tool.Spec.Schema.Input != nil {
@@ -539,6 +539,8 @@ func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig( //nolint:gocycl
 					var mcpServer agentorcav1alpha1.MCPServer
 					if err := r.Get(ctx, client.ObjectKey{Name: serverName, Namespace: deploy.Namespace}, &mcpServer); err == nil {
 						mcpCfg.AllowApps = mcpServer.Spec.AllowApps
+						mcpCfg.IncludePatterns = mcpServer.Spec.IncludePatterns
+						mcpCfg.ExcludePatterns = mcpServer.Spec.ExcludePatterns
 					}
 				}
 				args := tool.Spec.MCPConfig.Args

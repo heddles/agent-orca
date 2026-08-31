@@ -382,4 +382,339 @@ var _ = Describe("MCPServer Controller", func() {
 			Expect(updated.Status.Ready).To(BeTrue())
 		})
 	})
+
+	Context("When creating an MCPServer in discovery mode (empty tools)", func() {
+		const serverName = "test-discovery-server"
+
+		AfterEach(func() {
+			deleteIfExists(&agentorcav1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{Name: serverName, Namespace: namespace},
+			})
+			// The connector/marker Tool CR is named after the MCPServer.
+			deleteIfExists(&agentorcav1alpha1.Tool{
+				ObjectMeta: metav1.ObjectMeta{Name: serverName, Namespace: namespace},
+			})
+		})
+
+		It("should create a single connector Tool CR named after the server", func() {
+			server := &agentorcav1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      serverName,
+					Namespace: namespace,
+				},
+				Spec: agentorcav1alpha1.MCPServerSpec{
+					Transport:       "http",
+					URL:             "http://calculator.default.svc:3000",
+					Discoverability: agentorcav1alpha1.MCPServerDiscoverabilityEnabled,
+					// Tools intentionally omitted.
+				},
+			}
+			Expect(k8sClient.Create(ctx, server)).To(Succeed())
+
+			reconcileAndExpectSuccess(serverName)
+
+			var marker agentorcav1alpha1.Tool
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: serverName, Namespace: namespace,
+			}, &marker)).To(Succeed())
+
+			Expect(marker.Spec.Type).To(Equal(agentorcav1alpha1.ToolTypeMCP))
+			Expect(marker.Spec.MCPConfig).NotTo(BeNil())
+			Expect(marker.Spec.MCPConfig.Transport).To(Equal("http"))
+			Expect(marker.Spec.MCPConfig.URL).To(Equal("http://calculator.default.svc:3000"))
+			Expect(marker.Spec.Schema).To(BeNil())
+			Expect(marker.Labels[LabelManagedBy]).To(Equal(LabelManagedByMCPServer))
+			Expect(marker.Labels[LabelMCPServer]).To(Equal(serverName))
+			Expect(marker.OwnerReferences).To(HaveLen(1))
+			Expect(marker.OwnerReferences[0].Name).To(Equal(serverName))
+
+			// Exactly one child Tool CR should exist for this server.
+			var children agentorcav1alpha1.ToolList
+			Expect(k8sClient.List(ctx, &children,
+				client.InNamespace(namespace),
+				client.MatchingLabels{LabelManagedBy: LabelManagedByMCPServer, LabelMCPServer: serverName},
+			)).To(Succeed())
+			Expect(children.Items).To(HaveLen(1))
+
+			var updated agentorcav1alpha1.MCPServer
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: serverName, Namespace: namespace,
+			}, &updated)).To(Succeed())
+			Expect(updated.Status.Ready).To(BeTrue())
+			Expect(updated.Status.Discovering).To(BeTrue())
+			Expect(updated.Status.ToolCount).To(Equal(1))
+		})
+
+		It("should default to discovery mode when discoverability is omitted", func() {
+			server := &agentorcav1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      serverName,
+					Namespace: namespace,
+				},
+				Spec: agentorcav1alpha1.MCPServerSpec{
+					Transport: "http",
+					URL:       "http://calculator.default.svc:3000",
+					// Discoverability and Tools both omitted → defaults to enabled.
+				},
+			}
+			Expect(k8sClient.Create(ctx, server)).To(Succeed())
+
+			reconcileAndExpectSuccess(serverName)
+
+			var marker agentorcav1alpha1.Tool
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: serverName, Namespace: namespace,
+			}, &marker)).To(Succeed())
+			Expect(marker.Spec.Type).To(Equal(agentorcav1alpha1.ToolTypeMCP))
+
+			var updated agentorcav1alpha1.MCPServer
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: serverName, Namespace: namespace,
+			}, &updated)).To(Succeed())
+			Expect(updated.Status.Ready).To(BeTrue())
+			Expect(updated.Status.Discovering).To(BeTrue())
+		})
+	})
+
+	Context("When validating discovery mode boundaries", func() {
+		const serverName = "test-discovery-validation"
+
+		AfterEach(func() {
+			deleteIfExists(&agentorcav1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{Name: serverName, Namespace: namespace},
+			})
+			deleteIfExists(&agentorcav1alpha1.Tool{
+				ObjectMeta: metav1.ObjectMeta{Name: serverName + "-foo", Namespace: namespace},
+			})
+			deleteIfExists(&agentorcav1alpha1.Tool{
+				ObjectMeta: metav1.ObjectMeta{Name: serverName, Namespace: namespace},
+			})
+		})
+
+		It("should set Ready=false when disabled with empty spec.tools", func() {
+			server := &agentorcav1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      serverName,
+					Namespace: namespace,
+				},
+				Spec: agentorcav1alpha1.MCPServerSpec{
+					Transport:       "http",
+					URL:             "http://example.svc:3000",
+					Discoverability: agentorcav1alpha1.MCPServerDiscoverabilityDisabled,
+					// Tools intentionally omitted.
+				},
+			}
+			Expect(k8sClient.Create(ctx, server)).To(Succeed())
+
+			reconcileAndExpectSuccess(serverName)
+
+			var updated agentorcav1alpha1.MCPServer
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: serverName, Namespace: namespace,
+			}, &updated)).To(Succeed())
+			Expect(updated.Status.Ready).To(BeFalse())
+			Expect(updated.Status.Message).To(ContainSubstring("spec.tools must declare at least one tool"))
+		})
+
+		It("should accept enabled with explicit spec.tools (backward compatible)", func() {
+			server := &agentorcav1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      serverName,
+					Namespace: namespace,
+				},
+				Spec: agentorcav1alpha1.MCPServerSpec{
+					Transport:       "http",
+					URL:             "http://example.svc:3000",
+					Discoverability: agentorcav1alpha1.MCPServerDiscoverabilityEnabled,
+					Tools: []agentorcav1alpha1.MCPServerTool{
+						{Name: "foo", Description: "A tool"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, server)).To(Succeed())
+
+			reconcileAndExpectSuccess(serverName)
+
+			// Explicit declaration under enabled -> per-tool CR, not the marker.
+			var foo agentorcav1alpha1.Tool
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: serverName + "-foo", Namespace: namespace,
+			}, &foo)).To(Succeed())
+			Expect(foo.Labels[LabelMCPServer]).To(Equal(serverName))
+
+			// No connector marker (named after the server) should exist.
+			err := k8sClient.Get(ctx, types.NamespacedName{
+				Name: serverName, Namespace: namespace,
+			}, &agentorcav1alpha1.Tool{})
+			Expect(errors.IsNotFound(err)).To(BeTrue())
+
+			var updated agentorcav1alpha1.MCPServer
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: serverName, Namespace: namespace,
+			}, &updated)).To(Succeed())
+			Expect(updated.Status.Ready).To(BeTrue())
+			Expect(updated.Status.Discovering).To(BeFalse())
+		})
+
+		It("should flag duplicate tool names even in default (enabled) mode", func() {
+			server := &agentorcav1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      serverName,
+					Namespace: namespace,
+				},
+				Spec: agentorcav1alpha1.MCPServerSpec{
+					Transport: "http",
+					URL:       "http://example.svc:3000",
+					Tools: []agentorcav1alpha1.MCPServerTool{
+						{Name: "foo"},
+						{Name: "foo"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, server)).To(Succeed())
+
+			reconcileAndExpectSuccess(serverName)
+
+			var updated agentorcav1alpha1.MCPServer
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: serverName, Namespace: namespace,
+			}, &updated)).To(Succeed())
+			Expect(updated.Status.Ready).To(BeFalse())
+			Expect(updated.Status.Message).To(ContainSubstring("duplicate tool name"))
+		})
+	})
+
+	Context("When switching an MCPServer from explicit tools to discovery mode", func() {
+		const serverName = "test-migration-server"
+
+		AfterEach(func() {
+			deleteIfExists(&agentorcav1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{Name: serverName, Namespace: namespace},
+			})
+			deleteIfExists(&agentorcav1alpha1.Tool{
+				ObjectMeta: metav1.ObjectMeta{Name: serverName + "-alpha", Namespace: namespace},
+			})
+			deleteIfExists(&agentorcav1alpha1.Tool{
+				ObjectMeta: metav1.ObjectMeta{Name: serverName + "-beta", Namespace: namespace},
+			})
+			deleteIfExists(&agentorcav1alpha1.Tool{
+				ObjectMeta: metav1.ObjectMeta{Name: serverName, Namespace: namespace},
+			})
+		})
+
+		It("should replace per-tool CRs with the connector Tool CR", func() {
+			server := &agentorcav1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      serverName,
+					Namespace: namespace,
+				},
+				Spec: agentorcav1alpha1.MCPServerSpec{
+					Transport: "http",
+					URL:       "http://example.svc:3000",
+					Tools: []agentorcav1alpha1.MCPServerTool{
+						{Name: "alpha", Description: "Alpha"},
+						{Name: "beta", Description: "Beta"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, server)).To(Succeed())
+			reconcileAndExpectSuccess(serverName)
+
+			// Both per-tool CRs exist.
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: serverName + "-alpha", Namespace: namespace,
+			}, &agentorcav1alpha1.Tool{})).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: serverName + "-beta", Namespace: namespace,
+			}, &agentorcav1alpha1.Tool{})).To(Succeed())
+
+			// Switch to discovery mode.
+			var current agentorcav1alpha1.MCPServer
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: serverName, Namespace: namespace,
+			}, &current)).To(Succeed())
+			current.Spec.Discoverability = agentorcav1alpha1.MCPServerDiscoverabilityEnabled
+			current.Spec.Tools = nil
+			Expect(k8sClient.Update(ctx, &current)).To(Succeed())
+
+			reconcileAndExpectSuccess(serverName)
+
+			// The per-tool CRs are gone...
+			err := k8sClient.Get(ctx, types.NamespacedName{
+				Name: serverName + "-alpha", Namespace: namespace,
+			}, &agentorcav1alpha1.Tool{})
+			Expect(errors.IsNotFound(err)).To(BeTrue())
+			err = k8sClient.Get(ctx, types.NamespacedName{
+				Name: serverName + "-beta", Namespace: namespace,
+			}, &agentorcav1alpha1.Tool{})
+			Expect(errors.IsNotFound(err)).To(BeTrue())
+
+			// ...and the connector marker exists, named after the server.
+			var marker agentorcav1alpha1.Tool
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: serverName, Namespace: namespace,
+			}, &marker)).To(Succeed())
+			Expect(marker.Spec.Type).To(Equal(agentorcav1alpha1.ToolTypeMCP))
+			Expect(marker.Labels[LabelMCPServer]).To(Equal(serverName))
+
+			var updated agentorcav1alpha1.MCPServer
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: serverName, Namespace: namespace,
+			}, &updated)).To(Succeed())
+			Expect(updated.Status.Discovering).To(BeTrue())
+		})
+	})
+
+	Context("When an agent references a stale per-tool name under discovery mode", func() {
+		const serverName = "test-hint-server"
+
+		AfterEach(func() {
+			deleteIfExists(&agentorcav1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{Name: serverName, Namespace: namespace},
+			})
+		})
+
+		It("should return a hint to reference the server by name", func() {
+			server := &agentorcav1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      serverName,
+					Namespace: namespace,
+				},
+				Spec: agentorcav1alpha1.MCPServerSpec{
+					Transport: "http",
+					URL:       "http://example.svc:3000",
+					// Discoverability defaults to enabled; Tools omitted => discovery mode.
+				},
+			}
+			Expect(k8sClient.Create(ctx, server)).To(Succeed())
+			reconcileAndExpectSuccess(serverName)
+
+			// A stale per-tool reference like "github-mcp-<tool>" should yield an
+			// actionable hint pointing the agent at the connector/server name.
+			hint := mcpToolResolutionHint(ctx, k8sClient, namespace, serverName+"-get-file-contents")
+			Expect(hint).To(ContainSubstring("auto-discovery mode"))
+			Expect(hint).To(ContainSubstring("reference the server by name \"" + serverName + "\""))
+		})
+
+		It("should return no hint for a non-discovery server", func() {
+			server := &agentorcav1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      serverName,
+					Namespace: namespace,
+				},
+				Spec: agentorcav1alpha1.MCPServerSpec{
+					Transport:       "http",
+					URL:             "http://example.svc:3000",
+					Discoverability: agentorcav1alpha1.MCPServerDiscoverabilityDisabled,
+					Tools: []agentorcav1alpha1.MCPServerTool{
+						{Name: "foo", Description: "A tool"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, server)).To(Succeed())
+			reconcileAndExpectSuccess(serverName)
+
+			Expect(mcpToolResolutionHint(ctx, k8sClient, namespace, serverName+"-get-file-contents")).To(BeEmpty())
+		})
+	})
 })

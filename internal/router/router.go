@@ -545,6 +545,8 @@ func (r *Router) InitMCPServers() {
 			EnvFiles:        envFiles,
 			AuthHeaderFiles: authHeaderFiles,
 			AllowApps:       s.AllowApps,
+			IncludePatterns: s.IncludePatterns,
+			ExcludePatterns: s.ExcludePatterns,
 		})
 	}
 	client := mcp.New(context.Background(), serverConfigs)

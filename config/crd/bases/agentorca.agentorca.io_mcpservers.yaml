@@ -86,6 +86,23 @@ spec:
                 items:
                   type: string
                 type: array
+              discoverability:
+                default: enabled
+                description: |-
+                  Discoverability controls how MCP tools are surfaced to agents.
+
+                  "enabled" (default): the model-router auto-discovers all tools at runtime via
+                  tools/list and exposes them to the LLM. spec.tools is optional — when omitted,
+                  the controller creates one connector Tool CR (named after the MCPServer) and the
+                  agent references the server by that name. Any tools declared in spec.tools are
+                  still created as child Tool CRs (useful for access-control cataloguing).
+
+                  "disabled": spec.tools is required and the agent must reference each declared
+                  Tool CR explicitly.
+                enum:
+                - enabled
+                - disabled
+                type: string
               env:
                 additionalProperties:
                   type: string
@@ -133,6 +150,24 @@ spec:
                   required:
                   - name
                   type: object
+                type: array
+              excludePatterns:
+                description: |-
+                  ExcludePatterns is a list of glob patterns to hide discovered tools. A tool
+                  matching any pattern is dropped before it reaches the LLM, even if it matched
+                  an IncludePatterns entry (exclude always wins). Applied after IncludePatterns.
+                items:
+                  type: string
+                type: array
+              includePatterns:
+                description: |-
+                  IncludePatterns is a list of glob patterns used to filter the tools the
+                  model-router discovers at runtime. When non-empty, only tools whose name matches
+                  at least one pattern are exposed to agents. Supports "*", "?", and "**" for
+                  recursive multi-segment matching (e.g. "search/**"). Mirrors the
+                  includePatterns convention used by KnowledgeBase ingestion.
+                items:
+                  type: string
                 type: array
               networkEgress:
                 description: |-
@@ -228,6 +263,11 @@ spec:
                 description: |-
                   Tools declares the tools this MCP server provides.
                   Each entry becomes a child Tool CR managed by the MCPServer controller.
+
+                  Optional when spec.discoverability is "enabled" (the default): if Tools is
+                  empty the controller creates a single connector Tool CR (named after the
+                  MCPServer) and the model-router discovers every tool at runtime via tools/list.
+                  When spec.discoverability is "disabled", Tools is required.
                 items:
                   description: MCPServerTool declares a single tool provided by an
                     MCP server.
@@ -251,7 +291,6 @@ spec:
                   required:
                   - name
                   type: object
-                minItems: 1
                 type: array
               transport:
                 default: stdio
@@ -266,8 +305,6 @@ spec:
                   URL is the MCP server URL for http and sse transports.
                   If set, the server runs externally and no sidecar is injected.
                 type: string
-            required:
-            - tools
             type: object
           status:
             description: MCPServerStatus defines the observed state of an MCPServer.
@@ -332,6 +369,12 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              discovering:
+                description: |-
+                  Discovering is true when spec.discoverability is "enabled" and spec.tools is
+                  empty, meaning the controller created a connector Tool CR and the model-router
+                  will discover all tools at runtime via tools/list.
+                type: boolean
               message:
                 description: Message contains a human-readable status message.
                 type: string

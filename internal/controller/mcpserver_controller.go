@@ -73,13 +73,25 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, fmt.Errorf("listing child Tools: %w", err)
 	}
 
-	// Build a set of desired tool names for stale detection.
-	desiredNames := make(map[string]struct{}, len(server.Spec.Tools))
-	for _, t := range server.Spec.Tools {
-		desiredNames[childToolName(server.Name, t.Name)] = struct{}{}
+	// Determine whether this server relies on runtime auto-discovery:
+	// discoverability enabled (the default) with no tools explicitly declared.
+	discoveryMode := isDiscoveryMode(&server)
+
+	// Build a set of desired child Tool CR names for stale detection.
+	// In discovery mode a single "connector" Tool CR is named after the MCPServer
+	// itself, so agents list it once in spec.tools instead of enumerating tools.
+	desiredNames := make(map[string]struct{})
+	if discoveryMode {
+		desiredNames[server.Name] = struct{}{}
+	} else {
+		for _, t := range server.Spec.Tools {
+			desiredNames[childToolName(server.Name, t.Name)] = struct{}{}
+		}
 	}
 
-	// Delete stale child Tools that are no longer in the spec.
+	// Delete stale child Tools that are no longer desired.
+	// This also cleans up per-tool CRs when a server switches between explicit
+	// declaration and discovery mode (and vice-versa).
 	for i := range existingTools.Items {
 		tool := &existingTools.Items[i]
 		if _, ok := desiredNames[tool.Name]; !ok {
@@ -95,30 +107,26 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		existingByName[existingTools.Items[i].Name] = &existingTools.Items[i]
 	}
 
-	// Create or update child Tools.
-	for _, declared := range server.Spec.Tools {
-		desired := r.buildChildTool(&server, declared)
-
-		if existing, ok := existingByName[desired.Name]; ok {
-			// Update if spec changed.
-			existing.Spec = desired.Spec
-			existing.Labels = desired.Labels
-			if err := r.Update(ctx, existing); err != nil {
-				return ctrl.Result{}, fmt.Errorf("updating Tool %q: %w", desired.Name, err)
-			}
-		} else {
-			// Create new child Tool.
-			if err := ctrl.SetControllerReference(&server, desired, r.Scheme); err != nil {
-				return ctrl.Result{}, fmt.Errorf("setting owner ref on Tool %q: %w", desired.Name, err)
-			}
-			if err := r.Create(ctx, desired); err != nil {
-				return ctrl.Result{}, fmt.Errorf("creating Tool %q: %w", desired.Name, err)
+	// Create or update the desired child Tool(s).
+	if discoveryMode {
+		desired := r.buildMarkerTool(&server)
+		if err := r.applyChildTool(ctx, existingByName, &server, desired); err != nil {
+			return ctrl.Result{}, fmt.Errorf("reconciling connector Tool %q: %w", desired.Name, err)
+		}
+	} else {
+		for _, declared := range server.Spec.Tools {
+			desired := r.buildChildTool(&server, declared)
+			if err := r.applyChildTool(ctx, existingByName, &server, desired); err != nil {
+				return ctrl.Result{}, fmt.Errorf("reconciling Tool %q: %w", desired.Name, err)
 			}
 		}
 	}
 
-	return ctrl.Result{}, r.patchStatus(ctx, &server, true, len(server.Spec.Tools),
-		fmt.Sprintf("%d tool(s) reconciled", len(server.Spec.Tools)))
+	message := fmt.Sprintf("%d tool(s) reconciled", len(desiredNames))
+	if discoveryMode {
+		message = "auto-discovery enabled; connector Tool created, all tools discovered at runtime"
+	}
+	return ctrl.Result{}, r.patchStatus(ctx, &server, true, len(desiredNames), message)
 }
 
 // validate checks the MCPServer spec for correctness.
@@ -137,22 +145,43 @@ func (r *MCPServerReconciler) validate(server *agentorcav1alpha1.MCPServer) (boo
 		return false, fmt.Sprintf("unknown transport %q", server.Spec.Transport)
 	}
 
-	if len(server.Spec.Tools) == 0 {
-		return false, "spec.tools must declare at least one tool"
-	}
-
-	seen := make(map[string]struct{}, len(server.Spec.Tools))
-	for _, t := range server.Spec.Tools {
-		if t.Name == "" {
-			return false, "tool name must not be empty"
+	// In discovery mode (discoverability enabled, no tools declared) there are no
+	// tools to validate — the model-router discovers them all at runtime. Otherwise
+	// (explicit declaration, or discoverability disabled) the operator must declare
+	// at least one tool so there is a catalog and a referenceable connector.
+	if !isDiscoveryMode(server) {
+		if len(server.Spec.Tools) == 0 {
+			return false, "spec.tools must declare at least one tool (or set spec.discoverability: enabled to auto-discover all tools)"
 		}
-		if _, dup := seen[t.Name]; dup {
-			return false, fmt.Sprintf("duplicate tool name %q", t.Name)
+		seen := make(map[string]struct{}, len(server.Spec.Tools))
+		for _, t := range server.Spec.Tools {
+			if t.Name == "" {
+				return false, "tool name must not be empty"
+			}
+			if _, dup := seen[t.Name]; dup {
+				return false, fmt.Sprintf("duplicate tool name %q", t.Name)
+			}
+			seen[t.Name] = struct{}{}
 		}
-		seen[t.Name] = struct{}{}
 	}
 
 	return true, ""
+}
+
+// discoverabilityMode returns the effective discoverability value, treating the
+// empty/unset value as the documented default ("enabled").
+func discoverabilityMode(server *agentorcav1alpha1.MCPServer) string {
+	if server.Spec.Discoverability == agentorcav1alpha1.MCPServerDiscoverabilityDisabled {
+		return agentorcav1alpha1.MCPServerDiscoverabilityDisabled
+	}
+	return agentorcav1alpha1.MCPServerDiscoverabilityEnabled
+}
+
+// isDiscoveryMode reports whether the MCPServer relies on runtime auto-discovery:
+// discoverability is enabled (the default) and no tools are explicitly declared.
+func isDiscoveryMode(server *agentorcav1alpha1.MCPServer) bool {
+	return discoverabilityMode(server) == agentorcav1alpha1.MCPServerDiscoverabilityEnabled &&
+		len(server.Spec.Tools) == 0
 }
 
 // buildChildTool constructs the desired Tool CR for a declared MCPServer tool.
@@ -188,6 +217,64 @@ func (r *MCPServerReconciler) buildChildTool(server *agentorcav1alpha1.MCPServer
 	return tool
 }
 
+// buildMarkerTool constructs the connector Tool CR created when an MCPServer is in
+// auto-discovery mode (discoverability enabled with no tools explicitly declared).
+//
+// The marker exists so that:
+//   - agents can reference the MCPServer by a single name in spec.tools, and
+//   - podbuilder can mount the stdio sidecar image volume and rewrite binary paths
+//     against a real Tool CR (those mounts are keyed on Tool CR names).
+//
+// The model-router ignores this Tool's (empty) schema — it discovers every tool at
+// runtime via tools/list and exposes them (filtered by includePatterns/excludePatterns).
+func (r *MCPServerReconciler) buildMarkerTool(server *agentorcav1alpha1.MCPServer) *agentorcav1alpha1.Tool {
+	tool := &agentorcav1alpha1.Tool{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      server.Name,
+			Namespace: server.Namespace,
+			Labels: map[string]string{
+				LabelManagedBy: LabelManagedByMCPServer,
+				LabelMCPServer: server.Name,
+			},
+		},
+		Spec: agentorcav1alpha1.ToolSpec{
+			Type: agentorcav1alpha1.ToolTypeMCP,
+			MCPConfig: &agentorcav1alpha1.MCPConfig{
+				Transport: server.Spec.Transport,
+				URL:       server.Spec.URL,
+				Args:      server.Spec.Args,
+				Env:       server.Spec.Env,
+				EnvFrom:   server.Spec.EnvFrom,
+			},
+			OCIRef:        server.Spec.OCIRef,
+			ExecutionMode: executionModeForServer(server),
+			NetworkEgress: server.Spec.NetworkEgress,
+			Resources:     server.Spec.Resources,
+		},
+	}
+	return tool
+}
+
+// applyChildTool creates or updates a child Tool CR described by desired.
+func (r *MCPServerReconciler) applyChildTool(
+	ctx context.Context,
+	existingByName map[string]*agentorcav1alpha1.Tool,
+	server *agentorcav1alpha1.MCPServer,
+	desired *agentorcav1alpha1.Tool,
+) error {
+	if existing, ok := existingByName[desired.Name]; ok {
+		// Update if spec changed.
+		existing.Spec = desired.Spec
+		existing.Labels = desired.Labels
+		return r.Update(ctx, existing)
+	}
+	// Create new child Tool.
+	if err := ctrl.SetControllerReference(server, desired, r.Scheme); err != nil {
+		return err
+	}
+	return r.Create(ctx, desired)
+}
+
 // executionModeForServer returns "sidecar" when the MCPServer has an OCI image
 // and uses stdio transport, meaning the model-router needs the binary mounted
 // via an image volume. Otherwise returns empty (default pod execution).
@@ -204,6 +291,7 @@ func (r *MCPServerReconciler) patchStatus(ctx context.Context, server *agentorca
 	server.Status.Ready = ready
 	server.Status.Message = message
 	server.Status.ToolCount = toolCount
+	server.Status.Discovering = isDiscoveryMode(server)
 
 	condStatus := metav1.ConditionTrue
 	reason := "Reconciled"

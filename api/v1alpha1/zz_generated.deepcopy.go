@@ -1704,6 +1704,16 @@ func (in *MCPServerSpec) DeepCopyInto(out *MCPServerSpec) {
 			(*in)[i].DeepCopyInto(&(*out)[i])
 		}
 	}
+	if in.IncludePatterns != nil {
+		in, out := &in.IncludePatterns, &out.IncludePatterns
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
+	if in.ExcludePatterns != nil {
+		in, out := &in.ExcludePatterns, &out.ExcludePatterns
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	if in.AllowedAgents != nil {
 		in, out := &in.AllowedAgents, &out.AllowedAgents
 		*out = make([]string, len(*in))

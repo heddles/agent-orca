@@ -11,6 +11,59 @@ Both layers work together: the operator prevents unauthorized runs from starting
 
 ---
 
+## Auto tool discovery & name-based filtering
+
+`spec.discoverability` controls whether the model-router auto-discovers every tool
+the MCP server exposes (via `tools/list` at runtime) and surfaces them to the LLM.
+
+- **`enabled` (default)** — all tools are discovered automatically. `spec.tools` is
+  **optional**: when omitted, the controller creates a single connector `Tool` CR named
+  after the MCPServer, and the agent references that one name in `spec.tools` instead of
+  enumerating every tool. Declared `spec.tools` entries are still honored when present.
+- **`disabled`** — opt back into the explicit model: `spec.tools` is **required** (≥1
+  entry), each becoming its own `Tool` CR, and the agent references each one by name.
+
+Name-based filtering narrows which *discovered* tools the LLM can actually call, without
+listing them. These are ordinary glob patterns (the same convention used by
+[KnowledgeBase ingestion](https://kubernetes.io/docs/concepts/cluster-administration/networking/#kubectl)):
+
+- `includePatterns` — when non-empty, only tools whose name matches at least one pattern
+  are exposed (`*` and `?` wildcards; `**` for recursive matching).
+- `excludePatterns` — tools matching any pattern are always dropped, even if they matched
+  an include pattern (exclude wins).
+- Empty (the default) ⇒ all discovered tools are exposed (backward compatible).
+
+These mirror the `includePatterns`/`excludePatterns` glob convention already used by
+[KnowledgeBase ingestion](mcp-apps.md) and the `mcp-ingester`.
+
+```yaml
+apiVersion: agentorca.agentorca.io/v1alpha1
+kind: MCPServer
+metadata:
+  name: github-mcp
+  namespace: default
+spec:
+  transport: http
+  url: http://github-mcp-svc.default:8080
+  allowedAgents:
+    - analyst
+  # Tools are auto-discovered — no spec.tools needed. The agent references
+  # "github-mcp" (the connector Tool CR) in agent.spec.tools.
+  includePatterns:
+    - "list_*"
+    - "get_*"
+  excludePatterns:
+    - "internal_*"
+```
+
+> Discovery happens at runtime in the model-router sidecar, which connects to every MCP
+> server referenced by the agent and merges the discovered schemas into the LLM's tool
+> set. Filters are applied at that point. The connector `Tool` CR exists only so the
+> agent (and the podbuilder's stdio sidecar image-volume wiring, which is keyed on Tool CR
+> names) can reference the server by name.
+
+---
+
 ## Authorization — `allowedAgents`
 
 Access to an MCP server is **denied by default**. An agent must be explicitly listed in `MCPServer.spec.allowedAgents` for any AgentRun that uses it to be allowed to start.

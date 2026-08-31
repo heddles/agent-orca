@@ -684,7 +684,7 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 		}
 		var tool agentorcav1alpha1.Tool
 		if err := r.Get(ctx, client.ObjectKey{Name: toolName, Namespace: run.Namespace}, &tool); err != nil {
-			return nil, nil, false, fmt.Errorf("getting Tool %q: %w", toolName, err)
+			return nil, nil, false, annotatedToolError(ctx, r.Client, run.Namespace, toolName, err)
 		}
 
 		var params json.RawMessage
@@ -722,6 +722,8 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 					var mcpServer agentorcav1alpha1.MCPServer
 					if err := r.Get(ctx, client.ObjectKey{Name: serverName, Namespace: run.Namespace}, &mcpServer); err == nil {
 						mcpCfg.AllowApps = mcpServer.Spec.AllowApps
+						mcpCfg.IncludePatterns = mcpServer.Spec.IncludePatterns
+						mcpCfg.ExcludePatterns = mcpServer.Spec.ExcludePatterns
 					}
 				}
 				args := tool.Spec.MCPConfig.Args

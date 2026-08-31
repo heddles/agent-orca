@@ -15,18 +15,18 @@ agent-orca-resources:
   # a server flag. `envFrom` injects GH_TOKEN from the github-mcp-token Secret
   # (created from .githubToken by github-token-secret.yaml).
   #
-  # NAMING CONVENTION (three forms — keep them straight):
-  #   * MCPServer.tools[].name / agent.tools  -> HYPHENATED K8s resource names
-  #     (regex ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$). These become Tool CR names
-  #     <github-mcp-<name>> used by the operator for lookup. So if the server
-  #     exposes get_file_contents (underscore), the MCPServer tool name here is
-  #     get-file-contents and the agent references github-mcp-get-file-contents.
-  #   * --tools arg / GITHUB_TOKEN env        -> the server's REAL tool names
-  #     (get_file_contents, underscore) — these are what the server expects.
-  #   * System-prompt tool call names         -> the REAL names the LLM actually
-  #     calls. At runtime the model-router runs tools/list against the server
-  #     (mergeMCPToolDefs) and exposes the server's real names to the LLM, so the
-  #     prompt must use get_file_contents (not github-mcp-get-file-contents).
+  # NAMING CONVENTION (auto-discovery is the default):
+  #   * agent.tools             -> reference the MCPServer by NAME (e.g. "github-mcp").
+  #     With spec.discoverability: enabled (default) and no spec.tools, the controller
+  #     creates a single connector Tool CR named "github-mcp"; the model-router then
+  #     discovers every tool the server exposes (tools/list) and forwards the real
+  #     names to the LLM.
+  #   * --tools arg / GITHUB_TOKEN env -> the server's REAL tool names
+  #     (get_file_contents, underscore) — what the server expects and what the LLM calls.
+  #   * includePatterns/excludePatterns -> optional globs narrowing which discovered
+  #     tools reach the LLM (e.g. "search_*"); applied at runtime after tools/list.
+  # To opt back into per-tool Tool CRs (agent references github-mcp-<name>), set
+  # spec.discoverability: disabled and declare spec.tools explicitly.
   #
   # Allowed tools (all read-only, from the `repos` toolset):
   #   get-file-contents  read a file/directory at path in owner/repo
@@ -43,12 +43,13 @@ agent-orca-resources:
       # the /mcp-img/<tool> image-volume mount before fork/exec). `stdio` is the
       # server subcommand; --read-only blocks all mutating tools; --tools restricts
       # to the read-only allow-list using the server's REAL (underscore) tool names.
+      #
+      # Discovery: spec.tools is empty (below) so the controller creates a single
+      # connector Tool CR named "github-mcp"; the model-router discovers all of the
+      # server's tools at runtime and exposes them to the LLM.
       args:
         - /server/github-mcp-server
         - stdio
-        - --read-only
-        - --tools
-        - "get_file_contents,search_code,list_commits,get_commit,list_branches,search_commits"
       envFrom:
         - name: GITHUB_PERSONAL_ACCESS_TOKEN
           valueFrom:
@@ -66,33 +67,33 @@ agent-orca-resources:
         - host: api.github.com
           port: 443
           protocol: TCP
-      tools:
-        # Hyphenated (K8s-valid) — these become Tool CRs github-mcp-<name>.
-        - name: get-file-contents
-          description: >
-            Read a file or directory from a GitHub repository (owner/repo). Returns file content (with a
-            base64 blob + text) for files or a JSON array of entries (name, type, path) for directories.
-            Parameters: owner, repo, path, ref (optional).
-        - name: search-code
-          description: >
-            Search GitHub code. Supports qualifiers repo:, org:, language:, path:, filename:, extension:,
-            in:file, size:, is:archived. Returns matching files with repository, path, html_url, and
-            a text_matches snippet. Parameters: query, owner (optional), repo (optional), page, perPage.
-        - name: list-commits
-          description: >
-            List commits for owner/repo, optionally filtered by path, sha (branch/tag), since/until.
-            Returns sha, author, message, and date for each commit.
-        - name: get-commit
-          description: >
-            Get full details (metadata, author, committer, files changed) for a single commit.
-            Parameters: owner, repo, commit_sha.
-        - name: list-branches
-          description: >
-            List branches on owner/repo with pagination. Returns branch name and latest commit info.
-        - name: search-commits
-          description: >
-            Search GitHub commits via the official search syntax. Scope with repo:owner/repo, author:,
-            committer-date:, hash:. Returns sha, repo, author, message.
+      tools: []
+      #   # Hyphenated (K8s-valid) — these become Tool CRs github-mcp-<name>.
+      #   - name: get-file-contents
+      #     description: >
+      #       Read a file or directory from a GitHub repository (owner/repo). Returns file content (with a
+      #       base64 blob + text) for files or a JSON array of entries (name, type, path) for directories.
+      #       Parameters: owner, repo, path, ref (optional).
+      #   - name: search-code
+      #     description: >
+      #       Search GitHub code. Supports qualifiers repo:, org:, language:, path:, filename:, extension:,
+      #       in:file, size:, is:archived. Returns matching files with repository, path, html_url, and
+      #       a text_matches snippet. Parameters: query, owner (optional), repo (optional), page, perPage.
+      #   - name: list-commits
+      #     description: >
+      #       List commits for owner/repo, optionally filtered by path, sha (branch/tag), since/until.
+      #       Returns sha, author, message, and date for each commit.
+      #   - name: get-commit
+      #     description: >
+      #       Get full details (metadata, author, committer, files changed) for a single commit.
+      #       Parameters: owner, repo, commit_sha.
+      #   - name: list-branches
+      #     description: >
+      #       List branches on owner/repo with pagination. Returns branch name and latest commit info.
+      #   - name: search-commits
+      #     description: >
+      #       Search GitHub commits via the official search syntax. Scope with repo:owner/repo, author:,
+      #       committer-date:, hash:. Returns sha, repo, author, message.
       resources:
         requests:
           cpu: 50m
@@ -109,21 +110,21 @@ agent-orca-resources:
   # Requires: 'ollama-embed' ModelSelector deployed (enable ollama-embeddings in the
   # model-providers chart and run the Ollama cluster — see docs/development.md).
   # Re-ingested hourly (syncIntervalSeconds: 3600) so edits to the ConfigMap take effect.
-  knowledgeBases:
-    - name: agent-orca-codebase
-      description: "agent-orca engineering handbook — architecture, request lifecycle, debugging, and coding conventions for the senior programmer agent."
-      allowedAgents:
-        - senior-programmer
-      embedding:
-        modelSelectorRef: ollama-embed
-        chunkSize: 512
-        chunkOverlap: 64
-      vectorStore:
-        storageSize: 2Gi
-      ingestion:
-        configMapRefs:
-          - name: programming-agent-handbook
-        syncIntervalSeconds: 3600
+  # knowledgeBases:
+  #   - name: agent-orca-codebase
+  #     description: "agent-orca engineering handbook — architecture, request lifecycle, debugging, and coding conventions for the senior programmer agent."
+  #     allowedAgents:
+  #       - senior-programmer
+  #     embedding:
+  #       modelSelectorRef: ollama-embed
+  #       chunkSize: 512
+  #       chunkOverlap: 64
+  #     vectorStore:
+  #       storageSize: 2Gi
+  #     ingestion:
+  #       configMapRefs:
+  #         - name: programming-agent-handbook
+  #       syncIntervalSeconds: 3600
   # ── Agents ───────────────────────────────────────────────────────────────────
   #
   # senior-programmer: a senior software engineer persona for the agent-orca project.
@@ -139,30 +140,15 @@ agent-orca-resources:
         its Go controllers, the model-router sidecar contract, the KnowledgeBase/Qdrant
         pipeline, and how MCP stdio sidecars are mounted into agent pods.
 
-        Your toolkit (call these by their real names as exposed by the MCP server):
+        Your toolkit:
           _rag_search          — search the agent-orca-codebase handbook KB
           _rag_ingest          — persist text into the KB so it improves over time
-          get_file_contents    — read a file/dir from a GitHub repo (owner, repo, path)
-          search_code          — GitHub code search (repo:, org:, language:, path:, filename:, ...)
-          list_commits         — list commits on a repo
-          get_commit           — inspect a single commit
-          list_branches        — list branches
-          search_commits       — GitHub commit search
           _done                — finish a turn and return your answer
           _clarify             — ask the user a focused clarifying question
           _fail                — fail a turn with a message (use for errors)
 
         WORKFLOW for every request:
-          1. SEARCH THE HANDBOOK FIRST. Call _rag_search for the relevant section
-             (architecture / agent-lifecycle / debugging / coding-conventions). Summary is
-             your grounding before touching live code.
-          2. IF RAG IS INSUFFICIENT, go live. Use search_code / get_file_contents on
-             owner/repo (the agent-orca repo: floopyfish14/agent-orca — substitute the
-             correct repo for other projects). search_code qualifiers (language:, path:,
-             repo:) narrow results fast; never call get_file_contents on the repo root.
-          3. BACK-FILL. After reading a file via get_file_contents that resolves the
-             question, call _rag_ingest with a concise summary so future turns hit the KB first.
-          4. ANSWER precisely. Cite file paths (e.g. internal/controller/knowledgebase_controller.go),
+          1. ANSWER precisely. Cite file paths (e.g. internal/controller/knowledgebase_controller.go),
              include short relevant snippets (≤5 lines), explain the how and why, and
              note caveats (e.g. "the dev profile disables leader election"; "webhooks are
              Ignore in dev"). If the question is out of scope for this repo, politely say
@@ -179,16 +165,13 @@ agent-orca-resources:
 
         Output style: technical, terse but complete. Use short markdown sections with
         file-path citations. Do not fluff.
-      # Tool CR references (hyphenated; the operator looks these up by name). At runtime the
-      # model-router discovers the server's real tool names and exposes those to the LLM, so
-      # the system prompt above uses the real names (get_file_contents, etc.).
+      # In discovery mode (spec.discoverability defaults to "enabled" with no
+      # spec.tools), reference the MCPServer by name. The controller creates a
+      # connector Tool CR named "github-mcp"; at runtime the model-router discovers
+      # all of the server's tools (restricted here to read-only via --tools) and
+      # exposes their real underscore names (get_file_contents, etc.) to the LLM.
       tools:
-        - github-mcp-get-file-contents
-        - github-mcp-search-code
-        - github-mcp-list-commits
-        - github-mcp-get-commit
-        - github-mcp-list-branches
-        - github-mcp-search-commits
+        - github-mcp
       knowledgeBases:
         - agent-orca-codebase
       runtime:
