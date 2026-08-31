@@ -440,8 +440,14 @@ func ConfigFromEnv() (*Config, error) {
 	if cfg.ContextWindowReserve <= 0 || cfg.ContextWindowReserve >= 1.0 {
 		cfg.ContextWindowReserve = 0.20
 	}
+	// MaxToolResultTokens caps the size of any single tool result before it enters
+	// conversation history. The operator always sets a context-window-aware value in
+	// the router config (see AgentDeployment.buildDeploymentRouterConfig →
+	// defaultMaxToolResultTokens); this only applies to standalone/dev runs that build
+	// a config without the operator. Kept well above the old 4000 (16k chars) floor so
+	// large MCP/file/commit-patch reads aren't silently truncated.
 	if cfg.MaxToolResultTokens <= 0 {
-		cfg.MaxToolResultTokens = 4000
+		cfg.MaxToolResultTokens = 16000
 	}
 	if cfg.LLMRequestTimeout <= 0 {
 		// Default to 1h — provider chat/completion calls (especially for long

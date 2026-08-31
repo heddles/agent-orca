@@ -200,6 +200,19 @@ agent-orca-resources:
         type: chat
       replicas: 1
       warmPoolSize: 1
+      # Allow large MCP/file/commit-patch reads (e.g. router.go is ~153K chars) through
+      # untruncated. When omitted the operator derives a context-window-aware default
+      # (~10% of the model's ContextWindow, floored at 8k / capped at 64k tokens).
+      maxToolResultTokens: 64000
+      # Conservative loop guards so a stuck agent halts with a clear message instead of
+      # spinning silently. Thresholds are deliberately generous so legitimate repeated
+      # tool use (e.g. reading many distinct files during a PR review) is NOT blocked —
+      # MaxRepeatedToolCalls keys on identical tool+args, so distinct files don't count.
+      safeguards:
+        maxConsecutiveNoopTurns: 15
+        maxRepeatedToolCalls: 50
+        # toolFrequencyCap intentionally omitted (opt-in): a big PR review can legitimately
+        # call one tool hundreds of times. Leave 0 to keep it disabled.
       restartPolicy:
         minBackoffSeconds: 5
         maxBackoffSeconds: 300

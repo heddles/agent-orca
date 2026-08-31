@@ -836,13 +836,19 @@ func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig( //nolint:gocycl
 		LongTermMemory:         longTermMemory,
 	}
 
-	// Deployment-level tool timeout: long-holding tooling (Sliver sessions, shells)
-	// exceeds the 60s default and would be killed by the model-router's per-tool
-	// safeguard. Propagate the deployment's setting into the warm router config so
-	// claimed warm pods use the same window. 0 → left to ConfigFromEnv's 60s default.
-	if deploy.Spec.ToolExecutionTimeoutSec > 0 {
-		cfg.Safeguards.ToolExecutionTimeoutSec = deploy.Spec.ToolExecutionTimeoutSec
+	// Per-tool-result token cap and loop guards. We deliberately seed sane defaults
+	// here (in the operator, which knows each provider's ContextWindow/MaxRequestTokens)
+	// rather than relying on the model-router's bare ConfigFromEnv floor, which silently
+	// truncated tool results to 16k chars and left safeguards disabled — the exact
+	// recipe for a confused, runaway agent run that never emits a final output.
+	// An explicit deployment override always wins; see defaultMaxToolResultTokens /
+	// applySafeguardDefaults for the reasoning behind the numbers.
+	if deploy.Spec.MaxToolResultTokens > 0 {
+		cfg.MaxToolResultTokens = deploy.Spec.MaxToolResultTokens
+	} else if cfg.MaxToolResultTokens <= 0 {
+		cfg.MaxToolResultTokens = defaultMaxToolResultTokens(providers)
 	}
+	applySafeguardDefaults(&cfg.Safeguards, deploy.Spec.ToolExecutionTimeoutSec, deploy.Spec.Safeguards)
 
 	// GuardrailPolicy CR: wire agent's guardrailPolicyRef into cfg.Guardrails.
 	if agent.Spec.GuardrailPolicyRef != "" {
@@ -850,6 +856,106 @@ func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig( //nolint:gocycl
 	}
 
 	return cfg, nil
+}
+
+// defaultMaxToolResultTokens derives a sane per-tool-result cap from the configured
+// providers' ContextWindow so large MCP/file/commit-patch results aren't silently cut
+// off. ~10% of the window leaves room for the rest of the conversation + output; the
+// floor keeps tiny-context models usable and the ceiling keeps a single result from
+// dominating, and we additionally never exceed half of MaxRequestTokens (if set) so
+// one oversized result can't by itself trip the rule-router's request-size exclusion.
+func defaultMaxToolResultTokens(providers []router.ProviderConfig) int {
+	const (
+		fraction = 0.10
+		floor    = 8000
+		ceiling  = 64000
+	)
+	cw := maxContextWindow(providers)
+	if cw <= 0 {
+		return floor
+	}
+	t := int(float64(cw) * fraction)
+	if mrt := maxRequestTokens(providers); mrt > 0 {
+		if half := mrt / 2; t > half {
+			t = half
+		}
+	}
+	if t < floor {
+		t = floor
+	}
+	if t > ceiling {
+		t = ceiling
+	}
+	return t
+}
+
+// maxContextWindow returns the largest model ContextWindow among the resolved providers.
+func maxContextWindow(providers []router.ProviderConfig) int {
+	var m int
+	for _, p := range providers {
+		if p.ContextWindow > m {
+			m = p.ContextWindow
+		}
+	}
+	return m
+}
+
+// maxRequestTokens returns the smallest effective per-request token budget (MaxRequestTokens
+// when set, else 0 = unset) among providers, used to bound a single tool result.
+func maxRequestTokens(providers []router.ProviderConfig) int {
+	var m int
+	first := true
+	for _, p := range providers {
+		if p.MaxRequestTokens <= 0 {
+			continue
+		}
+		if first || p.MaxRequestTokens < m {
+			m = p.MaxRequestTokens
+			first = false
+		}
+	}
+	if first {
+		return 0
+	}
+	return m
+}
+
+// applySafeguardDefaults seeds conservative loop guards that only trip on genuine stalls
+// (not on legitimate repeated tool use — e.g. reading many distinct files during a PR
+// review — then layers explicit deployment overrides on top. ToolFrequencyCap is left 0
+// (opt-in) because big batch jobs can legitimately call one tool hundreds of times.
+func applySafeguardDefaults(s *router.RouterSafeguards, deployTimeoutSec int, ov *agentorcav1alpha1.AgentRunSafeguards) {
+	if s == nil {
+		return
+	}
+	s.MaxConsecutiveNoopTurns = 15 // 15 consecutive non-substantive text-only turns = stuck
+	s.MinSubstantiveTokens = 20
+	s.MaxRepeatedToolCalls = 50 // same tool + IDENTICAL args 50x = stuck (distinct args != trip)
+	s.ToolFrequencyCap = 0      // opt-in: do NOT block high-volume legit use by default
+	if s.ToolExecutionTimeoutSec <= 0 {
+		s.ToolExecutionTimeoutSec = 60
+	}
+	if deployTimeoutSec > 0 {
+		s.ToolExecutionTimeoutSec = deployTimeoutSec
+	}
+	if ov == nil {
+		return
+	}
+	if ov.MaxConsecutiveNoopTurns > 0 {
+		s.MaxConsecutiveNoopTurns = ov.MaxConsecutiveNoopTurns
+	}
+	if ov.MinSubstantiveTokens > 0 {
+		s.MinSubstantiveTokens = ov.MinSubstantiveTokens
+	}
+	if ov.MaxRepeatedToolCalls > 0 {
+		s.MaxRepeatedToolCalls = ov.MaxRepeatedToolCalls
+	}
+	if ov.ToolFrequencyCap > 0 {
+		s.ToolFrequencyCap = ov.ToolFrequencyCap
+	}
+	if ov.ToolExecutionTimeoutSec > 0 {
+		s.ToolExecutionTimeoutSec = ov.ToolExecutionTimeoutSec
+	}
 }
 
 // ensureDeploymentRouterConfigMap creates or updates the ConfigMap with the router config.

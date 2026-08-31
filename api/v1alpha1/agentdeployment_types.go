@@ -101,6 +101,28 @@ type AgentDeploymentSpec struct {
 	// +optional
 	ToolExecutionTimeoutSec int `json:"toolExecutionTimeoutSec,omitempty"`
 
+	// MaxToolResultTokens overrides the per-tool-result token cap for this deployment.
+	// 0 (default) = the operator computes a context-window-aware cap (~10% of the
+	// model's ContextWindow, floored at 8000 and capped at 64000 tokens, and never more
+	// than half of MaxRequestTokens so a single result can't by itself blow the
+	// request budget) so large MCP/file/commit-patch results are not silently
+	// truncated. Eyeballed against the loudest offender: router.go is ~153K chars
+	// (~38k tokens) on the 1M-context poolside model — the default 64k cap reads it
+	// in full. Raise further for agents that routinely read very large files, or lower
+	// for spend-thrifty agents.
+	// +optional
+	MaxToolResultTokens int `json:"maxToolResultTokens,omitempty"`
+
+	// Safeguards configures behavioral loop guards (MaxRepeatedToolCalls,
+	// MaxConsecutiveNoopTurns, ToolFrequencyCap, etc.) for runs spawned from this
+	// deployment. Omit to use the operator's conservative defaults; set any field to 0
+	// to keep the default for that field. Fields that are left zero (defaulted) only
+	// trip on genuine stuck loops and do NOT block legitimate repeated tool use
+	// (MaxRepeatedToolCalls keys on identical tool+args, so reading many distinct
+	// files — e.g. a PR review — never trips it). Reuses the AgentRunSafeguards shape.
+	// +optional
+	Safeguards *AgentRunSafeguards `json:"safeguards,omitempty"`
+
 	// Replicas is the desired number of agent pod replicas. Defaults to 1.
 	// +kubebuilder:default=1
 	// +optional

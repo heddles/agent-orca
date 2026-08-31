@@ -175,6 +175,11 @@ func (in *AgentDeploymentSpec) DeepCopyInto(out *AgentDeploymentSpec) {
 		*out = new(DeploymentRestartPolicy)
 		**out = **in
 	}
+	if in.Safeguards != nil {
+		in, out := &in.Safeguards, &out.Safeguards
+		*out = new(AgentRunSafeguards)
+		**out = **in
+	}
 	if in.Replicas != nil {
 		in, out := &in.Replicas, &out.Replicas
 		*out = new(int32)

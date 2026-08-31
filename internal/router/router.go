@@ -2183,6 +2183,22 @@ func (r *Router) dispatchToolCall(ctx context.Context, tc ToolCall) string { //n
 
 	// Cap tool result size before it enters conversation history.
 	result = truncateToolResult(result, r.cfg.MaxToolResultTokens)
+	if len(fullResult) > len(result) {
+		// Never truncate silently: a capped tool result (e.g. reading a large file or a
+		// full-commit patch) starves the agent of data and makes it loop on re-reads.
+		// Surface it loudly and in the trace so a missing/oversize result is debuggable.
+		slog.Warn("tool result truncated to maxToolResultTokens; raise modelRouter.maxToolResultTokens or the deployment's maxToolResultTokens to avoid silently losing content",
+			"run", r.cfg.RunName, "tool", tc.Function.Name,
+			"originalChars", len(fullResult), "keptChars", len(result), "maxTokens", r.cfg.MaxToolResultTokens)
+		ev, _ := json.Marshal(map[string]any{
+			"type":          "toolResultTruncated",
+			"tool":          tc.Function.Name,
+			"originalChars": len(fullResult),
+			"keptChars":     len(result),
+			"maxTokens":     r.cfg.MaxToolResultTokens,
+		})
+		r.emitTraceEvent(string(ev))
+	}
 
 	// A tool result that is empty or a bare "[]" / "{}" carries no information for
 	// the LLM, so it is usually read as "no data" and the agent bails (the
