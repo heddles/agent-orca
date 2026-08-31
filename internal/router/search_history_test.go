@@ -51,6 +51,9 @@ func (s *searchFakeStore) SaveSpend(context.Context, string, float64, time.Durat
 func (s *searchFakeStore) LoadSpend(context.Context, string) (float64, error)   { return 0, nil }
 func (s *searchFakeStore) SaveToken(context.Context, string, string) error      { return nil }
 func (s *searchFakeStore) SaveTraceEvent(context.Context, string, string) error { return nil }
+func (s *searchFakeStore) ReadTraceEvents(context.Context, string) ([]state.TraceEntry, error) {
+	return nil, nil
+}
 func (s *searchFakeStore) TailTokens(context.Context, string) (<-chan string, error) {
 	ch := make(chan string)
 	close(ch)

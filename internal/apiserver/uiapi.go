@@ -2547,7 +2547,29 @@ func (s *UIServer) handleGetArchivedRun(w http.ResponseWriter, r *http.Request, 
 		}
 	}
 
+	// Deserialise archived trace entries (if any) so the history detail view can
+	// render the full execution trace with TraceAccordion, same as the live runs tab.
+	if len(archive.TraceEventsJSON) > 0 {
+		var traceEntries []traceEntryJSON
+		if err := json.Unmarshal(archive.TraceEventsJSON, &traceEntries); err != nil {
+			slog.Warn("failed to unmarshal trace events for archived run", "run", runName, "ns", namespace, "err", err)
+		} else {
+			detail.TraceEntries = traceEntries
+		}
+	}
+
 	jsonResponse(w, detail)
+}
+
+// traceEntryJSON is a single archived trace entry in the API response. Event is
+// left as json.RawMessage so the original event payload passes through verbatim
+// and the UI can discriminate on the "type" field exactly as it does for live
+// SSE events.
+type traceEntryJSON struct {
+	ID           int             `json:"id"`
+	Event        json.RawMessage `json:"event"`
+	TS           string          `json:"ts"`
+	ChildRunName string          `json:"childRunName,omitempty"`
 }
 
 // routingDecisionJSON is the JSON shape for a single routing decision as
@@ -2590,6 +2612,10 @@ type archivedRunDetail struct {
 	Tools              []string              `json:"tools,omitempty"`
 	MCPServers         []string              `json:"mcps,omitempty"`
 	ResolvedModel      string                `json:"resolvedModel,omitempty"`
+	// TraceEntries is the full execution trace archived from the Redis token
+	// stream at archival time. Each entry mirrors the UI's TraceEntry shape.
+	// Omitted when no trace was archived (older runs or store unavailable).
+	TraceEntries []traceEntryJSON `json:"traceEntries,omitempty"`
 }
 
 // routingDecisionsToJSON converts CRD routing decisions into the JSON shape,

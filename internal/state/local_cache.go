@@ -240,6 +240,9 @@ func (c *localCacheStore) SaveTraceEvent(ctx context.Context, key string, eventJ
 func (c *localCacheStore) TailTokens(ctx context.Context, key string) (<-chan string, error) {
 	return c.backing.TailTokens(ctx, key)
 }
+func (c *localCacheStore) ReadTraceEvents(ctx context.Context, key string) ([]TraceEntry, error) {
+	return c.backing.ReadTraceEvents(ctx, key)
+}
 func (c *localCacheStore) SaveAnswer(ctx context.Context, key string, answer string, ttl time.Duration) error {
 	return c.backing.SaveAnswer(ctx, key, answer, ttl)
 }

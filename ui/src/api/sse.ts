@@ -1,5 +1,7 @@
 /** SSE client for streaming AgentRun trace events from /api/runs/{id}/stream. */
 
+import type { TraceEntry } from './traceStream'
+
 export * from './traceStream'
 
 // ── Auth token ───────────────────────────────────────────────────────────────
@@ -584,6 +586,11 @@ export interface RunHistoryDetail {
   /** The model selected at runtime, derived from the last routing decision. */
   resolvedModel?: string
   podName?: string
+  /** Archived execution trace entries from the Redis token stream, rendered
+   *  with the same TraceAccordion component as the live runs tab. Present
+   *  only when the run was archived while the Redis stream was still
+   *  available (within 24h of completion). */
+  traceEntries?: TraceEntry[]
 }
 
 /** Fetch the full detail of a single archived run from PostgreSQL. */

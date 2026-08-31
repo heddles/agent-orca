@@ -65,6 +65,11 @@ type RunArchive struct {
 	// Routing decisions and child refs (JSON-serialised).
 	RoutingDecisionsJSON []byte `db:"routing_decisions"`
 	ChildRunRefsJSON     []byte `db:"child_run_refs"`
+	// TraceEventsJSON is the archived execution trace — a JSON array of
+	// {id, event, ts, childRunName} entries read from the Redis token stream
+	// at archival time. NULL when no trace events were available (store
+	// disabled, stream expired, or pre-feature run).
+	TraceEventsJSON []byte `db:"trace_events"`
 	// Timestamps.
 	CreatedAt time.Time `db:"created_at"`
 	UpdatedAt time.Time `db:"updated_at"`
@@ -157,22 +162,29 @@ func (s *Store) Ping(ctx context.Context) error {
 }
 
 // ArchiveRun upserts a completed AgentRun into the archival table.
-func (s *Store) ArchiveRun(ctx context.Context, run *agentorcav1alpha1.AgentRun) error {
+// traceEventsJSON is a pre-marshalled JSON array of trace entries (or nil to
+// leave the column untouched on conflict). It is passed in by the controller
+// after reading the Redis token stream, so the full execution trace can be
+// rendered in the history view.
+func (s *Store) ArchiveRun(ctx context.Context, run *agentorcav1alpha1.AgentRun, traceEventsJSON []byte) error {
 	archived := fromAgentRun(run)
+	archived.TraceEventsJSON = traceEventsJSON
 
 	labelsJSON, _ := json.Marshal(archived.Labels)
 
-	// UPSERT by composite key so re-archival updates the row.
+	// UPSERT by composite key so re-archival updates the row. When upserting
+	// with a nil traceEventsJSON (e.g. Redis stream expired during a back-fill),
+	// the existing trace_events column is preserved rather than overwritten.
 	const q = `
 		INSERT INTO archived_runs (
 			id, name, namespace, labels, agent_ref, input, parent_run_ref,
 			prior_run_ref, timeout_sec, phase, pod_name, spend_usd, output,
 			raw_output, restart_count, start_time, completion_time,
 			context_used_tokens, max_context_tokens, tenant,
-			routing_decisions, child_run_refs, created_at, updated_at
+			routing_decisions, child_run_refs, trace_events, created_at, updated_at
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-			$15, $16, $17, $18, $19, $20, $21, $22, $23, $24
+			$15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25
 		)
 		ON CONFLICT (id) DO UPDATE SET
 			phase = EXCLUDED.phase,
@@ -185,6 +197,9 @@ func (s *Store) ArchiveRun(ctx context.Context, run *agentorcav1alpha1.AgentRun)
 			context_used_tokens = EXCLUDED.context_used_tokens,
 			routing_decisions = EXCLUDED.routing_decisions,
 			child_run_refs = EXCLUDED.child_run_refs,
+			trace_events = CASE WHEN EXCLUDED.trace_events IS NOT NULL
+			                    THEN EXCLUDED.trace_events
+			                    ELSE archived_runs.trace_events END,
 			updated_at = EXCLUDED.updated_at
 	`
 	now := time.Now().UTC()
@@ -195,7 +210,8 @@ func (s *Store) ArchiveRun(ctx context.Context, run *agentorcav1alpha1.AgentRun)
 		archived.PodName, archived.SpendUSD, archived.Output, archived.RawOutput,
 		archived.RestartCount, archived.StartTime, archived.CompletionTime,
 		archived.ContextUsedTokens, archived.MaxContextTokens, archived.Tenant,
-		archived.RoutingDecisionsJSON, archived.ChildRunRefsJSON, now, now,
+		archived.RoutingDecisionsJSON, archived.ChildRunRefsJSON,
+		archived.TraceEventsJSON, now, now,
 	)
 	if err != nil {
 	}
@@ -309,7 +325,7 @@ func (s *Store) GetRun(ctx context.Context, namespace, name string) (*RunArchive
 	const q = `SELECT id, name, namespace, labels, agent_ref, input, parent_run_ref,
 		prior_run_ref, timeout_sec, phase, pod_name, spend_usd, output, raw_output,
 		restart_count, start_time, completion_time, context_used_tokens, max_context_tokens,
-		tenant, routing_decisions, child_run_refs, created_at, updated_at
+		tenant, routing_decisions, child_run_refs, trace_events, created_at, updated_at
 		FROM archived_runs WHERE id = $1`
 	id := fmt.Sprintf("%s/%s", namespace, name)
 	var r RunArchive
@@ -320,7 +336,7 @@ func (s *Store) GetRun(ctx context.Context, namespace, name string) (*RunArchive
 		&r.TimeoutSec, &r.Phase, &r.PodName, &r.SpendUSD, &r.Output, &r.RawOutput,
 		&r.RestartCount, &r.StartTime, &r.CompletionTime,
 		&r.ContextUsedTokens, &r.MaxContextTokens, &r.Tenant,
-		&r.RoutingDecisionsJSON, &r.ChildRunRefsJSON, &r.CreatedAt, &r.UpdatedAt,
+		&r.RoutingDecisionsJSON, &r.ChildRunRefsJSON, &r.TraceEventsJSON, &r.CreatedAt, &r.UpdatedAt,
 	); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -357,6 +373,7 @@ CREATE TABLE IF NOT EXISTS archived_runs (
     tenant          TEXT,
     routing_decisions JSONB,
     child_run_refs  JSONB,
+    trace_events     JSONB,
     created_at      TIMESTAMPTZ DEFAULT NOW(),
     updated_at      TIMESTAMPTZ DEFAULT NOW()
 );
@@ -366,6 +383,11 @@ CREATE INDEX IF NOT EXISTS idx_archived_runs_namespace ON archived_runs(namespac
 CREATE INDEX IF NOT EXISTS idx_archived_runs_phase     ON archived_runs(phase);
 CREATE INDEX IF NOT EXISTS idx_archived_runs_created   ON archived_runs(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_archived_runs_name      ON archived_runs(name);
+
+-- Back-fill: add the trace_events column to tables created before the full
+-- execution-trace archival feature shipped. ADD COLUMN IF NOT EXISTS is a no-op
+-- for fresh tables (which already declare the column above).
+ALTER TABLE archived_runs ADD COLUMN IF NOT EXISTS trace_events JSONB;
 `
 
 // ApplyMigration runs the schema migration SQL against the store.

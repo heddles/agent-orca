@@ -28,6 +28,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -1613,9 +1614,10 @@ func (r *AgentRunReconciler) ensureCleanup(ctx context.Context, run *agentorcav1
 	// (keyed by namespace/name), so this is a cheap no-op for runs already
 	// archived and a durable back-fill for the ones that were lost.
 	if r.PostgresStore != nil && postgresql.IsTerminalPhase(run.Status.Phase) {
-		archiveCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		archiveCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
-		if err := r.PostgresStore.ArchiveRun(archiveCtx, run); err != nil {
+		traceJSON := r.loadTraceEventsForArchive(archiveCtx, run)
+		if err := r.PostgresStore.ArchiveRun(archiveCtx, run, traceJSON); err != nil {
 			logger := log.FromContext(ctx)
 			logger.Error(err, "failed to re-archive terminal run on restart", "run", run.Name, "ns", run.Namespace)
 		}
@@ -1754,18 +1756,130 @@ func (r *AgentRunReconciler) failRun(ctx context.Context, run *agentorcav1alpha1
 // maybeArchiveRun snapshots a terminal-phase AgentRun to PostgreSQL if the
 // archival store is configured. Uses a non-blocking goroutine so DB latency
 // never delays reconciliation. Re-archiving is idempotent (UPSERT by name).
+// The run's Redis token stream is read at archival time so the full execution
+// trace (tokens, tool calls, tool results, etc.) is durable in PostgreSQL and
+// viewable from the history tab even after the Redis stream expires.
 func (r *AgentRunReconciler) maybeArchiveRun(ctx context.Context, run *agentorcav1alpha1.AgentRun) {
 	if r.PostgresStore == nil || !postgresql.IsTerminalPhase(run.Status.Phase) {
 		return
 	}
-	// Snapshot the run as-is (spec + status) into PostgreSQL.
 	go func() {
-		archiveCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		archiveCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		if err := r.PostgresStore.ArchiveRun(archiveCtx, run); err != nil {
+		traceJSON := r.loadTraceEventsForArchive(archiveCtx, run)
+		if err := r.PostgresStore.ArchiveRun(archiveCtx, run, traceJSON); err != nil {
 			log.Log.Error(err, "failed to archive run to PostgreSQL", "run", run.Name, "ns", run.Namespace)
 		}
 	}()
+}
+
+// loadTraceEventsForArchive reads the run's trace events from the Redis token
+// stream (including child-run streams) and synthesises modelSelected/finalOutput
+// events from the run status, producing a JSON array ready for archival.
+// Returns nil when the state store is unavailable so the caller stores NULL
+// in the trace_events column (preserving any previously archived trace on
+// idempotent re-upserts).
+func (r *AgentRunReconciler) loadTraceEventsForArchive(ctx context.Context, run *agentorcav1alpha1.AgentRun) []byte {
+	if r.StateStore == nil {
+		return nil
+	}
+
+	var entries []state.TraceEntry
+
+	// Read the parent run's trace events from its Redis token stream.
+	streamKey := "tokens:" + run.Namespace + ":" + run.Name
+	parentEvents, err := r.StateStore.ReadTraceEvents(ctx, streamKey)
+	if err != nil {
+		log.Log.Error(err, "failed to read trace events for archival", "run", run.Name, "ns", run.Namespace)
+		return nil
+	}
+	entries = parentEvents
+
+	// Read each child run's trace events (agent-as-tool), tagging them so the
+	// UI can distinguish the child's activity (mirrors RunView's child-stream
+	// subscription behaviour).
+	for _, childName := range run.Status.ChildRunRefs {
+		childKey := "tokens:" + run.Namespace + ":" + childName
+		childEvents, err := r.StateStore.ReadTraceEvents(ctx, childKey)
+		if err != nil {
+			continue
+		}
+		for i := range childEvents {
+			childEvents[i].ChildRunName = childName
+		}
+		entries = append(entries, childEvents...)
+	}
+
+	// Synthesise modelSelected events from the run's routing decisions. The
+	// model-router emits these as SSE events at stream time (the stream handler
+	// itself constructs them from the CRD), but they are NOT written to the
+	// Redis token stream — so we reconstruct them here for archival parity.
+	for _, rd := range run.Status.RoutingDecisions {
+		if strings.HasPrefix(rd.Reason, "configured provider") {
+			continue
+		}
+		conf := 0.0
+		_, _ = fmt.Sscanf(rd.Confidence, "%f", &conf)
+		eventJSON, _ := json.Marshal(map[string]any{
+			"type":       "modelSelected",
+			"model":      rd.Model,
+			"reason":     fmt.Sprintf("[%s] %s — %s", rd.Strategy, rd.Provider, rd.Reason),
+			"confidence": conf,
+		})
+		ts := ""
+		if rd.Timestamp != nil {
+			ts = rd.Timestamp.UTC().Format(time.RFC3339)
+		}
+		entries = append(entries, state.TraceEntry{
+			Event: json.RawMessage(eventJSON),
+			TS:    ts,
+		})
+	}
+
+	// Synthesise a finalOutput event from the run's captured output so the
+	// archive's trace ends with the consolidated result (matching the live
+	// stream handler, which emits finalOutput from accumulated tokens).
+	if run.Status.Output != "" {
+		eventJSON, _ := json.Marshal(map[string]string{
+			"type":   "finalOutput",
+			"output": run.Status.Output,
+		})
+		ts := ""
+		if run.Status.CompletionTime != nil {
+			ts = run.Status.CompletionTime.UTC().Format(time.RFC3339)
+		}
+		entries = append(entries, state.TraceEntry{
+			Event: json.RawMessage(eventJSON),
+			TS:    ts,
+		})
+	}
+
+	if len(entries) == 0 {
+		return nil
+	}
+
+	// Stable sort by timestamp so events appear in chronological order even
+	// when parent + child streams are merged. Timeless entries sink to the end.
+	sort.SliceStable(entries, func(i, j int) bool {
+		if entries[i].TS == "" && entries[j].TS == "" {
+			return false
+		}
+		if entries[i].TS == "" {
+			return false
+		}
+		if entries[j].TS == "" {
+			return true
+		}
+		return entries[i].TS < entries[j].TS
+	})
+
+	// Re-assign sequential IDs after merging/sorting.
+	for i := range entries {
+		entries[i].ID = i
+	}
+
+	traceJSON, _ := json.Marshal(entries)
+	return traceJSON
 }
 
 // fireCallback sends an HTTP POST to the configured callback URL when an AgentRun

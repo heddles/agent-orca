@@ -150,6 +150,19 @@ components:
         tools: { type: array, items: { type: string } }
         mcps: { type: array, items: { type: string } }
         resolvedModel: { type: string }
+        traceEntries:
+          type: array
+          description: >
+            Archived execution trace entries (tokens, tool calls, tool results, etc.)
+            read from the Redis stream at archival time. Enables the history view
+            to render the same TraceAccordion UI as the live runs tab.
+          items:
+            type: object
+            properties:
+              id: { type: integer }
+              event: { type: object, description: Discriminated trace event }
+              ts: { type: string, format: date-time }
+              childRunName: { type: string }
     RoutingDecisionInfo:
       type: object
       properties:

@@ -18,11 +18,15 @@ package postgresql
 
 import (
 	"context"
+	"encoding/json"
 	"regexp"
 	"testing"
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
 )
 
 // TestQueryHistoryBindsLimitOffsetArgs is a regression test for the bug where
@@ -117,6 +121,7 @@ func TestQueryHistoryEmptyReturnsNonNullRuns(t *testing.T) {
 		t.Fatalf("unmet sqlmock expectations: %v", err)
 	}
 }
+
 // are all bound to the correct positional placeholders (regression guard for
 // the same args-binding bug).
 func TestQueryHistoryFilteredBindsArgs(t *testing.T) {
@@ -150,5 +155,128 @@ func TestQueryHistoryFilteredBindsArgs(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sqlmock expectations: %v", err)
+	}
+}
+
+// TestArchiveRunWritesTraceEvents verifies that ArchiveRun binds the trace_events
+// column in the INSERT and that the UPSERT preserves existing trace_events when
+// the incoming value is nil (so back-fill paths don't clobber archived traces).
+func TestArchiveRunWritesTraceEvents(t *testing.T) {
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	run := &agentorcav1alpha1.AgentRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-run", Namespace: "default"},
+		Spec:       agentorcav1alpha1.AgentRunSpec{AgentRef: "my-agent", Input: "hello"},
+		Status: agentorcav1alpha1.AgentRunStatus{
+			Phase:    agentorcav1alpha1.AgentRunPhaseSucceeded,
+			SpendUSD: "0.01",
+			Output:   "result",
+		},
+	}
+	traceEvents := json.RawMessage(`[{"id":0,"event":{"type":"token","content":"hi"},"ts":"2026-01-01T00:00:00Z"}]`)
+
+	// Expect the INSERT with trace_events ($23) bound before created_at ($24/$25).
+	mock.ExpectExec(`INSERT INTO archived_runs`).
+		WithArgs(
+			"default/test-run", "test-run", "default", sqlmock.AnyArg(),
+			"my-agent", "hello", "", "", sqlmock.AnyArg(),
+			"Succeeded", "", "0.01", "result", "",
+			0, sqlmock.AnyArg(), sqlmock.AnyArg(),
+			0, 0, "",
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(), sqlmock.AnyArg(),
+		).WillReturnResult(sqlmock.NewResult(1, 1))
+
+	s := &Store{db: db}
+	if err := s.ArchiveRun(context.Background(), run, traceEvents); err != nil {
+		t.Fatalf("ArchiveRun failed: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+// TestArchiveRunNilTraceEventsPreservesColumn verifies that when traceEventsJSON
+// is nil, the UPSERT SQL still receives a nil trace_events value (the CASE
+// statement in the SQL preserves the existing column on conflict). This
+// prevents back-fill paths from clobbering archived traces when the Redis
+// stream has expired.
+func TestArchiveRunNilTraceEventsPreservesColumn(t *testing.T) {
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	run := &agentorcav1alpha1.AgentRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "old-run", Namespace: "default"},
+		Spec:       agentorcav1alpha1.AgentRunSpec{AgentRef: "agent"},
+		Status:     agentorcav1alpha1.AgentRunStatus{Phase: agentorcav1alpha1.AgentRunPhaseFailed},
+	}
+
+	// All args as AnyArg — the focus here is that the Exec succeeds with nil
+	// traceEventsJSON (the CASE in the UPSERT SQL handles the preservation).
+	mock.ExpectExec(`INSERT INTO archived_runs`).
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	s := &Store{db: db}
+	if err := s.ArchiveRun(context.Background(), run, nil); err != nil {
+		t.Fatalf("ArchiveRun with nil traceEventsJSON failed: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+// TestGetRunScansTraceEvents verifies that GetRun selects and scans the
+// trace_events column into RunArchive.
+func TestGetRunScansTraceEvents(t *testing.T) {
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	traceJSON := []byte(`[{"id":0,"event":{"type":"token","content":"hi"},"ts":"2026-01-01T00:00:00Z"}]`)
+
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, name, namespace, labels, agent_ref, input, parent_run_ref,")).
+		WithArgs("default/my-run").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "name", "namespace", "labels", "agent_ref", "input", "parent_run_ref",
+			"prior_run_ref", "timeout_sec", "phase", "pod_name", "spend_usd", "output", "raw_output",
+			"restart_count", "start_time", "completion_time", "context_used_tokens", "max_context_tokens",
+			"tenant", "routing_decisions", "child_run_refs", "trace_events", "created_at", "updated_at",
+		}).AddRow(
+			"default/my-run", "my-run", "default", []byte(`{}`),
+			"agent", "input", "", "", nil,
+			"Succeeded", "pod-1", "0.00", "out", "",
+			0, nil, nil, 0, 0,
+			"", nil, nil, traceJSON, time.Now(), time.Now(),
+		))
+
+	s := &Store{db: db}
+	archive, err := s.GetRun(context.Background(), "default", "my-run")
+	if err != nil {
+		t.Fatalf("GetRun failed: %v", err)
+	}
+	if archive == nil {
+		t.Fatal("expected non-nil archive")
+	}
+	if string(archive.TraceEventsJSON) != string(traceJSON) {
+		t.Fatalf("TraceEventsJSON = %s, want %s", archive.TraceEventsJSON, traceJSON)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
 	}
 }

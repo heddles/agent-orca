@@ -32,6 +32,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/klauspost/compress/zstd"
@@ -56,6 +58,22 @@ type Config struct {
 	// CheckpointKey is the Redis key prefix for this run.
 	// Format: "agentorca/runs/<run-id>/state"
 	CheckpointKey string `json:"checkpointKey,omitempty"`
+}
+
+// TraceEntry is a single timestamped entry in a run's execution trace, mirroring
+// the UI's TraceEntry TypeScript interface. Used to archive the full trace
+// (tokens, tool calls, tool results, etc.) from the Redis stream so that
+// historical runs can be rendered with the same TraceAccordion component as live
+// runs.
+type TraceEntry struct {
+	// ID is a sequential counter assigned during archival for React key stability.
+	ID int `json:"id"`
+	// Event is the discriminated trace event JSON (e.g. {"type":"toolCall",...}).
+	Event json.RawMessage `json:"event"`
+	// TS is an RFC3339 timestamp derived from the Redis stream entry ID.
+	TS string `json:"ts"`
+	// ChildRunName is set when this entry originated from a child run's stream.
+	ChildRunName string `json:"childRunName,omitempty"`
 }
 
 // Store is the interface for conversation state storage.
@@ -91,6 +109,15 @@ type Store interface {
 	// new ones. The channel closes when ctx is cancelled, when a terminal trace event
 	// (done/fail/finalOutput) is received, or after a 10-minute absolute deadline.
 	TailTokens(ctx context.Context, key string) (<-chan string, error)
+
+	// ReadTraceEvents returns all trace entries from the token-stream Redis key,
+	// ordered by stream entry ID. Tokens are converted to
+	// {"type":"token","content":"..."} events; structured trace events (ev field)
+	// are returned with their original JSON payload. Each entry receives a
+	// sequential id and an ISO timestamp parsed from the Redis stream ID.
+	// Returns nil if the stream does not exist or is empty. Used at archival
+	// time to snapshot a run's full execution trace into PostgreSQL.
+	ReadTraceEvents(ctx context.Context, key string) ([]TraceEntry, error)
 
 	// SaveAnswer stores a human's clarification answer for a run.
 	SaveAnswer(ctx context.Context, key string, answer string, ttl time.Duration) error
@@ -173,12 +200,13 @@ func (nopStore) LoadSpend(_ context.Context, _ string) (float64, error) { return
 func (nopStore) SaveAnswer(_ context.Context, _ string, _ string, _ time.Duration) error {
 	return nil
 }
-func (nopStore) LoadAnswer(_ context.Context, _ string) (string, error)     { return "", nil }
-func (nopStore) SaveHTTPOutput(_ context.Context, _ string, _ string) error { return nil }
-func (nopStore) LoadHTTPOutput(_ context.Context, _ string) (string, error) { return "", nil }
-func (nopStore) DeleteKey(_ context.Context, _ string) error                { return nil }
-func (nopStore) SaveToken(_ context.Context, _ string, _ string) error      { return nil }
-func (nopStore) SaveTraceEvent(_ context.Context, _ string, _ string) error { return nil }
+func (nopStore) LoadAnswer(_ context.Context, _ string) (string, error)            { return "", nil }
+func (nopStore) SaveHTTPOutput(_ context.Context, _ string, _ string) error        { return nil }
+func (nopStore) LoadHTTPOutput(_ context.Context, _ string) (string, error)        { return "", nil }
+func (nopStore) DeleteKey(_ context.Context, _ string) error                       { return nil }
+func (nopStore) SaveToken(_ context.Context, _ string, _ string) error             { return nil }
+func (nopStore) SaveTraceEvent(_ context.Context, _ string, _ string) error        { return nil }
+func (nopStore) ReadTraceEvents(_ context.Context, _ string) ([]TraceEntry, error) { return nil, nil }
 func (nopStore) TailTokens(_ context.Context, _ string) (<-chan string, error) {
 	ch := make(chan string)
 	close(ch)
@@ -402,6 +430,75 @@ func (s *redisStore) TailTokens(ctx context.Context, key string) (<-chan string,
 		}
 	}()
 	return ch, nil
+}
+
+// ReadTraceEvents returns all trace entries from the Redis stream for the given
+// token-stream key, in stream order. Tokens are wrapped as
+// {"type":"token","content":"..."} events; structured trace events (ev field)
+// are returned with their original JSON payload. The ts field is derived from
+// the Redis stream entry ID (millisecond timestamp). Returns nil if the stream
+// does not exist or is empty.
+func (s *redisStore) ReadTraceEvents(ctx context.Context, key string) ([]TraceEntry, error) {
+	entries, err := s.client.XRange(ctx, key, "-", "+").Result()
+	if err != nil {
+		if err == redis.Nil {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("XRANGE %s: %w", key, err)
+	}
+
+	result := make([]TraceEntry, 0, len(entries))
+	id := 0
+	for _, entry := range entries {
+		// Skip legacy empty-token "done" sentinels from older producers.
+		if _, ok := entry.Values["done"]; ok {
+			continue
+		}
+		ts := streamIDToISO(entry.ID)
+
+		if t, ok := entry.Values["t"]; ok {
+			tokenStr := fmt.Sprint(t)
+			eventJSON, _ := json.Marshal(map[string]string{
+				"type":    "token",
+				"content": tokenStr,
+			})
+			result = append(result, TraceEntry{
+				ID:    id,
+				Event: json.RawMessage(eventJSON),
+				TS:    ts,
+			})
+			id++
+		}
+
+		if ev, ok := entry.Values["ev"]; ok {
+			evStr := fmt.Sprint(ev)
+			result = append(result, TraceEntry{
+				ID:    id,
+				Event: json.RawMessage(evStr),
+				TS:    ts,
+			})
+			id++
+		}
+	}
+
+	if len(result) == 0 {
+		return nil, nil
+	}
+	return result, nil
+}
+
+// streamIDToISO parses a Redis stream entry ID ("<milliseconds>-<sequence>")
+// into an RFC3339 timestamp string. Returns "" if the ID cannot be parsed.
+func streamIDToISO(id string) string {
+	dash := strings.IndexByte(id, '-')
+	if dash < 0 {
+		return ""
+	}
+	ms, err := strconv.ParseInt(id[:dash], 10, 64)
+	if err != nil {
+		return ""
+	}
+	return time.UnixMilli(ms).UTC().Format(time.RFC3339Nano)
 }
 
 // sendStreamEntry forwards one Redis stream entry to ch. Regular tokens are yielded
