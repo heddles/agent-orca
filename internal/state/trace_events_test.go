@@ -17,9 +17,13 @@ limitations under the License.
 package state
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
+
+	"github.com/alicebob/miniredis/v2"
+	"github.com/redis/go-redis/v9"
 )
 
 func TestStreamIDToISO(t *testing.T) {
@@ -95,5 +99,184 @@ func TestTraceEntryRoundTrip(t *testing.T) {
 	}
 	if m["childRunName"] != "run-child-xyz" {
 		t.Errorf("expected childRunName in output, got %v", m["childRunName"])
+	}
+}
+
+// addXAdd is a test helper that XAdd's a value to the Redis stream.
+func addXAdd(t *testing.T, rdb *redis.Client, stream, field, value string) {
+	t.Helper()
+	if err := rdb.XAdd(context.Background(), &redis.XAddArgs{
+		Stream: stream,
+		Values: map[string]any{field: value},
+	}).Err(); err != nil {
+		t.Fatalf("XAdd %s: %v", stream, err)
+	}
+}
+
+// TestRedisReadTraceEventsConsolidatesTokens verifies that consecutive token
+// deltas are merged into a single TraceEntry per burst, while structured
+// events (toolCall, done, etc.) remain individual entries. This is the key
+// optimisation that prevents ~10K per-token rows being archived per turn.
+func TestRedisReadTraceEventsConsolidatesTokens(t *testing.T) {
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("starting miniredis: %v", err)
+	}
+	defer mr.Close()
+
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	store := &redisStore{client: rdb}
+
+	key := "tokens:default:test-run"
+	ctx := context.Background()
+
+	evToolCall := `{"type":"toolCall","name":"search","arguments":"{}"}`
+	evDone := `{"type":"done","finish_reason":"stop"}`
+
+	// Interleaved tokens and trace events (mimics real Redis stream content).
+	addXAdd(t, rdb, key, "t", "Hello")
+	addXAdd(t, rdb, key, "t", " world")
+	addXAdd(t, rdb, key, "ev", evToolCall)
+	addXAdd(t, rdb, key, "t", "Based")
+	addXAdd(t, rdb, key, "t", " on")
+	addXAdd(t, rdb, key, "t", " context")
+	addXAdd(t, rdb, key, "ev", evDone)
+
+	entries, err := store.ReadTraceEvents(ctx, key)
+	if err != nil {
+		t.Fatalf("ReadTraceEvents: %v", err)
+	}
+
+	// Expect 4 entries: token burst, toolCall, token burst, done.
+	if len(entries) != 4 {
+		t.Fatalf("expected 4 consolidated entries, got %d", len(entries))
+	}
+
+	// Entry 0: consolidated token burst
+	var tokEvent map[string]any
+	if err := json.Unmarshal(entries[0].Event, &tokEvent); err != nil {
+		t.Fatalf("unmarshal entry 0: %v", err)
+	}
+	if tokEvent["type"] != "token" {
+		t.Errorf("entry 0: expected type 'token', got %v", tokEvent["type"])
+	}
+	if tokEvent["content"] != "Hello world" {
+		t.Errorf("entry 0: expected content 'Hello world', got %v", tokEvent["content"])
+	}
+
+	// Entry 1: toolCall (individual)
+	var tcEvent map[string]any
+	if err := json.Unmarshal(entries[1].Event, &tcEvent); err != nil {
+		t.Fatalf("unmarshal entry 1: %v", err)
+	}
+	if tcEvent["type"] != "toolCall" {
+		t.Errorf("entry 1: expected type 'toolCall', got %v", tcEvent["type"])
+	}
+
+	// Entry 2: second consolidated token burst
+	if err := json.Unmarshal(entries[2].Event, &tokEvent); err != nil {
+		t.Fatalf("unmarshal entry 2: %v", err)
+	}
+	if tokEvent["type"] != "token" {
+		t.Errorf("entry 2: expected type 'token', got %v", tokEvent["type"])
+	}
+	if tokEvent["content"] != "Based on context" {
+		t.Errorf("entry 2: expected content 'Based on context', got %v", tokEvent["content"])
+	}
+
+	// Entry 3: done (individual)
+	var doneEvent map[string]any
+	if err := json.Unmarshal(entries[3].Event, &doneEvent); err != nil {
+		t.Fatalf("unmarshal entry 3: %v", err)
+	}
+	if doneEvent["type"] != "done" {
+		t.Errorf("entry 3: expected type 'done', got %v", doneEvent["type"])
+	}
+
+	// IDs must be sequential.
+	for i, e := range entries {
+		if e.ID != i {
+			t.Errorf("entry %d: expected ID %d, got %d", i, i, e.ID)
+		}
+	}
+}
+
+// TestRedisReadTraceEventsConsolidatesThoughts verifies that consecutive
+// thought deltas are merged into a single expandable thinking entry.
+func TestRedisReadTraceEventsConsolidatesThoughts(t *testing.T) {
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("starting miniredis: %v", err)
+	}
+	defer mr.Close()
+
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	store := &redisStore{client: rdb}
+
+	key := "tokens:default:thinking-run"
+	ctx := context.Background()
+
+	evToolCall := `{"type":"toolCall","name":"x","arguments":"{}"}`
+
+	addXAdd(t, rdb, key, "ev", `{"type":"thought","content":"plan"}`)
+	addXAdd(t, rdb, key, "ev", `{"type":"thought","content":"ning"}`)
+	addXAdd(t, rdb, key, "ev", evToolCall)
+	addXAdd(t, rdb, key, "ev", `{"type":"thought","content":"after"}`)
+
+	entries, err := store.ReadTraceEvents(ctx, key)
+	if err != nil {
+		t.Fatalf("ReadTraceEvents: %v", err)
+	}
+
+	// Expect 3 entries: consolidated thought, toolCall, consolidated thought.
+	if len(entries) != 3 {
+		t.Fatalf("expected 3 entries (2 thought bursts + 1 toolCall), got %d", len(entries))
+	}
+
+	var thoughtEvt map[string]any
+	if err := json.Unmarshal(entries[0].Event, &thoughtEvt); err != nil {
+		t.Fatalf("unmarshal entry 0: %v", err)
+	}
+	if thoughtEvt["type"] != "thought" {
+		t.Errorf("entry 0: expected 'thought', got %v", thoughtEvt["type"])
+	}
+	if thoughtEvt["content"] != "planning" {
+		t.Errorf("entry 0: expected content 'planning', got %v", thoughtEvt["content"])
+	}
+
+	var toolEvt map[string]any
+	if err := json.Unmarshal(entries[1].Event, &toolEvt); err != nil {
+		t.Fatalf("unmarshal entry 1: %v", err)
+	}
+	if toolEvt["type"] != "toolCall" {
+		t.Errorf("entry 1: expected 'toolCall', got %v", toolEvt["type"])
+	}
+
+	if err := json.Unmarshal(entries[2].Event, &thoughtEvt); err != nil {
+		t.Fatalf("unmarshal entry 2: %v", err)
+	}
+	if thoughtEvt["content"] != "after" {
+		t.Errorf("entry 2: expected content 'after', got %v", thoughtEvt["content"])
+	}
+}
+
+// TestRedisReadTraceEventsEmptyStream verifies that a non-existent stream
+// returns nil (not an error).
+func TestRedisReadTraceEventsEmptyStream(t *testing.T) {
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("starting miniredis: %v", err)
+	}
+	defer mr.Close()
+
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	store := &redisStore{client: rdb}
+
+	entries, err := store.ReadTraceEvents(context.Background(), "tokens:default:nonexistent")
+	if err != nil {
+		t.Fatalf("expected nil error for missing stream, got %v", err)
+	}
+	if entries != nil {
+		t.Fatalf("expected nil entries for missing stream, got %d entries", len(entries))
 	}
 }

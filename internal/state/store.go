@@ -433,9 +433,12 @@ func (s *redisStore) TailTokens(ctx context.Context, key string) (<-chan string,
 }
 
 // ReadTraceEvents returns all trace entries from the Redis stream for the given
-// token-stream key, in stream order. Tokens are wrapped as
-// {"type":"token","content":"..."} events; structured trace events (ev field)
-// are returned with their original JSON payload. The ts field is derived from
+// token-stream key, in stream order. Tokens and thinking deltas are grouped
+// into a single entry per consecutive burst (rather than one entry per
+// individual delta) — this keeps the archived trace compact (~100x smaller)
+// while preserving the same information the UI renders for live runs.
+// Structured trace events (toolCall, toolResult, guardrail, etc.) are returned
+// individually with their original JSON payload. The ts field is derived from
 // the Redis stream entry ID (millisecond timestamp). Returns nil if the stream
 // does not exist or is empty.
 func (s *redisStore) ReadTraceEvents(ctx context.Context, key string) ([]TraceEntry, error) {
@@ -449,6 +452,40 @@ func (s *redisStore) ReadTraceEvents(ctx context.Context, key string) ([]TraceEn
 
 	result := make([]TraceEntry, 0, len(entries))
 	id := 0
+
+	// Accumulators for grouping consecutive same-type delta events. Tokens and
+	// thinking deltas are emitted by the model-router one fragment at a time;
+	// merging them into a single entry per burst avoids storing O(10K) entries
+	// per turn in PostgreSQL (which was ~15MB per run at scale).
+	var tokenBuf strings.Builder
+	var thoughtBuf strings.Builder
+	var pendingTS string
+	var pendingToken bool
+	var pendingThought bool
+
+	flushPending := func() {
+		if pendingToken {
+			eventJSON, _ := json.Marshal(map[string]string{
+				"type":    "token",
+				"content": tokenBuf.String(),
+			})
+			result = append(result, TraceEntry{ID: id, Event: json.RawMessage(eventJSON), TS: pendingTS})
+			id++
+			tokenBuf.Reset()
+			pendingToken = false
+		}
+		if pendingThought {
+			eventJSON, _ := json.Marshal(map[string]string{
+				"type":    "thought",
+				"content": thoughtBuf.String(),
+			})
+			result = append(result, TraceEntry{ID: id, Event: json.RawMessage(eventJSON), TS: pendingTS})
+			id++
+			thoughtBuf.Reset()
+			pendingThought = false
+		}
+	}
+
 	for _, entry := range entries {
 		// Skip legacy empty-token "done" sentinels from older producers.
 		if _, ok := entry.Values["done"]; ok {
@@ -457,21 +494,49 @@ func (s *redisStore) ReadTraceEvents(ctx context.Context, key string) ([]TraceEn
 		ts := streamIDToISO(entry.ID)
 
 		if t, ok := entry.Values["t"]; ok {
-			tokenStr := fmt.Sprint(t)
-			eventJSON, _ := json.Marshal(map[string]string{
-				"type":    "token",
-				"content": tokenStr,
-			})
-			result = append(result, TraceEntry{
-				ID:    id,
-				Event: json.RawMessage(eventJSON),
-				TS:    ts,
-			})
-			id++
+			// Token delta: accumulate into the current burst.
+			if !pendingToken {
+				pendingTS = ts
+			}
+			tokenBuf.WriteString(fmt.Sprint(t))
+			pendingToken = true
+			continue
 		}
 
 		if ev, ok := entry.Values["ev"]; ok {
 			evStr := fmt.Sprint(ev)
+
+			// Peek at the event type to decide whether to group or flush.
+			var meta struct {
+				Type    string `json:"type"`
+				Content string `json:"content"`
+			}
+			if json.Unmarshal([]byte(evStr), &meta) == nil {
+				if meta.Type == "thought" {
+					// Thinking delta: accumulate into the current burst.
+					if !pendingThought {
+						if pendingToken {
+							flushPending()
+						}
+						pendingTS = ts
+					}
+					thoughtBuf.WriteString(meta.Content)
+					pendingThought = true
+					continue
+				}
+				if meta.Type == "token" {
+					// A token wrapped in the ev field (unusual, but handle it).
+					if !pendingToken {
+						pendingTS = ts
+					}
+					tokenBuf.WriteString(meta.Content)
+					pendingToken = true
+					continue
+				}
+			}
+
+			// Any other event type: flush pending accumulators, then store as-is.
+			flushPending()
 			result = append(result, TraceEntry{
 				ID:    id,
 				Event: json.RawMessage(evStr),
@@ -480,6 +545,7 @@ func (s *redisStore) ReadTraceEvents(ctx context.Context, key string) ([]TraceEn
 			id++
 		}
 	}
+	flushPending()
 
 	if len(result) == 0 {
 		return nil, nil
