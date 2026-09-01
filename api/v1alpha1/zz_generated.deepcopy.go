@@ -1702,6 +1702,11 @@ func (in *MCPServerSpec) DeepCopyInto(out *MCPServerSpec) {
 			(*in)[i].DeepCopyInto(&(*out)[i])
 		}
 	}
+	if in.Auth != nil {
+		in, out := &in.Auth, &out.Auth
+		*out = new(MCPAuthConfig)
+		(*in).DeepCopyInto(*out)
+	}
 	if in.Tools != nil {
 		in, out := &in.Tools, &out.Tools
 		*out = make([]MCPServerTool, len(*in))

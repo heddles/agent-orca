@@ -25,6 +25,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
+	"github.com/floppyfish14/agent-orca/internal/podbuilder"
 	"github.com/floppyfish14/agent-orca/internal/router"
 )
 
@@ -217,4 +218,98 @@ func TestBuildDeploymentRouterConfig_LimitsAndSafeguards(t *testing.T) {
 			t.Fatalf("override safeguards unexpected: %+v", sg)
 		}
 	})
+}
+
+// TestBuildDeploymentRouterConfig_PropagatesMCPAuth verifies the warm-pool router
+// config resolves MCP auth into AuthHeaderFiles. This is the regression test for the
+// Slack MCP "missing_token" bug: warm-pool pods bake their router config at
+// deployment time, and the deployment builder must resolve bearer/API-key/custom
+// auth headers onto remote (HTTP/SSE) MCP servers exactly like the per-run builder.
+// Without this, the model-router sends no Authorization header and Slack returns
+// -32001 missing_token.
+func TestBuildDeploymentRouterConfig_PropagatesMCPAuth(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := agentorcav1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+
+	provider := &agentorcav1alpha1.ModelProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "primary-provider", Namespace: "default"},
+		Spec: agentorcav1alpha1.ModelProviderSpec{
+			LiteLLMModel:   "openai/gpt-4o",
+			CredentialsRef: agentorcav1alpha1.SecretKeyRef{Name: "primary-secret", Key: "api-key"},
+		},
+	}
+	selector := &agentorcav1alpha1.ModelSelector{
+		ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: "default"},
+		Spec: agentorcav1alpha1.ModelSelectorSpec{
+			Strategy:  "rule-based",
+			Providers: []agentorcav1alpha1.ProviderWeight{{Name: "primary-provider", Weight: 100}},
+		},
+	}
+	// MCP tool with HTTP bearer-token auth (mirrors an MCPServer in discovery mode
+	// whose connector Tool carries auth.bearerToken).
+	tool := &agentorcav1alpha1.Tool{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "slack-mcp",
+			Namespace: "default",
+			Labels: map[string]string{
+				LabelManagedBy: LabelManagedByMCPServer,
+				LabelMCPServer: "slack-mcp",
+			},
+		},
+		Spec: agentorcav1alpha1.ToolSpec{
+			Type: agentorcav1alpha1.ToolTypeMCP,
+			MCPConfig: &agentorcav1alpha1.MCPConfig{
+				Transport: "http",
+				URL:       "https://mcp.slack.com/mcp",
+				Auth: &agentorcav1alpha1.MCPAuthConfig{
+					BearerToken: &agentorcav1alpha1.SecretKeyRef{
+						Name: "slack-mcp-token",
+						Key:  "token",
+					},
+				},
+			},
+		},
+	}
+	agent := &agentorcav1alpha1.Agent{
+		ObjectMeta: metav1.ObjectMeta{Name: "senior-programmer", Namespace: "default"},
+		Spec: agentorcav1alpha1.AgentSpec{
+			ModelSelectorRef: "default",
+			Tools:            []string{"slack-mcp"},
+		},
+	}
+	deploy := &agentorcav1alpha1.AgentDeployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "senior-programmer-chat", Namespace: "default"},
+		Spec:       agentorcav1alpha1.AgentDeploymentSpec{AgentRef: "senior-programmer"},
+	}
+
+	cl := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(provider, selector, tool).Build()
+
+	r := &AgentDeploymentReconciler{Client: cl, Scheme: scheme}
+	cfg, err := r.buildDeploymentRouterConfig(context.Background(), deploy, agent, "test-sa", nil)
+	if err != nil {
+		t.Fatalf("buildDeploymentRouterConfig: %v", err)
+	}
+
+	if len(cfg.MCPServers) != 1 {
+		t.Fatalf("expected 1 MCPServerConfig, got %d", len(cfg.MCPServers))
+	}
+	got := cfg.MCPServers[0]
+	if got.Name != "slack-mcp" || got.Transport != "http" || got.URL != "https://mcp.slack.com/mcp" {
+		t.Fatalf("unexpected MCPServerConfig: %+v", got)
+	}
+	if len(got.AuthHeaderFiles) != 1 {
+		t.Fatalf("expected 1 AuthHeaderFile (warm pods were NOT resolving MCP auth), got %d (%+v)",
+			len(got.AuthHeaderFiles), got.AuthHeaderFiles)
+	}
+	ahf := got.AuthHeaderFiles[0]
+	if ahf.HeaderName != "Authorization" || ahf.Prefix != "Bearer " {
+		t.Errorf("unexpected auth header %+v", ahf)
+	}
+	if ahf.FilePath != podbuilder.ToolSecretFilePath("slack-mcp", "slack-mcp-token", "token") {
+		t.Errorf("expected file path %q, got %q",
+			podbuilder.ToolSecretFilePath("slack-mcp", "slack-mcp-token", "token"), ahf.FilePath)
+	}
 }

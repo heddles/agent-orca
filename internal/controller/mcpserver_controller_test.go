@@ -717,4 +717,106 @@ var _ = Describe("MCPServer Controller", func() {
 			Expect(mcpToolResolutionHint(ctx, k8sClient, namespace, serverName+"-get-file-contents")).To(BeEmpty())
 		})
 	})
+
+	Context("When creating an MCPServer with HTTP transport and bearer token auth", func() {
+		const serverName = "test-http-auth-server"
+
+		AfterEach(func() {
+			deleteIfExists(&agentorcav1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{Name: serverName, Namespace: namespace},
+			})
+			// Connector Tool CR is named after the server.
+			deleteIfExists(&agentorcav1alpha1.Tool{
+				ObjectMeta: metav1.ObjectMeta{Name: serverName, Namespace: namespace},
+			})
+		})
+
+		It("should propagate auth to the connector Tool for the model-router", func() {
+			server := &agentorcav1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      serverName,
+					Namespace: namespace,
+				},
+				Spec: agentorcav1alpha1.MCPServerSpec{
+					Transport: "http",
+					URL:       "https://mcp.slack.com/mcp",
+					Auth: &agentorcav1alpha1.MCPAuthConfig{
+						BearerToken: &agentorcav1alpha1.SecretKeyRef{
+							Name: "slack-mcp-token",
+							Key:  "token",
+						},
+					},
+					// Discoverability defaults to enabled; Tools omitted =>
+					// discovery mode => a single connector Tool named after the server.
+				},
+			}
+			Expect(k8sClient.Create(ctx, server)).To(Succeed())
+
+			reconcileAndExpectSuccess(serverName)
+
+			var marker agentorcav1alpha1.Tool
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: serverName, Namespace: namespace,
+			}, &marker)).To(Succeed())
+
+			Expect(marker.Spec.Type).To(Equal(agentorcav1alpha1.ToolTypeMCP))
+			Expect(marker.Spec.MCPConfig).NotTo(BeNil())
+			Expect(marker.Spec.MCPConfig.Transport).To(Equal("http"))
+			Expect(marker.Spec.MCPConfig.URL).To(Equal("https://mcp.slack.com/mcp"))
+			Expect(marker.Spec.MCPConfig.Auth).NotTo(BeNil())
+			Expect(marker.Spec.MCPConfig.Auth.BearerToken).NotTo(BeNil())
+			Expect(marker.Spec.MCPConfig.Auth.BearerToken.Name).To(Equal("slack-mcp-token"))
+			Expect(marker.Spec.MCPConfig.Auth.BearerToken.Key).To(Equal("token"))
+
+			var updated agentorcav1alpha1.MCPServer
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: serverName, Namespace: namespace,
+			}, &updated)).To(Succeed())
+			Expect(updated.Status.Ready).To(BeTrue())
+			Expect(updated.Status.Discovering).To(BeTrue())
+		})
+	})
+
+	Context("When creating an MCPServer with stdio transport and auth", func() {
+		const serverName = "test-stdio-auth-server"
+
+		AfterEach(func() {
+			deleteIfExists(&agentorcav1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{Name: serverName, Namespace: namespace},
+			})
+		})
+
+		It("should set Ready=false (auth is not supported for stdio)", func() {
+			server := &agentorcav1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      serverName,
+					Namespace: namespace,
+				},
+				Spec: agentorcav1alpha1.MCPServerSpec{
+					Transport: "stdio",
+					OCIRef:    "ghcr.io/example/mcp-echo:v1",
+					Args:      []string{"/usr/local/bin/mcp-echo"},
+					Auth: &agentorcav1alpha1.MCPAuthConfig{
+						BearerToken: &agentorcav1alpha1.SecretKeyRef{
+							Name: "slack-mcp-token",
+							Key:  "token",
+						},
+					},
+					Tools: []agentorcav1alpha1.MCPServerTool{
+						{Name: "echo", Description: "Echo input back"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, server)).To(Succeed())
+
+			reconcileAndExpectSuccess(serverName)
+
+			var updated agentorcav1alpha1.MCPServer
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: serverName, Namespace: namespace,
+			}, &updated)).To(Succeed())
+			Expect(updated.Status.Ready).To(BeFalse())
+			Expect(updated.Status.Message).To(ContainSubstring("spec.auth is not supported for stdio transport"))
+		})
+	})
 })

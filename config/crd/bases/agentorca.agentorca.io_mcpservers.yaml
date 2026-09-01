@@ -86,6 +86,99 @@ spec:
                 items:
                   type: string
                 type: array
+              auth:
+                description: |-
+                  Auth configures authentication for HTTP/SSE transports.
+                  The model-router reads each referenced Secret (mounted as a file into the
+                  sidecar) and injects it as an HTTP header on every request to the remote
+                  MCP server. Not supported for stdio transport (use EnvFrom instead — the
+                  agentorca admission webhook rejects auth on stdio).
+                properties:
+                  apiKey:
+                    description: APIKey sets a custom header with a key read from
+                      a Secret.
+                    properties:
+                      headerName:
+                        default: X-API-Key
+                        description: HeaderName is the HTTP header name. Defaults
+                          to "X-API-Key".
+                        type: string
+                      secretKeyRef:
+                        description: SecretKeyRef references the Secret containing
+                          the API key.
+                        properties:
+                          key:
+                            description: Key within the Secret.
+                            type: string
+                          name:
+                            description: Name of the Secret.
+                            type: string
+                          namespace:
+                            description: Namespace of the Secret. Defaults to the
+                              same namespace as the referencing resource.
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                    required:
+                    - secretKeyRef
+                    type: object
+                  bearerToken:
+                    description: |-
+                      BearerToken sets the Authorization header to "Bearer <token>".
+                      The token value is read from a Kubernetes Secret.
+                    properties:
+                      key:
+                        description: Key within the Secret.
+                        type: string
+                      name:
+                        description: Name of the Secret.
+                        type: string
+                      namespace:
+                        description: Namespace of the Secret. Defaults to the same
+                          namespace as the referencing resource.
+                        type: string
+                    required:
+                    - key
+                    - name
+                    type: object
+                  headers:
+                    description: |-
+                      Headers sets custom HTTP headers from Secrets.
+                      Use this for non-standard auth schemes.
+                    items:
+                      description: AuthHeader maps an HTTP header name to a Secret
+                        key reference.
+                      properties:
+                        name:
+                          description: Name is the HTTP header name (e.g., "Authorization",
+                            "X-Custom-Token").
+                          type: string
+                        secretKeyRef:
+                          description: SecretKeyRef references the Secret containing
+                            the header value.
+                          properties:
+                            key:
+                              description: Key within the Secret.
+                              type: string
+                            name:
+                              description: Name of the Secret.
+                              type: string
+                            namespace:
+                              description: Namespace of the Secret. Defaults to the
+                                same namespace as the referencing resource.
+                              type: string
+                          required:
+                          - key
+                          - name
+                          type: object
+                      required:
+                      - name
+                      - secretKeyRef
+                      type: object
+                    type: array
+                type: object
               discoverability:
                 default: enabled
                 description: |-
@@ -112,6 +205,7 @@ spec:
                 description: |-
                   EnvFrom sets environment variables sourced from Kubernetes Secrets.
                   These are merged with (and override) Env entries of the same name.
+                  Only used for stdio transport.
                 items:
                   description: |-
                     EnvVar represents an environment variable with either a literal value or an indirect

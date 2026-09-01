@@ -62,8 +62,17 @@ type MCPServerSpec struct {
 
 	// EnvFrom sets environment variables sourced from Kubernetes Secrets.
 	// These are merged with (and override) Env entries of the same name.
+	// Only used for stdio transport.
 	// +optional
 	EnvFrom []EnvVar `json:"envFrom,omitempty"`
+
+	// Auth configures authentication for HTTP/SSE transports.
+	// The model-router reads each referenced Secret (mounted as a file into the
+	// sidecar) and injects it as an HTTP header on every request to the remote
+	// MCP server. Not supported for stdio transport (use EnvFrom instead — the
+	// agentorca admission webhook rejects auth on stdio).
+	// +optional
+	Auth *MCPAuthConfig `json:"auth,omitempty"`
 
 	// Tools declares the tools this MCP server provides.
 	// Each entry becomes a child Tool CR managed by the MCPServer controller.

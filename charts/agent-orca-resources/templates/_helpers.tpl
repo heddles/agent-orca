@@ -271,6 +271,10 @@ spec:
   envFrom:
     {{- toYaml .envFrom | nindent 4 }}
   {{- end }}
+  {{- if .auth }}
+  auth:
+    {{- toYaml .auth | nindent 4 }}
+  {{- end }}
   tools:
     {{- toYaml .tools | nindent 4 }}
   {{- if .allowApps }}

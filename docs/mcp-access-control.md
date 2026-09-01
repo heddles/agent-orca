@@ -202,6 +202,31 @@ subjects:
 
 Stdio MCP servers run as a subprocess **inside** the model-router sidecar. There is no network boundary, so the SA JWT header is not sent and identity verification via TokenReview does not apply. The authorization check (`allowedAgents`) still runs at AgentRun creation time.
 
+## Service-level auth (bearer tokens, API keys)
+
+For HTTP/SSE transports, many remote MCP servers require application-level credentials (e.g. a Slack user token sent as `Authorization: Bearer <token>`). Declare these on the MCPServer via `spec.auth`; the controller propagates them to the child Tool CRs, the podbuilder mounts each referenced Secret as a read-only file into the model-router sidecar, and the model-router reads the file and injects the header on every request to the remote server. `auth` is optional and cannot be combined with `stdio` transport (use `spec.envFrom` for stdio credentials — the controller sets `Ready=false` if you mix them).
+
+```yaml
+apiVersion: agentorca.agentorca.io/v1alpha1
+kind: MCPServer
+metadata:
+  name: slack-mcp
+  namespace: agent-orca-system
+spec:
+  transport: http
+  url: "https://mcp.slack.com/mcp"
+  auth:
+    bearerToken:
+      name: slack-mcp-token   # Secret
+      key: token              # key holding the xoxp- user token
+  allowedAgents:
+    - senior-programmer
+  networkEgress:
+    - host: mcp.slack.com
+      port: 443
+      protocol: TCP
+```
+
 ---
 
 ## Trust model summary

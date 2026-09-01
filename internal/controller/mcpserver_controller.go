@@ -141,6 +141,9 @@ func (r *MCPServerReconciler) validate(server *agentorcav1alpha1.MCPServer) (boo
 		if server.Spec.OCIRef == "" {
 			return false, "spec.ociRef is required for transport=stdio"
 		}
+		if server.Spec.Auth != nil {
+			return false, "spec.auth is not supported for stdio transport; use spec.envFrom for stdio credentials"
+		}
 	default:
 		return false, fmt.Sprintf("unknown transport %q", server.Spec.Transport)
 	}
@@ -203,6 +206,7 @@ func (r *MCPServerReconciler) buildChildTool(server *agentorcav1alpha1.MCPServer
 				Args:      server.Spec.Args,
 				Env:       server.Spec.Env,
 				EnvFrom:   server.Spec.EnvFrom,
+				Auth:      server.Spec.Auth,
 			},
 			OCIRef:        server.Spec.OCIRef,
 			ExecutionMode: executionModeForServer(server),
@@ -245,6 +249,7 @@ func (r *MCPServerReconciler) buildMarkerTool(server *agentorcav1alpha1.MCPServe
 				Args:      server.Spec.Args,
 				Env:       server.Spec.Env,
 				EnvFrom:   server.Spec.EnvFrom,
+				Auth:      server.Spec.Auth,
 			},
 			OCIRef:        server.Spec.OCIRef,
 			ExecutionMode: executionModeForServer(server),

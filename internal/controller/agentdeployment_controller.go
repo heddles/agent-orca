@@ -581,6 +581,37 @@ func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig( //nolint:gocycl
 						mcpCfg.Env = append(mcpCfg.Env, ev.Name+"="+ev.Value)
 					}
 				}
+				// Resolve auth config to file paths. (Mirrors agentrun_controller.buildRouterConfig
+				// so warm-pool pods - which bake the router config at deployment time - also
+				// inject bearer/API-key/custom auth headers into remote HTTP/SSE MCP requests.)
+				if auth := tool.Spec.MCPConfig.Auth; auth != nil {
+					if auth.BearerToken != nil {
+						ref := auth.BearerToken
+						mcpCfg.AuthHeaderFiles = append(mcpCfg.AuthHeaderFiles, router.AuthHeaderFile{
+							HeaderName: "Authorization",
+							FilePath:   podbuilder.ToolSecretFilePath(toolName, ref.Name, ref.Key),
+							Prefix:     "Bearer ",
+						})
+					}
+					if auth.APIKey != nil {
+						ref := &auth.APIKey.SecretKeyRef
+						headerName := auth.APIKey.HeaderName
+						if headerName == "" {
+							headerName = "X-API-Key"
+						}
+						mcpCfg.AuthHeaderFiles = append(mcpCfg.AuthHeaderFiles, router.AuthHeaderFile{
+							HeaderName: headerName,
+							FilePath:   podbuilder.ToolSecretFilePath(toolName, ref.Name, ref.Key),
+						})
+					}
+					for _, h := range auth.Headers {
+						ref := &h.SecretKeyRef
+						mcpCfg.AuthHeaderFiles = append(mcpCfg.AuthHeaderFiles, router.AuthHeaderFile{
+							HeaderName: h.Name,
+							FilePath:   podbuilder.ToolSecretFilePath(toolName, ref.Name, ref.Key),
+						})
+					}
+				}
 				mcpServers = append(mcpServers, mcpCfg)
 			}
 		}

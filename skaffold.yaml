@@ -322,6 +322,8 @@ profiles:
   # 'ollama-embed' embedding selector) already deployed (skaffold dev -p dev, with
   # ollama-embeddings enabled for local embeddings).
   # Requires: GitHub PAT with repo (read) scope — set via AGENT_ORCA_GITHUB_TOKEN.
+  # Requires: Slack user token (xoxp-...) with the read/search scopes listed in
+  # values.yaml — set via AGENT_ORCA_SLACK_TOKEN.
   # The agent image is the pre-built reference agent
   # (ghcr.io/agentorca/agent-orca/openai-reference:latest), built + kind-loaded by
   # `skaffold dev`; the GitHub MCP image (ghcr.io/github/github-mcp-server) is pulled
@@ -343,6 +345,9 @@ profiles:
             setValueTemplates:
               # GitHub PAT (repo read scope). Read from env, never committed.
               githubToken: "{{.AGENT_ORCA_GITHUB_TOKEN}}"
+              # Slack user token (xoxp-...) with the read/search scopes listed in
+              # values.yaml (social-mcp read subset). Read from env, never committed.
+              slackToken: "{{.AGENT_ORCA_SLACK_TOKEN}}"
 
   # dev: inference runs natively on macOS with Metal GPU acceleration.
   # Start the native servers before deploying:

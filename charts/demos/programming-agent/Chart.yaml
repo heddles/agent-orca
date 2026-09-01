@@ -6,7 +6,9 @@ description: |
   questions from a curated engineering KnowledgeBase (RAG), then drills into live
   source via a read-only GitHub MCP server (stdio sidecar) when RAG results are
   insufficient — back-filling what it reads into the KB with _rag_ingest so the vector
-  store grows richer with each session.
+  store grows richer with each session. It can also consult team Slack history
+  (messages, channels, users) via the publicly-hosted Slack MCP server before
+  grounding its answers in live source.
 
   Components:
     1. github-mcp  — MCPServer running the official GitHub MCP server
@@ -14,11 +16,16 @@ description: |
        get_file_contents / search_code / list_commits / get_commit / list_branches /
        search_commits. The GitHub PAT is injected from the github-mcp-token Secret
        (read-only `repo` scope) — never baked into the chart.
-    2. agent-orca-codebase — KnowledgeBase ingested from a handbook ConfigMap,
+    2. slack-mcp   — MCPServer pointing at Slack's publicly-hosted MCP server over
+       Streamable HTTP (https://mcp.slack.com/mcp). Auth is an xoxp- user token sent
+       as `Authorization: Bearer <token>` from the slack-mcp-token Secret (read/
+       search scopes only — see values.yaml). The per-run NetworkPolicy egress allows
+       mcp.slack.com:443.
+    3. agent-orca-codebase — KnowledgeBase ingested from a handbook ConfigMap,
        embedded via the ollama-embed ModelSelector (local in-cluster embeddings).
-    3. senior-programmer — the Agent (openai-reference image) with a senior-engineer
-       system prompt and the GitHub MCP tools.
-    4. senior-programmer-chat — chat AgentDeployment with a warm pool of 1.
+    4. senior-programmer — the Agent (openai-reference image) with a senior-engineer
+       system prompt and the GitHub + Slack MCP tools.
+    5. senior-programmer-chat — chat AgentDeployment with a warm pool of 1.
 
   Requires:
     - agent-orca operator + model-providers with the 'default' ModelSelector and
@@ -26,6 +33,8 @@ description: |
       ollama-embeddings enabled for local embeddings).
     - GitHub PAT with repo (read) scope, injected via the githubToken value
       (AGENT_ORCA_GITHUB_TOKEN env var under skaffold).
+    - Slack user token (xoxp-...) with the read/search scopes listed in values.yaml,
+      injected via the slackToken value (AGENT_ORCA_SLACK_TOKEN env var under skaffold).
 
   The agent image is the OpenAI-compatible reference agent
   ghcr.io/agentorca/agent-orca/openai-reference:latest (built + kind-loaded by
@@ -38,6 +47,7 @@ keywords:
   - agents
   - programming
   - github-mcp
+  - slack-mcp
   - mcp
   - rag
   - knowledgebase
