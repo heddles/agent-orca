@@ -390,15 +390,26 @@ func (r *AgentRunReconciler) checkProgress(ctx context.Context, run *agentorcav1
 		httpOut, err := r.StateStore.LoadHTTPOutput(ctx, run.Name)
 		if err == nil && httpOut != "" {
 			result, err := r.handlePodSuccess(ctx, run, &pod)
-			// Only destroy ONE-SHOT pods here so they don't linger as Running.
-			// WARM pods must be left alive: ensureCleanup -> reconcileRunPodOnTerminal
-			// (run on the terminal reconcile) returns them to the idle pool so they
-			// survive across chat turns and long-trajectory tasks. Deleting warm
-			// pods here — as the old unconditional delete did — defeated reuse and
-			// could murder an in-progress session, since the pod is removed before
-			// the return-to-idle logic ever runs.
-			if err == nil && shouldDeletePodOnCompletion(&pod) {
-				_ = r.Delete(ctx, &pod)
+			// One-shot pods (no warm-pool label) are torn down here so they don't linger
+			// as Running. WARM (http/chat) pods are kept alive AND returned to the idle
+			// pool in THIS reconcile — the same reconcile that just observed the completed
+			// output — so the next chat turn claims it (preserving context) instead of
+			// spawning a fresh pod during the deferred terminal reconcile. Previously the
+			// return-to-idle was deferred to ensureCleanup, leaving the pod `claimed` in
+			// the window where claimWarmPod (idle-only) found nothing and built a new pod.
+			// reconcileRunPodOnTerminal is idempotent, so ensureCleanup calling it again
+			// on the terminal reconcile is a harmless no-op.
+			if err == nil {
+				if shouldDeletePodOnCompletion(&pod) {
+					_ = r.Delete(ctx, &pod)
+				} else if isTerminal(run.Status.Phase) {
+					// Warm pod + terminal run: return to idle now so the next chat turn
+					// reuses it (preserving context). Only when the run actually
+					// terminated — a WaitingForInput/clarify run is kept `claimed` so it
+					// can be resumed in place; reconcileRunPodOnTerminal (idempotent) is
+					// also re-run by ensureCleanup on the terminal reconcile.
+					r.reconcileRunPodOnTerminal(ctx, run)
+				}
 			}
 			return result, err
 		}
@@ -437,20 +448,28 @@ func (r *AgentRunReconciler) handlePodSuccess(ctx context.Context, run *agentorc
 		}
 	}
 
-	// Collect stdout from the agent container.
-	logs, err := r.K8s.CoreV1().Pods(run.Namespace).GetLogs(pod.Name, &corev1.PodLogOptions{
-		Container: "agent",
-	}).DoRaw(ctx)
-	if err != nil {
-		logs = []byte("(log collection failed)")
-	}
-
-	output := string(logs)
-	if run.Status.InputMode == "http" {
-		if httpOut, err := r.StateStore.LoadHTTPOutput(ctx, run.Name); err == nil && httpOut != "" {
+	// Collect the run's output. For http/chat runs the model-router has already
+	// captured the agent's streamed response via RunHTTPInput and saved it as HTTP
+	// output, which is the canonical result — so prefer that and avoid a pointless
+	// (and slow/unsupported by fake clientsets) GetLogs call. Fall back to the
+	// agent container stdout only when there is no http output (e.g. one-shot pods
+	// that terminate with stdout as their only signal).
+	output := ""
+	if run.Status.InputMode == "http" && r.StateStore != nil {
+		if httpOut, lerr := r.StateStore.LoadHTTPOutput(ctx, run.Name); lerr == nil && httpOut != "" {
 			output = httpOut
 		}
 	}
+	if output == "" {
+		logs, err := r.K8s.CoreV1().Pods(run.Namespace).GetLogs(pod.Name, &corev1.PodLogOptions{
+			Container: "agent",
+		}).DoRaw(ctx)
+		if err != nil {
+			logs = []byte("(log collection failed)")
+		}
+		output = string(logs)
+	}
+
 	raw := truncate(output, 4096)
 	finalOutput := truncate(output, 10240)
 
@@ -2133,6 +2152,14 @@ func (r *AgentRunReconciler) claimWarmPod(ctx context.Context, run *agentorcav1a
 		return "", nil
 	}
 
+	// Before deciding no pod is available, release any stale-claimed pods left behind
+	// by a prior run that already reached a terminal phase. Without this, a new chat
+	// turn arriving in the window between a run's completion and its deferred
+	// terminal reconcile finds no idle pod and spawns a fresh one — orphaning the
+	// prior pod and losing chat context. (reconcileRunPodOnTerminal in checkProgress
+	// normally idles the pod promptly; this is the safety net for the race.)
+	r.reclaimStaleClaimedWarmPods(ctx, run.Namespace, deployName)
+
 	// Find an idle warm pod for this deployment.
 	var pods corev1.PodList
 	if err := r.List(ctx, &pods,
@@ -2224,6 +2251,54 @@ func (r *AgentRunReconciler) claimWarmPod(ctx context.Context, run *agentorcav1a
 	}
 
 	return "", nil
+}
+
+// reclaimStaleClaimedWarmPods returns to idle any warm pod still labeled `claimed`
+// whose bound run (agentorca.io/run) has already reached a terminal phase. These are
+// pods whose terminal reconcile hasn't idled them yet (or that were racing a new turn).
+// Releasing them here lets claimWarmPod's normal idle path reuse them — preserving
+// chat context — instead of forcing a brand-new pod.
+//
+// SafeLabelValue is a no-op for run names <= 63 chars (the common case), so the AgentRun
+// lookup by the label value succeeds then; longer hashed labels are skipped (harmless —
+// the prompt release in checkProgress still covers sequential turns). Only pods whose
+// prior run is genuinely terminal are touched, so an in-flight claimed pod is never stolen.
+func (r *AgentRunReconciler) reclaimStaleClaimedWarmPods(ctx context.Context, ns, deployName string) {
+	var pods corev1.PodList
+	if err := r.List(ctx, &pods,
+		client.InNamespace(ns),
+		client.MatchingLabels{labelWarmPool: deployName, labelWarmStatus: warmStatusClaimed},
+	); err != nil {
+		return
+	}
+	logger := log.FromContext(ctx)
+	for i := range pods.Items {
+		p := &pods.Items[i]
+		if p.DeletionTimestamp != nil {
+			continue
+		}
+		runName := p.Labels["agentorca.io/run"]
+		if runName == "" {
+			continue
+		}
+		var ar agentorcav1alpha1.AgentRun
+		if err := r.Get(ctx, client.ObjectKey{Namespace: ns, Name: runName}, &ar); err != nil {
+			continue
+		}
+		if !isTerminal(ar.Status.Phase) {
+			continue
+		}
+		patch := client.MergeFrom(p.DeepCopy())
+		p.Labels[labelWarmStatus] = warmStatusIdle
+		delete(p.Labels, "agentorca.io/run")
+		if err := r.Patch(ctx, p, patch); err != nil {
+			logger.Error(err, "failed to reclaim stale-claimed warm pod to idle",
+				"pod", p.Name, "priorRun", runName)
+			continue
+		}
+		logger.Info("reclaimed stale-claimed warm pod to idle (prior run terminal)",
+			"pod", p.Name, "priorRun", runName, "phase", ar.Status.Phase)
+	}
 }
 
 // findClaimedWarmPod returns the name of a warm pod that has already bound this run
