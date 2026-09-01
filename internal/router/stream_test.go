@@ -41,9 +41,11 @@ import (
 // (toolCall/toolResult/fail emission, used to assert dispatch).
 type testStore struct {
 	state.Store
-	mu          sync.Mutex
-	doneEvents  int      // count of terminal `done` trace events with finish_reason (0 — emitDoneEvent removed)
-	traceEvents []string // captured trace-event JSON
+	mu            sync.Mutex
+	doneEvents    int      // count of terminal `done` trace events with finish_reason (0 — emitDoneEvent removed)
+	traceEvents   []string // captured trace-event JSON
+	savedMessages []json.RawMessage
+	saveCount     int // number of checkpoint() (SaveMessages) calls
 }
 
 func newTestStore(t *testing.T) *testStore {
@@ -61,6 +63,28 @@ func (s *testStore) SaveToken(_ context.Context, _ string, _ string) error {
 	// the done trace event (emitDoneEvent) has been removed in favor of
 	// relying on the OpenAI schema's [DONE] and the UI API's finalOutput.
 	return nil
+}
+
+// SaveMessages records checkpoint() writes so tests can assert the conversation
+// is persisted on run completion (used by reused warm pods via PriorRunRef).
+func (s *testStore) SaveMessages(_ context.Context, _ string, messages []json.RawMessage, _ time.Duration) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.savedMessages = messages
+	s.saveCount++
+	return nil
+}
+
+func (s *testStore) checkpointCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.saveCount
+}
+
+func (s *testStore) savedMessageCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.savedMessages)
 }
 
 func (s *testStore) SaveTraceEvent(_ context.Context, _ string, eventJSON string) error {
@@ -605,6 +629,39 @@ func TestStreamingTerminalTurnEmitsDoneSSE(t *testing.T) {
 	}
 	if strings.Count(out, "data: [DONE]") != 1 {
 		t.Errorf("expected exactly one client [DONE] frame, got body:\n%s", out)
+	}
+	if c := calls.Load(); c != 1 {
+		t.Errorf("expected exactly one provider call, got %d", c)
+	}
+}
+
+// TestStreamingCompletionCheckpoint asserts that a terminal text turn (an /invoke
+// completing) persists the conversation via checkpoint()/SaveMessages, so a reused
+// warm pod can resume it on the next chat turn via PriorRunRef. Without the
+// completion checkpoint, short (<CheckpointEvery) chats were never saved and turn 2
+// started fresh — the "lost context after two turns" symptom.
+func TestStreamingCompletionCheckpoint(t *testing.T) {
+	srv, calls := fakeProvider(t, textTurnSSE("stop"))
+	keyFile := writeKeyFile(t)
+	store := newTestStore(t)
+	r := newStreamingTestRouter(t, srv.URL, keyFile, store)
+	// Enable checkpointing (newStreamingTestRouter leaves CheckpointKey empty so
+	// checkpoint() is a no-op); CheckpointEvery is 0, so only completion saves.
+	r.cfg.CheckpointKey = "agentorca/runs/test-run/state"
+
+	body := []byte(`{"model":"default","stream":true,"messages":[{"role":"user","content":"review my PR"}]}`)
+
+	out, _, _, _ := consumeClientBody(t, r, body)
+
+	if strings.Count(out, "data: [DONE]") != 1 {
+		t.Errorf("expected exactly one client [DONE] frame, got body:\n%s", out)
+	}
+	if c := store.checkpointCount(); c != 1 {
+		t.Fatalf("expected exactly 1 completion checkpoint, got %d", c)
+	}
+	// Folded conversation = user prompt + assistant final text turn.
+	if n := store.savedMessageCount(); n != 2 {
+		t.Errorf("expected 2 saved messages (user + assistant), got %d", n)
 	}
 	if c := calls.Load(); c != 1 {
 		t.Errorf("expected exactly one provider call, got %d", c)

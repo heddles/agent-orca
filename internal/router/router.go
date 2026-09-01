@@ -1027,10 +1027,16 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 		return
 	}
 
-	// Checkpoint asynchronously to avoid blocking the response.
+	// Checkpoint periodically for crash recovery.
 	if r.cfg.CheckpointEvery > 0 && r.ruleRouter.TurnCount()%r.cfg.CheckpointEvery == 0 {
 		go r.checkpoint(context.Background())
 	}
+	// Always persist on run completion (this block is only reached for a terminal text
+	// turn; tool-call turns are handled in handleToolCalls). A reused warm pod loads
+	// the prior run's checkpoint via PriorRunRef on the next chat turn, so the final
+	// state must be written here — not only every CheckpointEvery turns or at Finalize.
+	// (Idempotent with the periodic save above.)
+	r.checkpoint(context.Background())
 
 	// Notify operator of context usage for UI display.
 	go r.notifyOperatorContext()
