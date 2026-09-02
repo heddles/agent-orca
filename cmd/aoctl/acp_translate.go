@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -66,17 +67,25 @@ const acpJSONRPCVersion = "2.0"
 //
 // agent-orca run statuses that have no direct StopReason equivalent —
 // "awaiting" (waiting for the user, e.g. via _clarify) and "failed" — are
-// mapped to end_turn. The awaiting state is additionally surfaced to the
-// client through a session/update notification (see acpStatusAwaiting) so the
-// client can prompt the user for input even though the turn itself has ended.
+// mapped to end_turn. The awaiting state is surfaced to the client via an
+// elicitation/create request (see acpMethodElicitationCreate) so the agent can
+// ask the user for input and resume, rather than emitting a non-spec
+// sessionUpdate value.
 const (
 	acpStopReasonEndTurn    = "end_turn"
 	acpStopReasonUserCancel = "cancelled"
+
+	// acpPendingAwaiting is an internal sentinel returned by streamRunEvents /
+	// pollToCompletion to signal that the run entered the "awaiting" state.
+	// awaitCompletion handles it by asking the user via elicitation/create, then
+	// loops. It is never serialized as a stopReason.
+	acpPendingAwaiting = "__acp_pending_awaiting__"
 )
 
 // ACP JSON-RPC notification method names.
 const (
-	acpMethodSessionUpdate = "session/update"
+	acpMethodSessionUpdate     = "session/update"
+	acpMethodElicitationCreate = "elicitation/create"
 )
 
 // ----------------------------------------------------------------------------
@@ -85,7 +94,7 @@ const (
 
 // acpContentBlock is one element of a session/prompt "prompt" array.
 type acpContentBlock struct {
-	Type     string `json:"type"` // "text" | "image" | "resource" | "audio"
+	Type     string `json:"type"` // "text" | "image" | "audio" | "resource_link" | "resource"
 	Text     string `json:"text,omitempty"`
 	Data     string `json:"data,omitempty"` // base64 for image/audio
 	URI      string `json:"uri,omitempty"`  // content_url / resource uri
@@ -169,6 +178,7 @@ type acpUpdate struct {
 	PlanEntries   []acpPlanEntry   `json:"entries,omitempty"` // used when SessionUpdate == "plan"
 }
 
+// acpPlanEntry struct {
 type acpPlanEntry struct {
 	Content  string `json:"content"`
 	Priority string `json:"priority,omitempty"` // "low" | "medium" | "high"
@@ -176,19 +186,46 @@ type acpPlanEntry struct {
 }
 
 // ----------------------------------------------------------------------------
+// Elicitation types (agent -> client request for structured user input)
+// ----------------------------------------------------------------------------
+
+// acpElicitParams is the params of an elicitation/create request sent to the
+// client to ask the user for input (ACP spec: CreateElicitationRequest "form"
+// variant).
+type acpElicitParams struct {
+	Message         string         `json:"message"`
+	Mode            string         `json:"mode"` // "form"
+	RequestedSchema map[string]any `json:"requestedSchema,omitempty"`
+}
+
+// acpElicitResponse is the client's response to elicitation/create (ACP spec:
+// CreateElicitationResponse with action accept|decline|cancel).
+type acpElicitResponse struct {
+	Action  string         `json:"action"`            // "accept" | "decline" | "cancel"
+	Content map[string]any `json:"content,omitempty"` // form field values
+}
+
+// ----------------------------------------------------------------------------
 // agent-orca server-mirror types (for GET /runs/{id})
 // ----------------------------------------------------------------------------
 
+// acpAwaitRequest mirrors the server's await_request field for awaiting runs.
+type acpAwaitRequest struct {
+	Question string `json:"question,omitempty"`
+}
+
 // acpRun mirrors internal/apiserver.ACPRun for the GET /runs/{run_id} response.
 type acpRun struct {
-	AgentName  string       `json:"agent_name"`
-	SessionID  string       `json:"session_id,omitempty"`
-	RunID      string       `json:"run_id"`
-	Status     string       `json:"status"`
-	Output     []ACPMessage `json:"output,omitempty"`
-	Error      *acpErr      `json:"error,omitempty"`
-	CreatedAt  string       `json:"created_at"`
-	FinishedAt string       `json:"finished_at,omitempty"`
+	AgentName          string           `json:"agent_name"`
+	SessionID          string           `json:"session_id,omitempty"`
+	RunID              string           `json:"run_id"`
+	Status             string           `json:"status"`
+	AwaitRequest       *acpAwaitRequest `json:"await_request,omitempty"`
+	Output             []ACPMessage     `json:"output,omitempty"`
+	Error              *acpErr          `json:"error,omitempty"`
+	CreatedAt          string           `json:"created_at"`
+	FinishedAt         string           `json:"finished_at,omitempty"`
+	ContinuationRunRef string           `json:"continuationRunRef,omitempty"`
 }
 
 type acpErr struct {
@@ -213,7 +250,7 @@ func toAgentOrcaInput(blocks []acpContentBlock) []ACPMessage {
 			ct = "text/plain"
 		}
 		switch b.Type {
-		case "image", "audio", "resource":
+		case "image", "audio", "resource", "resource_link":
 			// Best-effort: pass content/url through. agent-orca collapses parts to
 			// text for the model-router, so non-text blocks arrive as a string.
 			parts = append(parts, ACPMessagePart{ContentType: ct, Content: b.Data, ContentURL: b.URI})
@@ -340,4 +377,49 @@ func (c *Client) CancelACPRun(ctx context.Context, runID string) error {
 		return fmt.Errorf("cancel run %q failed (HTTP %d)", runID, resp.StatusCode)
 	}
 	return nil
+}
+
+// ResumeRun resumes an awaiting run by answering the human input request via
+// POST /runs/{run_id} with an await_resume.answer body. The ACP server creates
+// a continuation run and returns its ID; the caller should poll the returned
+// run ID going forward. Returns the continuation run ID (empty if none was
+// returned by the server).
+func (c *Client) ResumeRun(ctx context.Context, runID, answer string) (continuationRunID string, err error) { //nolint:revive
+	body, err := json.Marshal(map[string]any{
+		"await_resume": map[string]any{"answer": answer},
+	})
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		fmt.Sprintf("%s/runs/%s", strings.TrimRight(c.ACP, "/"), url.PathEscape(runID)), bodyReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	c.tokenAuth(req)
+
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxJSONBodyBytes))
+		var acpErr struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		}
+		_ = json.Unmarshal(respBody, &acpErr)
+		detail := strings.TrimSpace(string(respBody))
+		if acpErr.Code != "" || acpErr.Message != "" {
+			detail = fmt.Sprintf("[%s] %s", acpErr.Code, acpErr.Message)
+		}
+		return "", fmt.Errorf("resume run %q failed (HTTP %d): %s", runID, resp.StatusCode, detail)
+	}
+	var out acpRun
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", fmt.Errorf("decoding resume response: %w", err)
+	}
+	return out.ContinuationRunRef, nil
 }

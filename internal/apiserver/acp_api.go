@@ -34,6 +34,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
+	"github.com/floppyfish14/agent-orca/internal/checkpoint"
 	"github.com/floppyfish14/agent-orca/internal/security"
 	"github.com/floppyfish14/agent-orca/internal/state"
 )
@@ -53,6 +54,9 @@ type ACPServer struct {
 	crdClient client.Client
 	auth      *ExternalAuth
 	store     state.Store
+	// checkpoint persists session LastRunRef chains for warm-pool context continuity
+	// across ACP turns. nil when no state store is configured (local dev).
+	checkpoint checkpoint.Store
 
 	// rateLimiter enforces per-tenant submission rate limits. nil disables it.
 	rateLimiter *RateLimiter
@@ -65,6 +69,7 @@ func NewACPServer(k8s kubernetes.Interface, crdClient client.Client, auth *Exter
 		crdClient:   crdClient,
 		auth:        auth,
 		store:       store,
+		checkpoint:  checkpointStore(store),
 		rateLimiter: auth.rateLimiter,
 	}
 }
@@ -168,9 +173,12 @@ type ACPRunCreateRequest struct {
 	Mode      ACPRunMode   `json:"mode,omitempty"`
 }
 
-// ACPAwaitRequest describes what is awaited from the client.
+// ACPAwaitRequest describes what the client should provide next when a run is
+// awaiting human input (e.g. the answer to a _clarify question).
 type ACPAwaitRequest struct {
-	// Extend with actual fields as needed
+	// Question is the human-readable clarifying question the agent asked,
+	// copied from the AgentRun's ClarifyQuestion status field.
+	Question string `json:"question,omitempty"`
 }
 
 // ACPRun is the response body for run operations.
@@ -184,6 +192,10 @@ type ACPRun struct {
 	Error        *ACPErr          `json:"error,omitempty"`
 	CreatedAt    string           `json:"created_at"`
 	FinishedAt   string           `json:"finished_at,omitempty"`
+	// ContinuationRunRef is the name of a follow-up AgentRun created when a
+	// waiting run is resumed with a clarify answer (see resumeACPRun). Clients
+	// should poll this run instead of the original.
+	ContinuationRunRef string `json:"continuationRunRef,omitempty"`
 }
 
 // ACPAgentStatus represents agent status metrics per spec.
@@ -567,6 +579,8 @@ func (s *ACPServer) handleAgentRun(w http.ResponseWriter, r *http.Request, tenan
 	if sessionID != "" {
 		run.Labels["agentorca.io/session-id"] = sessionID
 	}
+	// Enable warm-pod claiming + context chaining.
+	s.enrichACPRunForWarmPods(r.Context(), run, agent.Name, sessionID)
 
 	if err := s.crdClient.Create(r.Context(), run); err != nil {
 		slog.Error("creating ACP agent run", "err", err)
@@ -575,6 +589,9 @@ func (s *ACPServer) handleAgentRun(w http.ResponseWriter, r *http.Request, tenan
 	}
 
 	slog.Info("ACP agent run created", "run", run.Name, "agent", agent.Name, "tenant", tenant.TenantName)
+
+	// Advance the session checkpoint so the next ACP turn chains context.
+	s.updateSessionCheckpoint(r.Context(), sessionID, run.Name)
 
 	resp := ACPRun{
 		AgentName: agent.Name,
@@ -607,11 +624,13 @@ func buildAllowedTools(ctx context.Context, k8sClient client.Client, agent *agen
 			continue
 		}
 		info := ACPToolInfo{
-			Name:        toolName,
-			Description: tool.Spec.Schema.Description,
+			Name: toolName,
 		}
-		if tool.Spec.Schema != nil && tool.Spec.Schema.Input != nil {
-			info.InputSchema = rawExtensionToMap(tool.Spec.Schema.Input)
+		if tool.Spec.Schema != nil {
+			info.Description = tool.Spec.Schema.Description
+			if tool.Spec.Schema.Input != nil {
+				info.InputSchema = rawExtensionToMap(tool.Spec.Schema.Input)
+			}
 		}
 		tools = append(tools, info)
 	}
@@ -669,6 +688,65 @@ func buildOutputSchema() map[string]any {
 			},
 		},
 		"required": []string{"output", "status"},
+	}
+}
+
+// resolveDeploymentForAgent finds the first AgentDeployment in the namespace
+// that references the given agent name. Returns (nil, nil) if none exists.
+func (s *ACPServer) resolveDeploymentForAgent(ctx context.Context, ns, agentName string) (*agentorcav1alpha1.AgentDeployment, error) {
+	var list agentorcav1alpha1.AgentDeploymentList
+	if err := s.crdClient.List(ctx, &list, client.InNamespace(ns)); err != nil {
+		return nil, err
+	}
+	for i := range list.Items {
+		if list.Items[i].Spec.AgentRef == agentName {
+			return &list.Items[i], nil
+		}
+	}
+	return nil, nil
+}
+
+// enrichACPRunForWarmPods sets the labels and PriorRunRef needed for the
+// controller to claim a warm pod and the model-router to load prior conversation
+// context. If no deployment is found for the agent, the run falls through to the
+// existing one-shot pod path (no labels, no PriorRunRef).
+func (s *ACPServer) enrichACPRunForWarmPods(ctx context.Context, run *agentorcav1alpha1.AgentRun, agentName, sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	dep, err := s.resolveDeploymentForAgent(ctx, run.Namespace, agentName)
+	if err != nil || dep == nil {
+		slog.Debug("ACP run has no matching deployment; using one-shot pod path",
+			"agent", agentName, "err", err)
+		return
+	}
+	run.Labels["agentorca.io/deployment"] = dep.Name
+	run.Labels["agentorca.io/session"] = sessionID
+	run.Labels["agentorca.io/source"] = "acp"
+
+	// Chain to the prior run in this session so the warm pod's model-router
+	// loads the prior conversation checkpoint.
+	if s.checkpoint != nil {
+		if cp, err := s.checkpoint.Load(ctx, sessionID); err == nil && cp != nil {
+			run.Spec.PriorRunRef = cp.LastRunRef
+		}
+	}
+}
+
+// updateSessionCheckpoint advances the session's LastRunRef to the new run name
+// so the next ACP turn in the same session chains to it.
+func (s *ACPServer) updateSessionCheckpoint(ctx context.Context, sessionID, runName string) {
+	if sessionID == "" || s.checkpoint == nil {
+		return
+	}
+	cp, _ := s.checkpoint.Load(ctx, sessionID)
+	if cp == nil {
+		cp = &agentorcav1alpha1.Checkpoint{SessionID: sessionID}
+	}
+	cp.LastRunRef = runName
+	cp.Version++
+	if _, err := s.checkpoint.Save(ctx, cp); err != nil {
+		slog.Warn("failed to update ACP session checkpoint", "session", sessionID, "run", runName, "err", err)
 	}
 }
 
@@ -768,6 +846,9 @@ func (s *ACPServer) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 	if sessionID != "" {
 		run.Labels["agentorca.io/session-id"] = sessionID
 	}
+	// Enable warm-pod claiming + context chaining via the deployment that owns
+	// this agent. Falls back to one-shot pod path if no deployment exists.
+	s.enrichACPRunForWarmPods(r.Context(), run, req.AgentName, sessionID)
 
 	if err := s.crdClient.Create(r.Context(), run); err != nil {
 		slog.Error("creating ACP run", "err", err)
@@ -776,6 +857,9 @@ func (s *ACPServer) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slog.Info("ACP run created", "run", run.Name, "agent", req.AgentName, "tenant", tenant.TenantName)
+
+	// Advance the session checkpoint so the next ACP turn chains context.
+	s.updateSessionCheckpoint(r.Context(), sessionID, run.Name)
 
 	// Return ACP run object with RFC3339 timestamp per spec
 	resp := ACPRun{
@@ -980,14 +1064,27 @@ func (s *ACPServer) handleListRunEvents(w http.ResponseWriter, r *http.Request, 
 			},
 		})
 	} else if run.Status.Phase == agentorcav1alpha1.AgentRunPhaseWaitingForInput {
+		awaitingRun := ACPRun{
+			AgentName: run.Spec.AgentRef,
+			RunID:     run.Name,
+			Status:    ACPRunAwaiting,
+			CreatedAt: run.CreationTimestamp.Format(time.RFC3339),
+			AwaitRequest: &ACPAwaitRequest{
+				Question: run.Status.ClarifyQuestion,
+			},
+		}
+		if run.Status.ClarifyQuestion != "" {
+			awaitingRun.Output = []ACPMessage{{
+				Role: "agent",
+				Parts: []ACPMessagePart{{
+					ContentType: "text/plain",
+					Content:     run.Status.ClarifyQuestion,
+				}},
+			}}
+		}
 		events = append(events, ACPRunAwaitingEvent{
 			Type: "run.awaiting",
-			Run: ACPRun{
-				AgentName: run.Spec.AgentRef,
-				RunID:     run.Name,
-				Status:    ACPRunAwaiting,
-				CreatedAt: run.CreationTimestamp.Format(time.RFC3339),
-			},
+			Run:  awaitingRun,
 		})
 	}
 
@@ -1080,7 +1177,18 @@ func (s *ACPServer) getACPRun(w http.ResponseWriter, r *http.Request, run *agent
 
 	if run.Status.Phase == agentorcav1alpha1.AgentRunPhaseWaitingForInput {
 		resp.Status = ACPRunAwaiting
-		resp.AwaitRequest = &ACPAwaitRequest{}
+		resp.AwaitRequest = &ACPAwaitRequest{Question: run.Status.ClarifyQuestion}
+		// Surface the clarification question as agent output so clients/bridges
+		// can display it without a separate tool call.
+		if run.Status.ClarifyQuestion != "" {
+			resp.Output = []ACPMessage{{
+				Role: "agent",
+				Parts: []ACPMessagePart{{
+					ContentType: "text/plain",
+					Content:     run.Status.ClarifyQuestion,
+				}},
+			}}
+		}
 	}
 
 	jsonResponse(w, resp)
@@ -1177,6 +1285,18 @@ func (s *ACPServer) streamACPRun(w http.ResponseWriter, r *http.Request, run *ag
 			}
 		}
 
+		// Surface the clarification question as output for awaiting runs so the
+		// client can display it even when consuming the SSE stream.
+		if run.Status.Phase == agentorcav1alpha1.AgentRunPhaseWaitingForInput && run.Status.ClarifyQuestion != "" {
+			acpRun.Output = []ACPMessage{{
+				Role: "agent",
+				Parts: []ACPMessagePart{{
+					ContentType: "text/plain",
+					Content:     run.Status.ClarifyQuestion,
+				}},
+			}}
+		}
+
 		_, _ = fmt.Fprintf(w, "event: message.completed\ndata: %s\n\n", mustJSON(ACPMessageCompletedEvent{Type: "message.completed", Message: msg}))
 		flusher.Flush()
 
@@ -1185,12 +1305,20 @@ func (s *ACPServer) streamACPRun(w http.ResponseWriter, r *http.Request, run *ag
 			_, _ = fmt.Fprintf(w, "event: run.completed\ndata: %s\n\n", mustJSON(ACPRunCompletedEvent{Type: "run.completed", Run: acpRun}))
 		case ACPRunFailed:
 			_, _ = fmt.Fprintf(w, "event: run.failed\ndata: %s\n\n", mustJSON(ACPRunFailedEvent{Type: "run.failed", Run: acpRun}))
+		case ACPRunAwaiting:
+			_, _ = fmt.Fprintf(w, "event: run.awaiting\ndata: %s\n\n", mustJSON(ACPRunAwaitingEvent{Type: "run.awaiting", Run: acpRun}))
 		}
 		flusher.Flush()
 	}
 }
 
-// resumeACPRun handles POST /runs/{run_id} to resume a waiting run.
+// resumeACPRun handles POST /runs/{run_id} to resume a waiting run. Instead of
+// mutating the original run in place (which doesn't work for warm pods — the
+// model-router only checks for a clarify answer at startup, not while running),
+// it creates a CONTINUATION AgentRun that picks up the prior run's checkpoint via
+// PriorRunRef. The continuation run claims its own warm pod, and its model-router
+// injects the human's answer at startup. The original run is marked Succeeded so
+// the bridge can follow the continuation.
 func (s *ACPServer) resumeACPRun(w http.ResponseWriter, r *http.Request, run *agentorcav1alpha1.AgentRun) {
 	if r.Method != http.MethodPost {
 		writeACPError(w, "invalid_input", "POST required", http.StatusMethodNotAllowed)
@@ -1223,29 +1351,69 @@ func (s *ACPServer) resumeACPRun(w http.ResponseWriter, r *http.Request, run *ag
 		return
 	}
 
-	// Store the answer
-	namespace := run.Namespace
-	answerKey := fmt.Sprintf("answer:%s:%s", namespace, run.Name)
+	// Build continuation input. If the model-router checkpointed the prior run,
+	// the continuation's model-router will load it via PriorRunRef and inject the
+	// answer at startup. If no checkpoint exists (controller safety-net path),
+	// bake the Q&A into the input so the continuation has full context.
+	continuationInput := run.Spec.Input
 	if s.store != nil {
-		if err := s.store.SaveAnswer(r.Context(), answerKey, req.AwaitResume.Answer, 24*time.Hour); err != nil {
-			slog.Warn("failed to save ACP answer", "run", run.Name, "err", err)
+		checkpointKey := fmt.Sprintf("agentorca/runs/%s/state", run.Name)
+		if msgs, lerr := s.store.LoadMessages(r.Context(), checkpointKey); lerr != nil || len(msgs) == 0 {
+			continuationInput = fmt.Sprintf(
+				"%s\n\n---\nPrevious attempt asked: %s\nHuman answered: %s\n---\nPlease proceed with the above information.", //nolint:lll
+				run.Spec.Input, run.Status.ClarifyQuestion, req.AwaitResume.Answer)
 		}
 	}
 
-	// Update run status
-	patch := client.MergeFrom(run.DeepCopy())
-	run.Status.ClarifyAnswer = req.AwaitResume.Answer
-	if err := s.crdClient.Status().Patch(r.Context(), run, patch); err != nil {
-		writeACPError(w, "server_error", fmt.Sprintf("updating run: %s", err), http.StatusInternalServerError)
+	// Create a continuation AgentRun that loads the original's checkpoint via
+	// PriorRunRef. Inherit the original's labels (deployment, session, source) so
+	// the controller claims a warm pod for it.
+	continuation := &agentorcav1alpha1.AgentRun{
+		ObjectMeta: metav1.ObjectMeta{
+			GenerateName: run.Name + "-cont-",
+			Namespace:    run.Namespace,
+			Labels:       run.Labels, // shallow copy — inherits deployment/session/source
+		},
+		Spec: agentorcav1alpha1.AgentRunSpec{
+			AgentRef:    run.Spec.AgentRef,
+			Input:       continuationInput,
+			PriorRunRef: run.Name,
+		},
+	}
+	if err := s.crdClient.Create(r.Context(), continuation); err != nil {
+		writeACPError(w, "server_error", fmt.Sprintf("creating continuation run: %s", err), http.StatusInternalServerError)
 		return
 	}
 
+	// Store the answer under the CONTINUATION run's name so its model-router
+	// (which starts fresh) finds it during initialization / ClaimRun.
+	if s.store != nil {
+		answerKey := fmt.Sprintf("clarify-answer:%s:%s", run.Namespace, continuation.Name)
+		if err := s.store.SaveAnswer(r.Context(), answerKey, req.AwaitResume.Answer, 1*time.Hour); err != nil {
+			slog.Warn("failed to save ACP clarify answer", "run", continuation.Name, "err", err)
+		}
+	}
+
+	// Mark the original run as Succeeded with a forward pointer to the continuation.
+	origPatch := client.MergeFrom(run.DeepCopy())
+	run.Status.Phase = agentorcav1alpha1.AgentRunPhaseSucceeded
+	run.Status.ClarifyAnswer = req.AwaitResume.Answer
+	run.Status.ContinuationRunRef = continuation.Name
+	_ = s.crdClient.Status().Patch(r.Context(), run, origPatch)
+
+	// Advance the session checkpoint so the next turn chains to the continuation.
+	sessionID := run.Labels["agentorca.io/session"]
+	s.updateSessionCheckpoint(r.Context(), sessionID, continuation.Name)
+
+	slog.Info("ACP run resumed via continuation", "original", run.Name, "continuation", continuation.Name)
+
 	resp := ACPRun{
-		AgentName: run.Spec.AgentRef,
-		SessionID: run.Labels["agentorca.io/session-id"],
-		RunID:     run.Name,
-		Status:    ACPRunInProgress,
-		CreatedAt: run.CreationTimestamp.Format(time.RFC3339),
+		AgentName:          run.Spec.AgentRef,
+		SessionID:          sessionID,
+		RunID:              continuation.Name,
+		Status:             ACPRunInProgress,
+		ContinuationRunRef: continuation.Name,
+		CreatedAt:          continuation.CreationTimestamp.Format(time.RFC3339),
 	}
 	jsonResponse(w, resp)
 }

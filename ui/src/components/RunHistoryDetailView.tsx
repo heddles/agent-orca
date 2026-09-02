@@ -4,17 +4,23 @@
  * Mirrors the visual language of RunView (header stat chips → OutputCard →
  * input section → RouterAccordion) but with NO streaming, no stop button, and
  * data sourced from PostgreSQL via getRunHistoryDetail. Tabs (Details | Output |
- * Routing) give progressive disclosure (better-layout §5).
+ * Model Router | Execution Trace) give progressive disclosure (better-layout §5).
+ *
+ * The Execution Trace tab renders the full trace with TraceAccordion — same as
+ * the live runs tab — when the run's Redis token stream was captured at archival
+ * time (traceEntries field). For older archives without an archived trace, it
+ * falls back to the metadata-based ExecutionTrace timeline.
  *
  * Tabs are keyboard-navigable (better-accessibility §3), numerics use
  * tabular-nums (better-typography §11), and status chips carry redundant
  * icon+color cues (better-accessibility §9).
  */
 import { useEffect, useState } from 'react'
-import { getRunHistoryDetail, type RunHistoryDetail } from '../api/sse'
+import { getRunHistoryDetail, type RunHistoryDetail, type TraceEntry } from '../api/sse'
 import { OutputCard } from './OutputCard'
 import { RouterAccordion } from './RouterAccordion'
 import { StatusBadge } from './StatusBadge'
+import { TraceAccordion } from './TraceAccordion'
 import { DESIGN } from '../lib/designSystem'
 import { Icon, ICON } from '../lib/icons'
 
@@ -34,6 +40,7 @@ export function RunHistoryDetailView({ runId, namespace = 'default', onBack, onN
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [tab, setTab] = useState<DetailTab>('details')
+  const [markdown, setMarkdown] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -83,9 +90,14 @@ export function RunHistoryDetailView({ runId, namespace = 'default', onBack, onN
   const ctxColor = ctxPct > 85 ? 'var(--ds-error)' : ctxPct > 65 ? 'var(--ds-warning)' : 'var(--ds-success)'
   const hasOutput = Boolean(detail.output)
   const hasRouting = (detail.routingDecisions?.length ?? 0) > 0
-  // There's something to show in the Execution Trace tab if the run recorded
-  // routing decisions, child runs, context usage, or restarts.
+  // Full trace events are available when the run was archived while the Redis
+  // token stream was still live (within 24h of completion).
+  const hasFullTrace = (detail.traceEntries?.length ?? 0) > 0
+  // Show the Execution Trace tab when full trace events are available, or when
+  // enough metadata exists to reconstruct a summary timeline (routing decisions,
+  // child runs, restarts, context usage).
   const hasTrace =
+    hasFullTrace ||
     hasRouting ||
     (detail.childRunRefs?.length ?? 0) > 0 ||
     (detail.maxContextTokens ?? 0) > 0 ||
@@ -121,6 +133,17 @@ export function RunHistoryDetailView({ runId, namespace = 'default', onBack, onN
         )}
         {detail.resolvedModel && <Chip icon={ICON.modelprovider} label={detail.resolvedModel} title="Resolved model" />}
         {detail.restartCount > 0 && <Chip icon={ICON.retry} label={`${detail.restartCount} restarts`} title="Restart count" />}
+        {hasFullTrace && (
+          <label style={dv.mdToggle}>
+            <input
+              type="checkbox"
+              checked={markdown}
+              onChange={(e: { target: { checked: boolean } }) => setMarkdown(e.target.checked)}
+              style={{ accentColor: '#3b82f6', cursor: 'pointer', margin: 0 }}
+            />
+            <span style={dv.mdLabel}>Markdown</span>
+          </label>
+        )}
       </div>
 
       {/* Detail meta — cost/context/tools/mcps (better-layout §2 grouping) */}
@@ -170,7 +193,7 @@ export function RunHistoryDetailView({ runId, namespace = 'default', onBack, onN
       {(tab === 'output' || tab === 'details') && hasOutput && (
         <div style={dv.panel} role="region" aria-label="Output">
           <div style={dv.sectionLabel}>Final output</div>
-          <OutputCard output={detail.output} markdown={false} streaming={false} />
+          <OutputCard output={detail.output} markdown={markdown} streaming={false} />
         </div>
       )}
 
@@ -185,13 +208,18 @@ export function RunHistoryDetailView({ runId, namespace = 'default', onBack, onN
         </div>
       )}
 
-      {/* Execution Trace — a chronological reconstruction of everything recorded
-          about this archived run (routing decisions, child runs, milestones).
-          The full token/tool SSE stream is not archived; this assembles the
-          durable trace from the fields the archive stores. */}
+      {/* Execution Trace — when the run's Redis token stream was archived, show
+          the full trace (tokens, tool calls, tool results, etc.) with the same
+          TraceAccordion component used by the live runs tab. For runs without an
+          archived trace (older archives, expired streams), fall back to the
+          metadata-based ExecutionTrace timeline. */}
       {tab === 'trace' && (
         <div style={dv.panel} role="region" aria-label="Execution Trace">
-          <ExecutionTrace detail={detail} />
+          {hasFullTrace ? (
+            <TraceAccordion entries={detail.traceEntries!} streaming={false} markdown={markdown} />
+          ) : (
+            <ExecutionTrace detail={detail} />
+          )}
         </div>
       )}
 
@@ -420,6 +448,14 @@ const dv: Record<string, React.CSSProperties> = {
     fontWeight: 500,
     fontVariantNumeric: 'tabular-nums',
   },
+  mdToggle: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+    cursor: 'pointer',
+    fontSize: 12,
+  },
+  mdLabel: { color: 'var(--ds-text-secondary)', fontWeight: 500, userSelect: 'none' },
   metaGrid: {
     display: 'grid',
     gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',

@@ -143,6 +143,9 @@ func (f *fakeStore) LoadSpend(_ context.Context, _ string) (float64, error) { re
 func (f *fakeStore) SaveTraceEvent(_ context.Context, _ string, _ string) error {
 	return nil
 }
+func (f *fakeStore) ReadTraceEvents(_ context.Context, _ string) ([]state.TraceEntry, error) {
+	return nil, nil
+}
 func (f *fakeStore) SaveAnswer(_ context.Context, _ string, _ string, _ time.Duration) error {
 	return nil
 }

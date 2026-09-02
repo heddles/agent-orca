@@ -22,6 +22,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/floppyfish14/agent-orca/internal/mcp"
 	"github.com/floppyfish14/agent-orca/internal/state"
 )
 
@@ -211,8 +212,23 @@ type MCPServerConfig struct {
 	// AuthHeaderFiles maps HTTP header names to file paths containing secret values.
 	// Used for HTTP/SSE transport authentication.
 	AuthHeaderFiles []AuthHeaderFile `json:"authHeaderFiles,omitempty"`
+	// OAuth, when set, makes the model-router perform the OAuth 2.0 exchange itself
+	// (in-memory bearer) instead of a static authHeaderFile. Used for OAuth-only MCP
+	// servers (e.g. Slack); no access-token Secret is mounted — only the credentials
+	// Secret (see MCPOAuthConfig on the MCPServer CRD).
+	OAuth *mcp.OAuthConfig `json:"oauth,omitempty"`
 	// AllowApps enables MCP App iframe rendering for tools from this server.
 	AllowApps bool `json:"allowApps,omitempty"`
+	// IncludePatterns is a list of glob patterns used to filter the tools the
+	// model-router discovers at runtime (mirrors MCPServer.spec.includePatterns).
+	// When non-empty, only discovered tools whose name matches at least one pattern
+	// are exposed to the LLM. Empty means "all discovered tools" (no filtering).
+	// +optional
+	IncludePatterns []string `json:"includePatterns,omitempty"`
+	// ExcludePatterns hides discovered tools matching any glob, even if they
+	// matched IncludePatterns (mirrors MCPServer.spec.excludePatterns).
+	// +optional
+	ExcludePatterns []string `json:"excludePatterns,omitempty"`
 }
 
 // EnvFileMapping maps an environment variable name to a file containing its secret value.
@@ -430,8 +446,14 @@ func ConfigFromEnv() (*Config, error) {
 	if cfg.ContextWindowReserve <= 0 || cfg.ContextWindowReserve >= 1.0 {
 		cfg.ContextWindowReserve = 0.20
 	}
+	// MaxToolResultTokens caps the size of any single tool result before it enters
+	// conversation history. The operator always sets a context-window-aware value in
+	// the router config (see AgentDeployment.buildDeploymentRouterConfig →
+	// defaultMaxToolResultTokens); this only applies to standalone/dev runs that build
+	// a config without the operator. Kept well above the old 4000 (16k chars) floor so
+	// large MCP/file/commit-patch reads aren't silently truncated.
 	if cfg.MaxToolResultTokens <= 0 {
-		cfg.MaxToolResultTokens = 4000
+		cfg.MaxToolResultTokens = 16000
 	}
 	if cfg.LLMRequestTimeout <= 0 {
 		// Default to 1h — provider chat/completion calls (especially for long

@@ -28,6 +28,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -53,6 +54,7 @@ import (
 
 	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
 	"github.com/floppyfish14/agent-orca/internal/egress"
+	"github.com/floppyfish14/agent-orca/internal/mcp"
 	"github.com/floppyfish14/agent-orca/internal/podbuilder"
 	"github.com/floppyfish14/agent-orca/internal/postgresql"
 	"github.com/floppyfish14/agent-orca/internal/router"
@@ -389,15 +391,26 @@ func (r *AgentRunReconciler) checkProgress(ctx context.Context, run *agentorcav1
 		httpOut, err := r.StateStore.LoadHTTPOutput(ctx, run.Name)
 		if err == nil && httpOut != "" {
 			result, err := r.handlePodSuccess(ctx, run, &pod)
-			// Only destroy ONE-SHOT pods here so they don't linger as Running.
-			// WARM pods must be left alive: ensureCleanup -> reconcileRunPodOnTerminal
-			// (run on the terminal reconcile) returns them to the idle pool so they
-			// survive across chat turns and long-trajectory tasks. Deleting warm
-			// pods here — as the old unconditional delete did — defeated reuse and
-			// could murder an in-progress session, since the pod is removed before
-			// the return-to-idle logic ever runs.
-			if err == nil && shouldDeletePodOnCompletion(&pod) {
-				_ = r.Delete(ctx, &pod)
+			// One-shot pods (no warm-pool label) are torn down here so they don't linger
+			// as Running. WARM (http/chat) pods are kept alive AND returned to the idle
+			// pool in THIS reconcile — the same reconcile that just observed the completed
+			// output — so the next chat turn claims it (preserving context) instead of
+			// spawning a fresh pod during the deferred terminal reconcile. Previously the
+			// return-to-idle was deferred to ensureCleanup, leaving the pod `claimed` in
+			// the window where claimWarmPod (idle-only) found nothing and built a new pod.
+			// reconcileRunPodOnTerminal is idempotent, so ensureCleanup calling it again
+			// on the terminal reconcile is a harmless no-op.
+			if err == nil {
+				if shouldDeletePodOnCompletion(&pod) {
+					_ = r.Delete(ctx, &pod)
+				} else if isTerminal(run.Status.Phase) {
+					// Warm pod + terminal run: return to idle now so the next chat turn
+					// reuses it (preserving context). Only when the run actually
+					// terminated — a WaitingForInput/clarify run is kept `claimed` so it
+					// can be resumed in place; reconcileRunPodOnTerminal (idempotent) is
+					// also re-run by ensureCleanup on the terminal reconcile.
+					r.reconcileRunPodOnTerminal(ctx, run)
+				}
 			}
 			return result, err
 		}
@@ -436,20 +449,28 @@ func (r *AgentRunReconciler) handlePodSuccess(ctx context.Context, run *agentorc
 		}
 	}
 
-	// Collect stdout from the agent container.
-	logs, err := r.K8s.CoreV1().Pods(run.Namespace).GetLogs(pod.Name, &corev1.PodLogOptions{
-		Container: "agent",
-	}).DoRaw(ctx)
-	if err != nil {
-		logs = []byte("(log collection failed)")
-	}
-
-	output := string(logs)
-	if run.Status.InputMode == "http" {
-		if httpOut, err := r.StateStore.LoadHTTPOutput(ctx, run.Name); err == nil && httpOut != "" {
+	// Collect the run's output. For http/chat runs the model-router has already
+	// captured the agent's streamed response via RunHTTPInput and saved it as HTTP
+	// output, which is the canonical result — so prefer that and avoid a pointless
+	// (and slow/unsupported by fake clientsets) GetLogs call. Fall back to the
+	// agent container stdout only when there is no http output (e.g. one-shot pods
+	// that terminate with stdout as their only signal).
+	output := ""
+	if run.Status.InputMode == "http" && r.StateStore != nil {
+		if httpOut, lerr := r.StateStore.LoadHTTPOutput(ctx, run.Name); lerr == nil && httpOut != "" {
 			output = httpOut
 		}
 	}
+	if output == "" {
+		logs, err := r.K8s.CoreV1().Pods(run.Namespace).GetLogs(pod.Name, &corev1.PodLogOptions{
+			Container: "agent",
+		}).DoRaw(ctx)
+		if err != nil {
+			logs = []byte("(log collection failed)")
+		}
+		output = string(logs)
+	}
+
 	raw := truncate(output, 4096)
 	finalOutput := truncate(output, 10240)
 
@@ -683,7 +704,7 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 		}
 		var tool agentorcav1alpha1.Tool
 		if err := r.Get(ctx, client.ObjectKey{Name: toolName, Namespace: run.Namespace}, &tool); err != nil {
-			return nil, nil, false, fmt.Errorf("getting Tool %q: %w", toolName, err)
+			return nil, nil, false, annotatedToolError(ctx, r.Client, run.Namespace, toolName, err)
 		}
 
 		var params json.RawMessage
@@ -721,6 +742,8 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 					var mcpServer agentorcav1alpha1.MCPServer
 					if err := r.Get(ctx, client.ObjectKey{Name: serverName, Namespace: run.Namespace}, &mcpServer); err == nil {
 						mcpCfg.AllowApps = mcpServer.Spec.AllowApps
+						mcpCfg.IncludePatterns = mcpServer.Spec.IncludePatterns
+						mcpCfg.ExcludePatterns = mcpServer.Spec.ExcludePatterns
 					}
 				}
 				args := tool.Spec.MCPConfig.Args
@@ -788,6 +811,13 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 							HeaderName: h.Name,
 							FilePath:   podbuilder.ToolSecretFilePath(toolName, ref.Name, ref.Key),
 						})
+					}
+				}
+				if tool.Spec.MCPConfig.Auth != nil && tool.Spec.MCPConfig.Auth.OAuth != nil {
+					o := tool.Spec.MCPConfig.Auth.OAuth
+					mcpCfg.OAuth = &mcp.OAuthConfig{
+						CredentialsDir: podbuilder.OAuthCredsMountDir(toolName, o.Credentials.Name),
+						Scopes:         o.Scopes,
 					}
 				}
 				mcpServers = append(mcpServers, mcpCfg)
@@ -859,6 +889,13 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 		Name:        "_done",
 		Description: "Signal successful task completion with a structured result. Use this when the task is fully complete and you have a final answer or output to return. The run will transition to Succeeded and no further LLM calls will be made.",
 		Parameters:  []byte(`{"type":"object","properties":{"output":{"type":"string","description":"The final output or result of the task"},"summary":{"type":"string","description":"A brief human-readable summary of what was accomplished"}},"required":["output"]}`),
+		BackendType: "builtin",
+	})
+
+	toolDefs = append(toolDefs, router.ToolDefinition{
+		Name:        "_webhook_notify",
+		Description: "Post a message to Slack via an incoming webhook (WEBHOOK_URL). Use to notify a team channel with task results. Returns the Slack API response.",
+		Parameters:  []byte(`{"type":"object","properties":{"text":{"type":"string","description":"The message text to post to Slack."},"channel":{"type":"string","description":"Optional channel/@user override instead of the webhook's default channel"}},"required":["text"]}`),
 		BackendType: "builtin",
 	})
 	toolDefs = append(toolDefs, router.ToolDefinition{
@@ -1613,9 +1650,10 @@ func (r *AgentRunReconciler) ensureCleanup(ctx context.Context, run *agentorcav1
 	// (keyed by namespace/name), so this is a cheap no-op for runs already
 	// archived and a durable back-fill for the ones that were lost.
 	if r.PostgresStore != nil && postgresql.IsTerminalPhase(run.Status.Phase) {
-		archiveCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		archiveCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
-		if err := r.PostgresStore.ArchiveRun(archiveCtx, run); err != nil {
+		traceJSON := r.loadTraceEventsForArchive(archiveCtx, run)
+		if err := r.PostgresStore.ArchiveRun(archiveCtx, run, traceJSON); err != nil {
 			logger := log.FromContext(ctx)
 			logger.Error(err, "failed to re-archive terminal run on restart", "run", run.Name, "ns", run.Namespace)
 		}
@@ -1754,18 +1792,117 @@ func (r *AgentRunReconciler) failRun(ctx context.Context, run *agentorcav1alpha1
 // maybeArchiveRun snapshots a terminal-phase AgentRun to PostgreSQL if the
 // archival store is configured. Uses a non-blocking goroutine so DB latency
 // never delays reconciliation. Re-archiving is idempotent (UPSERT by name).
+// The run's Redis token stream is read at archival time so the full execution
+// trace (tokens, tool calls, tool results, etc.) is durable in PostgreSQL and
+// viewable from the history tab even after the Redis stream expires.
 func (r *AgentRunReconciler) maybeArchiveRun(ctx context.Context, run *agentorcav1alpha1.AgentRun) {
 	if r.PostgresStore == nil || !postgresql.IsTerminalPhase(run.Status.Phase) {
 		return
 	}
-	// Snapshot the run as-is (spec + status) into PostgreSQL.
 	go func() {
-		archiveCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		archiveCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		if err := r.PostgresStore.ArchiveRun(archiveCtx, run); err != nil {
+		traceJSON := r.loadTraceEventsForArchive(archiveCtx, run)
+		if err := r.PostgresStore.ArchiveRun(archiveCtx, run, traceJSON); err != nil {
 			log.Log.Error(err, "failed to archive run to PostgreSQL", "run", run.Name, "ns", run.Namespace)
 		}
 	}()
+}
+
+// loadTraceEventsForArchive reads the run's trace events from the Redis token
+// stream (including child-run streams) and synthesises modelSelected/finalOutput
+// events from the run status, producing a JSON array ready for archival.
+// Returns nil when the state store is unavailable so the caller stores NULL
+// in the trace_events column (preserving any previously archived trace on
+// idempotent re-upserts).
+func (r *AgentRunReconciler) loadTraceEventsForArchive(ctx context.Context, run *agentorcav1alpha1.AgentRun) []byte {
+	if r.StateStore == nil {
+		return nil
+	}
+
+	var entries []state.TraceEntry
+
+	// Read the parent run's trace events from its Redis token stream.
+	streamKey := "tokens:" + run.Namespace + ":" + run.Name
+	parentEvents, err := r.StateStore.ReadTraceEvents(ctx, streamKey)
+	if err != nil {
+		log.Log.Error(err, "failed to read trace events for archival", "run", run.Name, "ns", run.Namespace)
+		return nil
+	}
+	entries = parentEvents
+
+	// Read each child run's trace events (agent-as-tool), tagging them so the
+	// UI can distinguish the child's activity (mirrors RunView's child-stream
+	// subscription behaviour).
+	for _, childName := range run.Status.ChildRunRefs {
+		childKey := "tokens:" + run.Namespace + ":" + childName
+		childEvents, err := r.StateStore.ReadTraceEvents(ctx, childKey)
+		if err != nil {
+			continue
+		}
+		for i := range childEvents {
+			childEvents[i].ChildRunName = childName
+		}
+		entries = append(entries, childEvents...)
+	}
+
+	// Synthesise modelSelected events from the run's routing decisions. The
+	// model-router emits these as SSE events at stream time (the stream handler
+	// itself constructs them from the CRD), but they are NOT written to the
+	// Redis token stream — so we reconstruct them here for archival parity.
+	for _, rd := range run.Status.RoutingDecisions {
+		if strings.HasPrefix(rd.Reason, "configured provider") {
+			continue
+		}
+		conf := 0.0
+		_, _ = fmt.Sscanf(rd.Confidence, "%f", &conf)
+		eventJSON, _ := json.Marshal(map[string]any{
+			"type":       "modelSelected",
+			"model":      rd.Model,
+			"reason":     fmt.Sprintf("[%s] %s — %s", rd.Strategy, rd.Provider, rd.Reason),
+			"confidence": conf,
+		})
+		ts := ""
+		if rd.Timestamp != nil {
+			ts = rd.Timestamp.UTC().Format(time.RFC3339)
+		}
+		entries = append(entries, state.TraceEntry{
+			Event: json.RawMessage(eventJSON),
+			TS:    ts,
+		})
+	}
+
+	// The run's full output is already captured in the last consolidated token
+	// burst (or available via detail.output / the Output tab), so we deliberately
+	// do NOT synthesise a redundant finalOutput event here — doing so would
+	// duplicate the output text in the archive, inflating storage.
+
+	if len(entries) == 0 {
+		return nil
+	}
+
+	// Stable sort by timestamp so events appear in chronological order even
+	// when parent + child streams are merged. Timeless entries sink to the end.
+	sort.SliceStable(entries, func(i, j int) bool {
+		if entries[i].TS == "" && entries[j].TS == "" {
+			return false
+		}
+		if entries[i].TS == "" {
+			return false
+		}
+		if entries[j].TS == "" {
+			return true
+		}
+		return entries[i].TS < entries[j].TS
+	})
+
+	// Re-assign sequential IDs after merging/sorting.
+	for i := range entries {
+		entries[i].ID = i
+	}
+
+	traceJSON, _ := json.Marshal(entries)
+	return traceJSON
 }
 
 // fireCallback sends an HTTP POST to the configured callback URL when an AgentRun
@@ -2030,6 +2167,14 @@ func (r *AgentRunReconciler) claimWarmPod(ctx context.Context, run *agentorcav1a
 		return "", nil
 	}
 
+	// Before deciding no pod is available, release any stale-claimed pods left behind
+	// by a prior run that already reached a terminal phase. Without this, a new chat
+	// turn arriving in the window between a run's completion and its deferred
+	// terminal reconcile finds no idle pod and spawns a fresh one — orphaning the
+	// prior pod and losing chat context. (reconcileRunPodOnTerminal in checkProgress
+	// normally idles the pod promptly; this is the safety net for the race.)
+	r.reclaimStaleClaimedWarmPods(ctx, run.Namespace, deployName)
+
 	// Find an idle warm pod for this deployment.
 	var pods corev1.PodList
 	if err := r.List(ctx, &pods,
@@ -2121,6 +2266,54 @@ func (r *AgentRunReconciler) claimWarmPod(ctx context.Context, run *agentorcav1a
 	}
 
 	return "", nil
+}
+
+// reclaimStaleClaimedWarmPods returns to idle any warm pod still labeled `claimed`
+// whose bound run (agentorca.io/run) has already reached a terminal phase. These are
+// pods whose terminal reconcile hasn't idled them yet (or that were racing a new turn).
+// Releasing them here lets claimWarmPod's normal idle path reuse them — preserving
+// chat context — instead of forcing a brand-new pod.
+//
+// SafeLabelValue is a no-op for run names <= 63 chars (the common case), so the AgentRun
+// lookup by the label value succeeds then; longer hashed labels are skipped (harmless —
+// the prompt release in checkProgress still covers sequential turns). Only pods whose
+// prior run is genuinely terminal are touched, so an in-flight claimed pod is never stolen.
+func (r *AgentRunReconciler) reclaimStaleClaimedWarmPods(ctx context.Context, ns, deployName string) {
+	var pods corev1.PodList
+	if err := r.List(ctx, &pods,
+		client.InNamespace(ns),
+		client.MatchingLabels{labelWarmPool: deployName, labelWarmStatus: warmStatusClaimed},
+	); err != nil {
+		return
+	}
+	logger := log.FromContext(ctx)
+	for i := range pods.Items {
+		p := &pods.Items[i]
+		if p.DeletionTimestamp != nil {
+			continue
+		}
+		runName := p.Labels["agentorca.io/run"]
+		if runName == "" {
+			continue
+		}
+		var ar agentorcav1alpha1.AgentRun
+		if err := r.Get(ctx, client.ObjectKey{Namespace: ns, Name: runName}, &ar); err != nil {
+			continue
+		}
+		if !isTerminal(ar.Status.Phase) {
+			continue
+		}
+		patch := client.MergeFrom(p.DeepCopy())
+		p.Labels[labelWarmStatus] = warmStatusIdle
+		delete(p.Labels, "agentorca.io/run")
+		if err := r.Patch(ctx, p, patch); err != nil {
+			logger.Error(err, "failed to reclaim stale-claimed warm pod to idle",
+				"pod", p.Name, "priorRun", runName)
+			continue
+		}
+		logger.Info("reclaimed stale-claimed warm pod to idle (prior run terminal)",
+			"pod", p.Name, "priorRun", runName, "phase", ar.Status.Phase)
+	}
 }
 
 // findClaimedWarmPod returns the name of a warm pod that has already bound this run

@@ -53,15 +53,18 @@ export function TraceAccordion({ entries, streaming, markdown }: Props) {
   const [loadingQuip, setLoadingQuip] = useState(() => LOADING_QUIPS[Math.floor(Math.random() * LOADING_QUIPS.length)])
   // Show quips for at least QUIP_MIN_DURATION after mount, so users get the full
   // experience even if trace events arrive instantly on reconnect / old runs.
-  const [minLoading, setMinLoading] = useState(true)
+  // Only applies when streaming — non-streaming (historical) traces show the
+  // empty state immediately instead of pausing for 60s on a quip.
+  const [minLoading, setMinLoading] = useState(streaming ?? false)
 
   const inEmpty = entries.length === 0 && (streaming || minLoading)
 
-  // One-shot: stop showing quips after the minimum duration.
+  // One-shot: stop showing quips after the minimum duration (streaming only).
   useEffect(() => {
+    if (!streaming) return
     const t = setTimeout(() => setMinLoading(false), QUIP_MIN_DURATION)
     return () => clearTimeout(t)
-  }, [])
+  }, [streaming])
 
   // Cycle quips every 10s while the empty/loading message is shown.
   useEffect(() => {

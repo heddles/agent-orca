@@ -22,7 +22,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strconv"
 	"sync"
+	"sync/atomic"
 )
 
 // This file implements the ACP JSON-RPC 2.0 transport over stdio.
@@ -71,7 +73,9 @@ type acpRequestHandler interface {
 
 // acpStdioServer is the ACP-over-stdio transport. It reads JSON-RPC requests
 // from stdin, hands each to the handler, and serializes all stdout writes (and
-// stderr logging) for thread safety.
+// stderr logging) for thread safety. It also supports agent→client requests
+// (e.g. elicitation/create): when the handler calls SendRequest, the reply is
+// matched by ID on stdin and routed back to the caller.
 type acpStdioServer struct {
 	stdin   io.Reader
 	stdout  io.Writer
@@ -79,10 +83,21 @@ type acpStdioServer struct {
 	mu      sync.Mutex
 	handler acpRequestHandler
 	wg      sync.WaitGroup // tracks in-flight Dispatch goroutines
+
+	// Fields for agent→client request/response correlation.
+	seq       atomic.Int64                   // request id sequence
+	pendingMu sync.Mutex                     // guards pending
+	pending   map[string]chan jsonrpcMessage // requestID → response channel
 }
 
 func newACPStdioServer(handler acpRequestHandler, stdin io.Reader, stdout, stderr io.Writer) *acpStdioServer {
-	return &acpStdioServer{handler: handler, stdin: stdin, stdout: stdout, stderr: stderr}
+	return &acpStdioServer{
+		handler: handler,
+		stdin:   stdin,
+		stdout:  stdout,
+		stderr:  stderr,
+		pending: map[string]chan jsonrpcMessage{},
+	}
 }
 
 // Serve reads newline-delimited JSON-RPC requests until stdin closes (editor
@@ -123,14 +138,29 @@ func (s *acpStdioServer) Serve(ctx context.Context) error {
 		if line == "" {
 			continue
 		}
-		var req jsonrpcRequest
-		if err := json.Unmarshal([]byte(line), &req); err != nil {
+		var msg jsonrpcMessage
+		if err := json.Unmarshal([]byte(line), &msg); err != nil {
 			_, _ = fmt.Fprintln(s.stderr, "acp: decode error:", err)
 			continue
 		}
-		if req.JSONRPC != acpJSONRPCVersion {
+		if msg.JSONRPC != acpJSONRPCVersion {
 			_, _ = fmt.Fprintf(s.stderr, "acp: ignoring non-jsonrpc message: %s\n", line)
 			continue
+		}
+		// If this is a response to a pending agent→client request (has an id,
+		// no method), route it to the waiting caller instead of dispatching.
+		if msg.ID != nil && msg.Method == "" {
+			idStr := string(*msg.ID)
+			if ch := s.takePending(idStr); ch != nil {
+				ch <- msg
+				continue
+			}
+		}
+		req := jsonrpcRequest{
+			JSONRPC: msg.JSONRPC,
+			ID:      msg.ID,
+			Method:  msg.Method,
+			Params:  msg.Params,
 		}
 		s.wg.Add(1)
 		go func(r jsonrpcRequest) {
@@ -180,4 +210,61 @@ func (s *acpStdioServer) notify(method string, params any) { //nolint:unparam //
 
 func (s *acpStdioServer) logf(format string, args ...any) {
 	_, _ = fmt.Fprintf(s.stderr, format, args...)
+}
+
+// takePending atomically removes and returns the response channel registered
+// for the given request id, if any. Used by Serve to route client replies and
+// by SendRequest for cleanup.
+func (s *acpStdioServer) takePending(id string) chan jsonrpcMessage {
+	s.pendingMu.Lock()
+	defer s.pendingMu.Unlock()
+	ch, ok := s.pending[id]
+	if ok {
+		delete(s.pending, id)
+	}
+	return ch
+}
+
+// sendRequest sends an agent→client JSON-RPC request (e.g. elicitation/create)
+// on stdout and blocks until the matching response arrives, the context is
+// cancelled, or the client returns an error. This lets the bridge ask the
+// editor for user input mid-turn.
+func (s *acpStdioServer) sendRequest(ctx context.Context, method string, params any) (*jsonrpcMessage, error) {
+	// Prefix with "elicit_" so the id can never collide with a client→agent
+	// request id (which may be a bare number like "1").
+	id := "elicit_" + strconv.FormatInt(s.seq.Add(1), 10)
+	rawID := json.RawMessage(`"` + id + `"`)
+
+	var rawParams json.RawMessage
+	if params != nil {
+		b, err := json.Marshal(params)
+		if err != nil {
+			return nil, fmt.Errorf("marshalling %s params: %w", method, err)
+		}
+		rawParams = b
+	}
+
+	ch := make(chan jsonrpcMessage, 1)
+	s.pendingMu.Lock()
+	s.pending[string(rawID)] = ch
+	s.pendingMu.Unlock()
+
+	defer s.takePending(string(rawID))
+
+	s.writeMessage(jsonrpcMessage{
+		JSONRPC: acpJSONRPCVersion,
+		ID:      &rawID,
+		Method:  method,
+		Params:  rawParams,
+	})
+
+	select {
+	case resp := <-ch:
+		if resp.Error != nil {
+			return nil, fmt.Errorf("acp: %s request failed: %s (code %d)", method, resp.Error.Message, resp.Error.Code)
+		}
+		return &resp, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }

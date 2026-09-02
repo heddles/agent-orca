@@ -43,6 +43,9 @@ func (f fakeReadyStore) SaveSpend(context.Context, string, float64, time.Duratio
 func (f fakeReadyStore) LoadSpend(context.Context, string) (float64, error)              { return 0, nil }
 func (f fakeReadyStore) SaveToken(context.Context, string, string) error                 { return nil }
 func (f fakeReadyStore) SaveTraceEvent(context.Context, string, string) error            { return nil }
+func (f fakeReadyStore) ReadTraceEvents(context.Context, string) ([]state.TraceEntry, error) {
+	return nil, nil
+}
 func (f fakeReadyStore) TailTokens(context.Context, string) (<-chan string, error) {
 	ch := make(chan string)
 	close(ch)

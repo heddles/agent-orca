@@ -27,10 +27,14 @@ describe('TraceAccordion', () => {
     expect(screen.getByText('1 events')).toBeInTheDocument()
   })
 
-  it('shows empty body when expanded with no entries', async () => {
+  it('shows no-events message immediately when non-streaming and empty (no quip delay)', async () => {
     render(<TraceAccordion entries={[]} />)
     await openAccordion()
-    expect(screen.getByText(/Checking for traces./)).toBeInTheDocument()
+    // Non-streaming mode must not block for QUIP_MIN_DURATION — the empty
+    // state surfaces immediately so historical (archived) runs don't hang.
+    expect(screen.getByText(/No trace events yet/)).toBeInTheDocument()
+    expect(screen.queryByText(/Checking for traces/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Retrieving events/)).not.toBeInTheDocument()
   })
 
   it('shows retrieving events with a quip when streaming and empty', async () => {

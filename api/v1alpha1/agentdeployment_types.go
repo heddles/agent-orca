@@ -17,6 +17,7 @@ limitations under the License.
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -100,6 +101,28 @@ type AgentDeploymentSpec struct {
 	// +kubebuilder:default=0
 	// +optional
 	ToolExecutionTimeoutSec int `json:"toolExecutionTimeoutSec,omitempty"`
+
+	// MaxToolResultTokens overrides the per-tool-result token cap for this deployment.
+	// 0 (default) = the operator computes a context-window-aware cap (~10% of the
+	// model's ContextWindow, floored at 8000 and capped at 64000 tokens, and never more
+	// than half of MaxRequestTokens so a single result can't by itself blow the
+	// request budget) so large MCP/file/commit-patch results are not silently
+	// truncated. Eyeballed against the loudest offender: router.go is ~153K chars
+	// (~38k tokens) on the 1M-context poolside model — the default 64k cap reads it
+	// in full. Raise further for agents that routinely read very large files, or lower
+	// for spend-thrifty agents.
+	// +optional
+	MaxToolResultTokens int `json:"maxToolResultTokens,omitempty"`
+
+	// Safeguards configures behavioral loop guards (MaxRepeatedToolCalls,
+	// MaxConsecutiveNoopTurns, ToolFrequencyCap, etc.) for runs spawned from this
+	// deployment. Omit to use the operator's conservative defaults; set any field to 0
+	// to keep the default for that field. Fields that are left zero (defaulted) only
+	// trip on genuine stuck loops and do NOT block legitimate repeated tool use
+	// (MaxRepeatedToolCalls keys on identical tool+args, so reading many distinct
+	// files — e.g. a PR review — never trips it). Reuses the AgentRunSafeguards shape.
+	// +optional
+	Safeguards *AgentRunSafeguards `json:"safeguards,omitempty"`
 
 	// Replicas is the desired number of agent pod replicas. Defaults to 1.
 	// +kubebuilder:default=1
@@ -185,6 +208,25 @@ type AgentDeploymentSpec struct {
 	// +kubebuilder:default=256
 	// +optional
 	WarmLocalCacheSizeMi int `json:"warmLocalCacheSizeMi,omitempty"`
+
+	// WebhookNotify configures the optional Slack incoming-webhook integration. When set,
+	// warm pods mount the referenced Secret's webhook URL as WEBHOOK_URL into the
+	// model-router sidecar, which exposes the _webhook_notify builtin tool. The webhook
+	// URL is the credential (no per-user OAuth); it posts to the configured channel.
+	// +optional
+	WebhookNotify *WebhookNotifyConfig `json:"webhookNotify,omitempty"`
+}
+
+// WebhookNotifyConfig configures Slack incoming-webhook delivery for the _webhook_notify
+// builtin tool. The webhook URL (e.g. https://hooks.slack.com/services/T/B/X) is the
+// only credential needed: it posts `text` to the configured channel without any
+// per-user OAuth/bearer token.
+type WebhookNotifyConfig struct {
+	// WebhookSecretRef references a Secret whose key (default "url") holds the Slack
+	// incoming-webhook URL. The Secret is mounted into the model-router sidecar as the
+	// WEBHOOK_URL environment variable (not into the agent container).
+	// +optional
+	WebhookSecretRef *corev1.SecretKeySelector `json:"webhookSecretRef,omitempty"`
 }
 
 // AgentDeploymentStatus defines the observed state of an AgentDeployment.

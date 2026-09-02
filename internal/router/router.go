@@ -544,7 +544,10 @@ func (r *Router) InitMCPServers() {
 			Env:             s.Env,
 			EnvFiles:        envFiles,
 			AuthHeaderFiles: authHeaderFiles,
+			OAuth:           s.OAuth,
 			AllowApps:       s.AllowApps,
+			IncludePatterns: s.IncludePatterns,
+			ExcludePatterns: s.ExcludePatterns,
 		})
 	}
 	client := mcp.New(context.Background(), serverConfigs)
@@ -1025,10 +1028,16 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 		return
 	}
 
-	// Checkpoint asynchronously to avoid blocking the response.
+	// Checkpoint periodically for crash recovery.
 	if r.cfg.CheckpointEvery > 0 && r.ruleRouter.TurnCount()%r.cfg.CheckpointEvery == 0 {
 		go r.checkpoint(context.Background())
 	}
+	// Always persist on run completion (this block is only reached for a terminal text
+	// turn; tool-call turns are handled in handleToolCalls). A reused warm pod loads
+	// the prior run's checkpoint via PriorRunRef on the next chat turn, so the final
+	// state must be written here — not only every CheckpointEvery turns or at Finalize.
+	// (Idempotent with the periodic save above.)
+	r.checkpoint(context.Background())
 
 	// Notify operator of context usage for UI display.
 	go r.notifyOperatorContext()
@@ -2135,6 +2144,8 @@ func (r *Router) dispatchToolCall(ctx context.Context, tc ToolCall) string { //n
 		result = r.executeRAGSearch(toolCtx, tc.Function.Arguments)
 	case "_rag_ingest", "rag_ingest":
 		result = r.executeRAGIngest(toolCtx, tc.Function.Arguments)
+	case "_webhook_notify", "webhook_notify":
+		result = r.executeWebhookNotify(toolCtx, tc.Function.Arguments)
 	case "_memory_store", "memory_store":
 		result = r.executeMemoryStore(toolCtx, tc.Function.Arguments)
 	case "_propose_fix", "propose_fix":
@@ -2181,6 +2192,22 @@ func (r *Router) dispatchToolCall(ctx context.Context, tc ToolCall) string { //n
 
 	// Cap tool result size before it enters conversation history.
 	result = truncateToolResult(result, r.cfg.MaxToolResultTokens)
+	if len(fullResult) > len(result) {
+		// Never truncate silently: a capped tool result (e.g. reading a large file or a
+		// full-commit patch) starves the agent of data and makes it loop on re-reads.
+		// Surface it loudly and in the trace so a missing/oversize result is debuggable.
+		slog.Warn("tool result truncated to maxToolResultTokens; raise modelRouter.maxToolResultTokens or the deployment's maxToolResultTokens to avoid silently losing content",
+			"run", r.cfg.RunName, "tool", tc.Function.Name,
+			"originalChars", len(fullResult), "keptChars", len(result), "maxTokens", r.cfg.MaxToolResultTokens)
+		ev, _ := json.Marshal(map[string]any{
+			"type":          "toolResultTruncated",
+			"tool":          tc.Function.Name,
+			"originalChars": len(fullResult),
+			"keptChars":     len(result),
+			"maxTokens":     r.cfg.MaxToolResultTokens,
+		})
+		r.emitTraceEvent(string(ev))
+	}
 
 	// A tool result that is empty or a bare "[]" / "{}" carries no information for
 	// the LLM, so it is usually read as "no data" and the agent bails (the
@@ -2595,6 +2622,41 @@ func (r *Router) notifyOperatorContext() {
 // to set Phase=Succeeded with the agent's explicit output, emits a terminal `done`
 // trace event to the token stream (which closes the UI SSE via TailTokens), and
 // signals the router to stop further LLM calls.
+// executeWebhookNotify posts a message to a Slack incoming webhook. The webhook URL
+// is read from the WEBHOOK_URL environment variable (mounted from a Secret into
+// the model-router sidecar), so no per-user OAuth/bearer Secret is involved: the shared
+// webhook URL is the credential and delivers `text` to the configured channel.
+func (r *Router) executeWebhookNotify(ctx context.Context, args string) string {
+	var p struct {
+		Text    string `json:"text"`
+		Channel string `json:"channel,omitempty"`
+	}
+	if err := json.Unmarshal([]byte(args), &p); err != nil {
+		return fmt.Sprintf(`{"error":"parsing webhook_notify args: %v"}`, err)
+	}
+	webhook := os.Getenv("WEBHOOK_URL")
+	if webhook == "" {
+		return `{"error":"WEBHOOK_URL is not configured"}`
+	}
+	payload := map[string]any{"text": p.Text}
+	if p.Channel != "" {
+		payload["channel"] = p.Channel
+	}
+	body, _ := json.Marshal(payload)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, webhook, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Sprintf(`{"error":"building slack webhook request: %v"}`, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Sprintf(`{"error":"posting to slack webhook: %v"}`, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	respBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	return string(respBytes)
+}
+
 func (r *Router) executeDone(ctx context.Context, args string) string {
 	var p struct {
 		Output  string `json:"output"`

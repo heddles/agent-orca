@@ -1,0 +1,45 @@
+# Example: auto-discovery MCP server with name-based tool filtering.
+#
+# `spec.discoverability: enabled` is the **default**, so omitting it also works.
+# With no `spec.tools` declared, the MCPServer controller creates a single connector
+# Tool CR (named the same as the MCPServer) and the model-router discovers *every*
+# tool exposed by the server at runtime via tools/list.
+#
+# includePatterns/excludePatterns filter discovered tool names using glob patterns
+# (same convention as KnowledgeBase ingestion). Leave both empty to expose all tools.
+apiVersion: agentorca.agentorca.io/v1alpha1
+kind: MCPServer
+metadata:
+  name: github-mcp
+  namespace: default
+spec:
+  transport: http
+  url: http://github-mcp-svc.default:8080
+  allowedAgents:
+    - analyst
+  # Optional: restrict which discovered tools the LLM can call, by name.
+  # Here: only expose tools whose name starts with "list_" or "get_".
+  includePatterns:
+    - "list_*"
+    - "get_*"
+  # Optional: never expose tools whose name starts with "internal_".
+  # Exclude always wins over include.
+  excludePatterns:
+    - "internal_*"
+  # NOTE: spec.tools is intentionally omitted — tools are auto-discovered.
+
+---
+# The agent references the MCPServer by name (the connector Tool CR the controller
+# auto-creates). There is no need to enumerate individual tools.
+apiVersion: agentorca.agentorca.io/v1alpha1
+kind: Agent
+metadata:
+  name: analyst
+  namespace: default
+spec:
+  modelSelectorRef: default-model-selector
+  tools:
+    - github-mcp           # <- the MCPServer name (auto-discovered connector Tool CR)
+  runtime:
+    ociRef: ghcr.io/agent-orca/agent-base:latest
+    command: ["python", "agent.py"]

@@ -47,6 +47,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
+	"github.com/floppyfish14/agent-orca/internal/mcp"
 	"github.com/floppyfish14/agent-orca/internal/podbuilder"
 	"github.com/floppyfish14/agent-orca/internal/router"
 	"github.com/floppyfish14/agent-orca/internal/security"
@@ -506,7 +507,7 @@ func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig( //nolint:gocycl
 		}
 		var tool agentorcav1alpha1.Tool
 		if err := r.Get(ctx, client.ObjectKey{Name: toolName, Namespace: deploy.Namespace}, &tool); err != nil {
-			return nil, fmt.Errorf("getting Tool %q: %w", toolName, err)
+			return nil, annotatedToolError(ctx, r.Client, deploy.Namespace, toolName, err)
 		}
 		var params json.RawMessage
 		if tool.Spec.Schema != nil && tool.Spec.Schema.Input != nil {
@@ -539,6 +540,8 @@ func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig( //nolint:gocycl
 					var mcpServer agentorcav1alpha1.MCPServer
 					if err := r.Get(ctx, client.ObjectKey{Name: serverName, Namespace: deploy.Namespace}, &mcpServer); err == nil {
 						mcpCfg.AllowApps = mcpServer.Spec.AllowApps
+						mcpCfg.IncludePatterns = mcpServer.Spec.IncludePatterns
+						mcpCfg.ExcludePatterns = mcpServer.Spec.ExcludePatterns
 					}
 				}
 				args := tool.Spec.MCPConfig.Args
@@ -579,6 +582,44 @@ func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig( //nolint:gocycl
 						mcpCfg.Env = append(mcpCfg.Env, ev.Name+"="+ev.Value)
 					}
 				}
+				// Resolve auth config to file paths. (Mirrors agentrun_controller.buildRouterConfig
+				// so warm-pool pods - which bake the router config at deployment time - also
+				// inject bearer/API-key/custom auth headers into remote HTTP/SSE MCP requests.)
+				if auth := tool.Spec.MCPConfig.Auth; auth != nil {
+					if auth.BearerToken != nil {
+						ref := auth.BearerToken
+						mcpCfg.AuthHeaderFiles = append(mcpCfg.AuthHeaderFiles, router.AuthHeaderFile{
+							HeaderName: "Authorization",
+							FilePath:   podbuilder.ToolSecretFilePath(toolName, ref.Name, ref.Key),
+							Prefix:     "Bearer ",
+						})
+					}
+					if auth.APIKey != nil {
+						ref := &auth.APIKey.SecretKeyRef
+						headerName := auth.APIKey.HeaderName
+						if headerName == "" {
+							headerName = "X-API-Key"
+						}
+						mcpCfg.AuthHeaderFiles = append(mcpCfg.AuthHeaderFiles, router.AuthHeaderFile{
+							HeaderName: headerName,
+							FilePath:   podbuilder.ToolSecretFilePath(toolName, ref.Name, ref.Key),
+						})
+					}
+					for _, h := range auth.Headers {
+						ref := &h.SecretKeyRef
+						mcpCfg.AuthHeaderFiles = append(mcpCfg.AuthHeaderFiles, router.AuthHeaderFile{
+							HeaderName: h.Name,
+							FilePath:   podbuilder.ToolSecretFilePath(toolName, ref.Name, ref.Key),
+						})
+					}
+				}
+				if tool.Spec.MCPConfig.Auth != nil && tool.Spec.MCPConfig.Auth.OAuth != nil {
+					o := tool.Spec.MCPConfig.Auth.OAuth
+					mcpCfg.OAuth = &mcp.OAuthConfig{
+						CredentialsDir: podbuilder.OAuthCredsMountDir(toolName, o.Credentials.Name),
+						Scopes:         o.Scopes,
+					}
+				}
 				mcpServers = append(mcpServers, mcpCfg)
 			}
 		}
@@ -610,6 +651,13 @@ func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig( //nolint:gocycl
 		Name:        "_done",
 		Description: "Signal successful task completion with a structured result. Use this when the task is fully complete and you have a final answer or output to return. The run will transition to Succeeded and no further LLM calls will be made.",
 		Parameters:  []byte(`{"type":"object","properties":{"output":{"type":"string","description":"The final output or result of the task"},"summary":{"type":"string","description":"A brief human-readable summary of what was accomplished"}},"required":["output"]}`),
+		BackendType: "builtin",
+	})
+
+	toolDefs = append(toolDefs, router.ToolDefinition{
+		Name:        "_webhook_notify",
+		Description: "Post a message to Slack via an incoming webhook (WEBHOOK_URL). Use to notify a team channel with task results. Returns the Slack API response.",
+		Parameters:  []byte(`{"type":"object","properties":{"text":{"type":"string","description":"The message text to post to Slack."},"channel":{"type":"string","description":"Optional channel/@user override instead of the webhook's default channel"}},"required":["text"]}`),
 		BackendType: "builtin",
 	})
 	toolDefs = append(toolDefs, router.ToolDefinition{
@@ -834,13 +882,19 @@ func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig( //nolint:gocycl
 		LongTermMemory:         longTermMemory,
 	}
 
-	// Deployment-level tool timeout: long-holding tooling (Sliver sessions, shells)
-	// exceeds the 60s default and would be killed by the model-router's per-tool
-	// safeguard. Propagate the deployment's setting into the warm router config so
-	// claimed warm pods use the same window. 0 → left to ConfigFromEnv's 60s default.
-	if deploy.Spec.ToolExecutionTimeoutSec > 0 {
-		cfg.Safeguards.ToolExecutionTimeoutSec = deploy.Spec.ToolExecutionTimeoutSec
+	// Per-tool-result token cap and loop guards. We deliberately seed sane defaults
+	// here (in the operator, which knows each provider's ContextWindow/MaxRequestTokens)
+	// rather than relying on the model-router's bare ConfigFromEnv floor, which silently
+	// truncated tool results to 16k chars and left safeguards disabled — the exact
+	// recipe for a confused, runaway agent run that never emits a final output.
+	// An explicit deployment override always wins; see defaultMaxToolResultTokens /
+	// applySafeguardDefaults for the reasoning behind the numbers.
+	if deploy.Spec.MaxToolResultTokens > 0 {
+		cfg.MaxToolResultTokens = deploy.Spec.MaxToolResultTokens
+	} else if cfg.MaxToolResultTokens <= 0 {
+		cfg.MaxToolResultTokens = defaultMaxToolResultTokens(providers)
 	}
+	applySafeguardDefaults(&cfg.Safeguards, deploy.Spec.ToolExecutionTimeoutSec, deploy.Spec.Safeguards)
 
 	// GuardrailPolicy CR: wire agent's guardrailPolicyRef into cfg.Guardrails.
 	if agent.Spec.GuardrailPolicyRef != "" {
@@ -848,6 +902,106 @@ func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig( //nolint:gocycl
 	}
 
 	return cfg, nil
+}
+
+// defaultMaxToolResultTokens derives a sane per-tool-result cap from the configured
+// providers' ContextWindow so large MCP/file/commit-patch results aren't silently cut
+// off. ~10% of the window leaves room for the rest of the conversation + output; the
+// floor keeps tiny-context models usable and the ceiling keeps a single result from
+// dominating, and we additionally never exceed half of MaxRequestTokens (if set) so
+// one oversized result can't by itself trip the rule-router's request-size exclusion.
+func defaultMaxToolResultTokens(providers []router.ProviderConfig) int {
+	const (
+		fraction = 0.10
+		floor    = 8000
+		ceiling  = 64000
+	)
+	cw := maxContextWindow(providers)
+	if cw <= 0 {
+		return floor
+	}
+	t := int(float64(cw) * fraction)
+	if mrt := maxRequestTokens(providers); mrt > 0 {
+		if half := mrt / 2; t > half {
+			t = half
+		}
+	}
+	if t < floor {
+		t = floor
+	}
+	if t > ceiling {
+		t = ceiling
+	}
+	return t
+}
+
+// maxContextWindow returns the largest model ContextWindow among the resolved providers.
+func maxContextWindow(providers []router.ProviderConfig) int {
+	var m int
+	for _, p := range providers {
+		if p.ContextWindow > m {
+			m = p.ContextWindow
+		}
+	}
+	return m
+}
+
+// maxRequestTokens returns the smallest effective per-request token budget (MaxRequestTokens
+// when set, else 0 = unset) among providers, used to bound a single tool result.
+func maxRequestTokens(providers []router.ProviderConfig) int {
+	var m int
+	first := true
+	for _, p := range providers {
+		if p.MaxRequestTokens <= 0 {
+			continue
+		}
+		if first || p.MaxRequestTokens < m {
+			m = p.MaxRequestTokens
+			first = false
+		}
+	}
+	if first {
+		return 0
+	}
+	return m
+}
+
+// applySafeguardDefaults seeds conservative loop guards that only trip on genuine stalls
+// (not on legitimate repeated tool use — e.g. reading many distinct files during a PR
+// review — then layers explicit deployment overrides on top. ToolFrequencyCap is left 0
+// (opt-in) because big batch jobs can legitimately call one tool hundreds of times.
+func applySafeguardDefaults(s *router.RouterSafeguards, deployTimeoutSec int, ov *agentorcav1alpha1.AgentRunSafeguards) {
+	if s == nil {
+		return
+	}
+	s.MaxConsecutiveNoopTurns = 15 // 15 consecutive non-substantive text-only turns = stuck
+	s.MinSubstantiveTokens = 20
+	s.MaxRepeatedToolCalls = 50 // same tool + IDENTICAL args 50x = stuck (distinct args != trip)
+	s.ToolFrequencyCap = 0      // opt-in: do NOT block high-volume legit use by default
+	if s.ToolExecutionTimeoutSec <= 0 {
+		s.ToolExecutionTimeoutSec = 60
+	}
+	if deployTimeoutSec > 0 {
+		s.ToolExecutionTimeoutSec = deployTimeoutSec
+	}
+	if ov == nil {
+		return
+	}
+	if ov.MaxConsecutiveNoopTurns > 0 {
+		s.MaxConsecutiveNoopTurns = ov.MaxConsecutiveNoopTurns
+	}
+	if ov.MinSubstantiveTokens > 0 {
+		s.MinSubstantiveTokens = ov.MinSubstantiveTokens
+	}
+	if ov.MaxRepeatedToolCalls > 0 {
+		s.MaxRepeatedToolCalls = ov.MaxRepeatedToolCalls
+	}
+	if ov.ToolFrequencyCap > 0 {
+		s.ToolFrequencyCap = ov.ToolFrequencyCap
+	}
+	if ov.ToolExecutionTimeoutSec > 0 {
+		s.ToolExecutionTimeoutSec = ov.ToolExecutionTimeoutSec
+	}
 }
 
 // ensureDeploymentRouterConfigMap creates or updates the ConfigMap with the router config.
@@ -1434,6 +1588,10 @@ func (r *AgentDeploymentReconciler) buildWarmPod(
 
 	agentSecretVolumes, agentSecretMounts := podbuilder.ResolveAgentSecretRefs(agent)
 
+	var webhookNotifyRef *corev1.SecretKeySelector
+	if deploy.Spec.WebhookNotify != nil {
+		webhookNotifyRef = deploy.Spec.WebhookNotify.WebhookSecretRef
+	}
 	return podbuilder.Build(podbuilder.PodConfig{
 		GenerateName: "warm-" + deploy.Name + "-",
 		Namespace:    deploy.Namespace,
@@ -1473,6 +1631,7 @@ func (r *AgentDeploymentReconciler) buildWarmPod(
 		// to Redis for faster resume + Redis-outage resilience. Only on warm pods.
 		WarmLocalCacheEnabled:   effectiveWarmLocalCache(deploy),
 		WarmLocalCacheSizeLimit: warmCacheSizeLimitQuantity(deploy),
+		WebhookNotifySecretRef:  webhookNotifyRef,
 	})
 }
 

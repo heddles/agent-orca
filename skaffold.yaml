@@ -94,6 +94,15 @@ deploy:
                   --from-literal=password="$PG_PW" \
                   --dry-run=client -o yaml | kubectl apply -f -
             os: [darwin, linux]
+        # Sync Kubernetes CRDs with the source tree on every deploy. Helm applies the
+        # agent-orca chart's charts/agent-orca/crds/ on first install, but does NOT
+        # upgrade CRDs on `helm upgrade` — so a new spec field (e.g. webhookNotify)
+        # would otherwise be rejected at runtime with "field not declared in schema"
+        # until manually applied. This keeps the cluster schema in lockstep with the
+        # branch so `helm install`/`skaffold run` of demos Just Works.
+        - host:
+            command: ["bash", "-c", "kubectl apply -f config/crd/bases --server-side --force-conflicts --field-manager=helm 2>/dev/null || true"]
+            os: [darwin, linux]
     # releases:
       # CloudNativePG operator — installs CRDs + operator Deployment.
       # Deployed FIRST (before the cluster and agent-orca) so CRDs are established.
@@ -322,6 +331,9 @@ profiles:
   # 'ollama-embed' embedding selector) already deployed (skaffold dev -p dev, with
   # ollama-embeddings enabled for local embeddings).
   # Requires: GitHub PAT with repo (read) scope — set via AGENT_ORCA_GITHUB_TOKEN.
+  # Requires: Slack — an incoming webhook URL for the _webhook_notify builtin
+  # (AGENT_ORCA_WEBHOOK_URL). The model-router posts to the webhook; no per-user
+  # OAuth, no browser, no data residency concerns.
   # The agent image is the pre-built reference agent
   # (ghcr.io/agentorca/agent-orca/openai-reference:latest), built + kind-loaded by
   # `skaffold dev`; the GitHub MCP image (ghcr.io/github/github-mcp-server) is pulled
@@ -343,6 +355,10 @@ profiles:
             setValueTemplates:
               # GitHub PAT (repo read scope). Read from env, never committed.
               githubToken: "{{.AGENT_ORCA_GITHUB_TOKEN}}"
+              # Slack incoming webhook URL for the _webhook_notify builtin. The
+              # model-router posts to it; no per-user OAuth, no browser, no data
+              # residency concerns. See charts/demos/programming-agent/README.md.
+              webhookNotify.url: "{{.AGENT_ORCA_WEBHOOK_URL}}"
 
   # dev: inference runs natively on macOS with Metal GPU acceleration.
   # Start the native servers before deploying:
@@ -422,6 +438,18 @@ profiles:
               providerSecrets[1].apiKey: "{{.ANTHROPIC_API_KEY}}"
               providerSecrets[2].apiKey: "{{.GOOGLE_API_KEY}}"
               providerSecrets[3].apiKey: "{{.POOLSIDE_API_KEY}}"
+
+              # The ollama-embed-credentials Secret is provided by
+              # ollama-embedding-cluster.yaml (applied via the kubectl deployer
+              # below), so disable the chart's duplicate to avoid a reconcile fight.
+              providerSecrets[11].enabled: "false"
+      # Apply the in-cluster Ollama embedding manifests (PVC, Deployment,
+      # Service, pull Job, Secret, ModelProvider, ModelSelector) via the kubectl
+      # deployer. Helm (above) deploys first and installs the agent-orca CRDs,
+      # then kubectl applies the ModelProvider/ModelSelector CRs — so they resolve.
+      # defaultNamespace matches the README's `-n agent-orca-system` for this sample.
+      kubectl:
+        defaultNamespace: agent-orca-system
 
               # The ollama-embed-credentials Secret is provided by
               # ollama-embedding-cluster.yaml (applied via the kubectl deployer

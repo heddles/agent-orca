@@ -22,6 +22,16 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// Discoverability modes for an MCPServer's tools.
+const (
+	// MCPServerDiscoverabilityEnabled auto-discovers all tools at runtime via
+	// tools/list (the default). spec.tools is optional.
+	MCPServerDiscoverabilityEnabled = "enabled"
+	// MCPServerDiscoverabilityDisabled requires tools to be explicitly declared
+	// in spec.tools.
+	MCPServerDiscoverabilityDisabled = "disabled"
+)
+
 // MCPServerSpec defines the desired state of an MCPServer.
 type MCPServerSpec struct {
 	// Transport is the MCP transport protocol.
@@ -52,13 +62,56 @@ type MCPServerSpec struct {
 
 	// EnvFrom sets environment variables sourced from Kubernetes Secrets.
 	// These are merged with (and override) Env entries of the same name.
+	// Only used for stdio transport.
 	// +optional
 	EnvFrom []EnvVar `json:"envFrom,omitempty"`
 
+	// Auth configures authentication for HTTP/SSE transports.
+	// The model-router reads each referenced Secret (mounted as a file into the
+	// sidecar) and injects it as an HTTP header on every request to the remote
+	// MCP server. Not supported for stdio transport (use EnvFrom instead — the
+	// agentorca admission webhook rejects auth on stdio).
+	// +optional
+	Auth *MCPAuthConfig `json:"auth,omitempty"`
+
 	// Tools declares the tools this MCP server provides.
 	// Each entry becomes a child Tool CR managed by the MCPServer controller.
-	// +kubebuilder:validation:MinItems=1
-	Tools []MCPServerTool `json:"tools"`
+	//
+	// Optional when spec.discoverability is "enabled" (the default): if Tools is
+	// empty the controller creates a single connector Tool CR (named after the
+	// MCPServer) and the model-router discovers every tool at runtime via tools/list.
+	// When spec.discoverability is "disabled", Tools is required.
+	// +optional
+	Tools []MCPServerTool `json:"tools,omitempty"`
+
+	// Discoverability controls how MCP tools are surfaced to agents.
+	//
+	// "enabled" (default): the model-router auto-discovers all tools at runtime via
+	// tools/list and exposes them to the LLM. spec.tools is optional — when omitted,
+	// the controller creates one connector Tool CR (named after the MCPServer) and the
+	// agent references the server by that name. Any tools declared in spec.tools are
+	// still created as child Tool CRs (useful for access-control cataloguing).
+	//
+	// "disabled": spec.tools is required and the agent must reference each declared
+	// Tool CR explicitly.
+	// +kubebuilder:validation:Enum=enabled;disabled
+	// +kubebuilder:default=enabled
+	// +optional
+	Discoverability string `json:"discoverability,omitempty"`
+
+	// IncludePatterns is a list of glob patterns used to filter the tools the
+	// model-router discovers at runtime. When non-empty, only tools whose name matches
+	// at least one pattern are exposed to agents. Supports "*", "?", and "**" for
+	// recursive multi-segment matching (e.g. "search/**"). Mirrors the
+	// includePatterns convention used by KnowledgeBase ingestion.
+	// +optional
+	IncludePatterns []string `json:"includePatterns,omitempty"`
+
+	// ExcludePatterns is a list of glob patterns to hide discovered tools. A tool
+	// matching any pattern is dropped before it reaches the LLM, even if it matched
+	// an IncludePatterns entry (exclude always wins). Applied after IncludePatterns.
+	// +optional
+	ExcludePatterns []string `json:"excludePatterns,omitempty"`
 
 	// AllowedAgents is the explicit list of Agent names (in the same namespace) that are
 	// permitted to use this MCP server. Access is denied by default — if this list is
@@ -116,6 +169,12 @@ type MCPServerStatus struct {
 	// Ready indicates all child Tools were created successfully.
 	// +optional
 	Ready bool `json:"ready,omitempty"`
+
+	// Discovering is true when spec.discoverability is "enabled" and spec.tools is
+	// empty, meaning the controller created a connector Tool CR and the model-router
+	// will discover all tools at runtime via tools/list.
+	// +optional
+	Discovering bool `json:"discovering,omitempty"`
 
 	// Message contains a human-readable status message.
 	// +optional

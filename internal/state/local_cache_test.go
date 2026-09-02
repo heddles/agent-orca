@@ -59,6 +59,7 @@ func (m *memStore) SaveSpend(context.Context, string, float64, time.Duration) er
 func (m *memStore) LoadSpend(context.Context, string) (float64, error)              { return 0, nil }
 func (m *memStore) SaveToken(context.Context, string, string) error                 { return nil }
 func (m *memStore) SaveTraceEvent(context.Context, string, string) error            { return nil }
+func (m *memStore) ReadTraceEvents(context.Context, string) ([]TraceEntry, error)   { return nil, nil }
 func (m *memStore) TailTokens(context.Context, string) (<-chan string, error) {
 	ch := make(chan string)
 	close(ch)

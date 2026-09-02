@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -161,9 +162,15 @@ func handleInitialize(ctx context.Context, b *acpBridge, req jsonrpcRequest) (an
 			LoadSession:        false,
 			PromptCapabilities: acpPromptCaps{Image: false, Audio: false, EmbeddedContext: false},
 			MCPCapabilities:    acpMCPCaps{HTTP: false, SSE: false},
+			// session/new, session/prompt, session/cancel and session/update are
+			// baseline capabilities (all agents MUST support them), so they are
+			// NOT advertised here. Only optional capabilities that this bridge
+			// actually implements are listed: list, close, delete, resume.
 			SessionCapabilities: map[string]any{
-				"prompt": true,
-				"cancel": true,
+				"list":   map[string]any{},
+				"close":  map[string]any{},
+				"delete": map[string]any{},
+				"resume": map[string]any{},
 			},
 			Auth: map[string]any{},
 		},
@@ -213,15 +220,24 @@ func handleSessionPrompt(ctx context.Context, b *acpBridge, req jsonrpcRequest) 
 
 	// Translate ACP content blocks -> agent-orca input, reusing the same
 	// session_id so runs chain across turns.
-	run, err := b.client.CreateAgentRun(ctx, b.agentName, ACPRunRequest{
-		Input:     toAgentOrcaInput(p.Prompt),
-		SessionID: sessionID,
-	})
-	if err != nil {
-		b.srv.respondErr(req.ID, -32001, "create run: "+err.Error())
-		return promptHandled{}, nil
+	//
+	// If a prior turn left a run in the "awaiting" state (e.g. the user
+	// declined the elicitation form and is now answering in a new prompt),
+	// resume that run with the user's input instead of starting fresh.
+	var runID string
+	if existingID, ok := b.tryResumeAwaiting(ctx, sessionID, p.Prompt); ok {
+		runID = existingID
+	} else {
+		run, err := b.client.CreateAgentRun(ctx, b.agentName, ACPRunRequest{
+			Input:     toAgentOrcaInput(p.Prompt),
+			SessionID: sessionID,
+		})
+		if err != nil {
+			b.srv.respondErr(req.ID, -32001, "create run: "+err.Error())
+			return promptHandled{}, nil
+		}
+		runID = run.RunID
 	}
-	runID := run.RunID
 
 	// Register a cancellable context so session/cancel can abort a live turn.
 	// Derive from the dispatch context (not Background) so that a shutdown
@@ -249,11 +265,14 @@ func handleSessionPrompt(ctx context.Context, b *acpBridge, req jsonrpcRequest) 
 // stream; if SSE is unavailable (e.g. no state store in local dev) it falls
 // back to polling.
 func (b *acpBridge) awaitCompletion(ctx context.Context, runID, sessionID string) string {
+	// currentRunID tracks the run we're polling. It may switch to a
+	// continuation run after a clarify/resume cycle.
+	currentRunID := runID
 	for {
 		if err := ctx.Err(); err != nil {
 			return acpStopReasonUserCancel
 		}
-		run, err := b.client.GetACPRun(ctx, runID)
+		run, err := b.client.GetACPRun(ctx, currentRunID)
 		if err != nil {
 			b.srv.logf("acp: poll run error: %v\n", err)
 			if !b.retryWait(ctx, 200*time.Millisecond) {
@@ -263,15 +282,33 @@ func (b *acpBridge) awaitCompletion(ctx context.Context, runID, sessionID string
 		}
 		switch run.Status {
 		case acpStatusInProgress:
-			return b.streamRunEvents(ctx, runID, sessionID)
+			term := b.streamRunEvents(ctx, currentRunID, sessionID)
+			if term == acpPendingAwaiting {
+				// SSE stream surfaced an awaiting state; loop to re-poll — the
+				// next iteration will hit the acpStatusAwaiting case below and
+				// run the elicitation flow.
+				continue
+			}
+			return term
 		case acpStatusCompleted, acpStatusFailed, acpStatusCancelled:
+			// If the server created a continuation run (e.g. via clarify/resume),
+			// follow it instead of ending the turn.
+			if run.ContinuationRunRef != "" {
+				currentRunID = run.ContinuationRunRef
+				continue
+			}
 			b.emitTerminalOutput(run, sessionID)
 			return runStatusToStopReason(run.Status)
 		case acpStatusAwaiting:
-			b.srv.notify(acpMethodSessionUpdate, acpUpdateParams{
-				SessionID: sessionID,
-				Update:    acpUpdate{SessionUpdate: acpStatusAwaiting},
-			})
+			if contID, resumed := b.handleAwaitingRun(ctx, run, sessionID, currentRunID); resumed {
+				// Run was resumed with the user's answer; switch to the
+				// continuation run (if one was created) and re-poll.
+				currentRunID = contID
+				if !b.retryWait(ctx, 200*time.Millisecond) {
+					return acpStopReasonUserCancel
+				}
+				continue
+			}
 			return acpStopReasonEndTurn
 		default: // created / pending
 			b.srv.notify(acpMethodSessionUpdate, acpUpdateParams{
@@ -361,11 +398,12 @@ func (b *acpBridge) handleEvent(ev Event, sessionID, msgID string, emitted *bool
 	case "run.cancelled":
 		return acpStopReasonUserCancel
 	case "run.awaiting":
-		b.srv.notify(acpMethodSessionUpdate, acpUpdateParams{
-			SessionID: sessionID,
-			Update:    acpUpdate{SessionUpdate: acpStatusAwaiting},
-		})
-		return acpStopReasonEndTurn
+		// The run is waiting for human input. Return the pending-awaiting
+		// sentinel so awaitCompletion can run the elicitation/create flow.
+		// (Token chunks from the model's turn were already streamed as
+		// message.part events; the clarification question itself lives in the
+		// run's output, surfaced by handleAwaitingRun on re-poll.)
+		return acpPendingAwaiting
 		// run.created / run.in-progress / message.created / message.completed are
 		// either already announced or folded into the chunk stream; ignore them so
 		// we don't emit spurious empty notifications.
@@ -393,6 +431,108 @@ func (b *acpBridge) emitTerminalOutput(run acpRun, sessionID string) {
 	}
 }
 
+// handleAwaitingRun processes a run in the "awaiting" state. It emits the
+// clarification question as agent_message_chunk notifications, then sends an
+// elicitation/create request to the client asking for the user's input. If the
+// user accepts, it resumes the run (creating a continuation run via the ACP
+// server) and returns the continuation run ID. Returns ("", false) if the user
+// declined, the elicitation failed, or an error occurred.
+func (b *acpBridge) handleAwaitingRun(ctx context.Context, run acpRun, sessionID, runID string) (string, bool) {
+	// Emit the clarification question as agent output so the user can see what
+	// was asked before the elicitation form appears.
+	b.emitTerminalOutput(run, sessionID)
+
+	question := ""
+	if run.AwaitRequest != nil && run.AwaitRequest.Question != "" {
+		question = run.AwaitRequest.Question
+	} else if len(run.Output) > 0 && len(run.Output[0].Parts) > 0 {
+		question = run.Output[0].Parts[0].Content
+	}
+	if question == "" {
+		question = "The agent is waiting for your input."
+	}
+
+	resp, err := b.srv.sendRequest(ctx, acpMethodElicitationCreate, acpElicitParams{
+		Message: question,
+		Mode:    "form",
+		RequestedSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"answer": map[string]any{
+					"type":        "string",
+					"description": "Your response to the agent's question",
+				},
+			},
+			"required": []string{"answer"},
+		},
+	})
+	if err != nil {
+		b.srv.logf("acp: elicitation/create failed: %v\n", err)
+		return "", false
+	}
+
+	var elicit acpElicitResponse
+	raw, _ := json.Marshal(resp.Result)
+	if err := json.Unmarshal(raw, &elicit); err != nil {
+		b.srv.logf("acp: unmarshal elicitation response: %v\n", err)
+		return "", false
+	}
+
+	if elicit.Action != "accept" {
+		b.srv.logf("acp: elicitation %s by user\n", elicit.Action)
+		return "", false
+	}
+
+	answer, _ := elicit.Content["answer"].(string)
+	continuationID, err := b.client.ResumeRun(ctx, runID, answer)
+	if err != nil {
+		b.srv.logf("acp: resume run %s: %v\n", runID, err)
+		return "", false
+	}
+	if continuationID == "" {
+		// No continuation run returned — the server may have resumed in place.
+		// Fall back to polling the original run.
+		return runID, true
+	}
+	return continuationID, true
+}
+
+// tryResumeAwaiting checks whether the session has a prior run still in the
+// "awaiting" state (e.g. the user declined the elicitation form and is now
+// answering in a new session/prompt). If so, it resumes that run with the user's
+// input text as the answer. Returns the run ID and true on success.
+func (b *acpBridge) tryResumeAwaiting(ctx context.Context, sessionID string, prompt []acpContentBlock) (string, bool) {
+	b.mu.Lock()
+	sess := b.sessions[sessionID]
+	b.mu.Unlock()
+	if sess == nil || sess.RunID == "" {
+		return "", false
+	}
+	run, err := b.client.GetACPRun(ctx, sess.RunID)
+	if err != nil || run.Status != acpStatusAwaiting {
+		return "", false
+	}
+
+	// Extract text from the prompt blocks as the user's answer.
+	var parts []string
+	for _, block := range prompt {
+		if block.Text != "" {
+			parts = append(parts, block.Text)
+		}
+	}
+	answer := strings.Join(parts, "\n")
+
+	continuationID, err := b.client.ResumeRun(ctx, sess.RunID, answer)
+	if err != nil {
+		b.srv.logf("acp: resume awaiting run %s: %v\n", sess.RunID, err)
+		return "", false
+	}
+	if continuationID != "" {
+		return continuationID, true
+	}
+	return sess.RunID, true
+}
+
 // pollToCompletion polls GET /runs/{id} until terminal. Used as the SSE
 // fallback when the state store is unavailable or the run never reaches
 // in-progress in time.
@@ -411,7 +551,7 @@ func (b *acpBridge) pollToCompletion(ctx context.Context, runID, sessionID strin
 				b.emitTerminalOutput(run, sessionID)
 				return runStatusToStopReason(run.Status)
 			case acpStatusAwaiting:
-				return acpStopReasonEndTurn
+				return acpPendingAwaiting
 			}
 		}
 		if !b.retryWait(ctx, 300*time.Millisecond) {
@@ -462,10 +602,24 @@ func (b *acpBridge) handleCancel( //nolint:gocyclo
 	}
 }
 
-// --- session lifecycle: resume/list/close/delete (stubs for v1) ---
+// --- session lifecycle: resume/list/close/delete ---
 
-func handleSessionResume(_ context.Context, _ *acpBridge, _ jsonrpcRequest) (any, error) {
-	// ACP v1 doesn't require loadSession; acknowledge.
+func handleSessionResume(_ context.Context, b *acpBridge, req jsonrpcRequest) (any, error) {
+	var p struct {
+		SessionID string `json:"sessionId,omitempty"`
+	}
+	if len(req.Params) > 0 {
+		_ = json.Unmarshal(req.Params, &p)
+	}
+	// Ensure the session exists so subsequent session/prompt calls chain
+	// runs correctly (agent-orca restores conversation context via session_id).
+	if p.SessionID != "" {
+		b.mu.Lock()
+		if _, ok := b.sessions[p.SessionID]; !ok {
+			b.sessions[p.SessionID] = &acpSession{}
+		}
+		b.mu.Unlock()
+	}
 	return map[string]any{}, nil
 }
 

@@ -173,6 +173,10 @@ spec:
   {{- if hasKey . "warmLocalCacheSizeMi" }}
   warmLocalCacheSizeMi: {{ .warmLocalCacheSizeMi }}
   {{- end }}
+  {{- if hasKey . "webhookNotify" }}
+  webhookNotify:
+    {{- toYaml .webhookNotify | nindent 4 }}
+  {{- end }}
 {{- end }}
 {{- end -}}
 
@@ -270,6 +274,10 @@ spec:
   {{- if .envFrom }}
   envFrom:
     {{- toYaml .envFrom | nindent 4 }}
+  {{- end }}
+  {{- if .auth }}
+  auth:
+    {{- toYaml .auth | nindent 4 }}
   {{- end }}
   tools:
     {{- toYaml .tools | nindent 4 }}

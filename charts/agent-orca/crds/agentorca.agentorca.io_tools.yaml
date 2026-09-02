@@ -216,6 +216,79 @@ spec:
                           - secretKeyRef
                           type: object
                         type: array
+                      oauth:
+                        description: |-
+                          OAuth drives OAuth 2.0 token management for the remote MCP server (HTTP/SSE).
+                          When set, the MCPServer controller discovers the server's OAuth config from its
+                          RFC 8414 metadata, exchanges a refresh token (or a one-time authorization code
+                          via PKCE) for an access token, writes it to accessTokenSecretRef, and wires
+                          auth.bearerToken to that Secret so the model-router sends it as a bearer. This is
+                          what makes OAuth-only MCP servers usable (e.g. Slack, which rejects static tokens
+                          with -32001 invalid_token). Mutually exclusive with bearerToken/apiKey/headers.
+                        properties:
+                          accessTokenSecretRef:
+                            description: |-
+                              AccessTokenSecretRef is the Secret (key "token") the access token is written to
+                              and that auth.bearerToken references. If omitted, the controller names it
+                              "<mcpserver>-mcp-token" (key "token").
+                            properties:
+                              key:
+                                description: Key within the Secret.
+                                type: string
+                              name:
+                                description: Name of the Secret.
+                                type: string
+                              namespace:
+                                description: Namespace of the Secret. Defaults to
+                                  the same namespace as the referencing resource.
+                                type: string
+                            required:
+                            - key
+                            - name
+                            type: object
+                          credentials:
+                            description: |-
+                              Credentials is a Secret (in the MCPServer's namespace) holding the OAuth client
+                              id/secret (keys: client_id, client_secret), an optional registered redirect_uri
+                              (key: redirect_uri), and an optional pre-provisioned refresh_token (key:
+                              refresh_token). Supplying a refresh_token skips the one-time authorization-code
+                              seed; otherwise the controller reports "seeding required" and the operator runs
+                              `oauth-proxy seed` once.
+                            properties:
+                              name:
+                                description: Name of the resource.
+                                type: string
+                            required:
+                            - name
+                            type: object
+                          refreshTokenSecretRef:
+                            description: |-
+                              RefreshTokenSecretRef optionally points to a Secret/key holding just the refresh
+                              token (instead of inside Credentials). When set, this takes precedence.
+                            properties:
+                              key:
+                                description: Key within the Secret.
+                                type: string
+                              name:
+                                description: Name of the Secret.
+                                type: string
+                              namespace:
+                                description: Namespace of the Secret. Defaults to
+                                  the same namespace as the referencing resource.
+                                type: string
+                            required:
+                            - key
+                            - name
+                            type: object
+                          scopes:
+                            description: Scopes overrides the server's scopes_supported;
+                              if empty, discovery scopes win.
+                            items:
+                              type: string
+                            type: array
+                        required:
+                        - credentials
+                        type: object
                     type: object
                   env:
                     additionalProperties:

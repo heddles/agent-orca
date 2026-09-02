@@ -86,6 +86,189 @@ spec:
                 items:
                   type: string
                 type: array
+              auth:
+                description: |-
+                  Auth configures authentication for HTTP/SSE transports.
+                  The model-router reads each referenced Secret (mounted as a file into the
+                  sidecar) and injects it as an HTTP header on every request to the remote
+                  MCP server. Not supported for stdio transport (use EnvFrom instead — the
+                  agentorca admission webhook rejects auth on stdio).
+                properties:
+                  apiKey:
+                    description: APIKey sets a custom header with a key read from
+                      a Secret.
+                    properties:
+                      headerName:
+                        default: X-API-Key
+                        description: HeaderName is the HTTP header name. Defaults
+                          to "X-API-Key".
+                        type: string
+                      secretKeyRef:
+                        description: SecretKeyRef references the Secret containing
+                          the API key.
+                        properties:
+                          key:
+                            description: Key within the Secret.
+                            type: string
+                          name:
+                            description: Name of the Secret.
+                            type: string
+                          namespace:
+                            description: Namespace of the Secret. Defaults to the
+                              same namespace as the referencing resource.
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                    required:
+                    - secretKeyRef
+                    type: object
+                  bearerToken:
+                    description: |-
+                      BearerToken sets the Authorization header to "Bearer <token>".
+                      The token value is read from a Kubernetes Secret.
+                    properties:
+                      key:
+                        description: Key within the Secret.
+                        type: string
+                      name:
+                        description: Name of the Secret.
+                        type: string
+                      namespace:
+                        description: Namespace of the Secret. Defaults to the same
+                          namespace as the referencing resource.
+                        type: string
+                    required:
+                    - key
+                    - name
+                    type: object
+                  headers:
+                    description: |-
+                      Headers sets custom HTTP headers from Secrets.
+                      Use this for non-standard auth schemes.
+                    items:
+                      description: AuthHeader maps an HTTP header name to a Secret
+                        key reference.
+                      properties:
+                        name:
+                          description: Name is the HTTP header name (e.g., "Authorization",
+                            "X-Custom-Token").
+                          type: string
+                        secretKeyRef:
+                          description: SecretKeyRef references the Secret containing
+                            the header value.
+                          properties:
+                            key:
+                              description: Key within the Secret.
+                              type: string
+                            name:
+                              description: Name of the Secret.
+                              type: string
+                            namespace:
+                              description: Namespace of the Secret. Defaults to the
+                                same namespace as the referencing resource.
+                              type: string
+                          required:
+                          - key
+                          - name
+                          type: object
+                      required:
+                      - name
+                      - secretKeyRef
+                      type: object
+                    type: array
+                  oauth:
+                    description: |-
+                      OAuth drives OAuth 2.0 token management for the remote MCP server (HTTP/SSE).
+                      When set, the MCPServer controller discovers the server's OAuth config from its
+                      RFC 8414 metadata, exchanges a refresh token (or a one-time authorization code
+                      via PKCE) for an access token, writes it to accessTokenSecretRef, and wires
+                      auth.bearerToken to that Secret so the model-router sends it as a bearer. This is
+                      what makes OAuth-only MCP servers usable (e.g. Slack, which rejects static tokens
+                      with -32001 invalid_token). Mutually exclusive with bearerToken/apiKey/headers.
+                    properties:
+                      accessTokenSecretRef:
+                        description: |-
+                          AccessTokenSecretRef is the Secret (key "token") the access token is written to
+                          and that auth.bearerToken references. If omitted, the controller names it
+                          "<mcpserver>-mcp-token" (key "token").
+                        properties:
+                          key:
+                            description: Key within the Secret.
+                            type: string
+                          name:
+                            description: Name of the Secret.
+                            type: string
+                          namespace:
+                            description: Namespace of the Secret. Defaults to the
+                              same namespace as the referencing resource.
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      credentials:
+                        description: |-
+                          Credentials is a Secret (in the MCPServer's namespace) holding the OAuth client
+                          id/secret (keys: client_id, client_secret), an optional registered redirect_uri
+                          (key: redirect_uri), and an optional pre-provisioned refresh_token (key:
+                          refresh_token). Supplying a refresh_token skips the one-time authorization-code
+                          seed; otherwise the controller reports "seeding required" and the operator runs
+                          `oauth-proxy seed` once.
+                        properties:
+                          name:
+                            description: Name of the resource.
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      refreshTokenSecretRef:
+                        description: |-
+                          RefreshTokenSecretRef optionally points to a Secret/key holding just the refresh
+                          token (instead of inside Credentials). When set, this takes precedence.
+                        properties:
+                          key:
+                            description: Key within the Secret.
+                            type: string
+                          name:
+                            description: Name of the Secret.
+                            type: string
+                          namespace:
+                            description: Namespace of the Secret. Defaults to the
+                              same namespace as the referencing resource.
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      scopes:
+                        description: Scopes overrides the server's scopes_supported;
+                          if empty, discovery scopes win.
+                        items:
+                          type: string
+                        type: array
+                    required:
+                    - credentials
+                    type: object
+                type: object
+              discoverability:
+                default: enabled
+                description: |-
+                  Discoverability controls how MCP tools are surfaced to agents.
+
+                  "enabled" (default): the model-router auto-discovers all tools at runtime via
+                  tools/list and exposes them to the LLM. spec.tools is optional — when omitted,
+                  the controller creates one connector Tool CR (named after the MCPServer) and the
+                  agent references the server by that name. Any tools declared in spec.tools are
+                  still created as child Tool CRs (useful for access-control cataloguing).
+
+                  "disabled": spec.tools is required and the agent must reference each declared
+                  Tool CR explicitly.
+                enum:
+                - enabled
+                - disabled
+                type: string
               env:
                 additionalProperties:
                   type: string
@@ -95,6 +278,7 @@ spec:
                 description: |-
                   EnvFrom sets environment variables sourced from Kubernetes Secrets.
                   These are merged with (and override) Env entries of the same name.
+                  Only used for stdio transport.
                 items:
                   description: |-
                     EnvVar represents an environment variable with either a literal value or an indirect
@@ -133,6 +317,24 @@ spec:
                   required:
                   - name
                   type: object
+                type: array
+              excludePatterns:
+                description: |-
+                  ExcludePatterns is a list of glob patterns to hide discovered tools. A tool
+                  matching any pattern is dropped before it reaches the LLM, even if it matched
+                  an IncludePatterns entry (exclude always wins). Applied after IncludePatterns.
+                items:
+                  type: string
+                type: array
+              includePatterns:
+                description: |-
+                  IncludePatterns is a list of glob patterns used to filter the tools the
+                  model-router discovers at runtime. When non-empty, only tools whose name matches
+                  at least one pattern are exposed to agents. Supports "*", "?", and "**" for
+                  recursive multi-segment matching (e.g. "search/**"). Mirrors the
+                  includePatterns convention used by KnowledgeBase ingestion.
+                items:
+                  type: string
                 type: array
               networkEgress:
                 description: |-
@@ -228,6 +430,11 @@ spec:
                 description: |-
                   Tools declares the tools this MCP server provides.
                   Each entry becomes a child Tool CR managed by the MCPServer controller.
+
+                  Optional when spec.discoverability is "enabled" (the default): if Tools is
+                  empty the controller creates a single connector Tool CR (named after the
+                  MCPServer) and the model-router discovers every tool at runtime via tools/list.
+                  When spec.discoverability is "disabled", Tools is required.
                 items:
                   description: MCPServerTool declares a single tool provided by an
                     MCP server.
@@ -251,7 +458,6 @@ spec:
                   required:
                   - name
                   type: object
-                minItems: 1
                 type: array
               transport:
                 default: stdio
@@ -266,8 +472,6 @@ spec:
                   URL is the MCP server URL for http and sse transports.
                   If set, the server runs externally and no sidecar is injected.
                 type: string
-            required:
-            - tools
             type: object
           status:
             description: MCPServerStatus defines the observed state of an MCPServer.
@@ -332,6 +536,12 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              discovering:
+                description: |-
+                  Discovering is true when spec.discoverability is "enabled" and spec.tools is
+                  empty, meaning the controller created a connector Tool CR and the model-router
+                  will discover all tools at runtime via tools/list.
+                type: boolean
               message:
                 description: Message contains a human-readable status message.
                 type: string

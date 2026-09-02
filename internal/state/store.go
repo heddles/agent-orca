@@ -32,6 +32,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/klauspost/compress/zstd"
@@ -56,6 +58,32 @@ type Config struct {
 	// CheckpointKey is the Redis key prefix for this run.
 	// Format: "agentorca/runs/<run-id>/state"
 	CheckpointKey string `json:"checkpointKey,omitempty"`
+
+	// MaxTokenStreamLen is the Redis XADD MAXLEN (APPROX) applied to each run's token
+	// and trace-event stream ("tokens:<ns>:<run>"). The stream holds one entry per
+	// streamed token delta + trace event, so long-running/Reasoning-heavy runs can
+	// exceed the historical 10k cap and silently lose the OLDEST tokens on replay.
+	// 0 (default) = 100000 (~10x the old floor), enough headroom for very long runs
+	// while still bounding per-run memory. Tools/agents reading the stream via
+	// TailTokens keep the newest entries; set higher per-deployment if you run
+	// extremely long sessions. Not related to output truncation mid-stream.
+	MaxTokenStreamLen int `json:"maxTokenStreamLen,omitempty"`
+}
+
+// TraceEntry is a single timestamped entry in a run's execution trace, mirroring
+// the UI's TraceEntry TypeScript interface. Used to archive the full trace
+// (tokens, tool calls, tool results, etc.) from the Redis stream so that
+// historical runs can be rendered with the same TraceAccordion component as live
+// runs.
+type TraceEntry struct {
+	// ID is a sequential counter assigned during archival for React key stability.
+	ID int `json:"id"`
+	// Event is the discriminated trace event JSON (e.g. {"type":"toolCall",...}).
+	Event json.RawMessage `json:"event"`
+	// TS is an RFC3339 timestamp derived from the Redis stream entry ID.
+	TS string `json:"ts"`
+	// ChildRunName is set when this entry originated from a child run's stream.
+	ChildRunName string `json:"childRunName,omitempty"`
 }
 
 // Store is the interface for conversation state storage.
@@ -91,6 +119,15 @@ type Store interface {
 	// new ones. The channel closes when ctx is cancelled, when a terminal trace event
 	// (done/fail/finalOutput) is received, or after a 10-minute absolute deadline.
 	TailTokens(ctx context.Context, key string) (<-chan string, error)
+
+	// ReadTraceEvents returns all trace entries from the token-stream Redis key,
+	// ordered by stream entry ID. Tokens are converted to
+	// {"type":"token","content":"..."} events; structured trace events (ev field)
+	// are returned with their original JSON payload. Each entry receives a
+	// sequential id and an ISO timestamp parsed from the Redis stream ID.
+	// Returns nil if the stream does not exist or is empty. Used at archival
+	// time to snapshot a run's full execution trace into PostgreSQL.
+	ReadTraceEvents(ctx context.Context, key string) ([]TraceEntry, error)
 
 	// SaveAnswer stores a human's clarification answer for a run.
 	SaveAnswer(ctx context.Context, key string, answer string, ttl time.Duration) error
@@ -173,12 +210,13 @@ func (nopStore) LoadSpend(_ context.Context, _ string) (float64, error) { return
 func (nopStore) SaveAnswer(_ context.Context, _ string, _ string, _ time.Duration) error {
 	return nil
 }
-func (nopStore) LoadAnswer(_ context.Context, _ string) (string, error)     { return "", nil }
-func (nopStore) SaveHTTPOutput(_ context.Context, _ string, _ string) error { return nil }
-func (nopStore) LoadHTTPOutput(_ context.Context, _ string) (string, error) { return "", nil }
-func (nopStore) DeleteKey(_ context.Context, _ string) error                { return nil }
-func (nopStore) SaveToken(_ context.Context, _ string, _ string) error      { return nil }
-func (nopStore) SaveTraceEvent(_ context.Context, _ string, _ string) error { return nil }
+func (nopStore) LoadAnswer(_ context.Context, _ string) (string, error)            { return "", nil }
+func (nopStore) SaveHTTPOutput(_ context.Context, _ string, _ string) error        { return nil }
+func (nopStore) LoadHTTPOutput(_ context.Context, _ string) (string, error)        { return "", nil }
+func (nopStore) DeleteKey(_ context.Context, _ string) error                       { return nil }
+func (nopStore) SaveToken(_ context.Context, _ string, _ string) error             { return nil }
+func (nopStore) SaveTraceEvent(_ context.Context, _ string, _ string) error        { return nil }
+func (nopStore) ReadTraceEvents(_ context.Context, _ string) ([]TraceEntry, error) { return nil, nil }
 func (nopStore) TailTokens(_ context.Context, _ string) (<-chan string, error) {
 	ch := make(chan string)
 	close(ch)
@@ -200,9 +238,10 @@ func (nopStore) Close() error                                             { retu
 
 // redisStore implements Store using Redis with zstd compression.
 type redisStore struct {
-	client  *redis.Client
-	encoder *zstd.Encoder
-	decoder *zstd.Decoder
+	client            *redis.Client
+	encoder           *zstd.Encoder
+	decoder           *zstd.Decoder
+	tokenStreamMaxLen int64 // XADD MAXLEN(APPROX) for tokens:<ns>:<run> streams
 }
 
 func (s *redisStore) Ping(ctx context.Context) error {
@@ -210,6 +249,23 @@ func (s *redisStore) Ping(ctx context.Context) error {
 		return errors.New("redis store not initialized")
 	}
 	return s.client.Ping(ctx).Err()
+}
+
+// defaultTokenStreamMaxLen bounds each run's token/trace-event Redis stream. Raised
+// from the old hard-coded 10000 so very long / Reasoning-heavy sessions don't silently
+// shed their oldest streamed tokens when the user refreshes to replay. Each XADD entry is
+// small (a token delta or a short trace event), so ~100k entries is negligible memory per
+// run and still auto-expires on the 24h sliding TTL.
+const defaultTokenStreamMaxLen = 100000
+
+// resolveTokenStreamCap returns the effective MAXLEN for the per-run token stream: an
+// explicit Config.MaxTokenStreamLen (if >0) or the package default. Factored out so it can
+// be unit-tested without a live Redis connection.
+func resolveTokenStreamCap(n int) int64 {
+	if n > 0 {
+		return int64(n)
+	}
+	return defaultTokenStreamMaxLen
 }
 
 func newRedisStore(cfg Config) (*redisStore, error) {
@@ -237,7 +293,12 @@ func newRedisStore(cfg Config) (*redisStore, error) {
 	enc, _ := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedDefault))
 	dec, _ := zstd.NewReader(nil)
 
-	return &redisStore{client: client, encoder: enc, decoder: dec}, nil
+	return &redisStore{
+		client:            client,
+		encoder:           enc,
+		decoder:           dec,
+		tokenStreamMaxLen: resolveTokenStreamCap(cfg.MaxTokenStreamLen),
+	}, nil
 }
 
 func (s *redisStore) SaveMessages(ctx context.Context, key string, messages []json.RawMessage, ttl time.Duration) error {
@@ -317,7 +378,7 @@ func (s *redisStore) SaveTraceEvent(ctx context.Context, key string, eventJSON s
 	expiry := 24 * time.Hour
 	if err := s.client.XAdd(ctx, &redis.XAddArgs{
 		Stream: key,
-		MaxLen: 10000,
+		MaxLen: s.tokenStreamMaxLen,
 		Approx: true,
 		Values: map[string]any{"ev": eventJSON},
 	}).Err(); err != nil {
@@ -335,7 +396,7 @@ func (s *redisStore) SaveToken(ctx context.Context, key string, token string) er
 	expiry := 24 * time.Hour
 	if err := s.client.XAdd(ctx, &redis.XAddArgs{
 		Stream: key,
-		MaxLen: 10000,
+		MaxLen: s.tokenStreamMaxLen,
 		Approx: true,
 		Values: map[string]any{"t": token},
 	}).Err(); err != nil {
@@ -402,6 +463,141 @@ func (s *redisStore) TailTokens(ctx context.Context, key string) (<-chan string,
 		}
 	}()
 	return ch, nil
+}
+
+// ReadTraceEvents returns all trace entries from the Redis stream for the given
+// token-stream key, in stream order. Tokens and thinking deltas are grouped
+// into a single entry per consecutive burst (rather than one entry per
+// individual delta) — this keeps the archived trace compact (~100x smaller)
+// while preserving the same information the UI renders for live runs.
+// Structured trace events (toolCall, toolResult, guardrail, etc.) are returned
+// individually with their original JSON payload. The ts field is derived from
+// the Redis stream entry ID (millisecond timestamp). Returns nil if the stream
+// does not exist or is empty.
+func (s *redisStore) ReadTraceEvents(ctx context.Context, key string) ([]TraceEntry, error) {
+	entries, err := s.client.XRange(ctx, key, "-", "+").Result()
+	if err != nil {
+		if err == redis.Nil {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("XRANGE %s: %w", key, err)
+	}
+
+	result := make([]TraceEntry, 0, len(entries))
+	id := 0
+
+	// Accumulators for grouping consecutive same-type delta events. Tokens and
+	// thinking deltas are emitted by the model-router one fragment at a time;
+	// merging them into a single entry per burst avoids storing O(10K) entries
+	// per turn in PostgreSQL (which was ~15MB per run at scale).
+	var tokenBuf strings.Builder
+	var thoughtBuf strings.Builder
+	var pendingTS string
+	var pendingToken bool
+	var pendingThought bool
+
+	flushPending := func() {
+		if pendingToken {
+			eventJSON, _ := json.Marshal(map[string]string{
+				"type":    "token",
+				"content": tokenBuf.String(),
+			})
+			result = append(result, TraceEntry{ID: id, Event: json.RawMessage(eventJSON), TS: pendingTS})
+			id++
+			tokenBuf.Reset()
+			pendingToken = false
+		}
+		if pendingThought {
+			eventJSON, _ := json.Marshal(map[string]string{
+				"type":    "thought",
+				"content": thoughtBuf.String(),
+			})
+			result = append(result, TraceEntry{ID: id, Event: json.RawMessage(eventJSON), TS: pendingTS})
+			id++
+			thoughtBuf.Reset()
+			pendingThought = false
+		}
+	}
+
+	for _, entry := range entries {
+		// Skip legacy empty-token "done" sentinels from older producers.
+		if _, ok := entry.Values["done"]; ok {
+			continue
+		}
+		ts := streamIDToISO(entry.ID)
+
+		if t, ok := entry.Values["t"]; ok {
+			// Token delta: accumulate into the current burst.
+			if !pendingToken {
+				pendingTS = ts
+			}
+			tokenBuf.WriteString(fmt.Sprint(t))
+			pendingToken = true
+			continue
+		}
+
+		if ev, ok := entry.Values["ev"]; ok {
+			evStr := fmt.Sprint(ev)
+
+			// Peek at the event type to decide whether to group or flush.
+			var meta struct {
+				Type    string `json:"type"`
+				Content string `json:"content"`
+			}
+			if json.Unmarshal([]byte(evStr), &meta) == nil {
+				if meta.Type == "thought" {
+					// Thinking delta: accumulate into the current burst.
+					if !pendingThought {
+						if pendingToken {
+							flushPending()
+						}
+						pendingTS = ts
+					}
+					thoughtBuf.WriteString(meta.Content)
+					pendingThought = true
+					continue
+				}
+				if meta.Type == "token" {
+					// A token wrapped in the ev field (unusual, but handle it).
+					if !pendingToken {
+						pendingTS = ts
+					}
+					tokenBuf.WriteString(meta.Content)
+					pendingToken = true
+					continue
+				}
+			}
+
+			// Any other event type: flush pending accumulators, then store as-is.
+			flushPending()
+			result = append(result, TraceEntry{
+				ID:    id,
+				Event: json.RawMessage(evStr),
+				TS:    ts,
+			})
+			id++
+		}
+	}
+	flushPending()
+
+	if len(result) == 0 {
+		return nil, nil
+	}
+	return result, nil
+}
+
+// streamIDToISO parses a Redis stream entry ID ("<milliseconds>-<sequence>")
+// into an RFC3339 timestamp string. Returns "" if the ID cannot be parsed.
+func streamIDToISO(id string) string {
+	dash := strings.IndexByte(id, '-')
+	if dash < 0 {
+		return ""
+	}
+	ms, err := strconv.ParseInt(id[:dash], 10, 64)
+	if err != nil {
+		return ""
+	}
+	return time.UnixMilli(ms).UTC().Format(time.RFC3339Nano)
 }
 
 // sendStreamEntry forwards one Redis stream entry to ch. Regular tokens are yielded

@@ -17,10 +17,12 @@ limitations under the License.
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -398,12 +400,14 @@ func TestACPBridge_SessionPrompt_Cancel(t *testing.T) {
 	}
 }
 
-// TestACPBridge_SessionPrompt_Awaiting verifies that when a run reaches the
-// "awaiting" state (waiting for human input, e.g. via _clarify) the bridge
-// returns a spec-compliant stopReason (end_turn) — NOT the invalid "awaiting"
-// value — and emits a session/update notification so the client knows the
-// agent is waiting for input.
+// TestACPBridge_SessionPrompt_Awaiting verifies the full elicitation/create
+// flow: when a run reaches "awaiting" (e.g. via _clarify) the bridge emits the
+// clarification question, sends an elicitation/create request to the client,
+// resumes the run with the user's answer, and finally returns a spec-compliant
+// stopReason (end_turn) — never the invalid "awaiting" value.
 func TestACPBridge_SessionPrompt_Awaiting(t *testing.T) {
+	var pollCount int32
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/agents/test-agent" && r.Method == http.MethodGet:
@@ -414,49 +418,89 @@ func TestACPBridge_SessionPrompt_Awaiting(t *testing.T) {
 			w.WriteHeader(http.StatusCreated)
 			_, _ = fmt.Fprint(w, `{"agent_name":"test-agent","run_id":"run-await","status":"created","created_at":"2024-01-01T00:00:00Z"}`) //nolint:lll
 		case r.URL.Path == "/runs/run-await" && r.Method == http.MethodGet:
-			// Always return awaiting with output (the clarification question).
+			n := atomic.AddInt32(&pollCount, 1)
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = fmt.Fprint(w, `{"run_id":"run-await","status":"awaiting","agent_name":"test-agent","created_at":"2024-01-01T00:00:00Z","await_request":{},"output":[{"role":"assistant","parts":[{"content_type":"text/plain","content":"Which password? The email or SSO one?"}]}]}`) //nolint:lll
+			if n <= 1 {
+				// First poll: awaiting with the clarification question.
+				_, _ = fmt.Fprint(w, `{"run_id":"run-await","status":"awaiting","agent_name":"test-agent","created_at":"2024-01-01T00:00:00Z","await_request":{"question":"Which password? The email or SSO one?"},"output":[{"role":"assistant","parts":[{"content_type":"text/plain","content":"Which password? The email or SSO one?"}]}]}`) //nolint:lll
+			} else {
+				// After resume: completed with final output.
+				_, _ = fmt.Fprint(w, `{"run_id":"run-await","status":"completed","agent_name":"test-agent","created_at":"2024-01-01T00:00:00Z","finished_at":"2024-01-01T00:00:10Z","output":[{"role":"assistant","parts":[{"content_type":"text/plain","content":"OK, I sent the reset email."}]}]}`) //nolint:lll
+			}
+		case r.URL.Path == "/runs/run-await" && r.Method == http.MethodPost: //nolint:goconst
+			// Resume endpoint — accept the answer.
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprint(w, `{"run_id":"run-await","status":"in-progress","agent_name":"test-agent","created_at":"2024-01-01T00:00:00Z"}`) //nolint:lll
 		default:
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 		}
 	}))
 	defer srv.Close()
 
-	var stdout, stderr bytes.Buffer
-	server := &acpStdioServer{stdout: &stdout, stderr: &stderr}
-	client := newClient(srv.URL, srv.URL, "tok", defaultTimeout, true)
+	// Use io.Pipe for bidirectional stdio so we can drive the
+	// elicitation/create round-trip through the real Serve loop.
+	stdinR, stdinW := io.Pipe()
+	stdoutR, stdoutW := io.Pipe()
+	stderr := &bytes.Buffer{}
+	server := newACPStdioServer(nil, stdinR, stdoutW, stderr)
+	client := newClient(srv.URL, srv.URL, "tok", 10*time.Second, true)
 	bridge := newACPBridge(server, client, "test-agent")
 	server.handler = bridge
 
-	id := json.RawMessage(`1`)
-	bridge.Dispatch(context.Background(), jsonrpcRequest{
-		JSONRPC: "2.0",
-		ID:      &id,
-		Method:  "session/prompt",
-		Params:  json.RawMessage(`{"sessionId":"sess-await","prompt":[{"type":"text","text":"help"}]}`),
-	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	serveDone := make(chan struct{})
+	go func() {
+		defer close(serveDone)
+		_ = server.Serve(ctx)
+	}()
 
-	out := stdout.String()
-	// A session/update notification with sessionUpdate "awaiting" must have been
-	// emitted so the client knows the agent is waiting for human input.
-	if !strings.Contains(out, `"sessionUpdate":"awaiting"`) {
-		t.Fatalf("expected awaiting session/update notification, stdout:\n%s", out)
+	// 1. Send session/prompt.
+	if _, err := fmt.Fprintln(stdinW, `{"jsonrpc":"2.0","id":"1","method":"session/prompt","params":{"sessionId":"sess-await","prompt":[{"type":"text","text":"help"}]}}`); err != nil {
+		t.Fatalf("writing session/prompt: %v", err)
 	}
 
-	// The final session/prompt response must use a spec-compliant stopReason.
-	lines := strings.Split(strings.TrimSpace(out), "\n")
-	var resp jsonrpcMessage
-	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &resp); err != nil {
-		t.Fatalf("unmarshal last response: %v\\nstdout:\n%s", err, out)
+	// 2. Read stdout until we find the elicitation/create request, then reply.
+	scanner := bufio.NewScanner(stdoutR)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
+	var foundQuestion, foundElicitation, foundEndTurn bool
+	for scanner.Scan() {
+		line := scanner.Text()
+		var msg jsonrpcMessage
+		if err := json.Unmarshal([]byte(line), &msg); err != nil {
+			continue
+		}
+		// Detect the clarification question emitted as agent_message_chunk.
+		if strings.Contains(line, "agent_message_chunk") && strings.Contains(line, "Which password") {
+			foundQuestion = true
+		}
+		// Detect the elicitation/create request and reply with an answer.
+		if msg.Method == "elicitation/create" && msg.ID != nil {
+			foundElicitation = true
+			idStr := string(*msg.ID)
+			_, _ = fmt.Fprintf(stdinW, `{"jsonrpc":"2.0","id":%s,"result":{"action":"accept","content":{"answer":"email"}}}`+"\n", idStr)
+		}
+		// Detect the final session/prompt response.
+		if msg.ID != nil && msg.Method == "" && msg.Result != nil {
+			var pr acpPromptResponse
+			raw, _ := json.Marshal(msg.Result)
+			if err := json.Unmarshal(raw, &pr); err == nil {
+				if pr.StopReason == "end_turn" {
+					foundEndTurn = true
+					break
+				}
+			}
+		}
 	}
-	var promptResp acpPromptResponse
-	unmarshalResult(t, resp, &promptResp)
-	if promptResp.StopReason != "end_turn" {
-		t.Fatalf("expected spec-compliant stopReason 'end_turn' for awaiting, got %q", promptResp.StopReason)
+
+	if !foundQuestion {
+		t.Error("expected the clarification question to be emitted as an agent_message_chunk")
 	}
-	if promptResp.StopReason == "awaiting" {
-		t.Fatalf("stopReason must not be the non-spec value 'awaiting'")
+	if !foundElicitation {
+		t.Error("expected an elicitation/create request to be sent to the client")
+	}
+	if !foundEndTurn {
+		t.Error("expected session/prompt response with stopReason 'end_turn'")
 	}
 }
 

@@ -45,6 +45,20 @@ const defaultOIDCRedirectURI = "http://127.0.0.1:8765/callback"
 // avoids race-losing a request to an expiring token.
 const oidcLoginGracePeriod = 5 * time.Minute
 
+// oidcLoginTimeout bounds the overall interactive OIDC login flow (browser
+// callback wait). It must be generous enough for a human to complete the
+// browser-based authorization-code login, but bounded so the process can never
+// hang indefinitely — previously a missing deadline on context.Background()
+// caused the process to block until SIGKILL when the IdP was unreachable or
+// no browser was available.
+const oidcLoginTimeout = 10 * time.Minute
+
+// oidcHTTPTimeout bounds individual HTTP calls within the OIDC flow (provider
+// discovery, JWKS verification, token exchange). These should complete in
+// seconds; the long timeout is a safety net against a slow/unreachable IdP so
+// a discovery hang doesn't consume the entire interactive deadline.
+const oidcHTTPTimeout = 30 * time.Second
+
 // callbackSuccessHTML is the page shown to the user's browser after the loopback
 // callback receives the authorization code.
 const callbackSuccessHTML = "<!doctype html><html><body>" +
@@ -97,7 +111,11 @@ func loginOIDC(ctx context.Context, cfg OIDCLoginConfig, out io.Writer) (*OIDCLo
 		return nil, fmt.Errorf("oidc: --redirect-uri must use a loopback address (got %q); a CLI callback cannot bind a remote host", cfg.RedirectURI) //nolint:lll
 	}
 
-	provider, err := oidc.NewProvider(ctx, oidc.Config{
+	// Discovery: bound with a short HTTP timeout so an unreachable/slow IdP
+	// fails fast instead of hanging for the full interactive deadline.
+	discoverCtx, discoverCancel := context.WithTimeout(ctx, oidcHTTPTimeout)
+	defer discoverCancel()
+	provider, err := oidc.NewProvider(discoverCtx, oidc.Config{
 		IssuerURL:    cfg.IssuerURL,
 		ClientID:     cfg.ClientID,
 		ClientSecret: cfg.ClientSecret,
@@ -146,7 +164,10 @@ func loginOIDC(ctx context.Context, cfg OIDCLoginConfig, out io.Writer) (*OIDCLo
 		if res.err != nil {
 			return nil, res.err
 		}
-		principal, err := provider.ExchangeAndVerify(ctx, res.code, nonce, codeVerifier)
+		// Token exchange + JWKS verification: bound with a short HTTP timeout.
+		exchangeCtx, exchangeCancel := context.WithTimeout(ctx, oidcHTTPTimeout)
+		principal, err := provider.ExchangeAndVerify(exchangeCtx, res.code, nonce, codeVerifier)
+		exchangeCancel()
 		if err != nil {
 			return nil, fmt.Errorf("exchanging authorization code: %w", err)
 		}

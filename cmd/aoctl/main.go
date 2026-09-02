@@ -917,7 +917,13 @@ func (s *settings) loginOIDCInteractive() error {
 		NoBrowser:    s.noBrowser,
 		OpenBrowser:  s.openBrowser,
 	}
-	res, err := loginOIDC(context.Background(), cfg, s.out)
+	// Bounded context so the interactive flow can never hang indefinitely.
+	// (Previously context.Background() had no deadline — a stuck IdP or a
+	// missing browser callback would block forever and eventually get
+	// SIGKILL'd by the system.)
+	loginCtx, loginCancel := context.WithTimeout(context.Background(), oidcLoginTimeout)
+	defer loginCancel()
+	res, err := loginOIDC(loginCtx, cfg, s.out)
 	if err != nil {
 		return err
 	}
