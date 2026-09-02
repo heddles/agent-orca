@@ -173,6 +173,10 @@ spec:
   {{- if hasKey . "warmLocalCacheSizeMi" }}
   warmLocalCacheSizeMi: {{ .warmLocalCacheSizeMi }}
   {{- end }}
+  {{- if hasKey . "webhookNotify" }}
+  webhookNotify:
+    {{- toYaml .webhookNotify | nindent 4 }}
+  {{- end }}
 {{- end }}
 {{- end -}}
 

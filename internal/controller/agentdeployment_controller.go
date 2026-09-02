@@ -47,6 +47,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
+	"github.com/floppyfish14/agent-orca/internal/mcp"
 	"github.com/floppyfish14/agent-orca/internal/podbuilder"
 	"github.com/floppyfish14/agent-orca/internal/router"
 	"github.com/floppyfish14/agent-orca/internal/security"
@@ -612,6 +613,13 @@ func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig( //nolint:gocycl
 						})
 					}
 				}
+				if tool.Spec.MCPConfig.Auth != nil && tool.Spec.MCPConfig.Auth.OAuth != nil {
+					o := tool.Spec.MCPConfig.Auth.OAuth
+					mcpCfg.OAuth = &mcp.OAuthConfig{
+						CredentialsDir: podbuilder.OAuthCredsMountDir(toolName, o.Credentials.Name),
+						Scopes:         o.Scopes,
+					}
+				}
 				mcpServers = append(mcpServers, mcpCfg)
 			}
 		}
@@ -643,6 +651,13 @@ func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig( //nolint:gocycl
 		Name:        "_done",
 		Description: "Signal successful task completion with a structured result. Use this when the task is fully complete and you have a final answer or output to return. The run will transition to Succeeded and no further LLM calls will be made.",
 		Parameters:  []byte(`{"type":"object","properties":{"output":{"type":"string","description":"The final output or result of the task"},"summary":{"type":"string","description":"A brief human-readable summary of what was accomplished"}},"required":["output"]}`),
+		BackendType: "builtin",
+	})
+
+	toolDefs = append(toolDefs, router.ToolDefinition{
+		Name:        "_webhook_notify",
+		Description: "Post a message to Slack via an incoming webhook (WEBHOOK_URL). Use to notify a team channel with task results. Returns the Slack API response.",
+		Parameters:  []byte(`{"type":"object","properties":{"text":{"type":"string","description":"The message text to post to Slack."},"channel":{"type":"string","description":"Optional channel/@user override instead of the webhook's default channel"}},"required":["text"]}`),
 		BackendType: "builtin",
 	})
 	toolDefs = append(toolDefs, router.ToolDefinition{
@@ -1573,6 +1588,10 @@ func (r *AgentDeploymentReconciler) buildWarmPod(
 
 	agentSecretVolumes, agentSecretMounts := podbuilder.ResolveAgentSecretRefs(agent)
 
+	var webhookNotifyRef *corev1.SecretKeySelector
+	if deploy.Spec.WebhookNotify != nil {
+		webhookNotifyRef = deploy.Spec.WebhookNotify.WebhookSecretRef
+	}
 	return podbuilder.Build(podbuilder.PodConfig{
 		GenerateName: "warm-" + deploy.Name + "-",
 		Namespace:    deploy.Namespace,
@@ -1612,6 +1631,7 @@ func (r *AgentDeploymentReconciler) buildWarmPod(
 		// to Redis for faster resume + Redis-outage resilience. Only on warm pods.
 		WarmLocalCacheEnabled:   effectiveWarmLocalCache(deploy),
 		WarmLocalCacheSizeLimit: warmCacheSizeLimitQuantity(deploy),
+		WebhookNotifySecretRef:  webhookNotifyRef,
 	})
 }
 

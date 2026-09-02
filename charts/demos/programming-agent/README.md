@@ -4,9 +4,10 @@ A senior software engineer for the agent-orca project. It answers architecture
 questions from a curated engineering KnowledgeBase first, then drills into live
 source via a **read-only GitHub MCP server** (stdio sidecar) when RAG results are
 insufficient — back-filling what it reads into the KB with `_rag_ingest` so the
-vector store grows richer with each session. It can also consult team Slack history
-(messages, channels, users) via the **Slack MCP server** (`https://mcp.slack.com/mcp`,
-Streamable HTTP) before grounding its answers in live source.
+vector store grows richer with each session. When a task completes, it can also
+**notify the team Slack channel** via the `_webhook_notify` builtin tool (a Slack
+**incoming webhook** — no per-user token, shared channel, no data-residency
+concerns).
 
 ## What this demo shows
 
@@ -16,13 +17,12 @@ Streamable HTTP) before grounding its answers in live source.
   credentials (`GITHUB_PERSONAL_ACCESS_TOKEN`) are injected through `envFrom`
   (secretKeyRef), never via `mcpConfig.auth` (which the admission webhook rejects
   for stdio transport).
-- **Slack MCP (HTTP + bearer token)**: Slack's publicly-hosted MCP server is
-  reached over Streamable HTTP at `https://mcp.slack.com/mcp`. Unlike the GitHub
-  stdio sidecar, no binary is injected — the model-router connects directly and
-  authenticates with a Slack user token (xoxp-) mounted from the `slack-mcp-token`
-  Secret. The token is sent as `Authorization: Bearer <xoxp-...>` (the `bearerToken`
-  auth), resolved to a file and injected as a header on every request. A read-
-  only scope set is recommended so the agent can search but not post back.
+- **Slack webhook (team notification)**: the agent posts results to a shared Slack
+  channel via the `_webhook_notify` builtin tool, which POSTs to a Slack **incoming
+  webhook URL** mounted into the model-router sidecar from the `webhook-notify`
+  Secret. No per-user OAuth, no browser, no data residency concerns: the webhook URL
+  is the only credential and is scoped to posting in its channel. Used to announce
+  completions, PR links, or status updates — never to read Slack history.
 - **RAG + live code search**: the agent starts with `_rag_search` against the
   `agent-orca-codebase` KnowledgeBase (handbook ingested from a ConfigMap), then
   falls back to `search_code` / `get_file_contents` for fresh source, then
@@ -37,11 +37,11 @@ Streamable HTTP) before grounding its answers in live source.
 | Name | Kind | Purpose |
 |---|---|---|
 | `github-mcp-token` | Secret | GitHub PAT (repo read scope), from `githubToken` value |
-| `slack-mcp-token` | Secret | Slack user token (xoxp-), read/search scopes, from `slackToken` value |
+| `webhook-notify` | Secret | Slack incoming-webhook URL (posts only), from `webhookNotify.url` value |
 | `programming-agent-handbook` | ConfigMap | Engineering handbook ingested into the KB |
 | `github-mcp` | MCPServer | Read-only GitHub MCP stdio sidecar (get_file_contents, search_code, list_commits, get_commit, list_branches, search_commits) |
 | `github-mcp-<tool>` | Tool (6) | Auto-created child Tool CRs for each declared MCP tool |
-| `slack-mcp` | MCPServer | Slack MCP over HTTP (https://mcp.slack.com/mcp), bearer-token auth; tools auto-discovered at runtime (search, read channels/threads, list users/channels, emoji, canvases, lists) |
+| `_webhook_notify` | Builtin tool | Posts a message to Slack via the incoming webhook (`WEBHOOK_URL`) |
 | `agent-orca-codebase` | KnowledgeBase | Qdrant vector store of the handbook; embedded via `ollama-embed` |
 | `senior-programmer` | Agent | Senior-engineer persona, openai-reference, http warm-pool |
 | `senior-programmer-chat` | AgentDeployment | Chat endpoint, warm pool 1 |
@@ -63,39 +63,33 @@ Streamable HTTP) before grounding its answers in live source.
    and `demo-soc-triage` demos.)
 4. **GitHub PAT**: a token with the `repo` (read) scope. Under Skaffold it is read
    from the `AGENT_ORCA_GITHUB_TOKEN` env var (never committed).
-5. **Slack user token**: a `xoxp-...` token from a Slack app installed to your
-   workspace, with the read/search scopes below (see `values.yaml`). Under Skaffold
-   it is read from the `AGENT_ORCA_SLACK_TOKEN` env var (never committed). The token
-   is sent as `Authorization: Bearer <token>` to the public Slack MCP endpoint.
-
-   Required read scopes (safe for a demo — search + read + list; no posting):
+5. **Slack webhook**: create an **incoming webhook** in your Slack workspace (or a
+   workspace app with incoming-webhooks enabled) for the channel you want the agent
+   to notify. Copy its URL:
+   ```bash
+   export AGENT_ORCA_WEBHOOK_URL=https://hooks.slack.com/services/T/B/X
    ```
-   search:read.public search:read.private search:read.mpim search:read.im
-   search:read.files files:read emoji:read search:read.users
-   channels:history groups:history mpim:history im:history
-   channels:read groups:read mpim:read im:read
-   users:read users:read.email
-   ```
-   These map to the Slack MCP server's search/read/list tools (see
-   <https://docs.slack.dev/ai/slack-mcp-server#oauth-scopes>). Add `chat:write` /
-   `reactions:write` / `channels:write` / `im:write` / `mpim:write` only if you want
-   the agent to post back to Slack.
+   Under Skaffold it is read from `AGENT_ORCA_WEBHOOK_URL` (never committed) →
+   the `webhook-notify` Secret; the model-router mounts it as `WEBHOOK_URL` and
+   uses it **only** for `_webhook_notify`. An incoming webhook can post to its channel
+   but cannot read history, so there are no per-user tokens, no browser OAuth, and no
+   data-residency concerns — any team member can read the posted messages.
 
 ## Deploy / Remove
 
 ```bash
-# Skaffold (tokens read from env vars, never committed)
+# Skaffold (Slack webhook URL read from env var, never committed)
 export AGENT_ORCA_GITHUB_TOKEN=ghp_YOUR_TOKEN
-export AGENT_ORCA_SLACK_TOKEN=xoxp_YOUR_TOKEN
+export AGENT_ORCA_WEBHOOK_URL=https://hooks.slack.com/services/T/B/X
 skaffold run -p demo-programming-agent
 
 # or Helm
 helm install programming-agent charts/demos/programming-agent -n agent-orca-system \
   --set githubToken=ghp_YOUR_TOKEN \
-  --set slackToken=xoxp_YOUR_TOKEN
+  --set webhookNotify.url=https://hooks.slack.com/services/T/B/X
 
-# Wait for the KnowledgeBase to ingest the handbook and the warm pod to come up:
-kubectl get knowledgebase agent-orca-codebase -n agent-orca-system -w      # → Ready
+# Wait for the KB to ingest and the warm pod to come up:
+kubectl get knowledgebase agent-orca-codebase -n agent-orca-system -w                       # → Ready
 kubectl get pods -n agent-orca-system -l agentorca.io/deployment=senior-programmer-chat -w
 
 # Remove
@@ -134,14 +128,13 @@ indexed handbook, the live GitHub read takes precedence.
 Expected: `list_commits` on `floppyfish14/agent-orca`, then
 `get_commit` for detail on interesting entries.
 
-**Scenario 4 — Team Slack context**
+**Scenario 4 — Notify the team**
 
-> `What did we decide about the MCPServer auth field in the last discussions?`
+> `Post a one-line summary of this repo's architecture to Slack.`
 
-Expected: `_rag_search` (handbook) + `search_code` for context, then the Slack MCP
-(`slack-mcp`) to search recent channel history. The agent reads relevant
-messages/threads and surfaces prior decisions, grounding its answer in the actual
-discussion. The token's read/search scopes let it search and read but not post.
+Expected: `_rag_search` (handbook) + `search_code` for context, then `_webhook_notify`
+to POST the summary to the configured Slack channel via the incoming webhook. No
+per-user token is involved — the webhook URL only allows posting to its channel.
 
 ## Audit trail
 
@@ -155,7 +148,7 @@ kubectl get agentrun -n agent-orca-system \
 kubectl describe knowledgebase agent-orca-codebase -n agent-orca-system
 
 # MCP server tool readiness
-kubectl get mcpserver github-mcp,slack-mcp -n agent-orca-system -o wide
+kubectl get mcpserver github-mcp -n agent-orca-system -o wide
 kubectl get tool -n agent-orca-system -l agentorca.io/managed-by=mcpserver
 ```
 
@@ -164,17 +157,16 @@ kubectl get tool -n agent-orca-system -l agentorca.io/managed-by=mcpserver
 - The agent image is the persona-free reference
   `ghcr.io/agentorca/agent-orca/openai-reference:latest`; the model-router injects the
   system prompt, tools, history, and built-in tool resolution (`_done`, `_fail`,
-  `_clarify`, `_spawn`, `_rag_search`, `_rag_ingest`, …), so the image only ships
-  `input → model-router → output`.
+  `_clarify`, `_spawn`, `_rag_search`, `_rag_ingest`, `_webhook_notify`, …), so the
+  image only ships `input → model-router → output`.
 - The GitHub MCP runs **read-only** (`--read-only --tools <allow-list>`), so even
   though the `repos` toolset includes write tools, they cannot mutate anything.
-- The Slack MCP is exercised over the public endpoint `https://mcp.slack.com/mcp`.
-  The token is mounted as a file into the model-router sidecar (via the MCPServer's
-  `auth.bearerToken`) and sent as `Authorization: Bearer <token>` — it is never
-  logged or baked into the chart. Restrict the token to read/search scopes so the
-  agent cannot post to Slack even if the LLM tries.
+- Slack is used **outbound only** via the incoming webhook (`_webhook_notify`), mounted
+  as `WEBHOOK_URL` into the model-router sidecar from the `webhook-notify`
+  Secret. The webhook URL can post to its channel but cannot read Slack history, so
+  there are no per-user tokens and no data-residency concerns (any team member can
+  read the posted messages).
 - To point the agent at a different GitHub repo, edit the system prompt's repo
   (`floppyfish14/agent-orca`) and the GitHub PAT's permissions accordingly.
-- To point the agent at a different Slack workspace/app, install the app to that
-  workspace and swap the `slackToken` value (scopes will re-validate against the new
-  workspace).
+- To point the agent at a different Slack channel, create another incoming webhook in
+  that channel and update `webhookNotify.url`.

@@ -40,7 +40,9 @@ const (
 )
 
 // MCPServerReconciler reconciles an MCPServer object.
-// It generates one child Tool CR per declared tool in the MCPServer spec.
+// It generates one child Tool CR per declared tool in the MCPServer spec, and — for
+// OAuth-only remote MCP servers — performs the OAuth token exchange itself (no sidecar)
+// so the flow lives entirely in the MCPServer CR.
 type MCPServerReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
@@ -146,6 +148,20 @@ func (r *MCPServerReconciler) validate(server *agentorcav1alpha1.MCPServer) (boo
 		}
 	default:
 		return false, fmt.Sprintf("unknown transport %q", server.Spec.Transport)
+	}
+
+	// OAuth versus static bearer/API-key/headers are mutually exclusive. OAuth also
+	// requires a remote (http/sse) server and credentials.
+	if server.Spec.Auth != nil && server.Spec.Auth.OAuth != nil {
+		if server.Spec.Auth.BearerToken != nil || server.Spec.Auth.APIKey != nil || len(server.Spec.Auth.Headers) > 0 {
+			return false, "spec.auth.oauth is mutually exclusive with spec.auth.bearerToken/apiKey/headers"
+		}
+		if server.Spec.Auth.OAuth.Credentials.Name == "" {
+			return false, "spec.auth.oauth.credentials is required when spec.auth.oauth is set"
+		}
+		if server.Spec.Transport != "http" && server.Spec.Transport != "sse" {
+			return false, "spec.auth.oauth is only supported for http/sse transport"
+		}
 	}
 
 	// In discovery mode (discoverability enabled, no tools declared) there are no

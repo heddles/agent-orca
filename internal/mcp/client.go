@@ -29,11 +29,15 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
+
+	"github.com/floppyfish14/agent-orca/internal/oauth"
 )
 
 // Transport is the MCP connection transport type.
@@ -58,6 +62,20 @@ type AuthHeaderFile struct {
 	Prefix     string // prepended to file contents (e.g. "Bearer ")
 }
 
+// OAuthConfig drives OAuth 2.0 token acquisition for an HTTP/SSE MCP server. The
+// model-router performs the exchange itself and holds the access token in memory, so
+// NO access-token Secret is required — only the credentials Secret is mounted as
+// files at CredentialsDir (client_id, client_secret, redirect_uri, refresh_token).
+// This is what makes OAuth-only MCP servers (e.g. Slack, which rejects static
+// bearer tokens with -32001 invalid_token) work without a static bearerSecret.
+type OAuthConfig struct {
+	// CredentialsDir holds the OAuth client credentials as files (client_id,
+	// client_secret, redirect_uri, refresh_token).
+	CredentialsDir string
+	// Scopes overrides the server's scopes_supported; if empty, discovery scopes win.
+	Scopes []string
+}
+
 // ServerConfig describes a running MCP server to connect to.
 type ServerConfig struct {
 	// Name is the Tool CRD name this server corresponds to.
@@ -75,6 +93,9 @@ type ServerConfig struct {
 	// AuthHeaderFiles maps HTTP headers to files containing secret values.
 	// Read at HTTP/SSE connection time and injected into every request.
 	AuthHeaderFiles []AuthHeaderFile
+	// OAuth, when set, makes the client perform the OAuth 2.0 exchange (in-memory
+	// bearer) instead of using a static authHeaderFile. Only for http/sse transports.
+	OAuth *OAuthConfig
 	// AllowApps enables MCP App iframe rendering for tools from this server.
 	AllowApps bool
 	// IncludePatterns and ExcludePatterns filter the tool names the model-router
@@ -103,6 +124,7 @@ type Tool struct {
 // tool discovery and invocation interface.
 type Client struct {
 	mu      sync.RWMutex
+	configs []ServerConfig // original configs; used to retry connecting failed servers
 	servers []*serverConn
 	tools   []Tool
 }
@@ -113,6 +135,20 @@ func New(ctx context.Context, configs []ServerConfig) *Client {
 	c := &Client{}
 	for _, cfg := range configs {
 		conn, err := connect(ctx, cfg)
+		// HTTP/SSE servers (incl. OAuth-managed ones) may not have their bearer token
+		// populated yet at this exact instant; the operator writes it shortly after pod
+		// start. Retry briefly so the initial tools/list succeeds once the token appears.
+		if err != nil && (cfg.Transport == TransportHTTP || cfg.Transport == TransportSSE) {
+			for attempt := 0; attempt < 5 && err != nil; attempt++ {
+				slog.Warn("MCP server connect retry", "server", cfg.Name, "attempt", attempt+1, "err", err)
+				select {
+				case <-time.After(2 * time.Second):
+				case <-ctx.Done():
+					err = ctx.Err()
+				}
+				conn, err = connect(ctx, cfg)
+			}
+		}
 		if err != nil {
 			slog.Warn("MCP server connect failed", "server", cfg.Name, "err", err)
 			continue
@@ -132,6 +168,22 @@ func New(ctx context.Context, configs []ServerConfig) *Client {
 		slog.Info("MCP server connected", "server", cfg.Name, "tools", len(tools))
 	}
 	return c
+}
+
+// setAuthHeaders resolves the bearer/credential files fresh from disk on every
+// request. Re-reading per request (rather than once at connect) lets the operator
+// rotate the access token in the mounted Secret and have running pods use the new
+// value without a restart. A not-yet-populated secret file is skipped (logged) so it
+// does not crash the router; the operator's reconnect (Refresh) retries then.
+func (s *serverConn) setAuthHeaders(h http.Header) {
+	for _, ah := range s.authHeaderFiles {
+		val, err := readSecretFile(ah.FilePath)
+		if err != nil {
+			slog.Warn("MCP auth header file not ready; omitting header", "server", s.name, "header", ah.HeaderName, "err", err)
+			continue
+		}
+		h.Set(ah.HeaderName, ah.Prefix+val)
+	}
 }
 
 // Tools returns all tools discovered from connected MCP servers.
@@ -204,10 +256,43 @@ type serverConn struct {
 	stdin  io.WriteCloser
 	stdout *bufio.Reader
 	// http fields
-	httpURL     string
-	authHeaders map[string]string // resolved auth headers for HTTP/SSE
+	httpURL         string
+	authHeaderFiles []AuthHeaderFile // bearer/credential configs, resolved per request (supports token rotation)
+	oauth           *OAuthConfig     // OAuth config; token acquired in-memory (no token Secret)
+	oauthToken      string           // current bearer access token (in-memory)
 	// JSON-RPC ID counter
 	nextID atomic.Int64
+}
+
+// exchangeOAuthToken performs the OAuth 2.0 token exchange against the server's
+// published endpoints (RFC 8414 discovery + refresh_token grant) and returns the
+// access token, read from the mounted CredentialsDir credential files.
+func (s *serverConn) exchangeOAuthToken(ctx context.Context) (string, error) {
+	tm := oauth.New(&http.Client{Timeout: 15 * time.Second}, nil)
+	meta, err := tm.Discover(ctx, s.httpURL)
+	if err != nil {
+		return "", fmt.Errorf("discovering oauth metadata for %s: %w", s.name, err)
+	}
+	read := func(key string) string {
+		b, err := os.ReadFile(filepath.Join(s.oauth.CredentialsDir, key))
+		if err != nil {
+			return ""
+		}
+		return string(b)
+	}
+	cfg := &oauth.Config{
+		ServerURL:    s.httpURL,
+		ClientID:     read("client_id"),
+		ClientSecret: read("client_secret"),
+		RedirectURI:  read("redirect_uri"),
+		Scopes:       s.oauth.Scopes,
+		RefreshToken: read("refresh_token"),
+	}
+	resp, err := tm.Refresh(ctx, meta, cfg)
+	if err != nil {
+		return "", fmt.Errorf("oauth token exchange for %s: %w", s.name, err)
+	}
+	return resp.AccessToken, nil
 }
 
 // jsonrpcRequest is a JSON-RPC 2.0 request.
@@ -239,17 +324,10 @@ func connect(ctx context.Context, cfg ServerConfig) (*serverConn, error) {
 		excludePatterns: cfg.ExcludePatterns,
 	}
 
-	// Resolve auth header files into in-memory map for HTTP/SSE transports.
-	if len(cfg.AuthHeaderFiles) > 0 {
-		conn.authHeaders = make(map[string]string, len(cfg.AuthHeaderFiles))
-		for _, ahf := range cfg.AuthHeaderFiles {
-			val, err := readSecretFile(ahf.FilePath)
-			if err != nil {
-				return nil, fmt.Errorf("reading auth header file for %q: %w", ahf.HeaderName, err)
-			}
-			conn.authHeaders[ahf.HeaderName] = ahf.Prefix + val
-		}
-	}
+	// Store the auth-header configs; they are resolved fresh on each HTTP request via
+	// setAuthHeaders so the operator can rotate the bearer token in the mounted Secret
+	// and have running pods pick up the new value without a restart.
+	conn.authHeaderFiles = cfg.AuthHeaderFiles
 
 	switch cfg.Transport {
 	case TransportStdio:
@@ -259,6 +337,14 @@ func connect(ctx context.Context, cfg ServerConfig) (*serverConn, error) {
 		return conn, conn.connectStdio(ctx, cfg)
 	case TransportHTTP, TransportSSE:
 		conn.httpURL = cfg.URL
+		if cfg.OAuth != nil {
+			conn.oauth = cfg.OAuth
+			if tok, err := conn.exchangeOAuthToken(ctx); err != nil {
+				slog.Warn("MCP oauth token exchange failed; connecting without token", "server", conn.name, "err", err)
+			} else {
+				conn.oauthToken = tok
+			}
+		}
 		return conn, conn.initHTTP(ctx)
 	default:
 		return nil, fmt.Errorf("unsupported transport: %s", cfg.Transport)
@@ -572,14 +658,12 @@ func (s *serverConn) sendHTTP(ctx context.Context, reqBytes []byte) (json.RawMes
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	for k, v := range s.authHeaders {
-		req.Header.Set(k, v)
+	s.setAuthHeaders(req.Header)
+	if s.oauthToken != "" {
+		req.Header.Set("Authorization", "Bearer "+s.oauthToken)
 	}
 
 	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("MCP HTTP request: %w", err)
-	}
 	defer func() { _ = resp.Body.Close() }()
 
 	var rpcResp jsonrpcResponse
@@ -613,8 +697,9 @@ func (s *serverConn) notify(ctx context.Context, method string, params any) erro
 			return err
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
-		for k, v := range s.authHeaders {
-			httpReq.Header.Set(k, v)
+		s.setAuthHeaders(httpReq.Header)
+		if s.oauthToken != "" {
+			httpReq.Header.Set("Authorization", "Bearer "+s.oauthToken)
 		}
 		resp, err := http.DefaultClient.Do(httpReq)
 		if err != nil {

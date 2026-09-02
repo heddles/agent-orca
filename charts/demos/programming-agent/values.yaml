@@ -5,11 +5,14 @@ nameOverride: ""
 # value via a setValueTemplate. With plain Helm: --set githubToken=ghp_xxx
 githubToken: ""
 
-# Slack user token (xoxp-...) for the Slack MCP server. NOT committed — injected
-# at deploy time. Under Skaffold: skaffold wires AGENT_ORCA_SLACK_TOKEN into this
-# value via a setValueTemplate. With plain Helm: --set slackToken=xoxp_xxx
-# See the slack-mcp MCPServer entry below for the required OAuth scopes.
-slackToken: ""
+# Slack incoming webhook (team notification). The senior-programmer agent posts to a
+# shared Slack channel via the _webhook_notify builtin tool, which POSTs to this URL.
+# No per-user OAuth / browser flow, no data residency concerns: the webhook URL is the
+# only credential and is scoped to posting in its channel. NOT committed — injected at
+# deploy time via Skaffold setValueTemplates (AGENT_ORCA_WEBHOOK_URL) or via Helm
+# --set webhookNotify.url=...
+webhookNotify:
+  url: ""                  # Slack incoming-webhook URL (skaffold: AGENT_ORCA_WEBHOOK_URL)
 
 agent-orca-resources:
   # ── MCPServers ────────────────────────────────────────────────────────────────
@@ -107,57 +110,6 @@ agent-orca-resources:
         limits:
           cpu: 200m
           memory: 128Mi
-    # slack-mcp: Slack's publicly hosted MCP server over Streamable HTTP
-    # (https://mcp.slack.com/mcp). Unlike github-mcp (a stdio sidecar), Slack's
-    # server is reached over the public network and authenticates with a Bearer
-    # token (xoxp- user token) mounted from the slack-mcp-token Secret
-    # (created from .slackToken by slack-token-secret.yaml). The token is sent as
-    # `Authorization: Bearer xoxp-...` on every request; it is never baked into the
-    # chart. The per-run NetworkPolicy needs an explicit egress rule to
-    # mcp.slack.com:443.
-    #
-    # Discovery mode: spec.tools is empty (default discoverability: enabled), so the
-    # controller creates a single connector Tool CR named "slack-mcp" and the
-    # model-router discovers every Slack tool at runtime via tools/list. The agent
-    # references "slack-mcp" in its tools list.
-    #
-    # Required Slack app OAuth scopes on the user token (xoxp-). The Slack MCP
-    # server exposes search/read/list tools that map to these scopes — see
-    # https://docs.slack.dev/ai/slack-mcp-server#oauth-scopes. Grant the read
-    # subset below for a safe, read-only demo (the agent searches channel history
-    # and user/channel metadata to answer questions); add the write scopes only if
-    # you want the agent to post back to Slack:
-    #
-    #   search:read.public search:read.private search:read.mpim search:read.im
-    #   search:read.files files:read emoji:read search:read.users
-    #   channels:history groups:history mpim:history im:history
-    #   channels:read groups:read mpim:read im:read
-    #   users:read users:read.email
-    #
-    #   (optional, write-backed — only if the agent should post to Slack:)
-    #   chat:write reactions:write channels:write im:write mpim:write
-    - name: slack-mcp
-      transport: http
-      url: "https://mcp.slack.com/mcp"
-      auth:
-        bearerToken:
-          name: slack-mcp-token
-          key: token
-      allowedAgents:
-        - senior-programmer
-        - _controller
-      networkEgress:
-        - host: mcp.slack.com
-          port: 443
-          protocol: TCP
-      tools: []
-      resources:
-        requests:
-          cpu: 50m
-          memory: 64Mi
-        limits:
-          cpu: 200m
-          memory: 128Mi
   # ── KnowledgeBases ──────────────────────────────────────────────────────────
   #
   # agent-orca-codebase: a curated engineering handbook (created by
@@ -205,9 +157,8 @@ agent-orca-resources:
           _fail                — fail a turn with a message (use for errors)
           github-mcp-*         — read-only GitHub tools (get_file_contents, search_code,
                                    list_commits, get_commit, list_branches, search_commits)
-          slack-mcp:*          — Slack tools discovered at runtime: search messages/files,
-                                   read channels/threads, list users/channels/members,
-                                   emoji, and canvases/lists (read scopes on the token).
+          _webhook_notify        — post a message to the team Slack channel via an incoming
+                                   webhook (no per-user auth; shared channel, no data residency).
 
         WORKFLOW for every request:
           1. ANSWER precisely. Cite file paths (e.g. internal/controller/knowledgebase_controller.go),
@@ -225,9 +176,9 @@ agent-orca-resources:
         controller/tool. Form a hypothesis, point at the most likely root cause, and give a
         reproducible kubectl incantation to confirm.
 
-        SLACK CONTEXT mode: when asked about team history or prior decisions, search
-        Slack first (slack-mcp search/read tools) to surface prior discussions, then ground
-        your answer in the codebase. Never assume; prefer live evidence over memory.
+        SLACK NOTIFY: after completing a task (or at the end of a turn), use _webhook_notify
+        to post a brief, factual summary to the team channel — e.g. the result, a PR link,
+        or a status update. Never dump secrets or full transcripts; keep it terse.
 
         Output style: technical, terse but complete. Use short markdown sections with
         file-path citations. Do not fluff.
@@ -239,7 +190,6 @@ agent-orca-resources:
       # (get_file_contents, etc.) to the LLM.
       tools:
         - github-mcp
-        - slack-mcp
       knowledgeBases:
         - agent-orca-codebase
       runtime:
@@ -285,3 +235,9 @@ agent-orca-resources:
         minBackoffSeconds: 5
         maxBackoffSeconds: 300
         maxConsecutiveFailures: 10
+      # Incoming-webhook Slack notification: warm pods mount the webhook-notify Secret's
+      # `url` key as WEBHOOK_URL into the model-router sidecar, exposing _webhook_notify.
+      webhookNotify:
+        webhookSecretRef:
+          name: webhook-notify
+          key: url

@@ -177,6 +177,44 @@ type MCPAuthConfig struct {
 	// Use this for non-standard auth schemes.
 	// +optional
 	Headers []AuthHeader `json:"headers,omitempty"`
+
+	// OAuth drives OAuth 2.0 token management for the remote MCP server (HTTP/SSE).
+	// When set, the MCPServer controller discovers the server's OAuth config from its
+	// RFC 8414 metadata, exchanges a refresh token (or a one-time authorization code
+	// via PKCE) for an access token, writes it to accessTokenSecretRef, and wires
+	// auth.bearerToken to that Secret so the model-router sends it as a bearer. This is
+	// what makes OAuth-only MCP servers usable (e.g. Slack, which rejects static tokens
+	// with -32001 invalid_token). Mutually exclusive with bearerToken/apiKey/headers.
+	// +optional
+	OAuth *MCPOAuthConfig `json:"oauth,omitempty"`
+}
+
+// MCPOAuthConfig configures OAuth 2.0 token acquisition and rotation for an MCP server.
+// The credentials live in a user-managed Secret; the operator exchanges them for a
+// (rotating) access token and writes it to accessTokenSecretRef, whose value the
+// model-router sends as the bearer. This lets any OAuth-only MCP be declared
+// declaratively in the MCPServer CR.
+type MCPOAuthConfig struct {
+	// Credentials is a Secret (in the MCPServer's namespace) holding the OAuth client
+	// id/secret (keys: client_id, client_secret), an optional registered redirect_uri
+	// (key: redirect_uri), and an optional pre-provisioned refresh_token (key:
+	// refresh_token). Supplying a refresh_token skips the one-time authorization-code
+	// seed; otherwise the controller reports "seeding required" and the operator runs
+	// `oauth-proxy seed` once.
+	// +required
+	Credentials LocalObjectRef `json:"credentials"`
+	// Scopes overrides the server's scopes_supported; if empty, discovery scopes win.
+	// +optional
+	Scopes []string `json:"scopes,omitempty"`
+	// RefreshTokenSecretRef optionally points to a Secret/key holding just the refresh
+	// token (instead of inside Credentials). When set, this takes precedence.
+	// +optional
+	RefreshTokenSecretRef *SecretKeyRef `json:"refreshTokenSecretRef,omitempty"`
+	// AccessTokenSecretRef is the Secret (key "token") the access token is written to
+	// and that auth.bearerToken references. If omitted, the controller names it
+	// "<mcpserver>-mcp-token" (key "token").
+	// +optional
+	AccessTokenSecretRef *SecretKeyRef `json:"accessTokenSecretRef,omitempty"`
 }
 
 // APIKeyAuth configures API key authentication via a custom header.

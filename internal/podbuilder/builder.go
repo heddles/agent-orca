@@ -137,6 +137,11 @@ type PodConfig struct {
 	// RouterResources overrides the default model-router resource requirements.
 	// If nil, DefaultRouterResources is used.
 	RouterResources *corev1.ResourceRequirements
+	// WebhookNotifySecretRef, when set, mounts the referenced Secret key as the
+	// WEBHOOK_URL env var into the model-router sidecar so the _webhook_notify
+	// builtin tool can POST to a Slack incoming webhook. Not mounted to the agent
+	// container. +optional
+	WebhookNotifySecretRef *corev1.SecretKeySelector
 
 	// --- Agent probes ---
 
@@ -311,6 +316,13 @@ func Build(cfg PodConfig) *corev1.Pod {
 		modelRouterContainer.Env = append(modelRouterContainer.Env, corev1.EnvVar{
 			Name:  "AGENTORC_WARM_CACHE_DIR",
 			Value: WarmCacheMountDir,
+		})
+	}
+	if cfg.WebhookNotifySecretRef != nil {
+		// WEBHOOK_URL: Slack incoming-webhook URL for the _webhook_notify builtin.
+		modelRouterContainer.Env = append(modelRouterContainer.Env, corev1.EnvVar{
+			Name:      "WEBHOOK_URL",
+			ValueFrom: &corev1.EnvVarSource{SecretKeyRef: cfg.WebhookNotifySecretRef},
 		})
 	}
 

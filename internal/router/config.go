@@ -22,6 +22,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/floppyfish14/agent-orca/internal/mcp"
 	"github.com/floppyfish14/agent-orca/internal/state"
 )
 
@@ -211,6 +212,11 @@ type MCPServerConfig struct {
 	// AuthHeaderFiles maps HTTP header names to file paths containing secret values.
 	// Used for HTTP/SSE transport authentication.
 	AuthHeaderFiles []AuthHeaderFile `json:"authHeaderFiles,omitempty"`
+	// OAuth, when set, makes the model-router perform the OAuth 2.0 exchange itself
+	// (in-memory bearer) instead of a static authHeaderFile. Used for OAuth-only MCP
+	// servers (e.g. Slack); no access-token Secret is mounted — only the credentials
+	// Secret (see MCPOAuthConfig on the MCPServer CRD).
+	OAuth *mcp.OAuthConfig `json:"oauth,omitempty"`
 	// AllowApps enables MCP App iframe rendering for tools from this server.
 	AllowApps bool `json:"allowApps,omitempty"`
 	// IncludePatterns is a list of glob patterns used to filter the tools the

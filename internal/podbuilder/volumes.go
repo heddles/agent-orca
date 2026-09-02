@@ -19,6 +19,7 @@ package podbuilder
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -44,6 +45,13 @@ func SanitizeVolumeName(name string) string {
 // ToolSecretFilePath returns the mount path for a secret key used by a tool.
 func ToolSecretFilePath(toolName, secretName, key string) string {
 	return fmt.Sprintf("%s/%s/%s/%s", ToolSecretsDir, toolName, secretName, key)
+}
+
+// OAuthCredsMountDir returns the directory at which an MCP tool's OAuth credentials
+// Secret (MCPOAuthConfig.Credentials) is mounted as files for the model-router's MCP
+// client to read (client_id, client_secret, redirect_uri, refresh_token).
+func OAuthCredsMountDir(toolName, secretName string) string {
+	return fmt.Sprintf("%s/%s/%s", ToolSecretsDir, toolName, secretName)
 }
 
 // ResolveProviderVolumes builds volume + mount lists for provider API key secrets.
@@ -123,7 +131,7 @@ func ResolveToolSecretVolumes(
 	type volKey struct{ tool, secret, key string }
 	seen := make(map[volKey]bool)
 
-	addSecretKeyVolume := func(toolName string, ref *agentorcav1alpha1.SecretKeyRef) {
+	addSecretKeyVolume := func(toolName string, ref *agentorcav1alpha1.SecretKeyRef, asDir bool) {
 		vk := volKey{toolName, ref.Name, ref.Key}
 		if seen[vk] {
 			return
@@ -133,7 +141,7 @@ func ResolveToolSecretVolumes(
 		volName := ToolSecretVolPrefix + SanitizeVolumeName(toolName+"-"+ref.Name+"-"+ref.Key)
 		filePath := ToolSecretFilePath(toolName, ref.Name, ref.Key)
 
-		volumes = append(volumes, corev1.Volume{
+		vol := corev1.Volume{
 			Name: volName,
 			VolumeSource: corev1.VolumeSource{
 				Secret: &corev1.SecretVolumeSource{
@@ -143,13 +151,24 @@ func ResolveToolSecretVolumes(
 					},
 				},
 			},
-		})
-		mounts = append(mounts, corev1.VolumeMount{
-			Name:      volName,
-			MountPath: filePath,
-			SubPath:   ref.Key,
-			ReadOnly:  true,
-		})
+		}
+		mount := corev1.VolumeMount{
+			Name:     volName,
+			ReadOnly: true,
+		}
+		if asDir {
+			// Mount the secret as a directory (no SubPath) so the kubelet propagates
+			// updates to the mounted file. Used for HTTP bearer tokens the operator
+			// rotates in-place; the model-router re-reads the file per request.
+			mount.MountPath = filepath.Dir(filePath)
+		} else {
+			// Mount a single file at the exact path (SubPath snapshot). Used for stdio
+			// envFrom vars, which don't rotate.
+			mount.MountPath = filePath
+			mount.SubPath = ref.Key
+		}
+		volumes = append(volumes, vol)
+		mounts = append(mounts, mount)
 	}
 
 	for _, toolName := range agent.Spec.Tools {
@@ -164,20 +183,39 @@ func ResolveToolSecretVolumes(
 		// EnvFrom secret refs.
 		for _, ev := range tool.Spec.MCPConfig.EnvFrom {
 			if ev.ValueFrom != nil && ev.ValueFrom.SecretKeyRef != nil {
-				addSecretKeyVolume(toolName, ev.ValueFrom.SecretKeyRef)
+				addSecretKeyVolume(toolName, ev.ValueFrom.SecretKeyRef, false)
 			}
 		}
 
 		// Auth secret refs.
 		if auth := tool.Spec.MCPConfig.Auth; auth != nil {
 			if auth.BearerToken != nil {
-				addSecretKeyVolume(toolName, auth.BearerToken)
+				addSecretKeyVolume(toolName, auth.BearerToken, true)
 			}
 			if auth.APIKey != nil {
-				addSecretKeyVolume(toolName, &auth.APIKey.SecretKeyRef)
+				addSecretKeyVolume(toolName, &auth.APIKey.SecretKeyRef, true)
 			}
 			for i := range auth.Headers {
-				addSecretKeyVolume(toolName, &auth.Headers[i].SecretKeyRef)
+				addSecretKeyVolume(toolName, &auth.Headers[i].SecretKeyRef, true)
+			}
+
+			if auth.OAuth != nil {
+				// OAuth-managed server: mount the credentials Secret as a directory so the
+				// model-router's MCP client can read client_id/client_secret/refresh_token
+				// files and perform the OAuth exchange itself. No access-token Secret needed.
+				credDir := OAuthCredsMountDir(toolName, auth.OAuth.Credentials.Name)
+				volName := ToolSecretVolPrefix + SanitizeVolumeName(toolName+"-"+auth.OAuth.Credentials.Name+"-oauth")
+				volumes = append(volumes, corev1.Volume{
+					Name: volName,
+					VolumeSource: corev1.VolumeSource{
+						Secret: &corev1.SecretVolumeSource{SecretName: auth.OAuth.Credentials.Name},
+					},
+				})
+				mounts = append(mounts, corev1.VolumeMount{
+					Name:      volName,
+					MountPath: credDir,
+					ReadOnly:  true,
+				})
 			}
 		}
 

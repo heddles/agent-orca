@@ -17,6 +17,7 @@ limitations under the License.
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -207,6 +208,25 @@ type AgentDeploymentSpec struct {
 	// +kubebuilder:default=256
 	// +optional
 	WarmLocalCacheSizeMi int `json:"warmLocalCacheSizeMi,omitempty"`
+
+	// WebhookNotify configures the optional Slack incoming-webhook integration. When set,
+	// warm pods mount the referenced Secret's webhook URL as WEBHOOK_URL into the
+	// model-router sidecar, which exposes the _webhook_notify builtin tool. The webhook
+	// URL is the credential (no per-user OAuth); it posts to the configured channel.
+	// +optional
+	WebhookNotify *WebhookNotifyConfig `json:"webhookNotify,omitempty"`
+}
+
+// WebhookNotifyConfig configures Slack incoming-webhook delivery for the _webhook_notify
+// builtin tool. The webhook URL (e.g. https://hooks.slack.com/services/T/B/X) is the
+// only credential needed: it posts `text` to the configured channel without any
+// per-user OAuth/bearer token.
+type WebhookNotifyConfig struct {
+	// WebhookSecretRef references a Secret whose key (default "url") holds the Slack
+	// incoming-webhook URL. The Secret is mounted into the model-router sidecar as the
+	// WEBHOOK_URL environment variable (not into the agent container).
+	// +optional
+	WebhookSecretRef *corev1.SecretKeySelector `json:"webhookSecretRef,omitempty"`
 }
 
 // AgentDeploymentStatus defines the observed state of an AgentDeployment.

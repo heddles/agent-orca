@@ -259,6 +259,41 @@ spec:
                   Warm pods have the agent and model-router already initialized, eliminating cold-start
                   latency (~15s) for chat runs. Set to 0 to disable (use classic per-run pods).
                 type: integer
+              webhookNotify:
+                description: |-
+                  WebhookNotify configures the optional Slack incoming-webhook integration. When set,
+                  warm pods mount the referenced Secret's webhook URL as WEBHOOK_URL into the
+                  model-router sidecar, which exposes the _webhook_notify builtin tool. The webhook
+                  URL is the credential (no per-user OAuth); it posts to the configured channel.
+                properties:
+                  webhookSecretRef:
+                    description: |-
+                      WebhookSecretRef references a Secret whose key (default "url") holds the Slack
+                      incoming-webhook URL. The Secret is mounted into the model-router sidecar as the
+                      WEBHOOK_URL environment variable (not into the agent container).
+                    properties:
+                      key:
+                        description: The key of the secret to select from.  Must be
+                          a valid secret key.
+                        type: string
+                      name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        type: string
+                      optional:
+                        description: Specify whether the Secret or its key must be
+                          defined
+                        type: boolean
+                    required:
+                    - key
+                    type: object
+                    x-kubernetes-map-type: atomic
+                type: object
             required:
             - agentRef
             type: object

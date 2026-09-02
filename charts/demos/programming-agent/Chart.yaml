@@ -47,11 +47,13 @@ keywords:
   - agents
   - programming
   - github-mcp
-  - slack-mcp
+  - webhook-notify
   - mcp
   - rag
   - knowledgebase
   - codebase
+  - oauth
+  - slack
 dependencies:
   - name: agent-orca-resources
     version: "0.2.0"
