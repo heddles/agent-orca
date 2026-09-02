@@ -561,7 +561,7 @@ func TestBuildAllowedToolsNilSchema(t *testing.T) {
 	}
 	tool := &agentorcav1alpha1.Tool{
 		ObjectMeta: metav1.ObjectMeta{Name: "no-schema-tool", Namespace: "tenant-acme"},
-		Spec: agentorcav1alpha1.ToolSpec{
+		Spec:       agentorcav1alpha1.ToolSpec{
 			// Schema intentionally left nil
 		},
 	}
