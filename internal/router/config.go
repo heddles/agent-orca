@@ -161,6 +161,20 @@ type Config struct {
 	// Defaults to 1h. Set by the operator from the LLM_REQUEST_TIMEOUT env var
 	// (chart value modelRouter.llmRequestTimeout), configurable per deployment.
 	LLMRequestTimeout time.Duration `json:"llmRequestTimeout,omitempty"`
+
+	// ProactiveTruncationThreshold is the fraction of the live buffer budget at which
+	// truncation is triggered proactively (before the 80% budget is reached). This
+	// prevents large spikes in latency when the buffer is near full capacity.
+	// Range 0.0–1.0. Default: 0.6 (trigger at 60% of budget).
+	// Set to 0.0 to disable proactive truncation (only truncate when over budget).
+	ProactiveTruncationThreshold float64 `json:"proactiveTruncationThreshold,omitempty"`
+
+	// ContextManagementStrategy controls how aggressively the router manages context:
+	//   - "balanced": proactive truncation at 60% budget, episodic summaries if enabled
+	//   - "aggressive": proactive truncation at 40% budget, more frequent compaction
+	//   - "max-fidelity": minimal truncation, only when hard limit is reached
+	// Default: "balanced"
+	ContextManagementStrategy string `json:"contextManagementStrategy,omitempty"`
 }
 
 // ProviderConfig is a fully-resolved LLM provider ready for dispatch.
@@ -460,6 +474,32 @@ func ConfigFromEnv() (*Config, error) {
 		// reasoning/tool results) routinely exceed the old 120s hard-coded cap.
 		cfg.LLMRequestTimeout = time.Hour
 	}
+	// Proactive truncation threshold: trigger truncation before the buffer reaches
+	// its hard budget to avoid latency spikes when near full capacity.
+	if cfg.ProactiveTruncationThreshold <= 0 || cfg.ProactiveTruncationThreshold >= 1.0 {
+		cfg.ProactiveTruncationThreshold = 0.6
+	}
+	// Context management strategy: controls aggressiveness of buffer management.
+	if cfg.ContextManagementStrategy == "" {
+		cfg.ContextManagementStrategy = "balanced"
+	}
 
 	return &cfg, nil
+}
+
+// proactiveThreshold returns the fraction of the checkpoint budget at which proactive
+// truncation is triggered, based on the configured strategy.
+func (c *Config) proactiveThreshold() float64 {
+	if c.ProactiveTruncationThreshold > 0 && c.ProactiveTruncationThreshold < 1.0 {
+		return c.ProactiveTruncationThreshold
+	}
+	// Fall back to strategy-based defaults.
+	switch c.ContextManagementStrategy {
+	case "aggressive":
+		return 0.4
+	case "max-fidelity":
+		return 0.0 // disabled; only truncate when over budget
+	default: // "balanced"
+		return 0.6
+	}
 }

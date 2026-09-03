@@ -451,18 +451,6 @@ profiles:
       kubectl:
         defaultNamespace: agent-orca-system
 
-              # The ollama-embed-credentials Secret is provided by
-              # ollama-embedding-cluster.yaml (applied via the kubectl deployer
-              # below), so disable the chart's duplicate to avoid a reconcile fight.
-              providerSecrets[11].enabled: "false"
-      # Apply the in-cluster Ollama embedding manifests (PVC, Deployment,
-      # Service, pull Job, Secret, ModelProvider, ModelSelector) via the kubectl
-      # deployer. Helm (above) deploys first and installs the agent-orca CRDs,
-      # then kubectl applies the ModelProvider/ModelSelector CRs — so they resolve.
-      # defaultNamespace matches the README's `-n agent-orca-system` for this sample.
-      kubectl:
-        defaultNamespace: agent-orca-system
-
 
   # dev-oidc: OIDC login is OFF by default in the dev profile. To enable it for a
   # browser-login test with your own IdP (e.g. Keycloak), apply

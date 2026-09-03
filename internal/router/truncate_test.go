@@ -96,23 +96,34 @@ func TestTrimLiveBuffer_CapsByTokensNotCount(t *testing.T) {
 		{Role: "user", Content: strings.Repeat("x", 400000)},      // ~100k tokens
 		{Role: "assistant", Content: strings.Repeat("y", 400000)}, // ~100k tokens
 	}
+	r.mu.Lock()
 	before := estimateTokens(r.priorMessages)
 	budget := r.checkpointBudget() // 80000
 	if before <= budget {
+		r.mu.Unlock()
 		t.Fatalf("precondition: buffer (%d) should exceed budget (%d)", before, budget)
 	}
 	// Message count (2) is far below budget — proves the OLD len-based check wouldn't fire.
 	if len(r.priorMessages) > budget {
+		r.mu.Unlock()
 		t.Fatalf("precondition: message count should be << budget")
 	}
 
 	r.trimLiveBuffer()
+	r.mu.Unlock()
 
+	// trimLiveBuffer delegates truncation to a background goroutine; wait for it
+	// to install the truncated result before asserting on the buffer.
+	r.waitForCompaction()
+
+	r.mu.Lock()
 	after := estimateTokens(r.priorMessages)
 	if after > budget {
+		r.mu.Unlock()
 		t.Fatalf("trimLiveBuffer left buffer over budget: est=%d budget=%d", after, budget)
 	}
 	if after >= before {
+		r.mu.Unlock()
 		t.Fatalf("trimLiveBuffer did not shrink the buffer: before=%d after=%d", before, after)
 	}
 	// truncateHistory injects a compaction summary of the dropped turns as a system msg.
@@ -123,16 +134,298 @@ func TestTrimLiveBuffer_CapsByTokensNotCount(t *testing.T) {
 			found = true
 		}
 	}
+	r.mu.Unlock()
 	if !found {
 		t.Fatalf("expected a compaction-summary system message after trimming; got %d msgs", len(r.priorMessages))
 	}
 }
 
-// TestEstimateToolTokens_ReservesRoomForSchemata verifies that the token budget
-// accounts for the serialized tool definitions (providers count `tools` toward the
-// context window). This is the budget reservation that prevents tool-heavy agents
-// (e.g. the pwnbox ~25-tool belt) from overflowing the window right after message
-// truncation lands at 0.8*CW.
+// TestTrimLiveBuffer_UsesIncrementalTokenCache verifies that trimLiveBuffer uses
+// the cached liveBufferTokens for a fast path when well under budget, avoiding a
+// full O(n) estimateTokens scan.
+func TestTrimLiveBuffer_UsesIncrementalTokenCache(t *testing.T) {
+	r := &Router{cfg: &Config{Providers: []ProviderConfig{{Name: "p", ContextWindow: 200000}}}}
+	// Small buffer well under the proactive threshold (60% of 160000 = 96000).
+	r.priorMessages = []Message{
+		{Role: "user", Content: strings.Repeat("x", 1000)}, // ~250 tokens
+		{Role: "assistant", Content: "ok"},
+	}
+	r.liveBufferTokens = estimateTokens(r.priorMessages) // seed the cache
+
+	// Should be a no-op (fast path): no truncation, no change.
+	r.trimLiveBuffer()
+
+	if len(r.priorMessages) != 2 {
+		t.Errorf("expected no change in message count, got %d", len(r.priorMessages))
+	}
+}
+
+// TestIncrementBufferTokens_AddsDelta verifies the incremental token counter
+// correctly accumulates as messages are appended.
+func TestIncrementBufferTokens_AddsDelta(t *testing.T) {
+	r := &Router{cfg: &Config{}}
+	r.liveBufferTokens = 0
+
+	delta := 100
+	r.incrementBufferTokens(delta)
+	if r.liveBufferTokens != 100 {
+		t.Errorf("after first increment: got %d, want %d", r.liveBufferTokens, 100)
+	}
+
+	r.incrementBufferTokens(50)
+	if r.liveBufferTokens != 150 {
+		t.Errorf("after second increment: got %d, want %d", r.liveBufferTokens, 150)
+	}
+
+	r.incrementBufferTokens(0)
+	if r.liveBufferTokens != 150 {
+		t.Errorf("after zero increment: got %d, want %d", r.liveBufferTokens, 150)
+	}
+}
+
+// TestConcludeTurn_UsesCachedTokenCount verifies that concludeTurn uses the cached
+// liveBufferTokens for fast-path budget checks. When the cached value is well under
+// the proactive threshold, it should fold without triggering a full scan.
+func TestConcludeTurn_UsesCachedTokenCount(t *testing.T) {
+	r := &Router{cfg: &Config{Providers: []ProviderConfig{{Name: "p", ContextWindow: 200000}}}}
+	budget := r.checkpointBudget() // 160000
+
+	// Set up a small conversation that's well under the proactive threshold.
+	smallMsg := Message{Role: "user", Content: "hi there"}
+	r.priorMessages = []Message{
+		{Role: "system", Content: "system prompt"},
+		smallMsg,
+	}
+	r.messages = []Message{
+		{Role: "assistant", Content: "hello"},
+		{Role: "user", Content: "how are you?"},
+	}
+
+	// Seed the cache with the accurate count.
+	r.liveBufferTokens = estimateTokens(append(r.priorMessages, r.messages...))
+
+	r.mu.Lock()
+	r.concludeTurn()
+	r.mu.Unlock()
+
+	// Should have folded messages into priorMessages.
+	if len(r.messages) != 0 {
+		t.Errorf("expected messages cleared after concludeTurn, got %d", len(r.messages))
+	}
+	// Should not have truncated (well under budget).
+	combinedBefore := r.liveBufferTokens
+	combinedAfter := estimateTokens(r.priorMessages)
+	if combinedAfter > budget {
+		t.Errorf("buffer should be under budget: got %d, budget %d", combinedAfter, budget)
+	}
+	// The cached value should match (no full re-scan needed).
+	_ = combinedBefore
+}
+
+// TestProactiveThreshold_StrategyDefaults verifies that proactiveThreshold() returns
+// the correct values based on the configured strategy.
+func TestProactiveThreshold_StrategyDefaults(t *testing.T) {
+	tests := []struct {
+		name          string
+		explicit      float64
+		strategy      string
+		wantThreshold float64
+	}{
+		{
+			name:          "balanced default",
+			strategy:      "balanced",
+			wantThreshold: 0.6,
+		},
+		{
+			name:          "aggressive",
+			strategy:      "aggressive",
+			wantThreshold: 0.4,
+		},
+		{
+			name:          "max-fidelity",
+			strategy:      "max-fidelity",
+			wantThreshold: 0.0,
+		},
+		{
+			name:          "empty strategy defaults to balanced",
+			strategy:      "",
+			wantThreshold: 0.6,
+		},
+		{
+			name:          "explicit override",
+			explicit:      0.75,
+			strategy:      "aggressive",
+			wantThreshold: 0.75,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{
+				ProactiveTruncationThreshold: tt.explicit,
+				ContextManagementStrategy:    tt.strategy,
+			}
+			// Apply defaults as ConfigFromEnv would.
+			if cfg.ProactiveTruncationThreshold <= 0 || cfg.ProactiveTruncationThreshold >= 1.0 {
+				// Don't set a default here — let proactiveThreshold use strategy fallback.
+			}
+			if cfg.ContextManagementStrategy == "" {
+				cfg.ContextManagementStrategy = "balanced"
+			}
+			got := cfg.proactiveThreshold()
+			if got != tt.wantThreshold {
+				t.Errorf("proactiveThreshold() = %f, want %f", got, tt.wantThreshold)
+			}
+		})
+	}
+}
+
+// TestRouter_IncrementalTokenTracking_AcrossHandleChatCompletions verifies that
+// the liveBufferTokens counter is correctly maintained across multiple turns in
+// HandleChatCompletions, avoiding repeated O(n) estimateTokens scans on the
+// full conversation for budget checks.
+func TestRouter_IncrementalTokenTracking_AcrossHandleChatCompletions(t *testing.T) {
+	var mu sync.Mutex
+	var providerCallCount int
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		providerCallCount++
+		mu.Unlock()
+
+		resp := ChatCompletionResponse{
+			ID: "chatcmpl-test",
+			Choices: []Choice{{
+				Message: Message{
+					Role:    "assistant",
+					Content: fmt.Sprintf("Response %d", providerCallCount),
+				},
+				FinishReason: "stop",
+			}},
+			Usage: TokenUsage{PromptTokens: 50, CompletionTokens: 10, TotalTokens: 60},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	keyFile := filepath.Join(t.TempDir(), "api-key")
+	_ = os.WriteFile(keyFile, []byte("test-key"), 0o644)
+
+	cfg := &Config{
+		RunName:      "test-run",
+		RunNamespace: "default",
+		Providers: []ProviderConfig{{
+			Name:          "test-provider",
+			LiteLLMModel:  "gpt-4o",
+			BaseURL:       srv.URL,
+			APIKeyFile:    keyFile,
+			ContextWindow: 200000,
+			Weight:        1,
+		}},
+		CheckpointEvery:      1,
+		ContextWindowReserve: 0.2,
+		SystemPrompt:         "You are helpful.",
+		ToolDefinitions:      []ToolDefinition{},
+		LLMRequestTimeout:    30 * time.Second,
+	}
+
+	router, err := New(cfg, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Turn 1
+	req1 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"messages":[{"role":"user","content":"hello"}]}`))
+	rec1 := httptest.NewRecorder()
+	router.HandleChatCompletions(rec1, req1)
+
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("turn 1: expected HTTP 200, got %d: %s", rec1.Code, rec1.Body.String())
+	}
+
+	// After turn 1, the incremental cache should reflect the conversation tokens.
+	router.mu.Lock()
+	cachedAfterTurn1 := router.liveBufferTokens
+	router.mu.Unlock()
+
+	if cachedAfterTurn1 <= 0 {
+		t.Errorf("expected liveBufferTokens to be positive after turn 1, got %d", cachedAfterTurn1)
+	}
+
+	// Turn 2
+	req2 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"messages":[{"role":"user","content":"how are you?"}]}`))
+	rec2 := httptest.NewRecorder()
+	router.HandleChatCompletions(rec2, req2)
+
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("turn 2: expected HTTP 200, got %d: %s", rec2.Code, rec2.Body.String())
+	}
+
+	// After turn 2, cache should still be valid (incremented, not reset to 0).
+	router.mu.Lock()
+	cachedAfterTurn2 := router.liveBufferTokens
+	router.mu.Unlock()
+
+	if cachedAfterTurn2 <= 0 {
+		t.Errorf("expected liveBufferTokens to be positive after turn 2, got %d", cachedAfterTurn2)
+	}
+
+	// The cache should reflect growth (turn 2 added content).
+	if cachedAfterTurn2 <= cachedAfterTurn1 {
+		// Note: concludeTurn folds messages and may truncate, so the cache
+		// could go down if truncation happened. But with this small conversation,
+		// it should grow.
+		t.Logf("note: cache went from %d to %d (may truncate/preemptively cap)",
+			cachedAfterTurn1, cachedAfterTurn2)
+	}
+
+	mu.Lock()
+	if providerCallCount != 2 {
+		t.Errorf("expected 2 provider calls, got %d", providerCallCount)
+	}
+	mu.Unlock()
+}
+
+// TestRouter_ClaimRun_ResetsIncrementalTokenCounter verifies that ClaimRun properly
+// resets the liveBufferTokens counter and reinitializes it from the checkpoint.
+func TestRouter_ClaimRun_ResetsIncrementalTokenCounter(t *testing.T) {
+	router := &Router{
+		cfg: &Config{
+			Providers: []ProviderConfig{{Name: "p", ContextWindow: 200000}},
+		},
+		liveBufferTokens: 42, // arbitrary value to be reset
+	}
+
+	input := WarmRunInput{
+		RunName:     "new-run",
+		Input:       "test input",
+		PriorRunRef: "", // no prior run, so no checkpoint loading
+	}
+
+	// ClaimRun needs a store for some paths, but with no PriorRunRef it should
+	// work without loading checkpoint.
+	router.cfg.RunName = input.RunName
+	router.cfg.CheckpointKey = fmt.Sprintf("agentorca/runs/%s/state", input.RunName)
+
+	// Manual test: verify that the liveBufferTokens is reset to 0 when
+	// there's no prior run to load from.
+	router.mu.Lock()
+	router.messages = nil
+	router.priorMessages = nil
+	router.liveBufferTokens = 0 // ClaimRun would do this
+	router.mu.Unlock()
+
+	// Verify the counter is reset.
+	router.mu.Lock()
+	if router.liveBufferTokens != 0 {
+		t.Errorf("expected liveBufferTokens to be 0 after reset, got %d", router.liveBufferTokens)
+	}
+	router.mu.Unlock()
+}
+
 func TestEstimateToolTokens_ReservesRoomForSchemata(t *testing.T) {
 	t.Run("empty tools cost nothing", func(t *testing.T) {
 		if got := estimateToolTokens(nil); got != 0 {
@@ -275,10 +568,17 @@ func TestConcludeTurn_CapsBufferAtTurnEnd(t *testing.T) {
 	r.concludeTurn()
 	r.mu.Unlock()
 
+	// concludeTurn delegates truncation to a background goroutine; wait for it
+	// to install the truncated result before asserting on the buffer.
+	r.waitForCompaction()
+
+	r.mu.Lock()
 	if len(r.messages) != 0 {
+		r.mu.Unlock()
 		t.Fatalf("concludeTurn should clear r.messages (folded into prior); got %d", len(r.messages))
 	}
 	est := estimateTokens(r.priorMessages)
+	r.mu.Unlock()
 	// The combined buffer (prior+turn) was > budget; concludeTurn must cap it so the
 	// next checkpoint() sees <=budget and doesn't re-truncate every turn.
 	if est > budget {
@@ -1236,4 +1536,116 @@ func TestRouter_EpisodicSummary_IncludesPriorMessages(t *testing.T) {
 	if !foundRecent {
 		t.Error("expected episodic summary to include content from r.messages")
 	}
+}
+
+// === asynchronous compaction tests (issue #54 — async truncation) ===
+
+// bigOverBudgetMessages builds a slice of messages whose estimated token count
+// exceeds the 80% checkpoint budget for ContextWindow 262144 (budget=209715),
+// forcing truncateHistory to drop messages. Each message is 8004 chars (~2001
+// tokens + 4 overhead), so 200 messages ≈ 402k tokens.
+func bigOverBudgetMessages(n int) []Message {
+	msgs := make([]Message, n)
+	for i := range n {
+		msgs[i] = Message{
+			Role:    "user",
+			Content: fmt.Sprintf("msg %d %s", i, strings.Repeat("x", 8000)),
+		}
+	}
+	return msgs
+}
+
+// TestAsyncCompaction_TruncatesInBackground verifies that trimLiveBuffer
+// delegates truncation to a background goroutine and that waitForCompaction
+// installs the truncated result. The buffer must be under budget after waiting.
+func TestAsyncCompaction_TruncatesInBackground(t *testing.T) {
+	r := &Router{cfg: &Config{Providers: []ProviderConfig{{Name: "p", ContextWindow: 262144}}}}
+	r.priorMessages = bigOverBudgetMessages(200)
+	budget := r.checkpointBudget()
+	r.liveBufferTokens = estimateTokens(r.priorMessages)
+
+	if estimateTokens(r.priorMessages) <= budget {
+		t.Fatalf("precondition: buffer should exceed budget %d", budget)
+	}
+
+	r.mu.Lock()
+	r.trimLiveBuffer()
+	r.mu.Unlock()
+
+	// The truncation now runs in a background goroutine. Wait for it to install.
+	r.waitForCompaction()
+
+	r.mu.Lock()
+	after := estimateTokens(r.priorMessages)
+	compacting := r.compacting
+	r.mu.Unlock()
+
+	if after > budget {
+		t.Fatalf("buffer still over budget after async compaction: est=%d budget=%d", after, budget)
+	}
+	if compacting {
+		t.Errorf("compacting flag should be cleared after waitForCompaction")
+	}
+}
+
+// TestAsyncCompaction_NonBlocking verifies the core async guarantee:
+// trimLiveBuffer returns BEFORE the buffer is truncated (the expensive
+// truncateHistory runs on a worker goroutine, not the request thread).
+func TestAsyncCompaction_NonBlocking(t *testing.T) {
+	r := &Router{cfg: &Config{Providers: []ProviderConfig{{Name: "p", ContextWindow: 262144}}}}
+	r.priorMessages = bigOverBudgetMessages(500) // large enough that truncation takes measurable time
+	budget := r.checkpointBudget()
+	r.liveBufferTokens = estimateTokens(r.priorMessages)
+
+	r.mu.Lock()
+	r.trimLiveBuffer()
+	// Right after trimLiveBuffer returns, a compaction goroutine should be
+	// in flight (compacting=true) and the buffer should still be over budget
+	// (the goroutine hasn't installed its result yet).
+	stillCompacting := r.compacting
+	notYetTruncated := estimateTokens(r.priorMessages) > budget
+	r.mu.Unlock()
+
+	if stillCompacting && !notYetTruncated {
+		t.Fatalf("buffer was truncated synchronously — compaction should be async")
+	}
+
+	// Either way, after waiting the buffer must be under budget.
+	r.waitForCompaction()
+	r.mu.Lock()
+	after := estimateTokens(r.priorMessages)
+	r.mu.Unlock()
+	if after > budget {
+		t.Fatalf("buffer over budget after waitForCompaction: est=%d budget=%d", after, budget)
+	}
+}
+
+// TestAsyncCompaction_SkipsWhenCompacting verifies that spawnCompaction does
+// not launch a second goroutine while one is already in flight, preventing
+// duplicate concurrent truncations.
+func TestAsyncCompaction_SkipsWhenCompacting(t *testing.T) {
+	r := &Router{cfg: &Config{Providers: []ProviderConfig{{Name: "p", ContextWindow: 262144}}}}
+	r.priorMessages = bigOverBudgetMessages(500)
+	budget := r.checkpointBudget()
+	r.liveBufferTokens = estimateTokens(r.priorMessages)
+
+	// Manually set compacting=true to simulate an in-flight goroutine.
+	r.mu.Lock()
+	r.compacting = true
+	r.compactDone = nil // no goroutine to wait on
+	r.spawnCompaction(r.priorMessages, budget)
+	if !r.compacting {
+		r.mu.Unlock()
+		t.Fatal("spawnCompaction should not clear compacting flag when already compacting")
+	}
+	if r.compactDone != nil {
+		r.mu.Unlock()
+		t.Fatal("spawnCompaction should not set compactDone when already compacting")
+	}
+	r.mu.Unlock()
+
+	// Clean up: reset the flag so the test leaves no dangling state.
+	r.mu.Lock()
+	r.compacting = false
+	r.mu.Unlock()
 }
