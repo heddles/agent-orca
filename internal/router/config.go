@@ -175,6 +175,16 @@ type Config struct {
 	//   - "max-fidelity": minimal truncation, only when hard limit is reached
 	// Default: "balanced"
 	ContextManagementStrategy string `json:"contextManagementStrategy,omitempty"`
+
+	// ContextCompactionRatio is the target fraction of the context window to
+	// compact the in-memory buffer down to when truncation fires. The checkpoint
+	// budget (80%) remains the safety ceiling — buffers exceeding it trigger
+	// compaction, which then reduces to this target rather than to the ceiling.
+	// Lower values retain less recent history in memory (reducing per-turn
+	// token-counting cost and checkpoint size) while the compaction summary
+	// carries the dropped context. Default 0.5; set to 0.1 for aggressive
+	// compaction down to ~10% of the window (issue #54).
+	ContextCompactionRatio float64 `json:"contextCompactionRatio,omitempty"`
 }
 
 // ProviderConfig is a fully-resolved LLM provider ready for dispatch.
@@ -483,6 +493,12 @@ func ConfigFromEnv() (*Config, error) {
 	if cfg.ContextManagementStrategy == "" {
 		cfg.ContextManagementStrategy = "balanced"
 	}
+	// Compaction target ratio: the fraction of the context window to compact
+	// down to when truncation fires (default 0.5; set to 0.1 for aggressive
+	// compaction). Must be in (0, 1).
+	if cfg.ContextCompactionRatio <= 0 || cfg.ContextCompactionRatio >= 1.0 {
+		cfg.ContextCompactionRatio = 0.5
+	}
 
 	return &cfg, nil
 }
@@ -502,4 +518,32 @@ func (c *Config) proactiveThreshold() float64 {
 	default: // "balanced"
 		return 0.6
 	}
+}
+
+// compactionTarget returns the token budget to compact the in-memory buffer
+// DOWN TO — distinct from checkpointBudget() which is the safety ceiling
+// (the level at which truncation is *triggered*). Truncation fires when the
+// buffer exceeds the 80% ceiling, then reduces to this target so the buffer
+// doesn't linger at 60–80% of the context window (issue #54). Capped at
+// checkpointBudget() so the target never exceeds the ceiling.
+func (r *Router) compactionTarget() int {
+	cw := maxContextWindow(r.cfg.Providers)
+	if cw <= 0 {
+		cw = 200000
+	}
+	ratio := r.cfg.ContextCompactionRatio
+	if ratio <= 0 || ratio >= 1.0 {
+		ratio = 0.5 // default: compact to 50% of the context window
+	}
+	target := int(float64(cw) * ratio)
+	// Floor: never compact below 2k tokens — that would discard too much
+	// context for the compaction summary to be useful.
+	if target < 2000 {
+		target = 2000
+	}
+	// Cap: the target must never exceed the checkpoint budget (safety ceiling).
+	if budget := r.checkpointBudget(); target > budget {
+		target = budget
+	}
+	return target
 }

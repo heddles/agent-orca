@@ -1508,14 +1508,11 @@ func (r *Router) trimLiveBuffer() {
 	est := estimateTokens(r.priorMessages)
 	r.liveBufferTokens = est
 	if est > budget {
-		// Truncate asynchronously so the expensive O(n) truncateHistory runs
-		// off the request thread and does not delay streaming/routing. Safety
-		// nets that cap outgoing data regardless: the pre-send truncation above
-		// (capping chatReq.Messages before forwarding to the provider) and
-		// checkpoint()'s own copy-truncation. The compaction goroutine installs
-		// the truncated result under r.mu once complete; if the buffer was
-		// mutated in the meantime the install is safely skipped.
-		r.spawnCompaction(r.priorMessages, budget)
+		// Buffer exceeds the 80% ceiling — trigger compaction. The actual
+		// truncation reduces to compactionTarget() (configurable, default 50%,
+		// settable to ~10%) rather than all the way down to the ceiling, so the
+		// buffer doesn't linger at 60–80% of the context window after compaction.
+		r.spawnCompaction(r.priorMessages, r.compactionTarget())
 	}
 }
 
@@ -1643,7 +1640,7 @@ func (r *Router) concludeTurn() {
 		// cap outgoing/persisted data while async compaction is pending.
 		r.priorMessages = combined
 		if needsTrunc {
-			r.spawnCompaction(combined, budget)
+			r.spawnCompaction(combined, r.compactionTarget())
 		}
 		r.messages = nil
 	}

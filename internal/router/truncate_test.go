@@ -1731,3 +1731,42 @@ func TestAsyncCompaction_SkipsWhenCompacting(t *testing.T) {
 	r.compacting = false
 	r.mu.Unlock()
 }
+
+// TestTrimLiveBuffer_CompactsToTarget verifies that when ContextCompactionRatio
+// is set below 1.0, the buffer is compacted down to the *target* (e.g. 10% of
+// the context window), not just to the 80% safety ceiling. This is the core
+// fix for issue #54: reducing post-compaction context from 60–80% to ~10%.
+func TestTrimLiveBuffer_CompactsToTarget(t *testing.T) {
+	r := &Router{cfg: &Config{
+		Providers:              []ProviderConfig{{Name: "p", ContextWindow: 262144}},
+		ContextCompactionRatio: 0.1, // aggressive: target = 10% of CW ≈ 26214
+	}}
+	r.priorMessages = bigOverBudgetMessages(200) // ~402k tokens, well over the 80% ceiling
+	budget := r.checkpointBudget()               // 80% ceiling = 209715
+	target := r.compactionTarget()               // 10% = 26214
+	r.liveBufferTokens = estimateTokens(r.priorMessages)
+
+	if estimateTokens(r.priorMessages) <= budget {
+		t.Fatalf("precondition: buffer should exceed budget %d", budget)
+	}
+
+	r.mu.Lock()
+	r.trimLiveBuffer()
+	r.mu.Unlock()
+	r.waitForCompaction()
+
+	r.mu.Lock()
+	after := estimateTokens(r.priorMessages)
+	r.mu.Unlock()
+
+	// Must be under the 80% safety ceiling.
+	if after > budget {
+		t.Fatalf("buffer over ceiling after compaction: est=%d budget=%d", after, budget)
+	}
+	// Must be well below the ceiling — compaction reduced to the target (~10%),
+	// not just down to the 80% ceiling.
+	if after > budget/2 {
+		t.Errorf("buffer should be compacted well below the 80%% ceiling: est=%d ceiling=%d target=%d",
+			after, budget, target)
+	}
+}

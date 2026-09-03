@@ -84,3 +84,58 @@ func TestHTTPInputTimeoutDefault(t *testing.T) {
 		})
 	}
 }
+
+// --- context compaction target tests ---
+
+// TestCompactionTarget_DefaultsAndCaps verifies the compaction target defaults
+// to 50% of the context window, is capped at the checkpoint budget (80%), and
+// has a 2k token floor.
+func TestCompactionTarget_DefaultsAndCaps(t *testing.T) {
+	cw := 262144
+	budget := cw * 8 / 10 // 209715
+
+	// Default ratio (0) → 0.5 → 50% of CW = 131072. Below budget, above floor.
+	r := &Router{cfg: &Config{Providers: []ProviderConfig{{Name: "p", ContextWindow: cw}}}}
+	if got := r.compactionTarget(); got != cw/2 {
+		t.Errorf("default target = %d, want %d", got, cw/2)
+	}
+
+	// Ratio above budget → capped to checkpointBudget.
+	r.cfg.ContextCompactionRatio = 0.99
+	if got := r.compactionTarget(); got != budget {
+		t.Errorf("ratio 0.99 should cap at budget %d, got %d", budget, got)
+	}
+}
+
+// TestCompactionTarget_AggressiveRatio verifies a 0.1 ratio targets ~10% of CW.
+func TestCompactionTarget_AggressiveRatio(t *testing.T) {
+	cw := 262144
+	r := &Router{cfg: &Config{
+		Providers:              []ProviderConfig{{Name: "p", ContextWindow: cw}},
+		ContextCompactionRatio: 0.1,
+	}}
+	if got := r.compactionTarget(); got != cw/10 {
+		t.Errorf("aggressive target = %d, want %d (10%% of CW)", got, cw/10)
+	}
+	if got := r.compactionTarget(); got > r.checkpointBudget() {
+		t.Errorf("target %d should not exceed budget %d", got, r.checkpointBudget())
+	}
+}
+
+// TestConfigFromEnv_CompactionRatioDefault verifies ConfigFromEnv seeds the default.
+func TestConfigFromEnv_CompactionRatioDefault(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "router-config.json")
+	if err := os.WriteFile(path, []byte(`{}`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("AGENTORC_ROUTER_CONFIG", path)
+
+	cfg, err := ConfigFromEnv()
+	if err != nil {
+		t.Fatalf("ConfigFromEnv: %v", err)
+	}
+	if cfg.ContextCompactionRatio != 0.5 {
+		t.Errorf("default ContextCompactionRatio = %v, want 0.5", cfg.ContextCompactionRatio)
+	}
+}
