@@ -87,10 +87,11 @@ In-depth guides, organized by audience. **Developers** start with the first bloc
 | [OpenAPI Spec](docs/openapi-spec.md) | Developers | External Task API + ACP API machine-readable contracts |
 | [AgentWorkflow](docs/agentworkflow.md) | Developers | Declarative DAG orchestration |
 | [RAG / KnowledgeBase](docs/rag.md) | Developers | Vector store integration and built-in tools (`_rag_search`, `_rag_ingest`) |
-| [MCP Access Control](docs/mcp-access-control.md) | Developers / Operators | MCP server security and tool exposure |
+| [MCP Access Control](docs/mcp-access-control.md) | Developers / Operators | MCP server security, tool exposure, and HTTP bearer-token auth |
 | [Local Model Selection](docs/local-model-selection.md) | Developers | Running with local/Ollama models via LiteLLM |
 | [AI Task Testing](docs/testing-tools.md) | Developers | Test agents, evals, and the `hack/test-agents.sh` harness |
 | [UI Testing](docs/ui-testing.md) | Developers | Running UI unit/e2e (Vitest + Playwright) tests |
+| [Context Management](docs/context-management.md) | Developers / Operators | Context window compaction, episodic summaries, warm-pool session chaining, MCP auth |
 | [Rate Limiting](docs/rate-limiting.md) | Operators | Per-tenant quotas, budget enforcement, HTTP 429/402 responses |
 | [Cost Tracking](docs/cost-tracking.md) | Operators | How LLM spend is measured, persisted, and budgeted |
 | [Observability](docs/observability.md) | Operators | Health probes, Prometheus metrics, audit logging |
@@ -160,6 +161,7 @@ graph TD
 - Tracks consecutive failures and pauses if threshold exceeded
 - Supports multiple input sources: `chat` (API-driven), `queue` (Redis), `pubsub` (Kafka), `loop` (self-managed)
 - Persists conversation state via checkpoints; warm-pool pod reuse for low-latency chat
+- Optional `contextCompactionRatio` to tune how aggressively context is compacted (default 0.5; set to 0.1 for ~10% residual — see [docs/context-management.md](docs/context-management.md))
 
 **ModelProvider** - Registers an LLM endpoint
 - LiteLLM model string (OpenAI, Anthropic, Google, Ollama, Bedrock, etc.)
@@ -198,6 +200,7 @@ graph TD
 - Auto-creates child Tool resources for each declared tool
 - Supports `stdio` (sidecar), `http`, and `sse` transports
 - Built-in access control via `allowedAgents` list
+- Optional `auth` for HTTP/SSE servers requiring bearer-token authentication (e.g. Slack) — see [docs/mcp-access-control.md](docs/mcp-access-control.md)
 
 **TenantConfig** - Enterprise authentication and authorization
 - OAuth2 client credentials or federated OIDC (Auth0, Okta, etc.)
@@ -224,7 +227,7 @@ agent-orca keeps two layers of state, both backed by the same Redis `state.Store
    The store is a **shared singleton**: the `Router`, `ACPServer`, `UIServer`, `ExternalAPIServer`, `AgentRunReconciler`, and `Executor` all reference the same instance, so every component sees the same bytes. On cold start (`router.New()`) and on warm-pool reuse (`ClaimRun` → `PriorRunRef`) the router reloads prior spend and prior messages, so a resumed run picks up where it left off.
 2. **Chat-session checkpoint** — used by the UI's chat API (`POST …/execute` → `POST …/complete` → `GET …/history`). The `internal/checkpoint` Store persists a `Checkpoint{SessionID, Version, ConversationHistory, LastRunRef, Metadata{TotalCostUSD,…}}`, backed by Redis when a state backend is configured, else an in-memory store. Each message increments `Version`, and runs chain across turns via `LastRunRef`↔`PriorRunRef` (the model-router turns `PriorRunRef` into its `ResumeCheckpointKey` = `agentorca/runs/<prior-run>/state` to reload context).
 
-The conversation buffer is **hard-capped, not unbounded**: `priorMessages` is folded and truncated to `checkpointBudget()` (80% of the largest provider's `contextWindow`, see `ContextWindowReserve`) on each turn, and prior turns are condensed into an **episodic summary** (`maybeRunEpisodicSummary`) that replaces the collapsed turns in memory and is persisted to the `episodic:<run>:<n>` KV scope. See [docs/cost-tracking.md](docs/cost-tracking.md) and [docs/redis.md](docs/redis.md).
+The conversation buffer is **hard-capped, not unbounded**: `priorMessages` is folded and truncated to `checkpointBudget()` (80% of the largest provider's `contextWindow`, see `ContextWindowReserve`) on each turn, and prior turns are condensed into an **episodic summary** (`maybeRunEpisodicSummary`) that replaces the collapsed turns in memory and is persisted to the `episodic:<run>:<n>` KV scope. The **compaction target** (the fraction of the context window to compact down to) is configurable via `contextCompactionRatio` — see [docs/context-management.md](docs/context-management.md) for configuration.
 
 ---
 
@@ -261,17 +264,17 @@ managing Kubernetes resources.
 ```bash
 # 1. Obtain an access token (client_credentials grant)
 TOKEN=$(curl -s -X POST http://localhost:8084/oauth/token \
-  -d "grant_type=client_credentials&client_id=acme-client&client_secret=secret123" \
+  -d \"grant_type=client_credentials&client_id=acme-client&client_secret=secret123\" \
   | jq -r .access_token)
 
 # 2. Submit a task
 curl -s -X POST http://localhost:8084/v1/tasks \
-  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{ "agent": "support-bot", "input": "How do I reset my password?" }'
+  -H \"Authorization: Bearer $TOKEN\" -H 'Content-Type: application/json' \
+  -d '{ \"agent\": \"support-bot\", \"input\": \"How do I reset my password?\" }'
 
 # 3. Stream results (SSE)
 curl -N http://localhost:8084/v1/tasks/task-support-bot-abc123/stream \
-  -H "Authorization: Bearer $TOKEN"
+  -H \"Authorization: Bearer $TOKEN\"
 ```
 
 A CLI and Python/Go SDKs are available — see [docs/integrating.md](docs/integrating.md).
@@ -285,21 +288,21 @@ runs — all without writing YAML or touching `kubectl`.
 ```bash
 # 1. Discover available agents
 curl -s http://localhost:8000/agents \
-  -H "Authorization: Bearer $TOKEN"
+  -H \"Authorization: Bearer $TOKEN\"
 
 # 2. Inspect an agent's manifest (schema, tools, knowledge bases, guardrails)
 curl -s http://localhost:8000/agents/support-bot \
-  -H "Authorization: Bearer $TOKEN"
+  -H \"Authorization: Bearer $TOKEN\"
 
 # 3. Launch a run with schema-validated input
 curl -s -X POST http://localhost:8000/agents/support-bot/run \
-  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{ "input": [{"role":"user","parts":[{"content_type":"text/plain","content":"How do I reset my password?"}]}] }'
+  -H \"Authorization: Bearer $TOKEN\" -H 'Content-Type: application/json' \
+  -d '{ \"input\": [{\"role\":\"user\",\"parts\":[{\"content_type\":\"text/plain\",\"content\":\"How do I reset my password?\"}]}] }'
 
 # Or use the CLI:
 aoctl agents list
 aoctl agents describe support-bot
-aoctl agents run support-bot --input "How do I reset my password?"
+aoctl agents run support-bot --input \"How do I reset my password?\"
 ```
 
 ---
@@ -313,24 +316,24 @@ The UI API (`localhost:8080` via the UIProxy in dev) exposes a chat-style endpoi
 RESP=$(curl -s -X POST http://localhost:8080/api/deployments/default/support-bot/execute \
   -H 'Content-Type: application/json' \
   -d '{
-    "input": "Hi, I have a problem with my order",
-    "sessionId": "customer-12345"
+    \"input\": \"Hi, I have a problem with my order\",
+    \"sessionId\": \"customer-12345\"
   }')
-echo "$RESP"   # → {"runName":"chat-support-bot-xyz","sessionId":"customer-12345"}
+echo \"$RESP\"   # → {\"runName\":\"chat-support-bot-xyz\",\"sessionId\":\"customer-12345\"}
 
 # 2. Retrieve the conversation history for the session
 curl http://localhost:8080/api/deployments/default/support-bot/history?sessionId=customer-12345
-# → {"sessionId":"customer-12345","messages":[{"role":"user","content":"Hi, I have a problem with my order"}]}
+# → {\"sessionId\":\"customer-12345\",\"messages\":[{\"role\":\"user\",\"content\":\"Hi, I have a problem with my order\"}]}
 
 # 3. Persist the agent's final answer for the run (called by the runner/pod)
 curl -s -X POST http://localhost:8080/api/deployments/default/support-bot/complete \
   -H 'Content-Type: application/json' \
   -d '{
-    "sessionId": "customer-12345",
-    "output": "I'\''d be happy to help! What'\''s your order number?",
-    "traceEntries": "..."
+    \"sessionId\": \"customer-12345\",
+    \"output\": \"I\'d be happy to help! What\'s your order number?\",
+    \"traceEntries\": \"...\"
   }'
-# → {"status":"ok"}
+# → {\"status\":\"ok\"}
 ```
 
 > The deployment SSE stream endpoint (`GET …/stream`) currently returns a placeholder and is not yet wired to live token streaming; real-time token streaming is emitted by the model-router sidecar into its `tokens:<namespace>:<run>` stream, and will be surfaced through this endpoint in a future release.
@@ -342,18 +345,18 @@ curl http://localhost:8080/api/deployments/default/support-bot
 
 # Response
 {
-  "name": "support-bot",
-  "namespace": "default",
-  "agentRef": "support-agent",
-  "phase": "Running",
-  "readyReplicas": 2,
-  "availableReplicas": 2,
-  "consecutiveFailures": 0,
-  "inputSourceType": "chat",
-  "contextUsedTokens": 2048,
-  "maxContextTokens": 16000,
-  "lastUpdateTime": "2025-01-15T12:00:00Z",
-  "message": "Reconciling"
+  \"name\": \"support-bot\",
+  \"namespace\": \"default\",
+  \"agentRef\": \"support-agent\",
+  \"phase\": \"Running\",
+  \"readyReplicas\": 2,
+  \"availableReplicas\": 2,
+  \"consecutiveFailures\": 0,
+  \"inputSourceType\": \"chat\",
+  \"contextUsedTokens\": 2048,
+  \"maxContextTokens\": 16000,
+  \"lastUpdateTime\": \"2025-01-15T12:00:00Z\",
+  \"message\": \"Reconciling\"
 }
 ```
 
@@ -377,7 +380,7 @@ kind: ModelProvider
 metadata:
   name: gpt4-provider
 spec:
-  litellmModel: "openai/gpt-4o"
+  litellmModel: \"openai/gpt-4o\"
   credentialsRef:
     name: openai-credentials
     key: api-key
@@ -386,8 +389,8 @@ spec:
     - reasoning
   constraints:
     contextWindow: 128000
-    costPerMillionInputTokens: "3.00"
-    costPerMillionOutputTokens: "15.00"
+    costPerMillionInputTokens: \"3.00\"
+    costPerMillionOutputTokens: \"15.00\"
 
 ---
 # 2. Create a router
@@ -442,17 +445,17 @@ Then users chat with the agent across turns. Each `execute` call creates a new `
 # User message 1 — creates run chat-support-bot-aaa, returns runName + sessionId
 RESP=$(curl -s -X POST http://localhost:8080/api/deployments/default/support-bot/execute \
   -H 'Content-Type: application/json' \
-  -d '{"input": "Hi, I have a problem with my order", "sessionId": "customer-12345"}')
+  -d '{\"input\": \"Hi, I have a problem with my order\", \"sessionId\": \"customer-12345\"}')
 
 # (…the agent pod runs, then persists its answer…)
 curl -s -X POST http://localhost:8080/api/deployments/default/support-bot/complete \
   -H 'Content-Type: application/json' \
-  -d '{"sessionId":"customer-12345","output":"I'\''d be happy to help! What'\''s your order number?"}'
+  -d '{\"sessionId\":\"customer-12345\",\"output\":\"I\'d be happy to help! What\'s your order number?\"}'
 
 # User message 2 — same sessionId chains to the prior run; the agent remembers context
 curl -s -X POST http://localhost:8080/api/deployments/default/support-bot/execute \
   -H 'Content-Type: application/json' \
-  -d '{"input": "Order #ORD-789", "sessionId": "customer-12345"}'
+  -d '{\"input\": \"Order #ORD-789\", \"sessionId\": \"customer-12345\"}')
 
 # Conversation history for the session
 curl http://localhost:8080/api/deployments/default/support-bot/history?sessionId=customer-12345
