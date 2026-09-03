@@ -67,7 +67,7 @@ modelRouter:
   # in-memory buffer down to when truncation fires (issue #54). The 80% checkpoint
   # budget is the safety ceiling (trigger); this is the target (how far to compress).
   # 0.5 (default) keeps ~50% of the window; 0.1 aggressively compacts to ~10%.
-  contextCompactionRatio: 0.5
+  contextCompactionRatio: 0.1
 
 mcpIngester:
   image:
