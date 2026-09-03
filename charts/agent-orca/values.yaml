@@ -38,7 +38,7 @@ operator:
   # tenant-driven: each federated TenantConfig carries its own IdP config
   # (issuer/client/secret/redirect/claim mappings) — see config/samples/dev-tenant-google.yaml.
   # The per-tenant client secret lives on the TenantConfig (spec.federated.clientSecretRef,
-  # in the tenant's targetNamespace), never in these values.
+  # in the tenant's first allowed namespace), never in these values.
   oidc:
     enabled: false
     cookieSecure: true          # set false for plain-HTTP local dev
@@ -67,7 +67,7 @@ modelRouter:
   # in-memory buffer down to when truncation fires (issue #54). The 80% checkpoint
   # budget is the safety ceiling (trigger); this is the target (how far to compress).
   # 0.5 (default) keeps ~50% of the window; 0.1 aggressively compacts to ~10%.
-  contextCompactionRatio: 0.1
+  contextCompactionRatio: 0.3
 
 mcpIngester:
   image:

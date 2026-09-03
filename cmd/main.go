@@ -122,7 +122,7 @@ func main() {
 	// /oauth/callback, /oauth/logout. Login is tenant-driven: each federated
 	// TenantConfig carrying a ClientSecretRef is a selectable IdP, and the
 	// callback builds the OIDC provider from that tenant issuer/client/secret
-	// (read from the tenant targetNamespace) — so each org authenticates via
+	// (read from the tenant's first allowed namespace) — so each org authenticates via
 	// its own IdP. Per-tenant issuer/client_id/secret/redirect/claim mappings
 	// live on the TenantConfig CRD; no operator-wide IdP client is configured.
 	var oidcLoginEnabled bool
@@ -519,7 +519,7 @@ func main() {
 	// ── OIDC interactive login (browser "login via OIDC") ────────────────────
 	// Tenant-driven: no operator-wide IdP client. The handler builds the OIDC
 	// provider per TenantConfig at /oauth/login|/oauth/callback using the tenant
-	// own client_secret (read from its targetNamespace).
+	// own client_secret (read from its first allowed namespace).
 	var uiOIDC *apiserver.OIDCLoginHandler
 	if oidcLoginEnabled {
 		uiOIDC = apiserver.NewOIDCLoginHandler(externalAuth,

@@ -211,7 +211,8 @@ spec:
     clientSecretRef:
       name: acme-credentials
       key: client-secret
-  targetNamespace: "tenant-acme"
+  allowedNamespaces:
+    - "tenant-acme"
   allowedAgents:
     - "support-bot"
   rateLimit:
@@ -256,7 +257,8 @@ spec:
     clientID: "0oa1234567890"
     matchClaim: "org_id"
     matchValue: "bigco-inc"
-  targetNamespace: "tenant-bigco"
+  allowedNamespaces:
+    - "tenant-bigco"
   allowedAgents:
     - "support-bot"
     - "code-reviewer"
@@ -280,7 +282,8 @@ metadata:
   namespace: agent-orca-system
 spec:
   authMode: federated
-  targetNamespace: default          # where this tenant's tasks/agents live
+  allowedNamespaces:
+    - default          # where this tenant's tasks/agents live
   federated:
     issuerURL: "https://token.actions.githubusercontent.com"
     clientID:  "agent-orca-dev"     # the OIDC `aud` you request in your workflow
@@ -529,7 +532,8 @@ spec:
     clientSecretRef:
       name: acme-credentials
       key: client-secret
-  targetNamespace: "tenant-acme"
+  allowedNamespaces:
+    - "tenant-acme"
   allowedAgents:
     - "support-bot"
   rateLimit:

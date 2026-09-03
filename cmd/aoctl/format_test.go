@@ -204,7 +204,7 @@ func TestCmdAgentsList_JSON(t *testing.T) {
 func TestCmdAdminTenantsList_JSON(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"tenants":[{"name":"acme","clientID":"c1","targetNamespace":"tenant-acme"}],"count":1}`))
+		_, _ = w.Write([]byte(`{"tenants":[{"name":"acme","clientID":"c1","allowedNamespaces":["tenant-acme"]}],"count":1}`))
 	}))
 	defer srv.Close()
 	stdout, _, err := runCLI(t, nil, "admin", "tenants", "list", "--endpoint", srv.URL, "--token", "sa-token", "--json")

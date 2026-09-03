@@ -23,6 +23,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -122,8 +124,8 @@ func seedFederatedTenant(t *testing.T, issuerURL string) *ExternalAuth {
 	tc := &agentorcav1alpha1.TenantConfig{
 		ObjectMeta: metav1.ObjectMeta{Name: "github-oidc", Namespace: "agent-orca-system"},
 		Spec: agentorcav1alpha1.TenantConfigSpec{
-			AuthMode:        "federated",
-			TargetNamespace: "default",
+			AuthMode:          "federated",
+			AllowedNamespaces: []string{"default"},
 			Federated: &agentorcav1alpha1.FederatedAuthConfig{
 				IssuerURL:  issuerURL,
 				ClientID:   "agent-orca-dev",
@@ -272,5 +274,77 @@ func TestValidateTokenParallel_K8sNotConfigured(t *testing.T) {
 	}
 	if ident == nil {
 		t.Fatal("expected non-nil identity")
+	}
+}
+
+// TestNewProviderForTenant_PassesConfiguredScopes verifies (PR 67) that a
+// tenant's FederatedAuthConfig.Scopes are forwarded to the OIDC provider's auth
+// URL, so an operator can request "offline_access" per tenant to obtain a refresh
+// token for session refresh.
+func TestNewProviderForTenant_PassesConfiguredScopes(t *testing.T) {
+	key := newTestKey(t)
+	issuerURL := "https://example.invalid"
+	startOIDCIssuer(t, key, &issuerURL)
+
+	tc := &agentorcav1alpha1.TenantConfig{
+		Spec: agentorcav1alpha1.TenantConfigSpec{
+			AuthMode:          "federated",
+			AllowedNamespaces: []string{"default"},
+			Federated: &agentorcav1alpha1.FederatedAuthConfig{
+				IssuerURL:   issuerURL,
+				ClientID:    "agent-orca-dev",
+				RedirectURI: "http://localhost:8083/oauth/callback",
+				Scopes:      []string{"openid", "email", "offline_access"},
+			},
+		},
+	}
+	// No ClientSecretRef => no kubernetes client needed to build the provider.
+	a := &ExternalAuth{}
+	p, err := a.NewProviderForTenant(context.Background(), tc)
+	if err != nil {
+		t.Fatalf("NewProviderForTenant: %v", err)
+	}
+	authURL, _ := p.AuthCodeURL("state", "nonce")
+	q, err := url.Parse(authURL)
+	if err != nil {
+		t.Fatalf("parsing auth url: %v", err)
+	}
+	scope := q.Query().Get("scope")
+	for _, want := range []string{"openid", "email", "offline_access"} {
+		if !strings.Contains(scope, want) {
+			t.Fatalf("expected %q in requested scope %q", want, scope)
+		}
+	}
+}
+
+// TestNewProviderForTenant_DefaultScopesWhenEmpty verifies that a tenant with no
+// Scopes configured still gets the OIDC package default scopes (and therefore no
+// offline_access) — i.e. the refresh scope is opt-in per tenant, not forced.
+func TestNewProviderForTenant_DefaultScopesWhenEmpty(t *testing.T) {
+	key := newTestKey(t)
+	issuerURL := "https://example.invalid"
+	startOIDCIssuer(t, key, &issuerURL)
+	tc := &agentorcav1alpha1.TenantConfig{
+		Spec: agentorcav1alpha1.TenantConfigSpec{
+			Federated: &agentorcav1alpha1.FederatedAuthConfig{
+				IssuerURL:   issuerURL,
+				ClientID:    "agent-orca-dev",
+				RedirectURI: "http://localhost:8083/oauth/callback",
+			},
+		},
+	}
+	a := &ExternalAuth{}
+	p, err := a.NewProviderForTenant(context.Background(), tc)
+	if err != nil {
+		t.Fatalf("NewProviderForTenant: %v", err)
+	}
+	authURL, _ := p.AuthCodeURL("state", "nonce")
+	q, err := url.Parse(authURL)
+	if err != nil {
+		t.Fatalf("parsing auth url: %v", err)
+	}
+	scope := q.Query().Get("scope")
+	if strings.Contains(scope, "offline_access") {
+		t.Fatalf("did not expect offline_access when scopes unset, got %q", scope)
 	}
 }

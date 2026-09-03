@@ -140,7 +140,7 @@ func TestAdminCreateTenant(t *testing.T) {
 	s := newAdminServer(t)
 	h := s.requireAdminAuth(http.HandlerFunc(s.handleAdminTenants))
 
-	body := `{"name":"acme","targetNamespace":"tenant-acme","clientID":"acme-client"}`
+	body := `{"name":"acme","allowedNamespaces":["tenant-acme"],"clientID":"acme-client"}`
 	rec := doPost(t, h, "/admin/tenants", body)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
@@ -159,7 +159,7 @@ func TestAdminCreateTenant(t *testing.T) {
 	if err := s.crdClient.Get(context.Background(), client.ObjectKey{Name: "acme", Namespace: "agent-orca-system"}, &tc); err != nil {
 		t.Fatalf("tenant not created: %v", err)
 	}
-	if tc.Spec.TargetNamespace != "tenant-acme" || tc.Spec.Issued == nil || tc.Spec.Issued.ClientID != "acme-client" {
+	if firstNamespace(tc.Spec.AllowedNamespaces) != "tenant-acme" || tc.Spec.Issued == nil || tc.Spec.Issued.ClientID != "acme-client" {
 		t.Fatalf("bad tenant spec: %+v", tc.Spec)
 	}
 	var sec corev1.Secret
@@ -181,14 +181,14 @@ func TestAdminCreateTenant_AlreadyExists(t *testing.T) {
 	existing := &agentorcav1alpha1.TenantConfig{
 		ObjectMeta: metav1.ObjectMeta{Name: "acme", Namespace: "agent-orca-system"},
 		Spec: agentorcav1alpha1.TenantConfigSpec{
-			AuthMode:        tenantAuthModeIssued,
-			TargetNamespace: "tenant-acme",
-			Issued:          &agentorcav1alpha1.IssuedAuthConfig{ClientID: "acme-client"},
+			AuthMode:          tenantAuthModeIssued,
+			AllowedNamespaces: []string{"tenant-acme"},
+			Issued:            &agentorcav1alpha1.IssuedAuthConfig{ClientID: "acme-client"},
 		},
 	}
 	s := newAdminServer(t, existing)
 	h := s.requireAdminAuth(http.HandlerFunc(s.handleAdminTenants))
-	rec := doPost(t, h, "/admin/tenants", `{"name":"acme","targetNamespace":"tenant-acme","clientID":"acme-client"}`)
+	rec := doPost(t, h, "/admin/tenants", `{"name":"acme","allowedNamespaces":["tenant-acme"],"clientID":"acme-client"}`)
 	// Idempotent: re-creating an existing tenant reports it (no error).
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("expected idempotent 201, got %d: %s", rec.Code, rec.Body.String())
@@ -199,9 +199,9 @@ func TestAdminGetAndListTenants(t *testing.T) {
 	existing := &agentorcav1alpha1.TenantConfig{
 		ObjectMeta: metav1.ObjectMeta{Name: "acme", Namespace: "agent-orca-system"},
 		Spec: agentorcav1alpha1.TenantConfigSpec{
-			AuthMode:        tenantAuthModeIssued,
-			TargetNamespace: "tenant-acme",
-			Issued:          &agentorcav1alpha1.IssuedAuthConfig{ClientID: "acme-client"},
+			AuthMode:          tenantAuthModeIssued,
+			AllowedNamespaces: []string{"tenant-acme"},
+			Issued:            &agentorcav1alpha1.IssuedAuthConfig{ClientID: "acme-client"},
 		},
 	}
 	s := newAdminServer(t, existing)
@@ -247,8 +247,8 @@ func TestAdminRotateSecret(t *testing.T) {
 	existingTC := &agentorcav1alpha1.TenantConfig{
 		ObjectMeta: metav1.ObjectMeta{Name: "acme", Namespace: "agent-orca-system"},
 		Spec: agentorcav1alpha1.TenantConfigSpec{
-			AuthMode:        tenantAuthModeIssued,
-			TargetNamespace: "tenant-acme",
+			AuthMode:          tenantAuthModeIssued,
+			AllowedNamespaces: []string{"tenant-acme"},
 			Issued: &agentorcav1alpha1.IssuedAuthConfig{
 				ClientID:        "acme-client",
 				ClientSecretRef: agentorcav1alpha1.SecretKeyRef{Name: "acme-client-secret", Key: "client-secret"},
@@ -290,8 +290,8 @@ func TestAdminDeleteTenant(t *testing.T) {
 	tc := &agentorcav1alpha1.TenantConfig{
 		ObjectMeta: metav1.ObjectMeta{Name: "acme", Namespace: "agent-orca-system"},
 		Spec: agentorcav1alpha1.TenantConfigSpec{
-			AuthMode:        tenantAuthModeIssued,
-			TargetNamespace: "tenant-acme",
+			AuthMode:          tenantAuthModeIssued,
+			AllowedNamespaces: []string{"tenant-acme"},
 			Issued: &agentorcav1alpha1.IssuedAuthConfig{
 				ClientID:        "acme-client",
 				ClientSecretRef: agentorcav1alpha1.SecretKeyRef{Name: "acme-client-secret", Key: "client-secret"},
@@ -372,9 +372,9 @@ func TestAdminRotateSecret_NoSecretRef(t *testing.T) {
 	tc := &agentorcav1alpha1.TenantConfig{
 		ObjectMeta: metav1.ObjectMeta{Name: "bare", Namespace: "agent-orca-system"},
 		Spec: agentorcav1alpha1.TenantConfigSpec{
-			AuthMode:        tenantAuthModeIssued,
-			TargetNamespace: "tenant-bare",
-			Issued:          &agentorcav1alpha1.IssuedAuthConfig{ClientID: "bare-client"},
+			AuthMode:          tenantAuthModeIssued,
+			AllowedNamespaces: []string{"tenant-bare"},
+			Issued:            &agentorcav1alpha1.IssuedAuthConfig{ClientID: "bare-client"},
 			// No ClientSecretRef set.
 		},
 	}
@@ -391,7 +391,7 @@ func TestAdminRotateSecret_NoSecretRef(t *testing.T) {
 func TestAdminCreateTenant_WithRateLimitAndBudget(t *testing.T) {
 	s := newAdminServer(t)
 	h := s.requireAdminAuth(http.HandlerFunc(s.handleAdminTenants))
-	body := `{"name":"rate-limited","targetNamespace":"tenant-rl","clientID":"rl-client","rateLimit":{"requestsPerMinute":10,"concurrentRuns":3},"budgetPerDayUSD":"50.00","allowedAgents":["bot-a","bot-b"]}`
+	body := `{"name":"rate-limited","allowedNamespaces":["tenant-rl"],"clientID":"rl-client","rateLimit":{"requestsPerMinute":10,"concurrentRuns":3},"budgetPerDayUSD":"50.00","allowedAgents":["bot-a","bot-b"]}`
 	rec := doPost(t, h, "/admin/tenants", body)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
@@ -415,7 +415,7 @@ func TestAdminCreateTenant_WithRateLimitAndBudget(t *testing.T) {
 func TestAdminCreateTenant_ProvidedSecret(t *testing.T) {
 	s := newAdminServer(t)
 	h := s.requireAdminAuth(http.HandlerFunc(s.handleAdminTenants))
-	body := `{"name":"acme2","targetNamespace":"tenant-acme2","clientID":"acme2-client","clientSecret":"my-custom-secret"}`
+	body := `{"name":"acme2","allowedNamespaces":["tenant-acme2"],"clientID":"acme2-client","clientSecret":"my-custom-secret"}`
 	rec := doPost(t, h, "/admin/tenants", body)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
@@ -552,8 +552,8 @@ func TestAdminDeleteTenant_DeleteError(t *testing.T) {
 	tc := &agentorcav1alpha1.TenantConfig{
 		ObjectMeta: metav1.ObjectMeta{Name: "acme", Namespace: "agent-orca-system"},
 		Spec: agentorcav1alpha1.TenantConfigSpec{
-			AuthMode:        tenantAuthModeIssued,
-			TargetNamespace: "tenant-acme",
+			AuthMode:          tenantAuthModeIssued,
+			AllowedNamespaces: []string{"tenant-acme"},
 			Issued: &agentorcav1alpha1.IssuedAuthConfig{
 				ClientID:        "acme-client",
 				ClientSecretRef: agentorcav1alpha1.SecretKeyRef{Name: "acme-client-secret", Key: "client-secret"},
@@ -581,8 +581,8 @@ func TestTenantToResponse_NoIssued(t *testing.T) {
 	tc := &agentorcav1alpha1.TenantConfig{
 		ObjectMeta: metav1.ObjectMeta{Name: "noauth", Namespace: "agent-orca-system"},
 		Spec: agentorcav1alpha1.TenantConfigSpec{
-			AuthMode:        "federated",
-			TargetNamespace: "tenant-noauth",
+			AuthMode:          "federated",
+			AllowedNamespaces: []string{"tenant-noauth"},
 		},
 	}
 	resp := tenantToResponse(tc, "")
@@ -596,8 +596,8 @@ func TestTenantToResponse_WithSecret(t *testing.T) {
 	tc := &agentorcav1alpha1.TenantConfig{
 		ObjectMeta: metav1.ObjectMeta{Name: "acme", Namespace: "agent-orca-system"},
 		Spec: agentorcav1alpha1.TenantConfigSpec{
-			AuthMode:        tenantAuthModeIssued,
-			TargetNamespace: "tenant-acme",
+			AuthMode:          tenantAuthModeIssued,
+			AllowedNamespaces: []string{"tenant-acme"},
 			Issued: &agentorcav1alpha1.IssuedAuthConfig{
 				ClientID: "acme-client",
 				ClientSecretRef: agentorcav1alpha1.SecretKeyRef{
@@ -635,7 +635,7 @@ func TestAdminCreateTenant_CreateError(t *testing.T) {
 	}
 	s := newAdminServer(t, existingSec)
 	h := s.requireAdminAuth(http.HandlerFunc(s.handleAdminTenants))
-	body := `{"name":"acme","targetNamespace":"tenant-acme","clientID":"acme-client","clientSecret":"new-secret"}`
+	body := `{"name":"acme","allowedNamespaces":["tenant-acme"],"clientID":"acme-client","clientSecret":"new-secret"}`
 	rec := doPost(t, h, "/admin/tenants", body)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("expected 201 (idempotent), got %d: %s", rec.Code, rec.Body.String())
@@ -680,7 +680,7 @@ func TestAdminCreateTenant_CreateCRFailed(t *testing.T) {
 			},
 		}).Build()
 	h := s.requireAdminAuth(http.HandlerFunc(s.handleAdminTenants))
-	body := `{"name":"acme","targetNamespace":"tenant-acme","clientID":"acme-client"}`
+	body := `{"name":"acme","allowedNamespaces":["tenant-acme"],"clientID":"acme-client"}`
 	rec := doPost(t, h, "/admin/tenants", body)
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("expected 500, got %d: %s", rec.Code, rec.Body.String())
@@ -702,7 +702,7 @@ func TestAdminUpsertSecret_PatchError(t *testing.T) {
 			},
 		}).Build()
 	h := s.requireAdminAuth(http.HandlerFunc(s.handleAdminTenants))
-	body := `{"name":"acme","targetNamespace":"tenant-acme","clientID":"acme-client","clientSecret":"new"}`
+	body := `{"name":"acme","allowedNamespaces":["tenant-acme"],"clientID":"acme-client","clientSecret":"new"}`
 	rec := doPost(t, h, "/admin/tenants", body)
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("expected 500 for patch failure, got %d: %s", rec.Code, rec.Body.String())
@@ -714,8 +714,8 @@ func TestAdminDeleteTenant_DeleteError_Interceptor(t *testing.T) {
 	tc := &agentorcav1alpha1.TenantConfig{
 		ObjectMeta: metav1.ObjectMeta{Name: "acme", Namespace: "agent-orca-system"},
 		Spec: agentorcav1alpha1.TenantConfigSpec{
-			AuthMode:        tenantAuthModeIssued,
-			TargetNamespace: "tenant-acme",
+			AuthMode:          tenantAuthModeIssued,
+			AllowedNamespaces: []string{"tenant-acme"},
 			Issued: &agentorcav1alpha1.IssuedAuthConfig{
 				ClientID:        "acme-client",
 				ClientSecretRef: agentorcav1alpha1.SecretKeyRef{Name: "acme-client-secret", Key: "client-secret"},
@@ -743,8 +743,8 @@ func TestAdminRotateSecret_SecretNotFound(t *testing.T) {
 	tc := &agentorcav1alpha1.TenantConfig{
 		ObjectMeta: metav1.ObjectMeta{Name: "acme", Namespace: "agent-orca-system"},
 		Spec: agentorcav1alpha1.TenantConfigSpec{
-			AuthMode:        tenantAuthModeIssued,
-			TargetNamespace: "tenant-acme",
+			AuthMode:          tenantAuthModeIssued,
+			AllowedNamespaces: []string{"tenant-acme"},
 			Issued: &agentorcav1alpha1.IssuedAuthConfig{
 				ClientID:        "acme-client",
 				ClientSecretRef: agentorcav1alpha1.SecretKeyRef{Name: "missing-secret", Key: "client-secret"},

@@ -330,12 +330,13 @@ func (s *ExternalAPIServer) createTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify the agent exists in the target namespace.
-	var agent agentorcav1alpha1.Agent
-	if err := s.crdClient.Get(r.Context(), client.ObjectKey{
-		Name: req.Agent, Namespace: tenant.Namespace,
-	}, &agent); err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"agent %q not found in namespace %q"}`, req.Agent, tenant.Namespace), http.StatusNotFound)
+	// Resolve the agent to the namespace it actually lives in — which must be one
+	// of the tenant's authorized namespaces (allowedNamespaces). This directs the
+	// run to the agent's own namespace rather than assuming a single tenant
+	// namespace, so a tenant spanning multiple namespaces can reach any agent.
+	agent, err := findAgentInNamespaces(r.Context(), s.crdClient, tenant, req.Agent)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"agent %q not found in any authorized namespace"}`, req.Agent), http.StatusNotFound)
 		return
 	}
 
@@ -359,7 +360,7 @@ func (s *ExternalAPIServer) createTask(w http.ResponseWriter, r *http.Request) {
 	run := &agentorcav1alpha1.AgentRun{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: fmt.Sprintf("task-%s-", req.Agent),
-			Namespace:    tenant.Namespace,
+			Namespace:    agent.Namespace,
 			Labels: map[string]string{
 				security.LabelManagedBy:      security.ManagedByValue,
 				"agentorca.io/external-task": "true",
@@ -446,10 +447,8 @@ func (s *ExternalAPIServer) getTask(w http.ResponseWriter, r *http.Request, task
 		return
 	}
 
-	var run agentorcav1alpha1.AgentRun
-	if err := s.crdClient.Get(r.Context(), client.ObjectKey{
-		Name: taskID, Namespace: tenant.Namespace,
-	}, &run); err != nil {
+	run, err := findRunInNamespaces(r.Context(), s.crdClient, tenant, taskID)
+	if err != nil {
 		http.Error(w, `{"error":"task not found"}`, http.StatusNotFound)
 		return
 	}
@@ -460,7 +459,7 @@ func (s *ExternalAPIServer) getTask(w http.ResponseWriter, r *http.Request, task
 		return
 	}
 
-	resp := s.runToTaskResponse(&run)
+	resp := s.runToTaskResponse(run)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
 }
@@ -478,9 +477,8 @@ func (s *ExternalAPIServer) listTasks(w http.ResponseWriter, r *http.Request) {
 		"agentorca.io/tenant":        tenant.TenantName,
 	}
 
-	var runList agentorcav1alpha1.AgentRunList
-	if err := s.crdClient.List(r.Context(), &runList,
-		client.InNamespace(tenant.Namespace), labels); err != nil {
+	runList, err := listRunsInNamespaces(r.Context(), s.crdClient, tenant, labels)
+	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"listing tasks: %s"}`, err), http.StatusInternalServerError)
 		return
 	}
@@ -516,10 +514,8 @@ func (s *ExternalAPIServer) streamTask(w http.ResponseWriter, r *http.Request, t
 		return
 	}
 
-	var run agentorcav1alpha1.AgentRun
-	if err := s.crdClient.Get(r.Context(), client.ObjectKey{
-		Name: taskID, Namespace: tenant.Namespace,
-	}, &run); err != nil {
+	run, err := findRunInNamespaces(r.Context(), s.crdClient, tenant, taskID)
+	if err != nil {
 		http.Error(w, `{"error":"task not found"}`, http.StatusNotFound)
 		return
 	}
@@ -552,8 +548,11 @@ func (s *ExternalAPIServer) streamTask(w http.ResponseWriter, r *http.Request, t
 	}))
 	flusher.Flush()
 
-	// Subscribe to the Redis token stream.
-	streamKey := fmt.Sprintf("tokens:%s:%s", tenant.Namespace, taskID)
+	// Subscribe to the Redis token stream. The stream key is namespaced by the
+	// run's own namespace (matching the controller/executor producers, which key by
+	// run.Namespace) — so a run created in a non-primary allowed namespace streams
+	// from the correct key.
+	streamKey := fmt.Sprintf("tokens:%s:%s", run.Namespace, taskID)
 	tokenCh, err := s.store.TailTokens(r.Context(), streamKey)
 	if err != nil {
 		_, _ = fmt.Fprintf(w, "event: error\ndata: %s\n\n", mustJSON(map[string]string{
@@ -580,11 +579,12 @@ func (s *ExternalAPIServer) streamTask(w http.ResponseWriter, r *http.Request, t
 		flusher.Flush()
 	}
 
-	// Re-fetch the run for final status.
+	// Re-fetch the run for final status (in its resolved namespace).
+	var final agentorcav1alpha1.AgentRun
 	if err := s.crdClient.Get(r.Context(), client.ObjectKey{
-		Name: taskID, Namespace: tenant.Namespace,
-	}, &run); err == nil {
-		resp := s.runToTaskResponse(&run)
+		Name: taskID, Namespace: run.Namespace,
+	}, &final); err == nil {
+		resp := s.runToTaskResponse(&final)
 		_, _ = fmt.Fprintf(w, "event: complete\ndata: %s\n\n", mustJSON(resp))
 		flusher.Flush()
 	}
@@ -612,10 +612,8 @@ func (s *ExternalAPIServer) answerTask(w http.ResponseWriter, r *http.Request, t
 		return
 	}
 
-	var run agentorcav1alpha1.AgentRun
-	if err := s.crdClient.Get(r.Context(), client.ObjectKey{
-		Name: taskID, Namespace: tenant.Namespace,
-	}, &run); err != nil {
+	run, err := findRunInNamespaces(r.Context(), s.crdClient, tenant, taskID)
+	if err != nil {
 		http.Error(w, `{"error":"task not found"}`, http.StatusNotFound)
 		return
 	}
@@ -632,7 +630,7 @@ func (s *ExternalAPIServer) answerTask(w http.ResponseWriter, r *http.Request, t
 
 	// Store the answer in the state store for the model-router to pick up.
 	if s.hasStore && s.store != nil {
-		answerKey := fmt.Sprintf("answer:%s:%s", tenant.Namespace, taskID)
+		answerKey := fmt.Sprintf("answer:%s:%s", run.Namespace, taskID)
 		if err := s.store.SaveAnswer(r.Context(), answerKey, req.Answer, 24*time.Hour); err != nil {
 			slog.Warn("failed to save answer to state store", "task", taskID, "err", err)
 		}
@@ -641,7 +639,7 @@ func (s *ExternalAPIServer) answerTask(w http.ResponseWriter, r *http.Request, t
 	// Update the AgentRun status with the answer.
 	patch := client.MergeFrom(run.DeepCopy())
 	run.Status.ClarifyAnswer = req.Answer
-	if err := s.crdClient.Status().Patch(r.Context(), &run, patch); err != nil {
+	if err := s.crdClient.Status().Patch(r.Context(), run, patch); err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"updating task: %s"}`, err), http.StatusInternalServerError)
 		return
 	}
@@ -659,10 +657,8 @@ func (s *ExternalAPIServer) cancelTask(w http.ResponseWriter, r *http.Request, t
 		return
 	}
 
-	var run agentorcav1alpha1.AgentRun
-	if err := s.crdClient.Get(r.Context(), client.ObjectKey{
-		Name: taskID, Namespace: tenant.Namespace,
-	}, &run); err != nil {
+	run, err := findRunInNamespaces(r.Context(), s.crdClient, tenant, taskID)
+	if err != nil {
 		http.Error(w, `{"error":"task not found"}`, http.StatusNotFound)
 		return
 	}
@@ -686,7 +682,7 @@ func (s *ExternalAPIServer) cancelTask(w http.ResponseWriter, r *http.Request, t
 	run.Status.Phase = agentorcav1alpha1.AgentRunPhaseFailed
 	run.Status.FailureReason = "cancelled by tenant via external API"
 	run.Status.CompletionTime = &now
-	if err := s.crdClient.Status().Patch(r.Context(), &run, patch); err != nil {
+	if err := s.crdClient.Status().Patch(r.Context(), run, patch); err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"cancelling task: %s"}`, err), http.StatusInternalServerError)
 		return
 	}

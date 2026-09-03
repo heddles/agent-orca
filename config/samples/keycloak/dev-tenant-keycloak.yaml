@@ -8,7 +8,7 @@
 #   Browser -> /oauth/login -> picker -> /oauth/login?tenant=keycloak-oidc
 #           -> Keycloak login -> /oauth/callback (code exchanged using this
 #              tenant's client_secret, read from the oidc-client-secret Secret
-#              in spec.targetNamespace) -> session cookie set -> /api/* allowed
+#              in spec.allowedNamespaces[0]) -> session cookie set -> /api/* allowed
 #
 # Prerequisites:
 #   * Operator running with OIDC login enabled:
@@ -31,13 +31,14 @@ metadata:
 spec:
   authMode: federated
   # "default" matches the quickstart agents; the client secret lives here too.
-  targetNamespace: agent-orca-system
+  allowedNamespaces:
+    - agent-orca-system
   federated:
     issuerURL: "http://test.keycloak.org/realms/agentorca"
     clientID: "agent-orca"
     redirectURI: "http://agent-orca.local/oauth/callback"
     clientSecretRef:
-      name: agent-orca-client-secret      # Secret in spec.targetNamespace (default)
+      name: agent-orca-client-secret      # Secret in spec.allowedNamespaces[0] (default)
       key: client-secret-key
     claimMappings:
       userid: email                 # map the user's email -> TenantIdentity.UserID

@@ -374,8 +374,8 @@ func (s *ACPServer) handleListAgents(w http.ResponseWriter, r *http.Request) {
 	}
 	offset := max(parseIntQueryParam(r, "offset", 0), 0)
 
-	var agentList agentorcav1alpha1.AgentList
-	if err := s.crdClient.List(r.Context(), &agentList, client.InNamespace(tenant.Namespace)); err != nil {
+	agentList, err := listAgentsInNamespaces(r.Context(), s.crdClient, tenant)
+	if err != nil {
 		writeACPError(w, "server_error", err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -403,7 +403,7 @@ func (s *ACPServer) handleListAgents(w http.ResponseWriter, r *http.Request) {
 	for _, agent := range filteredAgents[offset:end] {
 		manifest := ACPAgentManifest{
 			Name:               agent.Name,
-			Namespace:          tenant.Namespace,
+			Namespace:          agent.Namespace,
 			Description:        agent.Spec.SystemPrompt,
 			InputContentTypes:  []string{"text/plain", "application/json"},
 			OutputContentTypes: []string{"text/plain", "application/json"},
@@ -447,9 +447,11 @@ func (s *ACPServer) handleAgentRoutes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify the agent exists
-	var agent agentorcav1alpha1.Agent
-	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: name, Namespace: tenant.Namespace}, &agent); err != nil {
+	// Resolve the agent to the namespace it actually lives in — which must be one
+	// of the tenant's authorized namespaces — so the request is directed to the
+	// agent's own namespace rather than a single assumed tenant namespace.
+	agent, err := findAgentInNamespaces(r.Context(), s.crdClient, tenant, name)
+	if err != nil {
 		writeACPError(w, "not_found", fmt.Sprintf("agent %q not found", name), http.StatusNotFound)
 		return
 	}
@@ -460,13 +462,13 @@ func (s *ACPServer) handleAgentRoutes(w http.ResponseWriter, r *http.Request) {
 			writeACPError(w, "invalid_input", "GET required", http.StatusMethodNotAllowed)
 			return
 		}
-		s.writeAgentManifest(w, r, &agent, tenant.Namespace)
+		s.writeAgentManifest(w, r, agent, agent.Namespace)
 	case "run":
 		if r.Method != http.MethodPost {
 			writeACPError(w, "invalid_input", "POST required", http.StatusMethodNotAllowed)
 			return
 		}
-		s.handleAgentRun(w, r, tenant, &agent)
+		s.handleAgentRun(w, r, tenant, agent)
 	default:
 		writeACPError(w, "invalid_input", fmt.Sprintf("unknown sub-path %q", sub), http.StatusBadRequest)
 	}
@@ -565,7 +567,7 @@ func (s *ACPServer) handleAgentRun(w http.ResponseWriter, r *http.Request, tenan
 	run := &agentorcav1alpha1.AgentRun{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: fmt.Sprintf("acp-%s-", agent.Name),
-			Namespace:    tenant.Namespace,
+			Namespace:    agent.Namespace,
 			Labels: map[string]string{
 				security.LabelManagedBy: "agent-orca",
 				"agentorca.io/tenant":   tenant.TenantName,
@@ -795,9 +797,9 @@ func (s *ACPServer) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Verify the agent exists
-	var agent agentorcav1alpha1.Agent
-	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: req.AgentName, Namespace: tenant.Namespace}, &agent); err != nil {
+	// Resolve the agent to the namespace it actually lives in (authorized).
+	agent, err := findAgentInNamespaces(r.Context(), s.crdClient, tenant, req.AgentName)
+	if err != nil {
 		writeACPError(w, "not_found", fmt.Sprintf("agent %q not found", req.AgentName), http.StatusNotFound)
 		return
 	}
@@ -832,7 +834,7 @@ func (s *ACPServer) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 	run := &agentorcav1alpha1.AgentRun{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: fmt.Sprintf("acp-%s-", req.AgentName),
-			Namespace:    tenant.Namespace,
+			Namespace:    agent.Namespace,
 			Labels: map[string]string{
 				security.LabelManagedBy: "agent-orca",
 				"agentorca.io/tenant":   tenant.TenantName,
@@ -904,23 +906,19 @@ func (s *ACPServer) handleRunByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var run agentorcav1alpha1.AgentRun
-	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: runID, Namespace: tenant.Namespace}, &run); err != nil {
-		writeACPError(w, "not_found", "run not found", http.StatusNotFound)
-		return
-	}
-
-	// Verify run belongs to tenant
-	if run.Labels["agentorca.io/tenant"] != tenant.TenantName {
+	// Resolve the run across the tenant's authorized namespaces. findRunInNamespaces
+	// also enforces tenant ownership via the agentorca.io/tenant label.
+	run, err := findRunInNamespaces(r.Context(), s.crdClient, tenant, runID)
+	if err != nil {
 		writeACPError(w, "not_found", "run not found", http.StatusNotFound)
 		return
 	}
 
 	switch r.Method {
 	case http.MethodGet:
-		s.getACPRun(w, r, &run)
+		s.getACPRun(w, r, run)
 	case http.MethodPost:
-		s.resumeACPRun(w, r, &run)
+		s.resumeACPRun(w, r, run)
 	default:
 		writeACPError(w, "invalid_input", "method not allowed", http.StatusMethodNotAllowed)
 	}
@@ -928,14 +926,10 @@ func (s *ACPServer) handleRunByID(w http.ResponseWriter, r *http.Request) {
 
 // handleCancelRun handles POST /runs/{run_id}/cancel.
 func (s *ACPServer) handleCancelRun(w http.ResponseWriter, r *http.Request, tenant *TenantIdentity, runID string) {
-	var run agentorcav1alpha1.AgentRun
-	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: runID, Namespace: tenant.Namespace}, &run); err != nil {
-		writeACPError(w, "not_found", "run not found", http.StatusNotFound)
-		return
-	}
-
-	// Verify run belongs to tenant
-	if run.Labels["agentorca.io/tenant"] != tenant.TenantName {
+	// Resolve the run across the tenant's authorized namespaces. findRunInNamespaces
+	// also enforces tenant ownership via the agentorca.io/tenant label.
+	run, err := findRunInNamespaces(r.Context(), s.crdClient, tenant, runID)
+	if err != nil {
 		writeACPError(w, "not_found", "run not found", http.StatusNotFound)
 		return
 	}
@@ -957,7 +951,7 @@ func (s *ACPServer) handleCancelRun(w http.ResponseWriter, r *http.Request, tena
 	run.Status.FailureReason = "cancelled by user"
 	now := metav1.Now()
 	run.Status.CompletionTime = &now
-	if err := s.crdClient.Status().Patch(r.Context(), &run, patch); err != nil {
+	if err := s.crdClient.Status().Patch(r.Context(), run, patch); err != nil {
 		writeACPError(w, "server_error", fmt.Sprintf("cancelling run: %s", err), http.StatusInternalServerError)
 		return
 	}
@@ -979,14 +973,10 @@ func (s *ACPServer) handleCancelRun(w http.ResponseWriter, r *http.Request, tena
 
 // handleListRunEvents handles GET /runs/{run_id}/events.
 func (s *ACPServer) handleListRunEvents(w http.ResponseWriter, r *http.Request, tenant *TenantIdentity, runID string) {
-	var run agentorcav1alpha1.AgentRun
-	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: runID, Namespace: tenant.Namespace}, &run); err != nil {
-		writeACPError(w, "not_found", "run not found", http.StatusNotFound)
-		return
-	}
-
-	// Verify run belongs to tenant
-	if run.Labels["agentorca.io/tenant"] != tenant.TenantName {
+	// Resolve the run across the tenant's authorized namespaces. findRunInNamespaces
+	// also enforces tenant ownership via the agentorca.io/tenant label.
+	run, err := findRunInNamespaces(r.Context(), s.crdClient, tenant, runID)
+	if err != nil {
 		writeACPError(w, "not_found", "run not found", http.StatusNotFound)
 		return
 	}
@@ -1114,9 +1104,8 @@ func (s *ACPServer) handleGetSession(w http.ResponseWriter, r *http.Request) {
 
 	// Find runs with this session ID to build session history
 	labels := client.MatchingLabels{"agentorca.io/session-id": sessionID}
-	var runList agentorcav1alpha1.AgentRunList
-	if err := s.crdClient.List(r.Context(), &runList,
-		client.InNamespace(tenant.Namespace), labels); err != nil {
+	runList, err := listRunsInNamespaces(r.Context(), s.crdClient, tenant, labels)
+	if err != nil {
 		writeACPError(w, "server_error", err.Error(), http.StatusInternalServerError)
 		return
 	}

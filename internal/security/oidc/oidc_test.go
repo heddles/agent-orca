@@ -24,6 +24,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -176,6 +177,79 @@ func TestProvider_AuthCodeURL_GeneratesPKCE(t *testing.T) {
 	}
 	if codeVerifier == "" {
 		t.Fatal("expected non-empty PKCE code_verifier when PKCE is enabled")
+	}
+}
+
+// TestAuthCodeURL_RequestsOfflineAccess verifies the auth-code URL carries an
+// explicit "offline_access" scope and the "access_type=offline" parameter when
+// configured — the combination needed so providers (Google in particular) return
+// a refresh token the login flow can persist for session refresh.
+func TestAuthCodeURL_RequestsOfflineAccess(t *testing.T) {
+	key := newTestKey(t)
+	var idToken string
+	issuer := newMockIdP(t, key, func() string { return idToken })
+	p, err := NewProvider(context.Background(), Config{
+		IssuerURL:    issuer,
+		ClientID:     "agent-orca-dev",
+		ClientSecret: "secret",
+		RedirectURI:  "http://localhost:8083/oauth/callback",
+		Scopes:       append(append([]string{}, DefaultScopes...), "offline_access"),
+		AccessType:   "offline",
+		PKCE:         true,
+	})
+	if err != nil {
+		t.Fatalf("NewProvider: %v", err)
+	}
+	authURL, _ := p.AuthCodeURL("s", testNonce)
+
+	if !strings.Contains(authURL, "access_type=offline") {
+		t.Fatalf("auth URL missing access_type=offline: %s", authURL)
+	}
+	q, err := url.Parse(authURL)
+	if err != nil {
+		t.Fatalf("parsing auth url: %v", err)
+	}
+	scope := q.Query().Get("scope")
+	if !strings.Contains(scope, "offline_access") {
+		t.Fatalf("auth URL missing offline_access scope, got scope=%q", scope)
+	}
+	for _, def := range DefaultScopes {
+		if !strings.Contains(scope, def) {
+			t.Fatalf("scope missing default %q: %q", def, scope)
+		}
+	}
+}
+
+// TestAuthCodeURL_NoOfflineAccessByDefault verifies that when AccessType and
+// extra scopes are not configured, no access_type param is sent and offline_access
+// is absent — so the server/browser login profile (which leaves these empty) is
+// unchanged by the CLI's refresh-token opt-in.
+func TestAuthCodeURL_NoOfflineAccessByDefault(t *testing.T) {
+	key := newTestKey(t)
+	var idToken string
+	issuer := newMockIdP(t, key, func() string { return idToken })
+	p, err := NewProvider(context.Background(), Config{
+		IssuerURL:   issuer,
+		ClientID:    "agent-orca-dev",
+		RedirectURI: "http://localhost:8083/oauth/callback",
+		Scopes:      DefaultScopes,
+		PKCE:        true,
+	})
+	if err != nil {
+		t.Fatalf("NewProvider: %v", err)
+	}
+	authURL, _ := p.AuthCodeURL("s", testNonce)
+
+	if strings.Contains(authURL, "access_type=") {
+		t.Fatalf("did not expect access_type param by default: %s", authURL)
+	}
+	q, err := url.Parse(authURL)
+	if err != nil {
+		t.Fatalf("parsing auth url: %v", err)
+	}
+	scope := q.Query().Get("scope")
+	if strings.Contains(scope, "offline_access") {
+		t.Fatalf("did not expect offline_access scope by default: %q", scope)
 	}
 }
 

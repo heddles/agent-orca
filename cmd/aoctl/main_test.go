@@ -21,11 +21,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -334,6 +337,10 @@ func runCLI(t *testing.T, env map[string]string, args ...string) (string, string
 	var out, errb bytes.Buffer
 	s.out = &out
 	s.errw = &errb
+	// Route the cobra command's own stdout/stderr (used by `validate *`, which
+	// writes via cmd.OutOrStdout) into the captured buffers so runCLI can assert
+	// on it. Other commands write directly to s.out/s.errw and are unaffected.
+	root.SetOut(&out)
 	for k, v := range env {
 		t.Setenv(k, v)
 	}
@@ -459,7 +466,7 @@ func TestCmdACPEndpointExplicitStaysIntact(t *testing.T) {
 
 	// Set a bogus task endpoint but the correct ACP endpoint explicitly.
 	stdout, _, err := runCLI(t, map[string]string{
-		"AOCTL_ENDPOINT":   "http://127.0.0.1:1/tasks/v1",
+		"AOCTL_ENDPOINT":     "http://127.0.0.1:1/tasks/v1",
 		"AOCTL_ACP_ENDPOINT": acpSrv.URL,
 	}, "agents", "list", "--token", "tok")
 	if err != nil {
@@ -656,21 +663,21 @@ func TestCreateTenant_Success(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Fatalf("decoding body: %v", err)
 		}
-		if req.Name != "acme" || req.TargetNamespace != "tenant-acme" || req.ClientID != "acme-client" { //nolint:goconst
+		if req.Name != "acme" || len(req.AllowedNamespaces) != 1 || req.AllowedNamespaces[0] != "tenant-acme" || req.ClientID != "acme-client" { //nolint:goconst
 
 			t.Fatalf("bad request: %+v", req)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte(`{"name":"acme","namespace":"agent-orca-system","clientID":"acme-client","clientSecret":"gen-secret","targetNamespace":"tenant-acme"}`)) //nolint:lll
+		_, _ = w.Write([]byte(`{"name":"acme","namespace":"agent-orca-system","clientID":"acme-client","clientSecret":"gen-secret","allowedNamespaces":["tenant-acme"]}`)) //nolint:lll
 
 	}))
 	defer srv.Close()
 	c := newClient(srv.URL, "", "sa-token", defaultTimeout, true)
 	resp, err := c.CreateTenant(context.Background(), AdminTenantCreateRequest{
-		Name:            "acme",
-		TargetNamespace: "tenant-acme",
-		ClientID:        "acme-client",
+		Name:              "acme",
+		AllowedNamespaces: []string{"tenant-acme"},
+		ClientID:          "acme-client",
 	})
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -731,7 +738,7 @@ func TestGetTenant_Success(t *testing.T) {
 			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"name":"acme","namespace":"agent-orca-system","clientID":"c1","targetNamespace":"tenant-acme"}`)) //nolint:lll
+		_, _ = w.Write([]byte(`{"name":"acme","namespace":"agent-orca-system","clientID":"c1","allowedNamespaces":["tenant-acme"]}`)) //nolint:lll
 
 	}))
 	defer srv.Close()
@@ -789,6 +796,183 @@ func TestRotateTenantSecret_ErrorOnNon200(t *testing.T) {
 	}
 }
 
+// --- auto-refresh transport tests ---
+//
+// These cover the change that lets a long-lived `aoctl acp serve` process
+// survive an id_token expiry (mid-session 401) without the user re-logging in
+// and re-creating the Zed agent.
+
+// withRefreshTransport wires a refresh callback + the refreshable transport onto
+// a test client, mirroring what runACPServe does for an OIDC session.
+func withRefreshTransport(t *testing.T, c *Client, refresh func(context.Context) (string, error)) {
+	t.Helper()
+	c.refresh = refresh
+	base := c.HTTP.Transport
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	c.HTTP.Transport = &refreshableTransport{base: base, owner: c}
+}
+
+// TestRefreshableTransport_401RefreshesAndRetries verifies that a 401 triggers
+// exactly one refresh and one retry, with the retried request carrying the
+// refreshed bearer token. Uses GetACPRun-equivalent GET (ListAgents) — the
+// common case where a mid-session poll is rejected after expiry.
+func TestRefreshableTransport_401RefreshesAndRetries(t *testing.T) {
+	var (
+		mu       sync.Mutex
+		n        int
+		lastAuth string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		n++
+		lastAuth = r.Header.Get("Authorization")
+		attempt := n
+		mu.Unlock()
+		if attempt == 1 {
+			w.WriteHeader(http.StatusUnauthorized) // stale token
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"agents":[]}`))
+	}))
+	defer srv.Close()
+
+	c := newClient(srv.URL, srv.URL, "stale-token", defaultTimeout, true)
+	refreshed := false
+	withRefreshTransport(t, c, func(ctx context.Context) (string, error) {
+		mu.Lock()
+		refreshed = true
+		mu.Unlock()
+		return "refreshed-token", nil
+	})
+
+	agents, err := c.ListAgents(context.Background())
+	if err != nil {
+		t.Fatalf("ListAgents: %v", err)
+	}
+	if len(agents) != 0 {
+		t.Fatalf("expected empty agent list, got %+v", agents)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !refreshed {
+		t.Fatal("expected the refresh callback to fire on 401")
+	}
+	if n != 2 {
+		t.Fatalf("expected 2 requests (401 then retry), got %d", n)
+	}
+	if lastAuth != "Bearer refreshed-token" {
+		t.Fatalf("expected retried request to use refreshed token, got %q", lastAuth)
+	}
+	if c.getToken() != "refreshed-token" {
+		t.Fatalf("expected client token refreshed in memory, got %q", c.getToken())
+	}
+}
+
+// TestRefreshableTransport_NoRefreshWithoutCallback verifies that a client
+// without a refresh callback surfaces a 401 unchanged (existing behaviour for
+// one-shot commands): a single request, then an error.
+func TestRefreshableTransport_NoRefreshWithoutCallback(t *testing.T) {
+	var n int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		n++
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	c := newClient(srv.URL, srv.URL, "tok", defaultTimeout, true)
+	// No refresh callback wired: behaves like the old client.
+	_, err := c.ListAgents(context.Background())
+	if err == nil {
+		t.Fatal("expected error for 401 with no refresh callback")
+	}
+	if n != 1 {
+		t.Fatalf("expected exactly 1 request (no retry), got %d", n)
+	}
+}
+
+// TestRefreshableTransport_Post401RetriesWithBody verifies that a 401 on a
+// POST with a body retries with the body intact (not a re-read of an already
+// drained stream) and the refreshed token. runCreateAgentRun-style calls must
+// survive a mid-session expiry too.
+func TestRefreshableTransport_Post401RetriesWithBody(t *testing.T) {
+	var (
+		mu       sync.Mutex
+		n        int
+		bodies   []string
+		lastAuth string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		n++
+		bodies = append(bodies, string(b))
+		lastAuth = r.Header.Get("Authorization")
+		attempt := n
+		mu.Unlock()
+		_ = r.Body.Close()
+		if attempt == 1 {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"agent_name":"test-agent","run_id":"run-1","status":"created","created_at":"2024-01-01T00:00:00Z"}`)) //nolint:lll
+	}))
+	defer srv.Close()
+
+	c := newClient(srv.URL, srv.URL, "stale-token", defaultTimeout, true)
+	withRefreshTransport(t, c, func(ctx context.Context) (string, error) {
+		return "refreshed-token", nil
+	})
+
+	_, err := c.CreateAgentRun(context.Background(), "test-agent", ACPRunRequest{
+		Input: []ACPMessage{{Role: "user", Parts: []ACPMessagePart{
+			{ContentType: "text/plain", Content: "hello"},
+		}}},
+	})
+	if err != nil {
+		t.Fatalf("CreateAgentRun: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if n != 2 {
+		t.Fatalf("expected 2 requests, got %d", n)
+	}
+	if lastAuth != "Bearer refreshed-token" {
+		t.Fatalf("expected retried request to use refreshed token, got %q", lastAuth)
+	}
+	for i, b := range bodies {
+		if !strings.Contains(b, "hello") {
+			t.Fatalf("request %d body missing payload: %q", i, b)
+		}
+	}
+}
+
+// TestRefreshableTransport_RefreshErrorPropagates verifies that when the refresh
+// callback itself fails, the original 401 is surfaced as an error (no silent
+// retry loop, no stale-token success).
+func TestRefreshableTransport_RefreshErrorPropagates(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	c := newClient(srv.URL, srv.URL, "bad-token", defaultTimeout, true)
+	withRefreshTransport(t, c, func(ctx context.Context) (string, error) {
+		return "", errors.New("idp unreachable")
+	})
+	_, err := c.ListAgents(context.Background())
+	if err == nil {
+		t.Fatal("expected error when refresh fails")
+	}
+	if !strings.Contains(err.Error(), "idp unreachable") {
+		t.Fatalf("expected refresh error to surface, got: %v", err)
+	}
+}
+
 func TestDeleteTenant_Success(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/admin/tenants/acme" || r.Method != http.MethodDelete {
@@ -828,7 +1012,7 @@ func TestCreateTenant_TransportError(t *testing.T) {
 func TestCmdAdminTenantsList(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"tenants":[{"name":"acme","clientID":"c1","targetNamespace":"tenant-acme"}],"count":1}`))
+		_, _ = w.Write([]byte(`{"tenants":[{"name":"acme","clientID":"c1","allowedNamespaces":["tenant-acme"]}],"count":1}`))
 	}))
 	defer srv.Close()
 	stdout, _, err := runCLI(t, map[string]string{"AOCTL_ENDPOINT": srv.URL},
@@ -845,7 +1029,7 @@ func TestCmdAdminTenantsList(t *testing.T) {
 func TestCmdAdminTenantsGet(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"name":"acme","namespace":"agent-orca-system","clientID":"c1","targetNamespace":"tenant-acme"}`)) //nolint:lll
+		_, _ = w.Write([]byte(`{"name":"acme","namespace":"agent-orca-system","clientID":"c1","allowedNamespaces":["tenant-acme"]}`)) //nolint:lll
 
 	}))
 	defer srv.Close()
@@ -867,7 +1051,7 @@ func TestCmdAdminTenantsCreate(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte(`{"name":"acme","namespace":"agent-orca-system","clientID":"c1","clientSecret":"gen-secret","targetNamespace":"tenant-acme"}`)) //nolint:lll
+		_, _ = w.Write([]byte(`{"name":"acme","namespace":"agent-orca-system","clientID":"c1","clientSecret":"gen-secret","allowedNamespaces":["tenant-acme"]}`)) //nolint:lll
 
 	}))
 	defer srv.Close()

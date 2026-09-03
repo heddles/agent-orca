@@ -141,7 +141,7 @@ func enforceQuotas(
 
 	// 2. Concurrent-run cap (external-task runs only).
 	if tenant.ConcurrentRuns > 0 && kube != nil {
-		running, err := countActiveExternalRuns(ctx, kube, tenant.Namespace)
+		running, err := countActiveExternalRuns(ctx, kube, tenantNamespaces(tenant))
 		if err != nil {
 			// Don't block the tenant on a transient K8s error — log via caller; fail closed
 			// only matters if we wanted to deny. We deny on uncertainty to avoid budget blowout.
@@ -173,15 +173,23 @@ func enforceQuotas(
 	return nil
 }
 
-// countActiveExternalRuns counts AgentRuns in ns that are active (holding a
-// concurrent-run slot), selected by the external-task label.
-func countActiveExternalRuns(ctx context.Context, kube client.Client, ns string) (int, error) {
+// countActiveExternalRuns counts AgentRuns in any of the tenant's authorized
+// namespaces that are active (holding a concurrent-run slot), selected by the
+// external-task label.
+func countActiveExternalRuns(ctx context.Context, kube client.Client, namespaces []string) (int, error) {
+	if len(namespaces) == 0 {
+		return 0, fmt.Errorf("tenant has no authorized namespaces")
+	}
 	var list agentorcav1alpha1.AgentRunList
-	if err := kube.List(ctx, &list,
-		client.InNamespace(ns),
-		client.MatchingLabels{"agentorca.io/external-task": "true"},
-	); err != nil {
-		return 0, err
+	for _, ns := range namespaces {
+		var l agentorcav1alpha1.AgentRunList
+		if err := kube.List(ctx, &l,
+			client.InNamespace(ns),
+			client.MatchingLabels{"agentorca.io/external-task": "true"},
+		); err != nil {
+			return 0, err
+		}
+		list.Items = append(list.Items, l.Items...)
 	}
 	n := 0
 	for i := range list.Items {

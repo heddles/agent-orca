@@ -238,6 +238,16 @@ Because ACP v1 is single-agent-per-server, `--agent` pins which agent-orca
 agent this bridge instance represents. The bearer token is read from the saved
 config (`~/.aoctl/config.json`), so run `aoctl login` first.
 
+For OIDC sessions that captured a refresh token, `serve` keeps the token valid
+for the **lifetime of the bridge process** — which outlives the id_token's short
+expiry. On start it refreshes an already-expired token from the cache, a
+background refresher renews it ahead of the grace window, and the HTTP transport
+transparently refreshes + retries any request that is rejected with a `401`.
+This means an expiring token no longer forces you to delete the Zed agent,
+`aoctl login` again, and re-`aoctl acp setup` — the session heals itself.
+Refresh is only wired for OIDC sessions with a cached refresh token; OAuth
+(client_credentials) and explicit `--token` passes are left untouched.
+
 ```bash
 # Foreground (for debugging or direct testing)
 aoctl acp serve --agent support-bot

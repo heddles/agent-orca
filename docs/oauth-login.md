@@ -10,7 +10,7 @@ identity carries `UserID`/`Groups`/`Roles` so authorization can be added later a
 handler-side check.
 
 > **Multi-tenant by design.** Per-tenant issuer/client_id/client_secret/redirect/
-> claim mappings live on the `TenantConfig` CRD (in the tenant's `targetNamespace`),
+> claim mappings live on the `TenantConfig` CRD (in the tenant's `allowedNamespaces`),
 > *not* operator-wide. A browser-facing `Bearer`/SA token does **not** grant UI
 > access when login is enabled — the UI is never shown without a successful login.
 
@@ -66,6 +66,12 @@ Key points:
   (`issuerURL`, `clientID`, `clientSecret`, `redirectURI`) is also cached so the
   refresh needs no further input. Refresh is skipped during `aoctl login` (which
   establishes a fresh session) and when a token is supplied via `--token`.
+- `aoctl login` requests the `offline_access` scope (plus `access_type=offline`
+  for Google) so the IdP actually returns a `refreshToken`. Without it, most
+  providers omit the refresh token and you'd see `refresh: none (re-login before
+  expiry)` — i.e. re-login every few hours. The long-lived `aoctl acp serve`
+  bridge additionally refreshes ahead of expiry and retries on any `401`, so an
+  ACP session survives an `id_token` expiry without re-login or re-`acp setup`.
 
 ```bash
 # Interactive picker (recommended for first run)
@@ -122,7 +128,7 @@ Browser  -> /oauth/login                -> picker of federated (login-capable) t
 Browser  -> /oauth/login?tenant=org-x   -> 302 to IdP (state carries tenant X)
 Browser <-> IdP login (Google/Keycloak/…)
 IdP      -> /oauth/callback?code=..&state=..  (state cookie checked; CSRF-safe)
-operator  * state -> tenant X -> read X's client_secret from its targetNamespace
+operator  * state -> tenant X -> read X's client_secret from its first allowed namespace
 operator  * POST code+secret to IdP -> id_token
 operator  * verify id_token (JWKS signature, iss, aud, exp, nonce) + email_verified
 operator  * ResolveFederatedTenant(issuer, claims)  -> TenantIdentity (tenant/namespace/agents)
@@ -144,13 +150,14 @@ metadata:
   namespace: agent-orca-system
 spec:
   authMode: federated
-  targetNamespace: default          # where tasks run; also where the client secret lives
+  allowedNamespaces:
+    - default          # where tasks run; also where the client secret lives
   federated:
     issuerURL: "https://accounts.google.com"
     clientID: "<your-oauth-web-client-id>"
     redirectURI: "http://localhost:8083/oauth/callback"
     clientSecretRef:
-      name: oidc-client-secret       # Secret in spec.targetNamespace
+      name: oidc-client-secret       # Secret in spec.allowedNamespaces[0]
       key: client-secret
     claimMappings:
       userid: email                  # email -> TenantIdentity.UserID (default: sub)
@@ -163,8 +170,11 @@ spec:
 ```
 
 **Fields of note:**
-- `targetNamespace` — scopes the user's tasks/agents; the OAuth client secret is
-  read from here (or `clientSecretRef.namespace` if set).
+- `allowedNamespaces` — the set of Kubernetes namespaces whose agents/resources this
+  tenant is authorized to access. The operator resolves each agent/run to its own
+  namespace within this set, so a tenant can span multiple namespaces. The OAuth
+  client secret is read from the first listed namespace (or `clientSecretRef.namespace`
+  if set).
 - `clientSecretRef` — optional. **Present ⇒** this tenant drives interactive login
   (the operator becomes an OAuth client). **Absent ⇒** bearer-only federation
   (callers present an IdP-issued JWT; verified via the public JWKS — no secret).

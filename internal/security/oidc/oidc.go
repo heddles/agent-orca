@@ -49,12 +49,18 @@ import (
 // resolved principal (used later by RBAC, for now only carried through). PKCE is
 // enabled by default and strongly recommended for browser/public clients.
 type Config struct {
-	IssuerURL     string
-	ClientID      string
-	ClientSecret  string
-	RedirectURI   string
-	Scopes        []string // defaults to {"openid","email","profile"}
-	PKCE          bool     // default true
+	IssuerURL    string
+	ClientID     string
+	ClientSecret string
+	RedirectURI  string
+	Scopes       []string // defaults to {"openid","email","profile"}
+	// AccessType, when non-empty, is sent as the `access_type` auth-code request
+	// parameter. Set to "offline" so Google issues a refresh token (the
+	// "offline_access" scope alone is insufficient for Google). Other providers
+	// ignore the parameter, so requesting it is safe and makes refresh capture
+	// work across IdPs.
+	AccessType    string
+	PKCE          bool // default true
 	ClaimMappings struct {
 		UserID string // default "sub"
 		Groups string // default "groups"
@@ -140,6 +146,9 @@ func NewProvider(ctx context.Context, cfg Config) (*Provider, error) {
 // AuthCodeURL implements PrincipalProvider.
 func (p *Provider) AuthCodeURL(state, nonce string) (string, string) {
 	opts := []oauth2.AuthCodeOption{gooidc.Nonce(nonce)}
+	if p.cfg.AccessType != "" {
+		opts = append(opts, oauth2.SetAuthURLParam("access_type", p.cfg.AccessType))
+	}
 	codeVerifier := ""
 	if p.cfg.PKCE {
 		codeVerifier = randomCodeVerifier()

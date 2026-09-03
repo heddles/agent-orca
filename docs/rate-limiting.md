@@ -21,7 +21,8 @@ spec:
     clientSecretRef:
       name: acme-credentials
       key: client-secret
-  targetNamespace: "tenant-acme"
+  allowedNamespaces:
+    - "tenant-acme"
   allowedAgents:
     - "support-bot"
   rateLimit:

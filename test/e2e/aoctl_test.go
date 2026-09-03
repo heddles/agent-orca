@@ -143,7 +143,8 @@ spec:
     clientSecretRef:
       name: %s
       key: client-secret
-  targetNamespace: %s
+  allowedNamespaces:
+    - %s
   allowedAgents:
     - %s
 `, tenantName, namespace, clientID, secretName, tenantNS, agentName))).To(Succeed())

@@ -72,8 +72,8 @@ func loginTenant(name, matchClaim, matchValue string) *agentorcav1alpha1.TenantC
 	return &agentorcav1alpha1.TenantConfig{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "agent-orca-system"},
 		Spec: agentorcav1alpha1.TenantConfigSpec{
-			AuthMode:        "federated",
-			TargetNamespace: "default",
+			AuthMode:          "federated",
+			AllowedNamespaces: []string{"default"},
 			Federated: &agentorcav1alpha1.FederatedAuthConfig{
 				IssuerURL:   "https://idp.example.com",
 				ClientID:    "agent-orca-dev",

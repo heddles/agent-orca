@@ -49,26 +49,26 @@ type AdminRateLimit struct {
 
 // AdminTenantCreateRequest is the body for POST /admin/tenants.
 type AdminTenantCreateRequest struct {
-	Name            string          `json:"name"`
-	TargetNamespace string          `json:"targetNamespace"`
-	ClientID        string          `json:"clientID"`
-	ClientSecret    string          `json:"clientSecret,omitempty"`
-	AllowedAgents   []string        `json:"allowedAgents,omitempty"`
-	RateLimit       *AdminRateLimit `json:"rateLimit,omitempty"`
-	BudgetPerDayUSD string          `json:"budgetPerDayUSD,omitempty"`
+	Name              string          `json:"name"`
+	AllowedNamespaces []string        `json:"allowedNamespaces"`
+	ClientID          string          `json:"clientID"`
+	ClientSecret      string          `json:"clientSecret,omitempty"`
+	AllowedAgents     []string        `json:"allowedAgents,omitempty"`
+	RateLimit         *AdminRateLimit `json:"rateLimit,omitempty"`
+	BudgetPerDayUSD   string          `json:"budgetPerDayUSD,omitempty"`
 }
 
 // AdminTenantResponse is the tenant representation returned to callers.
 // ClientSecret is included ONLY at create time (one-time disclosure).
 type AdminTenantResponse struct {
-	Name            string          `json:"name"`
-	Namespace       string          `json:"namespace"`
-	ClientID        string          `json:"clientID"`
-	ClientSecret    string          `json:"clientSecret,omitempty"`
-	TargetNamespace string          `json:"targetNamespace"`
-	AllowedAgents   []string        `json:"allowedAgents,omitempty"`
-	RateLimit       *AdminRateLimit `json:"rateLimit,omitempty"`
-	BudgetPerDayUSD string          `json:"budgetPerDayUSD,omitempty"`
+	Name              string          `json:"name"`
+	Namespace         string          `json:"namespace"`
+	ClientID          string          `json:"clientID"`
+	ClientSecret      string          `json:"clientSecret,omitempty"`
+	AllowedNamespaces []string        `json:"allowedNamespaces"`
+	AllowedAgents     []string        `json:"allowedAgents,omitempty"`
+	RateLimit         *AdminRateLimit `json:"rateLimit,omitempty"`
+	BudgetPerDayUSD   string          `json:"budgetPerDayUSD,omitempty"`
 }
 
 // saUsernameParts parses a Kubernetes TokenReview username of the form
@@ -299,8 +299,8 @@ func (s *ExternalAPIServer) createTenant(w http.ResponseWriter, r *http.Request)
 		http.Error(w, fmt.Sprintf(`{"error":"invalid JSON: %s"}`, err), http.StatusBadRequest)
 		return
 	}
-	if req.Name == "" || req.TargetNamespace == "" || req.ClientID == "" {
-		http.Error(w, `{"error":"name, targetNamespace, and clientID are required"}`, http.StatusBadRequest)
+	if req.Name == "" || len(req.AllowedNamespaces) == 0 || req.ClientID == "" {
+		http.Error(w, `{"error":"name, allowedNamespaces, and clientID are required"}`, http.StatusBadRequest)
 		return
 	}
 
@@ -334,10 +334,10 @@ func (s *ExternalAPIServer) createTenant(w http.ResponseWriter, r *http.Request)
 					Key:  "client-secret",
 				},
 			},
-			TargetNamespace: req.TargetNamespace,
-			AllowedAgents:   req.AllowedAgents,
-			RateLimit:       toSpecRateLimit(req.RateLimit),
-			BudgetPerDayUSD: req.BudgetPerDayUSD,
+			AllowedNamespaces: req.AllowedNamespaces,
+			AllowedAgents:     req.AllowedAgents,
+			RateLimit:         toSpecRateLimit(req.RateLimit),
+			BudgetPerDayUSD:   req.BudgetPerDayUSD,
 		},
 	}
 	if err := s.crdClient.Create(r.Context(), tc); err != nil && !k8serrors.IsAlreadyExists(err) {
@@ -429,11 +429,11 @@ func (s *ExternalAPIServer) upsertSecret(ctx context.Context, namespace, name, v
 // non-empty it is included (create/rotate); otherwise it is omitted.
 func tenantToResponse(tc *agentorcav1alpha1.TenantConfig, secret string) AdminTenantResponse {
 	resp := AdminTenantResponse{
-		Name:            tc.Name,
-		Namespace:       tc.Namespace,
-		TargetNamespace: tc.Spec.TargetNamespace,
-		AllowedAgents:   tc.Spec.AllowedAgents,
-		BudgetPerDayUSD: tc.Spec.BudgetPerDayUSD,
+		Name:              tc.Name,
+		Namespace:         tc.Namespace,
+		AllowedNamespaces: tc.Spec.AllowedNamespaces,
+		AllowedAgents:     tc.Spec.AllowedAgents,
+		BudgetPerDayUSD:   tc.Spec.BudgetPerDayUSD,
 	}
 	if tc.Spec.Issued != nil {
 		resp.ClientID = tc.Spec.Issued.ClientID

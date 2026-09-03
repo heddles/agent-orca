@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -119,13 +120,33 @@ func (s *settings) runACPServe() error {
 		return errors.New("no bearer token — run `aoctl login` first, or pass --token")
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(),
+		syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
 	// Use a generous HTTP timeout so SSE token streams and long-running polls
 	// don't time out prematurely. The bridge falls back to polling if SSE fails.
 	client := newClient(s.endpoint, s.acp, s.token, serveHTTPTimeout, s.insecure)
 
-	ctx, stop := signal.NotifyContext(context.Background(),
-		syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
+	// A long-lived ACP session (the bridge process Zed keeps running) outlives
+	// its short-lived OIDC id_token. For OIDC sessions that captured a refresh
+	// token, wire in automatic refresh so the session rides out token expiry
+	// without the user re-logging in and re-creating the agent:
+	//   - a background refresher renews the token ahead of expiry, and
+	//   - the HTTP transport transparently refreshes + retries any request that
+	//     is rejected with a 401.
+	// Explicit --token passes are left untouched (the caller owns that token).
+	if !s.tokenFromFlag {
+		if refresh, ok := s.oidcRefreshCallback(); ok {
+			client.refresh = refresh
+			base := client.HTTP.Transport
+			if base == nil {
+				base = http.DefaultTransport
+			}
+			client.HTTP.Transport = &refreshableTransport{base: base, owner: client}
+			go s.runTokenRefresher(ctx, client)
+		}
+	}
 
 	// The server and bridge hold mutual references (bridge responds via the
 	// server; server dispatches via the bridge). Create the server first with a

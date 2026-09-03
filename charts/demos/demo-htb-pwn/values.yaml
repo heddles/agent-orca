@@ -44,27 +44,9 @@ namespace:
 agent-orca-resources:
   # ── ModelProviders / ModelSelectors ───────────────────────────────
   providerSecrets:
-    - name: default-api-key
+    - name: poolside-api-key
       apiKey: "" # ps-... ; set via DEFAULT_API_KEY
   modelProviders:
-    - name: openai-gpt-4o
-      enabled: true
-      litellmModel: "openai/gpt-4o"
-      credentialsRef:
-        existingSecret: "openai-api-key"
-        key: "api-key"
-      capabilities:
-        - reasoning
-        - code
-        - vision
-        - fast
-      latencyProfile: medium
-      constraints:
-        contextWindow: 128000
-        maxOutputTokens: 16384
-        maxRequestTokens: 0
-        costPerMillionInputTokens: "2.50"
-        costPerMillionOutputTokens: "10.00"
     - name: poolside-laguna-s-2.1
       enabled: true
       litellmModel: "poolside/laguna-s-2.1"
@@ -88,12 +70,10 @@ agent-orca-resources:
       strategy: rule-based
       providers:
         - name: poolside-laguna-s-2.1
-          weight: 80
-        - name: openai-gpt-4o
-          weight: 20
+          weight: 100
       budgetCap:
-        perRun: "1.00"
-        perDay: "25.00"
+        perRun: "10.00"
+        perDay: "250.00"
   # ── GuardrailPolicy: bounds on the red-commander agent ────────────────────────
   # The agent stays restricted; this guardrail keeps its LLM output in-bounds (no real
   # cloud endpoints / secret leakage). The pwnbox pod itself is network-isolated by its NP.
@@ -336,7 +316,7 @@ openvpn:
   endpoint: "" # e.g. "nl.free.hackthebox.com:1194" — drives the pwnbox egress NP
   protocol: udp
   port: 1194
-  createSecret: true # set false and `kubectl create secret htb-ovpn --from-file=...`
+  createSecret: false # set false and `kubectl create secret htb-ovpn --from-file=...`
   ovpnConfig: "" # set via AGENT_ORCA_HTB_OVPN_CONFIG, or create the secret yourself
 # ── Pwnbox egress toggles (deny-by-default) ────────────────────────────────────
 # The pwnbox egress NetworkPolicy is deny-by-default except for: DNS, the HTB VPN

@@ -44,7 +44,7 @@ List all tenants.
       "name": "acme",
       "namespace": "agentorca-system",
       "clientID": "acme-client",
-      "targetNamespace": "tenant-acme",
+      "allowedNamespaces": ["tenant-acme"],
       "allowedAgents": ["support-bot"],
       "rateLimit": {"requestsPerMinute": 60, "concurrentRuns": 10},
       "budgetPerDayUSD": "100.00"
@@ -63,7 +63,7 @@ Create a new tenant. This writes a `TenantConfig` CRD and a client-secret
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `name` | string | yes | Tenant name (used for the `TenantConfig` name) |
-| `targetNamespace` | string | yes | Namespace where the tenant's agents run |
+| `allowedNamespaces` | []string | yes | Namespaces the tenant is authorized to access; agents/runs are resolved to their namespace within this set |
 | `clientID` | string | yes | OAuth2 client ID |
 | `clientSecret` | string | no | Initial client secret (auto-generated if omitted) |
 | `allowedAgents` | []string | no | Agent names this tenant can access |
@@ -79,7 +79,7 @@ Create a new tenant. This writes a `TenantConfig` CRD and a client-secret
   "namespace": "agentorca-system",
   "clientID": "acme-client",
   "clientSecret": "auto-generated-secret-abc123",
-  "targetNamespace": "tenant-acme",
+  "allowedNamespaces": ["tenant-acme"],
   "allowedAgents": ["support-bot"],
   "rateLimit": {"requestsPerMinute": 60, "concurrentRuns": 10},
   "budgetPerDayUSD": "100.00"

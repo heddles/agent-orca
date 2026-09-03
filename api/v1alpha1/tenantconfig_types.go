@@ -38,14 +38,18 @@ type TenantConfigSpec struct {
 	// +optional
 	Federated *FederatedAuthConfig `json:"federated,omitempty"`
 
-	// TargetNamespace is the Kubernetes namespace where this tenant's agents
-	// and resources live. All API requests from this tenant are scoped to this namespace.
-	// +kubebuilder:validation:MinLength=1
-	TargetNamespace string `json:"targetNamespace"`
+	// AllowedNamespaces is the set of Kubernetes namespaces whose agents and
+	// resources this tenant is authorized to access. The operator resolves each
+	// agent to the namespace it actually lives in — which must be one of these —
+	// when a task is submitted or an ACP run is created, so a single tenant can
+	// span multiple namespaces. List operations (agents, runs) span the whole set;
+	// per-request writes are directed to the agent's namespace.
+	// +kubebuilder:validation:MinItems=1
+	AllowedNamespaces []string `json:"allowedNamespaces"`
 
 	// AllowedAgents restricts which agents this tenant may invoke.
 	// An empty list means no agents are allowed; omitting the field allows all agents
-	// in the target namespace.
+	// in the allowed namespaces.
 	// +optional
 	AllowedAgents []string `json:"allowedAgents,omitempty"`
 
@@ -54,7 +58,7 @@ type TenantConfigSpec struct {
 	RateLimit *TenantRateLimit `json:"rateLimit,omitempty"`
 
 	// BudgetPerDayUSD is the maximum daily spend in USD for this tenant.
-	// Enforced across all runs in the target namespace attributed to this tenant.
+	// Enforced across all runs in the allowed namespaces attributed to this tenant.
 	// +optional
 	BudgetPerDayUSD string `json:"budgetPerDayUSD,omitempty"`
 }
@@ -105,9 +109,10 @@ type FederatedAuthConfig struct {
 	MatchValue string `json:"matchValue,omitempty"`
 
 	// ClientSecretRef references the OAuth2 client_secret used for the interactive
-	// login (authorization-code) flow, fetched from the tenant's targetNamespace.
-	// Omit for bearer-only federation (no secret is needed — verification uses the
-	// IdP's public JWKS).
+	// login (authorization-code) flow. When the ref omits a namespace, the
+	// operator looks it up in the tenant's first allowed namespace
+	// (spec.allowedNamespaces[0]). Omit for bearer-only federation (no secret is
+	// needed — verification uses the IdP's public JWKS).
 	// +optional
 	ClientSecretRef SecretKeyRef `json:"clientSecretRef,omitempty"`
 
@@ -121,6 +126,16 @@ type FederatedAuthConfig struct {
 	// groups=groups, email=email). Set userid=email for Google social login.
 	// +optional
 	ClaimMappings FederatedClaimMappings `json:"claimMappings,omitempty"`
+
+	// Scopes configures the OAuth2 scopes requested during the interactive
+	// (authorization-code) login flow. When omitted, defaults to
+	// ["openid","email","profile"]. Some IdPs require additional scopes — notably
+	// "offline_access" to receive a refresh token (so the session can be renewed
+	// without re-prompting for credentials). Has no effect on bearer-only
+	// federation: agent-orca verifies caller-presented JWTs against the IdP's
+	// JWKS regardless of scopes.
+	// +optional
+	Scopes []string `json:"scopes,omitempty"`
 }
 
 // FederatedClaimMappings maps IdP claims onto TenantIdentity fields. Zero values
@@ -168,7 +183,7 @@ type TenantConfigStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="AuthMode",type=string,JSONPath=`.spec.authMode`
-// +kubebuilder:printcolumn:name="Namespace",type=string,JSONPath=`.spec.targetNamespace`
+// +kubebuilder:printcolumn:name="Namespaces",type=string,JSONPath=`.spec.allowedNamespaces`
 // +kubebuilder:printcolumn:name="Ready",type=boolean,JSONPath=`.status.ready`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 

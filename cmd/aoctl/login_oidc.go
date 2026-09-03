@@ -120,7 +120,15 @@ func loginOIDC(ctx context.Context, cfg OIDCLoginConfig, out io.Writer) (*OIDCLo
 		ClientID:     cfg.ClientID,
 		ClientSecret: cfg.ClientSecret,
 		RedirectURI:  cfg.RedirectURI,
-		PKCE:         true,
+		// Request "offline_access" so the IdP returns a refresh_token (otherwise
+		// the session can only live as long as the id_token's lifetime and the
+		// user must re-login every few hours). "access_type=offline" is Google's
+		// equivalent signal; it's ignored by Okta/Keycloak/Auth0, so sending it
+		// makes refresh capture work across providers. The captured refresh
+		// token lets `aoctl acp serve` auto-renew the long-lived ACP session.
+		Scopes:     append(append([]string{}, oidc.DefaultScopes...), "offline_access"),
+		AccessType: "offline",
+		PKCE:       true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("oidc: %w", err)

@@ -61,8 +61,15 @@ const (
 type TenantIdentity struct {
 	// TenantName is the TenantConfig CR name.
 	TenantName string
-	// Namespace is the target Kubernetes namespace for this tenant.
+	// Namespace is the tenant's primary (first) authorized namespace. Kept as a
+	// single string for backward compatibility with the "namespace" bearer/session
+	// JWT claim and single-namespace consumers; the full authorized set is in
+	// Namespaces below.
 	Namespace string
+	// Namespaces is the full set of Kubernetes namespaces this tenant is
+	// authorized to access (spec.allowedNamespaces). Agent/run lookups resolve to
+	// the resource's own namespace within this set; lists span the whole set.
+	Namespaces []string
 	// AllowedAgents is the list of agents this tenant may invoke. Nil means all.
 	AllowedAgents []string
 
@@ -434,7 +441,8 @@ func (a *ExternalAuth) HandleTokenRequest(w http.ResponseWriter, r *http.Request
 		"iat":            now.Unix(),
 		"exp":            now.Add(jwtDefaultExpiry).Unix(),
 		"tenant":         tc.Name,
-		"namespace":      tc.Spec.TargetNamespace,
+		"namespace":      firstNamespace(tc.Spec.AllowedNamespaces),
+		"namespaces":     tc.Spec.AllowedNamespaces,
 		"allowed_agents": tc.Spec.AllowedAgents,
 	}
 	signed, err := a.MintSessionJWT(claims)
@@ -484,6 +492,7 @@ func (a *ExternalAuth) MintSessionForIdentity(ident *TenantIdentity) (string, er
 		"exp":            now.Add(jwtDefaultExpiry).Unix(),
 		"tenant":         ident.TenantName,
 		"namespace":      ident.Namespace,
+		"namespaces":     ident.Namespaces,
 		"allowed_agents": ident.AllowedAgents,
 		"userid":         ident.UserID,
 		"groups":         ident.Groups,
@@ -515,6 +524,12 @@ func (a *ExternalAuth) validateIssuedToken(tokenString string) (*TenantIdentity,
 
 	tenant, _ := claims["tenant"].(string)
 	namespace, _ := claims["namespace"].(string)
+	namespaces := claimStringSlice(claims["namespaces"])
+	if len(namespaces) == 0 && namespace != "" {
+		// Legacy tokens only carry the primary namespace; synthesize the single-
+		// element authorized set so multi-namespace resolution still works.
+		namespaces = []string{namespace}
+	}
 	if tenant == "" || namespace == "" {
 		return nil, fmt.Errorf("missing tenant or namespace claim")
 	}
@@ -538,6 +553,7 @@ func (a *ExternalAuth) validateIssuedToken(tokenString string) (*TenantIdentity,
 	return attachQuotaFields(&TenantIdentity{
 		TenantName:    tenant,
 		Namespace:     namespace,
+		Namespaces:    namespaces,
 		AllowedAgents: allowedAgents,
 		UserID:        userID,
 		Groups:        groups,
@@ -637,7 +653,8 @@ func (a *ExternalAuth) validateFederatedToken(ctx context.Context, tokenString s
 
 	return attachQuotaFields(&TenantIdentity{
 		TenantName:    matchedTC.Name,
-		Namespace:     matchedTC.Spec.TargetNamespace,
+		Namespace:     firstNamespace(matchedTC.Spec.AllowedNamespaces),
+		Namespaces:    matchedTC.Spec.AllowedNamespaces,
 		AllowedAgents: matchedTC.Spec.AllowedAgents,
 	}, matchedTC), nil
 }
@@ -698,9 +715,10 @@ func (a *ExternalAuth) FederatedLoginTenants() []*agentorcav1alpha1.TenantConfig
 }
 
 // NewProviderForTenant builds an OIDC provider from a federated tenant's config,
-// reading its OAuth2 client_secret from the tenant's targetNamespace (or
-// ClientSecretRef.Namespace when set). PKCE is enabled for the browser flow. The
-// login handler only calls this for login-capable tenants (see isLoginCapable).
+// reading its OAuth2 client_secret from the tenant's first allowed namespace
+// (spec.allowedNamespaces[0], or ClientSecretRef.Namespace when set). PKCE is
+// enabled for the browser flow. The login handler only calls this for
+// login-capable tenants (see isLoginCapable).
 func (a *ExternalAuth) NewProviderForTenant(ctx context.Context, tc *agentorcav1alpha1.TenantConfig) (*oidc.Provider, error) {
 	if tc == nil || tc.Spec.Federated == nil {
 		return nil, errors.New("oidc: tenant has no federated config")
@@ -711,7 +729,7 @@ func (a *ExternalAuth) NewProviderForTenant(ctx context.Context, tc *agentorcav1
 		if a.k8s == nil {
 			return nil, errors.New("oidc: no kubernetes client to read client secret")
 		}
-		ns := tc.Spec.TargetNamespace
+		ns := firstNamespace(tc.Spec.AllowedNamespaces)
 		if fed.ClientSecretRef.Namespace != "" {
 			ns = fed.ClientSecretRef.Namespace
 		}
@@ -727,6 +745,12 @@ func (a *ExternalAuth) NewProviderForTenant(ctx context.Context, tc *agentorcav1
 		ClientSecret: secret,
 		RedirectURI:  fed.RedirectURI,
 		PKCE:         true,
+	}
+	// PR 67: honor tenant-scoped scopes (e.g. "offline_access" for refresh
+	// tokens, "groups" for group-based RBAC). When empty, the OIDC package falls
+	// back to its default ["openid","email","profile"].
+	if len(fed.Scopes) > 0 {
+		cfg.Scopes = fed.Scopes
 	}
 	if fed.ClaimMappings.UserID != "" {
 		cfg.ClaimMappings.UserID = fed.ClaimMappings.UserID

@@ -194,8 +194,8 @@ func TestHandler_AdminSelfTenantRoute(t *testing.T) {
 	tc := &agentorcav1alpha1.TenantConfig{
 		ObjectMeta: metav1.ObjectMeta{Name: "github-oidc", Namespace: "agent-orca-system"},
 		Spec: agentorcav1alpha1.TenantConfigSpec{
-			AuthMode:        "federated",
-			TargetNamespace: "default",
+			AuthMode:          "federated",
+			AllowedNamespaces: []string{"default"},
 			Federated: &agentorcav1alpha1.FederatedAuthConfig{
 				IssuerURL:  issuerURL,
 				ClientID:   "agent-orca-dev",
@@ -228,7 +228,7 @@ func TestHandler_AdminSelfTenantRoute(t *testing.T) {
 		if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 			t.Fatalf("decoding response: %v", err)
 		}
-		if resp.Name != "github-oidc" || resp.TargetNamespace != "default" {
+		if resp.Name != "github-oidc" || firstNamespace(resp.AllowedNamespaces) != "default" {
 			t.Fatalf("bad tenant response: %+v", resp)
 		}
 		if resp.ClientSecret != "" {

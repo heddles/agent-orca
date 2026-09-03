@@ -41,6 +41,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -140,26 +141,26 @@ type AdminRateLimit struct {
 
 // AdminTenantCreateRequest is the body for POST /admin/tenants.
 type AdminTenantCreateRequest struct {
-	Name            string          `json:"name"`
-	TargetNamespace string          `json:"targetNamespace"`
-	ClientID        string          `json:"clientID"`
-	ClientSecret    string          `json:"clientSecret,omitempty"`
-	AllowedAgents   []string        `json:"allowedAgents,omitempty"`
-	RateLimit       *AdminRateLimit `json:"rateLimit,omitempty"`
-	BudgetPerDayUSD string          `json:"budgetPerDayUSD,omitempty"`
+	Name              string          `json:"name"`
+	AllowedNamespaces []string        `json:"allowedNamespaces"`
+	ClientID          string          `json:"clientID"`
+	ClientSecret      string          `json:"clientSecret,omitempty"`
+	AllowedAgents     []string        `json:"allowedAgents,omitempty"`
+	RateLimit         *AdminRateLimit `json:"rateLimit,omitempty"`
+	BudgetPerDayUSD   string          `json:"budgetPerDayUSD,omitempty"`
 }
 
 // AdminTenantResponse is the tenant representation returned by the admin API.
 // ClientSecret is included ONLY at create/rotate time (one-time disclosure).
 type AdminTenantResponse struct {
-	Name            string          `json:"name"`
-	Namespace       string          `json:"namespace"`
-	ClientID        string          `json:"clientID"`
-	ClientSecret    string          `json:"clientSecret,omitempty"`
-	TargetNamespace string          `json:"targetNamespace"`
-	AllowedAgents   []string        `json:"allowedAgents,omitempty"`
-	RateLimit       *AdminRateLimit `json:"rateLimit,omitempty"`
-	BudgetPerDayUSD string          `json:"budgetPerDayUSD,omitempty"`
+	Name              string          `json:"name"`
+	Namespace         string          `json:"namespace"`
+	ClientID          string          `json:"clientID"`
+	ClientSecret      string          `json:"clientSecret,omitempty"`
+	AllowedNamespaces []string        `json:"allowedNamespaces"`
+	AllowedAgents     []string        `json:"allowedAgents,omitempty"`
+	RateLimit         *AdminRateLimit `json:"rateLimit,omitempty"`
+	BudgetPerDayUSD   string          `json:"budgetPerDayUSD,omitempty"`
 }
 
 // --- HTTP client ---
@@ -168,16 +169,34 @@ type AdminTenantResponse struct {
 type Client struct {
 	Endpoint string
 	ACP      string
-	Token    string
 	HTTP     *http.Client
+
+	// token is the bearer token presented on every request. It is guarded by
+	// tokenMu because the long-lived `aoctl acp serve` bridge issues requests
+	// from multiple goroutines (and a background refresher may swap the token
+	// out from under them).
+	tokenMu sync.RWMutex
+	token   string
+
+	// refreshMu serializes token refreshes so a reactive 401-refresh and a
+	// proactive background refresh can never race (a raced refresh could reuse a
+	// rotated refresh token and get rejected by the IdP).
+	refreshMu sync.Mutex
+
+	// refresh, when non-nil, returns a fresh bearer token (e.g. via an OIDC
+	// refresh grant). It is wired only for `aoctl acp serve` against an OIDC
+	// session that captured a refresh token, so the bridge survives its short
+	// id_token lifetime without re-login. When nil the client behaves exactly
+	// as before: a stale/expired token surfaces a clear 4xx error.
+	refresh func(context.Context) (string, error)
 }
 
 func newClient(endpoint, acp, token string, timeout time.Duration, insecure bool) *Client {
 	c := &Client{
 		Endpoint: normalizeEndpoint(strings.TrimRight(endpoint, "/")),
 		ACP:      normalizeEndpoint(strings.TrimRight(acp, "/")),
-		Token:    token,
 		HTTP:     &http.Client{Timeout: timeout},
+		token:    token,
 	}
 	if insecure {
 		// A restrictive, intentional set of transport tweaks for local dev
@@ -220,11 +239,101 @@ var apiPathSuffixes = []string{
 	"/v1/tasks", "/tasks", "/admin/tenants", "/admin", "/oauth/token",
 }
 
-// tokenAuth attaches the bearer token if the caller supplied one.
+// tokenAuth attaches the bearer token if the caller supplied one. The token is
+// read under a read-lock so a concurrent refresher can swap it out safely.
 func (c *Client) tokenAuth(req *http.Request) {
-	if c.Token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.Token)
+	if t := c.getToken(); t != "" {
+		req.Header.Set("Authorization", "Bearer "+t)
 	}
+}
+
+// getToken returns the current bearer token (thread-safe).
+func (c *Client) getToken() string {
+	c.tokenMu.RLock()
+	defer c.tokenMu.RUnlock()
+	return c.token
+}
+
+// setToken swaps in a (refreshed) bearer token (thread-safe).
+func (c *Client) setToken(t string) {
+	c.tokenMu.Lock()
+	defer c.tokenMu.Unlock()
+	c.token = t
+}
+
+// refreshOnce invokes the configured refresh callback at most once at a time
+// (per-client serialization via refreshMu) and, on success, swaps in the new
+// token. With no refresh callback configured it is a no-op that returns the
+// current token. It is the single entry point used by both the 401-retry
+// transport and the proactive refresher goroutine in `aoctl acp serve`.
+func (c *Client) refreshOnce(ctx context.Context) (string, error) {
+	if c.refresh == nil {
+		return c.getToken(), nil
+	}
+	c.refreshMu.Lock()
+	defer c.refreshMu.Unlock()
+	fresh, err := c.refresh(ctx)
+	if err != nil {
+		return "", err
+	}
+	c.setToken(fresh)
+	return fresh, nil
+}
+
+// refreshableTransport wraps a base RoundTripper. When a refresh callback is
+// configured on the owning Client, a 401 Unauthorized response triggers a single
+// token refresh and exactly one retry of the request with the new token; with
+// no callback configured, responses pass through unchanged (preserving the
+// existing behavior for one-shot commands).
+//
+// This is what lets a long-lived `aoctl acp serve` process ride out an id_token
+// expiry mid-session instead of requiring the user to re-run `aoctl login` and
+// re-create the Zed agent. Request bodies are made rewindable so POST retries
+// (e.g. run creation/resume after a 401) resend the body correctly.
+type refreshableTransport struct {
+	base  http.RoundTripper
+	owner *Client
+}
+
+// RoundTrip implements http.RoundTripper.
+func (t *refreshableTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	// If we're going to need to retry (on 401), make the body rewindable.
+	// Done up front so the first attempt and the retry both read a fresh body.
+	if req.Body != nil && req.GetBody == nil {
+		bodyBytes, rerr := io.ReadAll(req.Body)
+		if rerr != nil {
+			return nil, rerr
+		}
+		_ = req.Body.Close()
+		req.ContentLength = int64(len(bodyBytes))
+		req.Body = io.NopCloser(strings.NewReader(string(bodyBytes)))
+		req.GetBody = func() (io.ReadCloser, error) {
+			req.Body = io.NopCloser(strings.NewReader(string(bodyBytes)))
+			return req.Body, nil
+		}
+	}
+
+	resp, err := t.base.RoundTrip(req)
+	if err != nil || resp == nil {
+		return resp, err
+	}
+	// A 401 with no refresh callback (or a non-auth status) is passed through
+	// untouched. Only one retry is ever attempted.
+	if resp.StatusCode != http.StatusUnauthorized || t.owner.refresh == nil {
+		return resp, nil
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+
+	if _, err := t.owner.refreshOnce(req.Context()); err != nil {
+		return nil, fmt.Errorf("refreshing auth token after 401: %w", err)
+	}
+	// Re-attach the (now refreshed) bearer token and rewind the body, then retry.
+	t.owner.tokenAuth(req)
+	if req.GetBody != nil {
+		_, _ = req.GetBody()
+	}
+	return t.base.RoundTrip(req)
 }
 
 // Login exchanges client credentials for a bearer token and returns it.
@@ -760,30 +869,35 @@ func saveConfig(cfg *Config) error {
 // --- command wiring ---
 
 type settings struct {
-	endpoint   string
-	acp        string
-	token      string
-	insecure   bool
-	timeout    time.Duration
-	stream     bool
-	clientID   string
-	secret     string
-	agent      string
-	input      string
-	timeoutStr string
-	status     string
-	id         string //nolint:unused
+	endpoint string
+	acp      string
+	token    string
+	// tokenFromFlag is true when --token was supplied explicitly on the command
+	// line. Such tokens are treated as opaque and never auto-refreshed (the
+	// user owns their lifetime); only tokens loaded from the saved OIDC login
+	// session are refreshed, so `acp serve` survives its id_token expiry.
+	tokenFromFlag bool
+	insecure      bool
+	timeout       time.Duration
+	stream        bool
+	clientID      string
+	secret        string
+	agent         string
+	input         string
+	timeoutStr    string
+	status        string
+	id            string //nolint:unused
 
-	sessionID       string
-	targetNamespace string
-	allowedAgents   []string
-	rpm             int
-	concurrent      int
-	budgetPerDay    string
-	file            string // --file: read input from a file instead of --input/stdin
-	contentType     string // --content-type: MIME type for the message part (default text/plain)
-	editor          string // --editor: editor to configure for `acp setup` (e.g. zed)
-	out, errw       io.Writer
+	sessionID         string
+	allowedNamespaces []string
+	allowedAgents     []string
+	rpm               int
+	concurrent        int
+	budgetPerDay      string
+	file              string // --file: read input from a file instead of --input/stdin
+	contentType       string // --content-type: MIME type for the message part (default text/plain)
+	editor            string // --editor: editor to configure for `acp setup` (e.g. zed)
+	out, errw         io.Writer
 
 	// OIDC interactive-login fields. authMethod/issuerURL/redirectURI/noBrowser
 	// mirror the login flags; `in`, `isTerminal` and `openBrowser` are the
@@ -951,42 +1065,51 @@ func (s *settings) promptRequiredSecret(flag, label string, interactive bool) (s
 	return promptSecret(s.out, s.stdin, label, s.isTerminal, s.readPassword)
 }
 
-// refreshOIDCIfNeeded refreshes an expired OIDC id_token using the cached refresh
-// token. It is best-effort: a failure returns an error (logged by the caller)
-// but never panics. Returns (newToken, refreshed, err).
+// refreshOIDCIfNeeded refreshes an expired OIDC id_token using the cached
+// refresh token. It is best-effort: a failure returns an error (logged by the
+// caller) but never panics. Returns (newToken, refreshed, err).
+//
+// This is the one-shot path used by PersistentPreRunE for short-lived commands
+// (`aoctl tasks ls`, `aoctl agents list`, …). The long-lived `aoctl acp serve`
+// process uses the ctx-aware cachedOIDCRefresh instead (see below), so a single
+// wrapped request can be cancelled.
 func (s *settings) refreshOIDCIfNeeded(cfg *Config) (string, bool, error) {
-	// Decide whether the id_token is expired (with grace).
-	expStr := cfg.IDTokenExpiry
-	var exp time.Time
-	if expStr != "" {
-		if e, err := time.Parse(time.RFC3339, expStr); err == nil {
-			exp = e
-		}
-	} else if e, err := jwtExpiry(cfg.Token); err == nil {
-		exp = e
-	}
-	if !exp.IsZero() && time.Now().Before(exp.Add(-oidcLoginGracePeriod)) {
-		return "", false, nil // still valid
+	if !tokenNearExpiry(cfg) {
+		return "", false, nil // still valid (or expiry unknown — don't churn)
 	}
 	if cfg.RefreshToken == "" {
 		return "", false, nil // nothing to refresh with
 	}
+	newID, _, err := s.refreshOIDCToken(context.Background(), cfg)
+	if err != nil {
+		return "", false, err
+	}
+	return newID, true, nil
+}
+
+// refreshOIDCToken performs a single OIDC refresh-token grant using cfg,
+// persists the rotated id_token + refresh token + new expiry to the config, and
+// returns them. The caller decides whether a refresh is due (see
+// tokenNearExpiry/cachedOIDCRefresh) and which context to use. Splitting this
+// out of refreshOIDCIfNeeded lets the long-lived serve path pass a request/
+// serve context rather than context.Background().
+func (s *settings) refreshOIDCToken(ctx context.Context, cfg *Config) (newID, newRefresh string, err error) {
 	redirectURI := cfg.RedirectURI
 	if redirectURI == "" {
 		redirectURI = defaultOIDCRedirectURI
 	}
-	provider, err := oidc.NewProvider(context.Background(), oidc.Config{
+	provider, err := oidc.NewProvider(ctx, oidc.Config{
 		IssuerURL:    cfg.IssuerURL,
 		ClientID:     cfg.ClientID,
 		ClientSecret: cfg.ClientSecret,
 		RedirectURI:  redirectURI,
 	})
 	if err != nil {
-		return "", false, fmt.Errorf("discovering OIDC provider: %w", err)
+		return "", "", fmt.Errorf("discovering OIDC provider: %w", err)
 	}
-	newID, newRefresh, err := provider.Refresh(context.Background(), cfg.RefreshToken)
+	newID, newRefresh, err = provider.Refresh(ctx, cfg.RefreshToken)
 	if err != nil {
-		return "", false, err
+		return "", "", err
 	}
 	newExp, _ := jwtExpiry(newID)
 	updated := *cfg
@@ -999,7 +1122,38 @@ func (s *settings) refreshOIDCIfNeeded(cfg *Config) (string, bool, error) {
 		// Non-fatal: the in-memory token is still returned to the caller.
 		_, _ = fmt.Fprintf(s.errw, "warning: could not persist refreshed OIDC token: %v\n", err)
 	}
-	return newID, true, nil
+	return newID, newRefresh, nil
+}
+
+// parseIDTokenExpiry resolves the cached id_token's expiry from the persisted
+// IDTokenExpiry field, falling back to parsing the (unverified) exp claim of the
+// token itself when the field is absent. Returns the zero time when the expiry
+// is unknown.
+func parseIDTokenExpiry(cfg *Config) time.Time {
+	if cfg.IDTokenExpiry != "" {
+		if e, err := time.Parse(time.RFC3339, cfg.IDTokenExpiry); err == nil {
+			return e
+		}
+		return time.Time{}
+	}
+	if e, err := jwtExpiry(cfg.Token); err == nil {
+		return e
+	}
+	return time.Time{}
+}
+
+// tokenNearExpiry reports whether the cached OIDC id_token should be refreshed:
+// true when it is expired or within oidcLoginGracePeriod of expiry. Returns
+// false when the expiry is known and still valid, or when it is unknown — so the
+// proactive refresher doesn't churn on every tick when the expiry is missing. A
+// 401 from the server is still the trigger in that (pathological) case, since
+// OIDC id_tokens always carry exp and login persists IDTokenExpiry.
+func tokenNearExpiry(cfg *Config) bool {
+	exp := parseIDTokenExpiry(cfg)
+	if exp.IsZero() {
+		return false
+	}
+	return !time.Now().Before(exp.Add(-oidcLoginGracePeriod))
 }
 
 // saveLoginConfig persists an OAuth login (token only).
@@ -1029,6 +1183,74 @@ func saveOIDCLoginConfig(s *settings, endpoint, acp string, res *OIDCLoginResult
 		cfg.IDTokenExpiry = res.ExpiresAt.UTC().Format(time.RFC3339)
 	}
 	return saveConfig(cfg)
+}
+
+// oidcRefreshCallback returns a refresh function (+true) when the cached session
+// is an OIDC login that captured a refresh token, so `aoctl acp serve` can renew
+// its id_token without re-login. It returns (+false) for OAuth sessions or when
+// no refresh token was captured (serve then behaves exactly as before).
+func (s *settings) oidcRefreshCallback() (func(context.Context) (string, error), bool) {
+	cfg, err := loadConfig()
+	if err != nil {
+		return nil, false
+	}
+	if cfg.AuthMethod != loginMethodOIDC || cfg.RefreshToken == "" {
+		return nil, false
+	}
+	return s.cachedOIDCRefresh, true
+}
+
+// cachedOIDCRefresh is the refresh callback wired into the long-lived `acp serve`
+// client. It re-reads the cached OIDC session each call (so a refresh's
+// persisted expiry is visible on the next invocation, preventing repeated
+// refreshes within the same grace window), and refreshes the id_token when it is
+// expired or within the grace window. While the token is still valid it is
+// returned untouched with no network access, so this is safe to call from both
+// the proactive refresher goroutine and the 401-retry transport path.
+func (s *settings) cachedOIDCRefresh(ctx context.Context) (string, error) {
+	cfg, err := loadConfig()
+	if err != nil {
+		return "", fmt.Errorf("loading cached OIDC session: %w", err)
+	}
+	if cfg.AuthMethod != loginMethodOIDC || cfg.RefreshToken == "" {
+		return "", errors.New("no OIDC refresh token cached; run `aoctl login` again")
+	}
+	if !tokenNearExpiry(cfg) {
+		return cfg.Token, nil
+	}
+	newID, _, err := s.refreshOIDCToken(ctx, cfg)
+	if err != nil {
+		return "", err
+	}
+	return newID, nil
+}
+
+// tokenRefreshInterval bounds how often the proactive refresher checks the
+// cached session. refreshableTransport's 401-retry is the safety net for any
+// request that expires between ticks; the callback is a no-op (cheap, no network)
+// while the token is still valid, so a tight interval keeps the expiry dead-band
+// tiny without hammering the identity provider.
+const tokenRefreshInterval = 2 * time.Minute
+
+// runTokenRefresher periodically renews the client's bearer token so a
+// long-lived `acp serve` process never presents an expired token to the ACP API.
+// The refresh callback no-ops while the token is still valid, so this is cheap
+// until the grace window; refreshableTransport's 401-retry recovers any request
+// that still slips through. Stops when ctx is cancelled (the serve process
+// receives SIGINT/SIGTERM or stdin closes).
+func (s *settings) runTokenRefresher(ctx context.Context, c *Client) {
+	t := time.NewTicker(tokenRefreshInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if _, err := c.refreshOnce(ctx); err != nil {
+				_, _ = fmt.Fprintf(s.errw, "warning: ACP session token refresh failed: %v\n", err)
+			}
+		}
+	}
 }
 
 // newRootCmd builds the command tree and returns it. Split out so tests can
@@ -1070,6 +1292,7 @@ func newRootCmd() (*cobra.Command, *settings) { //nolint:gocyclo
 				strings.EqualFold(os.Getenv("AOCTL_OUTPUT_FORMAT"), "true")
 		}
 		tokenFromFlag := s.token != ""
+		s.tokenFromFlag = tokenFromFlag
 		// Also accept the bearer token via AOCTL_TOKEN env var (useful for the
 		// Zed-launched `aoctl acp serve` subprocess which receives it via the
 		// agent_servers env map written by `setup`).
@@ -1116,7 +1339,7 @@ func newRootCmd() (*cobra.Command, *settings) { //nolint:gocyclo
 		}
 		// Best-effort OIDC session refresh: when the cached token is an OIDC
 		// id_token that is expired (or close to it) and a refresh token is
-		// available, mint a fresh one. Skipped for `login` (which establishes a
+		// available, mint a fresh one. Skipped for `login` ( which establishes a
 		// new session) and when a token was supplied via --token (untouched).
 		// Refresh failures are non-fatal — the API call surfaces a clear 401.
 		// NOTE: we read cfg.AuthMethod here (NOT s.authMethod) so a --auth-method
@@ -1371,7 +1594,7 @@ Examples:
 	agentRun.Flags().StringVar(&s.contentType, "content-type", "text/plain", "MIME type of the input (e.g. text/plain, application/json)") //nolint:lll
 	agents.AddCommand(agentRun)
 
-	root.AddCommand(login, tasks, agents)
+	root.AddCommand(login, tasks, agents, validateCmd)
 
 	// admin — tenant lifecycle management (requires a K8s SA token, not OAuth2).
 	admin := &cobra.Command{
@@ -1398,9 +1621,9 @@ Obtain one via 'kubectl create token agentorca-admin -n agent-orca-system' or th
 					_, _ = fmt.Fprintln(w, "No tenants found.")
 					return nil
 				}
-				tw := newTableWriter().header("NAME", "CLIENT ID", "NAMESPACE")
+				tw := newTableWriter().header("NAME", "CLIENT ID", "NAMESPACES")
 				for _, t := range tenants {
-					tw.row(t.Name, t.ClientID, t.TargetNamespace)
+					tw.row(t.Name, t.ClientID, strings.Join(t.AllowedNamespaces, ", "))
 				}
 				return tw.render(w)
 			})
@@ -1426,13 +1649,13 @@ Obtain one via 'kubectl create token agentorca-admin -n agent-orca-system' or th
 		Short: "Create a tenant (POST /admin/tenants)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			if s.targetNamespace == "" || s.clientID == "" {
-				return errors.New("--namespace and --client-id are required for create")
+			if len(s.allowedNamespaces) == 0 || s.clientID == "" {
+				return errors.New("--namespace (repeatable) and --client-id are required for create")
 			}
 			req := AdminTenantCreateRequest{
-				Name:            args[0],
-				TargetNamespace: s.targetNamespace,
-				ClientID:        s.clientID,
+				Name:              args[0],
+				AllowedNamespaces: s.allowedNamespaces,
+				ClientID:          s.clientID,
 			}
 			if s.allowedAgents != nil {
 				req.AllowedAgents = s.allowedAgents
@@ -1454,7 +1677,7 @@ Obtain one via 'kubectl create token agentorca-admin -n agent-orca-system' or th
 			return printJSON(s.out, resp)
 		},
 	}
-	adminCreate.Flags().StringVar(&s.targetNamespace, "namespace", "", "target namespace for the tenant's agents")
+	adminCreate.Flags().StringSliceVar(&s.allowedNamespaces, "namespace", nil, "authorized namespace for the tenant's agents (repeatable; at least one required)")
 	adminCreate.Flags().StringVar(&s.clientID, "client-id", "", "OAuth2 client ID")
 	adminCreate.Flags().StringSliceVar(&s.allowedAgents, "allowed-agents", nil, "comma-separated list of allowed agent names") //nolint:lll
 

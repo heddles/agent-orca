@@ -605,7 +605,8 @@ func (h *OIDCLoginHandler) handleCallback(w http.ResponseWriter, r *http.Request
 
 	ident := attachQuotaFields(&TenantIdentity{
 		TenantName:    tc.Name,
-		Namespace:     tc.Spec.TargetNamespace,
+		Namespace:     firstNamespace(tc.Spec.AllowedNamespaces),
+		Namespaces:    tc.Spec.AllowedNamespaces,
 		AllowedAgents: tc.Spec.AllowedAgents,
 		UserID:        principal.UserID,
 		Groups:        principal.Groups,

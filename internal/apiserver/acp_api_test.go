@@ -902,3 +902,63 @@ func TestACPPresumeRun_CreatesContinuation(t *testing.T) {
 		t.Errorf("expected continuation to inherit deployment label, got %q", cont.Labels["agentorca.io/deployment"])
 	}
 }
+
+// TestHandleAgentManifest_MultiNamespaceResolvesAgentNamespace verifies that when
+// a tenant is authorized for multiple namespaces, an agent living in a
+// non-primary namespace is still resolved — and reported with its own namespace —
+// directing the request to "the namespace the agent exists in and the tenant is
+// authorized to access" rather than the tenant's primary namespace.
+func TestHandleAgentManifest_MultiNamespaceResolvesAgentNamespace(t *testing.T) {
+	agent := &agentorcav1alpha1.Agent{
+		ObjectMeta: metav1.ObjectMeta{Name: "support-bot", Namespace: "red-team"},
+		Spec:       agentorcav1alpha1.AgentSpec{SystemPrompt: "hi"},
+	}
+	s := newACPServer(t, agent)
+	tenant := &TenantIdentity{
+		TenantName:    "acme",
+		Namespace:     "tenant-acme",                       // primary; the agent is NOT here
+		Namespaces:    []string{"tenant-acme", "red-team"}, // authorized set
+		AllowedAgents: nil,
+	}
+	h := s.withTenant(tenant)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/agents/support-bot", nil)
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var manifest ACPAgentManifest
+	if err := json.Unmarshal(rec.Body.Bytes(), &manifest); err != nil {
+		t.Fatalf("decoding manifest: %v", err)
+	}
+	if manifest.Namespace != "red-team" {
+		t.Fatalf("expected manifest namespace 'red-team' (the agent's namespace), got %q", manifest.Namespace)
+	}
+}
+
+// TestHandleAgentManifest_AgentNotInAuthorizedNamespace verifies a tenant cannot
+// reach an agent that lives outside its allowedNamespaces (404, not leaked).
+func TestHandleAgentManifest_AgentNotInAuthorizedNamespace(t *testing.T) {
+	agent := &agentorcav1alpha1.Agent{
+		ObjectMeta: metav1.ObjectMeta{Name: "secret-bot", Namespace: "other-team"},
+		Spec:       agentorcav1alpha1.AgentSpec{SystemPrompt: "hi"},
+	}
+	s := newACPServer(t, agent)
+	tenant := &TenantIdentity{
+		TenantName:    "acme",
+		Namespace:     "tenant-acme",
+		Namespaces:    []string{"tenant-acme"},
+		AllowedAgents: nil,
+	}
+	h := s.withTenant(tenant)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/agents/secret-bot", nil)
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for agent outside allowedNamespaces, got %d: %s", rec.Code, rec.Body.String())
+	}
+}

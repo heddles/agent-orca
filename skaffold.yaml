@@ -517,8 +517,8 @@ profiles:
             createNamespace: true
             setValueTemplates:
               # Default API key (providerSecrets[0].name = default-api-key).
-              agent-orca-resources.providerSecrets[0].name: "default-api-key"
-              agent-orca-resources.providerSecrets[0].apiKey: "{{.DEFAULT_API_KEY}}"
+              agent-orca-resources.providerSecrets[0].name: "poolside-api-key"
+              agent-orca-resources.providerSecrets[0].apiKey: "{{.POOLSIDE_API_KEY}}"
               # HTB OpenVPN config + endpoint -> injected into the htb-ovpn Secret.
               openvpn.ovpnConfig: "{{.AGENT_ORCA_HTB_OVPN_CONFIG}}"
               openvpn.endpoint: "{{.AGENT_ORCA_HTB_OVPN_ENDPOINT}}"

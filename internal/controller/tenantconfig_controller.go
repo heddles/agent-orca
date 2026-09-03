@@ -89,8 +89,8 @@ func (r *TenantConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request
 }
 
 func (r *TenantConfigReconciler) validate(tc *agentorcav1alpha1.TenantConfig) (bool, string) {
-	if tc.Spec.TargetNamespace == "" {
-		return false, "spec.targetNamespace is required"
+	if len(tc.Spec.AllowedNamespaces) == 0 {
+		return false, "spec.allowedNamespaces is required (at least one namespace)"
 	}
 
 	switch tc.Spec.AuthMode {
@@ -126,7 +126,7 @@ func (r *TenantConfigReconciler) validate(tc *agentorcav1alpha1.TenantConfig) (b
 		return false, fmt.Sprintf("unknown authMode %q", tc.Spec.AuthMode)
 	}
 
-	return true, fmt.Sprintf("tenant %s validated (authMode=%s, namespace=%s)", tc.Name, tc.Spec.AuthMode, tc.Spec.TargetNamespace)
+	return true, fmt.Sprintf("tenant %s validated (authMode=%s, namespaces=%v)", tc.Name, tc.Spec.AuthMode, tc.Spec.AllowedNamespaces)
 }
 
 // SetupWithManager sets up the controller with the Manager.

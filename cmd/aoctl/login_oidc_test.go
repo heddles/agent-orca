@@ -125,6 +125,17 @@ type mockIdP struct {
 
 	mu    sync.Mutex
 	codes map[string]authzRecord // code -> record
+
+	// lastAuthorize captures the scope/access_type of the most recent authorize
+	// request, so tests can assert which OAuth2 params the CLI login requested.
+	lastScope      string
+	lastAccessType string
+}
+
+func (m *mockIdP) lastAuthorize() (scope, accessType string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.lastScope, m.lastAccessType
 }
 
 func newMockIdP(t *testing.T, key *rsa.PrivateKey) *mockIdP {
@@ -146,6 +157,10 @@ func newMockIdP(t *testing.T, key *rsa.PrivateKey) *mockIdP {
 
 	mux.HandleFunc("/oauth/authorize", func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
+		m.mu.Lock()
+		m.lastScope = r.FormValue("scope")
+		m.lastAccessType = r.FormValue("access_type")
+		m.mu.Unlock()
 		if r.FormValue("client_id") != testClientID || r.FormValue("response_type") != "code" {
 			http.Error(w, `{"error":"invalid_request"}`, http.StatusBadRequest)
 			return
@@ -314,6 +329,46 @@ func TestLoginOIDC_EndToEnd(t *testing.T) {
 	}
 	if res.Principal == nil || res.Principal.Subject != "test-subject" {
 		t.Fatalf("bad principal: %+v", res.Principal)
+	}
+}
+
+// TestLoginOIDC_RequestsOfflineAccess verifies the CLI login flow requests the
+// "offline_access" scope and the "access_type=offline" parameter — the combo
+// providers (notably Google) need to mint a refresh token — and that the issued
+// refresh token is captured in the result. That capture is what lets a long-lived
+// `aoctl acp serve` session auto-renew instead of forcing re-login every few
+// hours when the short-lived id_token expires.
+func TestLoginOIDC_RequestsOfflineAccess(t *testing.T) {
+	key := newTestKey(t)
+	idp := newMockIdP(t, key)
+
+	port := freePort(t)
+	redirect := fmt.Sprintf("http://127.0.0.1:%d/callback", port)
+
+	cfg := OIDCLoginConfig{
+		IssuerURL:    idp.issuerURL(),
+		ClientID:     testClientID,
+		ClientSecret: testSecret,
+		RedirectURI:  redirect,
+		OpenBrowser:  fakeBrowser,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	res, err := loginOIDC(ctx, cfg, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("loginOIDC: %v", err)
+	}
+	if res.RefreshToken == "" {
+		t.Fatal("expected a refresh token to be captured from the IdP")
+	}
+
+	scope, accessType := idp.lastAuthorize()
+	if !strings.Contains(scope, "offline_access") {
+		t.Fatalf("authorize request missing offline_access scope, got scope %q", scope)
+	}
+	if accessType != "offline" {
+		t.Fatalf("authorize request access_type = %q, want offline", accessType)
 	}
 }
 
@@ -643,5 +698,164 @@ func TestRefreshOIDCIfNeeded_SkipsWhenValid(t *testing.T) {
 	}
 	if refreshed || fresh != "" {
 		t.Fatalf("expected NO refresh; got refreshed=%v fresh=%q", refreshed, fresh)
+	}
+}
+
+// --- cachedOIDCRefresh (serve-time refresh callback) tests ---
+
+// seedOIDCConfig writes a cached OIDC session to a temp config dir and returns
+// a settings wired to it. It is used by the cachedOIDCRefresh tests below.
+func seedOIDCConfig(t *testing.T, issuer, idToken, refreshToken, idTokenExpiry string) *settings {
+	t.Helper()
+	t.Setenv("AOCTL_CONFIG_DIR", t.TempDir())
+	cfg := &Config{
+		Endpoint:      defaultEndpoint,
+		ACP:           defaultACP,
+		Token:         idToken,
+		AuthMethod:    loginMethodOIDC,
+		IssuerURL:     issuer,
+		ClientID:      testClientID,
+		ClientSecret:  testSecret,
+		RedirectURI:   defaultOIDCRedirectURI,
+		RefreshToken:  refreshToken,
+		IDTokenExpiry: idTokenExpiry,
+	}
+	if err := saveConfig(cfg); err != nil {
+		t.Fatalf("seed save: %v", err)
+	}
+	return &settings{errw: &bytes.Buffer{}}
+}
+
+// TestCachedOIDCRefresh_RefreshsWhenExpired verifies the callback used by the
+// long-lived serve process re-reads the cached config, renews an expired
+// id_token via the refresh grant, and persists the rotated session.
+func TestCachedOIDCRefresh_RefreshsWhenExpired(t *testing.T) {
+	key := newTestKey(t)
+	idp := newMockIdP(t, key)
+
+	past := time.Now().Add(-1 * time.Hour).UTC().Format(time.RFC3339)
+	s := seedOIDCConfig(t, idp.issuerURL(), "expired-id-token", testRefreshA, past)
+
+	fresh, err := s.cachedOIDCRefresh(context.Background())
+	if err != nil {
+		t.Fatalf("cachedOIDCRefresh: %v", err)
+	}
+	if fresh == "" || fresh == "expired-id-token" {
+		t.Fatalf("expected a fresh token, got %q", fresh)
+	}
+
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.Token != fresh {
+		t.Fatalf("persisted token %q != returned %q", cfg.Token, fresh)
+	}
+	if cfg.RefreshToken != testRefreshB {
+		t.Fatalf("expected rotated refresh token %q, got %q", testRefreshB, cfg.RefreshToken)
+	}
+	if cfg.IDTokenExpiry == "" {
+		t.Fatal("expected persisted idTokenExpiry to be refreshed")
+	}
+}
+
+// TestCachedOIDCRefresh_NoopsWhenValid verifies a still-valid token is returned
+// untouched with no network call (the mock IdP host is unreachable, so any
+// refresh attempt would hang/fail).
+func TestCachedOIDCRefresh_NoopsWhenValid(t *testing.T) {
+	future := time.Now().Add(30 * time.Minute).UTC().Format(time.RFC3339)
+	// Unreachable issuer: the callback must NOT contact it when the token is valid.
+	s := seedOIDCConfig(t, "http://127.0.0.1:0", "valid-id-token", testRefreshA, future)
+
+	fresh, err := s.cachedOIDCRefresh(context.Background())
+	if err != nil {
+		t.Fatalf("cachedOIDCRefresh: %v", err)
+	}
+	if fresh != "valid-id-token" {
+		t.Fatalf("expected the cached (still-valid) token back, got %q", fresh)
+	}
+}
+
+// TestCachedOIDCRefresh_OnlyForOIDC verifies the callback is a no-op (error) for
+// non-OIDC sessions, so OAuth login sessions (no refresh token) are left alone.
+func TestCachedOIDCRefresh_OnlyForOIDC(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("AOCTL_CONFIG_DIR", dir)
+	if err := saveConfig(&Config{
+		Endpoint: defaultEndpoint, ACP: defaultACP, Token: "oauth-jwt", AuthMethod: loginMethodOAuth,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s := &settings{errw: &bytes.Buffer{}}
+	_, err := s.cachedOIDCRefresh(context.Background())
+	if err == nil {
+		t.Fatal("expected an error for a non-OIDC session")
+	}
+}
+
+// TestOIDCRefreshCallback verifies the serve wiring only enables auto-refresh
+// for OIDC sessions that captured a refresh token.
+func TestOIDCRefreshCallback(t *testing.T) {
+	t.Run("oidc_with_refresh", func(t *testing.T) {
+		key := newTestKey(t)
+		idp := newMockIdP(t, key)
+		s := seedOIDCConfig(t, idp.issuerURL(), "tok", testRefreshA,
+			time.Now().Add(1*time.Hour).UTC().Format(time.RFC3339))
+		fn, ok := s.oidcRefreshCallback()
+		if !ok {
+			t.Fatal("expected refresh callback for OIDC session with refresh token")
+		}
+		if fn == nil {
+			t.Fatal("expected non-nil refresh function")
+		}
+	})
+	t.Run("oauth_no_refresh", func(t *testing.T) {
+		t.Setenv("AOCTL_CONFIG_DIR", t.TempDir())
+		if err := saveConfig(&Config{AuthMethod: loginMethodOAuth, Token: "jwt"}); err != nil {
+			t.Fatal(err)
+		}
+		s := &settings{errw: &bytes.Buffer{}}
+		if _, ok := s.oidcRefreshCallback(); ok {
+			t.Fatal("expected no refresh callback for OAuth session")
+		}
+	})
+	t.Run("oidc_without_refresh_token", func(t *testing.T) {
+		s := seedOIDCConfig(t, "http://127.0.0.1:1", "tok", "", // RefreshToken empty
+			time.Now().Add(1*time.Hour).UTC().Format(time.RFC3339))
+		if _, ok := s.oidcRefreshCallback(); ok {
+			t.Fatal("expected no refresh callback when no refresh token was captured")
+		}
+	})
+}
+
+// TestTokenNearExpiry covers the grace-window gate used by both the at-startup
+// refresh and the serve-time callback.
+func TestTokenNearExpiry(t *testing.T) {
+	now := time.Now()
+	tests := []struct {
+		name string
+		exp  string // RFC3339, "" = unknown
+		want bool
+	}{
+		{"valid", now.Add(30 * time.Minute).Format(time.RFC3339), false},
+		{"expired", now.Add(-1 * time.Hour).Format(time.RFC3339), true},
+		{"within_grace", now.Add(-time.Minute).Format(time.RFC3339), true},
+		{"unknown_expiry", "", false}, // don't churn on unknown; 401 drives it
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{IDTokenExpiry: tt.exp, Token: "tok"}
+			if got := tokenNearExpiry(cfg); got != tt.want {
+				t.Fatalf("tokenNearExpiry=%v, want %v", got, tt.want)
+			}
+		})
+	}
+	// Falls back to parsing the exp claim of the token itself when the field is
+	// absent (mirrors the original refreshOIDCIfNeeded behaviour).
+	past := now.Add(-time.Hour).Unix()
+	claims := fmt.Sprintf(`{"exp":%d}`, past)
+	tok := "hdr." + base64.RawURLEncoding.EncodeToString([]byte(claims)) + ".sig"
+	if !tokenNearExpiry(&Config{Token: tok}) {
+		t.Fatal("expected token with expired exp claim to be near expiry")
 	}
 }

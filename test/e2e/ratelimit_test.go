@@ -126,7 +126,8 @@ spec:
     clientSecretRef:
       name: %s
       key: client-secret
-  targetNamespace: %s
+  allowedNamespaces:
+    - %s
   allowedAgents:
     - %s
   rateLimit:

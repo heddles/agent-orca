@@ -153,7 +153,7 @@ metadata:
 	})
 
 	It("creates a tenant via POST /admin/tenants", func() {
-		body := fmt.Sprintf(`{"name":"%s","targetNamespace":"%s","clientID":"%s"}`,
+		body := fmt.Sprintf(`{"name":"%s","allowedNamespaces":["%s"],"clientID":"%s"}`,
 			tenantName, targetNS, clientID)
 		status, respBody := adminRequest(http.MethodPost, "/admin/tenants", body, adminToken)
 		Expect(status).To(Equal(http.StatusCreated), "create: %s", respBody)
@@ -198,15 +198,15 @@ metadata:
 		Expect(status).To(Equal(http.StatusOK), "get: %s", respBody)
 
 		var resp struct {
-			Name            string `json:"name"`
-			ClientID        string `json:"clientID"`
-			TargetNamespace string `json:"targetNamespace"`
-			ClientSecret    string `json:"clientSecret"`
+			Name              string   `json:"name"`
+			ClientID          string   `json:"clientID"`
+			AllowedNamespaces []string `json:"allowedNamespaces"`
+			ClientSecret      string   `json:"clientSecret"`
 		}
 		Expect(json.Unmarshal([]byte(respBody), &resp)).To(Succeed(), "bad JSON: %s", respBody)
 		Expect(resp.Name).To(Equal(tenantName))
 		Expect(resp.ClientID).To(Equal(clientID))
-		Expect(resp.TargetNamespace).To(Equal(targetNS))
+		Expect(resp.AllowedNamespaces).To(Equal([]string{targetNS}))
 		Expect(resp.ClientSecret).To(BeEmpty(), "GET should not leak the client secret")
 	})
 
