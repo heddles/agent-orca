@@ -21,10 +21,10 @@ import (
 
 // BenchmarkTruncateHistory_LargeConversation measures the synchronous
 // truncateHistory cost for a ~200k-token conversation at the 262144
-// ContextWindow boundary — the same scale that triggers async compaction
-// in PR #59 (#59 / commit fa63c2fe). This pins the pre-send truncation
-// stall that runs on the request thread when async compaction hasn't
-// installed its result yet.
+// ContextWindow boundary — the same scale that triggered async compaction
+// in PR #59 (commit fa63c2fe). This pins the pre-send truncation stall
+// that runs on the request thread when async compaction hasn't installed
+// its result yet.
 //
 // Run with: go test -bench=BenchmarkTruncateHistory_LargeConversation -benchtime=3s -run=^$
 func BenchmarkTruncateHistory_LargeConversation(b *testing.B) {
@@ -33,7 +33,7 @@ func BenchmarkTruncateHistory_LargeConversation(b *testing.B) {
 	// ≈ 241k tokens, which exceeds the 209715 budget and forces truncation.
 	msgs := make([]Message, 0, 120)
 	msgs = append(msgs, Message{Role: "system", Content: "you are a helpful assistant"})
-	for i := range 119 {
+	for range 119 {
 		msgs = append(msgs, Message{
 			Role:    "user",
 			Content: strings.Repeat("x", 8000), // ~2000 tokens each
@@ -43,7 +43,7 @@ func BenchmarkTruncateHistory_LargeConversation(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_ = truncateHistory(msgs, 209715)
 	}
 }
