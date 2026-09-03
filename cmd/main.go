@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -267,6 +268,13 @@ func main() {
 	llmReqTimeout := parseLLMRequestTimeout()
 	setupLog.Info("LLM request timeout", "timeout", llmReqTimeout)
 
+	// Context compaction ratio: target fraction of the context window to compact
+	// down to when truncation fires (issue #54). Default 0.5 (50%); set to 0.1
+	// for aggressive compaction to ~10%. CONTEXT_COMPACTION_RATIO env var /
+	// chart value modelRouter.contextCompactionRatio.
+	compactionRatio := parseContextCompactionRatio()
+	setupLog.Info("Context compaction ratio", "ratio", compactionRatio)
+
 	modelRouterImage := os.Getenv("MODEL_ROUTER_IMAGE")
 	if modelRouterImage == "" {
 		modelRouterImage = "ghcr.io/agentorca/agent-orca/model-router:latest"
@@ -400,6 +408,7 @@ func main() {
 		TokenReviewerClusterRole: os.Getenv("TOKEN_REVIEWER_CLUSTER_ROLE"),
 		OperatorAPIURL:           os.Getenv("OPERATOR_API_URL"),
 		LLMRequestTimeout:        llmReqTimeout,
+		ContextCompactionRatio:   compactionRatio,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "AgentRun")
 		os.Exit(1)
@@ -414,6 +423,7 @@ func main() {
 		TokenReviewerClusterRole: os.Getenv("TOKEN_REVIEWER_CLUSTER_ROLE"),
 		OperatorAPIURL:           os.Getenv("OPERATOR_API_URL"),
 		LLMRequestTimeout:        llmReqTimeout,
+		ContextCompactionRatio:   compactionRatio,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "AgentDeployment")
 		os.Exit(1)
@@ -655,6 +665,22 @@ func parseLLMRequestTimeout() time.Duration {
 		return time.Hour
 	}
 	return d
+}
+
+// parseContextCompactionRatio reads the CONTEXT_COMPACTION_RATIO env var (a
+// float in (0, 1)) and returns it. When unset or invalid, returns 0 which
+// the router interprets as the default 0.5. Set to 0.1 for aggressive
+// compaction to ~10% of the context window (issue #54).
+func parseContextCompactionRatio() float64 {
+	v := strings.TrimSpace(os.Getenv("CONTEXT_COMPACTION_RATIO"))
+	if v == "" {
+		return 0
+	}
+	ratio, err := strconv.ParseFloat(v, 64)
+	if err != nil || ratio <= 0 || ratio >= 1.0 {
+		return 0
+	}
+	return ratio
 }
 
 // parseAlertWebhooks parses the ALERT_WEBHOOK_URL env var (comma-separated URLs)

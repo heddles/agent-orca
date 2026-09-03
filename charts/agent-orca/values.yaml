@@ -63,6 +63,11 @@ modelRouter:
   # LLM provider response. 60s/120s is too short for long reasoning/tool-augmented calls;
   # 1h is the default. Operators can override per deploy (e.g. "30m", "2h").
   llmRequestTimeout: "1h"
+  # Context compaction ratio: the fraction of the context window to compact the
+  # in-memory buffer down to when truncation fires (issue #54). The 80% checkpoint
+  # budget is the safety ceiling (trigger); this is the target (how far to compress).
+  # 0.5 (default) keeps ~50% of the window; 0.1 aggressively compacts to ~10%.
+  contextCompactionRatio: 0.5
 
 mcpIngester:
   image:

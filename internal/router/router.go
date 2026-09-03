@@ -888,7 +888,23 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 	// Reserve headroom for the model's output tokens and a safety margin so we
 	// never land within a token of the hard limit despite estimation error.
 	const outputReserveTokens = 1024
-	budget := int(float64(hardLimit)*(1.0-r.cfg.ContextWindowReserve)) - toolTokens - outputReserveTokens
+	// The pre-send budget is the LOWER of:
+	//   - the safety ceiling: hardLimit * (1 - ContextWindowReserve) − tools − output
+	//     (reserves headroom for tool defs and the model's response)
+	//   - the compaction target: hardLimit * ContextCompactionRatio − tools − output
+	//     (issue #54: keeps outgoing context proportional to the configured
+	//      compaction ratio, e.g. 0.1 → ~10% of the window instead of 80%)
+	// Taking the min ensures we never send more than either limit allows.
+	ratio := r.cfg.ContextCompactionRatio
+	if ratio <= 0 || ratio >= 1.0 {
+		ratio = 0.5
+	}
+	ceilingBudget := int(float64(hardLimit)*(1.0-r.cfg.ContextWindowReserve)) - toolTokens - outputReserveTokens
+	ratioBudget := int(float64(hardLimit)*ratio) - toolTokens - outputReserveTokens
+	budget := ratioBudget
+	if budget > ceilingBudget {
+		budget = ceilingBudget
+	}
 	if budget <= 0 {
 		budget = int(float64(hardLimit) * 0.5) // last-resort floor: keep at least half the window for messages
 	}
@@ -899,6 +915,7 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 			"budget", budget,
 			"hardLimit", hardLimit,
 			"reserve", r.cfg.ContextWindowReserve,
+			"compactionRatio", ratio,
 			"provider", provider.Name,
 			"run", r.cfg.RunName,
 		)

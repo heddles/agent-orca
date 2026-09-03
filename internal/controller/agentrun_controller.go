@@ -94,6 +94,11 @@ type AgentRunReconciler struct {
 	// LLMRequestTimeout is the per-LLM-request timeout written into every router
 	// config (default 1h). Injected from the LLM_REQUEST_TIMEOUT env var.
 	LLMRequestTimeout time.Duration
+	// ContextCompactionRatio is the target fraction of the context window to
+	// compact the in-memory buffer down to when truncation fires (issue #54).
+	// Default 0.5 (50%); set to 0.1 for aggressive compaction to ~10%.
+	// Injected from the CONTEXT_COMPACTION_RATIO env var.
+	ContextCompactionRatio float64
 }
 
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
@@ -1132,6 +1137,7 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 		KubeAPIURL:             "https://kubernetes.default.svc",
 		OperatorAPIURL:         r.OperatorAPIURL,
 		LLMRequestTimeout:      r.LLMRequestTimeout,
+		ContextCompactionRatio: r.ContextCompactionRatio,
 		SystemPrompt:           agent.Spec.SystemPrompt,
 		ChatMode:               agent.Spec.Runtime.InputMode == "http" || agent.Spec.Runtime.InputMode == "chat",
 		WorkflowName:           run.Labels["agentorca.io/workflow"],
