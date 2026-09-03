@@ -129,7 +129,7 @@ func TestTrimLiveBuffer_CapsByTokensNotCount(t *testing.T) {
 	// truncateHistory injects a compaction summary of the dropped turns as a system msg.
 	found := false
 	for _, m := range r.priorMessages {
-		if m.Role == "system" && strings.Contains(messageText(m), "Compacted context") { //nolint:goconst
+		if m.Role == "system" && strings.Contains(messageText(m), "[Compacted:") { //nolint:goconst
 
 			found = true
 		}
@@ -636,7 +636,7 @@ func TestTruncateHistory_BasicTruncation(t *testing.T) {
 	if !ok {
 		t.Fatal("compaction message content should be string")
 	}
-	if !strings.Contains(compaction, "Compacted context") {
+	if !strings.Contains(compaction, "[Compacted:") {
 		t.Errorf("compaction message missing header: %s", compaction)
 	}
 
@@ -673,7 +673,7 @@ func TestTruncateHistory_CompactionContainsKeyContext(t *testing.T) {
 	// Find the compaction message.
 	var compaction string
 	for _, m := range result {
-		if s, ok := m.Content.(string); ok && strings.Contains(s, "Compacted context") {
+		if s, ok := m.Content.(string); ok && strings.Contains(s, "[Compacted:") {
 			compaction = s
 			break
 		}
@@ -791,11 +791,93 @@ func TestCompactDroppedMessages(t *testing.T) {
 	if !strings.Contains(content, "CI pipeline") {
 		t.Errorf("should contain user follow-up about CI: %s", content)
 	}
-	if !strings.Contains(content, "2 total") {
+	if !strings.Contains(content, "2 calls") {
 		t.Errorf("should report 2 total tool calls: %s", content)
 	}
-	if !strings.Contains(content, "2 unique tools") {
+	if !strings.Contains(content, "2 unique") {
 		t.Errorf("should report 2 unique tools: %s", content)
+	}
+	// Verify the compact header format.
+	if !strings.Contains(content, "[Compacted:") {
+		t.Errorf("should use condensed compact header: %s", content)
+	}
+	if !strings.Contains(content, "msg/") {
+		t.Errorf("header should include message and token counts: %s", content)
+	}
+}
+
+// TestCompactDroppedMessages_TruncatesLongMessages verifies the shortened
+// truncation thresholds (75 chars for first user message, 50 for follow-ups)
+// introduced to reduce summary token overhead (issue #54 recommendations).
+func TestCompactDroppedMessages_TruncatesLongMessages(t *testing.T) {
+	longFirst := strings.Repeat("a", 200)  // 200 chars → should truncate to 75
+	longFollow := strings.Repeat("b", 120) // 120 chars → should truncate to 50
+
+	dropped := []Message{
+		{Role: "user", Content: longFirst},
+		{Role: "user", Content: longFollow},
+		{Role: "user", Content: longFollow},
+		{Role: "user", Content: longFollow}, // 3rd follow-up: should be dropped (max 2)
+	}
+
+	msg := compactDroppedMessages(dropped)
+	content, _ := msg.Content.(string)
+
+	// First message should be truncated to 75 chars (+ "…").
+	if !strings.Contains(content, strings.Repeat("a", 75)+"…") {
+		t.Errorf("first user message should truncate at 75 chars: %s", content)
+	}
+	// Follow-up should be truncated to 50 chars (+ "…").
+	if !strings.Contains(content, strings.Repeat("b", 50)+"…") {
+		t.Errorf("follow-up message should truncate at 50 chars: %s", content)
+	}
+	// The 3rd follow-up should NOT appear (only 2 kept).
+	// Since all 3 are identical (b×120), we verify by counting truncation markers
+	// for the follow-up text — there should be exactly 2.
+	count := strings.Count(content, strings.Repeat("b", 50)+"…")
+	if count != 2 {
+		t.Errorf("expected exactly 2 follow-up messages (got %d truncations): %s", count, content)
+	}
+}
+
+// TestCompactDroppedMessages_NoUserMessages verifies robustness when there are
+// no user messages (all drops are assistant/tool messages).
+func TestCompactDroppedMessages_NoUserMessages(t *testing.T) {
+	dropped := []Message{
+		{Role: "assistant", Content: "ok", ToolCalls: []ToolCall{
+			{ID: "tc1", Function: FunctionCall{Name: "search", Arguments: `{"q":"test"}`}},
+		}},
+		{Role: "tool", ToolCallID: "tc1", Content: "results"},
+	}
+	msg := compactDroppedMessages(dropped)
+	content, _ := msg.Content.(string)
+	if msg.Role != "system" {
+		t.Errorf("role = %q, want system", msg.Role)
+	}
+	if !strings.Contains(content, "search") {
+		t.Errorf("should list tool name: %s", content)
+	}
+	if !strings.Contains(content, "1 calls") {
+		t.Errorf("should report 1 tool call: %s", content)
+	}
+	if strings.Contains(content, "Intent:") {
+		t.Errorf("should not have Intent field when no user messages: %s", content)
+	}
+}
+
+// TestTruncateText verifies the truncation helper used by compactDroppedMessages.
+func TestTruncateText(t *testing.T) {
+	if got := truncateText("short", 75); got != "short" {
+		t.Errorf("short text should be unchanged, got %q", got)
+	}
+	if got := truncateText(strings.Repeat("x", 100), 50); got != strings.Repeat("x", 50)+"…" {
+		t.Errorf("should truncate to 50 chars with ellipsis, got len=%d", len(got))
+	}
+	if got := truncateText("", 75); got != "" {
+		t.Errorf("empty string should stay empty, got %q", got)
+	}
+	if got := truncateText(strings.Repeat("x", 50), 50); got != strings.Repeat("x", 50) {
+		t.Errorf("exactly maxRunes should not be truncated (no ellipsis), got len=%d", len(got))
 	}
 }
 

@@ -345,6 +345,10 @@ func sanitizeCheckpoint(msgs []Message) []Message {
 // dropped during history truncation. Returns a system message summarising the user's
 // identity/intent, conversation topic, and tool usage so the LLM retains situational
 // awareness after older messages are removed.
+//
+// The summary is kept compact (targeting ~100-200 tokens rather than the ~300-500
+// the previous verbose prose format produced) to minimise the token overhead that
+// compaction itself introduces. See issue #54 for the rationale.
 func compactDroppedMessages(dropped []Message) Message {
 	var (
 		firstUserMsg   string
@@ -364,16 +368,11 @@ func compactDroppedMessages(dropped []Message) Message {
 				continue
 			}
 			if firstUserMsg == "" {
-				if len(text) > 200 {
-					firstUserMsg = text[:200] + "…"
-				} else {
-					firstUserMsg = text
-				}
-			} else if len(keyUserMsgs) < 5 {
-				if len(text) > 100 {
-					text = text[:100] + "…"
-				}
-				keyUserMsgs = append(keyUserMsgs, text)
+				// Keep the first user request short but informative.
+				firstUserMsg = truncateText(text, 75)
+			} else if len(keyUserMsgs) < 2 {
+				// Only retain 2 most-recent follow-ups (was 5); each heavily truncated.
+				keyUserMsgs = append(keyUserMsgs, truncateText(text, 50))
 			}
 		case "assistant":
 			if len(m.ToolCalls) > 0 {
@@ -389,27 +388,40 @@ func compactDroppedMessages(dropped []Message) Message {
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "[Compacted context from earlier conversation (%d messages, ~%dk tokens removed)]\n",
-		len(dropped), droppedTokens/1000)
+	// Condensed header: "[Compacted: Nmsg/~Xk]" instead of the verbose
+	// "[Compacted context from earlier conversation ...]".
+	fmt.Fprintf(&b, "[Compacted: %dmsg/~%dk] ", len(dropped), droppedTokens/1000)
 	if firstUserMsg != "" {
-		fmt.Fprintf(&b, "- First user request: %q\n", firstUserMsg)
+		fmt.Fprintf(&b, "Intent: %s | ", firstUserMsg)
 	}
 	for _, msg := range keyUserMsgs {
-		fmt.Fprintf(&b, "- User follow-up: %q\n", msg)
+		fmt.Fprintf(&b, "Follow-up: %s | ", msg)
 	}
 	if len(toolNames) > 0 {
+		// Compact, sorted tool list with call counts.
 		names := make([]string, 0, len(toolNames))
 		for n := range toolNames {
 			names = append(names, n)
 		}
-		fmt.Fprintf(&b, "- Tools invoked: %s\n", strings.Join(names, ", "))
-		fmt.Fprintf(&b, "- Tool calls: %d total across %d unique tools in %d turns\n",
-			totalToolCalls, len(toolNames), toolCallTurns)
+		sort.Strings(names)
+		fmt.Fprintf(&b, "Tools: %s (%d calls, %d unique) | ",
+			strings.Join(names, ", "), totalToolCalls, len(toolNames))
 	}
-	fmt.Fprintf(&b, "- Assistant actions: %d tool-call turns, %d text responses\n",
-		toolCallTurns, textResponses)
+	fmt.Fprintf(&b, "%d tool-call turns, %d text responses", toolCallTurns, textResponses)
 
 	return Message{Role: "system", Content: b.String()}
+}
+
+// truncateText truncates s to at most maxRunes bytes and appends an ellipsis
+// if truncation occurred. Uses byte length for slicing (consistent with the
+// original compactDroppedMessages truncation logic). For ASCII content this
+// is equivalent to rune-based truncation; for multi-byte UTF-8 it may split a
+// code point, but this is acceptable for summary content.
+func truncateText(s string, maxRunes int) string {
+	if len(s) <= maxRunes {
+		return s
+	}
+	return s[:maxRunes] + "…"
 }
 
 // messageText extracts a plain-text string from a Message's Content field.
