@@ -20,20 +20,15 @@ import (
 	"context"
 	"fmt"
 
+	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
 )
 
 // This file centralizes multi-namespace tenant authorization: a tenant is
-// authorized to access the namespaces listed in its spec.allowedNamespaces. The
-// operator resolves each agent/run to the namespace it actually lives in (which
-// must be one of those), so a single tenant can span multiple namespaces. List
-// operations span the whole authorized set; per-resource lookups resolve to the
-// resource's own namespace.
-//
-// controller-runtime v0.23 only supports single-namespace List, so spanning is
-// done with a per-namespace loop rather than a multi-namespace selector.
+// authorized to access the namespaces listed in spec.allowedNamespaces.
 
 // tenantNamespaces returns the namespaces the tenant identity is authorized to
 // access. It prefers the multi-namespace list; for identities minted from
@@ -52,10 +47,7 @@ func tenantNamespaces(t *TenantIdentity) []string {
 	return nil
 }
 
-// firstNamespace returns the tenant's primary (first) authorized namespace, used
-// for single-namespace defaults (e.g. where the client secret lives when its
-// ref omits a namespace) and for the string "namespace" bearer/JWT claim that
-// existing token consumers expect.
+// firstNamespace returns the tenant's primary (first) authorized namespace.
 func firstNamespace(namespaces []string) string {
 	if len(namespaces) == 0 {
 		return ""
@@ -63,8 +55,48 @@ func firstNamespace(namespaces []string) string {
 	return namespaces[0]
 }
 
+// listCRDsMultiNamespace lists listType across every namespace the tenant identity
+// in ctx is authorized to access, accumulating the per-namespace results into the
+// provided list. controller-runtime's client.List decodes (replaces) the target
+// list on every call, so each namespace is listed into a fresh deep copy and its
+// items extracted and accumulated — otherwise only the last namespace's items
+// would survive.
+//
+// When no tenant identity is present (K8s SA BFF flow / auth disabled), it falls
+// back to a single cl.List honoring the optional ns (the ?namespace= query param,
+// or all namespaces when empty), preserving the previous non-tenant behavior.
+func listCRDsMultiNamespace(ctx context.Context, cl client.Client, listType client.ObjectList, ns string, extra ...client.ListOption) error {
+	tenant, ok := TenantFromContext(ctx)
+	if !ok || tenant == nil {
+		return cl.List(ctx, listType, append(nsListOpts(ns), extra...)...)
+	}
+
+	namespaces := tenantNamespaces(tenant)
+	if len(namespaces) == 0 {
+		return nil
+	}
+
+	var all []runtime.Object
+	for _, n := range namespaces {
+		sub, ok := listType.DeepCopyObject().(client.ObjectList)
+		if !ok {
+			return fmt.Errorf("listCRDsMultiNamespace: %T does not implement client.ObjectList", listType)
+		}
+		opts := append([]client.ListOption{client.InNamespace(n)}, extra...)
+		if err := cl.List(ctx, sub, opts...); err != nil {
+			return err
+		}
+		items, err := meta.ExtractList(sub)
+		if err != nil {
+			return err
+		}
+		all = append(all, items...)
+	}
+	return meta.SetList(listType, all)
+}
+
 // listAgentsInNamespaces lists Agent CRDs across all of the tenant's authorized
-// namespaces (the operator knows where each agent exists).
+// namespaces.
 func listAgentsInNamespaces(ctx context.Context, cl client.Client, t *TenantIdentity) (agentorcav1alpha1.AgentList, error) {
 	ns := tenantNamespaces(t)
 	if len(ns) == 0 {
@@ -82,8 +114,7 @@ func listAgentsInNamespaces(ctx context.Context, cl client.Client, t *TenantIden
 }
 
 // listRunsInNamespaces lists AgentRun CRDs across all of the tenant's authorized
-// namespaces, applying the extra list options (e.g. a tenant-label selector) to
-// each per-namespace query.
+// namespaces.
 func listRunsInNamespaces(ctx context.Context, cl client.Client, t *TenantIdentity, extra ...client.ListOption) (agentorcav1alpha1.AgentRunList, error) {
 	ns := tenantNamespaces(t)
 	if len(ns) == 0 {
@@ -100,10 +131,7 @@ func listRunsInNamespaces(ctx context.Context, cl client.Client, t *TenantIdenti
 	return all, nil
 }
 
-// findAgentInNamespaces returns the Agent named name living in any of the
-// tenant's authorized namespaces — directing the request to "the namespace the
-// agent exists in and the tenant is authorized to access." The returned agent's
-// Namespace is where the operator schedules its run.
+// findAgentInNamespaces returns the Agent named name in any authorized namespace.
 func findAgentInNamespaces(ctx context.Context, cl client.Client, t *TenantIdentity, name string) (*agentorcav1alpha1.Agent, error) {
 	list, err := listAgentsInNamespaces(ctx, cl, t)
 	if err != nil {
@@ -117,11 +145,7 @@ func findAgentInNamespaces(ctx context.Context, cl client.Client, t *TenantIdent
 	return nil, fmt.Errorf("agent %q not found in any authorized namespace", name)
 }
 
-// findRunInNamespaces returns the AgentRun named runID in any of the tenant's
-// authorized namespaces, scoped to this tenant's runs via the
-// agentorca.io/tenant label so runs are never accessible cross-tenant. The
-// returned run's Namespace is the canonical key for its token/answer streams
-// ("tokens:<ns>:<run>"), matching the controller/executor producers.
+// findRunInNamespaces returns the AgentRun named runID in any authorized namespace.
 func findRunInNamespaces(ctx context.Context, cl client.Client, t *TenantIdentity, runID string) (*agentorcav1alpha1.AgentRun, error) {
 	list, err := listRunsInNamespaces(ctx, cl, t, client.MatchingLabels{"agentorca.io/tenant": t.TenantName})
 	if err != nil {

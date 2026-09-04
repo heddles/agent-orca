@@ -63,7 +63,7 @@ const uiAPIRequestTimeout = 60 * time.Second
 //
 // When externalAuth is non-nil, OIDC tenant JWTs (validated by the external
 // auth middleware) are also accepted as an alternative to the K8s SA token.
-// The resolved TenantIdentity scopes list operations to the tenant's namespace,
+// The resolved TenantIdentity scopes list operations to the tenant's namespaces,
 // enabling per-tenant run history filtering and resource access control.
 //
 // Set --ui-auth-enabled=false for local development where the proxy is not running.
@@ -112,25 +112,8 @@ func nsListOpts(ns string) []client.ListOption {
 	return []client.ListOption{client.InNamespace(ns)}
 }
 
-// tenantScope returns ListOptions scoped to the authenticated tenant's namespace
-// when a TenantIdentity is present in the context (OIDC flow). When no tenant
-// identity is present (K8s SA BFF flow, auth disabled), it falls back to the
-// URL-provided namespace param or all namespaces.
-//
-// This is the hook that lets the run-history view and resource CRUD endpoints
-// present only the resources visible to the authenticated user — the foundation
-// for OIDC-based authorization that the plan reserves room for.
-func tenantScope(ctx context.Context, ns string) []client.ListOption {
-	if tenant, ok := TenantFromContext(ctx); ok && tenant != nil && tenant.Namespace != "" {
-		return []client.ListOption{client.InNamespace(tenant.Namespace)}
-	}
-	return nsListOpts(ns)
-}
-
 // checkpointStore picks a durable session-checkpoint store when a state backend
-// (Redis) is configured, falling back to the in-memory store for local dev. The
-// durable store is what lets a chat's LastRunRef conversation chain survive an
-// API-server or warm-pod restart, so a recycled pod can resume context.
+// (Redis) is configured, falling back to the in-memory store for local dev.
 func checkpointStore(store state.Store) checkpoint.Store {
 	if store != nil {
 		return checkpoint.NewRedisStore(store)
@@ -139,12 +122,6 @@ func checkpointStore(store state.Store) checkpoint.Store {
 }
 
 // NewUIServer creates a UIServer.
-// stateConfigured should be true when a Redis-backed state store is active.
-// store may be nil if no state backend is configured (in-memory checkpoint fallback).
-// authEnabled requires a valid UIProxy SA token (audience agentorca/ui) on all API calls.
-// pgStore may be nil to disable run archival/history.
-// externalAuth may be nil to disable OIDC tenant JWT auth (K8s SA only).
-// alertManager may be nil to disable alerting.
 func NewUIServer(
 	k8s kubernetes.Interface,
 	crdClient client.Client,
@@ -168,18 +145,12 @@ func NewUIServer(
 	}
 }
 
-// SetOIDCLogin wires the OIDC authorization-code login flow (browser login via an
-// external IdP) into the UI server. When set, /oauth/login, /oauth/callback and
-// /oauth/logout are served, and requireAuth accepts the resulting session cookie.
-// Call this after NewUIServer; safe to skip (nil) for cluster-internal-only dev.
 func (s *UIServer) SetOIDCLogin(h *OIDCLoginHandler) {
 	s.oidcLogin = h
 }
 
-// Handler returns the http.Handler for the UI API.
 func (s *UIServer) Handler() http.Handler {
 	mux := http.NewServeMux()
-	// Liveness/readiness/version are public probes (do not require a UI session token).
 	mux.HandleFunc("/healthz", healthzHandler)
 	mux.HandleFunc("/readyz", readyzHandlerBuilder(k8sReady(s.k8s), s.store != nil, s.store))
 	mux.HandleFunc("/version", versionHandler)
@@ -201,50 +172,31 @@ func (s *UIServer) Handler() http.Handler {
 	mux.HandleFunc("/api/runs/history", s.handleListRunHistory)
 	mux.HandleFunc("/api/resources", s.handleResourceCollection)
 	mux.HandleFunc("/api/resources/", s.handleResource)
-	// OpenAPI contract for the UI API.
 	mux.HandleFunc("/api/openapi.json", s.handleUIOpenAPI)
-	// OIDC login flow (public — exempt from requireAuth via uiPublicPaths).
 	if s.oidcLogin != nil {
 		s.oidcLogin.Register(mux)
 	}
-	// Instrument the UI server (8083) so browser-driven traffic populates the
-	// shared externalReg request/latency counters that the status page reads.
-	// Previously only the external Task API (8084) was instrumented, so the UI
-	// server's own traffic never incremented external_requests_total / the
-	// request-duration histogram — the status page always showed zeros.
 	return corsMiddleware(requestTimeoutMiddleware(instrument("ui", s.requireAuth(mux)), uiAPIRequestTimeout))
 }
 
-// requireAuth wraps next with Kubernetes TokenReview authentication.
-// When authEnabled is false it is a no-op (local development).
-// The token may be provided as an Authorization: Bearer header or as a
-// ?token= query parameter (required for SSE, where EventSource cannot set headers).
-//
-// Authentication is tried in order:
-//  1. K8s SA TokenReview with audience "agentorca/ui" (UIProxy BFF flow).
-//  2. OIDC tenant JWT via externalAuth (when configured) — injects TenantIdentity
-//     into the request context so downstream handlers can scope queries.
 func (s *UIServer) requireAuth(next http.Handler) http.Handler {
 	if !s.authEnabled {
 		return next
 	}
-	// Public paths that must remain reachable without a session token.
-	uiPublicPaths := map[string]bool{"/healthz": true, "/readyz": true, "/version": true}
-	// Public API paths that the UI may call before a token is available (e.g. token exchange).
-	uiPublicPaths["/api/system/status"] = true
-	// OIDC login flow is public (redirects to/from the IdP).
-	uiPublicPaths["/oauth/login"] = true
-	uiPublicPaths["/oauth/callback"] = true
-	uiPublicPaths["/oauth/logout"] = true
+	uiPublicPaths := map[string]bool{
+		"/healthz":           true,
+		"/readyz":            true,
+		"/version":           true,
+		"/api/system/status": true,
+		"/oauth/login":       true,
+		"/oauth/callback":    true,
+		"/oauth/logout":      true,
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if uiPublicPaths[r.URL.Path] {
 			next.ServeHTTP(w, r)
 			return
 		}
-		// 0. OIDC session cookie (browser login). When OIDC login is enabled this is
-		//    the ONLY accepted credential for the UI: the UIProxy BFF SA token is
-		//    intentionally NOT accepted as a fallback, so the UI is never shown
-		//    without a successful OIDC login ("no UI without login").
 		if s.oidcLogin != nil {
 			if identity, ok := s.oidcLogin.verifySession(r); ok {
 				ctx := context.WithValue(r.Context(), tenantIdentityKey, identity)
@@ -262,12 +214,10 @@ func (s *UIServer) requireAuth(next http.Handler) http.Handler {
 			writeUIAuthFailure(w, true, nil)
 			return
 		}
-		// 1. Try K8s SA TokenReview (UIProxy BFF flow).
 		if _, err := s.validateUIToken(r.Context(), token); err == nil {
 			next.ServeHTTP(w, r)
 			return
 		}
-		// 2. Fall back to OIDC tenant JWT (direct OIDC login flow).
 		if s.externalAuth != nil {
 			if identity, err := s.externalAuth.ValidateToken(r.Context(), token); err == nil && identity != nil {
 				ctx := context.WithValue(r.Context(), tenantIdentityKey, identity)
@@ -280,7 +230,6 @@ func (s *UIServer) requireAuth(next http.Handler) http.Handler {
 	})
 }
 
-// validateUIToken performs a Kubernetes TokenReview scoped to the UIProxy SA audience.
 func (s *UIServer) validateUIToken(ctx context.Context, token string) (string, error) {
 	tr := &authv1.TokenReview{
 		Spec: authv1.TokenReviewSpec{
@@ -298,17 +247,35 @@ func (s *UIServer) validateUIToken(ctx context.Context, token string) (string, e
 	return result.Status.User.Username, nil
 }
 
-// handleListRuns lists AgentRuns in the requested namespace (all namespaces when omitted).
+// handleListRuns lists AgentRuns across all tenant authorized namespaces.
+// Uses listRunsInNamespaces when a tenant identity is present.
 func (s *UIServer) handleListRuns(w http.ResponseWriter, r *http.Request) {
-	ns := r.URL.Query().Get("namespace")
-	opts := tenantScope(r.Context(), ns)
-	if dep := r.URL.Query().Get("deployment"); dep != "" {
-		opts = append(opts, client.MatchingLabels{"agentorca.io/deployment": dep})
-	}
 	var list agentorcav1alpha1.AgentRunList
-	if err := s.crdClient.List(r.Context(), &list, opts...); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+
+	if tenant, ok := TenantFromContext(r.Context()); ok && tenant != nil {
+		var err error
+		list, err = listRunsInNamespaces(r.Context(), s.crdClient, tenant)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	} else {
+		ns := r.URL.Query().Get("namespace")
+		opts := nsListOpts(ns)
+		if err := s.crdClient.List(r.Context(), &list, opts...); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	if dep := r.URL.Query().Get("deployment"); dep != "" {
+		filtered := make([]agentorcav1alpha1.AgentRun, 0, len(list.Items))
+		for _, run := range list.Items {
+			if run.Labels["agentorca.io/deployment"] == dep {
+				filtered = append(filtered, run)
+			}
+		}
+		list.Items = filtered
 	}
 
 	type summary struct {
@@ -342,10 +309,7 @@ func (s *UIServer) handleListRuns(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, out)
 }
 
-// handleRunOrStream dispatches /api/runs/{id}/stream (SSE) vs /api/runs/{id} (status).
-// handleRunOrStream dispatches /api/runs/{namespace}/{name}[/stream|stop|answer].
 func (s *UIServer) handleRunOrStream(w http.ResponseWriter, r *http.Request) {
-	// Path: /api/runs/{namespace}/{name}[/action]
 	path := strings.TrimPrefix(r.URL.Path, "/api/runs/")
 	parts := strings.SplitN(path, "/", 3)
 	if len(parts) < 2 {
@@ -353,9 +317,6 @@ func (s *UIServer) handleRunOrStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Archived run detail: /api/runs/history/{namespace}/{name}
-	// Intercepted before the live-CRD path so archived-only runs (pruned from
-	// Kubernetes but retained in PostgreSQL) are still viewable.
 	if parts[0] == "history" && len(parts) == 3 {
 		s.handleGetArchivedRun(w, r, parts[1], parts[2])
 		return
@@ -381,7 +342,6 @@ func (s *UIServer) handleRunOrStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Single run detail.
 	var run agentorcav1alpha1.AgentRun
 	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: runName, Namespace: ns}, &run); err != nil {
 		http.Error(w, "not found", http.StatusNotFound)
@@ -456,16 +416,7 @@ func (s *UIServer) handleRunOrStream(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, detail)
 }
 
-// handleStream sends a Server-Sent Events stream for a run.
-//
-// The stream has three phases:
-//  1. Wait for the pod to be created (poll AgentRun status).
-//  2. Tail pod logs in real-time, emitting each line as an SSE token event.
-//  3. After the log stream closes, emit routing decisions and final_output/error.
-//
-// If the run is already terminal on connect, all data is emitted immediately.
 func (s *UIServer) handleStream(w http.ResponseWriter, r *http.Request, ns, runName string) { //nolint:gocyclo
-
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
@@ -479,9 +430,6 @@ func (s *UIServer) handleStream(w http.ResponseWriter, r *http.Request, ns, runN
 
 	ctx := r.Context()
 
-	// emitRoutingDecisions sends any new routing decisions since the last call.
-	// Pre-populated candidate entries (reason starts with "configured provider") are
-	// skipped — only the actual runtime selection chosen by the router is emitted.
 	var emittedRouting int
 	emitRoutingDecisions := func(run *agentorcav1alpha1.AgentRun) {
 		for i := emittedRouting; i < len(run.Status.RoutingDecisions); i++ {
@@ -501,7 +449,6 @@ func (s *UIServer) handleStream(w http.ResponseWriter, r *http.Request, ns, runN
 		emittedRouting = len(run.Status.RoutingDecisions)
 	}
 
-	// emitTerminal sends the final SSE event for a completed run. Returns true if terminal.
 	emitTerminal := func(run *agentorcav1alpha1.AgentRun) bool {
 		phase := string(run.Status.Phase)
 		if phase == "Succeeded" {
@@ -531,15 +478,6 @@ func (s *UIServer) handleStream(w http.ResponseWriter, r *http.Request, ns, runN
 		return false
 	}
 
-	// ── Phase 1: Open the Redis token stream immediately. ──
-	// With Redis Streams we know the key from the run name alone — no need to
-	// wait for the pod to be assigned. TailTokens blocks via XREAD until the
-	// sidecar starts writing, replays history for refreshed subscribers, and
-	// exits cleanly when it receives the done sentinel.
-	//
-	// Routing decisions are polled concurrently so they appear in the UI as
-	// the controller reconciles them, without blocking token delivery.
-
 	var output strings.Builder
 
 	if s.store == nil {
@@ -548,15 +486,9 @@ func (s *UIServer) handleStream(w http.ResponseWriter, r *http.Request, ns, runN
 		streamKey := fmt.Sprintf("tokens:%s:%s", ns, runName)
 		slog.Info("opening Redis token stream", "key", streamKey, "storeType", fmt.Sprintf("%T", s.store))
 
-		// Use a cancellable child context so we can abort TailTokens as soon as
-		// the AgentRun reaches a terminal state (Succeeded/Failed/WaitingForInput).
-		// Without this, TailTokens blocks for up to 10 minutes when the model-router
-		// uses stream:false and never writes tokens or a done sentinel to Redis.
 		streamCtx, cancelStream := context.WithCancel(ctx)
 		defer cancelStream()
 
-		// Poll AgentRun status concurrently. Cancel the stream context the moment
-		// a terminal state is detected.
 		terminalRun := make(chan agentorcav1alpha1.AgentRun, 1)
 		go func() {
 			ticker := time.NewTicker(500 * time.Millisecond)
@@ -595,7 +527,6 @@ func (s *UIServer) handleStream(w http.ResponseWriter, r *http.Request, ns, runN
 				if tokenCount == 1 {
 					slog.Info("first token from Redis stream", "key", streamKey)
 				}
-				// Trace events are prefixed with \x00 followed by JSON.
 				if len(token) > 1 && token[0] == '\x00' {
 					var evt map[string]any
 					if json.Unmarshal([]byte(token[1:]), &evt) == nil {
@@ -614,8 +545,6 @@ func (s *UIServer) handleStream(w http.ResponseWriter, r *http.Request, ns, runN
 			slog.Info("Redis token stream closed", "key", streamKey, "tokens", tokenCount)
 		}
 
-		// If the poller detected a terminal state and we captured no token output,
-		// emit the terminal event directly from the polled run — skip the fallback loop.
 		if output.Len() == 0 {
 			select {
 			case run := <-terminalRun:
@@ -627,15 +556,7 @@ func (s *UIServer) handleStream(w http.ResponseWriter, r *http.Request, ns, runN
 		}
 	}
 
-	// ── Phase 3: Emit final result. ──
-	// If we captured output from the log stream, emit it directly as
-	// final_output — no need to wait for the controller to reconcile.
-
 	if output.Len() > 0 {
-		// Wait briefly for the controller to reconcile — it may set WaitingForInput
-		// if the output looks like a clarifying question (safety net in handlePodSuccess).
-		// Without this delay, we'd emit final_output before the controller has a chance to
-		// intercept and redirect to clarification.
 		var run agentorcav1alpha1.AgentRun
 		for range 6 {
 			if err := s.crdClient.Get(ctx, client.ObjectKey{Name: runName, Namespace: ns}, &run); err == nil {
@@ -654,7 +575,6 @@ func (s *UIServer) handleStream(w http.ResponseWriter, r *http.Request, ns, runN
 
 		emitRoutingDecisions(&run)
 
-		// If the controller redirected to WaitingForInput, emit clarify instead of final_output.
 		if run.Status.Phase == agentorcav1alpha1.AgentRunPhaseWaitingForInput && run.Status.ClarifyQuestion != "" {
 			writeSSE(w, map[string]any{
 				"type":     "clarify",
@@ -672,8 +592,6 @@ func (s *UIServer) handleStream(w http.ResponseWriter, r *http.Request, ns, runN
 		return
 	}
 
-	// No token output captured (store nil or stream failed). Fall back to
-	// polling the AgentRun status until the controller updates it.
 	fallbackTicker := time.NewTicker(500 * time.Millisecond)
 	defer fallbackTicker.Stop()
 	for range 60 {
@@ -701,8 +619,6 @@ func (s *UIServer) handleStream(w http.ResponseWriter, r *http.Request, ns, runN
 	flusher.Flush()
 }
 
-// handleStopRun cancels a Pending or Running AgentRun by marking it Failed.
-// POST /api/runs/{id}/stop?namespace=default
 func (s *UIServer) handleStopRun(w http.ResponseWriter, r *http.Request, ns, runName string) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -727,21 +643,12 @@ func (s *UIServer) handleStopRun(w http.ResponseWriter, r *http.Request, ns, run
 		http.Error(w, fmt.Sprintf("cancelling run: %v", err), http.StatusInternalServerError)
 		return
 	}
-	// Signal cancellation via Redis so the model-router sidecar aborts in-flight
-	// LLM requests within ~1 second, rather than waiting for the next call.
 	if s.store != nil {
 		_ = s.store.SignalCancel(r.Context(), ns, runName)
 	}
 	jsonResponse(w, map[string]string{"status": "cancelled"})
 }
 
-// handleAnswerRun accepts a human's clarification answer for a WaitingForInput run.
-// Instead of mutating the original run (which would require pod spec changes and
-// token secret rotation), it creates a brand-new continuation AgentRun that loads
-// the original run's checkpoint via PriorRunRef. The original run is kept as-is
-// for auditing; only its status is annotated with the answer and continuation ref.
-//
-// POST /api/runs/{id}/answer?namespace=default
 func (s *UIServer) handleAnswerRun(w http.ResponseWriter, r *http.Request, ns, runName string) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -766,11 +673,6 @@ func (s *UIServer) handleAnswerRun(w http.ResponseWriter, r *http.Request, ns, r
 		return
 	}
 
-	// Build the continuation run's input. If the model-router checkpointed the
-	// conversation (including the _clarify tool call), the new model-router will
-	// load it via PriorRunRef and inject the answer as a tool result. If no
-	// checkpoint exists (controller safety net path), augment the input with the
-	// full Q&A so the new run has context.
 	continuationInput := run.Spec.Input
 	hasCheckpoint := false
 	if s.store != nil {
@@ -785,18 +687,17 @@ func (s *UIServer) handleAnswerRun(w http.ResponseWriter, r *http.Request, ns, r
 			run.Spec.Input, run.Status.ClarifyQuestion, req.Answer)
 	}
 
-	// Create a continuation AgentRun that picks up from the original run's checkpoint.
 	continuation := &agentorcav1alpha1.AgentRun{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: runName + "-cont-",
 			Namespace:    ns,
-			Labels:       run.Labels, // preserve deployment, session, source labels
+			Labels:       run.Labels,
 		},
 		Spec: agentorcav1alpha1.AgentRunSpec{
 			AgentRef:    run.Spec.AgentRef,
 			Input:       continuationInput,
 			Timeout:     run.Spec.Timeout,
-			PriorRunRef: runName, // model-router loads this run's checkpoint
+			PriorRunRef: runName,
 		},
 	}
 	if err := s.crdClient.Create(r.Context(), continuation); err != nil {
@@ -804,8 +705,6 @@ func (s *UIServer) handleAnswerRun(w http.ResponseWriter, r *http.Request, ns, r
 		return
 	}
 
-	// Store the answer in Redis under the continuation run's name so its
-	// model-router finds it during startup and injects it as a tool result.
 	if s.store != nil {
 		answerKey := fmt.Sprintf("clarify-answer:%s:%s", ns, continuation.Name)
 		if err := s.store.SaveAnswer(r.Context(), answerKey, req.Answer, 1*time.Hour); err != nil {
@@ -813,9 +712,6 @@ func (s *UIServer) handleAnswerRun(w http.ResponseWriter, r *http.Request, ns, r
 		}
 	}
 
-	// Transition the original run out of WaitingForInput so it won't be
-	// rediscovered on page reload. Mark it Succeeded — the continuation run
-	// carries the conversation forward.
 	patch := client.MergeFrom(run.DeepCopy())
 	run.Status.Phase = agentorcav1alpha1.AgentRunPhaseSucceeded
 	run.Status.ClarifyAnswer = req.Answer
@@ -824,8 +720,6 @@ func (s *UIServer) handleAnswerRun(w http.ResponseWriter, r *http.Request, ns, r
 		slog.Warn("patching original run with continuation ref", "err", err)
 	}
 
-	// Update the session checkpoint: advance LastRunRef to the continuation run
-	// and append the clarify Q&A so reloadHistory returns the complete history.
 	if sessionID := run.Labels["agentorca.io/session"]; sessionID != "" && s.checkpoint != nil {
 		if cp, err := s.checkpoint.Load(r.Context(), sessionID); err == nil && cp != nil {
 			cp.LastRunRef = continuation.Name
@@ -850,7 +744,6 @@ func (s *UIServer) handleAnswerRun(w http.ResponseWriter, r *http.Request, ns, r
 	})
 }
 
-// handleAgents routes GET (list) and POST (create) for Agent CRDs.
 func (s *UIServer) handleAgents(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -862,11 +755,10 @@ func (s *UIServer) handleAgents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleListAgents lists Agent CRDs (all namespaces when namespace param is omitted).
 func (s *UIServer) handleListAgents(w http.ResponseWriter, r *http.Request) {
 	ns := r.URL.Query().Get("namespace")
 	var list agentorcav1alpha1.AgentList
-	if err := s.crdClient.List(r.Context(), &list, tenantScope(r.Context(), ns)...); err != nil {
+	if err := listCRDsMultiNamespace(r.Context(), s.crdClient, &list, ns); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -899,7 +791,6 @@ func (s *UIServer) handleListAgents(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, out)
 }
 
-// handleCreateAgent creates a new Agent CRD.
 func (s *UIServer) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name             string   `json:"name"`
@@ -947,7 +838,6 @@ func (s *UIServer) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Auto-create an AgentDeployment referencing the new agent.
 	replicas := int32(1)
 	deployment := &agentorcav1alpha1.AgentDeployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -963,7 +853,6 @@ func (s *UIServer) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 	if err := s.crdClient.Create(r.Context(), deployment); err != nil {
-		// Agent was created successfully but deployment failed — report but don't fail the whole request.
 		w.WriteHeader(http.StatusCreated)
 		jsonResponse(w, map[string]any{
 			"name":            agent.Name,
@@ -977,12 +866,10 @@ func (s *UIServer) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, map[string]string{"name": agent.Name, "namespace": agent.Namespace})
 }
 
-// handleListModelSelectors lists ModelSelector CRDs (all namespaces when namespace param is omitted).
-// Used for both form dropdowns (create agent) and the ModelSelectors UI view.
 func (s *UIServer) handleListModelSelectors(w http.ResponseWriter, r *http.Request) {
 	ns := r.URL.Query().Get("namespace")
 	var list agentorcav1alpha1.ModelSelectorList
-	if err := s.crdClient.List(r.Context(), &list, tenantScope(r.Context(), ns)...); err != nil {
+	if err := listCRDsMultiNamespace(r.Context(), s.crdClient, &list, ns); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -1029,11 +916,10 @@ func (s *UIServer) handleListModelSelectors(w http.ResponseWriter, r *http.Reque
 	jsonResponse(w, out)
 }
 
-// handleListTools lists Tool CRDs (all namespaces when namespace param is omitted).
 func (s *UIServer) handleListTools(w http.ResponseWriter, r *http.Request) {
 	ns := r.URL.Query().Get("namespace")
 	var list agentorcav1alpha1.ToolList
-	if err := s.crdClient.List(r.Context(), &list, tenantScope(r.Context(), ns)...); err != nil {
+	if err := listCRDsMultiNamespace(r.Context(), s.crdClient, &list, ns); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -1067,8 +953,6 @@ func (s *UIServer) handleListTools(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, out)
 }
 
-// handleMCPApp serves cached MCP App HTML for a given mcpServer/toolName key.
-// The key is the remainder of the path after "/mcpapp/", i.e. "{mcpServer}/{toolName}".
 func (s *UIServer) handleMCPApp(w http.ResponseWriter, r *http.Request, key string) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -1097,11 +981,10 @@ func (s *UIServer) handleMCPApp(w http.ResponseWriter, r *http.Request, key stri
 	_, _ = w.Write(htmlOut)
 }
 
-// handleListMCPServers lists MCPServer CRDs (all namespaces when namespace param is omitted).
 func (s *UIServer) handleListMCPServers(w http.ResponseWriter, r *http.Request) {
 	ns := r.URL.Query().Get("namespace")
 	var list agentorcav1alpha1.MCPServerList
-	if err := s.crdClient.List(r.Context(), &list, tenantScope(r.Context(), ns)...); err != nil {
+	if err := listCRDsMultiNamespace(r.Context(), s.crdClient, &list, ns); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -1155,11 +1038,10 @@ func (s *UIServer) handleListMCPServers(w http.ResponseWriter, r *http.Request) 
 	jsonResponse(w, out)
 }
 
-// handleListKnowledgeBases lists KnowledgeBase CRDs in the requested namespace.
 func (s *UIServer) handleListKnowledgeBases(w http.ResponseWriter, r *http.Request) {
 	ns := r.URL.Query().Get("namespace")
 	var list agentorcav1alpha1.KnowledgeBaseList
-	if err := s.crdClient.List(r.Context(), &list, tenantScope(r.Context(), ns)...); err != nil {
+	if err := listCRDsMultiNamespace(r.Context(), s.crdClient, &list, ns); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -1214,11 +1096,10 @@ func (s *UIServer) handleListKnowledgeBases(w http.ResponseWriter, r *http.Reque
 	jsonResponse(w, out)
 }
 
-// handleListModelProviders lists ModelProvider CRDs (all namespaces when namespace param is omitted).
 func (s *UIServer) handleListModelProviders(w http.ResponseWriter, r *http.Request) {
 	ns := r.URL.Query().Get("namespace")
 	var list agentorcav1alpha1.ModelProviderList
-	if err := s.crdClient.List(r.Context(), &list, tenantScope(r.Context(), ns)...); err != nil {
+	if err := listCRDsMultiNamespace(r.Context(), s.crdClient, &list, ns); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -1252,11 +1133,10 @@ func (s *UIServer) handleListModelProviders(w http.ResponseWriter, r *http.Reque
 	jsonResponse(w, out)
 }
 
-// handleListDeployments lists AgentDeployments in the requested namespace.
 func (s *UIServer) handleListDeployments(w http.ResponseWriter, r *http.Request) {
 	ns := r.URL.Query().Get("namespace")
 	var list agentorcav1alpha1.AgentDeploymentList
-	if err := s.crdClient.List(r.Context(), &list, tenantScope(r.Context(), ns)...); err != nil {
+	if err := listCRDsMultiNamespace(r.Context(), s.crdClient, &list, ns); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -1292,25 +1172,19 @@ func (s *UIServer) handleListDeployments(w http.ResponseWriter, r *http.Request)
 	jsonResponse(w, out)
 }
 
-// handleCosts returns aggregated spend data from AgentRun statuses.
-// Optional query params:
-//   - namespace: Kubernetes namespace (default "default")
-//   - run: filter to a single AgentRun by name
-//   - deployment: filter to runs owned by an AgentDeployment
 func (s *UIServer) handleCosts(w http.ResponseWriter, r *http.Request) {
 	ns := r.URL.Query().Get("namespace")
-	opts := tenantScope(r.Context(), ns)
+	var extra []client.ListOption
 	if dep := r.URL.Query().Get("deployment"); dep != "" {
-		opts = append(opts, client.MatchingLabels{"agentorca.io/deployment": dep})
+		extra = append(extra, client.MatchingLabels{"agentorca.io/deployment": dep})
 	}
 
 	var list agentorcav1alpha1.AgentRunList
-	if err := s.crdClient.List(r.Context(), &list, opts...); err != nil {
+	if err := listCRDsMultiNamespace(r.Context(), s.crdClient, &list, ns, extra...); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	// If a specific run is requested, filter to just that run.
 	runFilter := r.URL.Query().Get("run")
 
 	byAgent := make(map[string]float64)
@@ -1352,29 +1226,22 @@ func jsonResponse(w http.ResponseWriter, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// SystemSubSystemStatus describes the health of a single subsystem.
 type SystemSubSystemStatus struct {
 	Name      string `json:"name"`
-	Status    string `json:"status"` // "up", "down", "degraded"
+	Status    string `json:"status"`
 	Message   string `json:"message,omitempty"`
 	LatencyMs int    `json:"latencyMs,omitempty"`
 }
 
-// SystemStatusResponse is the full system status payload returned to the UI.
 type SystemStatusResponse struct {
-	StateConfigured bool                    `json:"stateConfigured"`
-	Version         string                  `json:"version"`
-	SubSystems      []SystemSubSystemStatus `json:"subsystems"`
-	// ModelProviders reports per-provider reachability and latency.
-	ModelProviders []ProviderHealth `json:"modelProviders,omitempty"`
-	// Metrics holds aggregated Prometheus-derived metrics.
-	Metrics *SystemMetrics `json:"metrics,omitempty"`
-	// RunHistoryConfigured is true when the PostgreSQL archival store is wired
-	// up, so the UI can show an actionable message instead of a silent empty state.
-	RunHistoryConfigured bool `json:"runHistoryConfigured"`
+	StateConfigured      bool                    `json:"stateConfigured"`
+	Version              string                  `json:"version"`
+	SubSystems           []SystemSubSystemStatus `json:"subsystems"`
+	ModelProviders       []ProviderHealth        `json:"modelProviders,omitempty"`
+	Metrics              *SystemMetrics          `json:"metrics,omitempty"`
+	RunHistoryConfigured bool                   `json:"runHistoryConfigured"`
 }
 
-// ProviderHealth is a per-model-provider reachability probe result.
 type ProviderHealth struct {
 	Name      string `json:"name"`
 	Namespace string `json:"namespace"`
@@ -1383,41 +1250,28 @@ type ProviderHealth struct {
 	Message   string `json:"message,omitempty"`
 }
 
-// MetricSample is a point-in-time snapshot of system metrics, recorded on a
-// rolling window so the status page can render time-series graphs and a
-// latency heatmap rather than only a single "current" value.
 type MetricSample struct {
-	// Time is the recording timestamp (unix seconds, UTC).
-	Time int64 `json:"time"`
-	// RequestCount / EgressPublished / EgressFailed are CUMULATIVE counters as
-	// exported by the registries; the UI derives per-bucket rates.
-	RequestCount    int `json:"requestCount"`
-	EgressPublished int `json:"egressPublished"`
-	EgressFailed    int `json:"egressFailed"`
-	// Latency percentiles (ms) from the external-request duration histogram.
-	P50LatencyMs float64 `json:"p50LatencyMs"`
-	P95LatencyMs float64 `json:"p95LatencyMs"`
-	P99LatencyMs float64 `json:"p99LatencyMs"`
-	// TokenThroughput is a stub (model-router scraping is deferred).
-	TokenThroughput float64 `json:"tokenThroughput"`
-}
-
-// SystemMetrics holds aggregated metrics scraped from the controller and model-routers.
-type SystemMetrics struct {
-	RequestCount24h int     `json:"requestCount24h"`
+	Time            int64   `json:"time"`
+	RequestCount    int     `json:"requestCount"`
+	EgressPublished int     `json:"egressPublished"`
+	EgressFailed    int     `json:"egressFailed"`
 	P50LatencyMs    float64 `json:"p50LatencyMs"`
 	P95LatencyMs    float64 `json:"p95LatencyMs"`
 	P99LatencyMs    float64 `json:"p99LatencyMs"`
 	TokenThroughput float64 `json:"tokenThroughput"`
-	EgressPublished int     `json:"egressPublished"`
-	EgressFailed    int     `json:"egressFailed"`
-	// Samples is the time-series history for the requested range (see ?range=).
-	Samples []MetricSample `json:"samples,omitempty"`
 }
 
-// handleSystemStatus returns operator-level and subsystem health for the UI.
-// Enhanced: probes K8s API, Redis, model providers, and scrapes Prometheus
-// metrics from the controller and model-router pods.
+type SystemMetrics struct {
+	RequestCount24h int            `json:"requestCount24h"`
+	P50LatencyMs    float64        `json:"p50LatencyMs"`
+	P95LatencyMs    float64        `json:"p95LatencyMs"`
+	P99LatencyMs    float64        `json:"p99LatencyMs"`
+	TokenThroughput float64        `json:"tokenThroughput"`
+	EgressPublished int            `json:"egressPublished"`
+	EgressFailed    int            `json:"egressFailed"`
+	Samples         []MetricSample `json:"samples,omitempty"`
+}
+
 func (s *UIServer) handleSystemStatus(w http.ResponseWriter, r *http.Request) {
 	resp := SystemStatusResponse{
 		StateConfigured:      s.stateConfigured,
@@ -1426,14 +1280,13 @@ func (s *UIServer) handleSystemStatus(w http.ResponseWriter, r *http.Request) {
 		SubSystems:           []SystemSubSystemStatus{},
 	}
 
-	// ── Kubernetes API ──
 	if s.k8s != nil {
 		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 		defer cancel()
 		start := time.Now()
 		_, err := s.k8s.Discovery().ServerVersion()
 		latency := int(time.Since(start).Milliseconds())
-		_ = ctx // ServerVersion() doesn't accept a context in this client-go version.
+		_ = ctx
 		if err != nil {
 			resp.SubSystems = append(resp.SubSystems, SystemSubSystemStatus{
 				Name: "kubernetes-api", Status: "down", Message: err.Error(),
@@ -1445,7 +1298,6 @@ func (s *UIServer) handleSystemStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// ── Redis state store ──
 	if s.store != nil {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()
@@ -1463,9 +1315,6 @@ func (s *UIServer) handleSystemStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// ── PostgreSQL archival store ──
-	// Surfaces as a named subsystem so operators see "run history not available"
-	// as a first-class health entry rather than a silent UI empty state.
 	if s.pgStore != nil {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()
@@ -1482,31 +1331,21 @@ func (s *UIServer) handleSystemStatus(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 	} else {
-		// Not wired at all — report as degraded (not down: the operator itself
-		// is healthy, but historical run tracking is unavailable).
 		resp.SubSystems = append(resp.SubSystems, SystemSubSystemStatus{
-			Name: "postgres-archive", Status: "degraded",
+			Name:    "postgres-archive",
+			Status:  "degraded",
 			Message: "PostgreSQL archival store not configured; run history is unavailable. Set PG_DSN.",
 		})
 	}
 
-	// ── Model provider health probes ──
 	resp.ModelProviders = s.probeModelProviders(r.Context())
 
-	// ── Prometheus metrics (controller + model-routers) ──
 	if metrics, err := s.scrapeMetrics(r.Context()); err == nil {
-		// Record a throttled sample for the time-range graphs, then attach the
-		// samples within the requested ?range= window (default 24h).
 		metrics.Samples = s.samplesForRange(r.Context(), r.URL.Query().Get("range"))
 		s.recordMetricSample(metrics)
 		resp.Metrics = metrics
 	}
 
-	// ── Alerting evaluation ──
-	// Evaluate each subsystem through the alert manager. For subsystems that
-	// are up, pass the detail; for down, pass the error message. (Alerting
-	// state is still tracked for the /api/system/alerts endpoint; the status
-	// page no longer displays it — that's the org's responsibility.)
 	if s.alertManager != nil {
 		for _, ss := range resp.SubSystems {
 			up := ss.Status == "up"
@@ -1520,8 +1359,6 @@ func (s *UIServer) handleSystemStatus(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, resp)
 }
 
-// probeModelProviders pings each ModelProvider's base URL (if set) to determine
-// reachability and latency. Returns an empty slice if no providers are configured.
 func (s *UIServer) probeModelProviders(ctx context.Context) []ProviderHealth {
 	var list agentorcav1alpha1.ModelProviderList
 	if err := s.crdClient.List(ctx, &list); err != nil {
@@ -1539,46 +1376,22 @@ func (s *UIServer) probeModelProviders(ctx context.Context) []ProviderHealth {
 	return out
 }
 
-// scrapeMetrics collects Prometheus metrics from the controller-runtime server
-// and from model-router pods. The controller serves on :8080/metrics (or :8443);
-// model-router pods expose :9091/metrics.
 func (s *UIServer) scrapeMetrics(ctx context.Context) (*SystemMetrics, error) {
 	m := &SystemMetrics{}
 
-	// External API server counters live in `externalReg` (a dedicated registry),
-	// so we sum across all label series to get a single value (these are
-	// CounterVecs with server/method/path/status labels).
 	m.RequestCount24h = int(getCounterValue(externalReg, "agentorca_external_requests_total"))
-	// Latency percentiles (ms) pooled across all labeled histogram series.
 	m.P50LatencyMs = getHistogramQuantile(externalReg, "agentorca_external_request_duration_seconds", 0.50) * 1000
 	m.P95LatencyMs = getHistogramQuantile(externalReg, "agentorca_external_request_duration_seconds", 0.95) * 1000
 	m.P99LatencyMs = getHistogramQuantile(externalReg, "agentorca_external_request_duration_seconds", 0.99) * 1000
 
-	// Egress counters are registered via promauto in the internal/egress package,
-	// which lands on the DEFAULT registry. The UI API server runs in the same
-	// process as the controller (cmd/main.go), so we gather them from
-	// prometheus.DefaultGatherer. (Previously these were read from externalReg,
-	// which never held them — so egress always showed 0.)
 	m.EgressPublished = int(getCounterValue(prometheus.DefaultGatherer, "agentorca_egress_published_total"))
 	m.EgressFailed = int(getCounterValue(prometheus.DefaultGatherer, "agentorca_egress_failed_total"))
 
-	// Model-router token throughput — the model-router runs as a separate pod
-	// (:9091/metrics); scraping it is a follow-up. Until then this stays 0,
-	// which the UI renders honestly as "—" rather than a phantom number.
 	m.TokenThroughput = s.scrapeModelRouterTokenRate(ctx)
 
 	return m, nil
 }
 
-// scrapeModelRouterTokenRate is a stub for scraping token counts from model-router
-// Prometheus endpoints. In a full implementation this would list pods with the
-// model-router container and scrape /metrics for token counts.
-// scrapeModelRouterTokenRate aggregates the cumulative `agentorca_modelrouter_tokens_total`
-// counter across all live model-router pods (each run's model-router exposes
-// :9091/metrics). It is cached for routerScrapeInterval so a 5s status poll
-// doesn't list+scrape pods every time. Any error (no k8s client, pod
-// unreachable, network policy blocking pod:9091) degrades gracefully to 0 — the
-// UI renders token throughput as "—" with a help note instead of crashing.
 func (s *UIServer) scrapeModelRouterTokenRate(ctx context.Context) float64 {
 	if s.k8s == nil || s.crdClient == nil {
 		return 0
@@ -1610,9 +1423,6 @@ func (s *UIServer) scrapeModelRouterTokenRate(ctx context.Context) float64 {
 		if phase != "Running" && phase != "Pending" && phase != "WaitingForInput" {
 			continue
 		}
-		// Combined-pod topology: the model-router is a sidecar in the agent pod
-		// (scrape PodName). Split-pod topology: a dedicated router pod
-		// (scrape RouterPodName).
 		podName := r.Status.RouterPodName
 		if podName == "" {
 			podName = r.Status.PodName
@@ -1637,10 +1447,6 @@ func (s *UIServer) scrapeModelRouterTokenRate(ctx context.Context) float64 {
 	return total
 }
 
-// scrapePromCounter HTTP-scrapes a Prometheus/OpenMetrics text endpoint and
-// returns the sum of all series of the named counter. ok is false if the scrape
-// fails or the counter is absent. Uses a small line-based parser to avoid a hard
-// dependency on the prometheus client_model dto types for a single counter.
 func scrapePromCounter(ctx context.Context, url, name string) (float64, bool) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -1657,15 +1463,12 @@ func scrapePromCounter(ctx context.Context, url, name string) (float64, bool) {
 	found := false
 	var sum float64
 	sc := bufio.NewScanner(resp.Body)
-	// Allow large metric lines (OpenMetrics exemplar lines can be long); 1 MiB.
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		// Format: "metric_name{labels} value" or "metric_name value". The metric
-		// name ends at the first '{' or space; the value is the last token.
 		end := strings.IndexAny(line, "{ ")
 		metricName := line
 		if end > 0 {
@@ -1693,9 +1496,6 @@ const (
 	maxRouterPodsToScrape = 10
 )
 
-// getCounterValue reads the current value of a Prometheus counter from a registry.
-// For CounterVecs (labelled metrics) it sums every series so a single aggregate
-// value is returned regardless of how many label combinations exist.
 func getCounterValue(reg prometheus.Gatherer, name string) float64 {
 	mfs, err := reg.Gather()
 	if err != nil {
@@ -1715,11 +1515,6 @@ func getCounterValue(reg prometheus.Gatherer, name string) float64 {
 	return 0
 }
 
-// getHistogramQuantile approximates the q-th quantile (q in [0,1]) of a
-// histogram by pooling the cumulative bucket counts across ALL labelled series
-// in the family (the latency histogram is a CounterVec keyed by server/path).
-// Returns the bucket upper bound in the histogram's native units (seconds).
-// Buckets are cumulative in the Prometheus text format.
 func getHistogramQuantile(reg prometheus.Gatherer, name string, q float64) float64 {
 	mfs, err := reg.Gather()
 	if err != nil {
@@ -1732,7 +1527,6 @@ func getHistogramQuantile(reg prometheus.Gatherer, name string, q float64) float
 		if len(mf.Metric) == 0 {
 			return 0
 		}
-		// Merge cumulative counts across series, keyed by bucket upper bound.
 		merged := make(map[float64]uint64)
 		var total uint64
 		for _, m := range mf.Metric {
@@ -1766,8 +1560,6 @@ func getHistogramQuantile(reg prometheus.Gatherer, name string, q float64) float
 	return 0
 }
 
-// parseMetricRange converts a UI time-range selector into a time.Duration.
-// Unknown/invalid values fall back to 24h.
 func parseMetricRange(s string) time.Duration {
 	switch s {
 	case "1h":
@@ -1783,19 +1575,10 @@ func parseMetricRange(s string) time.Duration {
 	}
 }
 
-// metricSampleInterval is the minimum spacing between recorded history samples
-// (throttles the scrape-on-every-poll path so the rolling buffer stays bounded).
 const metricSampleInterval = 30 * time.Second
-
-// maxMetricSamples caps the rolling history (2880 samples @ 30s = 24h).
 const maxMetricSamples = 2880
-
-// maxMetricSamplesReturned caps the number of samples sent per response so the
-// status payload stays small even when the buffer is full.
 const maxMetricSamplesReturned = 240
 
-// recordMetricSample appends the current metric snapshot to the rolling history
-// at most once per metricSampleInterval, trimming to maxMetricSamples.
 func (s *UIServer) recordMetricSample(m *SystemMetrics) {
 	s.metricMu.Lock()
 	defer s.metricMu.Unlock()
@@ -1819,9 +1602,6 @@ func (s *UIServer) recordMetricSample(m *SystemMetrics) {
 	s.lastSampleAt = now
 }
 
-// samplesForRange returns the recorded samples within the requested time window
-// (parsed from the ?range= query param), downsampled to maxMetricSamplesReturned
-// so the response stays bounded. Returns a non-nil slice.
 func (s *UIServer) samplesForRange(_ context.Context, rawRange string) []MetricSample {
 	span := parseMetricRange(rawRange)
 	cutoff := time.Now().UTC().Add(-span)
@@ -1836,7 +1616,6 @@ func (s *UIServer) samplesForRange(_ context.Context, rawRange string) []MetricS
 	if len(out) == 0 {
 		return []MetricSample{}
 	}
-	// Downsample to at most maxMetricSamplesReturned points (stride).
 	if len(out) > maxMetricSamplesReturned {
 		stride := (len(out) + maxMetricSamplesReturned - 1) / maxMetricSamplesReturned
 		down := make([]MetricSample, 0, (len(out)+stride-1)/stride)
@@ -1848,7 +1627,6 @@ func (s *UIServer) samplesForRange(_ context.Context, rawRange string) []MetricS
 	return out
 }
 
-// handleAlerts returns recent alert history from the alert manager.
 func (s *UIServer) handleAlerts(w http.ResponseWriter, r *http.Request) {
 	if s.alertManager == nil {
 		jsonResponse(w, []any{})
@@ -1867,11 +1645,6 @@ func parseFloatCost(s string) float64 {
 	return f
 }
 
-// handleDeployment routes deployment-related requests.
-// Paths:
-//
-//	POST /api/deployments/{namespace}/{name}/execute - send input to deployment
-//	GET /api/deployments/{namespace}/{name}/stream - SSE stream of responses
 func (s *UIServer) handleDeployment(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/deployments/")
 	parts := strings.SplitN(path, "/", 3)
@@ -1887,7 +1660,6 @@ func (s *UIServer) handleDeployment(w http.ResponseWriter, r *http.Request) {
 	}
 	deploymentName := parts[1]
 
-	// Check if this is execute, stream, history, complete, or deployment info.
 	if len(parts) >= 3 {
 		action := parts[2]
 		switch {
@@ -1903,19 +1675,14 @@ func (s *UIServer) handleDeployment(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "not found", http.StatusNotFound)
 		}
 	} else if r.Method == http.MethodGet {
-		// GET /api/deployments/{namespace}/{name} - get deployment status
 		s.handleGetDeployment(w, r, namespace, deploymentName)
 	} else if r.Method == http.MethodDelete {
-		// DELETE /api/deployments/{namespace}/{name}
 		s.handleDeleteDeployment(w, r, namespace, deploymentName)
 	} else {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
-// handleExecute processes POST /api/deployments/{namespace}/{name}/execute.
-// It creates an AgentRun for the deployment's agent and returns the run name
-// so the UI can subscribe to the existing run SSE stream for live progress.
 func (s *UIServer) handleExecute(w http.ResponseWriter, r *http.Request, namespace, deploymentName string) {
 	var req struct {
 		Input     string `json:"input"`
@@ -1931,27 +1698,23 @@ func (s *UIServer) handleExecute(w http.ResponseWriter, r *http.Request, namespa
 		return
 	}
 
-	// Generate session ID if not provided.
 	sessionID := req.SessionID
 	if sessionID == "" {
 		sessionID = generateUUID()
 	}
 
-	// Verify the deployment exists and get the agent ref.
 	var deployment agentorcav1alpha1.AgentDeployment
 	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: deploymentName, Namespace: namespace}, &deployment); err != nil {
 		http.Error(w, "deployment not found", http.StatusNotFound)
 		return
 	}
 
-	// Load existing checkpoint to build conversation context.
 	existing, err := s.checkpoint.Load(r.Context(), sessionID)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("loading checkpoint: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	// Save the user message to the checkpoint immediately.
 	version := 1
 	var history []agentorcav1alpha1.ConversationMessage
 	if existing != nil {
@@ -1978,13 +1741,11 @@ func (s *UIServer) handleExecute(w http.ResponseWriter, r *http.Request, namespa
 		return
 	}
 
-	// Determine the prior run in this session (if any) for context chaining.
 	priorRunRef := ""
 	if existing != nil {
 		priorRunRef = existing.LastRunRef
 	}
 
-	// Create an AgentRun for this chat message.
 	run := &agentorcav1alpha1.AgentRun{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: fmt.Sprintf("chat-%s-", deploymentName),
@@ -2001,8 +1762,6 @@ func (s *UIServer) handleExecute(w http.ResponseWriter, r *http.Request, namespa
 			PriorRunRef: priorRunRef,
 		},
 	}
-	// Propagate the deployment's tool-execution timeout so long-holding tooling
-	// (Sliver sessions, shells) isn't killed by the 60s default on every chat turn.
 	if deployment.Spec.ToolExecutionTimeoutSec > 0 {
 		run.Spec.Safeguards = &agentorcav1alpha1.AgentRunSafeguards{
 			ToolExecutionTimeoutSec: deployment.Spec.ToolExecutionTimeoutSec,
@@ -2013,17 +1772,11 @@ func (s *UIServer) handleExecute(w http.ResponseWriter, r *http.Request, namespa
 		return
 	}
 
-	// Record the new run in the checkpoint so the next turn can chain to it.
 	cp.LastRunRef = run.Name
 	if _, err := s.checkpoint.Save(r.Context(), cp); err != nil {
-		// Non-fatal: the run was created successfully; context chain will be broken
-		// for the next turn but the current turn is unaffected.
 		slog.Warn("failed to update checkpoint LastRunRef", "run", run.Name, "err", err)
 	}
 
-	// Also persist conversation history to the state store so the model-router can
-	// load it via PriorRunRef when the run starts. This serves as a safety net
-	// in case the prior run's finalization checkpoint wasn't written successfully.
 	if s.store != nil && priorRunRef != "" {
 		if err := s.ensureRunCheckpoint(r.Context(), priorRunRef, cp.ConversationHistory); err != nil {
 			slog.Warn("safety-net checkpoint write failed", "run", priorRunRef, "err", err)
@@ -2036,20 +1789,12 @@ func (s *UIServer) handleExecute(w http.ResponseWriter, r *http.Request, namespa
 	})
 }
 
-// ensureRunCheckpoint is the safety net that lets a warm pod resume a run even if
-// the model-router never checkpointed it (e.g. the pod was killed on its first turn
-// before any LLM call). It writes the session transcript into the run's Redis
-// checkpoint key — but ONLY when that key is empty. When the model-router DID
-// checkpoint, its run-key messages are full-fidelity (tool calls / results); this
-// function preserves them rather than overwriting with the session's
-// role/content-only summary, which would degrade resumed context.
 func (s *UIServer) ensureRunCheckpoint(ctx context.Context, runName string, history []agentorcav1alpha1.ConversationMessage) error {
 	if s.store == nil || runName == "" {
 		return nil
 	}
 	priorCheckpointKey := fmt.Sprintf("agentorca/runs/%s/state", runName)
 	if existing, err := s.store.LoadMessages(ctx, priorCheckpointKey); err == nil && len(existing) > 0 {
-		// Model-router already checkpointed this run — keep its full-fidelity history.
 		return nil
 	}
 	var msgs []json.RawMessage
@@ -2064,10 +1809,7 @@ func (s *UIServer) ensureRunCheckpoint(ctx context.Context, runName string, hist
 	return s.store.SaveMessages(ctx, priorCheckpointKey, msgs, 24*time.Hour)
 }
 
-// handleChatHistory returns the conversation history for a session.
-// GET /api/deployments/{namespace}/{name}/history?sessionId=X
 func (s *UIServer) handleChatHistory(w http.ResponseWriter, r *http.Request, namespace, deploymentName string) { //nolint:unparam
-
 	sessionID := r.URL.Query().Get("sessionId")
 	if sessionID == "" {
 		jsonResponse(w, map[string]any{"messages": []any{}})
@@ -2090,10 +1832,7 @@ func (s *UIServer) handleChatHistory(w http.ResponseWriter, r *http.Request, nam
 	})
 }
 
-// handleSaveResponse saves an assistant response to the session checkpoint.
-// POST /api/deployments/{namespace}/{name}/complete
 func (s *UIServer) handleSaveResponse(w http.ResponseWriter, r *http.Request, namespace, deploymentName string) { //nolint:unparam
-
 	var req struct {
 		SessionID    string `json:"sessionId"`
 		Output       string `json:"output"`
@@ -2114,8 +1853,6 @@ func (s *UIServer) handleSaveResponse(w http.ResponseWriter, r *http.Request, na
 		return
 	}
 	if cp == nil {
-		// Checkpoint was lost (e.g. server restart) — create a minimal one so the
-		// assistant response is still persisted for subsequent history loads.
 		cp = &agentorcav1alpha1.Checkpoint{
 			SessionID: req.SessionID,
 			Version:   0,
@@ -2134,11 +1871,9 @@ func (s *UIServer) handleSaveResponse(w http.ResponseWriter, r *http.Request, na
 	cp.Metadata.TotalMessages = len(cp.ConversationHistory)
 	cp.Metadata.LastMessageTime = &metav1.Time{Time: time.Now()}
 
-	// Populate TotalCostUSD from the current run's spend.
 	if cp.LastRunRef != "" {
 		var run agentorcav1alpha1.AgentRun
 		if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: cp.LastRunRef, Namespace: namespace}, &run); err == nil && run.Status.SpendUSD != "" {
-			// Accumulate: parse existing total, add this run's spend.
 			existing, _ := strconv.ParseFloat(cp.Metadata.TotalCostUSD, 64)
 			runSpend, _ := strconv.ParseFloat(run.Status.SpendUSD, 64)
 			if runSpend > 0 {
@@ -2152,9 +1887,6 @@ func (s *UIServer) handleSaveResponse(w http.ResponseWriter, r *http.Request, na
 		return
 	}
 
-	// Also persist to state store under the current run's key for context chaining.
-	// This serves as a safety net in case the model-router's finalization checkpoint
-	// wasn't written or the run completed without triggering periodic checkpoints.
 	if s.store != nil && cp.LastRunRef != "" {
 		checkpointKey := fmt.Sprintf("agentorca/runs/%s/state", cp.LastRunRef)
 		var msgs []json.RawMessage
@@ -2172,8 +1904,6 @@ func (s *UIServer) handleSaveResponse(w http.ResponseWriter, r *http.Request, na
 	jsonResponse(w, map[string]string{"status": "ok"})
 }
 
-// handleDeploymentStream handles GET /api/deployments/{namespace}/{name}/stream
-// Streams execution responses as Server-Sent Events.
 func (s *UIServer) handleDeploymentStream(w http.ResponseWriter, r *http.Request, namespace, deploymentName string) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -2192,8 +1922,6 @@ func (s *UIServer) handleDeploymentStream(w http.ResponseWriter, r *http.Request
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
-	// TODO: Implement actual streaming logic
-	// For now, send a placeholder event
 	writeSSE(w, map[string]any{
 		"type":    "placeholder",
 		"message": "[Streaming implementation pending]",
@@ -2201,7 +1929,6 @@ func (s *UIServer) handleDeploymentStream(w http.ResponseWriter, r *http.Request
 	flusher.Flush()
 }
 
-// handleGetDeployment handles GET /api/deployments/{namespace}/{name}
 func (s *UIServer) handleGetDeployment(w http.ResponseWriter, r *http.Request, namespace, deploymentName string) {
 	var deployment agentorcav1alpha1.AgentDeployment
 	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: deploymentName, Namespace: namespace}, &deployment); err != nil {
@@ -2248,7 +1975,6 @@ func (s *UIServer) handleGetDeployment(w http.ResponseWriter, r *http.Request, n
 	jsonResponse(w, info)
 }
 
-// handleDeleteDeployment handles DELETE /api/deployments/{namespace}/{name}.
 func (s *UIServer) handleDeleteDeployment(w http.ResponseWriter, r *http.Request, namespace, deploymentName string) {
 	var deployment agentorcav1alpha1.AgentDeployment
 	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: deploymentName, Namespace: namespace}, &deployment); err != nil {
@@ -2262,11 +1988,10 @@ func (s *UIServer) handleDeleteDeployment(w http.ResponseWriter, r *http.Request
 	jsonResponse(w, map[string]string{"status": "ok"})
 }
 
-// handleListWorkflows lists AgentWorkflows in the requested namespace.
 func (s *UIServer) handleListWorkflows(w http.ResponseWriter, r *http.Request) {
 	ns := r.URL.Query().Get("namespace")
 	var list agentorcav1alpha1.AgentWorkflowList
-	if err := s.crdClient.List(r.Context(), &list, tenantScope(r.Context(), ns)...); err != nil {
+	if err := listCRDsMultiNamespace(r.Context(), s.crdClient, &list, ns); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -2302,8 +2027,6 @@ func (s *UIServer) handleListWorkflows(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, out)
 }
 
-// handleGetWorkflow returns detail for a single AgentWorkflow including step statuses.
-// Path: /api/workflows/{namespace}/{name}
 func (s *UIServer) handleGetWorkflow(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/workflows/")
 	parts := strings.SplitN(path, "/", 2)
@@ -2359,7 +2082,6 @@ func (s *UIServer) handleGetWorkflow(w http.ResponseWriter, r *http.Request) {
 		d.CompletionTime = wf.Status.CompletionTime.UTC().Format(time.RFC3339)
 	}
 
-	// Build maps from step name to spec fields for the detail view.
 	agentRefByStep := make(map[string]string, len(wf.Spec.Steps))
 	inputByStep := make(map[string]string, len(wf.Spec.Steps))
 	for _, step := range wf.Spec.Steps {
@@ -2367,15 +2089,12 @@ func (s *UIServer) handleGetWorkflow(w http.ResponseWriter, r *http.Request) {
 		inputByStep[step.Name] = step.Input
 	}
 
-	// Build a map of step outputs so we can resolve template variables.
 	outputByStep := make(map[string]string, len(wf.Status.Steps))
 	for _, ss := range wf.Status.Steps {
 		outputByStep[ss.Name] = ss.Output
 	}
 
 	for _, ss := range wf.Status.Steps {
-		// Resolve {{steps.<name>.output}} placeholders so the UI shows
-		// the actual values that were sent to the agent.
 		resolvedInput := inputByStep[ss.Name]
 		for name, output := range outputByStep {
 			resolvedInput = strings.ReplaceAll(resolvedInput,
@@ -2402,16 +2121,11 @@ func (s *UIServer) handleGetWorkflow(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, d)
 }
 
-// generateUUID generates a simple pseudo-UUID for execution IDs.
-// In production, use github.com/google/uuid
 func generateUUID() string {
 	return fmt.Sprintf("%d", time.Now().UnixNano())
 }
 
-// ── Run history (PostgreSQL archival) ─────────────────────────────────────
-
 // handleListRunHistory returns archived AgentRuns from PostgreSQL with filtering.
-// GET /api/runs/history?limit=50&offset=0&phase=Succeeded&agentRef=my-agent&search=foo
 func (s *UIServer) handleListRunHistory(w http.ResponseWriter, r *http.Request) {
 	if s.pgStore == nil {
 		http.Error(w, `{"error":"run archival not configured"}`, http.StatusServiceUnavailable)
@@ -2436,12 +2150,14 @@ func (s *UIServer) handleListRunHistory(w http.ResponseWriter, r *http.Request) 
 		AgentRef: agentRef,
 		Search:   search,
 	}
-	// Apply tenant scoping: when a tenant identity is present, restrict to
-	// the tenant's namespace so users only see runs they are authorized for.
-	if tenant, ok := TenantFromContext(r.Context()); ok && tenant != nil && tenant.Namespace != "" {
-		q.Namespace = tenant.Namespace
+	// Apply tenant scoping across all authorized namespaces (not just the first)
+	// so the history view reflects every namespace the tenant can access.
+	if tenant, ok := TenantFromContext(r.Context()); ok && tenant != nil {
+		q.Namespaces = tenantNamespaces(tenant)
 	} else {
-		q.Namespace = r.URL.Query().Get("namespace")
+		if ns := r.URL.Query().Get("namespace"); ns != "" {
+			q.Namespaces = []string{ns}
+		}
 	}
 
 	page, err := s.pgStore.QueryHistory(r.Context(), q)
@@ -2453,12 +2169,6 @@ func (s *UIServer) handleListRunHistory(w http.ResponseWriter, r *http.Request) 
 	jsonResponse(w, page)
 }
 
-// handleGetArchivedRun returns the full detail of a single archived AgentRun
-// from PostgreSQL, or 404 if it is not present. This mirrors the live run-detail
-// shape (runDetail) so the UI can reuse the same presentational components for
-// runs that have been garbage-collected from Kubernetes.
-//
-// GET /api/runs/history/{namespace}/{name}
 func (s *UIServer) handleGetArchivedRun(w http.ResponseWriter, r *http.Request, namespace, runName string) {
 	if s.pgStore == nil {
 		http.Error(w, "run archival not configured", http.StatusServiceUnavailable)
@@ -2475,7 +2185,6 @@ func (s *UIServer) handleGetArchivedRun(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	// Re-hydrate the JSON-serialised fields captured at archival time.
 	var routing []agentorcav1alpha1.RoutingDecision
 	if len(archive.RoutingDecisionsJSON) > 0 {
 		_ = json.Unmarshal(archive.RoutingDecisionsJSON, &routing)
@@ -2487,7 +2196,6 @@ func (s *UIServer) handleGetArchivedRun(w http.ResponseWriter, r *http.Request, 
 
 	resolvedModel := ""
 	if len(routing) > 0 {
-		// The last decision is the runtime-selected model (non-candidate, if any).
 		for i := len(routing) - 1; i >= 0; i-- {
 			if !strings.HasPrefix(routing[i].Reason, "configured provider") {
 				resolvedModel = routing[i].Model
@@ -2518,7 +2226,6 @@ func (s *UIServer) handleGetArchivedRun(w http.ResponseWriter, r *http.Request, 
 		ResolvedModel:     resolvedModel,
 	}
 
-	// Resolve the Agent CRD to surface tools/MCP surface area alongside the run.
 	if s.crdClient != nil {
 		var agent agentorcav1alpha1.Agent
 		if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: archive.AgentRef, Namespace: archive.Namespace}, &agent); err == nil {
@@ -2527,8 +2234,6 @@ func (s *UIServer) handleGetArchivedRun(w http.ResponseWriter, r *http.Request, 
 				tools = []string{}
 			}
 			detail.Tools = tools
-			// Resolve MCP servers in the agent's namespace whose allowedAgents
-			// explicitly lists this agent (default-deny: empty = no access).
 			var mcpList agentorcav1alpha1.MCPServerList
 			if err := s.crdClient.List(r.Context(), &mcpList, client.InNamespace(archive.Namespace)); err == nil {
 				for i := range mcpList.Items {
@@ -2547,8 +2252,6 @@ func (s *UIServer) handleGetArchivedRun(w http.ResponseWriter, r *http.Request, 
 		}
 	}
 
-	// Deserialise archived trace entries (if any) so the history detail view can
-	// render the full execution trace with TraceAccordion, same as the live runs tab.
 	if len(archive.TraceEventsJSON) > 0 {
 		var traceEntries []traceEntryJSON
 		if err := json.Unmarshal(archive.TraceEventsJSON, &traceEntries); err != nil {
@@ -2561,10 +2264,6 @@ func (s *UIServer) handleGetArchivedRun(w http.ResponseWriter, r *http.Request, 
 	jsonResponse(w, detail)
 }
 
-// traceEntryJSON is a single archived trace entry in the API response. Event is
-// left as json.RawMessage so the original event payload passes through verbatim
-// and the UI can discriminate on the "type" field exactly as it does for live
-// SSE events.
 type traceEntryJSON struct {
 	ID           int             `json:"id"`
 	Event        json.RawMessage `json:"event"`
@@ -2572,9 +2271,6 @@ type traceEntryJSON struct {
 	ChildRunName string          `json:"childRunName,omitempty"`
 }
 
-// routingDecisionJSON is the JSON shape for a single routing decision as
-// returned to the UI. Shared by the live run-detail and archived run-detail
-// handlers so the UI consumes one shape.
 type routingDecisionJSON struct {
 	Model      string `json:"model"`
 	Provider   string `json:"provider"`
@@ -2584,9 +2280,6 @@ type routingDecisionJSON struct {
 	Timestamp  string `json:"timestamp,omitempty"`
 }
 
-// archivedRunDetail is the JSON shape returned for an archived run. It mirrors
-// the live runDetail struct (so the UI reuses its presentational components)
-// and adds tool/mcp resolution plus a computed resolved-model string.
 type archivedRunDetail struct {
 	Name               string                `json:"name"`
 	Namespace          string                `json:"namespace"`
@@ -2612,15 +2305,9 @@ type archivedRunDetail struct {
 	Tools              []string              `json:"tools,omitempty"`
 	MCPServers         []string              `json:"mcps,omitempty"`
 	ResolvedModel      string                `json:"resolvedModel,omitempty"`
-	// TraceEntries is the full execution trace archived from the Redis token
-	// stream at archival time. Each entry mirrors the UI's TraceEntry shape.
-	// Omitted when no trace was archived (older runs or store unavailable).
-	TraceEntries []traceEntryJSON `json:"traceEntries,omitempty"`
+	TraceEntries       []traceEntryJSON      `json:"traceEntries,omitempty"`
 }
 
-// routingDecisionsToJSON converts CRD routing decisions into the JSON shape,
-// formatting the timestamp to RFC3339 (UTC). Reused by both the live and
-// archived run-detail handlers.
 func routingDecisionsToJSON(rds []agentorcav1alpha1.RoutingDecision) []routingDecisionJSON {
 	if len(rds) == 0 {
 		return []routingDecisionJSON{}
@@ -2642,21 +2329,12 @@ func routingDecisionsToJSON(rds []agentorcav1alpha1.RoutingDecision) []routingDe
 	return out
 }
 
-// formatTimePtr renders a *time.Time to RFC3339 (UTC) or "" when nil.
 func formatTimePtr(t *time.Time) string {
 	if t == nil {
 		return ""
 	}
 	return t.UTC().Format(time.RFC3339)
 }
-
-// ── Generic resource CRUD ───────────────────────────────────────────────────
-//
-// These endpoints provide full read/write access to all CRD types via a single
-//   - The agentorca.io/managed-by label is checked on delete to prevent
-//     users from deleting resources not created by agent-orca.
-//   - Tenant scoping: when a TenantIdentity is in context, all list/get
-//     operations are restricted to the tenant's namespace.
 
 // crdKindInfo maps URL path segments to (listType, objectType) pairs.
 type crdKindInfo struct {
@@ -2723,11 +2401,11 @@ func (s *UIServer) handleResource(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// listResource lists CRDs scoped to the tenant's namespace (or the ?namespace= param).
+// listResource lists CRDs across all tenant-authorized namespaces (or, without a
+// tenant identity, the ?namespace= param / all namespaces).
 func (s *UIServer) listResource(w http.ResponseWriter, r *http.Request, info crdKindInfo) {
 	ns := r.URL.Query().Get("namespace")
-	opts := tenantScope(r.Context(), ns)
-	if err := s.crdClient.List(r.Context(), info.listType, opts...); err != nil {
+	if err := listCRDsMultiNamespace(r.Context(), s.crdClient, info.listType, ns); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

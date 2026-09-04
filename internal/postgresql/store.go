@@ -85,9 +85,10 @@ type HistoryQuery struct {
 	Phase string
 	// AgentRef filters by the agent name referenced by the run.
 	AgentRef string
-	// Namespace restricts results to a single namespace. Empty = all namespaces
-	// (only meaningful when the caller has cluster-wide access).
-	Namespace string
+	// Namespaces restricts results to the given namespaces (typically a tenant's
+	// authorized set). Empty = all namespaces (only meaningful when the caller has
+	// cluster-wide access).
+	Namespaces []string
 	// Search matches against the run name case-insensitively.
 	Search string
 }
@@ -255,10 +256,14 @@ func (s *Store) QueryHistory(ctx context.Context, q HistoryQuery) (*HistoryPage,
 		args = append(args, q.AgentRef)
 		paramN++
 	}
-	if q.Namespace != "" {
-		where = append(where, fmt.Sprintf("namespace = $%d", paramN))
-		args = append(args, q.Namespace)
-		paramN++
+	if len(q.Namespaces) > 0 {
+		ph := make([]string, len(q.Namespaces))
+		for i, n := range q.Namespaces {
+			ph[i] = fmt.Sprintf("$%d", paramN+i)
+			args = append(args, n)
+		}
+		paramN += len(q.Namespaces)
+		where = append(where, fmt.Sprintf("namespace IN (%s)", strings.Join(ph, ", ")))
 	}
 	if q.Search != "" {
 		where = append(where, fmt.Sprintf("name ILIKE $%d", paramN))
