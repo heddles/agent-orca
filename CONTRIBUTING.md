@@ -62,7 +62,20 @@ reviewed carefully.
 
 ## Toolchain
 
-Minimum supported versions (newer is fine):
+The repo uses [`mise`](https://mise.jdx.dev) to pin the local dev toolchain. With
+mise installed, one command provisions everything in the table below (except
+Docker):
+
+```bash
+mise install                 # install/pin all dev tools
+# optional: auto-activate tools on cd into this repo:
+#   eval "$(mise activate zsh)"   # or bash/fish
+```
+
+You can also run the Makefile front doors as `mise run build|test|lint|run`,
+which guarantees the pinned toolchain is active on `PATH`. The versions below
+are what `.mise.toml` pins (with `latest` where the project documents the tool
+as latest; bump with `mise use <tool>@latest`):
 
 | Tool       | Version | Notes |
 |------------|---------|-------|
@@ -73,12 +86,12 @@ Minimum supported versions (newer is fine):
 | kubectl    | latest  | Cluster interaction / goldens in `test/e2e`. |
 | helm       | 3.14+   | Chart rendering / `make install`. |
 | skaffold   | latest  | Local dev loop (`skaffold dev`). |
-| Docker     | latest  | Image builds for e2e/dev. |
+| Docker     | latest  | Image builds for e2e/dev. Not managed by mise — install Docker Desktop (or the engine) separately. |
 
 You do **not** need to install the Kubernetes code-gen tools by hand. The
 Makefile downloads `controller-gen`, `kustomize`, and `golangci-lint` into
 `./bin/` on first use (see `hack/` and the `*Tool` targets at the bottom of the
-Makefile), so a fresh checkout builds with just Go + Make.
+Makefile), so a fresh checkout builds with just `mise install` + `make build`.
 
 ---
 

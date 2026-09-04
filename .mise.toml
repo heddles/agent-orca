@@ -1,0 +1,44 @@
+# Local dev toolchain for agent-orca.
+#
+# Install once, keep everything in sync with CI. With [`mise`](https://mise.jdx.dev)
+# installed globally, run from the repo root:
+#
+#   mise install            # provision the full toolchain below (except Docker)
+#   mise run build|test|lint|run   # shortcuts that run the Makefile targets
+#
+# Optional (one-time shell setup so tools activate on `cd` into this repo):
+#   eval "$(mise activate zsh)"   # or bash/fish
+#
+# The Kubernetes code-gen tools (controller-gen, kustomize, golangci-lint,
+# setup-envtest) are NOT listed here — the Makefile downloads them into ./bin/
+# on first use. Docker is also not managed here; install Docker Desktop (or
+# the engine) separately — it's required for image builds and e2e tests.
+
+[tools]
+# Go — matches the directive in go.mod; CI uses go-version-file: go.mod
+go = "1.25.3"
+# Node — drives the React UI under ui/ ; CI uses Node 20
+node = "20"
+# GNU Make — the Makefile is the front door to everything
+make = "4.4"
+# Helm — chart rendering / `make install`
+helm = "3.14"
+# kind / kubectl / skaffold — local dev clusters and the Skaffold dev loop
+# (CONTRIBUTING documents these as "latest"; bump with `mise use NAME@latest`)
+kind = "latest"
+kubectl = "latest"
+skaffold = "latest"
+
+# Convenience wrappers. Running these via mise guarantees the toolchain above
+# is active on PATH, which is handy before the shell hook is configured.
+[tasks.build]
+run = "make build"
+
+[tasks.test]
+run = "make test"
+
+[tasks.lint]
+run = "make lint"
+
+[tasks.run]
+run = "make run"

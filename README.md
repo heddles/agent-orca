@@ -79,7 +79,7 @@ In-depth guides, organized by audience. **Developers** start with the first bloc
 
 | Doc | Audience | What it covers |
 |---|---|---|
-| [Development Guide](docs/development.md) | Developers | Project structure, build/test commands, critical rules, devcontainer |
+| [Development Guide](docs/development.md) | Developers | Project structure, build/test commands, critical rules |
 | [Integrating with agent-orca](docs/integrating.md) | Developers / integrators | End-to-end integration (CLI, SDKs, ACP API, observability) |
 | [Agent Images](docs/agent-images.md) | Developers | What an agent image must do; framework tiers, injected env vars, built-in tools |
 | [aoctl CLI Reference](docs/aoctl-reference.md) | Developers | Complete `aoctl` command reference |
@@ -522,6 +522,6 @@ make test-ui-e2e    # UI end-to-end tests (Playwright)
 
 ## Development
 
-[Skaffold](https://skaffold.dev/) is the standard way to run agent-orca locally. It builds all images, deploys via Helm, watches for file changes, and automatically rebuilds and redeploys only the affected component. For faster UI iteration, use the provided **devcontainer** (`.devcontainer/`, ships Docker-in-Docker + kind) — open the repo in VS Code/Codespaces and run the Quick Start directly.
+[Skaffold](https://skaffold.dev/) is the standard way to run agent-orca locally. It builds all images, deploys via Helm, watches for file changes, and automatically rebuilds and redeploys only the affected component. With [mise](https://mise.jdx.dev) installed, run `mise install` once to provision Go, Node, Make, kind, kubectl, helm, and skaffold, then run the Quick Start — `skaffold dev` works against your local Docker (Docker is required and is not managed by mise).
 
 Full command reference in [docs/development.md](docs/development.md): `make run`, `make manifests`, `make build`, `make build-model-router`, `make build-ui-proxy`, `make docker-build`, `make install`, `make deploy`, and more.
