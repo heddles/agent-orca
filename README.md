@@ -455,7 +455,7 @@ curl -s -X POST http://localhost:8080/api/deployments/default/support-bot/comple
 # User message 2 — same sessionId chains to the prior run; the agent remembers context
 curl -s -X POST http://localhost:8080/api/deployments/default/support-bot/execute \
   -H 'Content-Type: application/json' \
-  -d '{"input": "Order #ORD-789", "sessionId": "customer-12345"}')
+  -d '{"input": "Order #ORD-789", "sessionId": "customer-12345"}'
 
 # Conversation history for the session
 curl http://localhost:8080/api/deployments/default/support-bot/history?sessionId=customer-12345
