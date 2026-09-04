@@ -87,10 +87,11 @@ In-depth guides, organized by audience. **Developers** start with the first bloc
 | [OpenAPI Spec](docs/openapi-spec.md) | Developers | External Task API + ACP API machine-readable contracts |
 | [AgentWorkflow](docs/agentworkflow.md) | Developers | Declarative DAG orchestration |
 | [RAG / KnowledgeBase](docs/rag.md) | Developers | Vector store integration and built-in tools (`_rag_search`, `_rag_ingest`) |
-| [MCP Access Control](docs/mcp-access-control.md) | Developers / Operators | MCP server security and tool exposure |
+| [MCP Access Control](docs/mcp-access-control.md) | Developers / Operators | MCP server security, tool exposure, and HTTP bearer-token auth |
 | [Local Model Selection](docs/local-model-selection.md) | Developers | Running with local/Ollama models via LiteLLM |
 | [AI Task Testing](docs/testing-tools.md) | Developers | Test agents, evals, and the `hack/test-agents.sh` harness |
 | [UI Testing](docs/ui-testing.md) | Developers | Running UI unit/e2e (Vitest + Playwright) tests |
+| [Context Management](docs/context-management.md) | Developers / Operators | Context window compaction, episodic summaries, warm-pool session chaining, MCP auth |
 | [Rate Limiting](docs/rate-limiting.md) | Operators | Per-tenant quotas, budget enforcement, HTTP 429/402 responses |
 | [Cost Tracking](docs/cost-tracking.md) | Operators | How LLM spend is measured, persisted, and budgeted |
 | [Observability](docs/observability.md) | Operators | Health probes, Prometheus metrics, audit logging |
@@ -160,6 +161,7 @@ graph TD
 - Tracks consecutive failures and pauses if threshold exceeded
 - Supports multiple input sources: `chat` (API-driven), `queue` (Redis), `pubsub` (Kafka), `loop` (self-managed)
 - Persists conversation state via checkpoints; warm-pool pod reuse for low-latency chat
+- Optional `contextCompactionRatio` to tune how aggressively context is compacted (default 0.3; set to 0.1 for ~10% residual — see [docs/context-management.md](docs/context-management.md))
 
 **ModelProvider** - Registers an LLM endpoint
 - LiteLLM model string (OpenAI, Anthropic, Google, Ollama, Bedrock, etc.)
@@ -198,6 +200,7 @@ graph TD
 - Auto-creates child Tool resources for each declared tool
 - Supports `stdio` (sidecar), `http`, and `sse` transports
 - Built-in access control via `allowedAgents` list
+- Optional `auth` for HTTP/SSE servers requiring bearer-token authentication (e.g. Slack) — see [docs/mcp-access-control.md](docs/mcp-access-control.md)
 
 **TenantConfig** - Enterprise authentication and authorization
 - OAuth2 client credentials or federated OIDC (Auth0, Okta, etc.)
@@ -224,7 +227,7 @@ agent-orca keeps two layers of state, both backed by the same Redis `state.Store
    The store is a **shared singleton**: the `Router`, `ACPServer`, `UIServer`, `ExternalAPIServer`, `AgentRunReconciler`, and `Executor` all reference the same instance, so every component sees the same bytes. On cold start (`router.New()`) and on warm-pool reuse (`ClaimRun` → `PriorRunRef`) the router reloads prior spend and prior messages, so a resumed run picks up where it left off.
 2. **Chat-session checkpoint** — used by the UI's chat API (`POST …/execute` → `POST …/complete` → `GET …/history`). The `internal/checkpoint` Store persists a `Checkpoint{SessionID, Version, ConversationHistory, LastRunRef, Metadata{TotalCostUSD,…}}`, backed by Redis when a state backend is configured, else an in-memory store. Each message increments `Version`, and runs chain across turns via `LastRunRef`↔`PriorRunRef` (the model-router turns `PriorRunRef` into its `ResumeCheckpointKey` = `agentorca/runs/<prior-run>/state` to reload context).
 
-The conversation buffer is **hard-capped, not unbounded**: `priorMessages` is folded and truncated to `checkpointBudget()` (80% of the largest provider's `contextWindow`, see `ContextWindowReserve`) on each turn, and prior turns are condensed into an **episodic summary** (`maybeRunEpisodicSummary`) that replaces the collapsed turns in memory and is persisted to the `episodic:<run>:<n>` KV scope. See [docs/cost-tracking.md](docs/cost-tracking.md) and [docs/redis.md](docs/redis.md).
+The conversation buffer is **hard-capped, not unbounded**: `priorMessages` is folded and truncated to `checkpointBudget()` (80% of the largest provider's `contextWindow`, see `ContextWindowReserve`) on each turn, and prior turns are condensed into an **episodic summary** (`maybeRunEpisodicSummary`) that replaces the collapsed turns in memory and is persisted to the `episodic:<run>:<n>` KV scope. The **compaction target** (the fraction of the context window to compact down to) is configurable via `contextCompactionRatio` — see [docs/context-management.md](docs/context-management.md) for configuration.
 
 ---
 
