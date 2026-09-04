@@ -518,13 +518,16 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 	r.mu.Lock()
 	if !streamIsContinuation {
 		r.messages = append(r.messages, chatReq.Messages...)
+		r.incrementBufferTokens(estimateTokens(chatReq.Messages))
 	}
 	r.messages = append(r.messages, assistantMsg)
+	r.incrementBufferTokens(estimateTokens([]Message{assistantMsg}))
 	r.updateSpend(usage, provider)
 	r.ruleRouter.IncrementTurn()
-	// Fold the finished turn into priorMessages and cap the live buffer. Gated to the
-	// final (non-tool) response so the tool-call loop (which appends toolResults and
-	// recurses with r.messages) doesn't lose in-flight context.
+	// concludeTurn folds the finished turn and caps the buffer. It is gated to
+	// the final (non-tool) text response; during the tool-call loop the buffer is
+	// capped inline by capLiveBufferDuringToolLoop() (called after each batch of
+	// tool results is appended) so history doesn't only-grow until the loop exits.
 	if len(toolCalls) == 0 {
 		r.concludeTurn()
 	}
@@ -621,6 +624,13 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 		}
 		r.mu.Lock()
 		r.messages = append(r.messages, toolResults...)
+		r.incrementBufferTokens(estimateTokens(toolResults))
+		// Cap the live buffer mid tool-call loop. concludTurn/trimLiveBuffer are
+		// gated off for continuations, so without this the buffer (and
+		// liveBufferTokens, reported via notifyOperatorContext) only grows across
+		// tool calls. The pre-send truncation remains a safety net for the
+		// outgoing payload.
+		r.capLiveBufferDuringToolLoop()
 		continueReq := ChatCompletionRequest{
 			Model:    chatReq.Model,
 			Messages: r.messages,

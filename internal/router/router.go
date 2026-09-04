@@ -1663,6 +1663,65 @@ func (r *Router) concludeTurn() {
 	}
 }
 
+// capLiveBufferDuringToolLoop bounds the live conversation buffer mid tool-call loop.
+//
+// The top-level request path caps the buffer via trimLiveBuffer() at the start of
+// each new top-level request and via concludeTurn() at the terminal text turn.
+// But the tool-call loop recurses through HandleChatCompletions with a
+// continuationKey (isContinuation == true), for which BOTH cap points are gated
+// off — trimLiveBuffer is guarded by `!isContinuation` (router.go:726) and
+// concludeTurn by `len(toolCalls) == 0` (stream.go:528). The only truncation that
+// runs during the loop is pre-send truncation (a copy of the OUTGOING messages)
+// and checkpoint()'s persistence truncation (a local copy built from
+// prior+messages) — neither writes back to r.priorMessages/r.messages. As a
+// result the live buffer and liveBufferTokens only GROW for the whole tool loop,
+// so context stays at or above the budget for every tool call until the loop
+// finally resolves to a terminal text turn (observed in the red-team run: the
+// buffer sat ~92% of the 1M window, checkpoints persisted at the 80% ceiling,
+// and only the outbound copy was clipped each iteration).
+//
+// This caps the COMBINED priorMessages+messages buffer down to compactionTarget()
+// when the proactive threshold is exceeded, persists the compacted result back
+// into r.messages (clearing priorMessages — the recursion reloads the combined
+// buffer via the alreadyInjected short-circuit, so no history is doubled), and
+// resyncs liveBufferTokens so notifyOperatorContext reports accurate usage. The
+// pre-send truncation remains as a safety net for the outgoing payload.
+//
+// Caller must hold r.mu.
+func (r *Router) capLiveBufferDuringToolLoop() {
+	budget := r.checkpointBudget()
+	if budget <= 0 {
+		return
+	}
+	// Fast path: cached count is well under the proactive threshold — skip the
+	// O(n) scan. (Mirrors trimLiveBuffer's fast path; the cache is kept current
+	// by the incrementBufferTokens calls in both the streaming and non-streaming
+	// turn/tool paths. If it's ever stale this degrades to the slow path below.)
+	cached := r.liveBufferTokens
+	proactive := int(float64(budget) * r.cfg.proactiveThreshold())
+	if cached > 0 && cached < proactive {
+		return
+	}
+	// Slow path: full scan of the combined live buffer.
+	combined := append(append([]Message{}, r.priorMessages...), r.messages...)
+	est := estimateTokens(combined)
+	r.liveBufferTokens = est
+	if est <= budget {
+		return // under the hard ceiling — no compaction needed
+	}
+	// Over budget: compact down to the configured target (default 50% of the
+	// context window; 30% in the red-team deployment). truncateHistory
+	// preserves the system-message prefix and tool_call/tool_result pairings and
+	// replaces dropped turns with a compaction summary message.
+	compacted := truncateHistory(combined, r.compactionTarget())
+	r.priorMessages = nil
+	r.messages = compacted
+	r.liveBufferTokens = estimateTokens(compacted)
+	slog.Debug("compacted live buffer during tool-call loop",
+		"run", r.cfg.RunName, "fromTokens", est, "toTokens", r.liveBufferTokens,
+		"budget", budget, "target", r.compactionTarget())
+}
+
 // checkpointBudget is the in-memory cap for the conversation buffer: 80% of the
 // largest configured provider context window (matching the per-turn checkpoint
 // save at this function). Capping the live buffer — not just the persisted
@@ -2214,6 +2273,11 @@ func (r *Router) handleToolCalls(w http.ResponseWriter, req *http.Request,
 	r.mu.Lock()
 	r.messages = append(r.messages, toolResults...)
 	r.incrementBufferTokens(estimateTokens(toolResults))
+	// Cap the live buffer mid tool-call loop. concludTurn/trimLiveBuffer are gated
+	// off for continuations, so without this the buffer (and liveBufferTokens,
+	// which notifyOperatorContext reports) only grows across tool calls. The
+	// pre-send truncation still bounds the outgoing payload as a safety net.
+	r.capLiveBufferDuringToolLoop()
 	continueReq := ChatCompletionRequest{
 		Model:    chatReq.Model,
 		Messages: r.messages,

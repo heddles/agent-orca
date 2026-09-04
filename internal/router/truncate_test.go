@@ -160,6 +160,89 @@ func TestTrimLiveBuffer_UsesIncrementalTokenCache(t *testing.T) {
 	}
 }
 
+// TestCapLiveBufferDuringToolLoop_TruncatesBufferAndSyncsCache verifies that the
+// in-loop cap actually shrinks the live buffer (prior+messages) down to the
+// compaction target and resyncs liveBufferTokens. This is the regression test
+// for the bug where the tool-call loop's continuation recursion skipped
+// trimLiveBuffer/concludeTurn, so the buffer only grew across tool calls.
+func TestCapLiveBufferDuringToolLoop_TruncatesBufferAndSyncsCache(t *testing.T) {
+	r := &Router{cfg: &Config{Providers: []ProviderConfig{{Name: "p", ContextWindow: 1000000}}}}
+	// 1M context window → checkpointBudget 800000, compaction target 500000
+	// (default ratio 0.5), proactive threshold 60% of budget (480000).
+	big := Message{Role: "user", Content: strings.Repeat("x", 4000000)} // ~1M tokens each
+	r.priorMessages = []Message{big, big}
+	r.messages = []Message{
+		{Role: "assistant", Content: "tool call"},
+		{Role: "tool", Content: strings.Repeat("y", 4000000)}, // large tool result
+	}
+	before := estimateTokens(append(append([]Message{}, r.priorMessages...), r.messages...))
+	if before <= r.checkpointBudget() {
+		t.Fatalf("precondition: combined buffer (%d) should exceed budget (%d)", before, r.checkpointBudget())
+	}
+
+	r.mu.Lock()
+	r.capLiveBufferDuringToolLoop()
+	r.mu.Unlock()
+
+	r.mu.Lock()
+	after := estimateTokens(r.messages)
+	afterCached := r.liveBufferTokens
+	priorLen := len(r.priorMessages)
+	r.mu.Unlock()
+
+	if priorLen != 0 {
+		t.Errorf("expected priorMessages cleared by in-loop cap, got %d messages", priorLen)
+	}
+	if after > r.checkpointBudget() {
+		t.Errorf("buffer still over budget after cap: got %d want <= %d", after, r.checkpointBudget())
+	}
+	if after >= before {
+		t.Errorf("cap did not shrink the buffer: before=%d after=%d", before, after)
+	}
+	if afterCached != after {
+		t.Errorf("liveBufferTokens not resynced: cached=%d actual=%d", afterCached, after)
+	}
+	// truncateHistory should have replaced the dropped oldest turns with a
+	// condensed compaction-summary system message.
+	found := false
+	for _, m := range r.messages {
+		if m.Role == "system" && strings.Contains(messageText(m), "[Compacted:") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected a compaction-summary system message after capping; got %d msgs", len(r.messages))
+	}
+}
+
+// TestCapLiveBufferDuringToolLoop_FastPathNoOp verifies the O(1) fast path: when
+// the cached token count is well under the proactive threshold, the cap does
+// nothing and leaves the buffer intact.
+func TestCapLiveBufferDuringToolLoop_FastPathNoOp(t *testing.T) {
+	r := &Router{cfg: &Config{Providers: []ProviderConfig{{Name: "p", ContextWindow: 1000000}}}}
+	small := Message{Role: "user", Content: strings.Repeat("x", 1000)} // ~250 tokens
+	r.priorMessages = []Message{small}
+	r.messages = []Message{{Role: "assistant", Content: "ok"}}
+	// Seed the cache with an accurate, well-under-budget value.
+	r.liveBufferTokens = estimateTokens(append(r.priorMessages, r.messages...))
+	beforeCount := len(r.messages)
+	beforePrior := len(r.priorMessages)
+
+	r.mu.Lock()
+	r.capLiveBufferDuringToolLoop()
+	r.mu.Unlock()
+
+	r.mu.Lock()
+	afterCount := len(r.messages)
+	afterPrior := len(r.priorMessages)
+	r.mu.Unlock()
+
+	if afterCount != beforeCount || afterPrior != beforePrior {
+		t.Errorf("fast path should be a no-op: before(m=%d,p=%d) after(m=%d,p=%d)",
+			beforeCount, beforePrior, afterCount, afterPrior)
+	}
+}
+
 // TestIncrementBufferTokens_AddsDelta verifies the incremental token counter
 // correctly accumulates as messages are appended.
 func TestIncrementBufferTokens_AddsDelta(t *testing.T) {
