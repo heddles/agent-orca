@@ -130,8 +130,8 @@ In-depth guides, organized by audience. **Developers** start with the first bloc
 ```mermaid
 graph TD
     MP[ModelProvider<br/>Registers and authenticates into an LLM endpoint] --> MS[ModelSelector<br/>Routes across providers]
-    T[Tool<br/>Capability unit] --> A[Agent<br/>Reusable template]
-    MCPS[MCPServer<br/>External MCP server, exposes child Tool CRs] --> T
+    T[Tool<br/>Capability unit:<br/>regular · mcp · agent · wasm] -->|available to| A[Agent<br/>Reusable template]
+    MCPS[MCPServer<br/>External MCP server] -->|auto-creates child Tools| T
     MS --> A
     KB[KnowledgeBase<br/>RAG vector store + ingestion] --> A
     GP[GuardrailPolicy<br/>Content filtering] --> A
@@ -143,8 +143,11 @@ graph TD
     AR -->|agent-type tool spawns child| AR
     AW -->|controller creates one per step| AR
 
-    AR -->|spawns| Pod1[Pod<br/>agent + model-router sidecar]
+    AR -->|spawns| Pod1[Pod<br/>agent + model-router + tool-executor sidecars]
     AD -->|manages| Dep[Deployment<br/>agent + model-router replicas]
+
+    T -->|dispatched by| TE[Tool-executor sidecar<br/>runs tools, child agents, MCP stdio]
+    Pod1 -->|runs| TE
 
     Pod1 -->|checkpoints state| CS[(Redis / Checkpoint Store)]
     Dep -->|checkpoints state| CS
@@ -154,7 +157,7 @@ graph TD
     classDef crd fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
     classDef infra fill:#f3f4f6,stroke:#6b7280,color:#374151
     class MP,MS,T,A,AR,AD,AW,KB,GP,MCPS crd
-    class Pod1,Dep,CS,QD,MI infra
+    class Pod1,Dep,CS,QD,MI,TE infra
 ```
 
 **`AgentPod`** = an agent container + a **model-router sidecar** (the LLM proxy that owns
