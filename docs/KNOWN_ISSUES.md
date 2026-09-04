@@ -21,6 +21,9 @@ This is the consolidated tracker for known issues in agent-orca. Each entry link
 | [#76](https://github.com/floppyfish14/agent-orc/issues/76) | Cost tracking needs validation for the continuation run path | cost-tracking, testing | high | confirmed |
 | [#77](https://github.com/floppyfish14/agent-orc/issues/77) | Multiple agent-orca operator pods may or may not work via Raft algorithm | controller, ha, raft | high | confirmed |
 | [#78](https://github.com/floppyfish14/agent-orc/issues/78) | Multiple agent warm pods may or may not work (untested since session history was implemented) | controller, warm-pods, session-history | high | confirmed |
+| [#80](https://github.com/floppyfish14/agent-orc/issues/80) | `aoctl` ACP sessions do not output execution traces and sometimes miss agent response output | acp, cli, execution-trace | high | confirmed |
+| [#81](https://github.com/floppyfish14/agent-orc/issues/81) | Execution trace UI reports "Stream connection lost" during long tool-call loops | ui, execution-trace, streaming | medium | confirmed |
+| [#82](https://github.com/floppyfish14/agent-orc/issues/82) | demo-htb-pwn MCP errors crash sessions, requiring manual pod restart and session recovery | demos, mcp, crash-recovery | high | confirmed |
 
 ---
 
