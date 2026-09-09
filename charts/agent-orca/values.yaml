@@ -200,9 +200,9 @@ ingress:
 # cloudnative-pg-cluster releases are installed automatically (see skaffold.yaml).
 database:
   enabled: true
-  dsn: "postgresql://postgres:$(POSTGRES_PASSWORD)@postgres-rw.agent-orca-system.svc.cluster.local:5432/agentorca?sslmode=disable"
+  dsn: "postgresql://agentorca:$(POSTGRES_PASSWORD)@postgres-rw.agent-orca-system.svc.cluster.local:5432/agentorca?sslmode=disable"
   passwordSecret:
-    name: "postgres-superuser"
+    name: "postgres-app"
     key: "password"
 
 # System status alerting configuration.

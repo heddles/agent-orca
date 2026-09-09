@@ -156,8 +156,8 @@ spec:
             httpGet:
               path: /readyz
               port: health
-            initialDelaySeconds: 5
-            periodSeconds: 10
+            initialDelaySeconds: 45
+            periodSeconds: 15
           resources:
             {{- toYaml .Values.operator.resources | nindent 12 }}
           securityContext:

@@ -22,10 +22,11 @@ Agent orcastrator is a Kubernetes-native platform for deploying, managing, and r
 ## Quick Start
 
 **Quick-start prerequisites:**
+>__NOTE__: You need to activate mise in your shell for this to work. Here is an zsh example: `echo 'eval "$(mise activate zsh)"' >> ~/.zshr`
 1. Install `mise` via Homebrew: `brew install mise`
-2. Bootstrap the environment: `mise bootstrap`
-3. Ensure Docker is running.
-4. Have an API key for at least one model provider (OpenAI, Anthropic, Google, or **Poolside**; providers are [LiteLLM-compatible](https://docs.litellm.ai/docs/providers)).
+1. Bootstrap the environment: `sudo mise install --system`
+1. Ensure Docker is running.
+1. Have an API key for at least one model provider (OpenAI, Anthropic, Google, or **Poolside**; providers are [LiteLLM-compatible](https://docs.litellm.ai/docs/providers)).
 
 From zero to a chatting agent on your laptop in ~3 commands:
 
