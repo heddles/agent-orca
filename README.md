@@ -21,6 +21,12 @@ Agent orcastrator is a Kubernetes-native platform for deploying, managing, and r
 
 ## Quick Start
 
+**Quick-start prerequisites:**
+1. Install `mise` via Homebrew: `brew install mise`
+2. Bootstrap the environment: `mise bootstrap`
+3. Ensure Docker is running.
+4. Have an API key for at least one model provider (OpenAI, Anthropic, Google, or **Poolside**; providers are [LiteLLM-compatible](https://docs.litellm.ai/docs/providers)).
+
 From zero to a chatting agent on your laptop in ~3 commands:
 
 ```bash
@@ -46,12 +52,6 @@ Now go to `http://localhost:8080` to chat with your agent. We recommend asking:
 `What will happen to the economy in 5 years if there is a shortage of wheat for one
 year?` (this is the demo-financial-analysis prompt) or any question to the quickstart
 agent. The output should be an interactive user interface.
-
-**Quick-start prerequisites:** [`kind`](https://kind.sigs.k8s.io/docs/user/quick-start/#installation),
-[`kubectl`](https://kubernetes.io/docs/tasks/tools/), [`skaffold`](https://skaffold.dev/docs/install/),
-[Docker](https://docs.docker.com/get-docker/) running, and an API key for at least one
-model provider (OpenAI, Anthropic, Google, or **Poolside**; providers are
-[LiterLLM-compatible](https://docs.litellm.ai/docs/providers)).
 
 **What the `dev` profile deploys:**
 
@@ -129,35 +129,36 @@ In-depth guides, organized by audience. **Developers** start with the first bloc
 
 ```mermaid
 graph TD
-    MP[ModelProvider<br/>Registers and authenticates into an LLM endpoint] --> MS[ModelSelector<br/>Routes across providers]
-    T[Tool<br/>Capability unit:<br/>regular · mcp · agent · wasm] -->|available to| A[Agent<br/>Reusable template]
-    MCPS[MCPServer<br/>External MCP server] -->|auto-creates child Tools| T
-    MS --> A
-    KB[KnowledgeBase<br/>RAG vector store + ingestion] --> A
-    GP[GuardrailPolicy<br/>Content filtering] --> A
-    A --> AR[AgentRun<br/>One-time execution]
-    A --> AD[AgentDeployment<br/>Long-running service]
-    A --> AW[AgentWorkflow<br/>Declarative DAG of steps]
+    MP["ModelProvider<br/>Registers and authenticates into an LLM endpoint"] --> MS["ModelSelector<br/>Routes across providers"]
+    MS --> A["Agent<br/>Reusable template"]
+    A -->|uses| T["Tool (CRD)<br/>Capability unit:<br/>regular · mcp · agent · wasm"]
+    MCPS["MCPServer (CRD)<br/>Manages external MCP servers"] -->|manages| T
+    KB["KnowledgeBase<br/>RAG vector store + ingestion"] --> A
+    GP["GuardrailPolicy<br/>Content filtering"] --> A
+    A --> AR["AgentRun<br/>One-time execution"]
+    A --> AD["AgentDeployment<br/>Long-running service"]
+    A --> AW["AgentWorkflow<br/>Declarative DAG of steps"]
 
     AD -->|each input message spawns| AR
     AR -->|agent-type tool spawns child| AR
     AW -->|controller creates one per step| AR
 
-    AR -->|spawns| Pod1[Pod<br/>agent + model-router + tool-executor sidecars]
-    AD -->|manages| Dep[Deployment<br/>agent + model-router replicas]
+    AR -->|spawns| Pod1["Pod<br/>agent + model-router + tool-executor sidecars"]
+    AD -->|manages| Dep["Deployment<br/>agent + model-router replicas"]
 
-    T -->|dispatched by| TE[Tool-executor sidecar<br/>runs tools, child agents, MCP stdio]
+    T -->|dispatched by| TE["Tool-executor sidecar<br/>runs tools, child agents, MCP stdio"]
     Pod1 -->|runs| TE
 
     Pod1 -->|checkpoints state| CS[(Redis / Checkpoint Store)]
     Dep -->|checkpoints state| CS
     KB -->|auto-deploys| QD[(Qdrant)]
-    KB -->|ingestion jobs via| MI[MCP Ingester sidecar]
+    KB -->|ingestion jobs via| MI["MCP Ingester sidecar"]
+    AR -->|archives completed runs| PG[(PostgreSQL<br/>Run archival)]
 
     classDef crd fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
     classDef infra fill:#f3f4f6,stroke:#6b7280,color:#374151
     class MP,MS,T,A,AR,AD,AW,KB,GP,MCPS crd
-    class Pod1,Dep,CS,QD,MI,TE infra
+    class Pod1,Dep,CS,QD,MI,TE,PG infra
 ```
 
 **`AgentPod`** = an agent container + a **model-router sidecar** (the LLM proxy that owns
