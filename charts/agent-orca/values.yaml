@@ -174,7 +174,7 @@ ui:
 
 ingress:
   enabled: false
-  className: ""  # e.g., "nginx"
+  ingressClassName: ""  # e.g., "nginx"
   annotations: {}
   # annotations:
   #   cert-manager.io/cluster-issuer: letsencrypt-prod

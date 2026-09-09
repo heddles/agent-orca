@@ -30,6 +30,8 @@ Agent orcastrator is a Kubernetes-native platform for deploying, managing, and r
 
 From zero to a chatting agent on your laptop in ~3 commands:
 
+>__NOTE__: You may need to run `skaffold dev -p dev` multiple times if this is a brand new local cluster stand up. Typically 3 runs of the command will work for initial cluster standup.
+
 ```bash
 # 1. Create a local Kubernetes cluster (Skaffold's dev profile does this
 #    automatically if kind isn't running yet via hack/ensure-kind-cluster.sh)

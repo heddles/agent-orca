@@ -392,8 +392,11 @@ profiles:
                 command: ["bash", "-c", "kubectl apply -f charts/agent-orca/crds/"]
                 os: [darwin, linux]
             - host:
-                command: ["bash", "-c", "kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.1.3/deploy/static/provider/baremetal/deploy.yaml"]
+                command: ["bash", "-c", "kubectl apply -f config/samples/ingress-nginx-baremetal.yaml"]
                 os: [darwin, linux]
+          after:
+            - host:
+                command: ["echo", "Now you should add 127.0.0.1 agent-orca.local to your /etc/hosts file."]
         releases:
           # CloudNativePG operator — installs CRDs + operator Deployment (first).
           - name: cloudnative-pg-operator
@@ -446,7 +449,7 @@ profiles:
               ui.image.repository: "{{.IMAGE_REPO_agent_orca_ui}}"
               ui.image.tag: "{{.IMAGE_TAG_agent_orca_ui}}"
               ingress.enabled: "true"
-              ingress.className: "nginx"
+              ingress.ingressClassName: "nginx"
               ingress.host: "agent-orca.local"
           - name: model-providers
             chartPath: charts/model-providers
