@@ -447,7 +447,7 @@ profiles:
               ui.image.tag: "{{.IMAGE_TAG_agent_orca_ui}}"
               ingress.enabled: "true"
               ingress.className: "nginx"
-              ingress.hosts
+              ingress.host: "agent-orca.local"
           - name: model-providers
             chartPath: charts/model-providers
             namespace: agent-orca-system
