@@ -1,0 +1,78 @@
+---
+# Dummy secret for the local Ollama instance
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ollama-local-credentials
+type: Opaque
+stringData:
+  api-key: "local-dev-key-12345"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ollama-local
+spec:
+  type: ExternalName
+  externalName: host.docker.internal
+---
+# ModelProvider for the local Ollama instance.
+# This allows Agent Orca to use the models running on your machine.
+apiVersion: agentorca.agentorca.io/v1alpha1
+kind: ModelProvider
+metadata:
+  name: ollama-local
+spec:
+  # Replace with the actual model name you have pulled in Ollama (e.g., llama3, mistral, etc.)
+  litellmModel: "gemma4:26b"
+  credentialsRef:
+    name: ollama-local-credentials
+    key: api-key
+  baseURL: "http://ollama-local:11434"
+  capabilities:
+    - chat
+    - embeddings
+  latencyProfile: "fast"
+  queryPrompt: "search_query: "
+  docPrompt: "search_document: "
+  constraints:
+    contextWindow: 8192
+    costPerMillionInputTokens: "0"
+    costPerMillionOutputTokens: "0"
+---
+apiVersion: agentorca.agentorca.io/v1alpha1
+kind: ModelSelector
+metadata:
+  name: ollama-local-selector
+spec:
+  strategy: rule-based
+  providers:
+    - name: ollama-local
+      weight: 100
+---
+# The Agent definition: defines the personality and the model to use.
+apiVersion: agentorca.agentorca.io/v1alpha1
+kind: Agent
+metadata:
+  name: local-ollama-agent
+spec:
+  modelSelectorRef: ollama-local-selector
+  systemPrompt: |
+    You are a helpful and friendly AI assistant running locally on my machine via Ollama.
+    You can help with coding, answering questions, or just chatting.
+  runtime:
+    ociRef: ghcr.io/agentorca/agent-orca/openai-reference:latest
+    framework: openai-compatible
+    inputMode: env
+
+---
+# The AgentDeployment: runs the agent and enables the chat interface.
+apiVersion: agentorca.agentorca.io/v1alpha1
+kind: AgentDeployment
+metadata:
+  name: local-ollama-chat-deployment
+spec:
+  agentRef: local-ollama-agent
+  inputSource:
+    type: chat
+  replicas: 1
