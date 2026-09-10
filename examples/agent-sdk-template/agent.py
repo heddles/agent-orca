@@ -31,7 +31,9 @@ import sys
 import urllib.error
 import urllib.request
 
-BASE_URL = os.environ.get("OPENAI_BASE_URL", "http://localhost:8080/v1").rstrip("/")
+BASE_URL = os.environ.get("OPENAI_BASE_URL", "http://localhost:8080").rstrip("/")
+if not BASE_URL.endswith("/v1"):
+    BASE_URL = f"{BASE_URL}/v1"
 ENDPOINT = f"{BASE_URL}/chat/completions"
 API_KEY = os.environ.get("OPENAI_API_KEY", "")
 TIMEOUT = int(os.environ.get("AGENTORC_TIMEOUT_SEC", "600"))

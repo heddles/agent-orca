@@ -15,6 +15,10 @@ metadata:
 spec:
   type: ExternalName
   externalName: host.docker.internal
+  ports:
+  - name: http
+    port: 11434
+    targetPort: 11434
 ---
 # ModelProvider for the local Ollama instance.
 # This allows Agent Orca to use the models running on your machine.
@@ -36,7 +40,7 @@ spec:
   queryPrompt: "search_query: "
   docPrompt: "search_document: "
   constraints:
-    contextWindow: 8192
+    contextWindow: 262000
     costPerMillionInputTokens: "0"
     costPerMillionOutputTokens: "0"
 ---
