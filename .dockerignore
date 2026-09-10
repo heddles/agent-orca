@@ -8,6 +8,8 @@
 !internal/**
 !api
 !api/**
+!pkg
+!pkg/**
 !go.mod
 !go.sum
 **/*_test.go

@@ -16,11 +16,11 @@
 
 [tools]
 # Go — matches the directive in go.mod; CI uses go-version-file: go.mod
-go = "1.25.3"
+go = "1.25"
 # Node — drives the React UI under ui/ ; CI uses Node 20
 node = "20"
 # GNU Make — the Makefile is the front door to everything
-make = "4.4"
+make = "4.4.1"
 # Helm — chart rendering / `make install`
 helm = "3.14"
 # kind / kubectl / skaffold — local dev clusters and the Skaffold dev loop

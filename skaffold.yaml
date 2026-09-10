@@ -47,9 +47,13 @@ build:
       context: .
       docker:
         dockerfile: Dockerfile.mcp-ingester
+    # - image: agent-orca/openai-reference
+    #   context: .
+    #   docker:
+    #     dockerfile: Dockerfile.openai-reference
     # NOTE: the reference agent image (ghcr.io/agentorca/agent-orca/openai-reference)
     # is NOT built here because skaffold's tagPolicy is global (sha256) and the
-    # demo charts / hack/test-agents.sh pin it to `:latest`. Build it locally and
+    # demo charts pin it to `:latest`. Build it locally and
     # load into kind once (see docs/development.md), or `skaffold run -p dev` will
     # pull `:latest` from ghcr (public). This keeps the operator/router/ui tagging
     # scheme unchanged.
@@ -396,6 +400,11 @@ profiles:
                 os: [darwin, linux]
           after:
             - host:
+                command: ["docker", "build", "-t", "ghcr.io/agentorca/agent-orca/openai-reference:latest","-f", "Dockerfile.openai-reference","."]
+                os: [darwin, linux]
+            - host:
+                command: ["kind", "load", "docker-image", "ghcr.io/agentorca/agent-orca/openai-reference:latest", "--name", "agent-orca-dev"]
+            - host:
                 command: ["echo", "Now you should add 127.0.0.1 agent-orca.local to your /etc/hosts file."]
         releases:
           # CloudNativePG operator — installs CRDs + operator Deployment (first).
@@ -474,14 +483,6 @@ profiles:
       # defaultNamespace matches the README's `-n agent-orca-system` for this sample.
       kubectl:
         defaultNamespace: agent-orca-system
-
-
-  # dev-oidc: OIDC login is OFF by default in the dev profile. To enable it for a
-  # browser-login test with your own IdP (e.g. Keycloak), apply
-  # charts/agent-orca/values-dev-oidc.yaml after `skaffold dev` starts, then apply a
-  # login-capable TenantConfig (e.g. config/samples/dev-tenant-google.yaml):
-  #   helm upgrade agent-orca charts/agent-orca -n agent-orca-system \
-  #     -f charts/agent-orca/values-dev-oidc.yaml
 
 
   # demo-htb-pwn: autonomous HTB red-team pwnbox (MCP toolbelt pattern).

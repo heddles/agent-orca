@@ -1239,7 +1239,7 @@ type SystemStatusResponse struct {
 	SubSystems           []SystemSubSystemStatus `json:"subsystems"`
 	ModelProviders       []ProviderHealth        `json:"modelProviders,omitempty"`
 	Metrics              *SystemMetrics          `json:"metrics,omitempty"`
-	RunHistoryConfigured bool                   `json:"runHistoryConfigured"`
+	RunHistoryConfigured bool                    `json:"runHistoryConfigured"`
 }
 
 type ProviderHealth struct {

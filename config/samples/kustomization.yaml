@@ -1,4 +1,0 @@
-resources:
-- ollama-embedding-cluster.yaml
-- dev-tenant.yaml
-# +kubebuilder:scaffold:manifestskustomizesamples
