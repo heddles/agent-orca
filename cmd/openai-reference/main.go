@@ -77,7 +77,7 @@ func main() {
 	)
 
 	// --- One-Shot Mode ---
-	if input := os.Getenv("AGENT_INPUT"); input != "" {
+	if input := os.Getenv("AGENTORC_INPUT"); input != "" {
 		slog.Info("one-shot mode activated", "input", input)
 		result, err := a.Run(context.Background(), input)
 		if err != nil {
