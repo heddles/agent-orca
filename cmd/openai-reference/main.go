@@ -1,13 +1,17 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/floppyfish14/agent-orca/pkg/agent"
@@ -17,6 +21,7 @@ import (
 type OpenAICompletionRequest struct {
 	Model    string    `json:"model"`
 	Messages []Message `json:"messages"`
+	Stream   bool      `json:"stream"`
 }
 
 type Message struct {
@@ -67,18 +72,22 @@ func main() {
 	maxTokens, _ := strconv.Atoi(getEnv("OPENAI_MAX_TOKENS", "1000"))
 	port := getEnv("PORT", "8081")
 
-	a := agent.New(
-		agent.WithModel(model),
-		agent.WithBaseURL(baseURL),
-		agent.WithAPIKey(apiKey),
-		agent.WithSystemPrompt(systemPrompt),
-		agent.WithTemperature(temperature),
-		agent.WithMaxTokens(maxTokens),
-	)
+	// Helper to create a new agent instance per request to avoid concurrency issues.
+	newAgent := func() *agent.Agent {
+		return agent.New(
+			agent.WithModel(model),
+			agent.WithBaseURL(baseURL),
+			agent.WithAPIKey(apiKey),
+			agent.WithSystemPrompt(systemPrompt),
+			agent.WithTemperature(temperature),
+			agent.WithMaxTokens(maxTokens),
+		)
+	}
 
 	// --- One-Shot Mode ---
 	if input := os.Getenv("AGENTORC_INPUT"); input != "" {
 		slog.Info("one-shot mode activated", "input", input)
+		a := newAgent()
 		result, err := a.Run(context.Background(), input)
 		if err != nil {
 			slog.Error("agent run failed", "err", err)
@@ -95,10 +104,10 @@ func main() {
 	})
 
 	// OpenAI Compatibility Endpoint
-	mux.HandleFunc("/v1/chat/completions", handleOpenAICompletion(a))
+	mux.HandleFunc("/v1/chat/completions", handleOpenAICompletion(newAgent, model, baseURL, apiKey, systemPrompt, temperature, maxTokens))
 
 	// Legacy/Internal Invoke Endpoint
-	mux.HandleFunc("/invoke", handleInvoke(a))
+	mux.HandleFunc("/invoke", handleInvoke(newAgent()))
 
 	srv := &http.Server{
 		Addr:         ":" + port,
@@ -114,7 +123,7 @@ func main() {
 	}
 }
 
-func handleOpenAICompletion(a *agent.Agent) http.HandlerFunc {
+func handleOpenAICompletion(newAgent func() *agent.Agent, model, baseURL, apiKey, systemPrompt string, temperature float64, maxTokens int) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -141,11 +150,17 @@ func handleOpenAICompletion(a *agent.Agent) http.HandlerFunc {
 			return
 		}
 
-		slog.Info("openai completion requested", "input", userInput)
+		slog.Info("openai completion requested", "input", userInput, "stream", req.Stream)
+
+		if req.Stream {
+			handleOpenAIStreaming(w, r, req, model, baseURL, apiKey, systemPrompt, temperature, maxTokens)
+			return
+		}
 
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 		defer cancel()
 
+		a := newAgent()
 		result, err := a.Run(ctx, userInput)
 		if err != nil {
 			slog.Error("agent run failed", "err", err)
@@ -171,6 +186,116 @@ func handleOpenAICompletion(a *agent.Agent) http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(resp)
 		slog.Info("openai completion successful", "phase", result.Phase)
+	}
+}
+
+func handleOpenAIStreaming(w http.ResponseWriter, r *http.Request, req OpenAICompletionRequest, model, baseURL, apiKey, systemPrompt string, temperature float64, maxTokens int) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Extract the last user message as the agent input
+	var userInput string
+	for i := len(req.Messages) - 1; i >= 0; i-- {
+		if req.Messages[i].Role == "user" {
+			userInput = req.Messages[i].Content
+			break
+		}
+	}
+
+	if userInput == "" {
+		http.Error(w, "No user message found in request", http.StatusBadRequest)
+		return
+	}
+
+	slog.Info("openai streaming requested", "input", userInput)
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+	defer cancel()
+
+	// Prepare messages for the model-router, including system prompt
+	messages := []Message{{Role: "system", Content: systemPrompt}}
+	for _, m := range req.Messages {
+		messages = append(messages, m)
+	}
+
+	// We build a request to the model-router directly to get streaming.
+	// This bypasses the agent.Run loop, so it only streams the first turn.
+	// This is acceptable for a reference image.
+	body := map[string]any{
+		"model":       req.Model,
+		"messages":    messages,
+		"stream":      true,
+		"temperature": temperature,
+	}
+	if maxTokens > 0 {
+		body["max_tokens"] = maxTokens
+	}
+
+	data, err := json.Marshal(body)
+	if err != nil {
+		http.Error(w, "Invalid request", http.StatusInternalServerError)
+		return
+	}
+
+	// The model-router endpoint is baseURL/chat/completions.
+	// Since baseURL from main is http://localhost:8080/v1, we append "/chat/completions"
+	// if baseURL is http://localhost:8080/v1, then baseURL + "/chat/completions" is http://localhost:8080/v1/chat/completions.
+
+	url := baseURL + "/chat/completions"
+	req_out, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
+	if err != nil {
+		http.Error(w, "Failed to create request", http.StatusInternalServerError)
+		return
+	}
+	req_out.Header.Set("Content-Type", "application/json")
+	if apiKey != "" {
+		req_out.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+
+	resp, err := http.DefaultClient.Do(req_out)
+	if err != nil {
+		http.Error(w, "Failed to connect to model-router", http.StatusInternalServerError)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		http.Error(w, fmt.Sprintf("Model-router error: %s", string(bodyBytes)), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "Streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+
+		data_line := strings.TrimPrefix(line, "data: ")
+		if data_line == "" || data_line == "[DONE]" {
+			continue
+		}
+
+		// Write the line as-is to the client
+		fmt.Fprintf(w, "data: %s\n\n", data_line)
+		flusher.Flush()
+	}
+
+	if err := scanner.Err(); err != nil {
+		slog.Error("streaming error", "err", err)
 	}
 }
 

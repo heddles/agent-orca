@@ -28,7 +28,7 @@ metadata:
   name: ollama-local
 spec:
   # Replace with the actual model name you have pulled in Ollama (e.g., llama3, mistral, etc.)
-  litellmModel: "gemma4:26b"
+  litellmModel: "gemma4:e4b"
   credentialsRef:
     name: ollama-local-credentials
     key: api-key
@@ -40,7 +40,7 @@ spec:
   queryPrompt: "search_query: "
   docPrompt: "search_document: "
   constraints:
-    contextWindow: 262000
+    contextWindow: 262144
     costPerMillionInputTokens: "0"
     costPerMillionOutputTokens: "0"
 ---
@@ -67,7 +67,6 @@ spec:
   runtime:
     ociRef: ghcr.io/agentorca/agent-orca/openai-reference:latest
     framework: openai-compatible
-    inputMode: env
 
 ---
 # The AgentDeployment: runs the agent and enables the chat interface.

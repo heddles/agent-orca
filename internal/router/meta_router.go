@@ -235,7 +235,18 @@ func (m *MetaRouter) setCached(key, providerName string) {
 func liteLLMEndpoint(provider *ProviderConfig) string {
 	// If the provider has an explicit BaseURL, use it directly.
 	if provider.BaseURL != "" {
-		return strings.TrimRight(provider.BaseURL, "/") + "/v1/chat/completions"
+		baseURL := strings.TrimRight(provider.BaseURL, "/")
+		// Check if the URL already ends with /v1/chat/completions or /v1 to avoid double-appending.
+		// Some providers like OpenRouter have endpoints like https://openrouter.ai/api/v1/chat/completions
+		// where the user might set baseURL to https://openrouter.ai/api/v1
+		if strings.HasSuffix(baseURL, "/v1/chat/completions") {
+			return baseURL
+		}
+		if strings.HasSuffix(baseURL, "/v1") {
+			// BaseURL ends with /v1, append /chat/completions directly
+			return baseURL + "/chat/completions"
+		}
+		return baseURL + "/v1/chat/completions"
 	}
 
 	// Otherwise, map from the LiteLLM model prefix to the default endpoint.

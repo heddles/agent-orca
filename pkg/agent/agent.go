@@ -36,6 +36,7 @@ limitations under the License.
 package agent
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -44,6 +45,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -435,26 +437,24 @@ func (a *Agent) Run(ctx context.Context, input string, opts ...RunOption) (*RunR
 }
 
 // chatCompletion sends a chat completion request to the model-router.
-func (a *Agent) chatCompletion(ctx context.Context, messages []map[string]any) (map[string]any, error) {
-	body := map[string]any{
-		"messages":    messages,
+func (a *Agent) chatCompletion(ctx context.Context, conversation []map[string]any) (map[string]any, error) {
+	payload := map[string]any{
+		"model":       a.model,
+		"messages":    conversation,
 		"temperature": a.temperature,
 	}
-	if a.model != "" {
-		body["model"] = a.model
-	}
 	if a.maxTokens != nil {
-		body["max_tokens"] = *a.maxTokens
+		payload["max_tokens"] = *a.maxTokens
 	}
 
-	data, err := json.Marshal(body)
+	data, err := json.Marshal(payload)
 	if err != nil {
-		return nil, fmt.Errorf("marshaling request: %w", err)
+		return nil, err
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.baseURL+"/chat/completions", bytes.NewReader(data))
 	if err != nil {
-		return nil, fmt.Errorf("building request: %w", err)
+		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if a.apiKey != "" {
@@ -463,20 +463,113 @@ func (a *Agent) chatCompletion(ctx context.Context, messages []map[string]any) (
 
 	resp, err := a.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("request: %w", err)
+		return nil, err
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(bodyBytes))
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("chat completion failed: %s", string(body))
 	}
 
 	var result map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("decoding response: %w", err)
+		return nil, err
 	}
 	return result, nil
+}
+
+// chatCompletionStream sends a chat completion stream request to the model-router.
+func (a *Agent) chatCompletionStream(ctx context.Context, conversation []map[string]any) (<-chan string, <-chan error) {
+	contentChan := make(chan string)
+	errChan := make(chan error, 1)
+
+	go func() {
+		defer close(contentChan)
+		defer close(errChan)
+
+		payload := map[string]any{
+			"model":       a.model,
+			"messages":    conversation,
+			"temperature": a.temperature,
+			"stream":      true,
+		}
+		if a.maxTokens != nil {
+			payload["max_tokens"] = *a.maxTokens
+		}
+
+		data, err := json.Marshal(payload)
+		if err != nil {
+			errChan <- err
+			return
+		}
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.baseURL+"/chat/completions", bytes.NewReader(data))
+		if err != nil {
+			errChan <- err
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if a.apiKey != "" {
+			req.Header.Set("Authorization", "Bearer "+a.apiKey)
+		}
+
+		resp, err := a.httpClient.Do(req)
+		if err != nil {
+			errChan <- err
+			return
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			errChan <- fmt.Errorf("chat completion stream failed: %s", string(body))
+			return
+		}
+
+		scanner := bufio.NewScanner(resp.Body)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if !strings.HasPrefix(line, "data: ") {
+				continue
+			}
+
+			dataLine := strings.TrimPrefix(line, "data: ")
+			if dataLine == "" || dataLine == "[DONE]" {
+				continue
+			}
+
+			var event struct {
+				Choices []struct {
+					Delta struct {
+						Content string `json:"content"`
+					} `json:"delta"`
+				} `json:"choices"`
+			}
+			if err := json.Unmarshal([]byte(dataLine), &event); err == nil {
+				if len(event.Choices) > 0 && event.Choices[0].Delta.Content != "" {
+					contentChan <- event.Choices[0].Delta.Content
+				}
+			}
+		}
+
+		if err := scanner.Err(); err != nil {
+			errChan <- err
+		}
+	}()
+
+	return contentChan, errChan
+}
+
+// RunStream executes the agent and streams the output tokens for a single turn.
+func (a *Agent) RunStream(ctx context.Context, input string, opts ...RunOption) (<-chan string, <-chan error) {
+	conversation := make([]map[string]any, 0)
+	if a.systemPrompt != "" {
+		conversation = append(conversation, map[string]any{"role": "system", "content": a.systemPrompt})
+	}
+	conversation = append(conversation, map[string]any{"role": "user", "content": input})
+
+	return a.chatCompletionStream(ctx, conversation)
 }
 
 // extractDoneOutput finds the most recent _done tool call and returns its output.
