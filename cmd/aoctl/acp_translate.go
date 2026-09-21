@@ -20,13 +20,32 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
 )
+
+// flushSSE writes an SSE event to the response writer and immediately
+// flushes it to the client. It skips any content-type header check and
+// relies on the caller to set appropriate streaming headers. Returns an
+// error if the ResponseWriter does not support flushing.
+func flushSSE(w http.ResponseWriter, eventType, data string) error {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		return fmt.Errorf("streaming not supported")
+	}
+	if eventType != "" {
+		_, _ = fmt.Fprintf(w, "event: %s\n", eventType)
+	}
+	if data != "" {
+		_, _ = fmt.Fprintf(w, "data: %s\n", data)
+	}
+	_, _ = fmt.Fprint(w, "\n")
+	flusher.Flush()
+	return nil
+}
 
 // This file holds the ACP JSON-RPC wire types that Zed (and other ACP clients)
 // send over stdio, the conversions between ACP content blocks and agent-orca's
@@ -37,11 +56,6 @@ import (
 // Capability blocks are kept loose (json.RawMessage where the spec is still
 // evolving) so a small mismatch doesn't prevent the core prompt flow, which is
 // stable.
-
-// errNotStreaming is returned when the ACP HTTP API does not yield an SSE
-// stream (e.g. the run is not in-progress yet, or no state store is configured).
-// Callers fall back to polling GetACPRun.
-var errNotStreaming = errors.New("not streaming")
 
 // ACP run-status string constants — mirrors the server's ACPRunStatus enum
 // (internal/apiserver/acp_api.go). Used by the bridge to interpret poll results.
@@ -324,11 +338,13 @@ func (c *Client) StreamRunEvents(ctx context.Context, runID string) (<-chan Even
 		_ = resp.Body.Close()
 		return nil, fmt.Errorf("stream run events failed (HTTP %d)", resp.StatusCode)
 	}
-	if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, "event-stream") {
+
+	// The server streams SSE only for runs in the "running" phase.
+	// For completed/failed/awaiting runs it returns JSON; detect that
+	// and return an error so the caller can fall back to polling.
+	if !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
 		_ = resp.Body.Close()
-		// Server handed back JSON (run not running yet, or no state store).
-		// Caller falls back to polling GetACPRun.
-		return nil, errNotStreaming
+		return nil, fmt.Errorf("server returned non-streaming response (Content-Type: %s)", resp.Header.Get("Content-Type"))
 	}
 
 	ch := make(chan Event)
@@ -340,13 +356,9 @@ func (c *Client) StreamRunEvents(ctx context.Context, runID string) (<-chan Even
 		cur := Event{}
 		for scanner.Scan() {
 			line := scanner.Text()
-			switch {
-			case strings.HasPrefix(line, "event:"):
-				cur.Type = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
-			case strings.HasPrefix(line, "data:"):
-				cur.Data = strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-			case line == "":
-				if cur.Type != "" || cur.Data != "" {
+			if line == "" {
+				// End of event — flush the accumulated event to the channel.
+				if cur.Type != "" {
 					select {
 					case ch <- cur:
 					case <-ctx.Done():
@@ -354,7 +366,16 @@ func (c *Client) StreamRunEvents(ctx context.Context, runID string) (<-chan Even
 					}
 					cur = Event{}
 				}
+				continue
 			}
+			if strings.HasPrefix(line, "event: ") {
+				cur.Type = strings.TrimPrefix(line, "event: ")
+			} else if strings.HasPrefix(line, "data: ") {
+				cur.Data = strings.TrimPrefix(line, "data: ")
+			}
+		}
+		if scanner.Err() != nil {
+			return
 		}
 	}()
 	return ch, nil

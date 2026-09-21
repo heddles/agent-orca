@@ -260,82 +260,40 @@ func handleSessionPrompt(ctx context.Context, b *acpBridge, req jsonrpcRequest) 
 	return promptHandled{}, nil
 }
 
-// awaitCompletion drives one run to a terminal state. It polls the run status
-// and, once the run reaches "in-progress", hands off to the live SSE token
-// stream; if SSE is unavailable (e.g. no state store in local dev) it falls
-// back to polling.
+// awaitCompletion drives one run to a terminal state. It first tries
+// streaming (via streamRunEvents), which will fall back to polling if streaming
+// is unavailable. If streaming reaches the "awaiting" state, it handles the
+// elicitation flow and loops. Otherwise, it returns the terminal stop reason.
 func (b *acpBridge) awaitCompletion(ctx context.Context, runID, sessionID string) string {
-	// currentRunID tracks the run we're polling. It may switch to a
-	// continuation run after a clarify/resume cycle.
-	currentRunID := runID
 	for {
-		if err := ctx.Err(); err != nil {
+		// Path 1: Try streaming first
+		term := b.streamRunEvents(ctx, runID, sessionID)
+		if term != acpPendingAwaiting {
+			return term
+		}
+		// Path 2: Stream surfaced awaiting — handle elicitation and loop
+		run, err := b.client.GetACPRun(ctx, runID)
+		if err != nil {
 			return acpStopReasonUserCancel
 		}
-		run, err := b.client.GetACPRun(ctx, currentRunID)
-		if err != nil {
-			b.srv.logf("acp: poll run error: %v\n", err)
-			if !b.retryWait(ctx, 200*time.Millisecond) {
-				return acpStopReasonUserCancel
-			}
+		contID, resumed := b.handleAwaitingRun(ctx, run, sessionID, runID)
+		if resumed {
+			runID = contID
 			continue
 		}
-		switch run.Status {
-		case acpStatusInProgress:
-			term := b.streamRunEvents(ctx, currentRunID, sessionID)
-			if term == acpPendingAwaiting {
-				// SSE stream surfaced an awaiting state; loop to re-poll — the
-				// next iteration will hit the acpStatusAwaiting case below and
-				// run the elicitation flow.
-				continue
-			}
-			return term
-		case acpStatusCompleted, acpStatusFailed, acpStatusCancelled:
-			// If the server created a continuation run (e.g. via clarify/resume),
-			// follow it instead of ending the turn.
-			if run.ContinuationRunRef != "" {
-				currentRunID = run.ContinuationRunRef
-				continue
-			}
-			b.emitTerminalOutput(run, sessionID)
-			return runStatusToStopReason(run.Status)
-		case acpStatusAwaiting:
-			if contID, resumed := b.handleAwaitingRun(ctx, run, sessionID, currentRunID); resumed {
-				// Run was resumed with the user's answer; switch to the
-				// continuation run (if one was created) and re-poll.
-				currentRunID = contID
-				if !b.retryWait(ctx, 200*time.Millisecond) {
-					return acpStopReasonUserCancel
-				}
-				continue
-			}
-			return acpStopReasonEndTurn
-		default: // created / pending
-			b.srv.notify(acpMethodSessionUpdate, acpUpdateParams{
-				SessionID: sessionID,
-				Update: acpUpdate{
-					SessionUpdate: "plan",
-					PlanEntries: []acpPlanEntry{{
-						Content:  "Starting agent-orca run " + runID,
-						Priority: "low",
-						Status:   "in-progress",
-					}},
-				},
-			})
-			if !b.retryWait(ctx, 200*time.Millisecond) {
-				return acpStopReasonUserCancel
-			}
-		}
+		return acpStopReasonEndTurn
 	}
 }
 
 // streamRunEvents consumes the SSE stream from GET /runs/{id} (Accept:
 // text/event-stream) and translates it into session/update notifications.
+// If streaming is unavailable, it falls back to polling via pollToCompletion.
 func (b *acpBridge) streamRunEvents(ctx context.Context, runID, sessionID string) string {
 	ch, err := b.client.StreamRunEvents(ctx, runID)
 	if err != nil {
-		// Race: run left in-progress before SSE opened, or no state store.
-		b.srv.logf("acp: sse unavailable (%v), polling run %s\n", err, runID)
+		// SSE unavailable (run not yet in-progress, no state store, etc.).
+		// Fall back to polling.
+		b.srv.logf("acp: sse unavailable (%v), falling back to polling run %s\n", err, runID)
 		return b.pollToCompletion(ctx, runID, sessionID)
 	}
 
@@ -347,7 +305,7 @@ func (b *acpBridge) streamRunEvents(ctx context.Context, runID, sessionID string
 			return acpStopReasonUserCancel
 		case ev, ok := <-ch:
 			if !ok {
-				// Channel closed; final-poll to determine stop reason.
+				// Channel closed; fall back to polling to determine final stop reason.
 				return b.pollToCompletion(ctx, runID, sessionID)
 			}
 			if term := b.handleEvent(ev, sessionID, msgID, &emitted); term != "" {
@@ -384,7 +342,12 @@ func (b *acpBridge) handleEvent(ev Event, sessionID, msgID string, emitted *bool
 			Run acpRun `json:"run"`
 		}
 		if err := json.Unmarshal([]byte(ev.Data), &payload); err == nil {
-			b.emitTerminalOutput(payload.Run, sessionID)
+			// Only emit terminal output if tokens weren't already streamed.
+			// Tokens are streamed via message.part events, so run.completed's
+			// output would be a duplicate.
+			if !*emitted {
+				b.emitTerminalOutput(payload.Run, sessionID)
+			}
 		}
 		return acpStopReasonEndTurn
 	case "run.failed":
@@ -392,7 +355,12 @@ func (b *acpBridge) handleEvent(ev Event, sessionID, msgID string, emitted *bool
 			Run acpRun `json:"run"`
 		}
 		if err := json.Unmarshal([]byte(ev.Data), &payload); err == nil {
-			b.emitTerminalOutput(payload.Run, sessionID)
+			// Only emit terminal output if tokens weren't already streamed.
+			// Tokens are streamed via message.part events, so run.completed's
+			// output would be a duplicate.
+			if !*emitted {
+				b.emitTerminalOutput(payload.Run, sessionID)
+			}
 		}
 		return acpStopReasonEndTurn
 	case "run.cancelled":

@@ -26,12 +26,12 @@ func envMode() {
 		fmt.Println("No AGENTORC_INPUT set")
 		os.Exit(1)
 	}
-	output, usage, err := runOnce(inp)
+	usage, err := runOnce(inp)
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("Tokens: input=%d output=%d output=%s\n", usage.PromptTokens, usage.CompletionTokens, output)
+	fmt.Printf("Tokens: input=%d output=%d\n", usage.PromptTokens, usage.CompletionTokens)
 }
 
 func httpMode() {
@@ -57,7 +57,7 @@ func httpMode() {
 		if v, ok := payload["input"].(string); ok {
 			input = v
 		}
-		output, usage, err := runOnce(input)
+		usage, err := runOnce(input)
 		if err != nil {
 			w.WriteHeader(500)
 			json.NewEncoder(w).Encode(map[string]string{"error": "upstream error"})
@@ -65,7 +65,6 @@ func httpMode() {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"output": output,
 			"usage": map[string]interface{}{
 				"input_tokens":  usage.PromptTokens,
 				"output_tokens": usage.CompletionTokens,
@@ -76,7 +75,7 @@ func httpMode() {
 	http.ListenAndServe(":"+port, nil)
 }
 
-func runOnce(input string) (string, openai.CompletionUsage, error) {
+func runOnce(input string) (openai.CompletionUsage, error) {
 	model, ok := os.LookupEnv("OPENAI_MODEL")
 	if !ok || model == "" {
 		model = "gpt-4o"
@@ -91,8 +90,9 @@ func runOnce(input string) (string, openai.CompletionUsage, error) {
 			IncludeUsage: openai.Bool(true),
 		},
 	})
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
+	var completeText string
 	var output bytes.Buffer
 	var usage openai.CompletionUsage
 	for stream.Next() {
@@ -107,6 +107,6 @@ func runOnce(input string) (string, openai.CompletionUsage, error) {
 			usage = chunk.Usage
 		}
 	}
-	fmt.Println()
-	return output.String(), usage, stream.Err()
+	_ = completeText
+	return usage, stream.Err()
 }

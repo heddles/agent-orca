@@ -1729,6 +1729,7 @@ func streamAndPrint(ctx context.Context, c *Client, id string, out, errw io.Writ
 	if err != nil {
 		return fmt.Errorf("streaming: %w", err)
 	}
+	gotComplete := false
 	for ev := range ch {
 		switch ev.Type {
 		case "token":
@@ -1738,6 +1739,7 @@ func streamAndPrint(ctx context.Context, c *Client, id string, out, errw io.Writ
 			if json.Unmarshal([]byte(ev.Data), &tr) == nil {
 				_ = printTask(out, tr)
 			}
+			gotComplete = true
 		case "status":
 			var m map[string]string
 			if json.Unmarshal([]byte(ev.Data), &m) == nil {
@@ -1747,6 +1749,14 @@ func streamAndPrint(ctx context.Context, c *Client, id string, out, errw io.Writ
 			}
 		case "error":
 			return errors.New("stream error: " + ev.Data)
+		}
+	}
+	// Fallback: if the stream closed without a complete event, fetch the
+	// final result directly from the CRD so clients always get a response.
+	if !gotComplete {
+		tr, err := c.GetTask(ctx, id)
+		if err == nil {
+			_ = printTask(out, tr)
 		}
 	}
 	_, _ = fmt.Fprintln(errw)

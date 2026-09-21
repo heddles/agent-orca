@@ -74,3 +74,4 @@ ui/test-results/.last-run.json
 # Agent dirs
 plans/*
 graphify-out/
+**/.carto/*

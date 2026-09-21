@@ -50,7 +50,7 @@ build:
     - image: ghcr.io/agentorca/agent-orca/openai-reference
       context: .
       docker:
-        dockerfile: Dockerfile.openai-reference
+        dockerfile: Dockerfile.go.openai-reference
 deploy:
   helm:
     hooks: &ensure_kind_deploy_hooks

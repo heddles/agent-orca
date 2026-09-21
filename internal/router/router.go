@@ -850,7 +850,7 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 				// Handle Hard Block
 				if result.Blocked {
 					slog.Warn("Guardrail blocked outbound content", "run", r.cfg.RunName)
-					r.emitTraceEvent(fmt.Sprintf(`{"type":"guardrail","action":"blocked","reason":%q}`, result.BlockMessage))
+					r.emitTraceEventBoth(fmt.Sprintf(`{"type":"guardrail","action":"blocked","reason":%q}`, result.BlockMessage))
 					blockedResp := ChatCompletionResponse{
 						Choices: []Choice{{
 							Message: Message{Role: "assistant", Content: result.BlockMessage},
@@ -949,15 +949,15 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 		if err != nil {
 			primaryName := provider.Name
 			slog.Warn("primary provider failed (streaming), trying fallback", "provider", primaryName, "err", err)
-			r.emitTraceEvent(fmt.Sprintf(`{"type":"providerFallback","from":%q,"to":"","reason":%q}`, primaryName, err.Error()))
+			r.emitTraceEventBoth(fmt.Sprintf(`{"type":"providerFallback","from":%q,"to":"","reason":%q}`, primaryName, err.Error()))
 			resp, provider, err = r.tryFallbackStream(req.Context(), chatReq, primaryName)
 			if err != nil {
 				slog.Error("all providers failed (streaming)", "err", err)
-				r.emitTraceEvent(fmt.Sprintf(`{"type":"providerFallback","from":%q,"to":"","reason":%q,"exhausted":true}`, primaryName, err.Error()))
+				r.emitTraceEventBoth(fmt.Sprintf(`{"type":"providerFallback","from":%q,"to":"","reason":%q,"exhausted":true}`, primaryName, err.Error()))
 				http.Error(w, "upstream error", http.StatusBadGateway)
 				return
 			}
-			r.emitTraceEvent(fmt.Sprintf(`{"type":"providerFallback","from":%q,"to":%q,"reason":%q}`, primaryName, provider.Name, "streaming fallback succeeded"))
+			r.emitTraceEventBoth(fmt.Sprintf(`{"type":"providerFallback","from":%q,"to":%q,"reason":%q}`, primaryName, provider.Name, "streaming fallback succeeded"))
 		}
 		r.handleStreamingResponse(w, req, provider, resp, chatReq)
 		return
@@ -972,11 +972,11 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 		respBody, provider, err = r.tryFallback(req.Context(), chatReq, primaryName)
 		if err != nil {
 			slog.Error("all providers failed", "err", err)
-			r.emitTraceEvent(fmt.Sprintf(`{"type":"providerFallback","from":%q,"to":"","reason":%q,"exhausted":true}`, primaryName, err.Error()))
+			r.emitTraceEventBoth(fmt.Sprintf(`{"type":"providerFallback","from":%q,"to":"","reason":%q,"exhausted":true}`, primaryName, err.Error()))
 			http.Error(w, "upstream error", http.StatusBadGateway)
 			return
 		}
-		r.emitTraceEvent(fmt.Sprintf(`{"type":"providerFallback","from":%q,"to":%q,"reason":%q}`, primaryName, provider.Name, "fallback succeeded"))
+		r.emitTraceEventBoth(fmt.Sprintf(`{"type":"providerFallback","from":%q,"to":%q,"reason":%q}`, primaryName, provider.Name, "fallback succeeded"))
 	}
 
 	// Intercept tool calls and dispatch them.
@@ -2275,7 +2275,7 @@ func (r *Router) handleToolCalls(w http.ResponseWriter, req *http.Request,
 	toolResults := make([]Message, len(assistantMsg.ToolCalls))
 	for i, tc := range assistantMsg.ToolCalls {
 		result := r.dispatchToolCall(req.Context(), tc)
-		r.emitTraceEvent(fmt.Sprintf(`{"type":"toolResult","name":%q,"result":"%s"}`,
+		r.emitTraceEventBoth(fmt.Sprintf(`{"type":"toolResult","name":%q,"result":"%s"}`,
 			tc.Function.Name, truncateStr(result, 500)))
 		toolResults[i] = Message{
 			Role:       "tool",
@@ -2322,6 +2322,23 @@ func (r *Router) emitTraceEvent(eventJSON string) {
 	if err := r.store.SaveTraceEvent(ctx, key, eventJSON); err != nil {
 		slog.Warn("failed to save trace event", "err", err)
 	}
+}
+
+// emitTraceEventSSE emits a trace event to SSE subscribers via the TokenBroadcaster.
+// The event is prefixed with \x00 to match the Redis stream format expected by TailTokens.
+func (r *Router) emitTraceEventSSE(eventJSON string) {
+	r.tokens.Send("\x00" + eventJSON)
+}
+
+// emitTraceEventBoth emits a trace event to both Redis token stream and SSE subscribers.
+func (r *Router) emitTraceEventBoth(eventJSON string) {
+	r.emitTraceEvent(eventJSON)
+	r.emitTraceEventSSE(eventJSON)
+}
+
+// emitTraceEventSSEOnly emits a trace event only to SSE subscribers (no Redis storage).
+func (r *Router) emitTraceEventSSEOnly(eventJSON string) {
+	r.emitTraceEventSSE(eventJSON)
 }
 
 // Finalize emits a terminal trace-event release decision if no explicit terminal was reached.
@@ -2514,7 +2531,7 @@ func (r *Router) dispatchToolCall(ctx context.Context, tc ToolCall) string { //n
 		traceEvent["toolResult"] = tr
 	}
 	if resultJSON, err := json.Marshal(traceEvent); err == nil {
-		r.emitTraceEvent(string(resultJSON))
+		r.emitTraceEventBoth(string(resultJSON))
 	}
 
 	return result
@@ -4412,7 +4429,8 @@ func (r *Router) HandleInternalStream(w http.ResponseWriter, req *http.Request) 
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("Connection", "close")
+	w.Header().Set("X-Accel-Buffering", "no")
 	// Write headers immediately so proxies (including the k8s API server)
 	// know this is a streaming response and don't buffer it.
 	w.WriteHeader(http.StatusOK)
@@ -4434,7 +4452,14 @@ func (r *Router) HandleInternalStream(w http.ResponseWriter, req *http.Request) 
 				return
 			}
 			tokenCount++
-			data, _ := json.Marshal(map[string]string{"type": "token", "content": token})
+			var data []byte
+			if len(token) > 0 && token[0] == '\x00' {
+				// Trace event from the model-router. Forward it as-is so the client
+				// receives the same event shape as the UI API /external stream.
+				data = []byte(token[1:])
+			} else {
+				data, _ = json.Marshal(map[string]string{"type": "token", "content": token})
+			}
 			_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 			flusher.Flush()
 		}

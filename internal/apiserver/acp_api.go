@@ -19,6 +19,7 @@ package apiserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -1127,10 +1128,14 @@ func (s *ACPServer) handleGetSession(w http.ResponseWriter, r *http.Request) {
 func (s *ACPServer) getACPRun(w http.ResponseWriter, r *http.Request, run *agentorcav1alpha1.AgentRun) {
 	acpStatus := mapAgentRunPhaseToACPStatus(run.Status.Phase)
 
-	// Check if client wants streaming
-	accept := r.Header.Get("Accept")
-	if accept == "text/event-stream" && run.Status.Phase == agentorcav1alpha1.AgentRunPhaseRunning {
-		s.streamACPRun(w, r, run)
+	// Always attempt streaming for running runs
+	if run.Status.Phase == agentorcav1alpha1.AgentRunPhaseRunning {
+		if err := s.streamACPRun(w, r, run); err != nil {
+			// Streaming unavailable (no state store, no flusher, etc.)
+			// Fall back to JSON response so client can poll
+			writeACPError(w, "server_error", "streaming not available", http.StatusServiceUnavailable)
+			return
+		}
 		return
 	}
 
@@ -1184,21 +1189,22 @@ func (s *ACPServer) getACPRun(w http.ResponseWriter, r *http.Request, run *agent
 }
 
 // streamACPRun streams tokens via SSE using ACP-compliant event format.
-func (s *ACPServer) streamACPRun(w http.ResponseWriter, r *http.Request, run *agentorcav1alpha1.AgentRun) {
+func (s *ACPServer) streamACPRun(w http.ResponseWriter, r *http.Request, run *agentorcav1alpha1.AgentRun) error {
+
+	defer func() { r.Body.Close() }()
+
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
+	// w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		writeACPError(w, "server_error", "streaming not supported", http.StatusInternalServerError)
-		return
+		return errors.New("streaming not supported")
 	}
 
 	if s.store == nil {
-		writeACPError(w, "server_error", "streaming not available (no state store)", http.StatusServiceUnavailable)
-		return
+		return errors.New("streaming not available (no state store)")
 	}
 
 	// Get session ID from labels if present
@@ -1224,9 +1230,7 @@ func (s *ACPServer) streamACPRun(w http.ResponseWriter, r *http.Request, run *ag
 	tokenCh, err := s.store.TailTokens(r.Context(), streamKey)
 	if err != nil {
 		slog.Warn("failed to open token stream for ACP", "key", streamKey, "err", err)
-		_, _ = fmt.Fprintf(w, "event: error\ndata: %s\n\n", mustJSON(ACPErrEvent{Type: "error", Error: ACPErr{Code: "server_error", Message: err.Error()}}))
-		flusher.Flush()
-		return
+		return err
 	}
 
 	// Create message for output
@@ -1256,49 +1260,18 @@ func (s *ACPServer) streamACPRun(w http.ResponseWriter, r *http.Request, run *ag
 		flusher.Flush()
 	}
 
-	// Re-fetch run for final status
-	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: run.Name, Namespace: run.Namespace}, run); err == nil {
-		finalStatus := mapAgentRunPhaseToACPStatus(run.Status.Phase)
-		acpRun.Status = finalStatus
+	acpRun.Status = ACPRunCompleted
+	acpRun.Output = []ACPMessage{{
+		Role:  "agents",
+		Parts: msg.Parts, // Use the accumulated tokens
+	}}
 
-		if run.Status.Phase == agentorcav1alpha1.AgentRunPhaseSucceeded && run.Status.Output != "" {
-			acpRun.Output = []ACPMessage{{
-				Role: "agent",
-				Parts: []ACPMessagePart{{
-					ContentType: "text/plain",
-					Content:     run.Status.Output,
-				}},
-			}}
-			if run.Status.CompletionTime != nil {
-				acpRun.FinishedAt = run.Status.CompletionTime.Format(time.RFC3339)
-			}
-		}
-
-		// Surface the clarification question as output for awaiting runs so the
-		// client can display it even when consuming the SSE stream.
-		if run.Status.Phase == agentorcav1alpha1.AgentRunPhaseWaitingForInput && run.Status.ClarifyQuestion != "" {
-			acpRun.Output = []ACPMessage{{
-				Role: "agent",
-				Parts: []ACPMessagePart{{
-					ContentType: "text/plain",
-					Content:     run.Status.ClarifyQuestion,
-				}},
-			}}
-		}
-
-		_, _ = fmt.Fprintf(w, "event: message.completed\ndata: %s\n\n", mustJSON(ACPMessageCompletedEvent{Type: "message.completed", Message: msg}))
-		flusher.Flush()
-
-		switch finalStatus {
-		case ACPRunCompleted:
-			_, _ = fmt.Fprintf(w, "event: run.completed\ndata: %s\n\n", mustJSON(ACPRunCompletedEvent{Type: "run.completed", Run: acpRun}))
-		case ACPRunFailed:
-			_, _ = fmt.Fprintf(w, "event: run.failed\ndata: %s\n\n", mustJSON(ACPRunFailedEvent{Type: "run.failed", Run: acpRun}))
-		case ACPRunAwaiting:
-			_, _ = fmt.Fprintf(w, "event: run.awaiting\ndata: %s\n\n", mustJSON(ACPRunAwaitingEvent{Type: "run.awaiting", Run: acpRun}))
-		}
-		flusher.Flush()
-	}
+	_, _ = fmt.Fprintf(w, "event: run.completed\ndata: %s\n\n", mustJSON(ACPRunCompletedEvent{
+		Type: "run.completed",
+		Run:  acpRun,
+	}))
+	flusher.Flush()
+	return nil
 }
 
 // resumeACPRun handles POST /runs/{run_id} to resume a waiting run. Instead of

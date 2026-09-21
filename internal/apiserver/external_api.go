@@ -533,7 +533,7 @@ func (s *ExternalAPIServer) streamTask(w http.ResponseWriter, r *http.Request, t
 	// Set SSE headers.
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("Connection", "close")
 	w.Header().Set("X-Accel-Buffering", "no")
 
 	flusher, ok := w.(http.Flusher)
@@ -579,7 +579,8 @@ func (s *ExternalAPIServer) streamTask(w http.ResponseWriter, r *http.Request, t
 		flusher.Flush()
 	}
 
-	// Re-fetch the run for final status (in its resolved namespace).
+	// If the stream closes without a terminal event, fall back to fetching
+	// the final result from the CRD so clients always get a complete response.
 	var final agentorcav1alpha1.AgentRun
 	if err := s.crdClient.Get(r.Context(), client.ObjectKey{
 		Name: taskID, Namespace: run.Namespace,

@@ -184,6 +184,7 @@ func (r *Router) forwardToProviderStream(ctx context.Context, provider *Provider
 		cancel()
 		return nil, fmt.Errorf("provider %s returned %d: %s", provider.Name, resp.StatusCode, body)
 	}
+	go r.postRoutingDecision(llmCtx, provider, r.ruleRouter.Route(r.messages, 0, 0))
 	// Caller owns resp.Body; cancel the context when the body is closed.
 	resp.Body = &cancelOnClose{ReadCloser: resp.Body, cancel: cancel}
 	return resp, nil
@@ -378,7 +379,7 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 	if !isContinuation {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Connection", "keep-alive")
+		w.Header().Set("Connection", "close")
 		w.WriteHeader(http.StatusOK)
 	}
 
@@ -458,7 +459,7 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 							"type":    "thought",
 							"content": choice.Delta.Reasoning,
 						})
-						r.emitTraceEvent(string(ev))
+						r.emitTraceEventBoth(string(ev))
 					}
 					if choice.FinishReason != nil {
 						finishReason = *choice.FinishReason
@@ -475,6 +476,13 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 		_, _ = fmt.Fprintf(w, "%s\n", line)
 		flusher.Flush()
 	}
+	// uncomment if the rest of the checks below are not needed anymore
+	// if textInScanner := scanner.Scan(); textInScanner == false {
+	// 	r.concludeTurn()
+	// 	resp.Body.Close()
+	// 	go r.notifyOperatorContext()
+	// 	return
+	// }
 
 	if err := scanner.Err(); err != nil {
 		slog.Warn("error reading SSE stream", "err", err)
@@ -490,10 +498,8 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 		slog.Info("run cancelled, emitting terminal fail event", "run", r.cfg.RunName)
 		_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
 		flusher.Flush()
-		if r.store != nil {
-			failEv, _ := json.Marshal(map[string]string{"type": "fail", "reason": "router cancel"})
-			_ = r.store.SaveTraceEvent(context.Background(), tokenStreamKey, string(failEv))
-		}
+		failEv, _ := json.Marshal(map[string]string{"type": "fail", "reason": "router cancel"})
+		r.emitTraceEventBoth(string(failEv))
 		return
 	}
 
@@ -584,6 +590,13 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 		r.checkpoint(context.Background())
 		_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
 		flusher.Flush()
+
+		// Emit finalOutput trace event to SSE subscribers so the stream is self-contained.
+		finalOutputEv, _ := json.Marshal(map[string]string{
+			"type":   "finalOutput",
+			"output": contentBuilder.String(),
+		})
+		r.emitTraceEventBoth(string(finalOutputEv))
 	}
 
 	// Completion is signalled solely by the OpenAI schema's [DONE] to the agent
@@ -647,7 +660,7 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 		r.HandleChatCompletions(w, newReq)
 		return
 	}
-
+	resp.Body.Close()
 	// Notify operator of context usage for UI display (streaming path).
 	go r.notifyOperatorContext()
 }
@@ -865,6 +878,9 @@ func translateAnthropicSSE(r io.Reader, w io.Writer) {
 		case "message_stop":
 			_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		slog.Warn("error reading SSE stream", "err", err)
 	}
 }
 

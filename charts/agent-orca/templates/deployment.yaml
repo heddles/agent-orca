@@ -152,11 +152,17 @@ spec:
               port: health
             initialDelaySeconds: 15
             periodSeconds: 20
+          startupProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            failureThreshold: 30
+            periodSeconds: 10
           readinessProbe:
             httpGet:
               path: /readyz
               port: health
-            initialDelaySeconds: 45
+            initialDelaySeconds: 1
             periodSeconds: 15
           resources:
             {{- toYaml .Values.operator.resources | nindent 12 }}
