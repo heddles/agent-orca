@@ -518,10 +518,10 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 	r.mu.Lock()
 	if !streamIsContinuation {
 		r.messages = append(r.messages, chatReq.Messages...)
-		r.incrementBufferTokens(estimateTokens(chatReq.Messages))
+		r.incrementBufferTokens(usage.PromptTokens)
 	}
 	r.messages = append(r.messages, assistantMsg)
-	r.incrementBufferTokens(estimateTokens([]Message{assistantMsg}))
+	r.incrementBufferTokens(usage.CompletionTokens)
 	r.updateSpend(usage, provider)
 	r.ruleRouter.IncrementTurn()
 	// concludeTurn folds the finished turn and caps the buffer. It is gated to

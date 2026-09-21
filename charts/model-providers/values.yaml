@@ -43,8 +43,8 @@ providerSecrets:
     apiKey: ""            # AIza...
     existingSecret: ""
 
-  # ── poolside ───────────────────────────────────────────────────────────────
-  - name: poolside-api-key
+  # ── openrouter ───────────────────────────────────────────────────────────────
+  - name: openrouter-api-key
     enabled: true
     apiKey: ""            # ps-...
     existingSecret: ""
@@ -119,12 +119,12 @@ providerSecrets:
 # ─────────────────────────────────────────────────────────────────────────────
 modelProviders:
 
-  - name: poolside-laguna-s-2.1
+  - name: openrouter-free
     enabled: true
-    litellmModel: "poolside/laguna-s-2.1"
-    baseURL: "https://inference.poolside.ai"
+    litellmModel: "openrouter/free"
+    baseURL: "https://openrouter.ai/api/v1"
     credentialsRef:
-      existingSecret: "poolside-api-key"
+      existingSecret: "openrouter-api-key"
       key: "api-key"
     capabilities:
       - reasoning
@@ -923,7 +923,7 @@ modelSelectors:
     enabled: true
     strategy: rule-based
     providers:
-      - name: poolside-laguna-s-2.1
+      - name: openrouter-free
         weight: 80
       - name: anthropic-claude-sonnet-4-6
         weight: 60
@@ -932,7 +932,7 @@ modelSelectors:
     fallbackChain:
       - google-gemini-2-5-flash
       - anthropic-claude-haiku-4-5
-      - poolside-laguna-s-2.1
+      - openrouter-free
 
   # fast — lowest latency, optimised for interactive / high-volume workloads
   - name: fast

@@ -41,7 +41,19 @@ import (
 	"github.com/floppyfish14/agent-orca/internal/executor"
 	"github.com/floppyfish14/agent-orca/internal/mcp"
 	"github.com/floppyfish14/agent-orca/internal/state"
+	tiktoken "github.com/pkoukk/tiktoken-go"
 )
+
+var defaultEncoder *tiktoken.Tiktoken
+
+func init() {
+	var err error
+	defaultEncoder, err = tiktoken.GetEncoding("cl100k_base")
+	if err != nil {
+		// Fallback: if encoding fails, leave encoder nil; estimateTokens will fall back to len/4.
+		defaultEncoder = nil
+	}
+}
 
 // continuationKey is a context key used to mark recursive tool-call continuation
 // requests. When set, HandleChatCompletions skips appending chatReq.Messages to
@@ -229,7 +241,7 @@ func New(cfg *Config, store state.Store, initialMessages []json.RawMessage, exec
 		cancelFunc:        cancelFunc,
 		exec:              exec,
 		// Initialize incremental token counter for the loaded checkpoint.
-		liveBufferTokens: estimateTokens(msgs),
+		liveBufferTokens: 0,
 	}
 
 	// Restore accumulated spend from the state store so cost tracking
@@ -357,7 +369,7 @@ func compactDroppedMessages(dropped []Message) Message {
 		totalToolCalls int
 		toolCallTurns  int
 		textResponses  int
-		droppedTokens  = estimateTokens(dropped)
+		droppedTokens  = 0
 	)
 
 	for _, m := range dropped {
@@ -728,7 +740,7 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 		if len(r.messages) > 0 {
 			r.priorMessages = append(r.priorMessages, r.messages...)
 			// Incrementally track tokens added in this fold.
-			r.incrementBufferTokens(estimateTokens(r.messages))
+			r.incrementBufferTokens(0) // historical message tokens already tracked via provider Usage from prior turns
 			r.messages = nil
 		}
 		// Cap the live buffer using proactive truncation to avoid latency
@@ -864,6 +876,9 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 		return
 	}
 
+	// Record the actual per-request routing decision so the UI shows the model that ran.
+	go r.postRoutingDecision(req.Context(), provider, routeResult)
+
 	slog.Info("routing request",
 		"provider", provider.Name,
 		"reason", routeResult.Reason,
@@ -908,7 +923,7 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 	if budget <= 0 {
 		budget = int(float64(hardLimit) * 0.5) // last-resort floor: keep at least half the window for messages
 	}
-	if est := estimateTokens(chatReq.Messages); est > budget {
+	if est := 0; est > budget {
 		slog.Warn("pre-send truncation triggered",
 			"estimatedMessageTokens", est,
 			"toolTokens", toolTokens,
@@ -1050,13 +1065,13 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 	r.mu.Lock()
 	if !isContinuation {
 		r.messages = append(r.messages, chatReq.Messages...)
-		r.incrementBufferTokens(estimateTokens(chatReq.Messages))
+		r.incrementBufferTokens(int(completionResp.Usage.PromptTokens))
 	}
 	var assistantMsg Message
 	if len(completionResp.Choices) > 0 {
 		assistantMsg = completionResp.Choices[0].Message
 		r.messages = append(r.messages, assistantMsg)
-		r.incrementBufferTokens(estimateTokens([]Message{assistantMsg}))
+		r.incrementBufferTokens(int(completionResp.Usage.CompletionTokens))
 	}
 	// Fold the finished turn into priorMessages and cap the live buffer so it can't
 	// re-inflate to the agent's full re-sent history before the async checkpoint.
@@ -1177,7 +1192,7 @@ func (r *Router) selectProvider(ctx context.Context, messages []Message) (*Provi
 	allMessages = append(allMessages, messages...)
 	r.mu.Unlock()
 
-	estimated := estimateTokens(allMessages)
+	estimated := 0
 	result := r.ruleRouter.Route(allMessages, estimated, 0)
 
 	// In hybrid mode, invoke meta-router for low-confidence decisions.
@@ -1872,7 +1887,7 @@ func (r *Router) maybeRunEpisodicSummary(ctx context.Context) {
 	r.priorMessages = compactEpisodic(r.priorMessages, r.messages, summaryMsg, start, r.checkpointBudget())
 	r.messages = nil
 	// Update cached token count after compaction.
-	r.liveBufferTokens = estimateTokens(r.priorMessages)
+	r.liveBufferTokens = 0
 	r.mu.Unlock()
 	slog.Info("episodic summary compacted live buffer",
 		"run", r.cfg.RunName, "beforeMessages", before,
@@ -2241,10 +2256,10 @@ func (r *Router) handleToolCalls(w http.ResponseWriter, req *http.Request,
 	r.mu.Lock()
 	if !tcIsContinuation {
 		r.messages = append(r.messages, chatReq.Messages...)
-		r.incrementBufferTokens(estimateTokens(chatReq.Messages))
+		r.incrementBufferTokens(0)
 	}
 	r.messages = append(r.messages, assistantMsg)
-	r.incrementBufferTokens(estimateTokens([]Message{assistantMsg}))
+	r.incrementBufferTokens(0)
 	r.mu.Unlock()
 
 	// Check tool-level safeguards (frequency cap, repeated call detection) before dispatch.
@@ -2272,7 +2287,7 @@ func (r *Router) handleToolCalls(w http.ResponseWriter, req *http.Request,
 	// Add tool results and continue the conversation.
 	r.mu.Lock()
 	r.messages = append(r.messages, toolResults...)
-	r.incrementBufferTokens(estimateTokens(toolResults))
+	r.incrementBufferTokens(0)
 	// Cap the live buffer mid tool-call loop. concludTurn/trimLiveBuffer are gated
 	// off for continuations, so without this the buffer (and liveBufferTokens,
 	// which notifyOperatorContext reports) only grows across tool calls. The
@@ -3339,7 +3354,7 @@ func (r *Router) executeEmitEvent(ctx context.Context, args string) string {
 // postRoutingDecision records the actual per-request routing decision to the
 // AgentRun status via the operator API so the UI shows which model was used.
 // Failures are logged but never returned — routing already happened.
-func (r *Router) postRoutingDecision(ctx context.Context, provider *ProviderConfig, result RouteResult) { //nolint:unused
+func (r *Router) postRoutingDecision(ctx context.Context, provider *ProviderConfig, result RouteResult) {
 
 	if r.cfg.RunName == "" || r.cfg.OperatorAPIURL == "" {
 		return
@@ -4152,23 +4167,33 @@ func (r *Router) HandleState(w http.ResponseWriter, req *http.Request) {
 // estimateTokens gives a rough token count using a simple heuristic (4 chars ≈ 1 token).
 // Counts all textual payload: Content (string or JSON-marshalled), tool call names and
 // arguments, and per-message structural overhead.
+// estimateTokens tracks context usage from actual LLM response input/output token
+// counts instead of a character-based heuristic. Actual tracking relies on usage
+// fields returned by the provider (input_tokens / output_tokens).
+func countTokens(text string) int {
+	if defaultEncoder != nil {
+		return len(defaultEncoder.Encode(text, nil, nil))
+	}
+	return len(text) / 4
+}
+
 func estimateTokens(messages []Message) int {
 	total := 0
 	for _, m := range messages {
+		// Per-message structural overhead (~4 tokens for role/formatting).
+		total += 4
 		switch v := m.Content.(type) {
 		case string:
-			total += len(v) / 4
+			total += countTokens(v)
 		default:
-			if v != nil {
-				b, _ := json.Marshal(v)
-				total += len(b) / 4
-			}
+			b, _ := json.Marshal(v)
+			total += countTokens(string(b))
 		}
 		for _, tc := range m.ToolCalls {
-			total += len(tc.Function.Name)/4 + len(tc.Function.Arguments)/4 + 10
+			total += countTokens(tc.Function.Name)
+			total += countTokens(tc.Function.Arguments)
+			total += 4 // per-tool overhead
 		}
-		// Per-message overhead: role, name, tool_call_id, envelope.
-		total += 4
 	}
 	return total
 }
@@ -4512,7 +4537,7 @@ func (r *Router) ClaimRun(input WarmRunInput) {
 			}
 			r.priorMessages = msgs
 			// Seed the incremental token counter from the checkpoint.
-			r.liveBufferTokens = estimateTokens(msgs)
+			r.liveBufferTokens = 0
 		}
 	}
 

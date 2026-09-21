@@ -214,6 +214,9 @@ type ProviderConfig struct {
 	BaseURL string
 	// RoutingHint is passed to the LLM meta-router to help it decide when to select this provider.
 	RoutingHint string
+	// TokenEncoding is the tiktoken encoding name for this provider (e.g. "cl100k_base", "o200k_base").
+	// Defaults to "cl100k_base" when empty.
+	TokenEncoding string
 }
 
 // MCPServerConfig describes an MCP server the model-router should connect to at startup.

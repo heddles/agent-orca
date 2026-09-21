@@ -47,24 +47,10 @@ build:
       context: .
       docker:
         dockerfile: Dockerfile.mcp-ingester
-    # - image: agent-orca/openai-reference
-    #   context: .
-    #   docker:
-    #     dockerfile: Dockerfile.openai-reference
-    # NOTE: the reference agent image (ghcr.io/agentorca/agent-orca/openai-reference)
-    # is NOT built here because skaffold's tagPolicy is global (sha256) and the
-    # demo charts pin it to `:latest`. Build it locally and
-    # load into kind once (see docs/development.md), or `skaffold run -p dev` will
-    # pull `:latest` from ghcr (public). This keeps the operator/router/ui tagging
-    # scheme unchanged.
-    # - image: agent-orca/demo-agent
-    #   context: .
-    #   docker:
-    #     dockerfile: Dockerfile.demo-agent
-    #   hooks:
-    #     after:
-    #       - command: ["sh", "-c", "kind load docker-image ${IMAGE:-$SKAFFOLD_IMAGE} --name agent-orca-dev"]
-    #         os: [darwin, linux]
+    - image: ghcr.io/agentorca/agent-orca/openai-reference
+      context: .
+      docker:
+        dockerfile: Dockerfile.openai-reference
 deploy:
   helm:
     hooks: &ensure_kind_deploy_hooks
@@ -107,69 +93,7 @@ deploy:
         - host:
             command: ["bash", "-c", "kubectl apply -f config/crd/bases --server-side --force-conflicts --field-manager=helm 2>/dev/null || true"]
             os: [darwin, linux]
-    # releases:
-      # CloudNativePG operator — installs CRDs + operator Deployment.
-      # Deployed FIRST (before the cluster and agent-orca) so CRDs are established.
-      # wait: true ensures CRDs are established before the next release.
-      # - name: cloudnative-pg-operator
-      #   chartPath: charts/cloudnative-pg
-      #   namespace: agent-orca-system
-      #   createNamespace: true
-      #   wait: true
-      #   setValues:
-      #     crds.create: "true"
-      #     config.clusterWide: "true"
-      #     image.tag: "1.30.0"
-      #     replicaCount: "1"
-      #     resources.requests.cpu: "100m"
-      #     resources.requests.memory: "128Mi"
-      #     resources.limits.cpu: "500m"
-      #     resources.limits.memory: "512Mi"
 
-      # CloudNativePG cluster — creates the Cluster CR (kind: Cluster).
-      # Deployed AFTER the operator so the CRD is established.
-      # wait: true ensures the Cluster is ready before agent-orca starts.
-      # - name: cloudnative-pg-cluster
-      #   chartPath: charts/cluster
-      #   namespace: agent-orca-system
-      #   wait: true
-      #   setValues:
-      #     fullnameOverride: "postgres"
-      #     cluster.instances: "1"
-      #     cluster.imageName: "ghcr.io/cloudnative-pg/postgresql:16"
-      #     cluster.storage.size: "10Gi"
-      #     cluster.initdb.database: "agentorca"
-      #     cluster.initdb.owner: "agentorca"
-      #     cluster.enableSuperuserAccess: "true"
-      #     cluster.superuserSecret: "postgres-superuser"
-      #     cluster.enablePDB: "true"
-
-      # - name: agent-orca
-      #   chartPath: charts/agent-orca
-      #   namespace: agent-orca-system
-      #   createNamespace: true
-      #   setValues:
-      #     operator.image.pullPolicy: Never
-      #     modelRouter.image.pullPolicy: Never
-      #     ui.image.pullPolicy: Never
-      #     operator.leaderElection: false
-      #     webhook.certManager: true
-      #     database.enabled: "true"
-      #   setValueTemplates:
-      #     operator.image.repository: "{{.IMAGE_REPO_agent_orca_operator}}"
-      #     operator.image.tag: "{{.IMAGE_TAG_agent_orca_operator}}"
-      #     mcpIngester.image.repository: "{{.IMAGE_REPO_agent_orca_mcp_ingester}}"
-      #     mcpIngester.image.tag: "{{.IMAGE_TAG_agent_orca_mcp_ingester}}"
-      #     modelRouter.image.repository: "{{.IMAGE_REPO_agent_orca_model_router}}"
-      #     modelRouter.image.tag: "{{.IMAGE_TAG_agent_orca_model_router}}"
-      #     ui.image.repository: "{{.IMAGE_REPO_agent_orca_ui}}"
-      #     ui.image.tag: "{{.IMAGE_TAG_agent_orca_ui}}"
-      #     # Static Redis password for the bundled Redis (opt-in). When unset the
-      #     # operator auto-generates a random password (checkpointing still works —
-      #     # the model-router gets it via the operator-propagated REDIS_URL); setting
-      #     # this to a known value lets the red-pwnbox publish arena-events findings
-      #     # against the same Redis. Provide via env, never commit a real password.
-      #     redis.auth.password: "{{.AGENT_ORCA_REDIS_PASSWORD}}"
 portForward:
   - resourceType: service
     resourceName: agent-orca-ui
@@ -195,6 +119,117 @@ portForward:
     port: 8083
     localPort: 8083
 profiles:
+  # dev: inference runs natively on macOS with Metal GPU acceleration.
+  # Start the native servers before deploying:
+  #   scripts/start-llama-native.sh
+  - name: dev
+    # activation:
+    #   - kubeContext: kind-agent-orca-dev
+    #     command: dev
+    # In-cluster Ollama for local embeddings (nomic-embed-text). Applied as raw
+    # manifests via the kubectl deployer below so skaffold tracks them for cleanup.
+    manifests:
+      rawYaml:
+        - config/samples/ollama-embedding-cluster.yaml
+    deploy:
+      helm:
+        hooks:
+          before:
+            - host:
+                command: ["bash", "hack/ensure-kind-cluster.sh"]
+                os: [darwin, linux]
+            - host:
+                command: ["bash", "-c", "kubectl create namespace agent-orca-system || true"]
+                os: [darwin, linux]
+            - host:
+                command: ["bash", "-c", "helm repo add cloudnative-pg https://cloudnative-pg.github.io/charts 2>/dev/null || true"]
+                os: [darwin, linux]
+            - host:
+                command: ["bash", "-c", "helm repo add grafana-dashboards https://cloudnative-pg.github.io/grafana-dashboards 2>/dev/null || true"]
+                os: [darwin, linux]
+            - host:
+                command: ["bash", "-c", "kubectl apply -f charts/agent-orca/crds/"]
+                os: [darwin, linux]
+            - host:
+                command: ["bash", "-c", "kubectl apply -f config/samples/ingress-nginx-baremetal.yaml"]
+                os: [darwin, linux]
+          after:
+            # - host:
+            #     command: ["docker", "build", "-t", "ghcr.io/agentorca/agent-orca/openai-reference:latest","-f", "Dockerfile.openai-reference","."]
+            #     os: [darwin, linux]
+            # - host:
+            #     command: ["kind", "load", "docker-image", "ghcr.io/agentorca/agent-orca/openai-reference:latest", "--name", "agent-orca-dev"]
+            - host:
+                command: ["echo", "Now you should add 127.0.0.1 agent-orca.local to your /etc/hosts file."]
+        releases:
+          # CloudNativePG operator — installs CRDs + operator Deployment (first).
+          - name: cloudnative-pg-operator
+            chartPath: charts/cloudnative-pg
+            namespace: agent-orca-system
+            wait: true
+            setValues:
+              crds.create: "true"
+              config.clusterWide: "true"
+              image.tag: "1.30.0"
+              replicaCount: "1"
+          # CloudNativePG cluster — creates the Cluster CR (after operator is ready).
+          - name: cloudnative-pg-cluster
+            chartPath: charts/cluster
+            namespace: agent-orca-system
+            wait: true
+            setValues:
+              fullnameOverride: "postgres"
+              cluster.instances: "1"
+              cluster.imageName: "ghcr.io/cloudnative-pg/postgresql:16"
+              cluster.storage.size: "10Gi"
+              cluster.initdb.database: "agentorca"
+              cluster.initdb.owner: "agentorca"
+              cluster.enableSuperuserAccess: "true"
+              cluster.superuserSecret: "postgres-superuser"
+              cluster.enablePDB: "true"
+          - name: agent-orca
+            chartPath: charts/agent-orca
+            namespace: agent-orca-system
+            createNamespace: true
+            wait: true
+            setValues:
+              operator.image.pullPolicy: Never
+              modelRouter.image.pullPolicy: Never
+              ui.image.pullPolicy: Never
+              operator.leaderElection: false
+              webhook.certManager: false
+              webhook.failurePolicy: Ignore
+              database.enabled: "true"
+              operator.oidc.cookieSecure: "false"
+              operator.oidc.enabled: "false"
+              operator.networkPolicy.oidcEgress.enabled: "false"
+            setValueTemplates:
+              operator.image.repository: "{{.IMAGE_REPO_agent_orca_operator}}"
+              operator.image.tag: "{{.IMAGE_TAG_agent_orca_operator}}"
+              mcpIngester.image.repository: "{{.IMAGE_REPO_agent_orca_mcp_ingester}}"
+              mcpIngester.image.tag: "{{.IMAGE_TAG_agent_orca_mcp_ingester}}"
+              modelRouter.image.repository: "{{.IMAGE_REPO_agent_orca_model_router}}"
+              modelRouter.image.tag: "{{.IMAGE_TAG_agent_orca_model_router}}"
+              ui.image.repository: "{{.IMAGE_REPO_agent_orca_ui}}"
+              ui.image.tag: "{{.IMAGE_TAG_agent_orca_ui}}"
+              ingress.enabled: "true"
+              ingress.ingressClassName: "nginx"
+              ingress.host: "agent-orca.local"
+          - name: model-providers
+            chartPath: charts/model-providers
+            namespace: agent-orca-system
+            createNamespace: true
+            valuesFiles:
+              - charts/model-providers/values.yaml
+            setValueTemplates:
+              providerSecrets[0].apiKey: "{{.OPENAI_API_KEY}}"
+              providerSecrets[1].apiKey: "{{.ANTHROPIC_API_KEY}}"
+              providerSecrets[2].apiKey: "{{.GOOGLE_API_KEY}}"
+              providerSecrets[3].apiKey: "{{.OPENROUTER_API_KEY}}"
+
+      kubectl:
+        defaultNamespace: agent-orca-system
+
   # demo-mcp-apps: deploys the MCP Apps demo (interactive sandboxed iframe dashboards).
   # Requires: agent-orca + 'default' ModelSelector already deployed.
   # Deploy: skaffold run -p demo-mcp-apps
@@ -363,127 +398,6 @@ profiles:
               # model-router posts to it; no per-user OAuth, no browser, no data
               # residency concerns. See charts/demos/programming-agent/README.md.
               webhookNotify.url: "{{.AGENT_ORCA_WEBHOOK_URL}}"
-
-  # dev: inference runs natively on macOS with Metal GPU acceleration.
-  # Start the native servers before deploying:
-  #   scripts/start-llama-native.sh
-  - name: dev
-    # activation:
-    #   - kubeContext: kind-agent-orca-dev
-    #     command: dev
-    # In-cluster Ollama for local embeddings (nomic-embed-text). Applied as raw
-    # manifests via the kubectl deployer below so skaffold tracks them for cleanup.
-    manifests:
-      rawYaml:
-        - config/samples/ollama-embedding-cluster.yaml
-    deploy:
-      helm:
-        hooks:
-          before:
-            - host:
-                command: ["bash", "hack/ensure-kind-cluster.sh"]
-                os: [darwin, linux]
-            - host:
-                command: ["bash", "-c", "kubectl create namespace agent-orca-system || true"]
-                os: [darwin, linux]
-            - host:
-                command: ["bash", "-c", "helm repo add cloudnative-pg https://cloudnative-pg.github.io/charts 2>/dev/null || true"]
-                os: [darwin, linux]
-            - host:
-                command: ["bash", "-c", "helm repo add grafana-dashboards https://cloudnative-pg.github.io/grafana-dashboards 2>/dev/null || true"]
-                os: [darwin, linux]
-            - host:
-                command: ["bash", "-c", "kubectl apply -f charts/agent-orca/crds/"]
-                os: [darwin, linux]
-            - host:
-                command: ["bash", "-c", "kubectl apply -f config/samples/ingress-nginx-baremetal.yaml"]
-                os: [darwin, linux]
-          after:
-            - host:
-                command: ["docker", "build", "-t", "ghcr.io/agentorca/agent-orca/openai-reference:latest","-f", "Dockerfile.openai-reference","."]
-                os: [darwin, linux]
-            - host:
-                command: ["kind", "load", "docker-image", "ghcr.io/agentorca/agent-orca/openai-reference:latest", "--name", "agent-orca-dev"]
-            - host:
-                command: ["echo", "Now you should add 127.0.0.1 agent-orca.local to your /etc/hosts file."]
-        releases:
-          # CloudNativePG operator — installs CRDs + operator Deployment (first).
-          - name: cloudnative-pg-operator
-            chartPath: charts/cloudnative-pg
-            namespace: agent-orca-system
-            wait: true
-            setValues:
-              crds.create: "true"
-              config.clusterWide: "true"
-              image.tag: "1.30.0"
-              replicaCount: "1"
-          # CloudNativePG cluster — creates the Cluster CR (after operator is ready).
-          - name: cloudnative-pg-cluster
-            chartPath: charts/cluster
-            namespace: agent-orca-system
-            wait: true
-            setValues:
-              fullnameOverride: "postgres"
-              cluster.instances: "1"
-              cluster.imageName: "ghcr.io/cloudnative-pg/postgresql:16"
-              cluster.storage.size: "10Gi"
-              cluster.initdb.database: "agentorca"
-              cluster.initdb.owner: "agentorca"
-              cluster.enableSuperuserAccess: "true"
-              cluster.superuserSecret: "postgres-superuser"
-              cluster.enablePDB: "true"
-          - name: agent-orca
-            chartPath: charts/agent-orca
-            namespace: agent-orca-system
-            createNamespace: true
-            wait: true
-            setValues:
-              operator.image.pullPolicy: Never
-              modelRouter.image.pullPolicy: Never
-              ui.image.pullPolicy: Never
-              operator.leaderElection: false
-              webhook.certManager: false
-              webhook.failurePolicy: Ignore
-              database.enabled: "true"
-              operator.oidc.cookieSecure: "false"
-              operator.oidc.enabled: "false"
-              operator.networkPolicy.oidcEgress.enabled: "false"
-            setValueTemplates:
-              operator.image.repository: "{{.IMAGE_REPO_agent_orca_operator}}"
-              operator.image.tag: "{{.IMAGE_TAG_agent_orca_operator}}"
-              mcpIngester.image.repository: "{{.IMAGE_REPO_agent_orca_mcp_ingester}}"
-              mcpIngester.image.tag: "{{.IMAGE_TAG_agent_orca_mcp_ingester}}"
-              modelRouter.image.repository: "{{.IMAGE_REPO_agent_orca_model_router}}"
-              modelRouter.image.tag: "{{.IMAGE_TAG_agent_orca_model_router}}"
-              ui.image.repository: "{{.IMAGE_REPO_agent_orca_ui}}"
-              ui.image.tag: "{{.IMAGE_TAG_agent_orca_ui}}"
-              ingress.enabled: "true"
-              ingress.ingressClassName: "nginx"
-              ingress.host: "agent-orca.local"
-          - name: model-providers
-            chartPath: charts/model-providers
-            namespace: agent-orca-system
-            createNamespace: true
-            valuesFiles:
-              - charts/model-providers/values.yaml
-            setValueTemplates:
-              providerSecrets[0].apiKey: "{{.OPENAI_API_KEY}}"
-              providerSecrets[1].apiKey: "{{.ANTHROPIC_API_KEY}}"
-              providerSecrets[2].apiKey: "{{.GOOGLE_API_KEY}}"
-              providerSecrets[3].apiKey: "{{.POOLSIDE_API_KEY}}"
-
-              # The ollama-embed-credentials Secret is provided by
-              # ollama-embedding-cluster.yaml (applied via the kubectl deployer
-              # below), so disable the chart's duplicate to avoid a reconcile fight.
-              providerSecrets[11].enabled: "false"
-      # Apply the in-cluster Ollama embedding manifests (PVC, Deployment,
-      # Service, pull Job, Secret, ModelProvider, ModelSelector) via the kubectl
-      # deployer. Helm (above) deploys first and installs the agent-orca CRDs,
-      # then kubectl applies the ModelProvider/ModelSelector CRs — so they resolve.
-      # defaultNamespace matches the README's `-n agent-orca-system` for this sample.
-      kubectl:
-        defaultNamespace: agent-orca-system
-
 
   # demo-htb-pwn: autonomous HTB red-team pwnbox (MCP toolbelt pattern).
   # A privileged `red-pwnbox` Deployment runs HTB OpenVPN (tun0) + an MCP server

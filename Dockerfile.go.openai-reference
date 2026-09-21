@@ -1,0 +1,19 @@
+# Build the openai-reference agent binary
+FROM golang:1.25 AS builder
+ARG TARGETOS
+ARG TARGETARCH
+
+WORKDIR /workspace
+COPY go.mod go.sum ./
+RUN go mod download
+COPY pkg/go/openai-reference/ pkg/go/openai-reference/
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
+    go build -a -o bin/agent ./pkg/go/openai-reference/agent.go
+
+RUN chmod +x /workspace/bin/agent
+
+FROM gcr.io/distroless/static:nonroot
+WORKDIR /
+COPY --from=builder /workspace/bin/agent /agent
+USER 65532:65532
+ENTRYPOINT ["/agent"]

@@ -158,7 +158,7 @@ export function RunHistoryDetailView({ runId, namespace = 'default', onBack, onN
           />
         )}
         <MetaCard title="Agent" value={detail.agentRef || '—'} icon={ICON.agent} />
-        <MetaCard title="Model" value={detail.resolvedModel || detail.routingDecisions?.[0]?.model || '—'} icon={ICON.modelprovider} />
+        <MetaCard title="Model" value={detail.resolvedModel || detail.routingDecisions?.[detail.routingDecisions.length - 1]?.model || detail.routingDecisions?.[0]?.model || '—'} icon={ICON.modelprovider} />
         {detail.tools && detail.tools.length > 0 && (
           <MetaCard title="Tools" value={detail.tools.join(', ')} icon={ICON.tool} mono />
         )}
