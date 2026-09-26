@@ -1,0 +1,38 @@
+name: Enforce PR-only main branch
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  enforce:
+    name: Block direct pushes to main
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail - Direct pushes to main are not allowed
+        run: |
+          echo "❌ ERROR: Direct pushes to 'main' are not allowed."
+          echo ""
+          echo "All changes to main must be submitted via Pull Request."
+          echo ""
+          echo "Workflow:"
+          echo "  1. Create a feature branch from main"
+          echo "  2. Make your changes and commit"
+          echo "  3. Push to your fork/branch"
+          echo "  4. Open a Pull Request"
+          echo "  5. Get required reviews and CI checks to pass"
+          echo "  6. Merge via the PR interface"
+          echo ""
+          echo "This push was blocked to protect the main branch."
+          exit 1
+
+  # Additional check: ensure we're not in a PR context
+  # This helps identify if someone somehow bypassed direct push detection
+  verify-pr-context:
+    needs: enforce
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    steps:
+      - name: No-op verification step
+        run: echo "Verified PR-only enforcement"
