@@ -1,0 +1,50 @@
+name: Branch Naming Convention
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+    branches:
+      - main
+
+jobs:
+  check-branch-name:
+    name: Validate branch naming
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check branch name convention
+        run: |
+          BRANCH_NAME="${{ github.head_ref }}"
+          
+          # Valid patterns:
+          # - feat/description
+          # - fix/description
+          # - docs/description
+          # - chore/description
+          # - refactor/description
+          # - test/description
+          # - perf/description
+          
+          if [[ ! "$BRANCH_NAME" =~ ^(feat|fix|docs|chore|refactor|test|perf|ci|build)\/.+$ ]]; then
+            echo "❌ Invalid branch name: $BRANCH_NAME"
+            echo ""
+            echo "Branch names must follow the convention: type/description"
+            echo ""
+            echo "Valid types:"
+            echo "  feat    - New feature"
+            echo "  fix     - Bug fix"
+            echo "  docs    - Documentation"
+            echo "  chore   - Maintenance"
+            echo "  refactor - Code refactoring"
+            echo "  test    - Test changes"
+            echo "  perf    - Performance improvement"
+            echo "  ci      - CI/CD changes"
+            echo "  build   - Build system changes"
+            echo ""
+            echo "Example valid names:"
+            echo "  feat/add-rag-support"
+            echo "  fix/memory-leak-in-router"
+            echo "  docs/api-reference"
+            exit 1
+          fi
+          
+          echo "✅ Branch name '$BRANCH_NAME' follows the correct convention"
