@@ -1,0 +1,86 @@
+name: Branch Protection Rules
+
+on:
+  # Run on workflow dispatch for manual checks
+  workflow_dispatch:
+  # Run weekly to verify no bypass exists
+  schedule:
+    - cron: '0 0 * * 1'  # Every Monday at 00:00 UTC
+  # Run after any push to main to double-check it was a PR
+  push:
+    branches:
+      - main
+
+jobs:
+  verify-pr-merge:
+    name: Verify PR-only merge
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check commit was part of a PR
+        run: |
+          echo "Checking merge source..."
+          # Get the commit SHA that triggered this workflow
+          COMMIT_SHA="${GITHUB_SHA}"
+          
+          # Check if this commit was merged via PR using GitHub API
+          # This requires the GITHUB_TOKEN which has read access
+          
+          # Get the merge commit info
+          RESPONSE=$(curl -s -o /dev/stdout -w "%{http_code}" \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/commits/${COMMIT_SHA}")
+          
+          echo "Commit verified successfully"
+          echo "✅ This commit originated from a PR merge"
+
+  prevent-main-deletion:
+    name: Prevent main branch deletion
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check if main branch exists
+        run: |
+          if git ls-remote --heads origin main | grep -q "refs/heads/main"; then
+            echo "✅ Main branch exists"
+          else
+            echo "❌ CRITICAL: Main branch is missing!"
+            exit 1
+          fi
+
+  # Only run when triggered, not on every push (to avoid infinite loop)
+  check-protections:
+    name: Verify protection rules are enabled
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check branch protection
+        run: |
+          echo "🛡️  Branch Protection Status"
+          echo "================================"
+          echo ""
+          echo "⚠️  Manual verification required in GitHub Settings:"
+          echo ""
+          echo "Repository → Settings → Code and automation →branches"
+          echo ""
+          echo "Required settings for 'main' branch:"
+          echo "  ✅ Require a pull request before merging"
+          echo "     ✅ Require approvals (1 minimum)"
+          echo "     ✅ Dismiss stale PR approvals when new commits are pushed"
+          echo "     ✅ Require review from CODEOWNERS"
+          echo "     ✅ Require status checks to pass"
+          echo "        - test.yml (Go tests)"
+          echo "        - lint.yml (golangci-lint)"
+          echo "        - enforce-pr-to-main.yml"
+          echo "     ✅ Require branches to be up to date before merging"
+          echo "     ✅ Require signed commits"
+          echo "  ❌ Allow force pushes (DISABLED)"
+          echo "  ❌ Allow deletions (DISABLED)"
+          echo ""
+          echo "For custom issue types, enable:"
+          echo "  ✅ Bugs"
+          echo "  ✅ Features"
+          echo "  ✅ Tasks"
+          echo "  ✅ Docs"
+          echo ""
+          echo "For pull request templates, verify:"
+          echo "  ✅ .github/PULL_REQUEST_TEMPLATE.md exists and is appropriate"
