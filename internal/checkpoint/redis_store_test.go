@@ -21,7 +21,7 @@ import (
 	"testing"
 	"time"
 
-	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
+	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
 )
 
 // memKV is a tiny in-memory kvStore for testing RedisStore without Redis.

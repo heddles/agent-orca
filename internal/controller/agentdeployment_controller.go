@@ -46,12 +46,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
-	"github.com/floppyfish14/agent-orca/internal/mcp"
-	"github.com/floppyfish14/agent-orca/internal/podbuilder"
-	"github.com/floppyfish14/agent-orca/internal/router"
-	"github.com/floppyfish14/agent-orca/internal/security"
-	"github.com/floppyfish14/agent-orca/internal/state"
+	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
+	"github.com/heddles/agent-orca/internal/mcp"
+	"github.com/heddles/agent-orca/internal/podbuilder"
+	"github.com/heddles/agent-orca/internal/router"
+	"github.com/heddles/agent-orca/internal/security"
+	"github.com/heddles/agent-orca/internal/state"
 )
 
 // AgentDeploymentReconciler reconciles an AgentDeployment object.

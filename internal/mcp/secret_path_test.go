@@ -21,7 +21,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/floppyfish14/agent-orca/internal/podbuilder"
+	"github.com/heddles/agent-orca/internal/podbuilder"
 )
 
 func TestSecretPathRelative(t *testing.T) {

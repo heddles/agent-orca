@@ -43,9 +43,9 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
-	"github.com/floppyfish14/agent-orca/internal/rag"
-	"github.com/floppyfish14/agent-orca/internal/security"
+	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
+	"github.com/heddles/agent-orca/internal/rag"
+	"github.com/heddles/agent-orca/internal/security"
 )
 
 // Server handles the operator's internal API for agent-to-agent communication.

@@ -125,8 +125,8 @@ require (
 	google.golang.org/genproto/googleapis/api v0.0.0-20251029180050-ab9386a59fda // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260209200024-4cfbd4190f57 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
-	dsigs.k8s.io/apiserver-network-proxy/konnectivity-client v0.31.2 // indirect
-	dsigs.k8s.io/json v0.0.0-20250730193827-2d320260d730 // indirect
-	dsigs.k8s.io/randfill v1.0.0 // indirect
-	dsigs.k8s.io/structured-merge-diff/v6 v6.3.2-20260122202528-d9cc6641c482 // indirect
+	sigs.k8s.io/apiserver-network-proxy/konnectivity-client v0.31.2 // indirect
+	sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730 // indirect
+	sigs.k8s.io/randfill v1.0.0 // indirect
+	sigs.k8s.io/structured-merge-diff/v6 v6.3.2-20260122202528-d9cc6641c482 // indirect
 )

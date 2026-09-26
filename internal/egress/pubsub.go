@@ -26,7 +26,7 @@ import (
 	"google.golang.org/api/option"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
+	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
 )
 
 // pubsubPublisher delivers results to a Google Cloud Pub/Sub topic.

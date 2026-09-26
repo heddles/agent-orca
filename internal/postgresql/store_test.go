@@ -27,7 +27,7 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
+	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
 )
 
 // TestQueryHistoryBindsLimitOffsetArgs is a regression test for the bug where

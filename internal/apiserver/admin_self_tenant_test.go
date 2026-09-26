@@ -28,7 +28,7 @@ import (
 	k8sfake "k8s.io/client-go/kubernetes/fake"
 	ctrlfake "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
+	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
 )
 
 // federatedAuthForTest builds an ExternalAuth whose cache trusts one federated

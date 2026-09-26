@@ -32,7 +32,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/floppyfish14/agent-orca/internal/security/oidc"
+	"github.com/heddles/agent-orca/internal/security/oidc"
 )
 
 // defaultOIDCRedirectURI is the loopback callback the CLI listens on by default.

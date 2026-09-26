@@ -27,8 +27,8 @@ import (
 	"strings"
 	"testing"
 
-	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
-	"github.com/floppyfish14/agent-orca/internal/security/oidc"
+	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
+	"github.com/heddles/agent-orca/internal/security/oidc"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 

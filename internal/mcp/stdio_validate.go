@@ -13,7 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/floppyfish14/agent-orca/internal/podbuilder"
+	"github.com/heddles/agent-orca/internal/podbuilder"
 )
 
 var shellInterpreterNames = map[string]struct{}{

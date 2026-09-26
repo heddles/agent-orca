@@ -39,9 +39,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/floppyfish14/agent-orca/internal/executor"
-	"github.com/floppyfish14/agent-orca/internal/mcp"
-	"github.com/floppyfish14/agent-orca/internal/state"
+	"github.com/heddles/agent-orca/internal/executor"
+	"github.com/heddles/agent-orca/internal/mcp"
+	"github.com/heddles/agent-orca/internal/state"
 	tiktoken "github.com/pkoukk/tiktoken-go"
 	hindsight "github.com/vectorize-io/hindsight/hindsight-clients/go"
 )

@@ -30,7 +30,7 @@ import (
 	"strings"
 	"time"
 
-	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
+	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
 	_ "github.com/jackc/pgx/v5/stdlib" // pgx as database/sql driver
 )
 

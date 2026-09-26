@@ -34,10 +34,10 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
-	"github.com/floppyfish14/agent-orca/internal/checkpoint"
-	"github.com/floppyfish14/agent-orca/internal/security"
-	"github.com/floppyfish14/agent-orca/internal/state"
+	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
+	"github.com/heddles/agent-orca/internal/checkpoint"
+	"github.com/heddles/agent-orca/internal/security"
+	"github.com/heddles/agent-orca/internal/state"
 )
 
 // ACPServer implements the Agent Communication Protocol (ACP) API.

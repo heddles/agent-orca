@@ -47,7 +47,7 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
-	"github.com/floppyfish14/agent-orca/internal/security/oidc"
+	"github.com/heddles/agent-orca/internal/security/oidc"
 )
 
 const (
