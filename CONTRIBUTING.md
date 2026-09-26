@@ -14,6 +14,7 @@ By participating in this project you agree to abide by the
 ## Table of Contents
 
 - [How to Get Your Change Merged](#how-to-get-your-change-merged)
+- [Branch Protection Rules](#branch-protection-rules)
 - [Toolchain](#toolchain)
 - [Quick Build / Test / Lint Reference](#quick-build--test--lint-reference)
 - [Code Generation (the easy way to break CI)](#code-generation-the-easy-way-to-break-ci)
@@ -34,7 +35,7 @@ By participating in this project you agree to abide by the
    git checkout -b fix/my-short-description main
    ```
    Branch name prefixes we use (feel free to match them):
-   `fix/`, `feat/`, `chore/`, `docs/`, `refactor/`, `perf/`.
+   `fix/`, `feat/`, `chore/`, `docs/`, `refactor/`, `perf/`, `test/`, `ci/`.
 3. **Make the change**, keeping commits focused (one concept per commit is
    nicer to review than a 3000-line dump).
 4. **Run the checks locally** (see [below](#quick-build--test--lint-reference))
@@ -57,6 +58,63 @@ reviewed carefully.
 
 [blank]: https://github.com/floppyfish14/agent-orca/issues/new/choose
 [discussions]: https://github.com/floppyfish14/agent-orca/discussions
+
+---
+
+## Branch Protection Rules
+
+The `main` branch is protected. **Direct commits are not allowed** - all changes
+must go through Pull Requests.
+
+### Required Settings
+
+| Setting | Value |
+|---------|-------|
+| Require a pull request before merging | ✅ Required |
+| Require approvals | 1 minimum |
+| Dismiss stale PR approvals on new commits | ✅ Enabled |
+| Require review from CODEOWNERS | ✅ Enabled |
+| Require status checks | ✅ Required |
+| Require branches to be up to date | ✅ Enabled |
+| Require signed commits | ✅ Enabled |
+| Allow force pushes | ❌ Disabled |
+| Allow deletions | ❌ Disabled |
+
+### Required Status Checks
+
+Before a PR can be merged, all of these must pass:
+
+- `test.yml` - Go unit tests
+- `lint.yml` - golangci-lint
+- `enforce-pr-to-main.yml` - Branch protection enforcement
+- `check-branch-naming.yml` - Branch naming convention
+
+### Branch Naming Convention
+
+When creating feature branches, use this pattern:
+
+```
+<type>/<short-description>
+```
+
+Valid types:
+- `feat/` - New feature
+- `fix/` - Bug fix  
+- `docs/` - Documentation
+- `chore/` - Maintenance
+- `refactor/` - Code refactoring
+- `test/` - Test changes
+- `perf/` - Performance improvements
+- `ci/` - CI/CD changes
+
+Examples:
+```
+git checkout -b feat/add-rag-support main
+git checkout -b fix/memory-leak-in-router main
+git checkout -b docs/api-reference main
+```
+
+See `.github/BRANCH_PROTECTION.md` for complete documentation.
 
 ---
 
