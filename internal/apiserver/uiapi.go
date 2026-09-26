@@ -425,7 +425,7 @@ func (s *UIServer) handleStream(w http.ResponseWriter, r *http.Request, ns, runN
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "close")
+	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	ctx := r.Context()
@@ -1919,7 +1919,7 @@ func (s *UIServer) handleDeploymentStream(w http.ResponseWriter, r *http.Request
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "close")
+	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	writeSSE(w, map[string]any{

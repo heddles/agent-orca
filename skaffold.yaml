@@ -62,28 +62,11 @@ deploy:
             command: ["bash", "-c", "kubectl create namespace agent-orca-system || true"]
             os: [darwin, linux]
         - host:
-            command: ["bash", "-c", "helm repo add cloudnative-pg https://cloudnative-pg.github.io/charts 2>/dev/null || true"]
-            os: [darwin, linux]
-        - host:
-            command: ["bash", "-c", "helm repo add grafana-dashboards https://cloudnative-pg.github.io/grafana-dashboards 2>/dev/null || true"]
-            os: [darwin, linux]
-        # Pre-create the postgres superuser secret with a known password so both
-        # the CNPG operator (sets the DB password) and the agent-orca operator
-        # (reads the password for its DSN) agree on the credential. Without this,
-        # the CNPG operator generates a random password that the agent-orca operator
-        # can't know.
-        - host:
-            command:
-              - bash
-              - -c
-              - |
-                PG_PW="${AGENT_ORCA_POSTGRES_PASSWORD:-skaffold-dev-postgres-pw}"
-                kubectl create secret generic postgres-superuser \
-                  --namespace=agent-orca-system \
-                  --from-literal=username=postgres \
-                  --from-literal=password="$PG_PW" \
-                  --dry-run=client -o yaml | kubectl apply -f -
-            os: [darwin, linux]
+        #     command: ["bash", "-c", "helm repo add cloudnative-pg https://cloudnative-pg.github.io/charts 2>/dev/null || true"]
+        #     os: [darwin, linux]
+        # - host:
+        #     command: ["bash", "-c", "helm repo add grafana-dashboards https://cloudnative-pg.github.io/grafana-dashboards 2>/dev/null || true"]
+        #     os: [darwin, linux]
         # Sync Kubernetes CRDs with the source tree on every deploy. Helm applies the
         # agent-orca chart's charts/agent-orca/crds/ on first install, but does NOT
         # upgrade CRDs on `helm upgrade` — so a new spec field (e.g. webhookNotify)
@@ -141,12 +124,12 @@ profiles:
             - host:
                 command: ["bash", "-c", "kubectl create namespace agent-orca-system || true"]
                 os: [darwin, linux]
-            - host:
-                command: ["bash", "-c", "helm repo add cloudnative-pg https://cloudnative-pg.github.io/charts 2>/dev/null || true"]
-                os: [darwin, linux]
-            - host:
-                command: ["bash", "-c", "helm repo add grafana-dashboards https://cloudnative-pg.github.io/grafana-dashboards 2>/dev/null || true"]
-                os: [darwin, linux]
+            # - host:
+            #     command: ["bash", "-c", "helm repo add cloudnative-pg https://cloudnative-pg.github.io/charts 2>/dev/null || true"]
+            #     os: [darwin, linux]
+            # - host:
+            #     command: ["bash", "-c", "helm repo add grafana-dashboards https://cloudnative-pg.github.io/grafana-dashboards 2>/dev/null || true"]
+            #     os: [darwin, linux]
             - host:
                 command: ["bash", "-c", "kubectl apply -f charts/agent-orca/crds/"]
                 os: [darwin, linux]
@@ -154,11 +137,6 @@ profiles:
                 command: ["bash", "-c", "kubectl apply -f config/samples/ingress-nginx-baremetal.yaml"]
                 os: [darwin, linux]
           after:
-            # - host:
-            #     command: ["docker", "build", "-t", "ghcr.io/agentorca/agent-orca/openai-reference:latest","-f", "Dockerfile.openai-reference","."]
-            #     os: [darwin, linux]
-            # - host:
-            #     command: ["kind", "load", "docker-image", "ghcr.io/agentorca/agent-orca/openai-reference:latest", "--name", "agent-orca-dev"]
             - host:
                 command: ["echo", "Now you should add 127.0.0.1 agent-orca.local to your /etc/hosts file."]
         releases:
@@ -176,7 +154,7 @@ profiles:
           - name: cloudnative-pg-cluster
             chartPath: charts/cluster
             namespace: agent-orca-system
-            wait: true
+            wait: false
             setValues:
               fullnameOverride: "postgres"
               cluster.instances: "1"

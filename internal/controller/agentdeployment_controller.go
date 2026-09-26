@@ -76,6 +76,11 @@ type AgentDeploymentReconciler struct {
 	// Default 0.5 (50%); set to 0.1 for aggressive compaction to ~10%.
 	// Injected from the CONTEXT_COMPACTION_RATIO env var.
 	ContextCompactionRatio float64
+
+	// HindsightURL is the configured hindsight API endpoint (e.g. http://hindsight.local).
+	// Injected from the HINDSIGHT_URL env var. Used to generate ipBlock egress rules
+	// in the per-run NetworkPolicies when the cluster has a default-deny egress policy.
+	HindsightURL string
 }
 
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
@@ -886,6 +891,13 @@ func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig( //nolint:gocycl
 		SystemPrompt:           agent.Spec.SystemPrompt,
 		KnowledgeBases:         kbConfigs,
 		LongTermMemory:         longTermMemory,
+		Hindsight: router.HindsightConfig{
+			Enabled:           true,
+			URL:               r.HindsightURL,
+			BankIDTemplate:    "{namespace}--{agent-name}",
+			RecallBudget:      5,
+			RetainOnEveryTurn: true,
+		},
 	}
 
 	// Per-tool-result token cap and loop guards. We deliberately seed sane defaults

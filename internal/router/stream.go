@@ -353,8 +353,6 @@ func (r *Router) forwardToAnthropicStream(ctx context.Context, provider *Provide
 // accumulating the full message for conversation history tracking.
 func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Request, provider *ProviderConfig, resp *http.Response, chatReq ChatCompletionRequest) { //nolint:gocyclo
 
-	defer func() { _ = resp.Body.Close() }()
-
 	tokenStreamKey := "tokens:" + r.cfg.RunNamespace + ":" + r.cfg.RunName
 	slog.Info("streaming response started", "provider", provider.Name, "tokenStreamKey", tokenStreamKey, "storeType", fmt.Sprintf("%T", r.store))
 
@@ -379,7 +377,7 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 	if !isContinuation {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Connection", "close")
+		w.Header().Set("Connection", "keep-alive")
 		w.WriteHeader(http.StatusOK)
 	}
 
@@ -406,6 +404,8 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 	// Allow large SSE lines (up to 1MB).
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
+	slog.Debug("scanner started", "isContinuation", isContinuation, "provider", provider.Name)
+
 	// We withhold EVERY upstream `data: [DONE]` and emit a single canonical
 	// terminal [DONE] ourselves once the scan completes (see below). The OpenAI
 	// streaming spec permits exactly one terminating [DONE]; some providers
@@ -416,7 +416,9 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 	// one terminal [DONE]. This also covers the tool-call case (the recursion
 	// emits its own [DONE] at the true end of the loop), so the per-turn
 	// suppression logic that used to live here is no longer needed.
+	lineCount := 0
 	for scanner.Scan() {
+		lineCount++
 		line := scanner.Text()
 
 		// Parse "data: " lines first so we can decide whether to proxy them.
@@ -476,13 +478,7 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 		_, _ = fmt.Fprintf(w, "%s\n", line)
 		flusher.Flush()
 	}
-	// uncomment if the rest of the checks below are not needed anymore
-	// if textInScanner := scanner.Scan(); textInScanner == false {
-	// 	r.concludeTurn()
-	// 	resp.Body.Close()
-	// 	go r.notifyOperatorContext()
-	// 	return
-	// }
+	slog.Debug("scanner finished", "isContinuation", isContinuation, "provider", provider.Name, "lines", lineCount, "sawToolCall", sawToolCall, "toolCalls", len(toolCalls))
 
 	if err := scanner.Err(); err != nil {
 		slog.Warn("error reading SSE stream", "err", err)
@@ -515,6 +511,21 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 		Role:      "assistant",
 		Content:   contentBuilder.String(),
 		ToolCalls: toolCalls,
+	}
+
+	if r.cfg.Hindsight.Enabled {
+
+		_, errEnsureHindsightBank := r.ensureHindsightBank(req.Context())
+
+		if errEnsureHindsightBank != nil {
+			slog.Warn("hindsight bank does not exist, memory system usage will fail.")
+		}
+		content := fmt.Sprintf("ai assistant: %s", messageText(assistantMsg))
+		if err := r.hindsightRetain(req.Context(), r.cfg.RunName, content); err != nil {
+			slog.Warn("hindsight retain failed", "run", r.cfg.RunName, "err", err)
+		} else {
+			slog.Info("hindsight retain success", "run", r.cfg.RunName, "bankID", r.hindsightBankID())
+		}
 	}
 
 	// Update conversation history.
@@ -572,32 +583,32 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 		}
 	}
 
-	// Emit a single canonical terminal `data: [DONE]` to the client at the true end
-	// of a non-tool response. Upstream [DONE]s were withheld in the scan loop (above)
-	// so a provider's premature [DONE] cannot close the client stream early. When tool
-	// calls are present, this block is skipped and the recursion emits [DONE] itself.
-	//
-	// Keyed off sawToolCall (set the first time any tool-call delta is observed) so a
-	// mergeToolCallDeltas undercount can never make a tool-call turn look terminal.
-	if !sawToolCall {
-		// Terminal text turn: the /invoke is completing. Persist the conversation
-		// synchronously so the next chat turn — which ClaimsRun on a REUSED warm
-		// pod (no shutdown between turns) and loads this run's checkpoint via
-		// PriorRunRef — can resume it. Previously checkpointing only happened every
-		// CheckpointEvery turns (above) or at Finalize (pod shutdown); with warm pods
-		// reused across turns, short (<CheckpointEvery) chats were never saved and
-		// turn 2 started fresh — the "lost context after two turns" symptom.
-		r.checkpoint(context.Background())
-		_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
-		flusher.Flush()
+	// // Emit a single canonical terminal `data: [DONE]` to the client at the true end
+	// // of a non-tool response. Upstream [DONE]s were withheld in the scan loop (above)
+	// // so a provider's premature [DONE] cannot close the client stream early. When tool
+	// // calls are present, this block is skipped and the recursion emits [DONE] itself.
+	// //
+	// // Keyed off sawToolCall (set the first time any tool-call delta is observed) so a
+	// // mergeToolCallDeltas undercount can never make a tool-call turn look terminal.
+	// if !sawToolCall {
+	// 	// Terminal text turn: the /invoke is completing. Persist the conversation
+	// 	// synchronously so the next chat turn — which ClaimsRun on a REUSED warm
+	// 	// pod (no shutdown between turns) and loads this run's checkpoint via
+	// 	// PriorRunRef — can resume it. Previously checkpointing only happened every
+	// 	// CheckpointEvery turns (above) or at Finalize (pod shutdown); with warm pods
+	// 	// reused across turns, short (<CheckpointEvery) chats were never saved and
+	// 	// turn 2 started fresh — the "lost context after two turns" symptom.
+	// 	r.checkpoint(context.Background())
+	// 	_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
+	// 	flusher.Flush()
 
-		// Emit finalOutput trace event to SSE subscribers so the stream is self-contained.
-		finalOutputEv, _ := json.Marshal(map[string]string{
-			"type":   "finalOutput",
-			"output": contentBuilder.String(),
-		})
-		r.emitTraceEventBoth(string(finalOutputEv))
-	}
+	// 	// Emit finalOutput trace event to SSE subscribers so the stream is self-contained.
+	// 	finalOutputEv, _ := json.Marshal(map[string]string{
+	// 		"type":   "finalOutput",
+	// 		"output": contentBuilder.String(),
+	// 	})
+	// 	r.emitTraceEventBoth(string(finalOutputEv))
+	// }
 
 	// Completion is signalled solely by the OpenAI schema's [DONE] to the agent
 	// framework. No custom done trace event is emitted here — the UI relies on the
@@ -629,6 +640,20 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 		toolResults := make([]Message, len(toolCalls))
 		for i, tc := range toolCalls {
 			result := r.dispatchToolCall(req.Context(), tc)
+
+			// Stream tool call delta to client
+			toolChunk := streamingChatCompletionChunk{
+				ID:     "tool-call-" + tc.ID,
+				Object: "chat.completion.chunk",
+				Choices: []streamChoice{{
+					Index: 0,
+					Delta: streamDelta{ToolCalls: []ToolCall{tc}},
+				}},
+			}
+			data, _ := json.Marshal(toolChunk)
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
+			flusher.Flush()
+
 			toolResults[i] = Message{
 				Role:       "tool",
 				ToolCallID: tc.ID,
@@ -645,22 +670,25 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 		// outgoing payload.
 		r.capLiveBufferDuringToolLoop()
 		continueReq := ChatCompletionRequest{
-			Model:    chatReq.Model,
-			Messages: r.messages,
-			Tools:    chatReq.Tools,
-			Stream:   true,
+			Model:         chatReq.Model,
+			Messages:      r.messages,
+			Tools:         chatReq.Tools,
+			Stream:        true,
+			StreamOptions: &StreamOptions{},
 		}
+
 		r.mu.Unlock()
 		// Recursive call with the full conversation as the new request body.
+		slog.Debug("recursive HandleChatCompletions call", "toolCalls", len(toolCalls), "messages", len(r.messages))
 		newBody, _ := json.Marshal(continueReq)
 		ctx := context.WithValue(req.Context(), continuationKey{}, true)
 		newReq := req.Clone(ctx)
 		newReq.Body = io.NopCloser(bytes.NewReader(newBody))
 		newReq.ContentLength = int64(len(newBody))
 		r.HandleChatCompletions(w, newReq)
+		slog.Debug("recursive HandleChatCompletions returned", "toolCalls", len(toolCalls))
 		return
 	}
-	resp.Body.Close()
 	// Notify operator of context usage for UI display (streaming path).
 	go r.notifyOperatorContext()
 }

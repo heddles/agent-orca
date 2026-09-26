@@ -251,3 +251,27 @@ metrics:
       relabelings: []
       metricRelabelings: []
       additionalLabels: {}
+
+# Hindsight memory system integration (self-hosted POC)
+hindsight:
+  enabled: true
+  # url is the hindsight API endpoint. When set, the operator resolves the
+  # hostname to IP(s) and injects ipBlock egress rules into the per-run
+  # NetworkPolicies so agent-orca pods can reach hindsight even when the
+  # cluster has a default-deny egress policy.
+  # Example: "http://hindsight.local"
+  url: "http://hindsight-api.agent-orca-system.svc.cluster.local:8888"
+  namespace: agent-orca-system
+  port: 8888
+  # networkPolicy.cidrs is an optional manual override for the egress CIDR
+  # allowlist. Use this when the operator cannot resolve the hindsight URL
+  # (e.g. DNS is not yet available at policy-creation time). Each entry is
+  # a CIDR in ipBlock format, e.g. "10.244.1.42/32".
+  networkPolicy:
+    cidrs: []
+  # Bank ID template for tenant isolation
+  bankIdTemplate: "{namespace}--{agent-name}"
+  # Recall budget per LLM turn
+  recallBudget: 5
+  # Retain conversation after every turn
+  retainOnEveryTurn: true

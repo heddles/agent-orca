@@ -1,10 +1,10 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 
@@ -26,13 +26,22 @@ func envMode() {
 		fmt.Println("No AGENTORC_INPUT set")
 		os.Exit(1)
 	}
-	usage, err := runOnce(inp)
-	if err != nil {
-		fmt.Printf("Error: %v\n", err)
+	// Stream to stdout in OpenAI SSE format for CLI clients.
+	w := &streamWriter{w: os.Stdout}
+	if err := runOnce(w, inp); err != nil {
+		fmt.Printf("\nError: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("Tokens: input=%d output=%d\n", usage.PromptTokens, usage.CompletionTokens)
 }
+
+type streamWriter struct {
+	w io.Writer
+}
+
+func (s *streamWriter) Header() http.Header         { return http.Header{} }
+func (s *streamWriter) WriteHeader(int)             {}
+func (s *streamWriter) Write(p []byte) (int, error) { return s.w.Write(p) }
+func (s *streamWriter) Flush()                      {}
 
 func httpMode() {
 	port := os.Getenv("PORT")
@@ -57,29 +66,24 @@ func httpMode() {
 		if v, ok := payload["input"].(string); ok {
 			input = v
 		}
-		usage, err := runOnce(input)
-		if err != nil {
+		if err := runOnce(w, input); err != nil {
 			w.WriteHeader(500)
 			json.NewEncoder(w).Encode(map[string]string{"error": "upstream error"})
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"usage": map[string]interface{}{
-				"input_tokens":  usage.PromptTokens,
-				"output_tokens": usage.CompletionTokens,
-			},
-		})
 	})
 	fmt.Printf("reference agent listening on :%s\n", port)
 	http.ListenAndServe(":"+port, nil)
 }
 
-func runOnce(input string) (openai.CompletionUsage, error) {
+func runOnce(w http.ResponseWriter, input string) error {
 	model, ok := os.LookupEnv("OPENAI_MODEL")
 	if !ok || model == "" {
 		model = "gpt-4o"
 	}
+
+	// Use agent-orca (OpenAI-compatible) via SDK; base URL comes from env
+	// injected by the agent-orca framework (openai-compatible tier).
 	client := openai.NewClient()
 	stream := client.Chat.Completions.NewStreaming(context.TODO(), openai.ChatCompletionNewParams{
 		Model: shared.ChatModel(model),
@@ -92,21 +96,33 @@ func runOnce(input string) (openai.CompletionUsage, error) {
 	})
 	defer func() { _ = stream.Close() }()
 
-	var completeText string
-	var output bytes.Buffer
-	var usage openai.CompletionUsage
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+	flusher, ok := w.(http.Flusher)
+
 	for stream.Next() {
 		chunk := stream.Current()
-		if len(chunk.Choices) > 0 {
-			if chunk.Choices[0].Delta.Content != "" {
-				output.WriteString(chunk.Choices[0].Delta.Content)
-				fmt.Print(chunk.Choices[0].Delta.Content)
-			}
+
+		// Write the chunk back to the human client in exact OpenAI schema.
+		data, _ := json.Marshal(chunk)
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
+		if ok {
+			flusher.Flush()
 		}
-		if chunk.Usage.PromptTokens > 0 || chunk.Usage.CompletionTokens > 0 || chunk.Usage.TotalTokens > 0 {
-			usage = chunk.Usage
+
+		// Also print to stdout for agent logs.
+		if len(chunk.Choices) > 0 && chunk.Choices[0].Delta.Content != "" {
+			fmt.Print(chunk.Choices[0].Delta.Content)
 		}
 	}
-	_ = completeText
-	return usage, stream.Err()
+
+	// Terminal [DONE] per OpenAI streaming spec.
+	_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
+	if ok {
+		flusher.Flush()
+	}
+
+	return stream.Err()
 }

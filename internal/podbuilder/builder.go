@@ -143,6 +143,10 @@ type PodConfig struct {
 	// container. +optional
 	WebhookNotifySecretRef *corev1.SecretKeySelector
 
+	// HindsightURL is the configured hindsight API endpoint (e.g. http://hindsight.local).
+	// Used to generate ipBlock egress rules in the per-run NetworkPolicies when the cluster has a default-deny egress policy.
+	HindsightURL string
+
 	// --- Agent probes ---
 
 	// AgentReadinessProbe is set for http-mode AgentRun pods.
@@ -294,7 +298,6 @@ func Build(cfg PodConfig) *corev1.Pod {
 		RestartPolicy:   &alwaysRestart,
 		Env: []corev1.EnvVar{
 			{Name: "AGENTORC_ROUTER_CONFIG", Value: RouterConfigDir + "/" + RouterConfigKey},
-			{Name: "OLLAMA_API_BASE", Value: "http://ollama:11434"},
 		},
 		Ports:        routerPorts,
 		VolumeMounts: routerMounts,
@@ -310,6 +313,12 @@ func Build(cfg PodConfig) *corev1.Pod {
 			FailureThreshold:    30, // allow up to 61s for startup
 		},
 		Resources: routerResources,
+	}
+	if cfg.HindsightURL != "" {
+		modelRouterContainer.Env = append(modelRouterContainer.Env, corev1.EnvVar{
+			Name:  "HINDSIGHT_URL",
+			Value: cfg.HindsightURL,
+		})
 	}
 	if cfg.WarmLocalCacheEnabled {
 		// AGENTORC_WARM_CACHE_DIR activates the local-mirror state store in the model-router.
@@ -524,7 +533,6 @@ func BuildRouterOnly(cfg PodConfig) *corev1.Pod {
 		ImagePullPolicy: corev1.PullIfNotPresent,
 		Env: []corev1.EnvVar{
 			{Name: "AGENTORC_ROUTER_CONFIG", Value: RouterConfigDir + "/" + RouterConfigKey},
-			{Name: "OLLAMA_API_BASE", Value: "http://ollama:11434"},
 		},
 		Ports:        routerPorts,
 		VolumeMounts: routerMounts,

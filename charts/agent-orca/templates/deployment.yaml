@@ -113,6 +113,8 @@ spec:
             - name: OIDC_COOKIE_SECURE
               value: {{ .Values.operator.oidc.cookieSecure | quote }}
             {{- end }}
+            - name: HINDSIGHT_URL
+              value: {{ .Values.hindsight.url | quote }}
           args:
             - --leader-elect={{ .Values.operator.leaderElection }}
             - --health-probe-bind-address=:8081

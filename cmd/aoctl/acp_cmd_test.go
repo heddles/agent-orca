@@ -273,13 +273,9 @@ func TestACPBridge_SessionPrompt_SSE(t *testing.T) {
 				return
 			}
 			// JSON poll — alternate between created and in-progress.
-			n := atomic.AddInt32(&pollCount, 1)
+			_ = atomic.AddInt32(&pollCount, 1)
 			w.Header().Set("Content-Type", "application/json")
-			if n == 1 {
-				_, _ = fmt.Fprint(w, `{"run_id":"run-1","status":"created","agent_name":"test-agent","created_at":"2024-01-01T00:00:00Z"}`) //nolint:lll
-			} else {
-				_, _ = fmt.Fprint(w, `{"run_id":"run-1","status":"in-progress","agent_name":"test-agent","created_at":"2024-01-01T00:00:00Z"}`) //nolint:lll
-			}
+			_, _ = fmt.Fprint(w, `{"run_id":"run-1","status":"completed","agent_name":"test-agent","created_at":"2024-01-01T00:00:00Z"}`) //nolint:lll
 		default:
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 		}
@@ -318,6 +314,364 @@ func TestACPBridge_SessionPrompt_SSE(t *testing.T) {
 	var resp jsonrpcMessage
 	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &resp); err != nil {
 		t.Fatalf("unmarshal last response: %v\\nstdout:\n%s", err, out)
+	}
+	var promptResp acpPromptResponse
+	unmarshalResult(t, resp, &promptResp)
+	if promptResp.StopReason != "end_turn" {
+		t.Fatalf("expected stopReason 'end_turn', got %q", promptResp.StopReason)
+	}
+}
+
+// openAIChunkSSE builds a single OpenAI chat.completion.chunk SSE frame.
+// Exactly one of content/reasoning should be non-empty.
+func openAIChunkSSE(t *testing.T, content, reasoning string) string {
+	t.Helper()
+	delta := map[string]string{}
+	if content != "" {
+		delta["content"] = content
+	}
+	if reasoning != "" {
+		delta["reasoning"] = reasoning
+	}
+	chunk := map[string]any{
+		"id":     "c",
+		"object": "chat.completion.chunk",
+		"choices": []map[string]any{{
+			"index": 0,
+			"delta": delta,
+		}},
+	}
+	b, err := json.Marshal(chunk)
+	if err != nil {
+		t.Fatalf("marshalling openai chunk: %v", err)
+	}
+	return "data: " + string(b) + "\n\n"
+}
+
+const openAIDoneSSE = "data: [DONE]\n\n"
+
+// openAIRunOutputJSON builds a completed-run JSON payload whose single output
+// part is the given raw OpenAI SSE stream (the shape http/env-mode
+// openai-reference runs leave in run.Status.Output).
+func openAIRunOutputJSON(t *testing.T, runID, stream string) string {
+	t.Helper()
+	run := acpRun{
+		RunID:     runID,
+		Status:    acpStatusCompleted,
+		AgentName: "test-agent",
+		CreatedAt: "2024-01-01T00:00:00Z",
+		Output: []ACPMessage{{
+			Role: "assistant",
+			Parts: []ACPMessagePart{{
+				ContentType: "text/plain",
+				Content:     stream,
+			}},
+		}},
+	}
+	b, err := json.Marshal(run)
+	if err != nil {
+		t.Fatalf("marshalling run output: %v", err)
+	}
+	return string(b)
+}
+
+// acpUpdateTexts returns the concatenated text of all session/update
+// notifications whose update.sessionUpdate equals wantUpdate, in arrival order.
+func acpUpdateTexts(out, wantUpdate string) []string {
+	var texts []string
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var msg jsonrpcMessage
+		if err := json.Unmarshal([]byte(line), &msg); err != nil {
+			continue
+		}
+		if msg.Method != acpMethodSessionUpdate || msg.Params == nil {
+			continue
+		}
+		var p acpUpdateParams
+		if err := json.Unmarshal(msg.Params, &p); err != nil {
+			continue
+		}
+		raw, _ := json.Marshal(p.Update)
+		var u struct {
+			SessionUpdate string           `json:"sessionUpdate"`
+			Content       *acpContentBlock `json:"content"`
+		}
+		if json.Unmarshal(raw, &u) != nil || u.SessionUpdate != wantUpdate {
+			continue
+		}
+		if u.Content != nil {
+			texts = append(texts, u.Content.Text)
+		}
+	}
+	return texts
+}
+
+// TestACPBridge_SessionPrompt_OpenAIStream verifies the openai -> acp
+// translation for a raw OpenAI-schema SSE stream (bare "data:" lines with no
+// event name, as produced by internal/router/stream.go and
+// pkg/go/openai-reference): content deltas become agent_message_chunk
+// notifications, reasoning deltas become agent_thought_chunk notifications, and
+// the terminal [DONE] sentinel ends the turn. The full response must reach the
+// client — this is the regression test for the partial-output bug where the old
+// parser dropped typeless SSE events.
+func TestACPBridge_SessionPrompt_OpenAIStream(t *testing.T) {
+	stream := openAIChunkSSE(t, "Agent", "") +
+		openAIChunkSSE(t, " ORCA", "") +
+		openAIChunkSSE(t, "", "thinking...") +
+		openAIChunkSSE(t, " (ORchestrated Conversational AI)", "") +
+		openAIDoneSSE
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/agents/test-agent" && r.Method == http.MethodGet:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprint(w, `{"name":"test-agent","description":"test","clarify_available":true}`)
+		case r.URL.Path == "/agents/test-agent/run" && r.Method == http.MethodPost:
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_, _ = fmt.Fprint(w, `{"agent_name":"test-agent","run_id":"run-openai","status":"created","created_at":"2024-01-01T00:00:00Z"}`)
+		case r.URL.Path == "/runs/run-openai" && r.Method == http.MethodGet:
+			if strings.Contains(r.Header.Get("Accept"), "event-stream") {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.WriteHeader(http.StatusOK)
+				flusher, _ := w.(http.Flusher)
+				_, _ = fmt.Fprint(w, stream)
+				if flusher != nil {
+					flusher.Flush()
+				}
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprint(w, `{"run_id":"run-openai","status":"completed","agent_name":"test-agent","created_at":"2024-01-01T00:00:00Z"}`)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	var stdout, stderr bytes.Buffer
+	server := &acpStdioServer{stdout: &stdout, stderr: &stderr}
+	client := newClient(srv.URL, srv.URL, "tok", 10*time.Second, true)
+	bridge := newACPBridge(server, client, "test-agent")
+	server.handler = bridge
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	id := json.RawMessage(`1`)
+	bridge.Dispatch(ctx, jsonrpcRequest{
+		JSONRPC: "2.0",
+		ID:      &id,
+		Method:  "session/prompt",
+		Params:  json.RawMessage(`{"sessionId":"sess-oa","prompt":[{"type":"text","text":"hi"}]}`),
+	})
+
+	out := stdout.String()
+	msgTexts := acpUpdateTexts(out, acpUpdateMessageChunk)
+	joined := strings.Join(msgTexts, "")
+	if joined != "Agent ORCA (ORchestrated Conversational AI)" {
+		t.Fatalf("expected full streamed response %q, got %q\nstdout:\n%s",
+			"Agent ORCA (ORchestrated Conversational AI)", joined, out)
+	}
+	thoughtTexts := acpUpdateTexts(out, acpUpdateThoughtChunk)
+	if len(thoughtTexts) != 1 || thoughtTexts[0] != "thinking..." {
+		t.Fatalf("expected one thought chunk with 'thinking...', got %v\nstdout:\n%s", thoughtTexts, out)
+	}
+	// Reasoning must not leak into a message chunk.
+	for _, s := range msgTexts {
+		if strings.Contains(s, "thinking...") {
+			t.Fatalf("reasoning leaked into a message chunk: %q\nstdout:\n%s", s, out)
+		}
+	}
+
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	var resp jsonrpcMessage
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &resp); err != nil {
+		t.Fatalf("unmarshal last response: %v\nstdout:\n%s", err, out)
+	}
+	var promptResp acpPromptResponse
+	unmarshalResult(t, resp, &promptResp)
+	if promptResp.StopReason != "end_turn" {
+		t.Fatalf("expected stopReason 'end_turn', got %q", promptResp.StopReason)
+	}
+}
+
+// TestACPBridge_SessionPrompt_OpenAIStream_PrematureClose verifies that when a
+// raw OpenAI SSE stream is cut off before [DONE] (e.g. a proxy closes the
+// connection mid-response), the polling fallback emits the REMAINING run output
+// rather than dropping it. The streamed prefix must not be duplicated.
+func TestACPBridge_SessionPrompt_OpenAIStream_PrematureClose(t *testing.T) {
+	// The full response the agent eventually produced (as raw OpenAI SSE in
+	// run output).
+	fullStream := openAIChunkSSE(t, "Agent", "") +
+		openAIChunkSSE(t, " ORCA", "") +
+		openAIChunkSSE(t, " (ORchestrated Conversational AI)", "") +
+		openAIDoneSSE
+	// The truncated stream the bridge actually receives over SSE.
+	partialStream := openAIChunkSSE(t, "Agent", "") +
+		openAIChunkSSE(t, " ORCA", "")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/agents/test-agent" && r.Method == http.MethodGet:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprint(w, `{"name":"test-agent","description":"test","clarify_available":true}`)
+		case r.URL.Path == "/agents/test-agent/run" && r.Method == http.MethodPost:
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_, _ = fmt.Fprint(w, `{"agent_name":"test-agent","run_id":"run-cut","status":"created","created_at":"2024-01-01T00:00:00Z"}`)
+		case r.URL.Path == "/runs/run-cut" && r.Method == http.MethodGet:
+			if strings.Contains(r.Header.Get("Accept"), "event-stream") {
+				// SSE: only the first two content chunks, then the connection drops
+				// (no [DONE]).
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.WriteHeader(http.StatusOK)
+				flusher, _ := w.(http.Flusher)
+				_, _ = fmt.Fprint(w, partialStream)
+				if flusher != nil {
+					flusher.Flush()
+				}
+				return
+			}
+			// JSON poll: completed with the FULL OpenAI SSE as run output.
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprint(w, openAIRunOutputJSON(t, "run-cut", fullStream))
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	var stdout, stderr bytes.Buffer
+	server := &acpStdioServer{stdout: &stdout, stderr: &stderr}
+	client := newClient(srv.URL, srv.URL, "tok", 10*time.Second, true)
+	bridge := newACPBridge(server, client, "test-agent")
+	server.handler = bridge
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	id := json.RawMessage(`1`)
+	bridge.Dispatch(ctx, jsonrpcRequest{
+		JSONRPC: "2.0",
+		ID:      &id,
+		Method:  "session/prompt",
+		Params:  json.RawMessage(`{"sessionId":"sess-cut","prompt":[{"type":"text","text":"hi"}]}`),
+	})
+
+	out := stdout.String()
+	msgTexts := acpUpdateTexts(out, acpUpdateMessageChunk)
+	joined := strings.Join(msgTexts, "")
+	// Streamed prefix ("Agent ORCA") + remainder (" (ORchestrated...)") = full.
+	if joined != "Agent ORCA (ORchestrated Conversational AI)" {
+		t.Fatalf("expected full response %q (streamed prefix + remainder), got %q\nstdout:\n%s",
+			"Agent ORCA (ORchestrated Conversational AI)", joined, out)
+	}
+	// The streamed prefix must not be duplicated by the polling fallback.
+	if strings.Count(joined, "Agent ORCA") > 1 {
+		t.Fatalf("streamed prefix duplicated, stdout:\n%s", out)
+	}
+
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	var resp jsonrpcMessage
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &resp); err != nil {
+		t.Fatalf("unmarshal last response: %v\nstdout:\n%s", err, out)
+	}
+	var promptResp acpPromptResponse
+	unmarshalResult(t, resp, &promptResp)
+	if promptResp.StopReason != "end_turn" {
+		t.Fatalf("expected stopReason 'end_turn', got %q", promptResp.StopReason)
+	}
+}
+
+// TestACPBridge_SessionPrompt_PrematureRunCompleted verifies that a
+// premature run.completed (as the ACP API's 30s request timeout can surface
+// while the run is still in progress) does not truncate the response. The
+// bridge verifies the run is genuinely terminal; if not, it re-attempts the
+// stream and emits the remaining tokens.
+func TestACPBridge_SessionPrompt_PrematureRunCompleted(t *testing.T) {
+	var sseAttempts, jsonPolls int32
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/agents/test-agent" && r.Method == http.MethodGet:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprint(w, `{"name":"test-agent","description":"test","clarify_available":true}`)
+		case r.URL.Path == "/agents/test-agent/run" && r.Method == http.MethodPost:
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_, _ = fmt.Fprint(w, `{"agent_name":"test-agent","run_id":"run-prem","status":"created","created_at":"2024-01-01T00:00:00Z"}`)
+		case r.URL.Path == "/runs/run-prem" && r.Method == http.MethodGet:
+			accept := r.Header.Get("Accept")
+			if strings.Contains(accept, "event-stream") {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.WriteHeader(http.StatusOK)
+				flusher, _ := w.(http.Flusher)
+				attempt := atomic.AddInt32(&sseAttempts, 1)
+				if attempt == 1 {
+					// First window: only the first sentence, then a premature
+					// run.completed (as if the 30s timeout fired).
+					_, _ = fmt.Fprint(w, openAIChunkSSE(t, "First sentence. ", ""))
+					_, _ = fmt.Fprintf(w, "event: run.completed\ndata: %s\n\n", `{"type":"run.completed","run":{"run_id":"run-prem","status":"completed","agent_name":"test-agent","created_at":"2024-01-01T00:00:00Z"}}`)
+				} else {
+					// Second window: the rest of the response, then a genuine
+					// run.completed.
+					_, _ = fmt.Fprint(w, openAIChunkSSE(t, "Second sentence.", ""))
+					_, _ = fmt.Fprint(w, openAIDoneSSE)
+				}
+				if flusher != nil {
+					flusher.Flush()
+				}
+				return
+			}
+			// JSON poll — used by confirmTerminal.
+			poll := atomic.AddInt32(&jsonPolls, 1)
+			w.Header().Set("Content-Type", "application/json")
+			if poll == 1 {
+				_, _ = fmt.Fprint(w, `{"run_id":"run-prem","status":"in-progress","agent_name":"test-agent","created_at":"2024-01-01T00:00:00Z"}`)
+			} else {
+				_, _ = fmt.Fprint(w, `{"run_id":"run-prem","status":"completed","agent_name":"test-agent","created_at":"2024-01-01T00:00:00Z"}`)
+			}
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	var stdout, stderr bytes.Buffer
+	server := &acpStdioServer{stdout: &stdout, stderr: &stderr}
+	client := newClient(srv.URL, srv.URL, "tok", 10*time.Second, true)
+	bridge := newACPBridge(server, client, "test-agent")
+	server.handler = bridge
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	id := json.RawMessage(`1`)
+	bridge.Dispatch(ctx, jsonrpcRequest{
+		JSONRPC: "2.0",
+		ID:      &id,
+		Method:  "session/prompt",
+		Params:  json.RawMessage(`{"sessionId":"sess-prem","prompt":[{"type":"text","text":"hi"}]}`),
+	})
+
+	out := stdout.String()
+	msgTexts := acpUpdateTexts(out, acpUpdateMessageChunk)
+	joined := strings.Join(msgTexts, "")
+	if joined != "First sentence. Second sentence." {
+		t.Fatalf("expected full response across premature run.completed, got %q\nstdout:\n%s", joined, out)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	var resp jsonrpcMessage
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &resp); err != nil {
+		t.Fatalf("unmarshal last response: %v\nstdout:\n%s", err, out)
 	}
 	var promptResp acpPromptResponse
 	unmarshalResult(t, resp, &promptResp)

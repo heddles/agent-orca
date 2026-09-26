@@ -19,6 +19,7 @@ package router
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"time"
 
@@ -185,6 +186,11 @@ type Config struct {
 	// carries the dropped context. Default 0.5; set to 0.1 for aggressive
 	// compaction down to ~10% of the window (issue #54).
 	ContextCompactionRatio float64 `json:"contextCompactionRatio,omitempty"`
+
+	// Hindsight configures the hindsight memory system integration.
+	// When enabled, every LLM turn will recall relevant memories before the call
+	// and retain the conversation after the call.
+	Hindsight HindsightConfig `json:"hindsight,omitempty"`
 }
 
 // ProviderConfig is a fully-resolved LLM provider ready for dispatch.
@@ -362,6 +368,21 @@ type LongTermMemoryConfig struct {
 	TopK int `json:"topK,omitempty"`
 }
 
+// HindsightConfig configures the hindsight memory system integration.
+type HindsightConfig struct {
+	// Enabled is true when hindsight is active.
+	Enabled bool `json:"enabled,omitempty"`
+	// URL is the hindsight API endpoint (e.g. http://hindsight.hindsight.svc.cluster.local:8888).
+	URL string `json:"url,omitempty"`
+	// BankIDTemplate is the template for the hindsight bank ID. Can use placeholders like
+	// {namespace}, {runName}, {agentName} which will be replaced at runtime.
+	BankIDTemplate string `json:"bankIdTemplate,omitempty"`
+	// RecallBudget is the maximum number of memories to retrieve per turn.
+	RecallBudget int `json:"recallBudget,omitempty"`
+	// RetainOnEveryTurn is true to retain conversation after every LLM turn.
+	RetainOnEveryTurn bool `json:"retainOnEveryTurn,omitempty"`
+}
+
 // HTTPInputConfig describes how the model-router delivers run input to an HTTP agent.
 type HTTPInputConfig struct {
 	Enabled bool   `json:"enabled"`
@@ -501,6 +522,22 @@ func ConfigFromEnv() (*Config, error) {
 	// compaction). Must be in (0, 1).
 	if cfg.ContextCompactionRatio <= 0 || cfg.ContextCompactionRatio >= 1.0 {
 		cfg.ContextCompactionRatio = 0.5
+	}
+
+	// Hindsight defaults
+	if cfg.Hindsight.URL == "" {
+		cfg.Hindsight.URL = "http://hindsight-api.agent-orca-system.svc.cluster.local:8888"
+	}
+	// HINDSIGHT_URL env var overrides the URL when set.
+	if url, _ := os.LookupEnv("HINDSIGHT_URL"); url != "" {
+		slog.Warn("HINDSIGHT_URL env var exists but the system is set to use a different url; using pre-configured hindsight url", cfg.Hindsight.URL)
+	}
+
+	if cfg.Hindsight.RecallBudget <= 0 {
+		cfg.Hindsight.RecallBudget = 5
+	}
+	if !cfg.Hindsight.RetainOnEveryTurn {
+		cfg.Hindsight.RetainOnEveryTurn = true
 	}
 
 	return &cfg, nil

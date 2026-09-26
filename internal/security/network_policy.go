@@ -20,6 +20,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 
+	"net"
+	"net/url"
+
+	"strconv"
+
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -74,6 +79,7 @@ func BuildNetworkPolicy(
 	namespace string,
 	toolEgressRules []agentorcav1alpha1.EgressRule,
 	stateRedisEnabled bool,
+	hindsightURL string,
 ) *networkingv1.NetworkPolicy {
 	name := networkPolicyName(run.Name)
 
@@ -107,6 +113,19 @@ func BuildNetworkPolicy(
 	// The model-router sidecar requires this for built-in operations on every run:
 	// _clarify (WaitingForInput), loop-detected, handoff, RAG search/ingest.
 	egressRules = append(egressRules, egressToPort(8082))
+
+	// Allow egress to hindsight memory service (self-hosted POC).
+	// The model-router calls hindsight directly for retain/recall on every LLM turn.
+	// Port is derived from the configured URL (scheme default or explicit port).
+	hindsightPort := hindsightPortFromURL(hindsightURL, 8888)
+	egressRules = append(egressRules, egressToPort(hindsightPort))
+
+	// If a hindsight URL is configured, resolve its hostname to IPs and add
+	// ipBlock egress rules so agent-orca pods can reach hindsight even when
+	// the cluster has a default-deny egress policy.
+	for _, cidr := range resolveHindsightCIDRs(hindsightURL) {
+		egressRules = append(egressRules, egressToCIDR(cidr))
+	}
 
 	// DNS egress (UDP/TCP port 53) — required for hostname resolution.
 	egressRules = append(egressRules,
@@ -156,6 +175,7 @@ func BuildRouterPodNetworkPolicy(
 	namespace string,
 	toolEgressRules []agentorcav1alpha1.EgressRule,
 	stateRedisEnabled bool,
+	hindsightURL string,
 ) *networkingv1.NetworkPolicy {
 	name := "agentorca-router-" + run.Name
 	safeRunName := SafeLabelValue(run.Name)
@@ -175,6 +195,19 @@ func BuildRouterPodNetworkPolicy(
 	}
 	egressRules = append(egressRules, egressToPort(8082))
 	egressRules = append(egressRules, egressToPortProto(53, "UDP"), egressToPortProto(53, "TCP"))
+
+	// Allow egress to hindsight memory service (self-hosted POC).
+	// The model-router calls hindsight directly for retain/recall on every LLM turn.
+	// Port is derived from the configured URL (scheme default or explicit port).
+	hindsightPort := hindsightPortFromURL(hindsightURL, 8888)
+	egressRules = append(egressRules, egressToPort(hindsightPort))
+
+	// If a hindsight URL is configured, resolve its hostname to IPs and add
+	// ipBlock egress rules so agent-orca pods can reach hindsight even when
+	// the cluster has a default-deny egress policy.
+	for _, cidr := range resolveHindsightCIDRs(hindsightURL) {
+		egressRules = append(egressRules, egressToCIDR(cidr))
+	}
 
 	// Ingress from the agent pod (same run, component=agent) on router ports.
 	port8080 := intstr.FromInt32(8080)
@@ -309,6 +342,67 @@ func egressToPortProto(port int32, protocol string) networkingv1.NetworkPolicyEg
 			{Port: &p, Protocol: &proto},
 		},
 	}
+}
+
+func hindsightPortFromURL(urlStr string, defaultPort int32) int32 {
+	if urlStr == "" {
+		return defaultPort
+	}
+	u, err := url.Parse(urlStr)
+	if err != nil || u.Host == "" {
+		return defaultPort
+	}
+	// If there's an explicit port in the URL, use it
+	if u.Port() != "" {
+		port, err := strconv.Atoi(u.Port())
+		if err == nil {
+			return int32(port)
+		}
+	}
+	// If there's no explicit port, derive from scheme
+	switch u.Scheme {
+	case "https":
+		return 443
+	case "http":
+		return 80
+	}
+	// Fallback to defaultPort (though this should rarely be reached)
+	return defaultPort
+}
+
+func egressToCIDR(cidr string) networkingv1.NetworkPolicyEgressRule {
+	return networkingv1.NetworkPolicyEgressRule{
+		To: []networkingv1.NetworkPolicyPeer{
+			{IPBlock: &networkingv1.IPBlock{CIDR: cidr}},
+		},
+	}
+}
+
+func resolveHindsightCIDRs(urlStr string) []string {
+	if urlStr == "" {
+		return nil
+	}
+	u, err := url.Parse(urlStr)
+	if err != nil || u.Host == "" {
+		return nil
+	}
+	host := u.Hostname()
+	if host == "" {
+		return nil
+	}
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return nil
+	}
+	cidrs := make([]string, 0, len(ips))
+	for _, ip := range ips {
+		if ip.To4() != nil {
+			cidrs = append(cidrs, ip.String()+"/32")
+		} else {
+			cidrs = append(cidrs, ip.String()+"/128")
+		}
+	}
+	return cidrs
 }
 
 func corev1Protocol(p string) corev1.Protocol {

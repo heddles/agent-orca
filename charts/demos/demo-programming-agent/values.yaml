@@ -110,30 +110,7 @@ agent-orca-resources:
         limits:
           cpu: 200m
           memory: 128Mi
-  # ── KnowledgeBases ──────────────────────────────────────────────────────────
-  #
-  # agent-orca-codebase: a curated engineering handbook (created by
-  # kb-handbook-configmap.yaml) ingested via the ConfigMap source and embedded with
-  # the ollama-embed ModelSelector (local in-cluster Ollama embeddings).
-  #
-  # Requires: 'ollama-embed' ModelSelector deployed (enable ollama-embeddings in the
-  # model-providers chart and run the Ollama cluster — see docs/development.md).
-  # Re-ingested hourly (syncIntervalSeconds: 3600) so edits to the ConfigMap take effect.
-  # knowledgeBases:
-  #   - name: agent-orca-codebase
-  #     description: "agent-orca engineering handbook — architecture, request lifecycle, debugging, and coding conventions for the senior programmer agent."
-  #     allowedAgents:
-  #       - senior-programmer
-  #     embedding:
-  #       modelSelectorRef: ollama-embed
-  #       chunkSize: 512
-  #       chunkOverlap: 64
-  #     vectorStore:
-  #       storageSize: 2Gi
-  #     ingestion:
-  #       configMapRefs:
-  #         - name: programming-agent-handbook
-  #       syncIntervalSeconds: 3600
+
   # ── Agents ───────────────────────────────────────────────────────────────────
   #
   # senior-programmer: a senior software engineer persona for the agent-orca project.
@@ -190,8 +167,7 @@ agent-orca-resources:
       # (get_file_contents, etc.) to the LLM.
       tools:
         - github-mcp
-      knowledgeBases:
-        - agent-orca-codebase
+      knowledgeBases: []
       runtime:
         ociRef: "ghcr.io/agentorca/agent-orca/openai-reference:latest"
         framework: openai-compatible

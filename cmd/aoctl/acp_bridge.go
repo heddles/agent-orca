@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -56,6 +57,17 @@ type acpSession struct {
 	SessionID string
 	RunID     string
 	Cancel    context.CancelFunc
+}
+
+// openAIStreamState accumulates translation state across the events of one
+// streamed run: the assistant text streamed so far (so a premature stream
+// close + polling fallback can emit only the remainder), the reasoning
+// streamed so far (same dedup), and the tool-call deltas merged so far
+// (keyed by OpenAI index, mirroring mergeToolCallDeltas in internal/router).
+type openAIStreamState struct {
+	streamed        strings.Builder // assistant text emitted as message chunks
+	streamedThought strings.Builder // reasoning emitted as thought chunks
+	toolCalls       map[int]openaiToolCall
 }
 
 // acpBridge owns method dispatch and per-session run state.
@@ -266,8 +278,11 @@ func handleSessionPrompt(ctx context.Context, b *acpBridge, req jsonrpcRequest) 
 // elicitation flow and loops. Otherwise, it returns the terminal stop reason.
 func (b *acpBridge) awaitCompletion(ctx context.Context, runID, sessionID string) string {
 	for {
+		// Fresh translation state per run (continuation runs after an await
+		// resume carry their own output).
+		st := &openAIStreamState{toolCalls: map[int]openaiToolCall{}}
 		// Path 1: Try streaming first
-		term := b.streamRunEvents(ctx, runID, sessionID)
+		term := b.streamRunEvents(ctx, runID, sessionID, st)
 		if term != acpPendingAwaiting {
 			return term
 		}
@@ -276,7 +291,7 @@ func (b *acpBridge) awaitCompletion(ctx context.Context, runID, sessionID string
 		if err != nil {
 			return acpStopReasonUserCancel
 		}
-		contID, resumed := b.handleAwaitingRun(ctx, run, sessionID, runID)
+		contID, resumed := b.handleAwaitingRun(ctx, run, sessionID, runID, st)
 		if resumed {
 			runID = contID
 			continue
@@ -285,39 +300,144 @@ func (b *acpBridge) awaitCompletion(ctx context.Context, runID, sessionID string
 	}
 }
 
+// maxStreamRetries bounds how many times streamRunEvents will re-attempt the
+// SSE stream after it ends prematurely. The ACP API bounds each streaming
+// request to 30s (acpAPIRequestTimeout), which can cut a long response into
+// 30s windows; re-streaming lets the bridge recover tokens across windows
+// (the server replays the token history on each new connection). After the
+// budget is exhausted it falls back to polling, which is bounded by runCtx.
+const maxStreamRetries = 60
+
 // streamRunEvents consumes the SSE stream from GET /runs/{id} (Accept:
 // text/event-stream) and translates it into session/update notifications.
 // If streaming is unavailable, it falls back to polling via pollToCompletion.
-func (b *acpBridge) streamRunEvents(ctx context.Context, runID, sessionID string) string {
-	ch, err := b.client.StreamRunEvents(ctx, runID)
-	if err != nil {
-		// SSE unavailable (run not yet in-progress, no state store, etc.).
-		// Fall back to polling.
-		b.srv.logf("acp: sse unavailable (%v), falling back to polling run %s\n", err, runID)
-		return b.pollToCompletion(ctx, runID, sessionID)
-	}
+//
+// The ACP API bounds streaming requests to 30s, so a long response is delivered
+// in windows: each window ends either with a genuine terminal event or with
+// the connection dropping. A terminal event is verified against the run's real
+// status (confirmTerminal) before ending the turn, so a premature run.completed
+// caused by the 30s timeout does not truncate the response — instead the
+// stream is re-attempted and the suffix-aware polling fallback fills in any
+// gap.
+func (b *acpBridge) streamRunEvents(ctx context.Context, runID, sessionID string, st *openAIStreamState) string {
+	for attempt := 0; ; attempt++ {
+		// Each stream attempt gets its own cancellable context derived from the
+		// run context. When the attempt ends, the attempt context is cancelled
+		// so the producer goroutine inside StreamRunEvents unblocks from its
+		// channel send, closes the HTTP response body, and exits. Without this
+		// teardown, every early-ended 30s window would leak a goroutine and an
+		// open connection until the whole prompt turn finished.
+		streamCtx, streamCancel := context.WithCancel(ctx)
+		ch, err := b.client.StreamRunEvents(streamCtx, runID)
+		if err != nil {
+			// streamCancel()
+			// SSE unavailable (run not yet in-progress, no state store, etc.).
+			// Fall back to polling.
+			b.srv.logf("acp: streaming of run (%v) failed with error: %s\n", err, runID)
+			streamCancel()
+			return ""
+			// return b.pollToCompletion(ctx, runID, sessionID, st)
+		}
 
-	msgID := "msg_" + runID
-	emitted := false
-	for {
-		select {
-		case <-ctx.Done():
-			return acpStopReasonUserCancel
-		case ev, ok := <-ch:
-			if !ok {
-				// Channel closed; fall back to polling to determine final stop reason.
-				return b.pollToCompletion(ctx, runID, sessionID)
-			}
-			if term := b.handleEvent(ev, sessionID, msgID, &emitted); term != "" {
+		term := b.consumeAndStreamHTTP(streamCtx, ch, sessionID, "msg_"+runID, st)
+		// Tear down this attempt before deciding what to do next: cancelling
+		// streamCtx unblocks the producer (its send selects on streamCtx.Done)
+		// and closes the response body via the request context.
+		streamCancel()
+
+		if term == acpStopReasonUserCancel {
+			return term
+		}
+		if term != "" {
+			// A terminal event (run.completed / [DONE] / finish_reason). Verify it
+			// is genuine — the 30s request timeout can surface a premature
+			// run.completed while the run is still in progress. Without this
+			// check the turn ends at the first 30s window and the rest of the
+			// response is lost ("only pieces of the streamed output").
+			if b.confirmTerminal(ctx, runID) {
 				return term
 			}
+			// Premature terminal event: fall through to re-attempt streaming.
+		}
+		// if attempt >= maxStreamRetries {
+		// b.srv.logf("acp: stream for %s ended early repeatedly, falling back to polling\n", runID)
+		// return b.pollToCompletion(ctx, runID, sessionID, st)
+		// }
+		b.srv.logf("acp: stream for %s ended early (attempt %d), re-attempting\n", runID, attempt+1)
+		// Brief pause before reconnecting so a server that closes connections
+		// immediately is not hammered in a tight reconnect loop.
+		if !b.retryWait(ctx, 250*time.Millisecond) {
+			return acpStopReasonUserCancel
 		}
 	}
 }
 
-// handleEvent translates one SSE event into ACP notifications. Returns a
-// non-empty stopReason when the event is terminal.
-func (b *acpBridge) handleEvent(ev Event, sessionID, msgID string, emitted *bool) string {
+// consumeStream drains one SSE stream, translating events into ACP notifications
+// via handleEvent. It returns a non-empty stopReason when a terminal event is
+// observed, acpStopReasonUserCancel when the stream context is cancelled (user
+// cancel or shutdown), or "" when the channel closes without a terminal event
+// (premature close, e.g. the ACP API's 30s streaming window expiring).
+//
+// ctx is the per-attempt stream context owned by streamRunEvents: it is
+// cancelled right after consumeStream returns so the producer goroutine can
+// unblock from its channel send and release the HTTP response body.
+func (b *acpBridge) consumeAndStreamHTTP(ctx context.Context, ch <-chan Event, sessionID, msgID string, st *openAIStreamState) string {
+	for {
+		select {
+		case ev, ok := <-ch:
+			if !ok {
+				// Channel closed — the stream ended. If the stream context was
+				// cancelled (user cancel / shutdown) report that; otherwise it
+				// was a premature close and the caller should re-attempt.
+				if ctx.Err() != nil {
+					return acpStopReasonUserCancel
+				}
+				return ""
+			}
+
+			term := b.handleEvent(ev, sessionID, msgID, st)
+
+			if ev.Type != "thought" {
+				b.srv.notify("session/update", ev)
+			}
+
+			if term != "" {
+				return term
+			}
+
+		case <-ctx.Done():
+			// Cancelled while events were still flowing — session/cancel or
+			// shutdown. End the turn as user-cancelled.
+			return acpStopReasonUserCancel
+		}
+	}
+}
+
+// confirmTerminal reports whether the run has reached a terminal phase
+// (completed/failed/cancelled/awaiting). It is used to avoid ending the turn on a
+// premature run.completed: the ACP API bounds streaming requests to 30s, which
+// can surface a run.completed while the run is still in progress. GetACPRun
+// returns a non-JSON (SSE) body for in-progress runs, so an error here means the
+// run is still running.
+func (b *acpBridge) confirmTerminal(ctx context.Context, runID string) bool {
+	run, err := b.client.GetACPRun(ctx, runID)
+	if err != nil {
+		return false
+	}
+	switch run.Status {
+	case acpStatusCompleted, acpStatusFailed, acpStatusCancelled, acpStatusAwaiting:
+		return true
+	}
+	return false
+}
+
+// handleEvent translates one SSE event into ACP notifications. It handles both
+// framings the run endpoint produces: typed ACP run/message events, and raw
+// OpenAI-schema streaming chunks (bare "data:" lines with no event name,
+// proxied from internal/router/stream.go or an OpenAI-schema agent such as
+// pkg/go/openai-reference) via handleOpenAIChunk. Returns a non-empty
+// stopReason when the event is terminal.
+func (b *acpBridge) handleEvent(ev Event, sessionID, msgID string, st *openAIStreamState) string {
 	switch ev.Type {
 	case "message.part":
 		var payload struct {
@@ -327,27 +447,30 @@ func (b *acpBridge) handleEvent(ev Event, sessionID, msgID string, emitted *bool
 			} `json:"part"`
 		}
 		if err := json.Unmarshal([]byte(ev.Data), &payload); err == nil && payload.Part.Content != "" {
-			b.srv.notify(acpMethodSessionUpdate, acpUpdateParams{
-				SessionID: sessionID,
-				Update: acpUpdate{
-					SessionUpdate: "agent_message_chunk",
-					MessageID:     msgID,
-					Content:       &acpContentBlock{Type: "text", Text: payload.Part.Content},
-				},
-			})
-			*emitted = true
+			b.emitMessageChunk(sessionID, msgID, payload.Part.Content, st)
 		}
+	case "run.created", "run.in-progress":
+		// Surface the run lifecycle as an ACP plan so the client can show
+		// progress while the agent works.
+		var payload struct {
+			Run acpRun `json:"run"`
+		}
+		_ = json.Unmarshal([]byte(ev.Data), &payload)
+		status := acpPlanPending
+		if ev.Type == "run.in-progress" {
+			status = acpPlanInProgress
+		}
+		b.emitPlanUpdate(sessionID, payload.Run.RunID, status)
 	case "run.completed":
 		var payload struct {
 			Run acpRun `json:"run"`
 		}
 		if err := json.Unmarshal([]byte(ev.Data), &payload); err == nil {
-			// Only emit terminal output if tokens weren't already streamed.
-			// Tokens are streamed via message.part events, so run.completed's
-			// output would be a duplicate.
-			if !*emitted {
-				b.emitTerminalOutput(payload.Run, sessionID)
-			}
+			b.emitPlanUpdate(sessionID, payload.Run.RunID, acpPlanCompleted)
+			// Emit any output not already streamed as message.part chunks.
+			// emitTerminalOutput is suffix-aware: it skips text already
+			// delivered, so a partially-streamed run only emits the remainder.
+			b.emitTerminalOutput(payload.Run, sessionID, st)
 		}
 		return acpStopReasonEndTurn
 	case "run.failed":
@@ -355,12 +478,8 @@ func (b *acpBridge) handleEvent(ev Event, sessionID, msgID string, emitted *bool
 			Run acpRun `json:"run"`
 		}
 		if err := json.Unmarshal([]byte(ev.Data), &payload); err == nil {
-			// Only emit terminal output if tokens weren't already streamed.
-			// Tokens are streamed via message.part events, so run.completed's
-			// output would be a duplicate.
-			if !*emitted {
-				b.emitTerminalOutput(payload.Run, sessionID)
-			}
+			// Emit any output not already streamed (suffix-aware, see above).
+			b.emitTerminalOutput(payload.Run, sessionID, st)
 		}
 		return acpStopReasonEndTurn
 	case "run.cancelled":
@@ -372,31 +491,240 @@ func (b *acpBridge) handleEvent(ev Event, sessionID, msgID string, emitted *bool
 		// message.part events; the clarification question itself lives in the
 		// run's output, surfaced by handleAwaitingRun on re-poll.)
 		return acpPendingAwaiting
-		// run.created / run.in-progress / message.created / message.completed are
-		// either already announced or folded into the chunk stream; ignore them so
-		// we don't emit spurious empty notifications.
+	default:
+		// Unknown or absent event type: try parsing the payload as an OpenAI
+		// streaming chunk. OpenAI-schema streams carry bare "data:" lines with
+		// no "event:" name, so they arrive here with an empty Type.
+		// (message.created / message.completed also fall through here; they
+		// don't parse as chunks, so they are ignored.)
+		return b.handleOpenAIChunk(ev.Data, sessionID, msgID, st)
 	}
 	return ""
 }
 
+// handleOpenAIChunk translates one OpenAI streaming payload — a
+// chat.completion.chunk or the terminal "[DONE]" sentinel — into ACP session
+// updates. This is the openai -> acp translation for streams proxied raw from
+// internal/router/stream.go or produced by an OpenAI-schema agent
+// (pkg/go/openai-reference): content deltas become agent_message_chunk
+// updates, reasoning (extended-thinking) deltas become agent_thought_chunk
+// updates, tool-call deltas become tool_call updates, and the terminal
+// sentinel / finish_reason ends the turn. Returns a non-empty stopReason when
+// the event is terminal.
+func (b *acpBridge) handleOpenAIChunk(data, sessionID, msgID string, st *openAIStreamState) string {
+	chunk, ok := parseOpenAIChunk(data)
+	if !ok {
+		return ""
+	}
+	// if chunk.Done {
+	// 	// The OpenAI schema's terminal sentinel. The model-router emits exactly
+	// 	// one canonical [DONE] at the true end of a turn (withholding premature
+	// 	// upstream ones), so this reliably ends the turn.
+	// 	return acpStopReasonEndTurn
+	// }
+	if chunk.Reasoning != "" {
+		b.srv.notify(acpMethodSessionUpdate, acpUpdateParams{
+			SessionID: sessionID,
+			Update: acpUpdate{
+				SessionUpdate: acpUpdateThoughtChunk,
+				Content:       &acpContentBlock{Type: "text", Text: chunk.Reasoning},
+			},
+		})
+	}
+	if chunk.Content != "" {
+		b.emitMessageChunk(sessionID, msgID, chunk.Content, st)
+	}
+	b.mergeToolCallChunks(chunk, sessionID, st)
+	switch chunk.FinishReason {
+	case "":
+		return ""
+	case "tool_calls":
+		// The model requested tool execution; the router dispatches the tools
+		// and continues the turn with a new stream. Not terminal — keep
+		// consuming, and if this stream ends first, streamRunEvents falls
+		// back to polling for the run's true terminal state.
+		return ""
+	default:
+		return acpStopReasonEndTurn
+	}
+}
+
+// mergeToolCallChunks merges the tool-call deltas of one OpenAI chunk into the
+// stream state (keyed by index) and emits ACP tool_call updates: an
+// "in_progress" tool_call when a call is first seen, and a "completed"
+// tool_call_update carrying the accumulated invocation when the turn's
+// finish_reason is "tool_calls".
+func (b *acpBridge) mergeToolCallChunks(chunk openaiChunk, sessionID string, st *openAIStreamState) {
+	for _, tc := range chunk.ToolCalls {
+		existing, seen := st.toolCalls[tc.Index]
+		if !seen {
+			st.toolCalls[tc.Index] = tc
+			if tc.ID != "" || tc.Name != "" {
+				b.emitToolCallUpdate(sessionID, tc, acpUpdateToolCall, acpToolStatusInProgress, nil)
+			}
+			continue
+		}
+		if tc.ID != "" {
+			existing.ID = tc.ID
+		}
+		if tc.Name != "" {
+			existing.Name = tc.Name
+		}
+		existing.Arguments += tc.Arguments
+		st.toolCalls[tc.Index] = existing
+	}
+	if chunk.FinishReason != "tool_calls" {
+		return
+	}
+	// The turn's tool calls are complete: emit their accumulated invocations
+	// in index order, then reset so a subsequent turn starts fresh.
+	indices := make([]int, 0, len(st.toolCalls))
+	for idx := range st.toolCalls {
+		indices = append(indices, idx)
+	}
+	sort.Ints(indices)
+	for _, idx := range indices {
+		tc := st.toolCalls[idx]
+		call := strings.TrimSpace(tc.Name + " " + tc.Arguments)
+		b.emitToolCallUpdate(sessionID, tc, acpUpdateToolCallUpd, acpToolStatusCompleted,
+			[]acpContentBlock{{Type: "text", Text: call}})
+	}
+	st.toolCalls = map[int]openaiToolCall{}
+}
+
+// emitMessageChunk sends one assistant text delta as an agent_message_chunk and
+// records it in the stream state so the polling fallback can skip it.
+func (b *acpBridge) emitMessageChunk(sessionID, msgID, text string, st *openAIStreamState) {
+	if text == "" {
+		return
+	}
+	b.srv.notify(acpMethodSessionUpdate, acpUpdateParams{
+		SessionID: sessionID,
+		Update: acpUpdate{
+			SessionUpdate: acpUpdateMessageChunk,
+			MessageID:     msgID,
+			Content:       &acpContentBlock{Type: "text", Text: text},
+		},
+	})
+	if st != nil {
+		st.streamed.WriteString(text)
+	}
+}
+
+// emitPlanUpdate surfaces the run lifecycle as an ACP plan with a single
+// entry, so ACP clients can render progress while the agent works.
+func (b *acpBridge) emitPlanUpdate(sessionID, runID, status string) {
+	content := "agent-orca run"
+	if runID != "" {
+		content = "agent-orca run " + runID
+	}
+	b.srv.notify(acpMethodSessionUpdate, acpUpdateParams{
+		SessionID: sessionID,
+		Update: acpUpdate{
+			SessionUpdate: acpUpdatePlan,
+			PlanEntries: []acpPlanEntry{{
+				Content:  content,
+				Priority: acpPlanPriority,
+				Status:   status,
+			}},
+		},
+	})
+}
+
+// emitToolCallUpdate sends one ACP tool_call / tool_call_update notification.
+func (b *acpBridge) emitToolCallUpdate(sessionID string, tc openaiToolCall, update, status string, content []acpContentBlock) {
+	id := tc.ID
+	if id == "" {
+		id = fmt.Sprintf("tool_%d", tc.Index)
+	}
+	title := tc.Name
+	if title == "" {
+		title = "tool call"
+	}
+	b.srv.notify(acpMethodSessionUpdate, acpUpdateParams{
+		SessionID: sessionID,
+		Update: acpToolCallUpdate{
+			SessionUpdate: update,
+			ToolCallID:    id,
+			Title:         title,
+			Kind:          "other",
+			Status:        status,
+			Content:       content,
+		},
+	})
+}
+
 // emitTerminalOutput surfaces any final run output not captured by token chunks
-// (e.g. on the polling path) as assistant text chunks.
-func (b *acpBridge) emitTerminalOutput(run acpRun, sessionID string) {
+// (e.g. on the polling path) as assistant text chunks. Run output produced by
+// OpenAI-schema agents (pkg/go/openai-reference) or the model-router proxy is a
+// raw OpenAI SSE stream; this translates it so the user sees the assistant's
+// text and reasoning rather than the raw chunk JSON. Only the suffix not
+// already streamed is emitted, so a premature stream close followed by
+// polling never drops or duplicates the response.
+func (b *acpBridge) emitTerminalOutput(run acpRun, sessionID string, st *openAIStreamState) {
+	var combined strings.Builder
 	for _, m := range run.Output {
 		for _, part := range m.Parts {
-			if part.Content == "" {
-				continue
+			if part.Content != "" {
+				combined.WriteString(part.Content)
 			}
-			b.srv.notify(acpMethodSessionUpdate, acpUpdateParams{
-				SessionID: sessionID,
-				Update: acpUpdate{
-					SessionUpdate: "agent_message_chunk",
-					MessageID:     "msg_" + run.RunID,
-					Content:       &acpContentBlock{Type: "text", Text: part.Content},
-				},
-			})
 		}
 	}
+	content := combined.String()
+	if content == "" {
+		return
+	}
+	// If the output is a raw OpenAI SSE stream, extract the assistant text and
+	// reasoning; otherwise treat the raw text as the content.
+	text, reasoning, isSSE := extractOpenAIStreamText(content)
+	if !isSSE {
+		text = content
+	}
+	b.emitThoughtRemainder(reasoning, sessionID, st)
+	b.emitTextRemainder(text, "msg_"+run.RunID, sessionID, st)
+}
+
+// emitThoughtRemainder emits reasoning as an agent_thought_chunk, skipping any
+// prefix already streamed as thought chunks.
+func (b *acpBridge) emitThoughtRemainder(reasoning, sessionID string, st *openAIStreamState) {
+	if reasoning == "" {
+		return
+	}
+	rem := reasoning
+	if st != nil {
+		seen := st.streamedThought.String()
+		if strings.HasPrefix(reasoning, seen) {
+			rem = reasoning[len(seen):]
+		}
+	}
+	if rem == "" {
+		return
+	}
+	b.srv.notify(acpMethodSessionUpdate, acpUpdateParams{
+		SessionID: sessionID,
+		Update: acpUpdate{
+			SessionUpdate: acpUpdateThoughtChunk,
+			Content:       &acpContentBlock{Type: "text", Text: rem},
+		},
+	})
+	if st != nil {
+		st.streamedThought.WriteString(rem)
+	}
+}
+
+// emitTextRemainder emits text as an agent_message_chunk, skipping any prefix
+// already streamed as message chunks (tracked in st).
+func (b *acpBridge) emitTextRemainder(text, msgID, sessionID string, st *openAIStreamState) {
+	if text == "" {
+		return
+	}
+	if st != nil {
+		streamed := st.streamed.String()
+		if strings.HasPrefix(text, streamed) {
+			text = text[len(streamed):]
+		}
+	}
+	b.emitMessageChunk(sessionID, msgID, text, st)
 }
 
 // handleAwaitingRun processes a run in the "awaiting" state. It emits the
@@ -405,10 +733,12 @@ func (b *acpBridge) emitTerminalOutput(run acpRun, sessionID string) {
 // user accepts, it resumes the run (creating a continuation run via the ACP
 // server) and returns the continuation run ID. Returns ("", false) if the user
 // declined, the elicitation failed, or an error occurred.
-func (b *acpBridge) handleAwaitingRun(ctx context.Context, run acpRun, sessionID, runID string) (string, bool) {
+func (b *acpBridge) handleAwaitingRun(ctx context.Context, run acpRun, sessionID, runID string, st *openAIStreamState) (string, bool) {
 	// Emit the clarification question as agent output so the user can see what
-	// was asked before the elicitation form appears.
-	b.emitTerminalOutput(run, sessionID)
+	// was asked before the elicitation form appears. emitTerminalOutput is
+	// suffix-aware: if the question was already streamed as message.part
+	// chunks, only the remainder (often nothing) is re-emitted.
+	b.emitTerminalOutput(run, sessionID, st)
 
 	question := ""
 	if run.AwaitRequest != nil && run.AwaitRequest.Question != "" {
@@ -504,7 +834,7 @@ func (b *acpBridge) tryResumeAwaiting(ctx context.Context, sessionID string, pro
 // pollToCompletion polls GET /runs/{id} until terminal. Used as the SSE
 // fallback when the state store is unavailable or the run never reaches
 // in-progress in time.
-func (b *acpBridge) pollToCompletion(ctx context.Context, runID, sessionID string) string {
+func (b *acpBridge) pollToCompletion(ctx context.Context, runID, sessionID string, st *openAIStreamState) string {
 	for {
 		if err := ctx.Err(); err != nil {
 			return acpStopReasonUserCancel
@@ -513,10 +843,11 @@ func (b *acpBridge) pollToCompletion(ctx context.Context, runID, sessionID strin
 		if err == nil {
 			switch run.Status {
 			case acpStatusCompleted:
-				b.emitTerminalOutput(run, sessionID)
+				// Emit any output not already streamed (suffix-aware, see above).
+				b.emitTerminalOutput(run, sessionID, st)
 				return acpStopReasonEndTurn
 			case acpStatusFailed, acpStatusCancelled:
-				b.emitTerminalOutput(run, sessionID)
+				b.emitTerminalOutput(run, sessionID, st)
 				return runStatusToStopReason(run.Status)
 			case acpStatusAwaiting:
 				return acpPendingAwaiting

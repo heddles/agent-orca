@@ -27,24 +27,136 @@ import (
 	"strings"
 )
 
-// flushSSE writes an SSE event to the response writer and immediately
-// flushes it to the client. It skips any content-type header check and
-// relies on the caller to set appropriate streaming headers. Returns an
-// error if the ResponseWriter does not support flushing.
-func flushSSE(w http.ResponseWriter, eventType, data string) error {
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		return fmt.Errorf("streaming not supported")
+// ----------------------------------------------------------------------------
+// OpenAI streaming schema (chat.completion.chunk) parsing
+// ----------------------------------------------------------------------------
+
+// openaiToolCall is one (possibly partial) OpenAI tool-call delta. OpenAI
+// streams tool calls as incremental fragments keyed by Index; fragments with
+// the same Index are merged (arguments concatenated) — mirroring
+// mergeToolCallDeltas in internal/router/stream.go.
+type openaiToolCall struct {
+	Index     int
+	ID        string
+	Name      string
+	Arguments string
+}
+
+// openaiChunk is one parsed OpenAI streaming payload, normalized for
+// translation into ACP session updates.
+type openaiChunk struct {
+	// Done is set for the terminal "[DONE]" sentinel.
+	Done bool
+	// Content is the assistant text delta (choices[].delta.content).
+	Content string
+	// Reasoning is the extended-thinking delta (choices[].delta.reasoning),
+	// emitted by o-series models and thinking proxies.
+	Reasoning string
+	// ToolCalls are the tool-call deltas (choices[].delta.tool_calls).
+	ToolCalls []openaiToolCall
+	// FinishReason is the non-empty finish_reason of the turn, if any.
+	FinishReason string
+}
+
+// parseOpenAIChunk parses one SSE data payload from an OpenAI-format stream:
+// either a chat.completion.chunk JSON object (as emitted by internal/router's
+// streaming proxy and by OpenAI-schema agents like pkg/go/openai-reference) or
+// the terminal "[DONE]" sentinel. It returns ok=false when the payload is not
+// an OpenAI chunk (e.g. ACP-format event data), so callers can fall through.
+func parseOpenAIChunk(data string) (openaiChunk, bool) {
+	if strings.TrimSpace(data) == "[DONE]" {
+		return openaiChunk{Done: true}, true
 	}
-	if eventType != "" {
-		_, _ = fmt.Fprintf(w, "event: %s\n", eventType)
+	var chunk struct {
+		Choices []struct {
+			Index int `json:"index"`
+			Delta struct {
+				Role      string `json:"role"`
+				Content   string `json:"content"`
+				Reasoning string `json:"reasoning"`
+				ToolCalls []struct {
+					Index    int    `json:"index"`
+					ID       string `json:"id"`
+					Type     string `json:"type"`
+					Function struct {
+						Name      string `json:"name"`
+						Arguments string `json:"arguments"`
+					} `json:"function"`
+				} `json:"tool_calls"`
+			} `json:"delta"`
+			FinishReason *string `json:"finish_reason"`
+		} `json:"choices"`
 	}
-	if data != "" {
-		_, _ = fmt.Fprintf(w, "data: %s\n", data)
+	if err := json.Unmarshal([]byte(data), &chunk); err != nil || len(chunk.Choices) == 0 {
+		return openaiChunk{}, false
 	}
-	_, _ = fmt.Fprint(w, "\n")
-	flusher.Flush()
-	return nil
+	var out openaiChunk
+	for _, choice := range chunk.Choices {
+		out.Content += choice.Delta.Content
+		out.Reasoning += choice.Delta.Reasoning
+		for _, tc := range choice.Delta.ToolCalls {
+			out.ToolCalls = append(out.ToolCalls, openaiToolCall{
+				Index:     tc.Index,
+				ID:        tc.ID,
+				Name:      tc.Function.Name,
+				Arguments: tc.Function.Arguments,
+			})
+		}
+		if choice.FinishReason != nil && *choice.FinishReason != "" {
+			out.FinishReason = *choice.FinishReason
+		}
+	}
+	return out, true
+}
+
+// sseField splits an SSE line into its field name and value per the SSE spec:
+// "field: value" or "field:value" (a single optional space after the colon is
+// part of the separator, not the value). ok=false for lines without a colon.
+func sseField(line string) (field, value string, ok bool) {
+	idx := strings.Index(line, ":")
+	if idx < 0 {
+		return "", "", false
+	}
+	return line[:idx], strings.TrimPrefix(line[idx+1:], " "), true
+}
+
+// sseDataPayload returns the payload of an SSE "data:" line (with or without
+// the optional space). ok=false for non-data lines.
+func sseDataPayload(line string) (string, bool) {
+	if field, value, ok := sseField(line); ok && field == "data" {
+		return value, true
+	}
+	return "", false
+}
+
+// extractOpenAIStreamText extracts the human-readable assistant text and
+// reasoning from run output that carries a raw OpenAI SSE stream — "data:"
+// lines of chat.completion.chunk payloads terminated by "data: [DONE]". This
+// is the shape OpenAI-schema agents (pkg/go/openai-reference) and the
+// model-router proxy leave in run output. ok=false when no OpenAI chunks are
+// found (plain-text output passes through untouched). When a stream is
+// detected only the chunk-extracted content is returned: agents commonly
+// interleave duplicate plain-text log lines with the SSE frames.
+func extractOpenAIStreamText(output string) (text, reasoning string, ok bool) {
+	var content, thinking strings.Builder
+	chunks := 0
+	for _, line := range strings.Split(output, "\n") {
+		data, isData := sseDataPayload(line)
+		if !isData {
+			continue
+		}
+		chunk, isChunk := parseOpenAIChunk(data)
+		if !isChunk {
+			continue
+		}
+		chunks++
+		content.WriteString(chunk.Content)
+		thinking.WriteString(chunk.Reasoning)
+	}
+	if chunks == 0 {
+		return "", "", false
+	}
+	return content.String(), thinking.String(), true
 }
 
 // This file holds the ACP JSON-RPC wire types that Zed (and other ACP clients)
@@ -100,6 +212,31 @@ const (
 const (
 	acpMethodSessionUpdate     = "session/update"
 	acpMethodElicitationCreate = "elicitation/create"
+)
+
+// ACP sessionUpdate values emitted by the bridge (see
+// https://agentclientprotocol.com/protocol/v1/session-updates).
+const (
+	acpUpdateMessageChunk = "agent_message_chunk"
+	acpUpdateThoughtChunk = "agent_thought_chunk"
+	acpUpdatePlan         = "plan"
+	acpUpdateToolCall     = "tool_call"
+	acpUpdateToolCallUpd  = "tool_call_update"
+)
+
+// ACP plan-entry statuses (per the ACP spec) and the priority the bridge uses
+// for its run-lifecycle plan entries.
+const (
+	acpPlanPending    = "pending"
+	acpPlanInProgress = "in_progress"
+	acpPlanCompleted  = "completed"
+	acpPlanPriority   = "medium"
+)
+
+// ACP tool-call statuses (per the ACP spec).
+const (
+	acpToolStatusInProgress = "in_progress"
+	acpToolStatusCompleted  = "completed"
 )
 
 // ----------------------------------------------------------------------------
@@ -179,10 +316,11 @@ type acpImplementation struct {
 	Version string `json:"version"`
 }
 
-// acpUpdateParams is a server->client session/update notification.
+// acpUpdateParams is a server->client session/update notification. Update is
+// either an acpUpdate (message/thought/plan updates) or an acpToolCallUpdate.
 type acpUpdateParams struct {
-	SessionID string    `json:"sessionId"`
-	Update    acpUpdate `json:"update"`
+	SessionID string `json:"sessionId"`
+	Update    any    `json:"update"`
 }
 
 type acpUpdate struct {
@@ -196,7 +334,20 @@ type acpUpdate struct {
 type acpPlanEntry struct {
 	Content  string `json:"content"`
 	Priority string `json:"priority,omitempty"` // "low" | "medium" | "high"
-	Status   string `json:"status,omitempty"`   // "pending" | "in-progress" | "completed"
+	Status   string `json:"status,omitempty"`   // "pending" | "in_progress" | "completed"
+}
+
+// acpToolCallUpdate is the session/update payload for the "tool_call" and
+// "tool_call_update" sessionUpdate values. Tool calls carry a distinct shape
+// from message chunks: a toolCallId, title, kind, status and a content-block
+// array rather than a single content block.
+type acpToolCallUpdate struct {
+	SessionUpdate string            `json:"sessionUpdate"` // "tool_call" | "tool_call_update"
+	ToolCallID    string            `json:"toolCallId"`
+	Title         string            `json:"title,omitempty"`
+	Kind          string            `json:"kind,omitempty"`   // "command" | "fetch" | "other"
+	Status        string            `json:"status,omitempty"` // "pending" | "in_progress" | "completed"
+	Content       []acpContentBlock `json:"content,omitempty"`
 }
 
 // ----------------------------------------------------------------------------
@@ -321,6 +472,12 @@ func (c *Client) GetACPRun(ctx context.Context, runID string) (acpRun, error) {
 // StreamRunEvents streams the live ACP run events as SSE. Only valid while the
 // run is in the "in-progress" phase (the server returns JSON otherwise, and
 // 503s when no state store is configured). Mirrors StreamTask's scanner.
+//
+// The parser handles both framings the run endpoint can produce: typed ACP
+// events ("event: message.part" + "data: {...}") and raw OpenAI-schema streams
+// (bare "data: {...}" chat.completion.chunk lines terminated by "data: [DONE]"),
+// which carry no event name — those surface as Event{Type: ""} and are
+// translated by the bridge's OpenAI chunk handling (handleOpenAIChunk).
 func (c *Client) StreamRunEvents(ctx context.Context, runID string) (<-chan Event, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
 		fmt.Sprintf("%s/runs/%s", strings.TrimRight(c.ACP, "/"), url.PathEscape(runID)), nil)
@@ -329,6 +486,7 @@ func (c *Client) StreamRunEvents(ctx context.Context, runID string) (<-chan Even
 	}
 	c.tokenAuth(req)
 	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Connection", "keep-alive")
 
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
@@ -339,44 +497,51 @@ func (c *Client) StreamRunEvents(ctx context.Context, runID string) (<-chan Even
 		return nil, fmt.Errorf("stream run events failed (HTTP %d)", resp.StatusCode)
 	}
 
-	// The server streams SSE only for runs in the "running" phase.
-	// For completed/failed/awaiting runs it returns JSON; detect that
-	// and return an error so the caller can fall back to polling.
-	if !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
-		_ = resp.Body.Close()
-		return nil, fmt.Errorf("server returned non-streaming response (Content-Type: %s)", resp.Header.Get("Content-Type"))
-	}
+	// // The server streams SSE only for runs in the "running" phase.
+	// // For completed/failed/awaiting runs it returns JSON; detect that
+	// // and return an error so the caller can fall back to polling.
+	// if !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
+	// 	_ = resp.Body.Close()
+	// 	return nil, fmt.Errorf("server returned non-streaming response (Content-Type: %s)", resp.Header.Get("Content-Type"))
+	// }
 
 	ch := make(chan Event)
 	go func() {
 		defer close(ch)
 		defer func() { _ = resp.Body.Close() }()
 		scanner := bufio.NewScanner(resp.Body)
-		scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
-		cur := Event{}
+		// Initial capacity: 1 MB (1<<20 = 1,048,576 bytes)
+		// Maximum size: 8 MB (8<<20 = 8,388,608 bytes)
+		scanner.Buffer(make([]byte, 0, 1<<20), 8<<20)
+
+		var typ string
+		var dataLines []string
+		send := func() bool {
+			if typ == "" && len(dataLines) == 0 {
+				return true
+			}
+			ch <- Event{Type: typ, Data: strings.Join(dataLines, "\n")}
+			return true
+		}
 		for scanner.Scan() {
 			line := scanner.Text()
 			if line == "" {
 				// End of event — flush the accumulated event to the channel.
-				if cur.Type != "" {
-					select {
-					case ch <- cur:
-					case <-ctx.Done():
-						return
-					}
-					cur = Event{}
-				}
+				send()
+				typ, dataLines = "", nil
 				continue
 			}
-			if strings.HasPrefix(line, "event: ") {
-				cur.Type = strings.TrimPrefix(line, "event: ")
-			} else if strings.HasPrefix(line, "data: ") {
-				cur.Data = strings.TrimPrefix(line, "data: ")
+			if field, value, ok := sseField(line); ok {
+				switch field {
+				case "event":
+					typ = value
+				case "data":
+					dataLines = append(dataLines, value)
+				}
 			}
 		}
-		if scanner.Err() != nil {
-			return
-		}
+		// Flush a trailing event if the stream ended without a blank line.
+		send()
 	}()
 	return ch, nil
 }

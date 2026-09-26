@@ -257,6 +257,35 @@ type AgentMemoryConfig struct {
 	// and a MemoryUnavailable event is emitted.
 	// +optional
 	LongTermMemoryRef string `json:"longTermMemoryRef,omitempty"`
+
+	// Hindsight configures the hindsight memory system integration.
+	// When enabled, the model-router will recall relevant memories before each
+	// LLM call and retain the conversation after each turn.
+	// +optional
+	Hindsight *HindsightMemoryConfig `json:"hindsight,omitempty"`
+}
+
+// HindsightMemoryConfig configures the hindsight memory system integration.
+type HindsightMemoryConfig struct {
+	// Enabled is true when hindsight is active.
+	// +kubebuilder:default=true
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+	// URL is the hindsight API endpoint (e.g. http://hindsight.hindsight.svc.cluster.local:8888).
+	// +optional
+	URL string `json:"url,omitempty"`
+	// BankIDTemplate is the template for the hindsight bank ID.
+	// Can use placeholders like {namespace}, {runName}, {agentName} which will be replaced at runtime.
+	// +optional
+	BankIDTemplate string `json:"bankIdTemplate,omitempty"`
+	// RecallBudget is the maximum number of memories to retrieve per turn.
+	// +kubebuilder:default=5
+	// +optional
+	RecallBudget int `json:"recallBudget,omitempty"`
+	// RetainOnEveryTurn is true to retain conversation after every LLM turn.
+	// +kubebuilder:default=true
+	// +optional
+	RetainOnEveryTurn bool `json:"retainOnEveryTurn,omitempty"`
 }
 
 // AgentStatus defines the observed state of an Agent.

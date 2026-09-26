@@ -99,6 +99,11 @@ type AgentRunReconciler struct {
 	// Default 0.5 (50%); set to 0.1 for aggressive compaction to ~10%.
 	// Injected from the CONTEXT_COMPACTION_RATIO env var.
 	ContextCompactionRatio float64
+
+	// HindsightURL is the configured hindsight API endpoint (e.g. http://hindsight.local).
+	// Injected from the HINDSIGHT_URL env var. Used to generate ipBlock egress rules
+	// in the per-run NetworkPolicies when the cluster has a default-deny egress policy.
+	HindsightURL string
 }
 
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
@@ -1146,6 +1151,13 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 		Safeguards:             safeguards,
 		EpisodicMemory:         episodicMemory,
 		LongTermMemory:         longTermMemory,
+		Hindsight: router.HindsightConfig{
+			Enabled:           true,
+			URL:               r.HindsightURL,
+			BankIDTemplate:    "{namespace}--{agent-name}",
+			RecallBudget:      5,
+			RetainOnEveryTurn: true,
+		},
 	}
 	if agent.Spec.Runtime.InputMode == "http" {
 		port := agent.Spec.Runtime.InputPort
@@ -1234,7 +1246,7 @@ func (r *AgentRunReconciler) ensureTokenReviewerBinding(ctx context.Context, run
 // ensureNetworkPolicy creates the per-run NetworkPolicy if it doesn't exist.
 func (r *AgentRunReconciler) ensureNetworkPolicy(ctx context.Context, run *agentorcav1alpha1.AgentRun, toolEgressRules []agentorcav1alpha1.EgressRule, hasAgentTools bool, hasKnowledgeBases bool) error { //nolint:unparam
 
-	np := security.BuildNetworkPolicy(run, run.Namespace, toolEgressRules, r.StateConfig.Backend == "redis")
+	np := security.BuildNetworkPolicy(run, run.Namespace, toolEgressRules, r.StateConfig.Backend == "redis", r.HindsightURL)
 	if err := ctrl.SetControllerReference(run, np, r.Scheme); err != nil {
 		return fmt.Errorf("setting networkpolicy owner ref: %w", err)
 	}
@@ -1248,7 +1260,7 @@ func (r *AgentRunReconciler) ensureNetworkPolicy(ctx context.Context, run *agent
 //   - Router pod policy: full egress (providers, K8s API, Redis, tools) + ingress from agent pod
 //   - Agent pod policy: egress restricted to router pod ports 8080/8082 + DNS only
 func (r *AgentRunReconciler) ensureSplitPodNetworkPolicies(ctx context.Context, run *agentorcav1alpha1.AgentRun, toolEgressRules []agentorcav1alpha1.EgressRule) error {
-	routerNP := security.BuildRouterPodNetworkPolicy(run, run.Namespace, toolEgressRules, r.StateConfig.Backend == "redis")
+	routerNP := security.BuildRouterPodNetworkPolicy(run, run.Namespace, toolEgressRules, r.StateConfig.Backend == "redis", r.HindsightURL)
 	if err := ctrl.SetControllerReference(run, routerNP, r.Scheme); err != nil {
 		return fmt.Errorf("setting router networkpolicy owner ref: %w", err)
 	}

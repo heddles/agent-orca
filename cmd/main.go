@@ -409,6 +409,7 @@ func main() {
 		OperatorAPIURL:           os.Getenv("OPERATOR_API_URL"),
 		LLMRequestTimeout:        llmReqTimeout,
 		ContextCompactionRatio:   compactionRatio,
+		HindsightURL:             os.Getenv("HINDSIGHT_URL"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "AgentRun")
 		os.Exit(1)
@@ -424,6 +425,7 @@ func main() {
 		OperatorAPIURL:           os.Getenv("OPERATOR_API_URL"),
 		LLMRequestTimeout:        llmReqTimeout,
 		ContextCompactionRatio:   compactionRatio,
+		HindsightURL:             os.Getenv("HINDSIGHT_URL"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "AgentDeployment")
 		os.Exit(1)

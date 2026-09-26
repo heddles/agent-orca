@@ -25,6 +25,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -42,6 +43,7 @@ import (
 	"github.com/floppyfish14/agent-orca/internal/mcp"
 	"github.com/floppyfish14/agent-orca/internal/state"
 	tiktoken "github.com/pkoukk/tiktoken-go"
+	hindsight "github.com/vectorize-io/hindsight/hindsight-clients/go"
 )
 
 var defaultEncoder *tiktoken.Tiktoken
@@ -649,6 +651,16 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 		return
 	}
 
+	// Ensure hindsight bank exists at startup; if it already exists, continue gracefully.
+	if r.cfg.Hindsight.Enabled && r.cfg.Hindsight.URL != "" {
+		bankID, err := r.ensureHindsightBank(context.Background())
+
+		if err != nil {
+			slog.Warn("hindsight memory system did not find or create bankID", bankID, "Error:", err.Error(), "agent memory system is not active.")
+		}
+		slog.Info("hindsight memory bank", bankID, "exists.")
+	}
+
 	// If a handoff, clarify, done, fail, or safeguard trip completed, stop processing further LLM calls.
 	r.mu.Lock()
 	ho := r.handedOff
@@ -870,6 +882,20 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 	}
 
 	// Select the best provider.
+	// Hindsight recall: query hindsight for relevant memories before the LLM call.
+	// This is skipped for continuations (already in r.messages).
+	if r.cfg.Hindsight.Enabled && r.cfg.Hindsight.URL != "" {
+		if lastUserMsg := lastUserMessage(chatReq.Messages); lastUserMsg != "" {
+			if recalled, err := r.hindsightRecall(req.Context(), lastUserMsg); err == nil && recalled != "" {
+				chatReq.Messages = append([]Message{{Role: "system", Content: "<hindsight-recall>\n" + recalled + "\n</hindsight-recall>"}}, chatReq.Messages...)
+				slog.Info("hindsight recall success", "run", r.cfg.RunName, "bankID", r.hindsightBankID())
+			} else if err != nil {
+				slog.Warn("hindsight recall failed", "run", r.cfg.RunName, "err", err)
+			}
+		}
+	}
+
+	// Select the best provider.
 	provider, routeResult := r.selectProvider(req.Context(), chatReq.Messages)
 	if provider == nil {
 		http.Error(w, "no available provider", http.StatusServiceUnavailable)
@@ -938,163 +964,182 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 	}
 
 	// Streaming path: proxy SSE chunks directly from provider to client.
-	if chatReq.Stream {
-		// Ensure streaming responses include token usage so we can track spend.
-		if chatReq.StreamOptions == nil {
-			chatReq.StreamOptions = &StreamOptions{}
-		}
-		chatReq.StreamOptions.IncludeUsage = true
+	chatReq.StreamOptions.IncludeUsage = true
 
-		resp, err := r.forwardToProviderStream(req.Context(), provider, chatReq)
-		if err != nil {
-			primaryName := provider.Name
-			slog.Warn("primary provider failed (streaming), trying fallback", "provider", primaryName, "err", err)
-			r.emitTraceEventBoth(fmt.Sprintf(`{"type":"providerFallback","from":%q,"to":"","reason":%q}`, primaryName, err.Error()))
-			resp, provider, err = r.tryFallbackStream(req.Context(), chatReq, primaryName)
-			if err != nil {
-				slog.Error("all providers failed (streaming)", "err", err)
-				r.emitTraceEventBoth(fmt.Sprintf(`{"type":"providerFallback","from":%q,"to":"","reason":%q,"exhausted":true}`, primaryName, err.Error()))
-				http.Error(w, "upstream error", http.StatusBadGateway)
-				return
-			}
-			r.emitTraceEventBoth(fmt.Sprintf(`{"type":"providerFallback","from":%q,"to":%q,"reason":%q}`, primaryName, provider.Name, "streaming fallback succeeded"))
-		}
-		r.handleStreamingResponse(w, req, provider, resp, chatReq)
-		return
-	}
-
-	// Non-streaming path: forward and return the complete response.
-	respBody, err := r.forwardToProvider(req.Context(), provider, chatReq)
+	resp, err := r.forwardToProviderStream(req.Context(), provider, chatReq)
 	if err != nil {
 		primaryName := provider.Name
-		slog.Warn("primary provider failed, trying fallback", "provider", primaryName, "err", err)
-		// Try fallback chain.
-		respBody, provider, err = r.tryFallback(req.Context(), chatReq, primaryName)
+		slog.Warn("primary provider failed (streaming), trying fallback", "provider", primaryName, "err", err)
+		r.emitTraceEventBoth(fmt.Sprintf(`{"type":"providerFallback","from":%q,"to":"","reason":%q}`, primaryName, err.Error()))
+		resp, provider, err = r.tryFallbackStream(req.Context(), chatReq, primaryName)
 		if err != nil {
-			slog.Error("all providers failed", "err", err)
+			slog.Error("all providers failed (streaming)", "err", err)
 			r.emitTraceEventBoth(fmt.Sprintf(`{"type":"providerFallback","from":%q,"to":"","reason":%q,"exhausted":true}`, primaryName, err.Error()))
 			http.Error(w, "upstream error", http.StatusBadGateway)
 			return
 		}
-		r.emitTraceEventBoth(fmt.Sprintf(`{"type":"providerFallback","from":%q,"to":%q,"reason":%q}`, primaryName, provider.Name, "fallback succeeded"))
+		r.emitTraceEventBoth(fmt.Sprintf(`{"type":"providerFallback","from":%q,"to":%q,"reason":%q}`, primaryName, provider.Name, "streaming fallback succeeded"))
 	}
+	r.handleStreamingResponse(w, req, provider, resp, chatReq)
+
+	// Non-streaming path: forward and return the complete response.
+	// respBody, err := r.forwardToProvider(req.Context(), provider, chatReq)
+	// if err != nil {
+	// 	primaryName := provider.Name
+	// 	slog.Warn("primary provider failed, trying fallback", "provider", primaryName, "err", err)
+	// 	// Try fallback chain.
+	// 	respBody, provider, err = r.tryFallback(req.Context(), chatReq, primaryName)
+	// 	if err != nil {
+	// 		slog.Error("all providers failed", "err", err)
+	// 		r.emitTraceEventBoth(fmt.Sprintf(`{"type":"providerFallback","from":%q,"to":"","reason":%q,"exhausted":true}`, primaryName, err.Error()))
+	// 		http.Error(w, "upstream error", http.StatusBadGateway)
+	// 		return
+	// 	}
+	// 	r.emitTraceEventBoth(fmt.Sprintf(`{"type":"providerFallback","from":%q,"to":%q,"reason":%q}`, primaryName, provider.Name, "fallback succeeded"))
+	// }
 
 	// Intercept tool calls and dispatch them.
-	var completionResp ChatCompletionResponse
-	if jsonErr := json.Unmarshal(respBody, &completionResp); jsonErr == nil {
-		if len(completionResp.Choices) > 0 {
-			choice := completionResp.Choices[0]
-			if len(choice.Message.ToolCalls) > 0 {
-				// The LLM wants to call tools — dispatch them and return tool results.
-				r.handleToolCalls(w, req, chatReq, completionResp)
-				return
-			}
-		}
-	}
+	// var completionResp ChatCompletionResponse
+	// if jsonErr := json.Unmarshal(respBody, &completionResp); jsonErr == nil {
+	// 	if len(completionResp.Choices) > 0 {
+	// 		choice := completionResp.Choices[0]
+	// 		if len(choice.Message.ToolCalls) > 0 {
+	// 			// The LLM wants to call tools — dispatch them and return tool results.
+	// 			r.handleToolCalls(w, req, chatReq, completionResp)
+	// 			return
+	// 		}
+	// 	}
+	// }
 
-	// Apply guardrail output filters to the LLM response before returning to the agent.
-	if r.guardrails != nil && len(completionResp.Choices) > 0 {
-		if text, ok := completionResp.Choices[0].Message.Content.(string); ok && text != "" {
-			result := r.guardrails.ApplyOutput(text)
-			if result.Blocked {
-				slog.Warn("Guardrail blocked output", "run", r.cfg.RunName, "message", result.BlockMessage)
-				r.emitTraceEvent(fmt.Sprintf(`{"type":"guardrail","action":"blocked","reason":%q}`, result.BlockMessage))
-				// trace-event: record guardrail block.
-				completionResp.Choices[0].Message.Content = result.BlockMessage
-			} else if result.FilteredText != text {
-				completionResp.Choices[0].Message.Content = result.FilteredText
-				// Re-serialize since we modified the response.
-				respBody, _ = json.Marshal(completionResp)
-			}
-		}
-	}
+	// // Apply guardrail output filters to the LLM response before returning to the agent.
+	// if r.guardrails != nil && len(completionResp.Choices) > 0 {
+	// 	if text, ok := completionResp.Choices[0].Message.Content.(string); ok && text != "" {
+	// 		result := r.guardrails.ApplyOutput(text)
+	// 		if result.Blocked {
+	// 			slog.Warn("Guardrail blocked output", "run", r.cfg.RunName, "message", result.BlockMessage)
+	// 			r.emitTraceEvent(fmt.Sprintf(`{"type":"guardrail","action":"blocked","reason":%q}`, result.BlockMessage))
+	// 			// trace-event: record guardrail block.
+	// 			completionResp.Choices[0].Message.Content = result.BlockMessage
+	// 		} else if result.FilteredText != text {
+	// 			completionResp.Choices[0].Message.Content = result.FilteredText
+	// 			// Re-serialize since we modified the response.
+	// 			respBody, _ = json.Marshal(completionResp)
+	// 		}
+	// 	}
+	// }
 
-	// Safety net: if the LLM output a question as text instead of calling _clarify,
-	// detect it and synthetically trigger _clarify. This catches cases where the LLM
-	// ignores the system hint and writes a question that would otherwise be silently
-	// piped to the next workflow step.
-	//
-	// Skip the first turn after resuming with a clarify answer — the LLM's response
-	// to the injected answer often references the prior question, which would falsely
-	// re-trigger clarify and create an infinite loop.
-	if r.resumedWithAnswer {
-		r.mu.Lock()
-		r.resumedWithAnswer = false
-		r.mu.Unlock()
-	} else if r.shouldAutoTriggerClarify(completionResp) {
-		text, _ := completionResp.Choices[0].Message.Content.(string)
-		slog.Info("auto-triggering _clarify: LLM output a question as text", "run", r.cfg.RunName)
-		clarifyIsContinuation := req.Context().Value(continuationKey{}) != nil
-		r.mu.Lock()
-		if !clarifyIsContinuation {
-			r.messages = append(r.messages, chatReq.Messages...)
-		}
-		r.messages = append(r.messages, completionResp.Choices[0].Message)
-		r.mu.Unlock()
-		r.updateSpend(completionResp.Usage, provider)
-		// Checkpoint and notify the operator — do NOT use executeClarify here
-		// because it writes JSON to the Redis token stream, which the UI API
-		// would pick up and display as raw text. The UI API's Phase 3 polling
-		// will detect WaitingForInput and emit a proper clarify SSE event.
-		r.checkpoint(context.Background())
-		if err := r.notifyOperatorClarify(text); err != nil {
-			slog.Error("failed to notify operator for clarify", "err", err)
-		}
-		// trace-event: record auto-clarify release decision.
-		{
-		}
-		// Completion of the token stream is signalled by the WaitingForInput phase
-		// the operator just set (notifyOperatorClarify above): uiapi's terminal-state
-		// poller cancels TailTokens on that phase, closing the SSE. No empty-token
-		// "done sentinel" is written here — completion follows the OpenAI/CRD schema.
-		// Return the real LLM response (which IS the question) so the agent
-		// framework gets a clean 200 in HTTP/chat/warm mode. In job mode, return
-		// 410 Gone so the agent container exits cleanly.
-		if r.cfg.ChatMode {
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(completionResp)
-			return
-		}
-		http.Error(w, "run paused for clarification", http.StatusGone)
-		return
-	}
+	// // Safety net: if the LLM output a question as text instead of calling _clarify,
+	// // detect it and synthetically trigger _clarify. This catches cases where the LLM
+	// // ignores the system hint and writes a question that would otherwise be silently
+	// // piped to the next workflow step.
+	// //
+	// // Skip the first turn after resuming with a clarify answer — the LLM's response
+	// // to the injected answer often references the prior question, which would falsely
+	// // re-trigger clarify and create an infinite loop.
+	// if r.resumedWithAnswer {
+	// 	r.mu.Lock()
+	// 	r.resumedWithAnswer = false
+	// 	r.mu.Unlock()
+	// } else if r.shouldAutoTriggerClarify(completionResp) {
+	// 	text, _ := completionResp.Choices[0].Message.Content.(string)
+	// 	slog.Info("auto-triggering _clarify: LLM output a question as text", "run", r.cfg.RunName)
+	// 	clarifyIsContinuation := req.Context().Value(continuationKey{}) != nil
+	// 	r.mu.Lock()
+	// 	if !clarifyIsContinuation {
+	// 		r.messages = append(r.messages, chatReq.Messages...)
+	// 	}
+	// 	r.messages = append(r.messages, completionResp.Choices[0].Message)
+	// 	r.mu.Unlock()
+	// 	r.updateSpend(completionResp.Usage, provider)
+	// 	// Checkpoint and notify the operator — do NOT use executeClarify here
+	// 	// because it writes JSON to the Redis token stream, which the UI API
+	// 	// would pick up and display as raw text. The UI API's Phase 3 polling
+	// 	// will detect WaitingForInput and emit a proper clarify SSE event.
+	// 	r.checkpoint(context.Background())
+	// 	if err := r.notifyOperatorClarify(text); err != nil {
+	// 		slog.Error("failed to notify operator for clarify", "err", err)
+	// 	}
+	// 	// trace-event: record auto-clarify release decision.
+	// 	{
+	// 	}
+	// 	// Completion of the token stream is signalled by the WaitingForInput phase
+	// 	// the operator just set (notifyOperatorClarify above): uiapi's terminal-state
+	// 	// poller cancels TailTokens on that phase, closing the SSE. No empty-token
+	// 	// "done sentinel" is written here — completion follows the OpenAI/CRD schema.
+	// 	// Return the real LLM response (which IS the question) so the agent
+	// 	// framework gets a clean 200 in HTTP/chat/warm mode. In job mode, return
+	// 	// 410 Gone so the agent container exits cleanly.
+	// 	// Hindsight retain: store conversation content before returning.
+	// 	if r.cfg.Hindsight.Enabled && r.cfg.Hindsight.URL != "" {
+	// 		content := fmt.Sprintf("%s", messageText(completionResp.Choices[0].Message))
+	// 		if err := r.hindsightRetain(req.Context(), r.cfg.DeploymentName, content); err != nil {
+	// 			slog.Warn("hindsight retain failed", "run", r.cfg.RunName, "err", err)
+	// 		} else {
+	// 			slog.Info("hindsight retain success", "run", r.cfg.RunName, "bankID", r.hindsightBankID())
+	// 		}
+	// 	}
+	// 	if r.cfg.ChatMode {
+	// 		w.Header().Set("Content-Type", "application/json")
+	// 		_ = json.NewEncoder(w).Encode(completionResp)
+	// 		return
+	// 	}
+	// 	http.Error(w, "run paused for clarification", http.StatusGone)
+	// 	return
+	// }
 
-	// Update conversation history and checkpoint.
-	// For continuation requests (recursive tool-call loops), chatReq.Messages was
-	// built from r.messages and would duplicate the entire conversation if re-appended.
-	r.mu.Lock()
-	if !isContinuation {
-		r.messages = append(r.messages, chatReq.Messages...)
-		r.incrementBufferTokens(int(completionResp.Usage.PromptTokens))
-	}
-	var assistantMsg Message
-	if len(completionResp.Choices) > 0 {
-		assistantMsg = completionResp.Choices[0].Message
-		r.messages = append(r.messages, assistantMsg)
-		r.incrementBufferTokens(int(completionResp.Usage.CompletionTokens))
-	}
-	// Fold the finished turn into priorMessages and cap the live buffer so it can't
-	// re-inflate to the agent's full re-sent history before the async checkpoint.
-	r.concludeTurn()
-	r.updateSpend(completionResp.Usage, provider)
-	r.ruleRouter.IncrementTurn()
-	r.mu.Unlock()
+	// // Update conversation history and checkpoint.
+	// // For continuation requests (recursive tool-call loops), chatReq.Messages was
+	// // built from r.messages and would duplicate the entire conversation if re-appended.
+	// r.mu.Lock()
+	// if !isContinuation {
+	// 	r.messages = append(r.messages, chatReq.Messages...)
+	// 	r.incrementBufferTokens(int(completionResp.Usage.PromptTokens))
+	// }
+	// var assistantMsg Message
+	// if len(completionResp.Choices) > 0 {
+	// 	assistantMsg = completionResp.Choices[0].Message
+	// 	r.messages = append(r.messages, assistantMsg)
+	// 	r.incrementBufferTokens(int(completionResp.Usage.CompletionTokens))
+	// }
 
-	// trace-event: record successful LLM call.
-	{
-	}
+	// // Hindsight retain: store conversation content after every LLM turn.
+	// // This runs unconditionally so memory is retained even on auto-clarify or
+	// // safeguard paths that return before the normal completion response.
+	// if r.cfg.Hindsight.Enabled && r.cfg.Hindsight.URL != "" {
+	// 	content := fmt.Sprintf("%s", respBody)
+	// 	if err := r.hindsightRetain(req.Context(), r.cfg.DeploymentName, content); err != nil {
+	// 		slog.Warn("hindsight retain failed", "run", r.cfg.RunName, "err", err)
+	// 	} else {
+	// 		slog.Info("hindsight retain success", "run", r.cfg.RunName, "bankID", r.hindsightBankID())
+	// 	}
+	// }
+
+	// w.Header().Set("Content-Type", "application/json")
+	// w.WriteHeader(http.StatusOK)
+	// _, _ = w.Write(respBody)
+
+	// // Fold the finished turn into priorMessages and cap the live buffer so it can't
+	// // re-inflate to the agent's full re-sent history before the async checkpoint.
+	// r.concludeTurn()
+	// r.updateSpend(completionResp.Usage, provider)
+	// r.ruleRouter.IncrementTurn()
+	// r.mu.Unlock()
+
+	// // trace-event: record successful LLM call.
+	// {
+	// }
 
 	// Run episodic summarization if due (async to avoid blocking the response).
 	go r.maybeRunEpisodicSummary(context.Background())
 
 	// Check safeguards after each non-tool-call response.
 	// Tool-call responses are handled in handleToolCalls which also calls checkSafeguards.
-	if tripped, info := r.checkSafeguards(assistantMsg, completionResp.Usage.CompletionTokens); tripped {
-		r.checkpoint(context.Background())
-		go r.notifyLoopDetected(info)
-		http.Error(w, "run halted by safeguard: "+info.Reason, http.StatusGone)
-		return
-	}
+	// if tripped, info := r.checkSafeguards(assistantMsg, completionResp.Usage.CompletionTokens); tripped {
+	// 	r.checkpoint(context.Background())
+	// 	go r.notifyLoopDetected(info)
+	// 	http.Error(w, "run halted by safeguard: "+info.Reason, http.StatusGone)
+	// 	return
+	// }
 
 	// Checkpoint periodically for crash recovery.
 	if r.cfg.CheckpointEvery > 0 && r.ruleRouter.TurnCount()%r.cfg.CheckpointEvery == 0 {
@@ -1109,10 +1154,6 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 
 	// Notify operator of context usage for UI display.
 	go r.notifyOperatorContext()
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(respBody)
 }
 
 // HandleModels handles GET /v1/models — returns the list of available providers.
@@ -1287,7 +1328,6 @@ func (r *Router) forwardToProvider(ctx context.Context, provider *ProviderConfig
 	if err != nil {
 		return nil, fmt.Errorf("provider %s: %w", provider.Name, err)
 	}
-	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -2255,11 +2295,18 @@ func (r *Router) handleToolCalls(w http.ResponseWriter, req *http.Request,
 	tcIsContinuation := req.Context().Value(continuationKey{}) != nil
 	r.mu.Lock()
 	if !tcIsContinuation {
-		r.messages = append(r.messages, chatReq.Messages...)
+		// chatReq.Messages is already in r.messages from HandleChatCompletions
+		// for non-continuation requests, so we don't re-append it here to prevent duplication.
+		// Only append the assistant message (tool call) to r.messages.
+		r.messages = append(r.messages, assistantMsg)
+		r.incrementBufferTokens(0)
+	} else {
+		// For continuations, append both the assistant message and any new messages
+		// from chatReq that aren't already in r.messages.
+		// chatReq.Messages for continuations came from r.messages, so skip re-appending.
+		r.messages = append(r.messages, assistantMsg)
 		r.incrementBufferTokens(0)
 	}
-	r.messages = append(r.messages, assistantMsg)
-	r.incrementBufferTokens(0)
 	r.mu.Unlock()
 
 	// Check tool-level safeguards (frequency cap, repeated call detection) before dispatch.
@@ -3122,19 +3169,15 @@ func (r *Router) executeSpawn(ctx context.Context, args string) string {
 
 	slog.Info("spawned child AgentRun", "parent", r.cfg.RunName, "child", childName, "agent", p.AgentRef)
 
-	// trace-event: record spawn decision.
-	{
-	}
-
 	// Poll until the child reaches a terminal phase.
-	getURL := fmt.Sprintf("%s/agentrun/%s/%s", r.cfg.OperatorAPIURL, r.cfg.RunNamespace, childName)
+	pollURL := fmt.Sprintf("%s/agentrun/%s/%s/status", r.cfg.OperatorAPIURL, r.cfg.RunNamespace, childName)
 	deadline := time.Now().Add(timeout)
 	pollInterval := 2 * time.Second
 
 	for time.Now().Before(deadline) {
 		time.Sleep(pollInterval)
 
-		getReq, err := http.NewRequestWithContext(ctx, http.MethodGet, getURL, nil)
+		getReq, err := http.NewRequestWithContext(ctx, http.MethodGet, pollURL, nil)
 		if err != nil {
 			continue
 		}
@@ -4429,7 +4472,7 @@ func (r *Router) HandleInternalStream(w http.ResponseWriter, req *http.Request) 
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "close")
+	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 	// Write headers immediately so proxies (including the k8s API server)
 	// know this is a streaming response and don't buffer it.
@@ -4676,4 +4719,119 @@ func (r *Router) injectRAGTrustBoundaryHint(chatReq ChatCompletionRequest) ChatC
 	msgs = append(msgs, chatReq.Messages[insertIdx:]...)
 	chatReq.Messages = msgs
 	return chatReq
+}
+
+// ensureHindsightBank creates the  bank at agent startup if it does not exist.
+// If the bank already exists, it exits gracefully and continues startup.
+func (r *Router) ensureHindsightBank(ctx context.Context) (string, error) {
+	if !r.cfg.Hindsight.Enabled || r.cfg.Hindsight.URL == "" {
+		return "", nil
+	}
+	bankID := r.hindsightBankID()
+	if bankID == "" || bankID == "/" {
+		err := errors.New("hindsight bankID Invalid")
+		slog.Warn("Invalid hindsight bankID")
+		return bankID, err
+	}
+
+	cfg := hindsight.NewConfiguration()
+	cfg.Servers[0].URL = r.cfg.Hindsight.URL
+	client := hindsight.NewAPIClient(cfg)
+
+	_, _, err := client.BanksAPI.CreateOrUpdateBank(ctx, bankID).CreateBankRequest(hindsight.CreateBankRequest{}).Execute()
+
+	if err != nil {
+		return bankID, err
+	}
+
+	return bankID, nil
+}
+
+// hindsightBankID derives the hindsight bank ID from the tenant namespace and agent name.
+// Format: <namespace>/<agent-name> ensures tenant isolation.
+func (r *Router) hindsightBankID() string {
+	return r.cfg.RunNamespace + "--" + r.cfg.DeploymentName
+}
+
+// hindsightRecall queries hindsight for relevant memories before an LLM call.
+func (r *Router) hindsightRecall(ctx context.Context, query string) (string, error) {
+	if !r.cfg.Hindsight.Enabled || r.cfg.Hindsight.URL == "" {
+		return "", errors.New("Hindsight is disabled or the URL is empty.")
+	}
+
+	bankID := r.hindsightBankID()
+
+	// Create hindsight client
+	cfg := hindsight.NewConfiguration()
+	cfg.Servers[0].URL = r.cfg.Hindsight.URL
+	client := hindsight.NewAPIClient(cfg)
+
+	// Build recall request
+	recallReq := hindsight.NewRecallRequest(query)
+	recallReq.MaxTokens = hindsight.PtrInt32(int32(r.cfg.Hindsight.RecallBudget))
+
+	// Call hindsight recall API
+	resp, _, err := client.MemoryAPI.RecallMemories(ctx, bankID).RecallRequest(*recallReq).Execute()
+	if err != nil {
+		return "", fmt.Errorf("hindsight recall failed for url %s: %w", r.cfg.Hindsight.URL, err)
+	}
+
+	// Concatenate fact texts from results
+	var results []string
+	for _, result := range resp.Results {
+		if result.Text != "" {
+			results = append(results, result.Text)
+		}
+	}
+
+	return strings.Join(results, "\n\n"), nil
+}
+
+// hindsightRetain stores conversation content in hindsight after an LLM call.
+func (r *Router) hindsightRetain(ctx context.Context, runName string, content string) error {
+	if !r.cfg.Hindsight.Enabled || r.cfg.Hindsight.URL == "" {
+		return errors.New("Hindsight is disabled or the URL is empty.")
+	}
+
+	// Use a detached context with a timeout for hindsight operations so that
+	// a cancelled request/stream context (e.g. from session/cancel or the 30s
+	// ACP streaming timeout) does not abort the retain call prematurely.
+	retainCtx, retainCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer retainCancel()
+
+	bankID := r.hindsightBankID()
+
+	// Create hindsight client
+	cfg := hindsight.NewConfiguration()
+	cfg.Servers[0].URL = r.cfg.Hindsight.URL
+	client := hindsight.NewAPIClient(cfg)
+
+	// Build retain request
+	async := true
+	retainReq := hindsight.NewRetainRequest([]hindsight.MemoryItem{
+		{
+			Content:    hindsight.Content{String: hindsight.PtrString(content)},
+			Context:    stringToNullable("agent-run-" + runName),
+			DocumentId: stringToNullable("agent-run-" + runName),
+		},
+	})
+	retainReq.Async = &async
+
+	// Call hindsight retain API
+	_, _, err := client.MemoryAPI.RetainMemories(retainCtx, bankID).RetainRequest(*retainReq).Execute()
+	if err != nil {
+		return fmt.Errorf("hindsight retain failed for url %s: %w", r.cfg.Hindsight.URL, err)
+	}
+
+	return nil
+}
+
+// stringToNullable converts a string to a hindsight NullableString.
+func stringToNullable(s string) hindsight.NullableString {
+	return *hindsight.NewNullableString(&s)
+}
+
+// stringPtrToNullable converts a string pointer to a hindsight NullableString.
+func stringPtrToNullable(s string) hindsight.NullableString {
+	return *hindsight.NewNullableString(&s)
 }
