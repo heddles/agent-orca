@@ -53,9 +53,6 @@ agent-orca-resources:
       # server subcommand; --read-only blocks all mutating tools; --tools restricts
       # to the read-only allow-list using the server's REAL (underscore) tool names.
       #
-      # Discovery: spec.tools is empty (below) so the controller creates a single
-      # connector Tool CR named "github-mcp"; the model-router discovers all of the
-      # server's tools at runtime and exposes them to the LLM.
       args:
         - /server/github-mcp-server
         - stdio
@@ -76,6 +73,9 @@ agent-orca-resources:
         - host: api.github.com
           port: 443
           protocol: TCP
+      # Discovery: spec.tools is empty (below) so the controller creates a single
+      # connector Tool CR named "github-mcp"; the model-router discovers all of the
+      # server's tools at runtime and exposes them to the LLM.
       tools: []
       #   # Hyphenated (K8s-valid) — these become Tool CRs github-mcp-<name>.
       #   - name: get-file-contents
@@ -126,14 +126,7 @@ agent-orca-resources:
         its Go controllers, the model-router sidecar contract, the KnowledgeBase/Qdrant
         pipeline, and how MCP stdio sidecars are mounted into agent pods.
 
-        Your toolkit:
-          _rag_search          — search the agent-orca-codebase handbook KB
-          _rag_ingest          — persist text into the KB so it improves over time
-          _done                — finish a turn and return your answer
-          _clarify             — ask the user a focused clarifying question
-          _fail                — fail a turn with a message (use for errors)
-          github-mcp-*         — read-only GitHub tools (get_file_contents, search_code,
-                                   list_commits, get_commit, list_branches, search_commits)
+        Your toolkit beyond the standard tools:
           _webhook_notify        — post a message to the team Slack channel via an incoming
                                    webhook (no per-user auth; shared channel, no data residency).
 
