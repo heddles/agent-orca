@@ -125,7 +125,7 @@ indexed handbook, the live GitHub read takes precedence.
 
 > `What changed in the last 5 commits to the agent-orca repo?`
 
-Expected: `list_commits` on `floppyfish14/agent-orca`, then
+Expected: `list_commits` on `heddles/agent-orca`, then
 `get_commit` for detail on interesting entries.
 
 **Scenario 4 — Notify the team**
@@ -167,6 +167,6 @@ kubectl get tool -n agent-orca-system -l agentorca.io/managed-by=mcpserver
   there are no per-user tokens and no data-residency concerns (any team member can
   read the posted messages).
 - To point the agent at a different GitHub repo, edit the system prompt's repo
-  (`floppyfish14/agent-orca`) and the GitHub PAT's permissions accordingly.
+  (`heddles/agent-orca`) and the GitHub PAT's permissions accordingly.
 - To point the agent at a different Slack channel, create another incoming webhook in
   that channel and update `webhookNotify.url`.
