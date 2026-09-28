@@ -62,6 +62,8 @@ agent-orca-resources:
             secretKeyRef:
               name: github-mcp-token
               key: token
+        - name: GITHUB_TOOLSETS
+          value: "all"
       # The agent may call these tools directly; the _controller principal is
       # required so the KnowledgeBase MCP-ingestion Jobs (if enabled later) can too.
       allowedAgents:
