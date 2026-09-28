@@ -44,7 +44,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
-	"github.com/floppyfish14/agent-orca/internal/oauth"
+	"github.com/heddles/agent-orca/internal/oauth"
 )
 
 const (

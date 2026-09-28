@@ -37,7 +37,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/floppyfish14/agent-orca/internal/oauth"
+	"github.com/heddles/agent-orca/internal/oauth"
 )
 
 // Transport is the MCP connection transport type.

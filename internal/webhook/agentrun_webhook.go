@@ -39,8 +39,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
-	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
-	"github.com/floppyfish14/agent-orca/internal/security"
+	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
+	"github.com/heddles/agent-orca/internal/security"
 )
 
 // AgentRunValidator validates AgentRun resources on admission.

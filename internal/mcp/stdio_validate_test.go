@@ -20,7 +20,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/floppyfish14/agent-orca/internal/podbuilder"
+	"github.com/heddles/agent-orca/internal/podbuilder"
 )
 
 func TestValidateStdioCommand(t *testing.T) {

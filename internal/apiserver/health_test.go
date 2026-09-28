@@ -27,7 +27,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floppyfish14/agent-orca/internal/state"
+	"github.com/heddles/agent-orca/internal/state"
 )
 
 // fakeReadyStore is a minimal state.Store used only to drive /readyz's Ping path.

@@ -56,8 +56,8 @@ sign-off in the PR that the schema is backward-compatible (additive) or that a
 Kubernetes operator consumed by tenants; breaking CRD changes are rare and
 reviewed carefully.
 
-[blank]: https://github.com/floppyfish14/agent-orca/issues/new/choose
-[discussions]: https://github.com/floppyfish14/agent-orca/discussions
+[blank]: https://github.com/heddles/agent-orca/issues/new/choose
+[discussions]: https://github.com/heddles/agent-orca/discussions
 
 ---
 
@@ -146,7 +146,8 @@ as latest; bump with `mise use <tool>@latest`):
 | skaffold   | latest  | Local dev loop (`skaffold dev`). |
 | Docker     | latest  | Image builds for e2e/dev. Not managed by mise — install Docker Desktop (or the engine) separately. |
 
-You do **not** need to install the Kubernetes code-gen tools by hand. The
+You do **not** need to install the Kubernetes code-gen tools by hand.
+The
 Makefile downloads `controller-gen`, `kustomize`, and `golangci-lint` into
 `./bin/` on first use (see `hack/` and the `*Tool` targets at the bottom of the
 Makefile), so a fresh checkout builds with just `mise install` + `make build`.
@@ -209,7 +210,10 @@ by `make openapi`; editing Helm charts under `charts/` can be validated with
 - **Go:** `gofmt` + `goimports` (enforced by CI). The project already pins
   `golangci-lint` v2 in `./bin`. Run `make fmt` before pushing.
   License headers follow `hack/boilerplate.go.txt` — every `.go` source file
-  must start with the Apache 2.0 header (`/*\nCopyright 2026.\n...\n*/`).
+  must start with the Apache 2.0 header (`/*
+Copyright 2026.
+...
+*/`).
   Generated `zz_generated.*` files get the header automatically from
   `controller-gen --header-file`.
 - **Helm/Go templates:** `helm lint` on each chart under `charts/`.
@@ -225,7 +229,7 @@ by `make openapi`; editing Helm charts under `charts/` can be validated with
 ## Where to Start
 
 Got 30 minutes and new here? Pick an issue tagged
-[`good first issue`](https://github.com/floppyfish14/agent-orca/issues?q=is%3Aopen+is%3Aissue+label%3A%22good+first+issue%22).
+[`good first issue`](https://github.com/heddles/agent-orca/issues?q=is%3Aopen+is%3Aissue+label%3A%22good+first+issue%22).
 Typical starter topics:
 
 - small bugfix in `aoctl` (`cmd/aoctl/`) or a doc gap,

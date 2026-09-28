@@ -49,13 +49,13 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
-	"github.com/floppyfish14/agent-orca/internal/apiserver"
-	"github.com/floppyfish14/agent-orca/internal/controller"
-	"github.com/floppyfish14/agent-orca/internal/postgresql"
-	"github.com/floppyfish14/agent-orca/internal/security"
-	"github.com/floppyfish14/agent-orca/internal/state"
-	agentwebhook "github.com/floppyfish14/agent-orca/internal/webhook"
+	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
+	"github.com/heddles/agent-orca/internal/apiserver"
+	"github.com/heddles/agent-orca/internal/controller"
+	"github.com/heddles/agent-orca/internal/postgresql"
+	"github.com/heddles/agent-orca/internal/security"
+	"github.com/heddles/agent-orca/internal/state"
+	agentwebhook "github.com/heddles/agent-orca/internal/webhook"
 	// +kubebuilder:scaffold:imports
 )
 

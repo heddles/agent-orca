@@ -31,8 +31,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	"github.com/floppyfish14/agent-orca/api/v1alpha1"
-	"github.com/floppyfish14/agent-orca/internal/egress"
+	"github.com/heddles/agent-orca/api/v1alpha1"
+	"github.com/heddles/agent-orca/internal/egress"
 )
 
 func statusTestScheme(t *testing.T) *runtime.Scheme {

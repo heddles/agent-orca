@@ -24,7 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
+	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
 )
 
 // This file centralizes multi-namespace tenant authorization: a tenant is

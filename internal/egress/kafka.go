@@ -32,7 +32,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
+	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
 )
 
 // kafkaPublisher delivers results to a Kafka topic.

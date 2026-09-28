@@ -22,7 +22,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
+	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
 )
 
 func newPod() *corev1.Pod {

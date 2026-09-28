@@ -33,7 +33,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
+	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
 )
 
 // tenantAuthModeIssued is the TenantConfig authMode value for issued JWTs.

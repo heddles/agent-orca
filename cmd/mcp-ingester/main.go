@@ -32,8 +32,8 @@ import (
 	"syscall"
 	"text/template"
 
-	"github.com/floppyfish14/agent-orca/internal/mcp"
-	"github.com/floppyfish14/agent-orca/internal/rag"
+	"github.com/heddles/agent-orca/internal/mcp"
+	"github.com/heddles/agent-orca/internal/rag"
 )
 
 // IngestConfig is the JSON configuration mounted from the config ConfigMap.

@@ -29,8 +29,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
-	"github.com/floppyfish14/agent-orca/internal/security"
+	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
+	"github.com/heddles/agent-orca/internal/security"
 )
 
 const agentFinalizer = "agentorca.io/agent-cleanup"

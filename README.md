@@ -5,11 +5,11 @@
 
 
 [![Go](https://img.shields.io/badge/go-1.25-00ADD8?logo=go)](https://go.dev/)
-[![Tests](https://github.com/floppyfish14/agent-orca/actions/workflows/test.yml/badge.svg)](https://github.com/floppyfish14/agent-orca/actions/workflows/test.yml)
-[![Lint](https://github.com/floppyfish14/agent-orca/actions/workflows/lint.yml/badge.svg)](https://github.com/floppyfish14/agent-orca/actions/workflows/lint.yml)
-[![E2E](https://github.com/floppyfish14/agent-orca/actions/workflows/test-e2e.yml/badge.svg)](https://github.com/floppyfish14/agent-orca/actions/workflows/test-e2e.yml)
-[![License: Apache 2.0](https://img.shields.io/github/license/floppyfish14/agent-orca)](LICENSE)
-[![Release](https://img.shields.io/github/v/release/floppyfish14/agent-orca?display_name=tag)](https://github.com/floppyfish14/agent-orca/releases)
+[![Tests](https://github.com/heddles/agent-orca/actions/workflows/test.yml/badge.svg)](https://github.com/heddles/agent-orca/actions/workflows/test.yml)
+[![Lint](https://github.com/heddles/agent-orca/actions/workflows/lint.yml/badge.svg)](https://github.com/heddles/agent-orca/actions/workflows/lint.yml)
+[![E2E](https://github.com/heddles/agent-orca/actions/workflows/test-e2e.yml/badge.svg)](https://github.com/heddles/agent-orca/actions/workflows/test-e2e.yml)
+[![License: Apache 2.0](https://img.shields.io/github/license/heddles/agent-orca)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/heddles/agent-orca?display_name=tag)](https://github.com/heddles/agent-orca/releases)
 
 Agent orcastrator is a Kubernetes-native platform for deploying, managing, and running AI agents at scale. It lets you declaratively define agents, route them to the correct LLM, equip them with tools, and execute them as one-off jobs or long-running services with checkpoints, cost tracking, guardrails, and RAG built in.
 

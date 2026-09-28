@@ -21,7 +21,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/floppyfish14/agent-orca/internal/operator"
+	"github.com/heddles/agent-orca/internal/operator"
 )
 
 // validateCmd is the parent command for configuration validation utilities.

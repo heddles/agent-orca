@@ -23,8 +23,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/floppyfish14/agent-orca/internal/mcp"
-	"github.com/floppyfish14/agent-orca/internal/state"
+	"github.com/heddles/agent-orca/internal/mcp"
+	"github.com/heddles/agent-orca/internal/state"
 )
 
 // Config holds all configuration injected into the model-router sidecar via environment variables

@@ -208,23 +208,6 @@ profiles:
       kubectl:
         defaultNamespace: agent-orca-system
 
-  # demo-mcp-apps: deploys the MCP Apps demo (interactive sandboxed iframe dashboards).
-  # Requires: agent-orca + 'default' ModelSelector already deployed.
-  # Deploy: skaffold run -p demo-mcp-apps
-  # Remove:  helm uninstall demo-mcp-apps -n agent-orca-system
-  - name: demo-mcp-apps
-    build:
-      artifacts: []
-      # hooks:
-      #   before: *ensure_kind_build_before
-    deploy:
-      helm:
-        # hooks: *ensure_kind_deploy_hooks
-        releases:
-          - name: demo-mcp-apps
-            chartPath: charts/demos/demo-mcp-apps
-            namespace: agent-orca-system
-
   # demo-soc-triage: deploys the SOC Triage demo.
   # Requires: agent-orca + model-providers already deployed (skaffold dev -p dev).
   # Deploy: skaffold run -p demo-soc-triage
@@ -241,60 +224,6 @@ profiles:
           - name: demo-soc-triage
             chartPath: charts/demos/demo-soc-triage
             namespace: agent-orca-system
-
-  # demo-escalation-chain: deploys the Escalation Chain demo.
-  # Requires: agent-orca + model-providers (with 'coding' selector) already deployed.
-  # Deploy: skaffold run -p demo-escalation-chain
-  # Remove:  helm uninstall demo-escalation-chain -n agent-orca-system
-  - name: demo-escalation-chain
-    build:
-      artifacts: []
-      # hooks:
-      #   before: *ensure_kind_build_before
-    deploy:
-      helm:
-        # hooks: *ensure_kind_deploy_hooks
-        releases:
-          - name: demo-escalation-chain
-            chartPath: charts/demos/demo-escalation-chain
-            namespace: agent-orca-system
-
-  # demo-parallel-swarm: deploys the Parallel Research Swarm demo.
-  # Requires: agent-orca + model-providers already deployed (skaffold dev -p dev).
-  # Deploy: skaffold run -p demo-parallel-swarm
-  # Remove:  helm uninstall demo-parallel-swarm -n agent-orca-system
-  - name: demo-parallel-swarm
-    build:
-      artifacts: []
-      # hooks:
-      #   before: *ensure_kind_build_before
-    deploy:
-      helm:
-        # hooks: *ensure_kind_deploy_hooks
-        releases:
-          - name: demo-parallel-swarm
-            chartPath: charts/demos/demo-parallel-swarm
-            namespace: agent-orca-system
-
-  # demo-codebase-expert: deploys the Codebase Expert agent.
-  # Requires: agent-orca + model-providers (with 'default' and 'embedding' selectors) already deployed.
-  # Also requires: GitHub PAT with repo read scope, set via GITHUB_TOKEN env var.
-  # Deploy: skaffold run -p demo-codebase-expert
-  # Remove:  helm uninstall demo-codebase-expert -n agent-orca-system
-  - name: demo-codebase-expert
-    build:
-      artifacts: []
-      # hooks:
-      #   before: *ensure_kind_build_before
-    deploy:
-      helm:
-        # hooks: *ensure_kind_deploy_hooks
-        releases:
-          - name: demo-codebase-expert
-            chartPath: charts/demos/demo-codebase-expert
-            namespace: agent-orca-system
-            setValueTemplates:
-              githubToken: "{{.AGENT_ORCA_GITHUB_TOKEN}}"
 
   # demo-financial-analysis: deploys the Financial Impact Analysis demo.
   # Requires: agent-orca + 'default' ModelSelector + 'embeddings' ModelSelector already deployed.
@@ -367,7 +296,7 @@ profiles:
         # hooks: *ensure_kind_deploy_hooks
         releases:
           - name: programming-agent
-            chartPath: charts/demos/programming-agent
+            chartPath: charts/demos/demo-programming-agent
             namespace: agent-orca-system
             setValueTemplates:
               # GitHub PAT (repo read scope). Read from env, never committed.

@@ -128,7 +128,7 @@ See [examples/agent-sdk-template/agent.py](../examples/agent-sdk-template/agent.
 ### Go SDK
 
 ```go
-import "github.com/floppyfish14/agent-orca/pkg/agent"
+import "github.com/heddles/agent-orca/pkg/agent"
 
 func main() {
     agent := agent.New()

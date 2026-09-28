@@ -7,7 +7,7 @@ domain: agentorca.io
 layout:
 - go.kubebuilder.io/v4
 projectName: agent-orca
-repo: github.com/floppyfish14/agent-orca
+repo: github.com/heddles/agent-orca
 resources:
 - api:
     crdVersion: v1
@@ -16,7 +16,7 @@ resources:
   domain: agentorca.io
   group: agentorca
   kind: ModelProvider
-  path: github.com/floppyfish14/agent-orca/api/v1alpha1
+  path: github.com/heddles/agent-orca/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
@@ -25,7 +25,7 @@ resources:
   domain: agentorca.io
   group: agentorca
   kind: ModelSelector
-  path: github.com/floppyfish14/agent-orca/api/v1alpha1
+  path: github.com/heddles/agent-orca/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
@@ -34,7 +34,7 @@ resources:
   domain: agentorca.io
   group: agentorca
   kind: Tool
-  path: github.com/floppyfish14/agent-orca/api/v1alpha1
+  path: github.com/heddles/agent-orca/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
@@ -43,7 +43,7 @@ resources:
   domain: agentorca.io
   group: agentorca
   kind: Agent
-  path: github.com/floppyfish14/agent-orca/api/v1alpha1
+  path: github.com/heddles/agent-orca/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
@@ -52,6 +52,6 @@ resources:
   domain: agentorca.io
   group: agentorca
   kind: AgentRun
-  path: github.com/floppyfish14/agent-orca/api/v1alpha1
+  path: github.com/heddles/agent-orca/api/v1alpha1
   version: v1alpha1
 version: "3"

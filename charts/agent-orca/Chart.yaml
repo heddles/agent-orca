@@ -9,8 +9,8 @@ keywords:
   - agents
   - kubernetes
   - llm
-home: https://github.com/floppyfish14/agent-orca
+home: https://github.com/heddles/agent-orca
 sources:
-  - https://github.com/floppyfish14/agent-orca
+  - https://github.com/heddles/agent-orca
 maintainers:
   - name: agent-orca maintainers

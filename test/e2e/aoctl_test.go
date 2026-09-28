@@ -33,7 +33,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/floppyfish14/agent-orca/test/utils"
+	"github.com/heddles/agent-orca/test/utils"
 )
 
 // TestAOCTL validates the aoctl CLI end-to-end against a live operator:

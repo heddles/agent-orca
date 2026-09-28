@@ -40,11 +40,11 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	agentorcav1alpha1 "github.com/floppyfish14/agent-orca/api/v1alpha1"
-	"github.com/floppyfish14/agent-orca/internal/checkpoint"
-	"github.com/floppyfish14/agent-orca/internal/postgresql"
-	"github.com/floppyfish14/agent-orca/internal/security"
-	"github.com/floppyfish14/agent-orca/internal/state"
+	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
+	"github.com/heddles/agent-orca/internal/checkpoint"
+	"github.com/heddles/agent-orca/internal/postgresql"
+	"github.com/heddles/agent-orca/internal/security"
+	"github.com/heddles/agent-orca/internal/state"
 )
 
 // uiAPIRequestTimeout bounds the total time for a UI API request (auth +

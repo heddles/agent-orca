@@ -27,7 +27,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/floppyfish14/agent-orca/internal/state"
+	"github.com/heddles/agent-orca/internal/state"
 )
 
 // AlertState describes whether an alert is actively firing or has been resolved.
