@@ -1,4 +1,4 @@
-module github.com/heddles/agent-orca/agent-orca
+module github.com/heddles/agent-orca
 
 go 1.25.3
 
