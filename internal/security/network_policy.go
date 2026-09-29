@@ -73,6 +73,7 @@ func SafeLabelValue(s string) string {
 //   - Allows egress to tool-specific endpoints declared in the Tool specs
 //   - Allows egress to Redis on port 6379 when stateRedisEnabled is true
 //   - Allows egress to the operator's internal API on port 8082 (always — required for built-in router ops)
+//   - Allows egress to hindsight memory service when a hindsightURL is configured
 //   - Denies all other egress
 func BuildNetworkPolicy(
 	run *agentorcav1alpha1.AgentRun,
@@ -117,14 +118,17 @@ func BuildNetworkPolicy(
 	// Allow egress to hindsight memory service (self-hosted POC).
 	// The model-router calls hindsight directly for retain/recall on every LLM turn.
 	// Port is derived from the configured URL (scheme default or explicit port).
-	hindsightPort := hindsightPortFromURL(hindsightURL, 8888)
-	egressRules = append(egressRules, egressToPort(hindsightPort))
+	// Only added when a URL is explicitly configured — empty URL means no hindsight.
+	if hindsightURL != "" {
+		hindsightPort := hindsightPortFromURL(hindsightURL, 8888)
+		egressRules = append(egressRules, egressToPort(hindsightPort))
 
-	// If a hindsight URL is configured, resolve its hostname to IPs and add
-	// ipBlock egress rules so agent-orca pods can reach hindsight even when
-	// the cluster has a default-deny egress policy.
-	for _, cidr := range resolveHindsightCIDRs(hindsightURL) {
-		egressRules = append(egressRules, egressToCIDR(cidr))
+		// If a hindsight URL is configured, resolve its hostname to IPs and add
+		// ipBlock egress rules so agent-orca pods can reach hindsight even when
+		// the cluster has a default-deny egress policy.
+		for _, cidr := range resolveHindsightCIDRs(hindsightURL) {
+			egressRules = append(egressRules, egressToCIDR(cidr))
+		}
 	}
 
 	// DNS egress (UDP/TCP port 53) — required for hostname resolution.
@@ -197,16 +201,17 @@ func BuildRouterPodNetworkPolicy(
 	egressRules = append(egressRules, egressToPortProto(53, "UDP"), egressToPortProto(53, "TCP"))
 
 	// Allow egress to hindsight memory service (self-hosted POC).
-	// The model-router calls hindsight directly for retain/recall on every LLM turn.
-	// Port is derived from the configured URL (scheme default or explicit port).
-	hindsightPort := hindsightPortFromURL(hindsightURL, 8888)
-	egressRules = append(egressRules, egressToPort(hindsightPort))
+	// Only added when a URL is explicitly configured — empty URL means no hindsight.
+	if hindsightURL != "" {
+		hindsightPort := hindsightPortFromURL(hindsightURL, 8888)
+		egressRules = append(egressRules, egressToPort(hindsightPort))
 
-	// If a hindsight URL is configured, resolve its hostname to IPs and add
-	// ipBlock egress rules so agent-orca pods can reach hindsight even when
-	// the cluster has a default-deny egress policy.
-	for _, cidr := range resolveHindsightCIDRs(hindsightURL) {
-		egressRules = append(egressRules, egressToCIDR(cidr))
+		// If a hindsight URL is configured, resolve its hostname to IPs and add
+		// ipBlock egress rules so agent-orca pods can reach hindsight even when
+		// the cluster has a default-deny egress policy.
+		for _, cidr := range resolveHindsightCIDRs(hindsightURL) {
+			egressRules = append(egressRules, egressToCIDR(cidr))
+		}
 	}
 
 	// Ingress from the agent pod (same run, component=agent) on router ports.
