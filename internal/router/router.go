@@ -1,5 +1,1 @@
-// Streaming path: proxy SSE chunks directly from provider to client.
-	if chatReq.StreamOptions == nil {
-		chatReq.StreamOptions = &StreamOptions{}
-	}
-	chatReq.StreamOptions.IncludeUsage = true
+I need to get the full file content and restore it. Let me read it from the commit that works.
