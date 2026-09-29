@@ -44,7 +44,7 @@ func TestBuildNetworkPolicy_BasicNoToolsNoRedis(t *testing.T) {
 	// Verify no egress rule has port 0 (would cause K8s validation failure)
 	for i, rule := range np.Spec.Egress {
 		for _, port := range rule.Ports {
-			if port.Port != nil && *port.Port == 0 {
+			if port.Port != nil && port.Port.IntVal == 0 {
 				t.Errorf("egress rule %d has port 0 (invalid)", i)
 			}
 		}
@@ -63,7 +63,7 @@ func TestBuildNetworkPolicy_HindsightHTTPPort(t *testing.T) {
 	foundHindsightPort := false
 	for _, rule := range np.Spec.Egress {
 		for _, port := range rule.Ports {
-			if port.Port != nil && *port.Port == 80 {
+			if port.Port != nil && port.Port.IntVal == 80 {
 				foundHindsightPort = true
 			}
 		}
@@ -85,7 +85,7 @@ func TestBuildNetworkPolicy_HindsightHTTPSPort(t *testing.T) {
 	foundHindsightPort := false
 	for _, rule := range np.Spec.Egress {
 		for _, port := range rule.Ports {
-			if port.Port != nil && *port.Port == 443 {
+			if port.Port != nil && port.Port.IntVal == 443 {
 				foundHindsightPort = true
 			}
 		}
@@ -106,7 +106,7 @@ func TestBuildNetworkPolicy_HindsightExplicitPort(t *testing.T) {
 	foundHindsightPort := false
 	for _, rule := range np.Spec.Egress {
 		for _, port := range rule.Ports {
-			if port.Port != nil && *port.Port == 8888 {
+			if port.Port != nil && port.Port.IntVal == 8888 {
 				foundHindsightPort = true
 			}
 		}
@@ -127,7 +127,7 @@ func TestBuildNetworkPolicy_HindsightDefaultPort(t *testing.T) {
 	foundHindsightPort := false
 	for _, rule := range np.Spec.Egress {
 		for _, port := range rule.Ports {
-			if port.Port != nil && *port.Port == 8888 {
+			if port.Port != nil && port.Port.IntVal == 8888 {
 				foundHindsightPort = true
 			}
 		}
@@ -144,7 +144,7 @@ func TestBuildNetworkPolicy_HindsightPortNeverZero(t *testing.T) {
 
 	for i, rule := range np.Spec.Egress {
 		for _, port := range rule.Ports {
-			if port.Port != nil && *port.Port == 0 {
+			if port.Port != nil && port.Port.IntVal == 0 {
 				t.Errorf("egress rule %d has port 0 (K8s validation failure)", i)
 			}
 		}
