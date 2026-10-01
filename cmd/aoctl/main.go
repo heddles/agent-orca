@@ -40,6 +40,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -220,11 +221,9 @@ func normalizeEndpoint(ep string) string {
 	if err != nil || u.Host == "" {
 		return ep
 	}
-	for _, route := range apiPathSuffixes {
-		if u.Path == route {
-			u.Path = ""
-			return u.String()
-		}
+	if slices.Contains(apiPathSuffixes, u.Path) {
+		u.Path = ""
+		return u.String()
 	}
 	return ep
 }
@@ -263,21 +262,21 @@ func (c *Client) setToken(t string) {
 
 // refreshOnce invokes the configured refresh callback at most once at a time
 // (per-client serialization via refreshMu) and, on success, swaps in the new
-// token. With no refresh callback configured it is a no-op that returns the
-// current token. It is the single entry point used by both the 401-retry
-// transport and the proactive refresher goroutine in `aoctl acp serve`.
-func (c *Client) refreshOnce(ctx context.Context) (string, error) {
+// token. With no refresh callback configured it is a no-op. It is the single
+// entry point used by both the 401-retry transport and the proactive refresher
+// goroutine in `aoctl acp serve`.
+func (c *Client) refreshOnce(ctx context.Context) error {
 	if c.refresh == nil {
-		return c.getToken(), nil
+		return nil
 	}
 	c.refreshMu.Lock()
 	defer c.refreshMu.Unlock()
 	fresh, err := c.refresh(ctx)
 	if err != nil {
-		return "", err
+		return err
 	}
 	c.setToken(fresh)
-	return fresh, nil
+	return nil
 }
 
 // refreshableTransport wraps a base RoundTripper. When a refresh callback is
@@ -325,7 +324,7 @@ func (t *refreshableTransport) RoundTrip(req *http.Request) (*http.Response, err
 	_, _ = io.Copy(io.Discard, resp.Body)
 	_ = resp.Body.Close()
 
-	if _, err := t.owner.refreshOnce(req.Context()); err != nil {
+	if err := t.owner.refreshOnce(req.Context()); err != nil {
 		return nil, fmt.Errorf("refreshing auth token after 401: %w", err)
 	}
 	// Re-attach the (now refreshed) bearer token and rewind the body, then retry.
@@ -1080,7 +1079,7 @@ func (s *settings) refreshOIDCIfNeeded(cfg *Config) (string, bool, error) {
 	if cfg.RefreshToken == "" {
 		return "", false, nil // nothing to refresh with
 	}
-	newID, _, err := s.refreshOIDCToken(context.Background(), cfg)
+	newID, err := s.refreshOIDCToken(context.Background(), cfg)
 	if err != nil {
 		return "", false, err
 	}
@@ -1089,11 +1088,11 @@ func (s *settings) refreshOIDCIfNeeded(cfg *Config) (string, bool, error) {
 
 // refreshOIDCToken performs a single OIDC refresh-token grant using cfg,
 // persists the rotated id_token + refresh token + new expiry to the config, and
-// returns them. The caller decides whether a refresh is due (see
+// returns the new id_token. The caller decides whether a refresh is due (see
 // tokenNearExpiry/cachedOIDCRefresh) and which context to use. Splitting this
 // out of refreshOIDCIfNeeded lets the long-lived serve path pass a request/
 // serve context rather than context.Background().
-func (s *settings) refreshOIDCToken(ctx context.Context, cfg *Config) (newID, newRefresh string, err error) {
+func (s *settings) refreshOIDCToken(ctx context.Context, cfg *Config) (newID string, err error) {
 	redirectURI := cfg.RedirectURI
 	if redirectURI == "" {
 		redirectURI = defaultOIDCRedirectURI
@@ -1105,11 +1104,11 @@ func (s *settings) refreshOIDCToken(ctx context.Context, cfg *Config) (newID, ne
 		RedirectURI:  redirectURI,
 	})
 	if err != nil {
-		return "", "", fmt.Errorf("discovering OIDC provider: %w", err)
+		return "", fmt.Errorf("discovering OIDC provider: %w", err)
 	}
-	newID, newRefresh, err = provider.Refresh(ctx, cfg.RefreshToken)
+	newID, newRefresh, err := provider.Refresh(ctx, cfg.RefreshToken)
 	if err != nil {
-		return "", "", err
+		return "", err
 	}
 	newExp, _ := jwtExpiry(newID)
 	updated := *cfg
@@ -1122,7 +1121,7 @@ func (s *settings) refreshOIDCToken(ctx context.Context, cfg *Config) (newID, ne
 		// Non-fatal: the in-memory token is still returned to the caller.
 		_, _ = fmt.Fprintf(s.errw, "warning: could not persist refreshed OIDC token: %v\n", err)
 	}
-	return newID, newRefresh, nil
+	return newID, nil
 }
 
 // parseIDTokenExpiry resolves the cached id_token's expiry from the persisted
@@ -1218,7 +1217,7 @@ func (s *settings) cachedOIDCRefresh(ctx context.Context) (string, error) {
 	if !tokenNearExpiry(cfg) {
 		return cfg.Token, nil
 	}
-	newID, _, err := s.refreshOIDCToken(ctx, cfg)
+	newID, err := s.refreshOIDCToken(ctx, cfg)
 	if err != nil {
 		return "", err
 	}
@@ -1246,7 +1245,7 @@ func (s *settings) runTokenRefresher(ctx context.Context, c *Client) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			if _, err := c.refreshOnce(ctx); err != nil {
+			if err := c.refreshOnce(ctx); err != nil {
 				_, _ = fmt.Fprintf(s.errw, "warning: ACP session token refresh failed: %v\n", err)
 			}
 		}
@@ -1677,7 +1676,8 @@ Obtain one via 'kubectl create token agentorca-admin -n agent-orca-system' or th
 			return printJSON(s.out, resp)
 		},
 	}
-	adminCreate.Flags().StringSliceVar(&s.allowedNamespaces, "namespace", nil, "authorized namespace for the tenant's agents (repeatable; at least one required)")
+	adminCreate.Flags().StringSliceVar(&s.allowedNamespaces, "namespace", nil,
+		"authorized namespace for the tenant's agents (repeatable; at least one required)")
 	adminCreate.Flags().StringVar(&s.clientID, "client-id", "", "OAuth2 client ID")
 	adminCreate.Flags().StringSliceVar(&s.allowedAgents, "allowed-agents", nil, "comma-separated list of allowed agent names") //nolint:lll
 

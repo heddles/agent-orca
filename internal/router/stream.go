@@ -33,6 +33,12 @@ import (
 
 const maxRateLimitRetries = 3
 
+// finishReasonStop is the canonical OpenAI finish reason for a completed turn.
+const finishReasonStop = "stop"
+
+// traceEventTypeDone is the schema-aligned completion signal trace event.
+const traceEventTypeDone = "done"
+
 // doWithRateLimitRetry executes an HTTP request, retrying on 429 responses
 // with exponential backoff. The buildReq function is called for each attempt
 // to produce a fresh request (the body reader is consumed on each attempt).
@@ -521,7 +527,7 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 			slog.Warn("hindsight bank does not exist, memory system usage will fail.")
 		}
 		content := fmt.Sprintf("ai assistant: %s", messageText(assistantMsg))
-		if err := r.hindsightRetain(req.Context(), r.cfg.RunName, content); err != nil {
+		if err := r.hindsightRetain(r.cfg.RunName, content); err != nil {
 			slog.Warn("hindsight retain failed", "run", r.cfg.RunName, "err", err)
 		} else {
 			slog.Info("hindsight retain success", "run", r.cfg.RunName, "bankID", r.hindsightBankID())
@@ -559,13 +565,13 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 	// detect it and synthetically trigger _clarify. The SSE stream has already been
 	// proxied to the agent, but we can still intercept here: trigger clarify, which
 	// sets WaitingForInput on the run and causes the next agent request to get 410 Gone.
-	if len(toolCalls) == 0 && (finishReason == "stop" || finishReason == "") { //nolint:goconst
+	if len(toolCalls) == 0 && (finishReason == finishReasonStop || finishReason == "") {
 
 		fullText := contentBuilder.String()
 		syntheticResp := ChatCompletionResponse{
 			Choices: []Choice{{
 				Message:      Message{Role: "assistant", Content: fullText},
-				FinishReason: "stop",
+				FinishReason: finishReasonStop,
 			}},
 		}
 		if r.shouldAutoTriggerClarify(syntheticResp) {
@@ -676,18 +682,6 @@ func (r *Router) tryFallbackStream(ctx context.Context, chatReq ChatCompletionRe
 		}
 	}
 	return nil, nil, fmt.Errorf("all fallback providers exhausted")
-}
-
-// explicitlyTerminal reports whether an explicit terminal tool (_done/_fail/
-// _handoff/_clarify) has already fired for this run. The auto terminal signal
-// (emitted on the genuine terminal text turn via [DONE] to the agent framework)
-// is suppressed when this is true,
-// because the explicit path already emitted its own terminal trace event and the
-// streaming recursion short-circuits to 410 on the next call.
-func (r *Router) explicitlyTerminal() bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.doneExplicit || r.failedExplicit || r.handedOff || r.waitingForInput
 }
 
 // mergeToolCallDeltas merges incremental tool call deltas into a running list.
@@ -844,7 +838,7 @@ func translateAnthropicSSE(r io.Reader, w io.Writer) {
 				switch stopReason {
 				case "end_turn": //nolint:goconst
 
-					stopReason = "stop"
+					stopReason = finishReasonStop
 				case "tool_use":
 					stopReason = "tool_calls"
 				}

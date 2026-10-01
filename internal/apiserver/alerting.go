@@ -78,11 +78,6 @@ func NewAlertManager(store state.Store, webhooks []AlertWebhook) *AlertManager {
 	return &AlertManager{store: store, webhooks: webhooks}
 }
 
-// alertKey builds the Redis key for a given alert ID.
-func alertKey(id string) string {
-	return "agentorca:alerts:" + id
-}
-
 // Evaluate checks a subsystem's health and records any state transition.
 // It returns the current Alert (always non-nil) so the caller can include it
 // in the system status response. If the subsystem transitioned state,
@@ -204,7 +199,7 @@ func (am *AlertManager) fireWebhook(ctx context.Context, alert *Alert) {
 				slog.Warn("alert webhook delivery failed", "url", url, "err", err)
 				return
 			}
-			resp.Body.Close()
+			_ = resp.Body.Close()
 		}(wh.URL, wh.HMACKey)
 	}
 

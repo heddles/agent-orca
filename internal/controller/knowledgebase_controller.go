@@ -114,12 +114,12 @@ func (r *KnowledgeBaseReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	qdrantURL, upgrade, err := r.ensureQdrant(ctx, kb.Namespace, &kb)
 	if err != nil {
 		logger.Error(err, "ensuring Qdrant")
-		r.patchKBStatus(ctx, &kb, statusBase, false, fmt.Sprintf("ensuring Qdrant: %s", sanitizeKBError(err.Error())))
+		r.patchKBStatus(ctx, &kb, statusBase, fmt.Sprintf("ensuring Qdrant: %s", sanitizeKBError(err.Error())))
 		return ctrl.Result{}, err
 	}
 	if upgrade != nil && upgrade.Requeue {
 		// Preserve any upgrade conditions set during ensureQdrant.
-		r.patchKBStatus(ctx, &kb, statusBase, false, upgradeMessage(upgrade))
+		r.patchKBStatus(ctx, &kb, statusBase, upgradeMessage(upgrade))
 		return ctrl.Result{RequeueAfter: upgrade.RequeueAfter}, nil
 	}
 
@@ -129,14 +129,14 @@ func (r *KnowledgeBaseReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	embedder, err := r.resolveEmbedder(ctx, &kb)
 	if err != nil {
 		logger.Error(err, "resolving embedder")
-		r.patchKBStatus(ctx, &kb, statusBase, false, fmt.Sprintf("resolving embedder: %s", sanitizeKBError(err.Error())))
+		r.patchKBStatus(ctx, &kb, statusBase, fmt.Sprintf("resolving embedder: %s", sanitizeKBError(err.Error())))
 		return ctrl.Result{}, err
 	}
 	if kb.Status.EmbeddingDimensions == 0 {
 		dims, err := embedder.ProbeDimension(ctx)
 		if err != nil {
 			logger.Error(err, "discovering embedding dimension")
-			r.patchKBStatus(ctx, &kb, statusBase, false, fmt.Sprintf("discovering embedding dimension: %s", sanitizeKBError(err.Error())))
+			r.patchKBStatus(ctx, &kb, statusBase, fmt.Sprintf("discovering embedding dimension: %s", sanitizeKBError(err.Error())))
 			return ctrl.Result{}, fmt.Errorf("discovering embedding dimension: %w", err)
 		}
 		logger.Info("discovered embedding dimension", "dimensions", dims)
@@ -149,14 +149,14 @@ func (r *KnowledgeBaseReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// "name resolver error: produced zero addresses" and churns the reconcile.
 	if !r.qdrantReady(ctx, kb.Namespace, kb.Name) {
 		logger.Info("Qdrant not ready yet; requeuing", "namespace", kb.Namespace, "kb", kb.Name)
-		r.patchKBStatus(ctx, &kb, statusBase, false, "Qdrant pod is not ready yet; waiting for startup to complete")
+		r.patchKBStatus(ctx, &kb, statusBase, "Qdrant pod is not ready yet; waiting for startup to complete")
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
 	// Ensure the Qdrant collection exists with the actual model dimension.
 	if err := r.ensureCollection(ctx, qdrantURL, collectionName, uint64(kb.Status.EmbeddingDimensions)); err != nil {
 		logger.Error(err, "ensuring Qdrant collection")
-		r.patchKBStatus(ctx, &kb, statusBase, false, fmt.Sprintf("ensuring Qdrant collection: %s", sanitizeKBError(err.Error())))
+		r.patchKBStatus(ctx, &kb, statusBase, fmt.Sprintf("ensuring Qdrant collection: %s", sanitizeKBError(err.Error())))
 		return ctrl.Result{}, err
 	}
 
@@ -208,29 +208,23 @@ func (r *KnowledgeBaseReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 // patchKBStatus writes a failure or waiting status to the KnowledgeBase CR, setting
 // the Ready condition and Message field so the UI (and downstream controllers like
-// AgentDeploymentReconciler) can surface a helpful explanation. Errors from the
-// status patch are logged and discarded so they don't mask the original reconciler
-// error — the original error is what drives requeue behaviour.
+// AgentDeploymentReconciler) can surface a helpful explanation. It always marks the
+// KB not-ready; every call site reports a blocking error or a pending condition.
+// Errors from the status patch are logged and discarded so they don't mask the
+// original reconciler error — the original error is what drives requeue behaviour.
 func (r *KnowledgeBaseReconciler) patchKBStatus(
 	ctx context.Context,
 	kb *agentorcav1alpha1.KnowledgeBase,
 	base *agentorcav1alpha1.KnowledgeBase,
-	ready bool,
 	message string,
 ) {
-	kb.Status.Ready = ready
+	kb.Status.Ready = false
 	kb.Status.Message = message
 
-	condStatus := metav1.ConditionTrue
-	reason := "Ready"
-	if !ready {
-		condStatus = metav1.ConditionFalse
-		reason = "NotReady"
-	}
 	setCondition(&kb.Status.Conditions, metav1.Condition{
 		Type:               conditionReady,
-		Status:             condStatus,
-		Reason:             reason,
+		Status:             metav1.ConditionFalse,
+		Reason:             "NotReady",
 		Message:            message,
 		LastTransitionTime: metav1.Now(),
 	})

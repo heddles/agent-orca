@@ -300,25 +300,15 @@ func (b *acpBridge) awaitCompletion(ctx context.Context, runID, sessionID string
 	}
 }
 
-// maxStreamRetries bounds how many times streamRunEvents will re-attempt the
-// SSE stream after it ends prematurely. The ACP API bounds each streaming
-// request to 30s (acpAPIRequestTimeout), which can cut a long response into
-// 30s windows; re-streaming lets the bridge recover tokens across windows
-// (the server replays the token history on each new connection). After the
-// budget is exhausted it falls back to polling, which is bounded by runCtx.
-const maxStreamRetries = 60
-
 // streamRunEvents consumes the SSE stream from GET /runs/{id} (Accept:
 // text/event-stream) and translates it into session/update notifications.
-// If streaming is unavailable, it falls back to polling via pollToCompletion.
 //
 // The ACP API bounds streaming requests to 30s, so a long response is delivered
 // in windows: each window ends either with a genuine terminal event or with
 // the connection dropping. A terminal event is verified against the run's real
 // status (confirmTerminal) before ending the turn, so a premature run.completed
 // caused by the 30s timeout does not truncate the response — instead the
-// stream is re-attempted and the suffix-aware polling fallback fills in any
-// gap.
+// stream is re-attempted.
 func (b *acpBridge) streamRunEvents(ctx context.Context, runID, sessionID string, st *openAIStreamState) string {
 	for attempt := 0; ; attempt++ {
 		// Each stream attempt gets its own cancellable context derived from the
@@ -381,7 +371,9 @@ func (b *acpBridge) streamRunEvents(ctx context.Context, runID, sessionID string
 // ctx is the per-attempt stream context owned by streamRunEvents: it is
 // cancelled right after consumeStream returns so the producer goroutine can
 // unblock from its channel send and release the HTTP response body.
-func (b *acpBridge) consumeAndStreamHTTP(ctx context.Context, ch <-chan Event, sessionID, msgID string, st *openAIStreamState) string {
+func (b *acpBridge) consumeAndStreamHTTP(
+	ctx context.Context, ch <-chan Event, sessionID, msgID string, st *openAIStreamState,
+) string {
 	for {
 		select {
 		case ev, ok := <-ch:
@@ -632,7 +624,9 @@ func (b *acpBridge) emitPlanUpdate(sessionID, runID, status string) {
 }
 
 // emitToolCallUpdate sends one ACP tool_call / tool_call_update notification.
-func (b *acpBridge) emitToolCallUpdate(sessionID string, tc openaiToolCall, update, status string, content []acpContentBlock) {
+func (b *acpBridge) emitToolCallUpdate(
+	sessionID string, tc openaiToolCall, update, status string, content []acpContentBlock,
+) {
 	id := tc.ID
 	if id == "" {
 		id = fmt.Sprintf("tool_%d", tc.Index)
@@ -719,10 +713,7 @@ func (b *acpBridge) emitTextRemainder(text, msgID, sessionID string, st *openAIS
 		return
 	}
 	if st != nil {
-		streamed := st.streamed.String()
-		if strings.HasPrefix(text, streamed) {
-			text = text[len(streamed):]
-		}
+		text = strings.TrimPrefix(text, st.streamed.String())
 	}
 	b.emitMessageChunk(sessionID, msgID, text, st)
 }
@@ -733,7 +724,9 @@ func (b *acpBridge) emitTextRemainder(text, msgID, sessionID string, st *openAIS
 // user accepts, it resumes the run (creating a continuation run via the ACP
 // server) and returns the continuation run ID. Returns ("", false) if the user
 // declined, the elicitation failed, or an error occurred.
-func (b *acpBridge) handleAwaitingRun(ctx context.Context, run acpRun, sessionID, runID string, st *openAIStreamState) (string, bool) {
+func (b *acpBridge) handleAwaitingRun(
+	ctx context.Context, run acpRun, sessionID, runID string, st *openAIStreamState,
+) (string, bool) {
 	// Emit the clarification question as agent output so the user can see what
 	// was asked before the elicitation form appears. emitTerminalOutput is
 	// suffix-aware: if the question was already streamed as message.part
@@ -829,34 +822,6 @@ func (b *acpBridge) tryResumeAwaiting(ctx context.Context, sessionID string, pro
 		return continuationID, true
 	}
 	return sess.RunID, true
-}
-
-// pollToCompletion polls GET /runs/{id} until terminal. Used as the SSE
-// fallback when the state store is unavailable or the run never reaches
-// in-progress in time.
-func (b *acpBridge) pollToCompletion(ctx context.Context, runID, sessionID string, st *openAIStreamState) string {
-	for {
-		if err := ctx.Err(); err != nil {
-			return acpStopReasonUserCancel
-		}
-		run, err := b.client.GetACPRun(ctx, runID)
-		if err == nil {
-			switch run.Status {
-			case acpStatusCompleted:
-				// Emit any output not already streamed (suffix-aware, see above).
-				b.emitTerminalOutput(run, sessionID, st)
-				return acpStopReasonEndTurn
-			case acpStatusFailed, acpStatusCancelled:
-				b.emitTerminalOutput(run, sessionID, st)
-				return runStatusToStopReason(run.Status)
-			case acpStatusAwaiting:
-				return acpPendingAwaiting
-			}
-		}
-		if !b.retryWait(ctx, 300*time.Millisecond) {
-			return acpStopReasonUserCancel
-		}
-	}
 }
 
 func (b *acpBridge) retryWait(ctx context.Context, d time.Duration) bool {

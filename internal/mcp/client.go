@@ -124,7 +124,6 @@ type Tool struct {
 // tool discovery and invocation interface.
 type Client struct {
 	mu      sync.RWMutex
-	configs []ServerConfig // original configs; used to retry connecting failed servers
 	servers []*serverConn
 	tools   []Tool
 }
@@ -144,7 +143,6 @@ func New(ctx context.Context, configs []ServerConfig) *Client {
 				select {
 				case <-time.After(2 * time.Second):
 				case <-ctx.Done():
-					err = ctx.Err()
 				}
 				conn, err = connect(ctx, cfg)
 			}
@@ -664,6 +662,9 @@ func (s *serverConn) sendHTTP(ctx context.Context, reqBytes []byte) (json.RawMes
 	}
 
 	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
 	defer func() { _ = resp.Body.Close() }()
 
 	var rpcResp jsonrpcResponse

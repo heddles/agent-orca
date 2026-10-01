@@ -71,15 +71,8 @@ func ValidateContextCompaction(ratio float64, contextWindow, expectedSessionLeng
 
 	// Compute derived values
 	checkpointBudget := checkpointBudget(contextWindow)
-	target := int(float64(contextWindow) * ratio)
-
 	// Apply floor and cap
-	if target < MinCompactionTarget {
-		target = MinCompactionTarget
-	}
-	if target > checkpointBudget {
-		target = checkpointBudget
-	}
+	target := min(max(int(float64(contextWindow)*ratio), MinCompactionTarget), checkpointBudget)
 
 	result := &CompactionValidation{
 		Ratio:            ratio,

@@ -113,11 +113,11 @@ func parseOpenAIChunk(data string) (openaiChunk, bool) {
 // "field: value" or "field:value" (a single optional space after the colon is
 // part of the separator, not the value). ok=false for lines without a colon.
 func sseField(line string) (field, value string, ok bool) {
-	idx := strings.Index(line, ":")
-	if idx < 0 {
+	before, after, ok0 := strings.Cut(line, ":")
+	if !ok0 {
 		return "", "", false
 	}
-	return line[:idx], strings.TrimPrefix(line[idx+1:], " "), true
+	return before, strings.TrimPrefix(after, " "), true
 }
 
 // sseDataPayload returns the payload of an SSE "data:" line (with or without
@@ -140,7 +140,7 @@ func sseDataPayload(line string) (string, bool) {
 func extractOpenAIStreamText(output string) (text, reasoning string, ok bool) {
 	var content, thinking strings.Builder
 	chunks := 0
-	for _, line := range strings.Split(output, "\n") {
+	for line := range strings.SplitSeq(output, "\n") {
 		data, isData := sseDataPayload(line)
 		if !isData {
 			continue
@@ -201,8 +201,8 @@ const (
 	acpStopReasonEndTurn    = "end_turn"
 	acpStopReasonUserCancel = "cancelled"
 
-	// acpPendingAwaiting is an internal sentinel returned by streamRunEvents /
-	// pollToCompletion to signal that the run entered the "awaiting" state.
+	// acpPendingAwaiting is an internal sentinel returned by streamRunEvents
+	// to signal that the run entered the "awaiting" state.
 	// awaitCompletion handles it by asking the user via elicitation/create, then
 	// loops. It is never serialized as a stopReason.
 	acpPendingAwaiting = "__acp_pending_awaiting__"
@@ -426,23 +426,6 @@ func toAgentOrcaInput(blocks []acpContentBlock) []ACPMessage {
 	return []ACPMessage{{Role: "user", Parts: parts}}
 }
 
-// runStatusToStopReason maps an agent-orca ACP run status to a valid ACP
-// StopReason. The ACP StopReason enum (end_turn | max_tokens |
-// max_turn_requests | refusal | cancelled) has no entry for "awaiting" or
-// "failed", so both map to end_turn. The awaiting state is signalled to the
-// client separately via a session/update notification; failed runs surface
-// their diagnostics through message chunks.
-func runStatusToStopReason(status string) string {
-	switch status {
-	case acpStatusCompleted, acpStatusFailed, acpStatusAwaiting:
-		return acpStopReasonEndTurn
-	case acpStatusCancelled, acpStatusCancelling:
-		return acpStopReasonUserCancel
-	default:
-		return acpStopReasonEndTurn
-	}
-}
-
 // ----------------------------------------------------------------------------
 // Client methods: GET /runs/{id}, SSE stream, and cancel
 // ----------------------------------------------------------------------------
@@ -502,7 +485,6 @@ func (c *Client) StreamRunEvents(ctx context.Context, runID string) (<-chan Even
 	// // and return an error so the caller can fall back to polling.
 	// if !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
 	// 	_ = resp.Body.Close()
-	// 	return nil, fmt.Errorf("server returned non-streaming response (Content-Type: %s)", resp.Header.Get("Content-Type"))
 	// }
 
 	ch := make(chan Event)
@@ -516,12 +498,11 @@ func (c *Client) StreamRunEvents(ctx context.Context, runID string) (<-chan Even
 
 		var typ string
 		var dataLines []string
-		send := func() bool {
+		send := func() {
 			if typ == "" && len(dataLines) == 0 {
-				return true
+				return
 			}
 			ch <- Event{Type: typ, Data: strings.Join(dataLines, "\n")}
-			return true
 		}
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -570,7 +551,9 @@ func (c *Client) CancelACPRun(ctx context.Context, runID string) error {
 // a continuation run and returns its ID; the caller should poll the returned
 // run ID going forward. Returns the continuation run ID (empty if none was
 // returned by the server).
-func (c *Client) ResumeRun(ctx context.Context, runID, answer string) (continuationRunID string, err error) { //nolint:revive
+func (c *Client) ResumeRun( //nolint:revive
+	ctx context.Context, runID, answer string,
+) (continuationRunID string, err error) {
 	body, err := json.Marshal(map[string]any{
 		"await_resume": map[string]any{"answer": answer},
 	})

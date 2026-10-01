@@ -528,7 +528,7 @@ func (r *AgentRunReconciler) handlePodSuccess(ctx context.Context, run *agentorc
 	r.fireEgress(ctx, run)
 
 	// Archive terminal-phase run to PostgreSQL for historical querying.
-	r.maybeArchiveRun(ctx, run)
+	r.maybeArchiveRun(run)
 
 	return ctrl.Result{}, nil
 }
@@ -1802,7 +1802,7 @@ func (r *AgentRunReconciler) failRun(ctx context.Context, run *agentorcav1alpha1
 	r.fireEgress(ctx, run)
 
 	// Archive terminal-phase run to PostgreSQL for historical querying.
-	r.maybeArchiveRun(ctx, run)
+	r.maybeArchiveRun(run)
 
 	return ctrl.Result{}, nil
 }
@@ -1813,7 +1813,7 @@ func (r *AgentRunReconciler) failRun(ctx context.Context, run *agentorcav1alpha1
 // The run's Redis token stream is read at archival time so the full execution
 // trace (tokens, tool calls, tool results, etc.) is durable in PostgreSQL and
 // viewable from the history tab even after the Redis stream expires.
-func (r *AgentRunReconciler) maybeArchiveRun(ctx context.Context, run *agentorcav1alpha1.AgentRun) {
+func (r *AgentRunReconciler) maybeArchiveRun(run *agentorcav1alpha1.AgentRun) {
 	if r.PostgresStore == nil || !postgresql.IsTerminalPhase(run.Status.Phase) {
 		return
 	}

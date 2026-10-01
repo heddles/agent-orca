@@ -348,10 +348,8 @@ func TestProactiveThreshold_StrategyDefaults(t *testing.T) {
 				ProactiveTruncationThreshold: tt.explicit,
 				ContextManagementStrategy:    tt.strategy,
 			}
-			// Apply defaults as ConfigFromEnv would.
-			if cfg.ProactiveTruncationThreshold <= 0 || cfg.ProactiveTruncationThreshold >= 1.0 {
-				// Don't set a default here — let proactiveThreshold use strategy fallback.
-			}
+			// No default for ProactiveTruncationThreshold here — proactiveThreshold
+			// falls back to the strategy-derived value.
 			if cfg.ContextManagementStrategy == "" {
 				cfg.ContextManagementStrategy = "balanced"
 			}
@@ -383,7 +381,7 @@ func TestRouter_IncrementalTokenTracking_AcrossHandleChatCompletions(t *testing.
 					Role:    "assistant",
 					Content: fmt.Sprintf("Response %d", providerCallCount),
 				},
-				FinishReason: "stop",
+				FinishReason: finishReasonStop,
 			}},
 			Usage: TokenUsage{PromptTokens: 50, CompletionTokens: 10, TotalTokens: 60},
 		}
@@ -490,8 +488,6 @@ func TestRouter_ClaimRun_ResetsPerRunState(t *testing.T) {
 		spendUSD:         1.25,
 		handedOff:        true,
 		waitingForInput:  true,
-		toolCallCounts:   map[string]int{"old-tool": 3},
-		toolCallSigs:     map[string]int{"old-sig": 2},
 	}
 
 	router.ClaimRun(WarmRunInput{RunName: "new-run", Input: "test input"})
@@ -519,9 +515,6 @@ func TestRouter_ClaimRun_ResetsPerRunState(t *testing.T) {
 	}
 	if router.handedOff || router.waitingForInput {
 		t.Errorf("terminal flags not reset: handedOff=%v waitingForInput=%v", router.handedOff, router.waitingForInput)
-	}
-	if len(router.toolCallCounts) != 0 || len(router.toolCallSigs) != 0 {
-		t.Errorf("tool call tracking not reset: counts=%v sigs=%v", router.toolCallCounts, router.toolCallSigs)
 	}
 }
 
@@ -1426,7 +1419,7 @@ func TestRouter_PreservesContextAcrossTurns(t *testing.T) {
 					Role:    "assistant",
 					Content: fmt.Sprintf("Turn %d response", currentCall),
 				},
-				FinishReason: "stop",
+				FinishReason: finishReasonStop,
 			}},
 			Usage: TokenUsage{PromptTokens: 50, CompletionTokens: 10, TotalTokens: 60},
 		}
@@ -1537,7 +1530,7 @@ func TestRouter_SystemPromptNotDuplicatedAfterFold(t *testing.T) {
 			ID: "chatcmpl-test",
 			Choices: []Choice{{
 				Message:      Message{Role: "assistant", Content: "ok"},
-				FinishReason: "stop",
+				FinishReason: finishReasonStop,
 			}},
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -1629,7 +1622,7 @@ func TestRouter_EpisodicSummary_IncludesPriorMessages(t *testing.T) {
 			ID: "chatcmpl-summary",
 			Choices: []Choice{{
 				Message:      Message{Role: "assistant", Content: "compact summary"},
-				FinishReason: "stop",
+				FinishReason: finishReasonStop,
 			}},
 			Usage: TokenUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
 		}

@@ -38,7 +38,7 @@ import (
 func federatedAuthForTest(t *testing.T) (*ExternalAuth, string, *rsa.PrivateKey) {
 	t.Helper()
 	key := newTestKey(t)
-	issuerURL := "https://token.actions.githubusercontent.com"
+	issuerURL := githubIssuerURL
 	startOIDCIssuer(t, key, &issuerURL)
 	a := seedFederatedTenant(t, issuerURL)
 	a.signingKey = newTestKey(t)
@@ -64,6 +64,16 @@ func doRequestWithMethod(t *testing.T, h http.Handler, method, path, token strin
 }
 
 const saAdminToken = "sa-admin-token"
+
+// Test fixtures for the GitHub-style federated OIDC tenant used by the
+// self-tenant admin tests (and shared with other federated auth tests in
+// this package).
+const (
+	// githubIssuerURL is GitHub's OIDC issuer URL, mimicked by a local mock issuer.
+	githubIssuerURL = "https://token.actions.githubusercontent.com"
+	// githubOIDCTenant is the TenantConfig name of the federated test tenant.
+	githubOIDCTenant = "github-oidc"
+)
 
 func saAdminReviewer(username, token string) func(context.Context, string) (string, bool, error) {
 	return func(_ context.Context, t string) (string, bool, error) {
@@ -108,7 +118,7 @@ func TestRequireSAOrSelfTenant_Unit(t *testing.T) {
 	// Sanity: the federated token validates to TenantName "github-oidc".
 	if ident, err := auth.validateFederatedToken(context.Background(), ownToken); err != nil {
 		t.Fatalf("sanity: federated token should validate, got: %v", err)
-	} else if ident.TenantName != "github-oidc" {
+	} else if ident.TenantName != githubOIDCTenant {
 		t.Fatalf("sanity: expected tenant github-oidc, got %q", ident.TenantName)
 	}
 
@@ -131,14 +141,14 @@ func TestRequireSAOrSelfTenant_Unit(t *testing.T) {
 		sa := *base
 		sa.reviewSAToken = saAdminReviewer("system:serviceaccount:agent-orca-system:agentorca-admin", saAdminToken)
 		sa.isAdminSA = func(context.Context, string, string) (bool, error) { return true, nil }
-		rr := doRequestWithPath(t, sa.requireSAOrSelfTenant("github-oidc", readCap, stub), "/admin/tenants/github-oidc", saAdminToken)
+		rr := doRequestWithPath(t, sa.requireSAOrSelfTenant(githubOIDCTenant, readCap, stub), "/admin/tenants/github-oidc", saAdminToken)
 		if rr.Code != http.StatusOK {
 			t.Fatalf("SA admin: expected 200, got %d %q", rr.Code, rr.Body.String())
 		}
 	})
 
 	t.Run("federated own tenant allowed", func(t *testing.T) {
-		rr := doRequestWithPath(t, base.requireSAOrSelfTenant("github-oidc", readCap, stub), "/admin/tenants/github-oidc", ownToken)
+		rr := doRequestWithPath(t, base.requireSAOrSelfTenant(githubOIDCTenant, readCap, stub), "/admin/tenants/github-oidc", ownToken)
 		if rr.Code != http.StatusOK {
 			t.Fatalf("federated own tenant: expected 200, got %d %q", rr.Code, rr.Body.String())
 		}
@@ -154,7 +164,7 @@ func TestRequireSAOrSelfTenant_Unit(t *testing.T) {
 	t.Run("federated missing required role denied", func(t *testing.T) {
 		// Future-RBAC hook: a capability gated on a role the caller lacks is denied.
 		gated := adminCapability{method: http.MethodPost, pathPrefix: "/admin/tenants/", role: "tenant-admin"}
-		rr := doRequestWithPath(t, base.requireSAOrSelfTenant("github-oidc", gated, stub), "/admin/tenants/github-oidc", ownToken)
+		rr := doRequestWithPath(t, base.requireSAOrSelfTenant(githubOIDCTenant, gated, stub), "/admin/tenants/github-oidc", ownToken)
 		if rr.Code != http.StatusNotFound {
 			t.Fatalf("missing required role: expected 404, got %d %q", rr.Code, rr.Body.String())
 		}
@@ -165,21 +175,21 @@ func TestRequireSAOrSelfTenant_Unit(t *testing.T) {
 		sa.reviewSAToken = saAdminReviewer("system:serviceaccount:agent-orca-system:agentorca-admin", saAdminToken)
 		sa.isAdminSA = func(context.Context, string, string) (bool, error) { return true, nil }
 		gated := adminCapability{method: http.MethodPost, pathPrefix: "/admin/tenants/", role: "tenant-admin"}
-		rr := doRequestWithPath(t, sa.requireSAOrSelfTenant("github-oidc", gated, stub), "/admin/tenants/github-oidc", saAdminToken)
+		rr := doRequestWithPath(t, sa.requireSAOrSelfTenant(githubOIDCTenant, gated, stub), "/admin/tenants/github-oidc", saAdminToken)
 		if rr.Code != http.StatusOK {
 			t.Fatalf("SA admin with role gate: expected 200, got %d %q", rr.Code, rr.Body.String())
 		}
 	})
 
 	t.Run("no token unauthorized", func(t *testing.T) {
-		rr := doRequestWithPath(t, base.requireSAOrSelfTenant("github-oidc", readCap, stub), "/admin/tenants/github-oidc", "")
+		rr := doRequestWithPath(t, base.requireSAOrSelfTenant(githubOIDCTenant, readCap, stub), "/admin/tenants/github-oidc", "")
 		if rr.Code != http.StatusUnauthorized {
 			t.Fatalf("no token: expected 401, got %d", rr.Code)
 		}
 	})
 
 	t.Run("garbage token unauthorized", func(t *testing.T) {
-		rr := doRequestWithPath(t, base.requireSAOrSelfTenant("github-oidc", readCap, stub), "/admin/tenants/github-oidc", "not-a-jwt")
+		rr := doRequestWithPath(t, base.requireSAOrSelfTenant(githubOIDCTenant, readCap, stub), "/admin/tenants/github-oidc", "not-a-jwt")
 		if rr.Code != http.StatusUnauthorized {
 			t.Fatalf("garbage token: expected 401, got %d", rr.Code)
 		}
@@ -192,10 +202,10 @@ func TestHandler_AdminSelfTenantRoute(t *testing.T) {
 	ownerToken := mintOIDCToken(t, key, issuerURL, "agent-orca-dev", map[string]any{"actor": "floppyfish14"})
 
 	tc := &agentorcav1alpha1.TenantConfig{
-		ObjectMeta: metav1.ObjectMeta{Name: "github-oidc", Namespace: "agent-orca-system"},
+		ObjectMeta: metav1.ObjectMeta{Name: githubOIDCTenant, Namespace: "agent-orca-system"},
 		Spec: agentorcav1alpha1.TenantConfigSpec{
 			AuthMode:          "federated",
-			AllowedNamespaces: []string{"default"},
+			AllowedNamespaces: []string{defaultNamespace},
 			Federated: &agentorcav1alpha1.FederatedAuthConfig{
 				IssuerURL:  issuerURL,
 				ClientID:   "agent-orca-dev",
@@ -228,7 +238,7 @@ func TestHandler_AdminSelfTenantRoute(t *testing.T) {
 		if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 			t.Fatalf("decoding response: %v", err)
 		}
-		if resp.Name != "github-oidc" || firstNamespace(resp.AllowedNamespaces) != "default" {
+		if resp.Name != githubOIDCTenant || firstNamespace(resp.AllowedNamespaces) != defaultNamespace {
 			t.Fatalf("bad tenant response: %+v", resp)
 		}
 		if resp.ClientSecret != "" {

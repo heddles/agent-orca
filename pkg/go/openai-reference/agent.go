@@ -5,11 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 
 	openai "github.com/openai/openai-go/v3"
-	"github.com/openai/openai-go/v3/shared"
 )
 
 func main() {
@@ -50,14 +50,14 @@ func httpMode() {
 	}
 	http.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
-		w.Write([]byte("ok"))
+		_, _ = w.Write([]byte("ok"))
 	})
 	http.HandleFunc("/invoke", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(404)
 			return
 		}
-		var payload map[string]interface{}
+		var payload map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			w.WriteHeader(400)
 			return
@@ -68,12 +68,15 @@ func httpMode() {
 		}
 		if err := runOnce(w, input); err != nil {
 			w.WriteHeader(500)
-			json.NewEncoder(w).Encode(map[string]string{"error": "upstream error"})
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "upstream error"})
 			return
 		}
 	})
 	fmt.Printf("reference agent listening on :%s\n", port)
-	http.ListenAndServe(":"+port, nil)
+	if err := http.ListenAndServe(":"+port, nil); err != nil {
+		slog.Error("reference agent server exited", "err", err)
+		os.Exit(1)
+	}
 }
 
 func runOnce(w http.ResponseWriter, input string) error {
@@ -86,7 +89,7 @@ func runOnce(w http.ResponseWriter, input string) error {
 	// injected by the agent-orca framework (openai-compatible tier).
 	client := openai.NewClient()
 	stream := client.Chat.Completions.NewStreaming(context.TODO(), openai.ChatCompletionNewParams{
-		Model: shared.ChatModel(model),
+		Model: model,
 		Messages: []openai.ChatCompletionMessageParamUnion{
 			openai.UserMessage(input),
 		},

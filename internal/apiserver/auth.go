@@ -55,6 +55,9 @@ const (
 
 	// jwtDefaultExpiry is the default expiry for issued tokens.
 	jwtDefaultExpiry = 1 * time.Hour
+
+	// authModeFederated is the TenantConfig authMode for federated OIDC tenants.
+	authModeFederated = "federated"
 )
 
 // TenantIdentity is the resolved identity of an authenticated external API caller.
@@ -252,7 +255,7 @@ func (a *ExternalAuth) RefreshTenants(ctx context.Context) error {
 			if tc.Spec.Issued != nil {
 				cache["issued:"+tc.Spec.Issued.ClientID] = tc
 			}
-		case "federated":
+		case authModeFederated:
 			if tc.Spec.Federated != nil {
 				cache["federated:"+tc.Spec.Federated.IssuerURL+":"+tc.Spec.Federated.MatchValue] = tc
 			}
@@ -342,7 +345,7 @@ func (a *ExternalAuth) validateTokenParallel(ctx context.Context, token string) 
 	}()
 
 	var fedErr, k8sErr error
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		select {
 		case res := <-fedCh:
 			if res.err == nil {
@@ -706,7 +709,7 @@ func (a *ExternalAuth) FederatedLoginTenants() []*agentorcav1alpha1.TenantConfig
 	defer a.mu.RUnlock()
 	var out []*agentorcav1alpha1.TenantConfig
 	for _, tc := range a.tenantByName {
-		if tc.Spec.AuthMode != "federated" || tc.Spec.Federated == nil || !fedIsLoginCapable(tc.Spec.Federated) {
+		if tc.Spec.AuthMode != authModeFederated || tc.Spec.Federated == nil || !fedIsLoginCapable(tc.Spec.Federated) {
 			continue
 		}
 		out = append(out, tc)

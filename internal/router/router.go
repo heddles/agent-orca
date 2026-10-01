@@ -23,7 +23,6 @@ package router
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -116,15 +115,10 @@ type Router struct {
 	// guardrails is the content filtering pipeline. Nil when no guardrail policy is configured.
 	guardrails *GuardrailPipeline
 
-	// Safeguard tracking state (all protected by mu).
-	consecutiveNoops int            // turns with no tool calls and < MinSubstantiveTokens tokens
-	toolCallCounts   map[string]int // tool name → total invocations this run
-
 	// toolTimeout is the maximum duration for a single tool call before it is
 	// cancelled and a structured timeout error is returned to the LLM.
 	toolTimeout  time.Duration
-	toolCallSigs map[string]int // sha256(toolName+":"+args) → invocation count
-	loopDetected bool           // set when a safeguard trips; blocks further LLM calls
+	loopDetected bool // set when a safeguard trips; blocks further LLM calls
 
 	// cancelCtx is a run-scoped context used as the parent for LLM requests.
 	// It is detached from HTTP request contexts (so agent disconnects don't cancel
@@ -235,8 +229,6 @@ func New(cfg *Config, store state.Store, initialMessages []json.RawMessage, exec
 		checkpointTTL:     checkpointTTL,
 		tokens:            NewTokenBroadcaster(),
 		resumedWithAnswer: answerInjected,
-		toolCallCounts:    make(map[string]int),
-		toolCallSigs:      make(map[string]int),
 		guardrails:        NewGuardrailPipeline(cfg.Guardrails),
 		toolTimeout:       time.Duration(cfg.Safeguards.ToolExecutionTimeoutSec) * time.Second,
 		cancelCtx:         cancelCtx,
@@ -548,13 +540,11 @@ func truncateToolResult(result string, maxTokens int) string {
 		strconv.Itoa(maxChars) + " chars]"
 }
 
-// truncateStr truncates a string to maxLen characters, appending "…" if truncated.
-func truncateStr(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "…"
-}
+// Backend type identifiers for ToolDefinition.BackendType and trace enrichment.
+const (
+	backendTypeMCP     = "mcp"
+	backendTypeBuiltin = "builtin"
+)
 
 // InitMCPServers connects to all configured MCP servers and merges their tool
 // schemas into the router's tool definitions. It is designed to be called in a
@@ -607,7 +597,7 @@ func (r *Router) InitMCPServers() {
 	for _, s := range r.cfg.MCPServers {
 		toolCount := 0
 		for _, td := range r.cfg.ToolDefinitions {
-			if td.BackendRef == s.Name && td.BackendType == "mcp" {
+			if td.BackendRef == s.Name && td.BackendType == backendTypeMCP {
 				toolCount++
 			}
 		}
@@ -623,8 +613,7 @@ func (r *Router) InitMCPServers() {
 func mergeMCPToolDefs(defs []ToolDefinition, discovered []mcp.Tool) []ToolDefinition {
 	result := make([]ToolDefinition, 0, len(defs))
 	for _, d := range defs {
-		if d.BackendType != "mcp" { //nolint:goconst
-
+		if d.BackendType != backendTypeMCP {
 			result = append(result, d)
 		}
 	}
@@ -633,7 +622,7 @@ func mergeMCPToolDefs(defs []ToolDefinition, discovered []mcp.Tool) []ToolDefini
 			Name:           t.Name,
 			Description:    t.Description,
 			Parameters:     t.InputSchema,
-			BackendType:    "mcp",
+			BackendType:    backendTypeMCP,
 			BackendRef:     t.ServerName,
 			AppResourceURI: t.AppResourceURI,
 			AllowApps:      t.AllowApps,
@@ -683,7 +672,7 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 				ID: "clarify-pending",
 				Choices: []Choice{{
 					Message:      Message{Role: "assistant", Content: ""},
-					FinishReason: "stop",
+					FinishReason: finishReasonStop,
 				}},
 			})
 			return
@@ -746,7 +735,7 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 	// fresh within a pod's lifetime, complementary to the per-turn checkpoint
 	// writes that persist to Redis for cross-restart recovery.
 	// Skip for continuations — r.messages is consumed directly by the recursive
-	// HandleChatCompletions call in handleToolCalls.
+	// HandleChatCompletions call in the streaming tool-call loop.
 	if !isContinuation {
 		r.mu.Lock()
 		if len(r.messages) > 0 {
@@ -768,8 +757,8 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 
 	// Inject prior run's conversation history so the LLM has multi-turn context.
 	// Skip if the messages already start with the prior context (i.e., this is a
-	// tool-call continuation where handleToolCalls already built the full history,
-	// or the agent framework sent the full conversation itself).
+	// tool-call continuation where the streaming tool-call loop already built the
+	// full history, or the agent framework sent the full conversation itself).
 	r.mu.Lock()
 	prior := r.priorMessages
 	resumed := r.resumedWithAnswer
@@ -942,10 +931,7 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 	}
 	ceilingBudget := int(float64(hardLimit)*(1.0-r.cfg.ContextWindowReserve)) - toolTokens - outputReserveTokens
 	ratioBudget := int(float64(hardLimit)*ratio) - toolTokens - outputReserveTokens
-	budget := ratioBudget
-	if budget > ceilingBudget {
-		budget = ceilingBudget
-	}
+	budget := min(ratioBudget, ceilingBudget)
 	if budget <= 0 {
 		budget = int(float64(hardLimit) * 0.5) // last-resort floor: keep at least half the window for messages
 	}
@@ -989,21 +975,12 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 	// Run episodic summarization if due (async to avoid blocking the response).
 	go r.maybeRunEpisodicSummary(context.Background())
 
-	// Check safeguards after each non-tool-call response.
-	// Tool-call responses are handled in handleToolCalls which also calls checkSafeguards.
-	// if tripped, info := r.checkSafeguards(assistantMsg, completionResp.Usage.CompletionTokens); tripped {
-	// 	r.checkpoint(context.Background())
-	// 	go r.notifyLoopDetected(info)
-	// 	http.Error(w, "run halted by safeguard: "+info.Reason, http.StatusGone)
-	// 	return
-	// }
-
 	// Checkpoint periodically for crash recovery.
 	if r.cfg.CheckpointEvery > 0 && r.ruleRouter.TurnCount()%r.cfg.CheckpointEvery == 0 {
 		go r.checkpoint(context.Background())
 	}
 	// Always persist on run completion (this block is only reached for a terminal text
-	// turn; tool-call turns are handled in handleToolCalls). A reused warm pod loads
+	// turn; tool-call turns are handled in the streaming tool-call loop). A reused warm pod loads
 	// the prior run's checkpoint via PriorRunRef on the next chat turn, so the final
 	// state must be written here — not only every CheckpointEvery turns or at Finalize.
 	// (Idempotent with the periodic save above.)
@@ -1347,27 +1324,6 @@ func (r *Router) forwardToAnthropic(ctx context.Context, provider *ProviderConfi
 
 	// Convert Anthropic response to OpenAI format.
 	return anthropicToOpenAI(respBody)
-}
-
-// tryFallback attempts providers in the fallback chain after a primary failure.
-func (r *Router) tryFallback(ctx context.Context, chatReq ChatCompletionRequest, failedProvider string) ([]byte, *ProviderConfig, error) {
-	for _, name := range r.cfg.FallbackChain {
-		if name == failedProvider {
-			continue
-		}
-		for i := range r.cfg.Providers {
-			if r.cfg.Providers[i].Name == name {
-				p := &r.cfg.Providers[i]
-				slog.Info("trying fallback provider", "provider", name)
-				body, err := r.forwardToProvider(ctx, p, chatReq)
-				if err == nil {
-					return body, p, nil
-				}
-				slog.Warn("fallback provider failed", "provider", name, "err", err)
-			}
-		}
-	}
-	return nil, nil, fmt.Errorf("all fallback providers exhausted")
 }
 
 // SpendUSD returns the total USD spend accumulated during this router's lifetime.
@@ -2013,7 +1969,7 @@ func (r *Router) shouldAutoTriggerClarify(resp ChatCompletionResponse) bool {
 	if len(choice.Message.ToolCalls) > 0 {
 		return false
 	}
-	if choice.FinishReason != "stop" && choice.FinishReason != "end_turn" { //nolint:goconst
+	if choice.FinishReason != finishReasonStop && choice.FinishReason != "end_turn" { //nolint:goconst
 		return false
 	}
 
@@ -2084,7 +2040,7 @@ func (r *Router) injectBuiltinSystemHints(chatReq ChatCompletionRequest) ChatCom
 	var builtinTools []string
 	hasBuiltins := false
 	for _, td := range r.cfg.ToolDefinitions {
-		if td.BackendType == "builtin" {
+		if td.BackendType == backendTypeBuiltin {
 			hasBuiltins = true
 			builtinTools = append(builtinTools, td.Name)
 		}
@@ -2139,82 +2095,6 @@ func (r *Router) injectBuiltinSystemHints(chatReq ChatCompletionRequest) ChatCom
 	return chatReq
 }
 
-// handleToolCalls dispatches tool calls to the appropriate executor and returns results.
-// This is called when the LLM responds with a tool_calls array.
-func (r *Router) handleToolCalls(w http.ResponseWriter, req *http.Request,
-	chatReq ChatCompletionRequest, completionResp ChatCompletionResponse) {
-
-	choice := completionResp.Choices[0]
-	assistantMsg := choice.Message
-
-	// Add the assistant message with tool calls to the conversation.
-	// For continuation requests, chatReq.Messages came from r.messages — skip re-appending.
-	tcIsContinuation := req.Context().Value(continuationKey{}) != nil
-	r.mu.Lock()
-	if !tcIsContinuation {
-		// chatReq.Messages is already in r.messages from HandleChatCompletions
-		// for non-continuation requests, so we don't re-append it here to prevent duplication.
-		// Only append the assistant message (tool call) to r.messages.
-		r.messages = append(r.messages, assistantMsg)
-		r.incrementBufferTokens(0)
-	} else {
-		// For continuations, append both the assistant message and any new messages
-		// from chatReq that aren't already in r.messages.
-		// chatReq.Messages for continuations came from r.messages, so skip re-appending.
-		r.messages = append(r.messages, assistantMsg)
-		r.incrementBufferTokens(0)
-	}
-	r.mu.Unlock()
-
-	// Check tool-level safeguards (frequency cap, repeated call detection) before dispatch.
-	// completionTokens is 0 here; noop detection only fires on non-tool-call turns.
-	if tripped, info := r.checkSafeguards(assistantMsg, 0); tripped {
-		r.checkpoint(context.Background())
-		go r.notifyLoopDetected(info)
-		http.Error(w, "run halted by safeguard: "+info.Reason, http.StatusGone)
-		return
-	}
-
-	// Dispatch tool calls in parallel.
-	toolResults := make([]Message, len(assistantMsg.ToolCalls))
-	for i, tc := range assistantMsg.ToolCalls {
-		result := r.dispatchToolCall(req.Context(), tc)
-		r.emitTraceEventBoth(fmt.Sprintf(`{"type":"toolResult","name":%q,"result":"%s"}`,
-			tc.Function.Name, truncateStr(result, 500)))
-		toolResults[i] = Message{
-			Role:       "tool",
-			ToolCallID: tc.ID,
-			Content:    result,
-		}
-	}
-
-	// Add tool results and continue the conversation.
-	r.mu.Lock()
-	r.messages = append(r.messages, toolResults...)
-	r.incrementBufferTokens(0)
-	// Cap the live buffer mid tool-call loop. concludTurn/trimLiveBuffer are gated
-	// off for continuations, so without this the buffer (and liveBufferTokens,
-	// which notifyOperatorContext reports) only grows across tool calls. The
-	// pre-send truncation still bounds the outgoing payload as a safety net.
-	r.capLiveBufferDuringToolLoop()
-	continueReq := ChatCompletionRequest{
-		Model:    chatReq.Model,
-		Messages: r.messages,
-		Tools:    chatReq.Tools,
-	}
-	r.mu.Unlock()
-
-	// Recursive call with the full conversation (original messages + assistant tool
-	// calls + tool results) as the new request body.
-	newBody, _ := json.Marshal(continueReq)
-	ctx := context.WithValue(req.Context(), continuationKey{}, true)
-	newReq := req.Clone(ctx)
-	newReq.Body = io.NopCloser(bytes.NewReader(newBody))
-	newReq.ContentLength = int64(len(newBody))
-	_ = ctx
-	r.HandleChatCompletions(w, newReq)
-}
-
 // emitTraceEvent writes a structured trace event to the Redis token stream.
 func (r *Router) emitTraceEvent(eventJSON string) {
 	if r.store == nil {
@@ -2237,11 +2117,6 @@ func (r *Router) emitTraceEventSSE(eventJSON string) {
 // emitTraceEventBoth emits a trace event to both Redis token stream and SSE subscribers.
 func (r *Router) emitTraceEventBoth(eventJSON string) {
 	r.emitTraceEvent(eventJSON)
-	r.emitTraceEventSSE(eventJSON)
-}
-
-// emitTraceEventSSEOnly emits a trace event only to SSE subscribers (no Redis storage).
-func (r *Router) emitTraceEventSSEOnly(eventJSON string) {
 	r.emitTraceEventSSE(eventJSON)
 }
 
@@ -2353,7 +2228,7 @@ func (r *Router) dispatchToolCall(ctx context.Context, tc ToolCall) string { //n
 		for _, td := range r.cfg.ToolDefinitions {
 			if td.Name == tc.Function.Name {
 				found = true
-				if td.BackendType == "mcp" {
+				if td.BackendType == backendTypeMCP {
 					result, appUrl = r.callMCPTool(toolCtx, td, tc.Function.Arguments)
 				} else {
 					result = r.executeToolBackend(toolCtx, td, tc.Function.Arguments)
@@ -2471,8 +2346,8 @@ func (r *Router) classifyTool(toolName, args string) (backendType, backendRef st
 	// LLM schema injection; those must fall through to the name-based switch below.
 	for _, td := range r.cfg.ToolDefinitions {
 		if td.Name == toolName {
-			if td.BackendType == "mcp" {
-				return "mcp", td.BackendRef
+			if td.BackendType == backendTypeMCP {
+				return backendTypeMCP, td.BackendRef
 			}
 			break
 		}
@@ -2499,7 +2374,7 @@ func (r *Router) classifyTool(toolName, args string) (backendType, backendRef st
 		_ = json.Unmarshal([]byte(args), &p)
 		return "agent", p.AgentRef
 	default:
-		return "builtin", ""
+		return backendTypeBuiltin, ""
 	}
 }
 
@@ -2895,7 +2770,7 @@ func (r *Router) executeDone(ctx context.Context, args string) string {
 
 	if r.store != nil {
 		tokenStreamKey := "tokens:" + r.cfg.RunNamespace + ":" + r.cfg.RunName
-		doneEvent, _ := json.Marshal(map[string]string{"type": "done", "output": output})
+		doneEvent, _ := json.Marshal(map[string]string{"type": traceEventTypeDone, "output": output})
 		// The `done` trace event is terminal (state.IsTerminalTraceEventJSON);
 		// TailTokens closes the UI SSE after yielding it. No empty-token "done
 		// sentinel" is written — completion follows the OpenAI/CRD schema, not a
@@ -3303,115 +3178,6 @@ func (r *Router) postRoutingDecision(ctx context.Context, provider *ProviderConf
 		return
 	}
 	_ = resp.Body.Close()
-}
-
-// loopDetectedInfo mirrors the API type for use within the router package.
-type loopDetectedInfo struct {
-	Reason    string `json:"reason"`
-	TripCount int    `json:"tripCount"`
-	ToolName  string `json:"toolName,omitempty"`
-}
-
-// checkSafeguards evaluates all configured guardrails against the latest assistant
-// response. Returns (true, info) when a safeguard is tripped. Must be called with
-// r.mu unlocked; it acquires the lock internally.
-func (r *Router) checkSafeguards(msg Message, completionTokens int) (bool, loopDetectedInfo) {
-	s := r.cfg.Safeguards
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	// 1. Noop turn detection.
-	if s.MaxConsecutiveNoopTurns > 0 {
-		isNoop := len(msg.ToolCalls) == 0 && completionTokens < s.MinSubstantiveTokens
-		if isNoop {
-			r.consecutiveNoops++
-		} else {
-			r.consecutiveNoops = 0
-		}
-		if r.consecutiveNoops >= s.MaxConsecutiveNoopTurns {
-			r.loopDetected = true
-			return true, loopDetectedInfo{
-				Reason:    fmt.Sprintf("agent produced %d consecutive non-substantive turns (< %d tokens, no tool calls)", r.consecutiveNoops, s.MinSubstantiveTokens),
-				TripCount: r.consecutiveNoops,
-			}
-		}
-	}
-
-	// 2. Tool-level checks.
-	for _, tc := range msg.ToolCalls {
-		name := tc.Function.Name
-		args := tc.Function.Arguments
-
-		// Frequency cap.
-		if s.ToolFrequencyCap > 0 {
-			r.toolCallCounts[name]++
-			if r.toolCallCounts[name] >= s.ToolFrequencyCap {
-				r.loopDetected = true
-				return true, loopDetectedInfo{
-					Reason:    fmt.Sprintf("tool %q called %d times, exceeding frequency cap of %d", name, r.toolCallCounts[name], s.ToolFrequencyCap),
-					TripCount: r.toolCallCounts[name],
-					ToolName:  name,
-				}
-			}
-		}
-
-		// Repeated identical call detection.
-		if s.MaxRepeatedToolCalls > 0 {
-			h := sha256.Sum256([]byte(name + ":" + args))
-			sig := fmt.Sprintf("%x", h)
-			r.toolCallSigs[sig]++
-			if r.toolCallSigs[sig] >= s.MaxRepeatedToolCalls {
-				r.loopDetected = true
-				return true, loopDetectedInfo{
-					Reason:    fmt.Sprintf("tool %q called %d times with identical arguments, exceeding limit of %d", name, r.toolCallSigs[sig], s.MaxRepeatedToolCalls),
-					TripCount: r.toolCallSigs[sig],
-					ToolName:  name,
-				}
-			}
-		}
-	}
-
-	return false, loopDetectedInfo{}
-}
-
-// notifyLoopDetected POSTs to the operator internal API to set the run's phase to
-// Failed with LoopDetected info, and sets r.loopDetected to block further LLM calls.
-func (r *Router) notifyLoopDetected(info loopDetectedInfo) {
-	meta := map[string]string{
-		"safeguardReason": info.Reason,
-	}
-	if info.ToolName != "" {
-		meta["toolName"] = info.ToolName
-	}
-
-	tokenBytes, err := os.ReadFile(r.cfg.SATokenFile)
-	if err != nil {
-		slog.Error("reading SA token for loop-detected notification", "err", err)
-		return
-	}
-	saToken := strings.TrimSpace(string(tokenBytes))
-
-	url := fmt.Sprintf("%s/agentrun/%s/%s/loop-detected",
-		r.cfg.OperatorAPIURL, r.cfg.RunNamespace, r.cfg.RunName)
-	body, _ := json.Marshal(info)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
-	if err != nil {
-		slog.Error("building loop-detected request", "err", err)
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+saToken)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		slog.Error("notifying operator of loop detection", "err", err)
-		return
-	}
-	_ = resp.Body.Close()
-	slog.Info("safeguard tripped, operator notified", "run", r.cfg.RunName, "reason", info.Reason)
 }
 
 func (r *Router) executeMCPResource(_ context.Context, args string) string {
@@ -3972,7 +3738,7 @@ func (r *Router) executeListResources(ctx context.Context, args string) string {
 	// represented under mcpServers, and excluding builtin tools handled separately).
 	var tools []map[string]string
 	for _, td := range r.cfg.ToolDefinitions {
-		if td.BackendType != "builtin" && td.BackendType != "mcp" {
+		if td.BackendType != backendTypeBuiltin && td.BackendType != backendTypeMCP {
 			tools = append(tools, map[string]string{
 				"name":        td.Name,
 				"description": td.Description,
@@ -4243,7 +4009,7 @@ func anthropicToOpenAI(body []byte) ([]byte, error) {
 	case "tool_use":
 		finishReason = "tool_calls" //nolint:goconst
 	case "end_turn":
-		finishReason = "stop"
+		finishReason = finishReasonStop
 	}
 
 	openAIResp := ChatCompletionResponse{
@@ -4415,9 +4181,6 @@ func (r *Router) ClaimRun(input WarmRunInput) {
 	r.doneExplicit = false
 	r.failedExplicit = false
 	r.resumedWithAnswer = false
-	r.consecutiveNoops = 0
-	r.toolCallCounts = make(map[string]int)
-	r.toolCallSigs = make(map[string]int)
 	r.loopDetected = false
 	r.liveBufferTokens = 0
 
@@ -4620,7 +4383,7 @@ func (r *Router) hindsightBankID() string {
 // hindsightRecall queries hindsight for relevant memories before an LLM call.
 func (r *Router) hindsightRecall(ctx context.Context, query string) (string, error) {
 	if !r.cfg.Hindsight.Enabled || r.cfg.Hindsight.URL == "" {
-		return "", errors.New("Hindsight is disabled or the URL is empty.")
+		return "", errors.New("hindsight is disabled or the URL is empty")
 	}
 
 	bankID := r.hindsightBankID()
@@ -4652,9 +4415,9 @@ func (r *Router) hindsightRecall(ctx context.Context, query string) (string, err
 }
 
 // hindsightRetain stores conversation content in hindsight after an LLM call.
-func (r *Router) hindsightRetain(ctx context.Context, runName string, content string) error {
+func (r *Router) hindsightRetain(runName, content string) error {
 	if !r.cfg.Hindsight.Enabled || r.cfg.Hindsight.URL == "" {
-		return errors.New("Hindsight is disabled or the URL is empty.")
+		return errors.New("hindsight is disabled or the URL is empty")
 	}
 
 	// Use a detached context with a timeout for hindsight operations so that
@@ -4692,10 +4455,5 @@ func (r *Router) hindsightRetain(ctx context.Context, runName string, content st
 
 // stringToNullable converts a string to a hindsight NullableString.
 func stringToNullable(s string) hindsight.NullableString {
-	return *hindsight.NewNullableString(&s)
-}
-
-// stringPtrToNullable converts a string pointer to a hindsight NullableString.
-func stringPtrToNullable(s string) hindsight.NullableString {
 	return *hindsight.NewNullableString(&s)
 }

@@ -180,7 +180,7 @@ func TestFilterTools(t *testing.T) {
 
 	// include list_* + get_*, exclude internal_* => keep list_repos, get_repo.
 	got, gotNames = filterTools(tools, available, []string{"list_*", "get_*"}, []string{"internal_*"})
-	var gotNames2 []string
+	gotNames2 := make([]string, 0, len(got))
 	for _, t := range got {
 		gotNames2 = append(gotNames2, t.Name)
 	}

@@ -21,6 +21,9 @@ import (
 	"testing"
 )
 
+// strategyHighFidelity is the strategy label classifyStrategy assigns to high ratios.
+const strategyHighFidelity = "high-fidelity"
+
 func TestValidateContextCompaction_Defaults(t *testing.T) {
 	// When ratio is 0, should default to 0.5
 	v := ValidateContextCompaction(0, 0, 0)
@@ -56,7 +59,7 @@ func TestValidateContextCompaction_HighFidelity(t *testing.T) {
 	// High-fidelity ratio (0.7)
 	v := ValidateContextCompaction(0.7, 262144, 0)
 
-	if v.Strategy != "high-fidelity" {
+	if v.Strategy != strategyHighFidelity {
 		t.Errorf("strategy = %s, want high-fidelity", v.Strategy)
 	}
 }
@@ -192,7 +195,7 @@ func TestValidateContextCompaction_Recommendations(t *testing.T) {
 			ratio:        0.7,
 			cw:           128000,
 			session:      10,
-			wantStrategy: "high-fidelity",
+			wantStrategy: strategyHighFidelity,
 			wantRecip:    "HIGH-FIDELITY compaction",
 		},
 	}
@@ -275,7 +278,7 @@ func TestValidateContextCompaction_ModerateStrategy(t *testing.T) {
 
 func TestValidateContextCompaction_ConservativeStrategy(t *testing.T) {
 	v := ValidateContextCompaction(0.85, 128000, 0)
-	if v.Strategy != "high-fidelity" {
+	if v.Strategy != strategyHighFidelity {
 		t.Errorf("strategy for ratio 0.85 = %s, want high-fidelity", v.Strategy)
 	}
 }

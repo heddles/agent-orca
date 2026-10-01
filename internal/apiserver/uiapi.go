@@ -25,6 +25,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -53,6 +54,10 @@ import (
 // OIDC provider fetch should still be bounded to avoid 504 responses behind
 // the ingress.
 const uiAPIRequestTimeout = 60 * time.Second
+
+// defaultNamespace is the fallback namespace for UI API requests that don't
+// specify one.
+const defaultNamespace = "default"
 
 // UIServer serves the REST API consumed by the React UI.
 //
@@ -811,7 +816,7 @@ func (s *UIServer) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Namespace == "" {
-		req.Namespace = "default"
+		req.Namespace = defaultNamespace
 	}
 	if req.Framework == "" {
 		req.Framework = "openai-compatible"
@@ -1340,11 +1345,10 @@ func (s *UIServer) handleSystemStatus(w http.ResponseWriter, r *http.Request) {
 
 	resp.ModelProviders = s.probeModelProviders(r.Context())
 
-	if metrics, err := s.scrapeMetrics(r.Context()); err == nil {
-		metrics.Samples = s.samplesForRange(r.Context(), r.URL.Query().Get("range"))
-		s.recordMetricSample(metrics)
-		resp.Metrics = metrics
-	}
+	metrics := s.scrapeMetrics(r.Context())
+	metrics.Samples = s.samplesForRange(r.Context(), r.URL.Query().Get("range"))
+	s.recordMetricSample(metrics)
+	resp.Metrics = metrics
 
 	if s.alertManager != nil {
 		for _, ss := range resp.SubSystems {
@@ -1376,7 +1380,7 @@ func (s *UIServer) probeModelProviders(ctx context.Context) []ProviderHealth {
 	return out
 }
 
-func (s *UIServer) scrapeMetrics(ctx context.Context) (*SystemMetrics, error) {
+func (s *UIServer) scrapeMetrics(ctx context.Context) *SystemMetrics {
 	m := &SystemMetrics{}
 
 	m.RequestCount24h = int(getCounterValue(externalReg, "agentorca_external_requests_total"))
@@ -1389,7 +1393,7 @@ func (s *UIServer) scrapeMetrics(ctx context.Context) (*SystemMetrics, error) {
 
 	m.TokenThroughput = s.scrapeModelRouterTokenRate(ctx)
 
-	return m, nil
+	return m
 }
 
 func (s *UIServer) scrapeModelRouterTokenRate(ctx context.Context) float64 {
@@ -1456,7 +1460,7 @@ func scrapePromCounter(ctx context.Context, url, name string) (float64, bool) {
 	if err != nil {
 		return 0, false
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return 0, false
 	}
@@ -1656,7 +1660,7 @@ func (s *UIServer) handleDeployment(w http.ResponseWriter, r *http.Request) {
 
 	namespace := parts[0]
 	if namespace == "" {
-		namespace = "default"
+		namespace = defaultNamespace
 	}
 	deploymentName := parts[1]
 
@@ -2241,11 +2245,8 @@ func (s *UIServer) handleGetArchivedRun(w http.ResponseWriter, r *http.Request, 
 					if len(mp.Spec.AllowedAgents) == 0 {
 						continue
 					}
-					for _, a := range mp.Spec.AllowedAgents {
-						if a == archive.AgentRef {
-							detail.MCPServers = append(detail.MCPServers, mp.Name)
-							break
-						}
+					if slices.Contains(mp.Spec.AllowedAgents, archive.AgentRef) {
+						detail.MCPServers = append(detail.MCPServers, mp.Name)
 					}
 				}
 			}
@@ -2434,7 +2435,7 @@ func (s *UIServer) createResource(w http.ResponseWriter, r *http.Request, info c
 		labels = make(map[string]string)
 	}
 	if _, exists := labels["app.kubernetes.io/managed-by"]; !exists {
-		labels["app.kubernetes.io/managed-by"] = "agent-orca"
+		labels["app.kubernetes.io/managed-by"] = security.ManagedByValue
 		obj.SetLabels(labels)
 	}
 	// Enforce tenant scoping: when a tenant identity is present, force the
@@ -2485,11 +2486,6 @@ func (s *UIServer) updateResource(w http.ResponseWriter, r *http.Request, info c
 	obj.SetName(name)
 	obj.SetNamespace(ns)
 
-	// Clear status — the controller owns it. If the client sent status fields,
-	// we strip them so a PUT never clobbers observed state.
-	if statusWriter, ok := obj.(client.Object); ok {
-		_ = statusWriter
-	}
 	if accessor, ok := obj.(metav1.Object); ok {
 		// Set the managed-by label so we never accidentally create unmodified resources.
 		labels := accessor.GetLabels()
@@ -2497,7 +2493,7 @@ func (s *UIServer) updateResource(w http.ResponseWriter, r *http.Request, info c
 			labels = make(map[string]string)
 		}
 		if _, exists := labels["app.kubernetes.io/managed-by"]; !exists {
-			labels["app.kubernetes.io/managed-by"] = "agent-orca"
+			labels["app.kubernetes.io/managed-by"] = security.ManagedByValue
 			accessor.SetLabels(labels)
 		}
 	}
@@ -2543,8 +2539,8 @@ func (s *UIServer) deleteResource(w http.ResponseWriter, r *http.Request, info c
 //   - agentorca.io/deployment (runs belonging to a deployment)
 func isManagedByAgentOrca(obj client.Object) bool {
 	labels := obj.GetLabels()
-	return labels["app.kubernetes.io/managed-by"] == "agent-orca" ||
-		labels["agentorca.io/managed-by"] == "agent-orca" ||
+	return labels["app.kubernetes.io/managed-by"] == security.ManagedByValue ||
+		labels["agentorca.io/managed-by"] == security.ManagedByValue ||
 		labels["agentorca.io/source"] != "" ||
 		labels["agentorca.io/deployment"] != ""
 }

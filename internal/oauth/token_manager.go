@@ -33,6 +33,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 )
@@ -282,7 +283,7 @@ type TokenResponse struct {
 
 func (t *TokenResponse) isFailure() bool {
 	// Slack sets ok:false; standard OAuth omits ok and sets error. Normalize.
-	return (t.OK == false && t.Error != "") || (t.Error != "" && t.AccessToken == "")
+	return (!t.OK && t.Error != "") || (t.Error != "" && t.AccessToken == "")
 }
 
 func (t *TokenResponse) ErrorOrMessage() string {
@@ -362,21 +363,11 @@ func (m *TokenManager) Run(ctx context.Context, meta *Metadata, cfg *Config) err
 }
 
 func supportsGrant(grants []string, want string) bool {
-	for _, g := range grants {
-		if g == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(grants, want)
 }
 
 func supportsString(items []string, want string) bool {
-	for _, s := range items {
-		if s == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(items, want)
 }
 
 func truncate(s string, max int) string {
@@ -386,9 +377,9 @@ func truncate(s string, max int) string {
 	return s[:max] + "…"
 }
 
-// fetchJSON fetches url and JSON-decodes into T.
-func fetchJSON[T any](ctx context.Context, hc *http.Client, url string) (*T, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+// fetchJSON fetches endpoint and JSON-decodes into T.
+func fetchJSON[T any](ctx context.Context, hc *http.Client, endpoint string) (*T, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -404,7 +395,7 @@ func fetchJSON[T any](ctx context.Context, hc *http.Client, url string) (*T, err
 	}
 	var out T
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, fmt.Errorf("decoding JSON from %s: %w", url, err)
+		return nil, fmt.Errorf("decoding JSON from %s: %w", endpoint, err)
 	}
 	return &out, nil
 }

@@ -52,9 +52,8 @@ var _ = Describe("Agent Controller", func() {
 		Expect(k8sClient.Create(ctx, agent)).To(Succeed())
 
 		By("first reconcile adds the finalizer and requeues")
-		result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
 		Expect(err).NotTo(HaveOccurred())
-		Expect(result.Requeue).To(BeTrue())
 
 		Expect(k8sClient.Get(ctx, namespacedName, agent)).To(Succeed())
 		Expect(agent.Finalizers).To(ContainElement(agentFinalizer))

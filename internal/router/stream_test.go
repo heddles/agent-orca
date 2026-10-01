@@ -95,7 +95,7 @@ func (s *testStore) SaveTraceEvent(_ context.Context, _ string, eventJSON string
 	// (replacing the old empty-token done sentinel); count it for assertions.
 	var m map[string]any
 	if json.Unmarshal([]byte(eventJSON), &m) == nil {
-		if t, _ := m["type"].(string); t == "done" {
+		if t, _ := m["type"].(string); t == traceEventTypeDone {
 			s.doneEvents++
 		}
 	}
@@ -106,23 +106,6 @@ func (s *testStore) lastDoneEvents() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.doneEvents
-}
-
-// doneEventJSONs returns the JSON of every terminal `done` trace event emitted,
-// so tests can assert on the OpenAI schema fields (e.g. finish_reason).
-func (s *testStore) doneEventJSONs() []string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := make([]string, 0, len(s.traceEvents))
-	for _, e := range s.traceEvents {
-		var m map[string]any
-		if json.Unmarshal([]byte(e), &m) == nil {
-			if t, _ := m["type"].(string); t == "done" {
-				out = append(out, e)
-			}
-		}
-	}
-	return out
 }
 
 func (s *testStore) toolCallEvents() int {
@@ -172,7 +155,7 @@ func fakeProvider(t *testing.T, bodies ...[]byte) (*httptest.Server, *atomic.Int
 			http.Error(w, "no more canned responses", http.StatusServiceUnavailable)
 			return
 		}
-		w.Write(bodies[idx])
+		_, _ = w.Write(bodies[idx])
 	}))
 	t.Cleanup(srv.Close)
 	return srv, &calls
@@ -330,7 +313,7 @@ func TestStreamingToolCallWithNullFinishReasonIsDispatched(t *testing.T) {
 	// terminating [DONE] to the client. After the fix, dispatch mirrors the
 	// non-streaming path (len(toolCalls) > 0), so the tool is dispatched and the
 	// final text turn emits exactly one [DONE] and one run-level done sentinel.
-	fr := "stop"
+	fr := finishReasonStop
 	turn1 := toolCallTurnSSE()
 	turn2 := textTurnSSE(fr)
 
@@ -365,7 +348,7 @@ func TestStreamingToolCallWithNullFinishReasonIsDispatched(t *testing.T) {
 func TestStreamingTextResponseWritesDoneEvent(t *testing.T) {
 	// Baseline: a plain text response (no tool calls) must emit [DONE] to the
 	// client and exactly one run-level done sentinel — the normal end-of-run path.
-	fr := "stop"
+	fr := finishReasonStop
 	end := []byte(strings.Join([]string{
 		sseFrame(streamingChatCompletionChunk{
 			ID: "c", Object: "chat.completion.chunk",
@@ -485,7 +468,7 @@ func TestStreamingMidStreamDoneDoesNotTruncateClient(t *testing.T) {
 	// The model-router must withhold upstream [DONE]s and emit exactly one
 	// canonical terminal [DONE] after the full payload, so the client receives
 	// both the thinking and the final content.
-	fr := "stop"
+	fr := finishReasonStop
 	end := []byte(strings.Join([]string{
 		sseFrame(streamingChatCompletionChunk{
 			ID: "c", Object: "chat.completion.chunk",
@@ -760,14 +743,12 @@ func TestConcurrentStreamingRequestRejected(t *testing.T) {
 
 	// First streaming request in a goroutine — blocks inside handleStreamingResponse.
 	var firstWG sync.WaitGroup
-	firstWG.Add(1)
-	go func() {
-		defer firstWG.Done()
+	firstWG.Go(func() {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		r.HandleChatCompletions(rec, req)
-	}()
+	})
 
 	// Safety net: ensure cleanup unblocks the first goroutine even if the test
 	// fails early or panics.

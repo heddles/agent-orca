@@ -158,10 +158,7 @@ func TestHandleRunOrStreamRoutesArchivedDetail(t *testing.T) {
 func TestScrapeMetricsReadsEgressRegistry(t *testing.T) {
 	s := &UIServer{} // k8s nil -> token throughput stays 0 (documented stub)
 
-	before, err := s.scrapeMetrics(context.Background())
-	if err != nil {
-		t.Fatalf("scrapeMetrics error: %v", err)
-	}
+	before := s.scrapeMetrics(context.Background())
 	if before == nil {
 		t.Fatal("expected non-nil metrics")
 	}
@@ -172,10 +169,7 @@ func TestScrapeMetricsReadsEgressRegistry(t *testing.T) {
 		RunID: "metrics-test", Phase: "Succeeded", Output: "ok", Tenant: "t",
 	})
 
-	after, err := s.scrapeMetrics(context.Background())
-	if err != nil {
-		t.Fatalf("scrapeMetrics error: %v", err)
-	}
+	after := s.scrapeMetrics(context.Background())
 	if after.EgressPublished < before.EgressPublished+1 {
 		t.Fatalf("EgressPublished = %d, want >= %d (registry wiring not reading egress counters)",
 			after.EgressPublished, before.EgressPublished+1)
@@ -225,7 +219,7 @@ func TestInstrumentPreservesFlusher(t *testing.T) {
 			t.Fatalf("inner handler could not assert http.Flusher through instrument wrapper")
 		}
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("data: hi\n\n"))
+		_, _ = w.Write([]byte("data: hi\n\n"))
 		flusher.Flush()
 		streamed = true
 	}))

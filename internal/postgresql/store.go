@@ -215,6 +215,7 @@ func (s *Store) ArchiveRun(ctx context.Context, run *agentorcav1alpha1.AgentRun,
 		archived.TraceEventsJSON, now, now,
 	)
 	if err != nil {
+		return fmt.Errorf("archiving run %s: %w", archived.ID, err)
 	}
 	slog.Debug("archived run to PostgreSQL", "run", archived.ID, "phase", archived.Phase)
 	return nil
@@ -230,10 +231,7 @@ func (s *Store) QueryHistory(ctx context.Context, q HistoryQuery) (*HistoryPage,
 	if limit > 200 {
 		limit = 200
 	}
-	offset := q.Offset
-	if offset < 0 {
-		offset = 0
-	}
+	offset := max(q.Offset, 0)
 
 	var (
 		where  []string
@@ -296,7 +294,7 @@ func (s *Store) QueryHistory(ctx context.Context, q HistoryQuery) (*HistoryPage,
 	if err != nil {
 		return nil, fmt.Errorf("querying archived runs: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	// Non-nil empty slice so JSON serializes to [] (not null). A null `runs`
 	// array previously crashed the UI with "can't access property
@@ -437,7 +435,7 @@ func fromAgentRun(run *agentorcav1alpha1.AgentRun) RunArchive {
 		Labels:            run.Labels,
 	}
 	if run.Spec.Timeout != nil {
-		r.TimeoutSec = sql.NullInt64{Int64: int64(run.Spec.Timeout.Duration.Seconds()), Valid: true}
+		r.TimeoutSec = sql.NullInt64{Int64: int64(run.Spec.Timeout.Seconds()), Valid: true}
 	}
 	if run.Status.StartTime != nil {
 		t := run.Status.StartTime.Time

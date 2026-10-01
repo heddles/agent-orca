@@ -124,9 +124,11 @@ func validateForAgentType(agentType string, ratio float64, cw, sessionLen int) *
 
 func init() {
 	validateContextCompactionCmd.Flags().Float64P("ratio", "r", 0, "context compaction ratio (0=use default 0.5)")
-	validateContextCompactionCmd.Flags().IntP("context-window", "w", 0, "provider context window in tokens (0=use default 200000)")
+	validateContextCompactionCmd.Flags().IntP("context-window", "w", 0,
+		"provider context window in tokens (0=use default 200000)")
 	validateContextCompactionCmd.Flags().IntP("session-length", "s", 0, "expected number of turns per session (0=unknown)")
-	validateContextCompactionCmd.Flags().StringP("agent-type", "t", "", "agent type: chat, batch, or research (for targeted recommendations)")
+	validateContextCompactionCmd.Flags().StringP("agent-type", "t", "",
+		"agent type: chat, batch, or research (for targeted recommendations)")
 
 	validateCmd.AddCommand(validateContextCompactionCmd)
 }

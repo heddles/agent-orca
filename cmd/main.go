@@ -693,7 +693,7 @@ func parseAlertWebhooks(urls, hmacSecretB64 string) []apiserver.AlertWebhook {
 	}
 	key, _ := base64.StdEncoding.DecodeString(hmacSecretB64)
 	var out []apiserver.AlertWebhook
-	for _, u := range strings.Split(urls, ",") {
+	for u := range strings.SplitSeq(urls, ",") {
 		u = strings.TrimSpace(u)
 		if u != "" {
 			out = append(out, apiserver.AlertWebhook{URL: u, HMACKey: key})

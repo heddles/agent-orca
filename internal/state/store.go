@@ -589,11 +589,11 @@ func (s *redisStore) ReadTraceEvents(ctx context.Context, key string) ([]TraceEn
 // streamIDToISO parses a Redis stream entry ID ("<milliseconds>-<sequence>")
 // into an RFC3339 timestamp string. Returns "" if the ID cannot be parsed.
 func streamIDToISO(id string) string {
-	dash := strings.IndexByte(id, '-')
-	if dash < 0 {
+	before, _, ok := strings.Cut(id, "-")
+	if !ok {
 		return ""
 	}
-	ms, err := strconv.ParseInt(id[:dash], 10, 64)
+	ms, err := strconv.ParseInt(before, 10, 64)
 	if err != nil {
 		return ""
 	}

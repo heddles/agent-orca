@@ -48,9 +48,10 @@ var _ = Describe("AgentRun Controller", func() {
 		Expect(k8sClient.Create(ctx, run)).To(Succeed())
 
 		By("first reconcile adds the finalizer and requeues")
-		result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
 		Expect(err).NotTo(HaveOccurred())
-		Expect(result.Requeue).To(BeTrue())
+		Expect(k8sClient.Get(ctx, namespacedName, run)).To(Succeed())
+		Expect(run.Finalizers).To(ContainElement(agentRunFinalizer))
 
 		By("second reconcile fails the run because the Agent is missing")
 		_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})

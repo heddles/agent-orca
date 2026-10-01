@@ -155,7 +155,8 @@ func (s *settings) runACPServe() error {
 	bridge := newACPBridge(srv, client, s.agent)
 	srv.handler = bridge
 
-	_, _ = fmt.Fprintf(s.errw, "aoctl acp serve — agent %q | ACP endpoint %s | JSON-RPC on stdin/stdout, logs on stderr\n",
+	_, _ = fmt.Fprintf(s.errw,
+		"aoctl acp serve — agent %q | ACP endpoint %s | JSON-RPC on stdin/stdout, logs on stderr\n",
 		s.agent, s.acp)
 	return srv.Serve(ctx)
 }
@@ -214,7 +215,8 @@ func (s *settings) setupZed(agentName string) error {
 	}
 
 	if s.token == "" {
-		_, _ = fmt.Fprintln(s.errw, "Warning: no bearer token is cached. Run `aoctl login` (or pass --token) before using the agent in Zed.")
+		_, _ = fmt.Fprintln(s.errw, "Warning: no bearer token is cached. "+
+			"Run `aoctl login` (or pass --token) before using the agent in Zed.")
 	}
 
 	path, err := zedSettingsPath()

@@ -465,7 +465,7 @@ func (a *Agent) chatCompletion(ctx context.Context, conversation []map[string]an
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -519,7 +519,7 @@ func (a *Agent) chatCompletionStream(ctx context.Context, conversation []map[str
 			errChan <- err
 			return
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		if resp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(resp.Body)

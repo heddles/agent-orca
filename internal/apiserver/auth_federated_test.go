@@ -21,6 +21,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -105,9 +106,7 @@ func mintOIDCToken(t *testing.T, key *rsa.PrivateKey, issuerURL, audience string
 		"exp": time.Now().Add(10 * time.Minute).Unix(),
 		"jti": "test-jti",
 	}
-	for k, v := range extra {
-		claims[k] = v
-	}
+	maps.Copy(claims, extra)
 	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
 	signed, err := tok.SignedString(key)
 	if err != nil {
@@ -122,7 +121,7 @@ func mintOIDCToken(t *testing.T, key *rsa.PrivateKey, issuerURL, audience string
 func seedFederatedTenant(t *testing.T, issuerURL string) *ExternalAuth {
 	t.Helper()
 	tc := &agentorcav1alpha1.TenantConfig{
-		ObjectMeta: metav1.ObjectMeta{Name: "github-oidc", Namespace: "agent-orca-system"},
+		ObjectMeta: metav1.ObjectMeta{Name: githubOIDCTenant, Namespace: "agent-orca-system"},
 		Spec: agentorcav1alpha1.TenantConfigSpec{
 			AuthMode:          "federated",
 			AllowedNamespaces: []string{"default"},
@@ -147,7 +146,7 @@ func seedFederatedTenant(t *testing.T, issuerURL string) *ExternalAuth {
 // the test never touches the network.
 func TestValidateFederatedToken_GitHubStyle(t *testing.T) {
 	key := newTestKey(t)
-	issuerURL := "https://token.actions.githubusercontent.com"
+	issuerURL := githubIssuerURL
 	startOIDCIssuer(t, key, &issuerURL)
 
 	t.Run("positive: matching actor and audience scopes to tenant namespace", func(t *testing.T) {
@@ -162,7 +161,7 @@ func TestValidateFederatedToken_GitHubStyle(t *testing.T) {
 		if ident.Namespace != "default" {
 			t.Fatalf("expected namespace default, got %q", ident.Namespace)
 		}
-		if ident.TenantName != "github-oidc" {
+		if ident.TenantName != githubOIDCTenant {
 			t.Fatalf("expected tenant name github-oidc, got %q", ident.TenantName)
 		}
 		if ident.AllowedAgents != nil {
@@ -218,7 +217,7 @@ func TestValidateFederatedToken_GitHubStyle(t *testing.T) {
 // doesn't delay OIDC token validation.
 func TestValidateTokenParallel_FederatedSucceeds(t *testing.T) {
 	key := newTestKey(t)
-	issuerURL := "https://token.actions.githubusercontent.com"
+	issuerURL := githubIssuerURL
 	startOIDCIssuer(t, key, &issuerURL)
 
 	a := seedFederatedTenant(t, issuerURL)
@@ -230,7 +229,7 @@ func TestValidateTokenParallel_FederatedSucceeds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected parallel auth to succeed, got error: %v", err)
 	}
-	if ident.TenantName != "github-oidc" {
+	if ident.TenantName != githubOIDCTenant {
 		t.Fatalf("expected tenant github-oidc, got %q", ident.TenantName)
 	}
 }
@@ -240,7 +239,7 @@ func TestValidateTokenParallel_FederatedSucceeds(t *testing.T) {
 // both failure reasons.
 func TestValidateTokenParallel_BothFail(t *testing.T) {
 	key := newTestKey(t)
-	issuerURL := "https://token.actions.githubusercontent.com"
+	issuerURL := githubIssuerURL
 	startOIDCIssuer(t, key, &issuerURL)
 
 	a := seedFederatedTenant(t, issuerURL)
@@ -258,7 +257,7 @@ func TestValidateTokenParallel_BothFail(t *testing.T) {
 // path should still be tried and return its result/error without panicking.
 func TestValidateTokenParallel_K8sNotConfigured(t *testing.T) {
 	key := newTestKey(t)
-	issuerURL := "https://token.actions.githubusercontent.com"
+	issuerURL := githubIssuerURL
 	startOIDCIssuer(t, key, &issuerURL)
 
 	a := seedFederatedTenant(t, issuerURL)

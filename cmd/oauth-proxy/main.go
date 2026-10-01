@@ -90,7 +90,7 @@ func splitNsName(s string) (ns, name string, err error) {
 
 func commaScopes(s string) []string {
 	var out []string
-	for _, sc := range strings.Split(s, ",") {
+	for sc := range strings.SplitSeq(s, ",") {
 		if sc = strings.TrimSpace(sc); sc != "" {
 			out = append(out, sc)
 		}
@@ -111,7 +111,9 @@ func k8sClient() (kubernetes.Interface, error) {
 
 // readCreds reads the OAuth client credentials (and optional refresh token and
 // redirect URI) from the oauth creds Secret.
-func readCreds(secrets oauth.SecretIO, ns, name string) (clientID, clientSecret, refreshToken, redirectURI string, err error) {
+func readCreds(
+	secrets oauth.SecretIO, ns, name string,
+) (clientID, clientSecret, refreshToken, redirectURI string, err error) {
 	get := func(key string) (string, bool, error) {
 		v, ok, e := secrets.ReadKey(context.Background(), ns, name, key)
 		return string(v), ok, e
@@ -128,13 +130,13 @@ func readCreds(secrets oauth.SecretIO, ns, name string) (clientID, clientSecret,
 		err = e
 		return
 	} else if ok {
-		refreshToken = string(v)
+		refreshToken = v
 	}
 	if v, ok, e := get(redirectURIKey); e != nil {
 		err = e
 		return
 	} else if ok {
-		redirectURI = string(v)
+		redirectURI = v
 	}
 	return
 }
@@ -171,7 +173,8 @@ func loginURLCmd(ctx context.Context, args []string) int {
 	fmt.Println(authURL)
 	fmt.Println()
 	fmt.Println("Paste the resulting `code` and THIS code_verifier into:")
-	fmt.Printf("  oauth-proxy seed --server-url %s --oauth-secret <ns/creds> --code <code> --code-verifier %s\n", serverURL, verifier)
+	fmt.Printf("  oauth-proxy seed --server-url %s --oauth-secret <ns/creds> --code <code> --code-verifier %s\n",
+		serverURL, verifier)
 	return 0
 }
 
@@ -182,8 +185,10 @@ func seedCmd(ctx context.Context, args []string) int {
 	fs := flag.NewFlagSet("seed", flag.ExitOnError)
 	var serverURL, oauthSecret, accessTokenSec, code, codeVerifier, scopes string
 	fs.StringVar(&serverURL, "server-url", "", "MCP server URL (required)")
-	fs.StringVar(&oauthSecret, "oauth-secret", "", "Secret with client_id/client_secret/redirect_uri (namespace/name) (required)")
-	fs.StringVar(&accessTokenSec, "access-token-secret", "", "Secret to write the access token into (namespace/name) (required)")
+	fs.StringVar(&oauthSecret, "oauth-secret", "",
+		"Secret with client_id/client_secret/redirect_uri (namespace/name) (required)")
+	fs.StringVar(&accessTokenSec, "access-token-secret", "",
+		"Secret to write the access token into (namespace/name) (required)")
 	fs.StringVar(&code, "code", "", "authorization code from the callback (required)")
 	fs.StringVar(&codeVerifier, "code-verifier", "", "PKCE code_verifier from login-url (required)")
 	fs.StringVar(&scopes, "scopes", "", "comma-separated OAuth scopes")
@@ -260,8 +265,10 @@ func runCmd(ctx context.Context, args []string) int {
 	var serverURL, oauthSecret, accessTokenSec, scopes string
 	var refreshInterval time.Duration
 	fs.StringVar(&serverURL, "server-url", "", "MCP server URL (required)")
-	fs.StringVar(&oauthSecret, "oauth-secret", "", "Secret with client_id/client_secret/refresh_token/redirect_uri (namespace/name) (required)")
-	fs.StringVar(&accessTokenSec, "access-token-secret", "", "Secret to write the access token into (namespace/name) (required)")
+	fs.StringVar(&oauthSecret, "oauth-secret", "",
+		"Secret with client_id/client_secret/refresh_token/redirect_uri (namespace/name) (required)")
+	fs.StringVar(&accessTokenSec, "access-token-secret", "",
+		"Secret to write the access token into (namespace/name) (required)")
 	fs.StringVar(&scopes, "scopes", "", "comma-separated OAuth scopes")
 	fs.DurationVar(&refreshInterval, "refresh-interval", 50*time.Minute, "refresh cadence when no expires_in known")
 	_ = fs.Parse(args)

@@ -1191,7 +1191,7 @@ func (s *ACPServer) getACPRun(w http.ResponseWriter, r *http.Request, run *agent
 // streamACPRun streams tokens via SSE using ACP-compliant event format.
 func (s *ACPServer) streamACPRun(w http.ResponseWriter, r *http.Request, run *agentorcav1alpha1.AgentRun) error {
 
-	defer func() { r.Body.Close() }()
+	defer func() { _ = r.Body.Close() }()
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")

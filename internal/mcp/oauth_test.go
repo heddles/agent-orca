@@ -37,14 +37,14 @@ func newOAuthMCPServer(t *testing.T, access string) *oauthMCPServer {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/.well-known/oauth-protected-resource", func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"authorization_servers":    []string{o.Server.URL},
+			"authorization_servers":    []string{o.URL},
 			"bearer_methods_supported": []string{"header"},
 		})
 	})
 	mux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"authorization_endpoint":                o.Server.URL + "/oauth/authorize",
-			"token_endpoint":                        o.Server.URL + "/oauth/token",
+			"authorization_endpoint":                o.URL + "/oauth/authorize",
+			"token_endpoint":                        o.URL + "/oauth/token",
 			"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
 			"code_challenge_methods_supported":      []string{"S256"},
 			"token_endpoint_auth_methods_supported": []string{"client_secret_post"},
@@ -114,7 +114,7 @@ func TestClientOAuthExchangesRefreshAndSendsBearer(t *testing.T) {
 	cfg := ServerConfig{
 		Name:      "slack-mcp",
 		Transport: TransportHTTP,
-		URL:       srv.Server.URL + "/mcp",
+		URL:       srv.URL + "/mcp",
 		OAuth: &OAuthConfig{
 			CredentialsDir: creds,
 			Scopes:         []string{"search:read.public"},
