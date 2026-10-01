@@ -37,14 +37,14 @@ func TestBuildNetworkPolicy_BasicNoToolsNoRedis(t *testing.T) {
 	if len(np.Spec.Ingress) != 1 {
 		t.Errorf("expected 1 ingress rule (metrics), got %d rules", len(np.Spec.Ingress))
 	}
-	// 443, 6443, 8082, 53 UDP, 53 TCP = 5
-	if len(np.Spec.Egress) != 5 {
-		t.Fatalf("expected 5 egress rules, got %d", len(np.Spec.Egress))
+	// 443, 6443, 8082, 8888 (hindsight default), 53 UDP, 53 TCP = 6
+	if len(np.Spec.Egress) != 6 {
+		t.Fatalf("expected 6 egress rules, got %d", len(np.Spec.Egress))
 	}
 	// Verify no egress rule has port 0 (would cause K8s validation failure)
 	for i, rule := range np.Spec.Egress {
 		for _, port := range rule.Ports {
-			if port.Port != nil && *port.Port == 0 {
+			if port.Port != nil && port.Port.IntVal == 0 {
 				t.Errorf("egress rule %d has port 0 (invalid)", i)
 			}
 		}
@@ -53,7 +53,7 @@ func TestBuildNetworkPolicy_BasicNoToolsNoRedis(t *testing.T) {
 
 func TestBuildNetworkPolicy_HindsightHTTPPort(t *testing.T) {
 	run := newTestRun("http-run")
-	np := BuildNetworkPolicy(run, "default", nil, false, "http://hindsight.local")
+	np := BuildNetworkPolicy(run, "default", nil, false, "http://hindsight.invalid")
 
 	// 443, 6443, 8082, 80 (hindsight HTTP), 53 UDP, 53 TCP = 6
 	if len(np.Spec.Egress) != 6 {
@@ -63,7 +63,7 @@ func TestBuildNetworkPolicy_HindsightHTTPPort(t *testing.T) {
 	foundHindsightPort := false
 	for _, rule := range np.Spec.Egress {
 		for _, port := range rule.Ports {
-			if port.Port != nil && *port.Port == 80 {
+			if port.Port != nil && port.Port.IntVal == 80 {
 				foundHindsightPort = true
 			}
 		}
@@ -75,7 +75,7 @@ func TestBuildNetworkPolicy_HindsightHTTPPort(t *testing.T) {
 
 func TestBuildNetworkPolicy_HindsightHTTPSPort(t *testing.T) {
 	run := newTestRun("https-run")
-	np := BuildNetworkPolicy(run, "default", nil, false, "https://hindsight.local")
+	np := BuildNetworkPolicy(run, "default", nil, false, "https://hindsight.invalid")
 
 	// 443, 6443, 8082, 443 (hindsight HTTPS), 53 UDP, 53 TCP = 6
 	if len(np.Spec.Egress) != 6 {
@@ -85,7 +85,7 @@ func TestBuildNetworkPolicy_HindsightHTTPSPort(t *testing.T) {
 	foundHindsightPort := false
 	for _, rule := range np.Spec.Egress {
 		for _, port := range rule.Ports {
-			if port.Port != nil && *port.Port == 443 {
+			if port.Port != nil && port.Port.IntVal == 443 {
 				foundHindsightPort = true
 			}
 		}
@@ -97,7 +97,7 @@ func TestBuildNetworkPolicy_HindsightHTTPSPort(t *testing.T) {
 
 func TestBuildNetworkPolicy_HindsightExplicitPort(t *testing.T) {
 	run := newTestRun("explicit-port-run")
-	np := BuildNetworkPolicy(run, "default", nil, false, "http://hindsight-api:8888")
+	np := BuildNetworkPolicy(run, "default", nil, false, "http://hindsight-api.invalid:8888")
 
 	// 443, 6443, 8082, 8888 (explicit), 53 UDP, 53 TCP = 6
 	if len(np.Spec.Egress) != 6 {
@@ -106,7 +106,7 @@ func TestBuildNetworkPolicy_HindsightExplicitPort(t *testing.T) {
 	foundHindsightPort := false
 	for _, rule := range np.Spec.Egress {
 		for _, port := range rule.Ports {
-			if port.Port != nil && *port.Port == 8888 {
+			if port.Port != nil && port.Port.IntVal == 8888 {
 				foundHindsightPort = true
 			}
 		}
@@ -127,7 +127,7 @@ func TestBuildNetworkPolicy_HindsightDefaultPort(t *testing.T) {
 	foundHindsightPort := false
 	for _, rule := range np.Spec.Egress {
 		for _, port := range rule.Ports {
-			if port.Port != nil && *port.Port == 8888 {
+			if port.Port != nil && port.Port.IntVal == 8888 {
 				foundHindsightPort = true
 			}
 		}
@@ -144,7 +144,7 @@ func TestBuildNetworkPolicy_HindsightPortNeverZero(t *testing.T) {
 
 	for i, rule := range np.Spec.Egress {
 		for _, port := range rule.Ports {
-			if port.Port != nil && *port.Port == 0 {
+			if port.Port != nil && port.Port.IntVal == 0 {
 				t.Errorf("egress rule %d has port 0 (K8s validation failure)", i)
 			}
 		}
@@ -155,9 +155,9 @@ func TestBuildNetworkPolicy_WithRedis(t *testing.T) {
 	run := newTestRun("redis-run")
 	np := BuildNetworkPolicy(run, "default", nil, true, "")
 
-	// +6379 for Redis = 6
-	if len(np.Spec.Egress) != 6 {
-		t.Fatalf("expected 6 egress rules with Redis, got %d", len(np.Spec.Egress))
+	// 443, 6443, 6379 (Redis), 8082, 8888 (hindsight default), 53 UDP, 53 TCP = 7
+	if len(np.Spec.Egress) != 7 {
+		t.Fatalf("expected 7 egress rules with Redis, got %d", len(np.Spec.Egress))
 	}
 }
 
@@ -169,9 +169,9 @@ func TestBuildNetworkPolicy_WithToolEgress(t *testing.T) {
 	run := newTestRun("tool-run")
 	np := BuildNetworkPolicy(run, "default", tools, false, "")
 
-	// 2 (k8s API) + 2 tools + 8082 + 2 DNS = 7
-	if len(np.Spec.Egress) != 7 {
-		t.Fatalf("expected 7 egress rules, got %d", len(np.Spec.Egress))
+	// 2 (k8s API) + 2 tools + 8082 + 8888 (hindsight default) + 2 DNS = 8
+	if len(np.Spec.Egress) != 8 {
+		t.Fatalf("expected 8 egress rules, got %d", len(np.Spec.Egress))
 	}
 }
 
@@ -211,9 +211,9 @@ func TestBuildRouterPodNetworkPolicy_Basic(t *testing.T) {
 	if fromLabels[LabelComponent] != LabelComponentAgent {
 		t.Errorf("ingress from component: got %q want %q", fromLabels[LabelComponent], LabelComponentAgent)
 	}
-	// 443, 6443, 8082, 53 UDP, 53 TCP = 5 egress rules (no Redis, no tools)
-	if len(np.Spec.Egress) != 5 {
-		t.Errorf("expected 5 egress rules, got %d", len(np.Spec.Egress))
+	// 443, 6443, 8082, 8888 (hindsight default), 53 UDP, 53 TCP = 6 egress rules (no Redis, no tools)
+	if len(np.Spec.Egress) != 6 {
+		t.Errorf("expected 6 egress rules, got %d", len(np.Spec.Egress))
 	}
 }
 
@@ -224,9 +224,9 @@ func TestBuildRouterPodNetworkPolicy_WithRedisAndTools(t *testing.T) {
 	}
 	np := BuildRouterPodNetworkPolicy(run, "default", tools, true, "")
 
-	// 443, 6443, tool(443), 6379, 8082, 53 UDP, 53 TCP = 7
-	if len(np.Spec.Egress) != 7 {
-		t.Errorf("expected 7 egress rules, got %d", len(np.Spec.Egress))
+	// 443, 6443, tool(443), 6379, 8082, 8888 (hindsight default), 53 UDP, 53 TCP = 8
+	if len(np.Spec.Egress) != 8 {
+		t.Errorf("expected 8 egress rules, got %d", len(np.Spec.Egress))
 	}
 }
 

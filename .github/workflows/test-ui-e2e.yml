@@ -28,6 +28,45 @@ jobs:
         with:
           cluster_name: agent-orca-ui-e2e
 
+      - name: Add Helm repositories
+        run: |
+          helm repo add cnpg https://cloudnative-pg.github.io/charts
+          helm repo update
+
+      - name: Deploy CNPG operator
+        run: |
+          helm upgrade --install cnpg cnpg/cloudnative-pg \
+            --namespace cnpg-system \
+            --create-namespace \
+            --wait --timeout 120s
+
+      - name: Deploy CNPG PostgreSQL database
+        run: |
+          kubectl apply -f - <<EOF
+          apiVersion: postgresql.cnpg.io/v1
+          kind: Cluster
+          metadata:
+            name: agent-orca-db
+            namespace: default
+          spec:
+            instances: 1
+            primaryUpdateStrategy: unsupervised
+            postgresql:
+              parameters:
+                shared_buffers: "256MB"
+                max_connections: "200"
+            bootstrap:
+              initdb:
+                database: agentorca
+                owner: postgres
+                secret:
+                  name: postgres-app
+            storage:
+              size: 1Gi
+          EOF
+          # Wait for the database to be ready
+          kubectl wait --for=condition=ready pod -l cnpg.io/cluster=agent-orca-db -n default --timeout=300s
+
       - name: Pre-pull Redis image into Kind
         # redis:7-alpine is deployed by the chart but NOT pre-loaded into the
         # kind nodes. Pulling + loading it here avoids a runtime image pull

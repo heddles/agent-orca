@@ -582,42 +582,6 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 			// Fall through to the done sentinel below so the UI SSE handler exits.
 		}
 	}
-
-	// // Emit a single canonical terminal `data: [DONE]` to the client at the true end
-	// // of a non-tool response. Upstream [DONE]s were withheld in the scan loop (above)
-	// // so a provider's premature [DONE] cannot close the client stream early. When tool
-	// // calls are present, this block is skipped and the recursion emits [DONE] itself.
-	// //
-	// // Keyed off sawToolCall (set the first time any tool-call delta is observed) so a
-	// // mergeToolCallDeltas undercount can never make a tool-call turn look terminal.
-	// if !sawToolCall {
-	// 	// Terminal text turn: the /invoke is completing. Persist the conversation
-	// 	// synchronously so the next chat turn — which ClaimsRun on a REUSED warm
-	// 	// pod (no shutdown between turns) and loads this run's checkpoint via
-	// 	// PriorRunRef — can resume it. Previously checkpointing only happened every
-	// 	// CheckpointEvery turns (above) or at Finalize (pod shutdown); with warm pods
-	// 	// reused across turns, short (<CheckpointEvery) chats were never saved and
-	// 	// turn 2 started fresh — the "lost context after two turns" symptom.
-	// 	r.checkpoint(context.Background())
-	// 	_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
-	// 	flusher.Flush()
-
-	// 	// Emit finalOutput trace event to SSE subscribers so the stream is self-contained.
-	// 	finalOutputEv, _ := json.Marshal(map[string]string{
-	// 		"type":   "finalOutput",
-	// 		"output": contentBuilder.String(),
-	// 	})
-	// 	r.emitTraceEventBoth(string(finalOutputEv))
-	// }
-
-	// Completion is signalled solely by the OpenAI schema's [DONE] to the agent
-	// framework. No custom done trace event is emitted here — the UI relies on the
-	// UI API's finalOutput event (which carries the accumulated output) rather than a
-	// done event (which carried only finish_reason, no output). This prevents the
-	// done/finalOutput race where done closed the SSE connection before finalOutput
-	// arrived. The UI API's poller detects the terminal CRD phase and emits
-	// finalOutput after TailTokens exits.
-
 	// Handle tool calls if the LLM requested them.
 	// NOTE: r.messages already contains chatReq.Messages + assistantMsg (added above),
 	// so we only need to dispatch, append results, and recurse — not re-append the history.

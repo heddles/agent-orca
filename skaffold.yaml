@@ -61,7 +61,7 @@ deploy:
         - host:
             command: ["bash", "-c", "kubectl create namespace agent-orca-system || true"]
             os: [darwin, linux]
-        - host:
+        # - host:
         #     command: ["bash", "-c", "helm repo add cloudnative-pg https://cloudnative-pg.github.io/charts 2>/dev/null || true"]
         #     os: [darwin, linux]
         # - host:

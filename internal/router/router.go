@@ -964,6 +964,11 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 	}
 
 	// Streaming path: proxy SSE chunks directly from provider to client.
+	// Clients may omit stream_options from the request body; initialize it
+	// here so the usage-accounting flag below never dereferences nil.
+	if chatReq.StreamOptions == nil {
+		chatReq.StreamOptions = &StreamOptions{}
+	}
 	chatReq.StreamOptions.IncludeUsage = true
 
 	resp, err := r.forwardToProviderStream(req.Context(), provider, chatReq)
@@ -981,154 +986,6 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 		r.emitTraceEventBoth(fmt.Sprintf(`{"type":"providerFallback","from":%q,"to":%q,"reason":%q}`, primaryName, provider.Name, "streaming fallback succeeded"))
 	}
 	r.handleStreamingResponse(w, req, provider, resp, chatReq)
-
-	// Non-streaming path: forward and return the complete response.
-	// respBody, err := r.forwardToProvider(req.Context(), provider, chatReq)
-	// if err != nil {
-	// 	primaryName := provider.Name
-	// 	slog.Warn("primary provider failed, trying fallback", "provider", primaryName, "err", err)
-	// 	// Try fallback chain.
-	// 	respBody, provider, err = r.tryFallback(req.Context(), chatReq, primaryName)
-	// 	if err != nil {
-	// 		slog.Error("all providers failed", "err", err)
-	// 		r.emitTraceEventBoth(fmt.Sprintf(`{"type":"providerFallback","from":%q,"to":"","reason":%q,"exhausted":true}`, primaryName, err.Error()))
-	// 		http.Error(w, "upstream error", http.StatusBadGateway)
-	// 		return
-	// 	}
-	// 	r.emitTraceEventBoth(fmt.Sprintf(`{"type":"providerFallback","from":%q,"to":%q,"reason":%q}`, primaryName, provider.Name, "fallback succeeded"))
-	// }
-
-	// Intercept tool calls and dispatch them.
-	// var completionResp ChatCompletionResponse
-	// if jsonErr := json.Unmarshal(respBody, &completionResp); jsonErr == nil {
-	// 	if len(completionResp.Choices) > 0 {
-	// 		choice := completionResp.Choices[0]
-	// 		if len(choice.Message.ToolCalls) > 0 {
-	// 			// The LLM wants to call tools — dispatch them and return tool results.
-	// 			r.handleToolCalls(w, req, chatReq, completionResp)
-	// 			return
-	// 		}
-	// 	}
-	// }
-
-	// // Apply guardrail output filters to the LLM response before returning to the agent.
-	// if r.guardrails != nil && len(completionResp.Choices) > 0 {
-	// 	if text, ok := completionResp.Choices[0].Message.Content.(string); ok && text != "" {
-	// 		result := r.guardrails.ApplyOutput(text)
-	// 		if result.Blocked {
-	// 			slog.Warn("Guardrail blocked output", "run", r.cfg.RunName, "message", result.BlockMessage)
-	// 			r.emitTraceEvent(fmt.Sprintf(`{"type":"guardrail","action":"blocked","reason":%q}`, result.BlockMessage))
-	// 			// trace-event: record guardrail block.
-	// 			completionResp.Choices[0].Message.Content = result.BlockMessage
-	// 		} else if result.FilteredText != text {
-	// 			completionResp.Choices[0].Message.Content = result.FilteredText
-	// 			// Re-serialize since we modified the response.
-	// 			respBody, _ = json.Marshal(completionResp)
-	// 		}
-	// 	}
-	// }
-
-	// // Safety net: if the LLM output a question as text instead of calling _clarify,
-	// // detect it and synthetically trigger _clarify. This catches cases where the LLM
-	// // ignores the system hint and writes a question that would otherwise be silently
-	// // piped to the next workflow step.
-	// //
-	// // Skip the first turn after resuming with a clarify answer — the LLM's response
-	// // to the injected answer often references the prior question, which would falsely
-	// // re-trigger clarify and create an infinite loop.
-	// if r.resumedWithAnswer {
-	// 	r.mu.Lock()
-	// 	r.resumedWithAnswer = false
-	// 	r.mu.Unlock()
-	// } else if r.shouldAutoTriggerClarify(completionResp) {
-	// 	text, _ := completionResp.Choices[0].Message.Content.(string)
-	// 	slog.Info("auto-triggering _clarify: LLM output a question as text", "run", r.cfg.RunName)
-	// 	clarifyIsContinuation := req.Context().Value(continuationKey{}) != nil
-	// 	r.mu.Lock()
-	// 	if !clarifyIsContinuation {
-	// 		r.messages = append(r.messages, chatReq.Messages...)
-	// 	}
-	// 	r.messages = append(r.messages, completionResp.Choices[0].Message)
-	// 	r.mu.Unlock()
-	// 	r.updateSpend(completionResp.Usage, provider)
-	// 	// Checkpoint and notify the operator — do NOT use executeClarify here
-	// 	// because it writes JSON to the Redis token stream, which the UI API
-	// 	// would pick up and display as raw text. The UI API's Phase 3 polling
-	// 	// will detect WaitingForInput and emit a proper clarify SSE event.
-	// 	r.checkpoint(context.Background())
-	// 	if err := r.notifyOperatorClarify(text); err != nil {
-	// 		slog.Error("failed to notify operator for clarify", "err", err)
-	// 	}
-	// 	// trace-event: record auto-clarify release decision.
-	// 	{
-	// 	}
-	// 	// Completion of the token stream is signalled by the WaitingForInput phase
-	// 	// the operator just set (notifyOperatorClarify above): uiapi's terminal-state
-	// 	// poller cancels TailTokens on that phase, closing the SSE. No empty-token
-	// 	// "done sentinel" is written here — completion follows the OpenAI/CRD schema.
-	// 	// Return the real LLM response (which IS the question) so the agent
-	// 	// framework gets a clean 200 in HTTP/chat/warm mode. In job mode, return
-	// 	// 410 Gone so the agent container exits cleanly.
-	// 	// Hindsight retain: store conversation content before returning.
-	// 	if r.cfg.Hindsight.Enabled && r.cfg.Hindsight.URL != "" {
-	// 		content := fmt.Sprintf("%s", messageText(completionResp.Choices[0].Message))
-	// 		if err := r.hindsightRetain(req.Context(), r.cfg.DeploymentName, content); err != nil {
-	// 			slog.Warn("hindsight retain failed", "run", r.cfg.RunName, "err", err)
-	// 		} else {
-	// 			slog.Info("hindsight retain success", "run", r.cfg.RunName, "bankID", r.hindsightBankID())
-	// 		}
-	// 	}
-	// 	if r.cfg.ChatMode {
-	// 		w.Header().Set("Content-Type", "application/json")
-	// 		_ = json.NewEncoder(w).Encode(completionResp)
-	// 		return
-	// 	}
-	// 	http.Error(w, "run paused for clarification", http.StatusGone)
-	// 	return
-	// }
-
-	// // Update conversation history and checkpoint.
-	// // For continuation requests (recursive tool-call loops), chatReq.Messages was
-	// // built from r.messages and would duplicate the entire conversation if re-appended.
-	// r.mu.Lock()
-	// if !isContinuation {
-	// 	r.messages = append(r.messages, chatReq.Messages...)
-	// 	r.incrementBufferTokens(int(completionResp.Usage.PromptTokens))
-	// }
-	// var assistantMsg Message
-	// if len(completionResp.Choices) > 0 {
-	// 	assistantMsg = completionResp.Choices[0].Message
-	// 	r.messages = append(r.messages, assistantMsg)
-	// 	r.incrementBufferTokens(int(completionResp.Usage.CompletionTokens))
-	// }
-
-	// // Hindsight retain: store conversation content after every LLM turn.
-	// // This runs unconditionally so memory is retained even on auto-clarify or
-	// // safeguard paths that return before the normal completion response.
-	// if r.cfg.Hindsight.Enabled && r.cfg.Hindsight.URL != "" {
-	// 	content := fmt.Sprintf("%s", respBody)
-	// 	if err := r.hindsightRetain(req.Context(), r.cfg.DeploymentName, content); err != nil {
-	// 		slog.Warn("hindsight retain failed", "run", r.cfg.RunName, "err", err)
-	// 	} else {
-	// 		slog.Info("hindsight retain success", "run", r.cfg.RunName, "bankID", r.hindsightBankID())
-	// 	}
-	// }
-
-	// w.Header().Set("Content-Type", "application/json")
-	// w.WriteHeader(http.StatusOK)
-	// _, _ = w.Write(respBody)
-
-	// // Fold the finished turn into priorMessages and cap the live buffer so it can't
-	// // re-inflate to the agent's full re-sent history before the async checkpoint.
-	// r.concludeTurn()
-	// r.updateSpend(completionResp.Usage, provider)
-	// r.ruleRouter.IncrementTurn()
-	// r.mu.Unlock()
-
-	// // trace-event: record successful LLM call.
-	// {
-	// }
-
 	// Run episodic summarization if due (async to avoid blocking the response).
 	go r.maybeRunEpisodicSummary(context.Background())
 
@@ -4230,8 +4087,15 @@ func (r *Router) HandleState(w http.ResponseWriter, req *http.Request) {
 // estimateTokens tracks context usage from actual LLM response input/output token
 // counts instead of a character-based heuristic. Actual tracking relies on usage
 // fields returned by the provider (input_tokens / output_tokens).
+// maxExactTokenLen caps the string size that goes through tiktoken's BPE
+// encoder. The encoder's byte-pair merge grows quadratically on large or highly
+// repetitive input — a single ~400KB message can hang the estimator for minutes
+// (and estimateTokens runs on every request). Above the cap, fall back to the
+// ~4 chars/token heuristic; this is a budgeting estimate, not billing.
+const maxExactTokenLen = 16 * 1024
+
 func countTokens(text string) int {
-	if defaultEncoder != nil {
+	if defaultEncoder != nil && len(text) <= maxExactTokenLen {
 		return len(defaultEncoder.Encode(text, nil, nil))
 	}
 	return len(text) / 4

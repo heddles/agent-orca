@@ -530,7 +530,7 @@ func ConfigFromEnv() (*Config, error) {
 	}
 	// HINDSIGHT_URL env var overrides the URL when set.
 	if url, _ := os.LookupEnv("HINDSIGHT_URL"); url != "" {
-		slog.Warn("HINDSIGHT_URL env var exists but the system is set to use a different url; using pre-configured hindsight url", cfg.Hindsight.URL)
+		slog.Warn("HINDSIGHT_URL env var exists but the system is set to use a different url; using pre-configured hindsight url", "url", cfg.Hindsight.URL)
 	}
 
 	if cfg.Hindsight.RecallBudget <= 0 {
