@@ -27,6 +27,10 @@ import (
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
 )
 
+// redTeamNS is the secondary tenant namespace used across the multi-namespace
+// listing tests.
+const redTeamNS = "red-team"
+
 func listCRDTestScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	s := runtime.NewScheme()
@@ -43,7 +47,7 @@ func listCRDTestScheme(t *testing.T) *runtime.Scheme {
 // — which is why the UI showed AgentRuns across all namespaces but no other
 // resource types.
 func TestListCRDsMultiNamespaceAccumulates(t *testing.T) {
-	nsA, nsB, nsC := "tenant-acme", "red-team", "extra-ns"
+	nsA, nsB, nsC := "tenant-acme", redTeamNS, "extra-ns"
 	cl := fake.NewClientBuilder().WithScheme(listCRDTestScheme(t)).WithObjects(
 		&agentorcav1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "a1", Namespace: nsA}},
 		&agentorcav1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "b1", Namespace: nsB}},
@@ -80,7 +84,7 @@ func TestListCRDsMultiNamespaceAccumulates(t *testing.T) {
 func TestListCRDsMultiNamespaceNoTenantFallsBackToAll(t *testing.T) {
 	cl := fake.NewClientBuilder().WithScheme(listCRDTestScheme(t)).WithObjects(
 		&agentorcav1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "a1", Namespace: "tenant-acme"}},
-		&agentorcav1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "b1", Namespace: "red-team"}},
+		&agentorcav1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "b1", Namespace: redTeamNS}},
 	).Build()
 
 	var list agentorcav1alpha1.AgentList
@@ -97,17 +101,17 @@ func TestListCRDsMultiNamespaceNoTenantFallsBackToAll(t *testing.T) {
 func TestListCRDsMultiNamespaceNoTenantRespectsNamespaceParam(t *testing.T) {
 	cl := fake.NewClientBuilder().WithScheme(listCRDTestScheme(t)).WithObjects(
 		&agentorcav1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "a1", Namespace: "tenant-acme"}},
-		&agentorcav1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "b1", Namespace: "red-team"}},
+		&agentorcav1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "b1", Namespace: redTeamNS}},
 	).Build()
 
 	var list agentorcav1alpha1.AgentList
-	if err := listCRDsMultiNamespace(context.Background(), cl, &list, "red-team"); err != nil {
+	if err := listCRDsMultiNamespace(context.Background(), cl, &list, redTeamNS); err != nil {
 		t.Fatalf("listCRDsMultiNamespace: %v", err)
 	}
 	if got := len(list.Items); got != 1 {
 		t.Fatalf("namespace-filtered list returned %d items, want 1", got)
 	}
-	if list.Items[0].Name != "b1" || list.Items[0].Namespace != "red-team" {
+	if list.Items[0].Name != "b1" || list.Items[0].Namespace != redTeamNS {
 		t.Fatalf("unexpected item: name=%q namespace=%q", list.Items[0].Name, list.Items[0].Namespace)
 	}
 }

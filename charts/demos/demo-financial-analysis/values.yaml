@@ -110,7 +110,7 @@ agent-orca-resources:
       knowledgeBases:
         - financial-planning-kb
       runtime:
-        ociRef: "ghcr.io/agentorca/agent-orca/openai-reference:latest"
+        ociRef: "ghcr.io/heddles/agent-orca/openai-reference:latest"
         framework: openai-compatible
       memory:
         checkpointEvery: 1

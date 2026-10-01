@@ -33,6 +33,13 @@ import (
 	"time"
 )
 
+// Shared test fixtures: the bearer token used across the ACP tests and a
+// normalized agent-orca host-root endpoint URL.
+const (
+	testToken         = "tok"
+	testAgentOrcaHost = "http://agent-orca.local"
+)
+
 // --- JSON-RPC stdio transport tests ---
 
 // unmarshalResult re-marshals a jsonrpcMessage.Result (which is `any`) back to
@@ -115,7 +122,7 @@ func TestACPBridge_Initialize(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	server := &acpStdioServer{stdout: &stdout, stderr: &stderr}
-	client := newClient(srv.URL, srv.URL, "tok", defaultTimeout, true)
+	client := newClient(srv.URL, srv.URL, testToken, defaultTimeout, true)
 	bridge := newACPBridge(server, client, "test-agent")
 
 	id := json.RawMessage(`1`)
@@ -157,7 +164,7 @@ func TestACPBridge_SessionNew(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	server := &acpStdioServer{stdout: &stdout, stderr: &stderr}
-	client := newClient(srv.URL, srv.URL, "tok", defaultTimeout, true)
+	client := newClient(srv.URL, srv.URL, testToken, defaultTimeout, true)
 	bridge := newACPBridge(server, client, "test-agent")
 	_ = bridge // bridge not needed for session/new which doesn't call the server
 
@@ -205,7 +212,7 @@ func TestACPBridge_SessionPrompt_Polling(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	server := &acpStdioServer{stdout: &stdout, stderr: &stderr}
-	client := newClient(srv.URL, srv.URL, "tok", defaultTimeout, true)
+	client := newClient(srv.URL, srv.URL, testToken, defaultTimeout, true)
 	bridge := newACPBridge(server, client, "test-agent")
 	server.handler = bridge
 
@@ -224,7 +231,7 @@ func TestACPBridge_SessionPrompt_Polling(t *testing.T) {
 	}
 	var promptResp acpPromptResponse
 	unmarshalResult(t, resp, &promptResp)
-	if promptResp.StopReason != "end_turn" {
+	if promptResp.StopReason != acpStopReasonEndTurn {
 		t.Fatalf("expected stopReason 'end_turn', got %q", promptResp.StopReason)
 	}
 
@@ -285,7 +292,7 @@ func TestACPBridge_SessionPrompt_SSE(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	server := &acpStdioServer{stdout: &stdout, stderr: &stderr}
 	// Use a longer timeout so the SSE stream doesn't get killed.
-	client := newClient(srv.URL, srv.URL, "tok", 10*time.Second, true)
+	client := newClient(srv.URL, srv.URL, testToken, 10*time.Second, true)
 	bridge := newACPBridge(server, client, "test-agent")
 	server.handler = bridge
 
@@ -317,7 +324,7 @@ func TestACPBridge_SessionPrompt_SSE(t *testing.T) {
 	}
 	var promptResp acpPromptResponse
 	unmarshalResult(t, resp, &promptResp)
-	if promptResp.StopReason != "end_turn" {
+	if promptResp.StopReason != acpStopReasonEndTurn {
 		t.Fatalf("expected stopReason 'end_turn', got %q", promptResp.StopReason)
 	}
 }
@@ -379,7 +386,7 @@ func openAIRunOutputJSON(t *testing.T, runID, stream string) string {
 // notifications whose update.sessionUpdate equals wantUpdate, in arrival order.
 func acpUpdateTexts(out, wantUpdate string) []string {
 	var texts []string
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
@@ -433,7 +440,8 @@ func TestACPBridge_SessionPrompt_OpenAIStream(t *testing.T) {
 		case r.URL.Path == "/agents/test-agent/run" && r.Method == http.MethodPost:
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusCreated)
-			_, _ = fmt.Fprint(w, `{"agent_name":"test-agent","run_id":"run-openai","status":"created","created_at":"2024-01-01T00:00:00Z"}`)
+			_, _ = fmt.Fprint(w, `{"agent_name":"test-agent","run_id":"run-openai",`+
+				`"status":"created","created_at":"2024-01-01T00:00:00Z"}`)
 		case r.URL.Path == "/runs/run-openai" && r.Method == http.MethodGet:
 			if strings.Contains(r.Header.Get("Accept"), "event-stream") {
 				w.Header().Set("Content-Type", "text/event-stream")
@@ -447,7 +455,8 @@ func TestACPBridge_SessionPrompt_OpenAIStream(t *testing.T) {
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = fmt.Fprint(w, `{"run_id":"run-openai","status":"completed","agent_name":"test-agent","created_at":"2024-01-01T00:00:00Z"}`)
+			_, _ = fmt.Fprint(w, `{"run_id":"run-openai","status":"completed",`+
+				`"agent_name":"test-agent","created_at":"2024-01-01T00:00:00Z"}`)
 		default:
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 		}
@@ -456,7 +465,7 @@ func TestACPBridge_SessionPrompt_OpenAIStream(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	server := &acpStdioServer{stdout: &stdout, stderr: &stderr}
-	client := newClient(srv.URL, srv.URL, "tok", 10*time.Second, true)
+	client := newClient(srv.URL, srv.URL, testToken, 10*time.Second, true)
 	bridge := newACPBridge(server, client, "test-agent")
 	server.handler = bridge
 
@@ -496,7 +505,7 @@ func TestACPBridge_SessionPrompt_OpenAIStream(t *testing.T) {
 	}
 	var promptResp acpPromptResponse
 	unmarshalResult(t, resp, &promptResp)
-	if promptResp.StopReason != "end_turn" {
+	if promptResp.StopReason != acpStopReasonEndTurn {
 		t.Fatalf("expected stopReason 'end_turn', got %q", promptResp.StopReason)
 	}
 }
@@ -524,7 +533,8 @@ func TestACPBridge_SessionPrompt_OpenAIStream_PrematureClose(t *testing.T) {
 		case r.URL.Path == "/agents/test-agent/run" && r.Method == http.MethodPost:
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusCreated)
-			_, _ = fmt.Fprint(w, `{"agent_name":"test-agent","run_id":"run-cut","status":"created","created_at":"2024-01-01T00:00:00Z"}`)
+			_, _ = fmt.Fprint(w, `{"agent_name":"test-agent","run_id":"run-cut",`+
+				`"status":"created","created_at":"2024-01-01T00:00:00Z"}`)
 		case r.URL.Path == "/runs/run-cut" && r.Method == http.MethodGet:
 			if strings.Contains(r.Header.Get("Accept"), "event-stream") {
 				// SSE: only the first two content chunks, then the connection drops
@@ -550,7 +560,7 @@ func TestACPBridge_SessionPrompt_OpenAIStream_PrematureClose(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	server := &acpStdioServer{stdout: &stdout, stderr: &stderr}
-	client := newClient(srv.URL, srv.URL, "tok", 10*time.Second, true)
+	client := newClient(srv.URL, srv.URL, testToken, 10*time.Second, true)
 	bridge := newACPBridge(server, client, "test-agent")
 	server.handler = bridge
 
@@ -585,7 +595,7 @@ func TestACPBridge_SessionPrompt_OpenAIStream_PrematureClose(t *testing.T) {
 	}
 	var promptResp acpPromptResponse
 	unmarshalResult(t, resp, &promptResp)
-	if promptResp.StopReason != "end_turn" {
+	if promptResp.StopReason != acpStopReasonEndTurn {
 		t.Fatalf("expected stopReason 'end_turn', got %q", promptResp.StopReason)
 	}
 }
@@ -606,7 +616,8 @@ func TestACPBridge_SessionPrompt_PrematureRunCompleted(t *testing.T) {
 		case r.URL.Path == "/agents/test-agent/run" && r.Method == http.MethodPost:
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusCreated)
-			_, _ = fmt.Fprint(w, `{"agent_name":"test-agent","run_id":"run-prem","status":"created","created_at":"2024-01-01T00:00:00Z"}`)
+			_, _ = fmt.Fprint(w, `{"agent_name":"test-agent","run_id":"run-prem",`+
+				`"status":"created","created_at":"2024-01-01T00:00:00Z"}`)
 		case r.URL.Path == "/runs/run-prem" && r.Method == http.MethodGet:
 			accept := r.Header.Get("Accept")
 			if strings.Contains(accept, "event-stream") {
@@ -619,7 +630,9 @@ func TestACPBridge_SessionPrompt_PrematureRunCompleted(t *testing.T) {
 					// First window: only the first sentence, then a premature
 					// run.completed (as if the 30s timeout fired).
 					_, _ = fmt.Fprint(w, openAIChunkSSE(t, "First sentence. ", ""))
-					_, _ = fmt.Fprintf(w, "event: run.completed\ndata: %s\n\n", `{"type":"run.completed","run":{"run_id":"run-prem","status":"completed","agent_name":"test-agent","created_at":"2024-01-01T00:00:00Z"}}`)
+					_, _ = fmt.Fprintf(w, "event: run.completed\ndata: %s\n\n",
+						`{"type":"run.completed","run":{"run_id":"run-prem",`+
+							`"status":"completed","agent_name":"test-agent","created_at":"2024-01-01T00:00:00Z"}}`)
 				} else {
 					// Second window: the rest of the response, then a genuine
 					// run.completed.
@@ -635,9 +648,11 @@ func TestACPBridge_SessionPrompt_PrematureRunCompleted(t *testing.T) {
 			poll := atomic.AddInt32(&jsonPolls, 1)
 			w.Header().Set("Content-Type", "application/json")
 			if poll == 1 {
-				_, _ = fmt.Fprint(w, `{"run_id":"run-prem","status":"in-progress","agent_name":"test-agent","created_at":"2024-01-01T00:00:00Z"}`)
+				_, _ = fmt.Fprint(w, `{"run_id":"run-prem","status":"in-progress",`+
+					`"agent_name":"test-agent","created_at":"2024-01-01T00:00:00Z"}`)
 			} else {
-				_, _ = fmt.Fprint(w, `{"run_id":"run-prem","status":"completed","agent_name":"test-agent","created_at":"2024-01-01T00:00:00Z"}`)
+				_, _ = fmt.Fprint(w, `{"run_id":"run-prem","status":"completed",`+
+					`"agent_name":"test-agent","created_at":"2024-01-01T00:00:00Z"}`)
 			}
 		default:
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
@@ -647,7 +662,7 @@ func TestACPBridge_SessionPrompt_PrematureRunCompleted(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	server := &acpStdioServer{stdout: &stdout, stderr: &stderr}
-	client := newClient(srv.URL, srv.URL, "tok", 10*time.Second, true)
+	client := newClient(srv.URL, srv.URL, testToken, 10*time.Second, true)
 	bridge := newACPBridge(server, client, "test-agent")
 	server.handler = bridge
 
@@ -675,7 +690,7 @@ func TestACPBridge_SessionPrompt_PrematureRunCompleted(t *testing.T) {
 	}
 	var promptResp acpPromptResponse
 	unmarshalResult(t, resp, &promptResp)
-	if promptResp.StopReason != "end_turn" {
+	if promptResp.StopReason != acpStopReasonEndTurn {
 		t.Fatalf("expected stopReason 'end_turn', got %q", promptResp.StopReason)
 	}
 }
@@ -706,7 +721,7 @@ func TestACPBridge_SessionPrompt_Cancel(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	server := &acpStdioServer{stdout: &stdout, stderr: &stderr}
-	client := newClient(srv.URL, srv.URL, "tok", defaultTimeout, true)
+	client := newClient(srv.URL, srv.URL, testToken, defaultTimeout, true)
 	bridge := newACPBridge(server, client, "test-agent")
 	server.handler = bridge
 
@@ -797,7 +812,7 @@ func TestACPBridge_SessionPrompt_Awaiting(t *testing.T) {
 	stdoutR, stdoutW := io.Pipe()
 	stderr := &bytes.Buffer{}
 	server := newACPStdioServer(nil, stdinR, stdoutW, stderr)
-	client := newClient(srv.URL, srv.URL, "tok", 10*time.Second, true)
+	client := newClient(srv.URL, srv.URL, testToken, 10*time.Second, true)
 	bridge := newACPBridge(server, client, "test-agent")
 	server.handler = bridge
 
@@ -810,7 +825,8 @@ func TestACPBridge_SessionPrompt_Awaiting(t *testing.T) {
 	}()
 
 	// 1. Send session/prompt.
-	if _, err := fmt.Fprintln(stdinW, `{"jsonrpc":"2.0","id":"1","method":"session/prompt","params":{"sessionId":"sess-await","prompt":[{"type":"text","text":"help"}]}}`); err != nil {
+	if _, err := fmt.Fprintln(stdinW, `{"jsonrpc":"2.0","id":"1","method":"session/prompt",`+
+		`"params":{"sessionId":"sess-await","prompt":[{"type":"text","text":"help"}]}}`); err != nil {
 		t.Fatalf("writing session/prompt: %v", err)
 	}
 
@@ -832,14 +848,15 @@ func TestACPBridge_SessionPrompt_Awaiting(t *testing.T) {
 		if msg.Method == "elicitation/create" && msg.ID != nil {
 			foundElicitation = true
 			idStr := string(*msg.ID)
-			_, _ = fmt.Fprintf(stdinW, `{"jsonrpc":"2.0","id":%s,"result":{"action":"accept","content":{"answer":"email"}}}`+"\n", idStr)
+			_, _ = fmt.Fprintf(stdinW,
+				`{"jsonrpc":"2.0","id":%s,"result":{"action":"accept","content":{"answer":"email"}}}`+"\n", idStr)
 		}
 		// Detect the final session/prompt response.
 		if msg.ID != nil && msg.Method == "" && msg.Result != nil {
 			var pr acpPromptResponse
 			raw, _ := json.Marshal(msg.Result)
 			if err := json.Unmarshal(raw, &pr); err == nil {
-				if pr.StopReason == "end_turn" {
+				if pr.StopReason == acpStopReasonEndTurn {
 					foundEndTurn = true
 					break
 				}
@@ -873,7 +890,7 @@ func TestACPUnit_NoToken(t *testing.T) {
 
 // TestACPUnit_ServeMissingAgent verifies that `serve` requires --agent.
 func TestACPUnit_ServeMissingAgent(t *testing.T) {
-	_, _, err := runCLI(t, nil, "acp", "serve", "--token", "tok")
+	_, _, err := runCLI(t, nil, "acp", "serve", "--token", testToken)
 	if err == nil {
 		t.Fatal("expected error for missing --agent")
 	}
@@ -897,7 +914,7 @@ func TestACPSetup_Zed(t *testing.T) {
 	stdout, _, err := runCLI(t, map[string]string{
 		"ZED_CONFIG_DIR": zedDir,
 	}, "acp", "setup", "--editor", "zed", "--agent", "support-bot",
-		"--token", "tok", "--acp-endpoint", "http://localhost:8000")
+		"--token", testToken, "--acp-endpoint", "http://localhost:8000")
 	if err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -955,7 +972,7 @@ func TestACPSetup_Zed(t *testing.T) {
 	if env["AOCTL_ACP_ENDPOINT"] != "http://localhost:8000" {
 		t.Errorf("expected AOCTL_ACP_ENDPOINT http://localhost:8000, got %v", env["AOCTL_ACP_ENDPOINT"])
 	}
-	if env["AOCTL_TOKEN"] != "tok" {
+	if env["AOCTL_TOKEN"] != testToken {
 		t.Errorf("expected AOCTL_TOKEN 'tok', got %v", env["AOCTL_TOKEN"])
 	}
 }
@@ -984,7 +1001,7 @@ func TestACPSetup_Zed_MergesExisting(t *testing.T) {
 	_, _, err := runCLI(t, map[string]string{
 		"ZED_CONFIG_DIR": zedDir,
 	}, "acp", "setup", "--editor", "zed", "--agent", "support-bot",
-		"--token", "tok", "--acp-endpoint", "http://localhost:8000")
+		"--token", testToken, "--acp-endpoint", "http://localhost:8000")
 	if err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -1016,7 +1033,7 @@ func TestACPSetup_Zed_MergesExisting(t *testing.T) {
 	}
 	if env, ok := newEntry["env"].(map[string]any); !ok {
 		t.Fatalf("expected env map in support-bot entry, got %T", newEntry["env"])
-	} else if env["AOCTL_TOKEN"] != "tok" {
+	} else if env["AOCTL_TOKEN"] != testToken {
 		t.Errorf("expected AOCTL_TOKEN 'tok' in merged entry, got %v", env["AOCTL_TOKEN"])
 	}
 }
@@ -1066,7 +1083,7 @@ func TestACPSetup_Zed_PropagatesDerivedEndpoint(t *testing.T) {
 		"ZED_CONFIG_DIR": zedDir,
 		"AOCTL_ENDPOINT": "http://agent-orca.local/tasks",
 	}, "acp", "setup", "--editor", "zed", "--agent", "senior-programmer",
-		"--token", "tok")
+		"--token", testToken)
 	if err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -1097,14 +1114,14 @@ func TestACPSetup_Zed_PropagatesDerivedEndpoint(t *testing.T) {
 	}
 	// The /tasks path suffix should be stripped from the External Task API
 	// endpoint (the CLI appends /v1/tasks itself).
-	if env["AOCTL_ENDPOINT"] != "http://agent-orca.local" {
+	if env["AOCTL_ENDPOINT"] != testAgentOrcaHost {
 		t.Errorf("expected normalized AOCTL_ENDPOINT http://agent-orca.local, got %v", env["AOCTL_ENDPOINT"])
 	}
 	// The ACP endpoint should be derived as host root (path stripped).
-	if env["AOCTL_ACP_ENDPOINT"] != "http://agent-orca.local" {
+	if env["AOCTL_ACP_ENDPOINT"] != testAgentOrcaHost {
 		t.Errorf("expected derived AOCTL_ACP_ENDPOINT http://agent-orca.local, got %v", env["AOCTL_ACP_ENDPOINT"])
 	}
-	if env["AOCTL_TOKEN"] != "tok" {
+	if env["AOCTL_TOKEN"] != testToken {
 		t.Errorf("expected AOCTL_TOKEN 'tok', got %v", env["AOCTL_TOKEN"])
 	}
 }
@@ -1118,7 +1135,7 @@ func TestACPSetup_Zed_NormalizesACPEndpoint(t *testing.T) {
 	stdout, _, err := runCLI(t, map[string]string{
 		"ZED_CONFIG_DIR": zedDir,
 	}, "acp", "setup", "--editor", "zed", "--agent", "senior-programmer",
-		"--token", "tok",
+		"--token", testToken,
 		"--endpoint", "http://agent-orca.local/tasks",
 		"--acp-endpoint", "http://agent-orca.local/agents")
 	if err != nil {
@@ -1149,7 +1166,7 @@ func TestACPSetup_Zed_NormalizesACPEndpoint(t *testing.T) {
 		t.Fatalf("expected env map, got %T", entry["env"])
 	}
 	// The ACP endpoint should be normalized to host root, not http://.../agents.
-	if env["AOCTL_ACP_ENDPOINT"] != "http://agent-orca.local" {
+	if env["AOCTL_ACP_ENDPOINT"] != testAgentOrcaHost {
 		t.Errorf("expected normalized AOCTL_ACP_ENDPOINT http://agent-orca.local, got %v", env["AOCTL_ACP_ENDPOINT"])
 	}
 }

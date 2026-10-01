@@ -18,70 +18,48 @@ package controller
 
 import (
 	"context"
+	"fmt"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
 )
 
 var _ = Describe("AgentRun Controller", func() {
-	Context("When reconciling a resource", func() {
-		const resourceName = "test-resource"
-
+	It("fails a run whose referenced Agent does not exist", func() {
 		ctx := context.Background()
+		name := fmt.Sprintf("test-run-%d", time.Now().UnixNano())
+		namespacedName := types.NamespacedName{Name: name, Namespace: "default"}
+		reconciler := &AgentRunReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 
-		typeNamespacedName := types.NamespacedName{
-			Name:      resourceName,
-			Namespace: "default", // TODO(user):Modify as needed
+		By("creating an AgentRun referencing a missing Agent")
+		run := &agentorcav1alpha1.AgentRun{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+			Spec: agentorcav1alpha1.AgentRunSpec{
+				AgentRef: "no-such-agent",
+				Input:    "what is 2+2?",
+			},
 		}
-		agentrun := &agentorcav1alpha1.AgentRun{}
+		Expect(k8sClient.Create(ctx, run)).To(Succeed())
 
-		BeforeEach(func() {
-			By("creating the custom resource for the Kind AgentRun")
-			err := k8sClient.Get(ctx, typeNamespacedName, agentrun)
-			if err != nil && errors.IsNotFound(err) {
-				resource := &agentorcav1alpha1.AgentRun{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      resourceName,
-						Namespace: "default",
-					},
-					Spec: agentorcav1alpha1.AgentRunSpec{
-						AgentRef: "test-agent",
-						Input:    "what is 2+2?",
-					},
-				}
-				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
-			}
-		})
+		By("first reconcile adds the finalizer and requeues")
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(k8sClient.Get(ctx, namespacedName, run)).To(Succeed())
+		Expect(run.Finalizers).To(ContainElement(agentRunFinalizer))
 
-		AfterEach(func() {
-			// TODO(user): Cleanup logic after each test, like removing the resource instance.
-			resource := &agentorcav1alpha1.AgentRun{}
-			err := k8sClient.Get(ctx, typeNamespacedName, resource)
-			Expect(err).NotTo(HaveOccurred())
+		By("second reconcile fails the run because the Agent is missing")
+		_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+		Expect(err).NotTo(HaveOccurred())
 
-			By("Cleanup the specific resource instance AgentRun")
-			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
-		})
-		It("should successfully reconcile the resource", func() {
-			By("Reconciling the created resource")
-			controllerReconciler := &AgentRunReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
-			}
-
-			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: typeNamespacedName,
-			})
-			Expect(err).NotTo(HaveOccurred())
-			// TODO(user): Add more specific assertions depending on your controller's reconciliation logic.
-			// Example: If you expect a certain status condition after reconciliation, verify it here.
-		})
+		Expect(k8sClient.Get(ctx, namespacedName, run)).To(Succeed())
+		Expect(run.Status.Phase).To(Equal(agentorcav1alpha1.AgentRunPhaseFailed))
+		Expect(run.Status.LastRestartReason).To(ContainSubstring(`agent "no-such-agent" not found`))
+		Expect(run.Status.CompletionTime).NotTo(BeNil())
 	})
 })

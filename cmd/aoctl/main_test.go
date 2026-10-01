@@ -663,7 +663,9 @@ func TestCreateTenant_Success(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Fatalf("decoding body: %v", err)
 		}
-		if req.Name != "acme" || len(req.AllowedNamespaces) != 1 || req.AllowedNamespaces[0] != "tenant-acme" || req.ClientID != "acme-client" { //nolint:goconst
+		if req.Name != "acme" || len(req.AllowedNamespaces) != 1 || //nolint:goconst
+			req.AllowedNamespaces[0] != "tenant-acme" ||
+			req.ClientID != "acme-client" {
 
 			t.Fatalf("bad request: %+v", req)
 		}
@@ -814,6 +816,9 @@ func withRefreshTransport(t *testing.T, c *Client, refresh func(context.Context)
 	c.HTTP.Transport = &refreshableTransport{base: base, owner: c}
 }
 
+// testRefreshedToken is the token the refresh callbacks in these tests swap in.
+const testRefreshedToken = "refreshed-token"
+
 // TestRefreshableTransport_401RefreshesAndRetries verifies that a 401 triggers
 // exactly one refresh and one retry, with the retried request carrying the
 // refreshed bearer token. Uses GetACPRun-equivalent GET (ListAgents) — the
@@ -845,7 +850,7 @@ func TestRefreshableTransport_401RefreshesAndRetries(t *testing.T) {
 		mu.Lock()
 		refreshed = true
 		mu.Unlock()
-		return "refreshed-token", nil
+		return testRefreshedToken, nil
 	})
 
 	agents, err := c.ListAgents(context.Background())
@@ -866,7 +871,7 @@ func TestRefreshableTransport_401RefreshesAndRetries(t *testing.T) {
 	if lastAuth != "Bearer refreshed-token" {
 		t.Fatalf("expected retried request to use refreshed token, got %q", lastAuth)
 	}
-	if c.getToken() != "refreshed-token" {
+	if c.getToken() != testRefreshedToken {
 		t.Fatalf("expected client token refreshed in memory, got %q", c.getToken())
 	}
 }
@@ -925,7 +930,7 @@ func TestRefreshableTransport_Post401RetriesWithBody(t *testing.T) {
 
 	c := newClient(srv.URL, srv.URL, "stale-token", defaultTimeout, true)
 	withRefreshTransport(t, c, func(ctx context.Context) (string, error) {
-		return "refreshed-token", nil
+		return testRefreshedToken, nil
 	})
 
 	_, err := c.CreateAgentRun(context.Background(), "test-agent", ACPRunRequest{

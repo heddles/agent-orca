@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 
 	"log/slog"
@@ -195,12 +196,7 @@ func (s *ExternalAPIServer) requireSAOrSelfTenant(name string, capability adminC
 // Roles are populated from a tenant's group/role mapping; empty until the
 // per-tenant RBAC layer lands. Used by the capability.role gate above.
 func identityHasRole(ident *TenantIdentity, role string) bool {
-	for _, r := range ident.Roles {
-		if r == role {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(ident.Roles, role)
 }
 
 // --- admin identity context ---

@@ -23,6 +23,10 @@ import (
 	"time"
 )
 
+// rotatedRefreshToken is the refresh token the fake OAuth server mints on
+// every refresh; the seed token it accepts is "valid-refresh".
+const rotatedRefreshToken = "xoxe-ROTATED-REFRESH"
+
 // fakeSecretIO is an in-memory SecretIO for tests.
 type fakeSecretIO struct {
 	mu   sync.Mutex
@@ -72,7 +76,7 @@ func newFakeOAuthServer(t *testing.T) *fakeOAuthServer {
 	mux.HandleFunc("/.well-known/oauth-protected-resource", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(ProtectedResourceMetadata{
-			AuthorizationServers:   []string{f.Server.URL},
+			AuthorizationServers:   []string{f.URL},
 			BearerMethodsSupported: []string{"header", "form"},
 			ScopesSupported:        []string{"search:read.public", "channels:history", "users:read"},
 		})
@@ -80,9 +84,9 @@ func newFakeOAuthServer(t *testing.T) *fakeOAuthServer {
 	mux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(AuthorizationServerMetadata{
-			Issuer:                            f.Server.URL,
-			AuthorizationEndpoint:             f.Server.URL + "/oauth/authorize",
-			TokenEndpoint:                     f.Server.URL + "/oauth/token",
+			Issuer:                            f.URL,
+			AuthorizationEndpoint:             f.URL + "/oauth/authorize",
+			TokenEndpoint:                     f.URL + "/oauth/token",
 			GrantTypesSupported:               []string{"authorization_code", "refresh_token"},
 			TokenEndpointAuthMethodsSupported: []string{"client_secret_post"},
 			CodeChallengeMethodsSupported:     []string{"S256"},
@@ -100,7 +104,7 @@ func newFakeOAuthServer(t *testing.T) *fakeOAuthServer {
 		case "refresh_token":
 			rt := r.PostForm.Get("refresh_token")
 			// Accept the seed refresh token and the rotated one the server itself mints.
-			if rt != "valid-refresh" && rt != "xoxe-ROTATED-REFRESH" {
+			if rt != "valid-refresh" && rt != rotatedRefreshToken {
 				w.WriteHeader(http.StatusBadRequest)
 				_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "invalid_grant"})
 				return
@@ -108,7 +112,7 @@ func newFakeOAuthServer(t *testing.T) *fakeOAuthServer {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"ok":            true,
 				"access_token":  access,
-				"refresh_token": "xoxe-ROTATED-REFRESH",
+				"refresh_token": rotatedRefreshToken,
 				"token_type":    "user",
 				"expires_in":    3600,
 			})
@@ -202,10 +206,10 @@ func TestRefreshWritesAccessTokenAndRotatesRefresh(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("refresh token secret not written: ok=%v err=%v", ok, err)
 	}
-	if string(rt) != "xoxe-ROTATED-REFRESH" {
-		t.Errorf("refresh token = %q, want xoxe-ROTATED-REFRESH", string(rt))
+	if string(rt) != rotatedRefreshToken {
+		t.Errorf("refresh token = %q, want %s", string(rt), rotatedRefreshToken)
 	}
-	if cfg.RefreshToken != "xoxe-ROTATED-REFRESH" {
+	if cfg.RefreshToken != rotatedRefreshToken {
 		t.Errorf("cfg.RefreshToken not updated = %q", cfg.RefreshToken)
 	}
 }

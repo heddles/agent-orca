@@ -530,7 +530,7 @@ func ConfigFromEnv() (*Config, error) {
 	}
 	// HINDSIGHT_URL env var overrides the URL when set.
 	if url, _ := os.LookupEnv("HINDSIGHT_URL"); url != "" {
-		slog.Warn("HINDSIGHT_URL env var exists but the system is set to use a different url; using pre-configured hindsight url", cfg.Hindsight.URL)
+		slog.Warn("HINDSIGHT_URL env var exists but the system is set to use a different url; using pre-configured hindsight url", "url", cfg.Hindsight.URL)
 	}
 
 	if cfg.Hindsight.RecallBudget <= 0 {
@@ -575,12 +575,9 @@ func (r *Router) compactionTarget() int {
 	if ratio <= 0 || ratio >= 1.0 {
 		ratio = 0.5 // default: compact to 50% of the context window
 	}
-	target := int(float64(cw) * ratio)
 	// Floor: never compact below 2k tokens — that would discard too much
 	// context for the compaction summary to be useful.
-	if target < 2000 {
-		target = 2000
-	}
+	target := max(int(float64(cw)*ratio), 2000)
 	// Cap: the target must never exceed the checkpoint budget (safety ceiling).
 	if budget := r.checkpointBudget(); target > budget {
 		target = budget

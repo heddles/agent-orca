@@ -1,5 +1,5 @@
 # Reference OpenAI-compatible agent image for agent-orca:
-#   ghcr.io/agentorca/agent-orca/openai-reference:<version>
+#   ghcr.io/heddles/agent-orca/openai-reference:<version>
 #
 # A minimal, framework-agnostic transport: it streams a chat request to the
 # model-router (OPENAI_BASE_URL) and prints/returns the tokens. The model-router

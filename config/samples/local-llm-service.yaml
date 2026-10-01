@@ -58,7 +58,7 @@ spec:
     You are a helpful and friendly AI assistant running locally on my machine via Ollama.
     You can help with coding, answering questions, or just chatting.
   runtime:
-    ociRef: ghcr.io/agentorca/agent-orca/openai-reference:latest
+    ociRef: ghcr.io/heddles/agent-orca/openai-reference:latest
     framework: openai-compatible
     # http mode keeps warm-pool pods alive and reusable for low-latency chat.
     inputMode: http

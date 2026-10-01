@@ -161,7 +161,7 @@ agent-orca-resources:
         - llm-research-kb
       runtime:
         inputMode: http
-        ociRef: "ghcr.io/agentorca/agent-orca/openai-reference:latest"
+        ociRef: "ghcr.io/heddles/agent-orca/openai-reference:latest"
         framework: openai-compatible
       memory:
         checkpointEvery: 5

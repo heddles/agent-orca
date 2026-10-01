@@ -41,7 +41,7 @@ func TestQueryHistoryBindsLimitOffsetArgs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sqlmock: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	start := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	completed := start.Add(5 * time.Minute)
@@ -92,7 +92,7 @@ func TestQueryHistoryEmptyReturnsNonNullRuns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sqlmock: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM archived_runs")).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
@@ -130,7 +130,7 @@ func TestQueryHistoryFilteredBindsArgs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sqlmock: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	// phase filter → $1, agent_ref filter → $2, then LIMIT $3 OFFSET $4.
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM archived_runs")).
@@ -167,7 +167,7 @@ func TestArchiveRunWritesTraceEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sqlmock: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	run := &agentorcav1alpha1.AgentRun{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-run", Namespace: "default"},
@@ -211,7 +211,7 @@ func TestArchiveRunNilTraceEventsPreservesColumn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sqlmock: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	run := &agentorcav1alpha1.AgentRun{
 		ObjectMeta: metav1.ObjectMeta{Name: "old-run", Namespace: "default"},
@@ -247,7 +247,7 @@ func TestGetRunScansTraceEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sqlmock: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	traceJSON := []byte(`[{"id":0,"event":{"type":"token","content":"hi"},"ts":"2026-01-01T00:00:00Z"}]`)
 

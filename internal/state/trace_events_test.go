@@ -19,12 +19,16 @@ package state
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 )
+
+// eventTypeToken is the trace-event type for consolidated token bursts.
+const eventTypeToken = "token"
 
 func TestStreamIDToISO(t *testing.T) {
 	cases := []struct {
@@ -70,7 +74,7 @@ func TestTraceEntryRoundTrip(t *testing.T) {
 		Type    string `json:"type"`
 		Content string `json:"content"`
 	}
-	eventJSON, _ := json.Marshal(tokenEvent{Type: "token", Content: "hello"})
+	eventJSON, _ := json.Marshal(tokenEvent{Type: eventTypeToken, Content: "hello"})
 	entry := TraceEntry{
 		ID:    0,
 		Event: json.RawMessage(eventJSON),
@@ -157,7 +161,7 @@ func TestRedisReadTraceEventsConsolidatesTokens(t *testing.T) {
 	if err := json.Unmarshal(entries[0].Event, &tokEvent); err != nil {
 		t.Fatalf("unmarshal entry 0: %v", err)
 	}
-	if tokEvent["type"] != "token" {
+	if tokEvent["type"] != eventTypeToken {
 		t.Errorf("entry 0: expected type 'token', got %v", tokEvent["type"])
 	}
 	if tokEvent["content"] != "Hello world" {
@@ -177,7 +181,7 @@ func TestRedisReadTraceEventsConsolidatesTokens(t *testing.T) {
 	if err := json.Unmarshal(entries[2].Event, &tokEvent); err != nil {
 		t.Fatalf("unmarshal entry 2: %v", err)
 	}
-	if tokEvent["type"] != "token" {
+	if tokEvent["type"] != eventTypeToken {
 		t.Errorf("entry 2: expected type 'token', got %v", tokEvent["type"])
 	}
 	if tokEvent["content"] != "Based on context" {
@@ -298,7 +302,7 @@ func TestRedisReadTraceEventsLargeTokenBurst(t *testing.T) {
 	ctx := context.Background()
 
 	// Write 500 individual token deltas followed by a toolCall.
-	for i := 0; i < 500; i++ {
+	for range 500 {
 		addXAdd(t, rdb, key, "t", "x")
 	}
 	addXAdd(t, rdb, key, "ev", `{"type":"toolCall","name":"finish","arguments":"{}"}`)
@@ -317,13 +321,10 @@ func TestRedisReadTraceEventsLargeTokenBurst(t *testing.T) {
 	if err := json.Unmarshal(entries[0].Event, &tokEvent); err != nil {
 		t.Fatalf("unmarshal entry 0: %v", err)
 	}
-	if tokEvent["type"] != "token" {
+	if tokEvent["type"] != eventTypeToken {
 		t.Errorf("entry 0: expected 'token', got %v", tokEvent["type"])
 	}
-	expected := ""
-	for i := 0; i < 500; i++ {
-		expected += "x"
-	}
+	expected := strings.Repeat("x", 500)
 	if tokEvent["content"] != expected {
 		t.Errorf("entry 0: expected content of 500 'x' chars, got %d chars", len(tokEvent["content"].(string)))
 	}

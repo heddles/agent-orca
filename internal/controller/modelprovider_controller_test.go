@@ -18,73 +18,111 @@ package controller
 
 import (
 	"context"
+	"fmt"
+	"testing"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
 )
 
+// TestModelProviderValidate covers the pure validation branches directly:
+// invalid specs are rejected by CRD admission (litellmModel has MinLength=1),
+// so these paths cannot be driven through envtest.
+func TestModelProviderValidate(t *testing.T) {
+	tests := []struct {
+		name        string
+		spec        agentorcav1alpha1.ModelProviderSpec
+		wantReady   bool
+		wantMessage string
+	}{
+		{
+			name: "valid provider",
+			spec: agentorcav1alpha1.ModelProviderSpec{
+				LiteLLMModel:   "anthropic/claude-sonnet-4-6",
+				CredentialsRef: agentorcav1alpha1.SecretKeyRef{Name: "creds", Key: "api-key"},
+			},
+			wantReady:   true,
+			wantMessage: "provider anthropic/claude-sonnet-4-6 validated",
+		},
+		{
+			name:        "missing litellmModel",
+			spec:        agentorcav1alpha1.ModelProviderSpec{CredentialsRef: agentorcav1alpha1.SecretKeyRef{Name: "creds", Key: "api-key"}},
+			wantMessage: "spec.litellmModel is required",
+		},
+		{
+			name: "litellmModel without provider prefix",
+			spec: agentorcav1alpha1.ModelProviderSpec{
+				LiteLLMModel:   "claude",
+				CredentialsRef: agentorcav1alpha1.SecretKeyRef{Name: "creds", Key: "api-key"},
+			},
+			wantMessage: `spec.litellmModel "claude" must be in <provider>/<model> format (e.g. anthropic/claude-sonnet-4-6)`,
+		},
+		{
+			name: "missing credentialsRef.name",
+			spec: agentorcav1alpha1.ModelProviderSpec{
+				LiteLLMModel:   "anthropic/claude",
+				CredentialsRef: agentorcav1alpha1.SecretKeyRef{Key: "api-key"},
+			},
+			wantMessage: "spec.credentialsRef.name is required",
+		},
+		{
+			name: "missing credentialsRef.key",
+			spec: agentorcav1alpha1.ModelProviderSpec{
+				LiteLLMModel:   "anthropic/claude",
+				CredentialsRef: agentorcav1alpha1.SecretKeyRef{Name: "creds"},
+			},
+			wantMessage: "spec.credentialsRef.key is required",
+		},
+	}
+
+	r := &ModelProviderReconciler{}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ready, message := r.validate(&agentorcav1alpha1.ModelProvider{Spec: tt.spec})
+			if ready != tt.wantReady {
+				t.Errorf("ready: got %v, want %v", ready, tt.wantReady)
+			}
+			if message != tt.wantMessage {
+				t.Errorf("message: got %q, want %q", message, tt.wantMessage)
+			}
+		})
+	}
+}
+
 var _ = Describe("ModelProvider Controller", func() {
-	Context("When reconciling a resource", func() {
-		const resourceName = "test-resource"
-
+	It("publishes validation results to status", func() {
 		ctx := context.Background()
+		name := fmt.Sprintf("test-modelprovider-%d", time.Now().UnixNano())
+		namespacedName := types.NamespacedName{Name: name, Namespace: "default"}
 
-		typeNamespacedName := types.NamespacedName{
-			Name:      resourceName,
-			Namespace: "default", // TODO(user):Modify as needed
+		By("creating a valid ModelProvider")
+		mp := &agentorcav1alpha1.ModelProvider{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+			Spec: agentorcav1alpha1.ModelProviderSpec{
+				LiteLLMModel:   "anthropic/claude-sonnet-4-6",
+				CredentialsRef: agentorcav1alpha1.SecretKeyRef{Name: "creds", Key: "api-key"},
+			},
 		}
-		modelprovider := &agentorcav1alpha1.ModelProvider{}
+		Expect(k8sClient.Create(ctx, mp)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, mp) }()
 
-		BeforeEach(func() {
-			By("creating the custom resource for the Kind ModelProvider")
-			err := k8sClient.Get(ctx, typeNamespacedName, modelprovider)
-			if err != nil && errors.IsNotFound(err) {
-				resource := &agentorcav1alpha1.ModelProvider{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      resourceName,
-						Namespace: "default",
-					},
-					Spec: agentorcav1alpha1.ModelProviderSpec{
-						LiteLLMModel: "anthropic/claude-sonnet-4-6",
-						CredentialsRef: agentorcav1alpha1.SecretKeyRef{
-							Name: "test-creds",
-							Key:  "api-key",
-						},
-					},
-				}
-				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
-			}
-		})
+		By("reconciling the ModelProvider")
+		reconciler := &ModelProviderReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+		Expect(err).NotTo(HaveOccurred())
 
-		AfterEach(func() {
-			// TODO(user): Cleanup logic after each test, like removing the resource instance.
-			resource := &agentorcav1alpha1.ModelProvider{}
-			err := k8sClient.Get(ctx, typeNamespacedName, resource)
-			Expect(err).NotTo(HaveOccurred())
-
-			By("Cleanup the specific resource instance ModelProvider")
-			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
-		})
-		It("should successfully reconcile the resource", func() {
-			By("Reconciling the created resource")
-			controllerReconciler := &ModelProviderReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
-			}
-
-			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: typeNamespacedName,
-			})
-			Expect(err).NotTo(HaveOccurred())
-			// TODO(user): Add more specific assertions depending on your controller's reconciliation logic.
-			// Example: If you expect a certain status condition after reconciliation, verify it here.
-		})
+		updated := &agentorcav1alpha1.ModelProvider{}
+		Expect(k8sClient.Get(ctx, namespacedName, updated)).To(Succeed())
+		Expect(updated.Status.Ready).To(BeTrue())
+		Expect(updated.Status.Message).To(Equal("provider anthropic/claude-sonnet-4-6 validated"))
+		Expect(updated.Status.Conditions).To(HaveLen(1))
+		Expect(updated.Status.Conditions[0].Type).To(Equal("Ready"))
+		Expect(updated.Status.Conditions[0].Status).To(Equal(metav1.ConditionTrue))
 	})
 })

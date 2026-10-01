@@ -1296,6 +1296,28 @@ func classifyWarmPod(p *corev1.Pod, deploy *agentorcav1alpha1.AgentDeployment, r
 	return warmDisposeIdle, ""
 }
 
+// warmScaleDownPlan picks which idle pods to delete when the warm pool exceeds its
+// desired size: not-yet-ready starting pods first, then the oldest ready pods. It
+// returns the pods to delete plus the remaining idle pools. Claimed pods are never
+// passed in — the caller excludes them from the excess count so they are never deleted.
+func warmScaleDownPlan(idleReady, idleStarting []*corev1.Pod, excess int) (toDelete, keepReady, keepStarting []*corev1.Pod) {
+	slices.SortFunc(idleStarting, func(a, b *corev1.Pod) int {
+		return a.CreationTimestamp.Compare(b.CreationTimestamp.Time)
+	})
+	slices.SortFunc(idleReady, func(a, b *corev1.Pod) int {
+		return a.CreationTimestamp.Compare(b.CreationTimestamp.Time)
+	})
+	for len(idleStarting) > 0 && len(toDelete) < excess {
+		toDelete = append(toDelete, idleStarting[0])
+		idleStarting = idleStarting[1:]
+	}
+	for len(idleReady) > 0 && len(toDelete) < excess {
+		toDelete = append(toDelete, idleReady[0])
+		idleReady = idleReady[1:]
+	}
+	return toDelete, idleReady, idleStarting
+}
+
 // recordWarmRecycle emits a Kubernetes Event on the AgentDeployment recording
 // that a warm pod was recycled and why, and stashes the reason/timestamp in
 // status (the caller's status patch persists these in-memory writes).
@@ -1424,36 +1446,16 @@ func (r *AgentDeploymentReconciler) reconcileWarmPool(
 
 	// Scale down excess IDLE/starting pods only. Never delete in-use (claimed) pods.
 	if excess := totalExisting - desired; excess > 0 {
-		slices.SortFunc(idleReady, func(a, b *corev1.Pod) int {
-			return a.CreationTimestamp.Compare(b.CreationTimestamp.Time)
-		})
-		slices.SortFunc(idleStarting, func(a, b *corev1.Pod) int {
-			return a.CreationTimestamp.Compare(b.CreationTimestamp.Time)
-		})
-		deleted := 0
-		// Delete not-yet-ready starting pods first; then oldest idle pods.
-		for deleted < excess && len(idleStarting) > 0 {
-			p := idleStarting[0]
-			idleStarting = idleStarting[1:]
-			slog.Info("scaling down warm pool: deleting excess starting pod",
+		toDelete, keepReady, keepStarting := warmScaleDownPlan(idleReady, idleStarting, excess)
+		for _, p := range toDelete {
+			slog.Info("scaling down warm pool: deleting excess warm pod",
 				"deployment", deploy.Name, "pod", p.Name, "desired", desired, "excess", excess)
 			if err := r.Delete(ctx, p); err != nil && !apierrors.IsNotFound(err) {
 				return fmt.Errorf("deleting excess warm pod %s: %w", p.Name, err)
 			}
-			deleted++
 		}
-		for deleted < excess && len(idleReady) > 0 {
-			p := idleReady[0]
-			idleReady = idleReady[1:]
-			slog.Info("scaling down warm pool: deleting excess idle pod",
-				"deployment", deploy.Name, "pod", p.Name, "desired", desired, "excess", excess)
-			if err := r.Delete(ctx, p); err != nil && !apierrors.IsNotFound(err) {
-				return fmt.Errorf("deleting excess warm pod %s: %w", p.Name, err)
-			}
-			deleted++
-		}
-		readyCount = len(idleReady)
-		startingCount = len(idleStarting)
+		readyCount = len(keepReady)
+		startingCount = len(keepStarting)
 	}
 
 	// Create warm pods up to the desired total pool size. Each warm pod gets its

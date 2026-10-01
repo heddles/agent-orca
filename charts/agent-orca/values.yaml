@@ -8,7 +8,7 @@ global:
 
 operator:
   image:
-    repository: ghcr.io/agentorca/agent-orca/operator
+    repository: ghcr.io/heddles/agent-orca/operator
     tag: "latest"
     pullPolicy: IfNotPresent
   replicas: 1
@@ -56,7 +56,7 @@ operator:
 
 modelRouter:
   image:
-    repository: ghcr.io/agentorca/agent-orca/model-router
+    repository: ghcr.io/heddles/agent-orca/model-router
     tag: "latest"
     pullPolicy: IfNotPresent
   # LLM request timeout (Go duration). The max time the model-router waits for a single
@@ -157,7 +157,7 @@ externalAPI:
 # operator using a projected Kubernetes SA token (audience: agentorca/ui).
 ui:
   image:
-    repository: ghcr.io/agentorca/agent-orca/ui-proxy
+    repository: ghcr.io/heddles/agent-orca/ui-proxy
     tag: "latest"
     pullPolicy: IfNotPresent
   replicas: 1

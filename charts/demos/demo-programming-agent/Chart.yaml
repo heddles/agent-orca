@@ -37,7 +37,7 @@ description: |
       injected via the slackToken value (AGENT_ORCA_SLACK_TOKEN env var under skaffold).
 
   The agent image is the OpenAI-compatible reference agent
-  ghcr.io/agentorca/agent-orca/openai-reference:latest (built + kind-loaded by
+  ghcr.io/heddles/agent-orca/openai-reference:latest (built + kind-loaded by
   `skaffold dev`; also publicly pullable from GHCR).
 type: application
 version: 0.1.0

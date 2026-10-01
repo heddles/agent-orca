@@ -1,4 +1,4 @@
-"""Reference OpenAI-compatible agent image for agent-orca (`ghcr.io/agentorca/agent-orca/openai-reference`).
+"""Reference OpenAI-compatible agent image for agent-orca (`ghcr.io/heddles/agent-orca/openai-reference`).
 
 A minimal, framework-agnostic transport — NOT a persona. It streams a chat request to the
 model-router and prints/returns the tokens. The model-router injects everything else:

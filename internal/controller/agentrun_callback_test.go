@@ -131,7 +131,7 @@ func TestResolveCallbackKey(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "cb-secret", Namespace: "tenant-ns"},
 		Data:       map[string][]byte{"hmac-key": []byte("top-secret")},
 	}
-	suite := &AgentRunReconciler{K8s: fake.NewSimpleClientset(secret)} //nolint:staticcheck
+	suite := &AgentRunReconciler{K8s: fake.NewClientset(secret)}
 
 	t.Run("returns key when secret and key exist", func(t *testing.T) {
 		got := suite.resolveCallbackKey(context.Background(), "tenant-ns", "cb-secret", "run-1")
@@ -152,7 +152,7 @@ func TestResolveCallbackKey(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{Name: "cb-nokey", Namespace: "tenant-ns"},
 			Data:       map[string][]byte{"other": []byte("x")},
 		}
-		s := &AgentRunReconciler{K8s: fake.NewSimpleClientset(noKey)} //nolint:staticcheck
+		s := &AgentRunReconciler{K8s: fake.NewClientset(noKey)}
 
 		got := s.resolveCallbackKey(context.Background(), "tenant-ns", "cb-nokey", "run-2")
 		if got != nil {
@@ -169,7 +169,7 @@ func TestFireCallback_SignedEndToEnd(t *testing.T) {
 	srv, h := capturedHeaders(t)
 	defer srv.Close()
 
-	clientset := fake.NewSimpleClientset(&corev1.Secret{ //nolint:staticcheck
+	clientset := fake.NewClientset(&corev1.Secret{
 
 		ObjectMeta: metav1.ObjectMeta{Name: "cb-secret", Namespace: "tenant-ns"},
 		Data:       map[string][]byte{"hmac-key": []byte("top-secret")},
@@ -231,7 +231,7 @@ func TestFireCallback_UnsignedEndToEnd(t *testing.T) {
 		},
 	}
 
-	r := &AgentRunReconciler{K8s: fake.NewSimpleClientset()} //nolint:staticcheck
+	r := &AgentRunReconciler{K8s: fake.NewClientset()}
 
 	r.fireCallback(context.Background(), run)
 
@@ -256,7 +256,7 @@ func TestFireCallback_NonTerminalPhase(t *testing.T) {
 	srv, h := capturedHeaders(t)
 	defer srv.Close()
 
-	clientset := fake.NewSimpleClientset(&corev1.Secret{ //nolint:staticcheck
+	clientset := fake.NewClientset(&corev1.Secret{
 
 		ObjectMeta: metav1.ObjectMeta{Name: "cb-secret", Namespace: "tenant-ns"},
 		Data:       map[string][]byte{"hmac-key": []byte("top-secret")},
@@ -290,7 +290,7 @@ func TestFireCallback_NoCallbacksAndEmptyURL(t *testing.T) {
 	srv, h := capturedHeaders(t)
 	defer srv.Close()
 
-	r := &AgentRunReconciler{K8s: fake.NewSimpleClientset()} //nolint:staticcheck
+	r := &AgentRunReconciler{K8s: fake.NewClientset()}
 
 	// nil Callbacks -> immediate return, no delivery.
 	r.fireCallback(context.Background(), &agentorcav1alpha1.AgentRun{
@@ -334,7 +334,7 @@ func TestFireCallback_FailedPhase(t *testing.T) {
 			FailureReason: "boom",
 		},
 	}
-	clientset := fake.NewSimpleClientset(&corev1.Secret{ //nolint:staticcheck
+	clientset := fake.NewClientset(&corev1.Secret{
 
 		ObjectMeta: metav1.ObjectMeta{Name: "cb-secret", Namespace: "tenant-ns"},
 		Data:       map[string][]byte{"hmac-key": []byte("top-secret")},

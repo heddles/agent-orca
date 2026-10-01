@@ -180,7 +180,7 @@ func TestCheckProgress_HTTPPeekReturnsWarmPodToIdle(t *testing.T) {
 		StateStore: testStore{httpOutput: httpOut},
 		// GetLogs is stubbed behind the kubernetes fake clientset; any error is swallowed
 		// by handlePodSuccess (httpOut takes precedence over container logs).
-		K8s: clientgofake.NewSimpleClientset(),
+		K8s: clientgofake.NewClientset(),
 	}
 
 	if _, err := r.checkProgress(context.Background(), run, &agentorcav1alpha1.Agent{}); err != nil {

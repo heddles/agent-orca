@@ -29,6 +29,9 @@ import (
 	"github.com/heddles/agent-orca/internal/router"
 )
 
+// transportHTTP is the MCP transport value for streamable-HTTP servers.
+const transportHTTP = "http"
+
 func TestDefaultMaxToolResultTokens(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -261,7 +264,7 @@ func TestBuildDeploymentRouterConfig_PropagatesMCPAuth(t *testing.T) {
 		Spec: agentorcav1alpha1.ToolSpec{
 			Type: agentorcav1alpha1.ToolTypeMCP,
 			MCPConfig: &agentorcav1alpha1.MCPConfig{
-				Transport: "http",
+				Transport: transportHTTP,
 				URL:       "https://mcp.slack.com/mcp",
 				Auth: &agentorcav1alpha1.MCPAuthConfig{
 					BearerToken: &agentorcav1alpha1.SecretKeyRef{
@@ -297,7 +300,7 @@ func TestBuildDeploymentRouterConfig_PropagatesMCPAuth(t *testing.T) {
 		t.Fatalf("expected 1 MCPServerConfig, got %d", len(cfg.MCPServers))
 	}
 	got := cfg.MCPServers[0]
-	if got.Name != "slack-mcp" || got.Transport != "http" || got.URL != "https://mcp.slack.com/mcp" {
+	if got.Name != "slack-mcp" || got.Transport != transportHTTP || got.URL != "https://mcp.slack.com/mcp" {
 		t.Fatalf("unexpected MCPServerConfig: %+v", got)
 	}
 	if len(got.AuthHeaderFiles) != 1 {

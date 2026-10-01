@@ -18,7 +18,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_REPO: ghcr.io/agentorca/agent-orca
+  IMAGE_REPO: ghcr.io/heddles/agent-orca
 
 permissions:
   contents: read
@@ -39,6 +39,8 @@ jobs:
             dockerfile: Dockerfile.mcp-ingester
           - name: ui-proxy
             dockerfile: Dockerfile.ui-proxy
+          - name: openai-reference
+            dockerfile: Dockerfile.go.openai-reference
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4

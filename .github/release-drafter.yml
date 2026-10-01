@@ -1,0 +1,23 @@
+# Release Drafter configuration
+# This file is used by the release-drafter action to determine how to group PRs and format the changelog.
+
+template: |
+  ## 🚀 Features
+  - [ ] See the list of features below.
+
+  ## 🐛 Bug Fixes
+  - [ ] See the list of bug fixes below.
+
+  ## 🛠️ Maintenance
+  - [ ] See the list of maintenance tasks below.
+
+categories:
+  - title: '🚀 Features'
+    labels: ['feat']
+    order: 0
+  - title: '🐛 Bug Fixes'
+    labels: ['fix']
+    order: 1
+  - title: '🛠️ Maintenance'
+    labels: ['chore', 'refactor', 'test', 'perf', 'ci', 'build']
+    order: 2
