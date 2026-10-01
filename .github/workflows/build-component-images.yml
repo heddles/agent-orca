@@ -7,9 +7,9 @@ name: Build & Publish Component Images
 # (from the paths in skaffold.yaml) for that tag.
 
 on:
-  push:
-    tags:
-     - 'v[0-9]+.[0-9]+.[0-9]+'
+  # push:
+  #   tags:
+  #    - 'v[0-9]+.[0-9]+.[0-9]+'
   release:
     types: [published]
   workflow_dispatch:
