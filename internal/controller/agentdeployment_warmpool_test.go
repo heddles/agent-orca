@@ -17,19 +17,12 @@ limitations under the License.
 package controller
 
 import (
-	"context"
 	"slices"
 	"testing"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
-
-	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
-	"k8s.io/apimachinery/pkg/runtime"
 )
 
 // makeWarmPod creates an IDLE warm pool pod with the given name, creation time, and readiness.
@@ -71,7 +64,7 @@ func makeClaimedWarmPod(name, deployName, configHash string, createdAt time.Time
 func makeTerminatingWarmPod(name, deployName, configHash string, createdAt time.Time, ready bool) *corev1.Pod {
 	p := makeWarmPod(name, deployName, configHash, createdAt, ready)
 	p.DeletionTimestamp = &metav1.Time{Time: createdAt}
-	p.Finalizers = []string{"test.agentorca.io/warm-pool"} // required for a terminating object to be admitted by the fake client
+	p.Finalizers = []string{"test.agentorca.io/warm-pool"}
 	return p
 }
 
@@ -85,19 +78,19 @@ func warmPodModelRouterReady(p *corev1.Pod) bool {
 	return false
 }
 
-// TestScaleDownWarmPool exercises the scale-down portion of reconcileWarmPool using the
-// SAME partitioning accounting (warmPoolSize = total idle + in-use; claimed pods count
-// toward the total and are never deleted; terminating pods are ignored). It is a
-// faithful mirror, not the real reconciler, because reconcileWarmPool requires the full
-// AgentDeploymentReconciler wiring (SA tokens, buildWarmPod, etc.).
+// TestScaleDownWarmPool exercises the real scale-down decision path of reconcileWarmPool:
+// pods are partitioned with classifyWarmPod and the excess set is chosen by
+// warmScaleDownPlan. Only the List/Delete plumbing around them is omitted.
 func TestScaleDownWarmPool(t *testing.T) {
 	now := time.Now()
+	const configHash = "hash1"
+	// No age recycling; config-drift recycling on (all pods carry the current hash).
+	deploy := warmDeployForLifecycle(0, true, 0)
 
 	tests := []struct {
 		name            string
 		warmPoolSize    int
 		pods            []*corev1.Pod
-		wantRemaining   int // pods left in the fake client after scale-down
 		wantReadyCount  int // idle-ready pods remaining after scale-down
 		wantDeletedPods []string
 	}{
@@ -105,33 +98,30 @@ func TestScaleDownWarmPool(t *testing.T) {
 			name:         "no excess pods",
 			warmPoolSize: 3,
 			pods: []*corev1.Pod{
-				makeWarmPod("ready-1", "deploy-a", "hash1", now.Add(-10*time.Minute), true),
-				makeWarmPod("ready-2", "deploy-a", "hash1", now.Add(-5*time.Minute), true),
+				makeWarmPod("ready-1", "deploy-a", configHash, now.Add(-10*time.Minute), true),
+				makeWarmPod("ready-2", "deploy-a", configHash, now.Add(-5*time.Minute), true),
 			},
-			wantRemaining:  2,
 			wantReadyCount: 2,
 		},
 		{
 			name:         "exact match",
 			warmPoolSize: 3,
 			pods: []*corev1.Pod{
-				makeWarmPod("ready-1", "deploy-a", "hash1", now.Add(-10*time.Minute), true),
-				makeWarmPod("ready-2", "deploy-a", "hash1", now.Add(-5*time.Minute), true),
-				makeWarmPod("ready-3", "deploy-a", "hash1", now.Add(-1*time.Minute), true),
+				makeWarmPod("ready-1", "deploy-a", configHash, now.Add(-10*time.Minute), true),
+				makeWarmPod("ready-2", "deploy-a", configHash, now.Add(-5*time.Minute), true),
+				makeWarmPod("ready-3", "deploy-a", configHash, now.Add(-1*time.Minute), true),
 			},
-			wantRemaining:  3,
 			wantReadyCount: 3,
 		},
 		{
 			name:         "excess ready pods - oldest deleted first",
 			warmPoolSize: 2,
 			pods: []*corev1.Pod{
-				makeWarmPod("oldest", "deploy-a", "hash1", now.Add(-30*time.Minute), true),
-				makeWarmPod("middle", "deploy-a", "hash1", now.Add(-15*time.Minute), true),
-				makeWarmPod("newest-1", "deploy-a", "hash1", now.Add(-5*time.Minute), true),
-				makeWarmPod("newest-2", "deploy-a", "hash1", now.Add(-1*time.Minute), true),
+				makeWarmPod("oldest", "deploy-a", configHash, now.Add(-30*time.Minute), true),
+				makeWarmPod("middle", "deploy-a", configHash, now.Add(-15*time.Minute), true),
+				makeWarmPod("newest-1", "deploy-a", configHash, now.Add(-5*time.Minute), true),
+				makeWarmPod("newest-2", "deploy-a", configHash, now.Add(-1*time.Minute), true),
 			},
-			wantRemaining:   2,
 			wantReadyCount:  2,
 			wantDeletedPods: []string{"oldest", "middle"},
 		},
@@ -139,12 +129,11 @@ func TestScaleDownWarmPool(t *testing.T) {
 			name:         "excess mixed - not-yet-ready starting pods deleted first",
 			warmPoolSize: 2,
 			pods: []*corev1.Pod{
-				makeWarmPod("ready-old", "deploy-a", "hash1", now.Add(-20*time.Minute), true),
-				makeWarmPod("ready-new", "deploy-a", "hash1", now.Add(-5*time.Minute), true),
-				makeWarmPod("starting-1", "deploy-a", "hash1", now.Add(-2*time.Minute), false),
-				makeWarmPod("starting-2", "deploy-a", "hash1", now.Add(-1*time.Minute), false),
+				makeWarmPod("ready-old", "deploy-a", configHash, now.Add(-20*time.Minute), true),
+				makeWarmPod("ready-new", "deploy-a", configHash, now.Add(-5*time.Minute), true),
+				makeWarmPod("starting-1", "deploy-a", configHash, now.Add(-2*time.Minute), false),
+				makeWarmPod("starting-2", "deploy-a", configHash, now.Add(-1*time.Minute), false),
 			},
-			wantRemaining:   2,
 			wantReadyCount:  2, // both ready pods kept; starting ones pruned
 			wantDeletedPods: []string{"starting-1", "starting-2"},
 		},
@@ -152,12 +141,11 @@ func TestScaleDownWarmPool(t *testing.T) {
 			name:         "all starting pods - excess deleted",
 			warmPoolSize: 2,
 			pods: []*corev1.Pod{
-				makeWarmPod("starting-1", "deploy-a", "hash1", now.Add(-10*time.Minute), false),
-				makeWarmPod("starting-2", "deploy-a", "hash1", now.Add(-5*time.Minute), false),
-				makeWarmPod("starting-3", "deploy-a", "hash1", now.Add(-2*time.Minute), false),
-				makeWarmPod("starting-4", "deploy-a", "hash1", now.Add(-1*time.Minute), false),
+				makeWarmPod("starting-1", "deploy-a", configHash, now.Add(-10*time.Minute), false),
+				makeWarmPod("starting-2", "deploy-a", configHash, now.Add(-5*time.Minute), false),
+				makeWarmPod("starting-3", "deploy-a", configHash, now.Add(-2*time.Minute), false),
+				makeWarmPod("starting-4", "deploy-a", configHash, now.Add(-1*time.Minute), false),
 			},
-			wantRemaining:   2,
 			wantReadyCount:  0,
 			wantDeletedPods: []string{"starting-1", "starting-2"},
 		},
@@ -165,10 +153,9 @@ func TestScaleDownWarmPool(t *testing.T) {
 			name:         "scale to zero deletes all idle pods",
 			warmPoolSize: 0,
 			pods: []*corev1.Pod{
-				makeWarmPod("ready-1", "deploy-a", "hash1", now.Add(-10*time.Minute), true),
-				makeWarmPod("ready-2", "deploy-a", "hash1", now.Add(-5*time.Minute), true),
+				makeWarmPod("ready-1", "deploy-a", configHash, now.Add(-10*time.Minute), true),
+				makeWarmPod("ready-2", "deploy-a", configHash, now.Add(-5*time.Minute), true),
 			},
-			wantRemaining:   0,
 			wantReadyCount:  0,
 			wantDeletedPods: []string{"ready-1", "ready-2"},
 		},
@@ -181,11 +168,10 @@ func TestScaleDownWarmPool(t *testing.T) {
 			name:         "claimed pod counts toward total and survives scale-down",
 			warmPoolSize: 2,
 			pods: []*corev1.Pod{
-				makeWarmPod("idle-1", "deploy-a", "hash1", now.Add(-10*time.Minute), true),
-				makeWarmPod("idle-2", "deploy-a", "hash1", now.Add(-5*time.Minute), true),
-				makeClaimedWarmPod("claimed", "deploy-a", "hash1", now.Add(-2*time.Minute), true),
+				makeWarmPod("idle-1", "deploy-a", configHash, now.Add(-10*time.Minute), true),
+				makeWarmPod("idle-2", "deploy-a", configHash, now.Add(-5*time.Minute), true),
+				makeClaimedWarmPod("claimed", "deploy-a", configHash, now.Add(-2*time.Minute), true),
 			},
-			wantRemaining:   2,
 			wantReadyCount:  1,
 			wantDeletedPods: []string{"idle-1"},
 		},
@@ -195,111 +181,56 @@ func TestScaleDownWarmPool(t *testing.T) {
 			name:         "terminating pod is ignored, not recounted",
 			warmPoolSize: 2,
 			pods: []*corev1.Pod{
-				makeWarmPod("idle-1", "deploy-a", "hash1", now.Add(-10*time.Minute), true),
-				makeTerminatingWarmPod("terminating", "deploy-a", "hash1", now.Add(-5*time.Minute), true),
+				makeWarmPod("idle-1", "deploy-a", configHash, now.Add(-10*time.Minute), true),
+				makeTerminatingWarmPod("terminating", "deploy-a", configHash, now.Add(-5*time.Minute), true),
 			},
-			wantRemaining:   2,
-			wantReadyCount:  1,
-			wantDeletedPods: nil,
+			wantReadyCount: 1,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			scheme := runtime.NewScheme()
-			_ = corev1.AddToScheme(scheme)
-			_ = agentorcav1alpha1.AddToScheme(scheme)
-
-			var deletedPods []string
-			objs := make([]client.Object, len(tt.pods))
-			for i, p := range tt.pods {
-				objs[i] = p
-			}
-			fakeClient := fake.NewClientBuilder().
-				WithScheme(scheme).
-				WithObjects(objs...).
-				WithStatusSubresource(&agentorcav1alpha1.AgentDeployment{}).
-				WithInterceptorFuncs(interceptor.Funcs{
-					Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
-						if pod, ok := obj.(*corev1.Pod); ok {
-							deletedPods = append(deletedPods, pod.Name)
-						}
-						return c.Delete(ctx, obj, opts...)
-					},
-				}).
-				Build()
-
-			// Mirror the scale-down accounting of reconcileWarmPool.
-			var pods corev1.PodList
-			if err := fakeClient.List(context.Background(), &pods,
-				client.InNamespace("default"),
-				client.MatchingLabels{labelWarmPool: "deploy-a"},
-			); err != nil {
-				t.Fatalf("listing pods: %v", err)
-			}
-
+			// Partition pods exactly like reconcileWarmPool: skip terminating pods,
+			// classify the rest, split idle by model-router readiness.
 			var idleReady, idleStarting, claimed []*corev1.Pod
-			for i := range pods.Items {
-				p := &pods.Items[i]
+			for _, p := range tt.pods {
 				if p.DeletionTimestamp != nil {
 					continue // terminating pods are ignored
 				}
-				if p.Labels[labelWarmStatus] == warmStatusClaimed {
+				disp, _ := classifyWarmPod(p, deploy, configHash, now)
+				switch disp {
+				case warmDisposeClaimed:
 					claimed = append(claimed, p)
-					continue
-				}
-				if warmPodModelRouterReady(p) {
-					idleReady = append(idleReady, p)
-				} else {
-					idleStarting = append(idleStarting, p)
+				case warmDisposeIdle:
+					if warmPodModelRouterReady(p) {
+						idleReady = append(idleReady, p)
+					} else {
+						idleStarting = append(idleStarting, p)
+					}
 				}
 			}
 
-			desired := tt.warmPoolSize
-			readyCount := len(idleReady)
-			startingCount := len(idleStarting)
-			totalExisting := readyCount + startingCount + len(claimed)
+			// warmPoolSize is the TOTAL pool (idle + claimed), mirroring reconcileWarmPool.
+			excess := len(idleReady) + len(idleStarting) + len(claimed) - tt.warmPoolSize
 
-			if excess := totalExisting - desired; excess > 0 {
-				slices.SortFunc(idleStarting, func(a, b *corev1.Pod) int {
-					return a.CreationTimestamp.Compare(b.CreationTimestamp.Time)
-				})
-				slices.SortFunc(idleReady, func(a, b *corev1.Pod) int {
-					return a.CreationTimestamp.Compare(b.CreationTimestamp.Time)
-				})
-				deleted := 0
-				for deleted < excess && len(idleStarting) > 0 {
-					p := idleStarting[0]
-					idleStarting = idleStarting[1:]
-					_ = fakeClient.Delete(context.Background(), p)
-					deleted++
+			var deleted []string
+			readyRemaining := len(idleReady)
+			if excess > 0 {
+				toDelete, keepReady, _ := warmScaleDownPlan(idleReady, idleStarting, excess)
+				for _, p := range toDelete {
+					deleted = append(deleted, p.Name)
 				}
-				for deleted < excess && len(idleReady) > 0 {
-					p := idleReady[0]
-					idleReady = idleReady[1:]
-					_ = fakeClient.Delete(context.Background(), p)
-					deleted++
-				}
-				readyCount = len(idleReady)
+				readyRemaining = len(keepReady)
 			}
 
-			var remaining corev1.PodList
-			if err := fakeClient.List(context.Background(), &remaining, client.InNamespace("default")); err != nil {
-				t.Fatalf("listing remaining pods: %v", err)
+			if readyRemaining != tt.wantReadyCount {
+				t.Errorf("ready pods remaining: got %d, want %d", readyRemaining, tt.wantReadyCount)
 			}
-			if got := len(remaining.Items); got != tt.wantRemaining {
-				t.Errorf("remaining pods: got %d, want %d", got, tt.wantRemaining)
-			}
-			if readyCount != tt.wantReadyCount {
-				t.Errorf("readyCount: got %d, want %d", readyCount, tt.wantReadyCount)
-			}
-			if tt.wantDeletedPods != nil {
-				slices.Sort(deletedPods)
-				wantSorted := slices.Clone(tt.wantDeletedPods)
-				slices.Sort(wantSorted)
-				if !slices.Equal(deletedPods, wantSorted) {
-					t.Errorf("deleted pods: got %v, want %v", deletedPods, wantSorted)
-				}
+			slices.Sort(deleted)
+			wantSorted := slices.Clone(tt.wantDeletedPods)
+			slices.Sort(wantSorted)
+			if !slices.Equal(deleted, wantSorted) {
+				t.Errorf("deleted pods: got %v, want %v", deleted, wantSorted)
 			}
 		})
 	}

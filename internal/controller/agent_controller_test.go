@@ -18,72 +18,72 @@ package controller
 
 import (
 	"context"
+	"fmt"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"k8s.io/apimachinery/pkg/api/errors"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
+	"github.com/heddles/agent-orca/internal/security"
 )
 
 var _ = Describe("Agent Controller", func() {
-	Context("When reconciling a resource", func() {
-		const resourceName = "test-resource"
-
+	It("manages the agent ServiceAccount across create and delete", func() {
 		ctx := context.Background()
+		name := fmt.Sprintf("test-agent-%d", time.Now().UnixNano())
+		namespacedName := types.NamespacedName{Name: name, Namespace: "default"}
+		reconciler := &AgentReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 
-		typeNamespacedName := types.NamespacedName{
-			Name:      resourceName,
-			Namespace: "default", // TODO(user):Modify as needed
+		By("creating an Agent")
+		agent := &agentorcav1alpha1.Agent{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+			Spec: agentorcav1alpha1.AgentSpec{
+				ModelSelectorRef: "test-selector",
+				Runtime: agentorcav1alpha1.AgentRuntime{
+					OCIRef: "ghcr.io/test/agent:latest",
+				},
+			},
 		}
-		agent := &agentorcav1alpha1.Agent{}
+		Expect(k8sClient.Create(ctx, agent)).To(Succeed())
 
-		BeforeEach(func() {
-			By("creating the custom resource for the Kind Agent")
-			err := k8sClient.Get(ctx, typeNamespacedName, agent)
-			if err != nil && errors.IsNotFound(err) {
-				resource := &agentorcav1alpha1.Agent{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      resourceName,
-						Namespace: "default",
-					},
-					Spec: agentorcav1alpha1.AgentSpec{
-						ModelSelectorRef: "test-selector",
-						Runtime: agentorcav1alpha1.AgentRuntime{
-							OCIRef: "ghcr.io/test/agent:latest",
-						},
-					},
-				}
-				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
-			}
-		})
+		By("first reconcile adds the finalizer and requeues")
+		result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.Requeue).To(BeTrue())
 
-		AfterEach(func() {
-			// TODO(user): Cleanup logic after each test, like removing the resource instance.
-			resource := &agentorcav1alpha1.Agent{}
-			err := k8sClient.Get(ctx, typeNamespacedName, resource)
-			Expect(err).NotTo(HaveOccurred())
+		Expect(k8sClient.Get(ctx, namespacedName, agent)).To(Succeed())
+		Expect(agent.Finalizers).To(ContainElement(agentFinalizer))
 
-			By("Cleanup the specific resource instance Agent")
-			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
-		})
-		It("should successfully reconcile the resource", func() {
-			By("Reconciling the created resource")
-			controllerReconciler := &AgentReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
-			}
+		By("second reconcile creates the managed ServiceAccount and reflects it in status")
+		_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+		Expect(err).NotTo(HaveOccurred())
 
-			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: typeNamespacedName,
-			})
-			Expect(err).NotTo(HaveOccurred())
-			// TODO(user): Add more specific assertions depending on your controller's reconciliation logic.
-			// Example: If you expect a certain status condition after reconciliation, verify it here.
-		})
+		saName := security.AgentSAName(name)
+		sa := &corev1.ServiceAccount{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: saName, Namespace: "default"}, sa)).To(Succeed())
+		Expect(sa.OwnerReferences).To(HaveLen(1))
+		Expect(sa.OwnerReferences[0].Name).To(Equal(name))
+
+		Expect(k8sClient.Get(ctx, namespacedName, agent)).To(Succeed())
+		Expect(agent.Status.ServiceAccountName).To(Equal(saName))
+
+		By("deleting the Agent cleans up the ServiceAccount and removes the finalizer")
+		Expect(k8sClient.Delete(ctx, agent)).To(Succeed())
+		_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+		Expect(err).NotTo(HaveOccurred())
+
+		Eventually(func() bool {
+			err := k8sClient.Get(ctx, types.NamespacedName{Name: saName, Namespace: "default"}, &corev1.ServiceAccount{})
+			return err != nil // ServiceAccount gone
+		}).Should(BeTrue())
+		Eventually(func() bool {
+			err := k8sClient.Get(ctx, namespacedName, &agentorcav1alpha1.Agent{})
+			return err != nil // Agent gone (finalizer removed)
+		}).Should(BeTrue())
 	})
 })

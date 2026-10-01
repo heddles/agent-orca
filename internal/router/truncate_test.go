@@ -472,41 +472,57 @@ func TestRouter_IncrementalTokenTracking_AcrossHandleChatCompletions(t *testing.
 	mu.Unlock()
 }
 
-// TestRouter_ClaimRun_ResetsIncrementalTokenCounter verifies that ClaimRun properly
-// resets the liveBufferTokens counter and reinitializes it from the checkpoint.
-func TestRouter_ClaimRun_ResetsIncrementalTokenCounter(t *testing.T) {
+// TestRouter_ClaimRun_ResetsPerRunState verifies that ClaimRun wires the new run
+// identity into the config and resets all per-run state, so a warm pod reused
+// across runs starts clean.
+func TestRouter_ClaimRun_ResetsPerRunState(t *testing.T) {
+	cancelCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	router := &Router{
 		cfg: &Config{
 			Providers: []ProviderConfig{{Name: "p", ContextWindow: 200000}},
 		},
-		liveBufferTokens: 42, // arbitrary value to be reset
+		cancelCtx:        cancelCtx,
+		cancelFunc:       cancel,
+		liveBufferTokens: 42,
+		messages:         []Message{{Role: "user", Content: "stale"}},
+		priorMessages:    []Message{{Role: "user", Content: "stale"}},
+		spendUSD:         1.25,
+		handedOff:        true,
+		waitingForInput:  true,
+		toolCallCounts:   map[string]int{"old-tool": 3},
+		toolCallSigs:     map[string]int{"old-sig": 2},
 	}
 
-	input := WarmRunInput{
-		RunName:     "new-run",
-		Input:       "test input",
-		PriorRunRef: "", // no prior run, so no checkpoint loading
+	router.ClaimRun(WarmRunInput{RunName: "new-run", Input: "test input"})
+
+	if router.cfg.RunName != "new-run" {
+		t.Errorf("cfg.RunName: got %q, want %q", router.cfg.RunName, "new-run")
 	}
-
-	// ClaimRun needs a store for some paths, but with no PriorRunRef it should
-	// work without loading checkpoint.
-	router.cfg.RunName = input.RunName
-	router.cfg.CheckpointKey = fmt.Sprintf("agentorca/runs/%s/state", input.RunName)
-
-	// Manual test: verify that the liveBufferTokens is reset to 0 when
-	// there's no prior run to load from.
-	router.mu.Lock()
-	router.messages = nil
-	router.priorMessages = nil
-	router.liveBufferTokens = 0 // ClaimRun would do this
-	router.mu.Unlock()
-
-	// Verify the counter is reset.
-	router.mu.Lock()
+	if want := "agentorca/runs/new-run/state"; router.cfg.CheckpointKey != want {
+		t.Errorf("cfg.CheckpointKey: got %q, want %q", router.cfg.CheckpointKey, want)
+	}
+	if router.cfg.ResumeCheckpointKey != "" {
+		t.Errorf("cfg.ResumeCheckpointKey: got %q, want empty (no prior run)", router.cfg.ResumeCheckpointKey)
+	}
+	if router.cfg.HTTPInput.RunName != "new-run" || router.cfg.HTTPInput.Input != "test input" {
+		t.Errorf("cfg.HTTPInput: got %+v, want run %q input %q", router.cfg.HTTPInput, "new-run", "test input")
+	}
 	if router.liveBufferTokens != 0 {
-		t.Errorf("expected liveBufferTokens to be 0 after reset, got %d", router.liveBufferTokens)
+		t.Errorf("liveBufferTokens: got %d, want 0", router.liveBufferTokens)
 	}
-	router.mu.Unlock()
+	if router.messages != nil || router.priorMessages != nil {
+		t.Errorf("messages not reset: messages=%v priorMessages=%v", router.messages, router.priorMessages)
+	}
+	if router.spendUSD != 0 {
+		t.Errorf("spendUSD: got %v, want 0", router.spendUSD)
+	}
+	if router.handedOff || router.waitingForInput {
+		t.Errorf("terminal flags not reset: handedOff=%v waitingForInput=%v", router.handedOff, router.waitingForInput)
+	}
+	if len(router.toolCallCounts) != 0 || len(router.toolCallSigs) != 0 {
+		t.Errorf("tool call tracking not reset: counts=%v sigs=%v", router.toolCallCounts, router.toolCallSigs)
+	}
 }
 
 func TestEstimateToolTokens_ReservesRoomForSchemata(t *testing.T) {

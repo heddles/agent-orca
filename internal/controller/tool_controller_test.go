@@ -18,67 +18,157 @@ package controller
 
 import (
 	"context"
+	"fmt"
+	"testing"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
 )
 
+// TestToolValidate covers the pure validation branches directly: unknown tool
+// types are rejected by CRD admission (the type field is an enum), so that
+// path cannot be driven through envtest.
+func TestToolValidate(t *testing.T) {
+	schema := &agentorcav1alpha1.ToolSchema{Description: "test tool"}
+
+	tests := []struct {
+		name        string
+		tool        *agentorcav1alpha1.Tool
+		wantReady   bool
+		wantMessage string
+	}{
+		{
+			name: "valid regular tool",
+			tool: &agentorcav1alpha1.Tool{Spec: agentorcav1alpha1.ToolSpec{
+				Type:   agentorcav1alpha1.ToolTypeRegular,
+				OCIRef: "ghcr.io/test/tool:latest",
+				Schema: schema,
+			}},
+			wantReady:   true,
+			wantMessage: "tool regular/valid regular tool validated",
+		},
+		{
+			name: "regular tool missing ociRef",
+			tool: &agentorcav1alpha1.Tool{Spec: agentorcav1alpha1.ToolSpec{
+				Type:   agentorcav1alpha1.ToolTypeRegular,
+				Schema: schema,
+			}},
+			wantMessage: "spec.ociRef is required for type=regular",
+		},
+		{
+			name: "agent tool missing agentRef",
+			tool: &agentorcav1alpha1.Tool{Spec: agentorcav1alpha1.ToolSpec{
+				Type:   agentorcav1alpha1.ToolTypeAgent,
+				Schema: schema,
+			}},
+			wantMessage: "spec.agentRef is required for type=agent",
+		},
+		{
+			name: "valid agent tool",
+			tool: &agentorcav1alpha1.Tool{Spec: agentorcav1alpha1.ToolSpec{
+				Type:     agentorcav1alpha1.ToolTypeAgent,
+				AgentRef: "other-agent",
+				Schema:   schema,
+			}},
+			wantReady:   true,
+			wantMessage: "tool agent/valid agent tool validated",
+		},
+		{
+			name: "mcp tool missing mcpConfig",
+			tool: &agentorcav1alpha1.Tool{Spec: agentorcav1alpha1.ToolSpec{
+				Type:   agentorcav1alpha1.ToolTypeMCP,
+				Schema: schema,
+			}},
+			wantMessage: "spec.mcpConfig is required for type=mcp",
+		},
+		{
+			name: "valid remote mcp tool",
+			tool: &agentorcav1alpha1.Tool{Spec: agentorcav1alpha1.ToolSpec{
+				Type:      agentorcav1alpha1.ToolTypeMCP,
+				MCPConfig: &agentorcav1alpha1.MCPConfig{Transport: "http", URL: "https://mcp.example.com/sse"},
+				Schema:    schema,
+			}},
+			wantReady:   true,
+			wantMessage: "tool mcp/valid remote mcp tool validated",
+		},
+		{
+			name: "mcp stdio rejects auth config",
+			tool: &agentorcav1alpha1.Tool{Spec: agentorcav1alpha1.ToolSpec{
+				Type:      agentorcav1alpha1.ToolTypeMCP,
+				OCIRef:    "ghcr.io/test/mcp:latest",
+				MCPConfig: &agentorcav1alpha1.MCPConfig{Transport: "stdio", Auth: &agentorcav1alpha1.MCPAuthConfig{}},
+				Schema:    schema,
+			}},
+			wantMessage: "spec.mcpConfig.auth is not supported for stdio transport; use envFrom for stdio credentials",
+		},
+		{
+			name: "unknown tool type",
+			tool: &agentorcav1alpha1.Tool{Spec: agentorcav1alpha1.ToolSpec{
+				Type:   agentorcav1alpha1.ToolType("bogus"),
+				Schema: schema,
+			}},
+			wantMessage: `unknown tool type "bogus"`,
+		},
+		{
+			name: "missing schema",
+			tool: &agentorcav1alpha1.Tool{Spec: agentorcav1alpha1.ToolSpec{
+				Type:   agentorcav1alpha1.ToolTypeRegular,
+				OCIRef: "ghcr.io/test/tool:latest",
+			}},
+			wantMessage: "spec.schema is required so the LLM knows how to call this tool",
+		},
+	}
+
+	r := &ToolReconciler{}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.tool.Name = tt.name
+			ready, message := r.validate(context.Background(), tt.tool)
+			if ready != tt.wantReady {
+				t.Errorf("ready: got %v, want %v", ready, tt.wantReady)
+			}
+			if message != tt.wantMessage {
+				t.Errorf("message: got %q, want %q", message, tt.wantMessage)
+			}
+		})
+	}
+}
+
 var _ = Describe("Tool Controller", func() {
-	Context("When reconciling a resource", func() {
-		const resourceName = "test-resource"
-
+	It("publishes validation results to status", func() {
 		ctx := context.Background()
+		name := fmt.Sprintf("test-tool-%d", time.Now().UnixNano())
+		namespacedName := types.NamespacedName{Name: name, Namespace: "default"}
 
-		typeNamespacedName := types.NamespacedName{
-			Name:      resourceName,
-			Namespace: "default", // TODO(user):Modify as needed
+		By("creating a valid Tool")
+		tool := &agentorcav1alpha1.Tool{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+			Spec: agentorcav1alpha1.ToolSpec{
+				Type:   agentorcav1alpha1.ToolTypeRegular,
+				OCIRef: "ghcr.io/test/tool:latest",
+				Schema: &agentorcav1alpha1.ToolSchema{Description: "test tool"},
+			},
 		}
-		tool := &agentorcav1alpha1.Tool{}
+		Expect(k8sClient.Create(ctx, tool)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, tool) }()
 
-		BeforeEach(func() {
-			By("creating the custom resource for the Kind Tool")
-			err := k8sClient.Get(ctx, typeNamespacedName, tool)
-			if err != nil && errors.IsNotFound(err) {
-				resource := &agentorcav1alpha1.Tool{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      resourceName,
-						Namespace: "default",
-					},
-					// TODO(user): Specify other spec details if needed.
-				}
-				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
-			}
-		})
+		By("reconciling the Tool")
+		reconciler := &ToolReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+		Expect(err).NotTo(HaveOccurred())
 
-		AfterEach(func() {
-			// TODO(user): Cleanup logic after each test, like removing the resource instance.
-			resource := &agentorcav1alpha1.Tool{}
-			err := k8sClient.Get(ctx, typeNamespacedName, resource)
-			Expect(err).NotTo(HaveOccurred())
-
-			By("Cleanup the specific resource instance Tool")
-			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
-		})
-		It("should successfully reconcile the resource", func() {
-			By("Reconciling the created resource")
-			controllerReconciler := &ToolReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
-			}
-
-			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: typeNamespacedName,
-			})
-			Expect(err).NotTo(HaveOccurred())
-			// TODO(user): Add more specific assertions depending on your controller's reconciliation logic.
-			// Example: If you expect a certain status condition after reconciliation, verify it here.
-		})
+		updated := &agentorcav1alpha1.Tool{}
+		Expect(k8sClient.Get(ctx, namespacedName, updated)).To(Succeed())
+		Expect(updated.Status.Ready).To(BeTrue())
+		Expect(updated.Status.Message).To(Equal(fmt.Sprintf("tool regular/%s validated", name)))
+		Expect(updated.Status.Conditions).To(HaveLen(1))
+		Expect(updated.Status.Conditions[0].Type).To(Equal("Ready"))
+		Expect(updated.Status.Conditions[0].Status).To(Equal(metav1.ConditionTrue))
 	})
 })
