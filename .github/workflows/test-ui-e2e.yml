@@ -64,8 +64,6 @@ jobs:
             storage:
               size: 1Gi
           EOF
-          # Wait for the database to be ready
-          kubectl wait --for=condition=ready pod -l cnpg.io/cluster=agent-orca-db -n default --timeout=300s
 
       - name: Pre-pull Redis image into Kind
         # redis:7-alpine is deployed by the chart but NOT pre-loaded into the
