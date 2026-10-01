@@ -73,7 +73,7 @@ jobs:
       - name: Build and push multi-arch ${{ matrix.name }} image
         # Build context is the repository root (each Dockerfile is structured to copy
         # from the repo root, matching skaffold.yaml's artifacts).
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ${{ matrix.dockerfile }}
