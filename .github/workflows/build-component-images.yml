@@ -70,10 +70,7 @@ jobs:
             exit 1
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          cat >> "$GITHUB_OUTPUT" << 'EOF'
-          tags=${{ env.IMAGE_REPO }}/${{ matrix.name }}:$TAG
-          ${{ env.IMAGE_REPO }}/${{ matrix.name }}:latest
-          EOF
+          echo "tags=${{ env.IMAGE_REPO }}/${{ matrix.name }}:$TAG,${{ env.IMAGE_REPO }}/${{ matrix.name }}:latest" >> "$GITHUB_OUTPUT"
 
       - name: Build and push multi-arch ${{ matrix.name }} image
         # Build context is the repository root (each Dockerfile is structured to copy
