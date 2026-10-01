@@ -9,7 +9,7 @@ build:
     before: &ensure_kind_build_before
       - command: ["bash", "hack/ensure-kind-cluster.sh"]
         os: [darwin, linux]
-    # Build the reference agent image (ghcr.io/agentorca/agent-orca/openai-reference)
+    # Build the reference agent image (ghcr.io/heddles/agent-orca/openai-reference)
     # and load it into the kind cluster as `:latest`, so the demos and
     # hack/test-agents.sh (which pin ociRef => …/openai-reference:latest) resolve
     # locally — just like the operator/router/ui images, minus the global SHA tag.
@@ -21,10 +21,10 @@ build:
           - bash
           - -c
           - |
-            if command -v kind >/dev/null 2>&1 && ! docker image inspect ghcr.io/agentorca/agent-orca/openai-reference:latest >/dev/null 2>&1; then
+            if command -v kind >/dev/null 2>&1 && ! docker image inspect ghcr.io/heddles/agent-orca/openai-reference:latest >/dev/null 2>&1; then
               echo "building reference agent image (openai-reference:latest)…"
-              docker build -t ghcr.io/agentorca/agent-orca/openai-reference:latest -f examples/agent-sdk-template/Dockerfile . \
-                && kind load docker-image ghcr.io/agentorca/agent-orca/openai-reference:latest --name agent-orca-dev \
+              docker build -t ghcr.io/heddles/agent-orca/openai-reference:latest -f examples/agent-sdk-template/Dockerfile . \
+                && kind load docker-image ghcr.io/heddles/agent-orca/openai-reference:latest --name agent-orca-dev \
                 || echo "warning: reference agent image build/load failed (non-fatal); demos will pull :latest from GHCR if online"
             else
               echo "reference agent image present locally (openai-reference:latest) — skipping build"
@@ -47,7 +47,7 @@ build:
       context: .
       docker:
         dockerfile: Dockerfile.mcp-ingester
-    - image: ghcr.io/agentorca/agent-orca/openai-reference
+    - image: ghcr.io/heddles/agent-orca/openai-reference
       context: .
       docker:
         dockerfile: Dockerfile.go.openai-reference
@@ -281,7 +281,7 @@ profiles:
   # (AGENT_ORCA_WEBHOOK_URL). The model-router posts to the webhook; no per-user
   # OAuth, no browser, no data residency concerns.
   # The agent image is the pre-built reference agent
-  # (ghcr.io/agentorca/agent-orca/openai-reference:latest), built + kind-loaded by
+  # (ghcr.io/heddles/agent-orca/openai-reference:latest), built + kind-loaded by
   # `skaffold dev`; the GitHub MCP image (ghcr.io/github/github-mcp-server) is pulled
   # from GHCR at runtime. No local artifacts are built by this profile.
   # Deploy: skaffold run -p demo-programming-agent

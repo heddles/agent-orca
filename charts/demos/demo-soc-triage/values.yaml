@@ -134,7 +134,7 @@ agent-orca-resources:
       knowledgeBases:
         - soc-runbooks
       runtime:
-        ociRef: "ghcr.io/agentorca/agent-orca/openai-reference:latest"
+        ociRef: "ghcr.io/heddles/agent-orca/openai-reference:latest"
         framework: openai-compatible
       memory:
         checkpointEvery: 1
@@ -172,7 +172,7 @@ agent-orca-resources:
 
         Output ONLY valid JSON. No preamble, no markdown fences.
       runtime:
-        ociRef: "ghcr.io/agentorca/agent-orca/openai-reference:latest"
+        ociRef: "ghcr.io/heddles/agent-orca/openai-reference:latest"
         framework: openai-compatible
       memory:
         checkpointEvery: 1
@@ -246,7 +246,7 @@ agent-orca-resources:
         - soc-apps-render-incident-report
       runtime:
         inputMode: http
-        ociRef: "ghcr.io/agentorca/agent-orca/openai-reference:latest"
+        ociRef: "ghcr.io/heddles/agent-orca/openai-reference:latest"
         framework: openai-compatible
       memory:
         checkpointEvery: 1

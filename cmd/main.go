@@ -277,7 +277,7 @@ func main() {
 
 	modelRouterImage := os.Getenv("MODEL_ROUTER_IMAGE")
 	if modelRouterImage == "" {
-		modelRouterImage = "ghcr.io/agentorca/agent-orca/model-router:latest"
+		modelRouterImage = "ghcr.io/heddles/agent-orca/model-router:latest"
 	}
 
 	// Connect to the state store so the controller can read spend data

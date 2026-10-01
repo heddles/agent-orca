@@ -284,7 +284,7 @@ agent-orca-resources:
             ⇒ searchsploit/ExploitDB only). run-exploit writes only to /tmp/exploits.
           - Do NOT brute-force real internet services; keep wordlists small and rates low.
       runtime:
-        ociRef: "ghcr.io/agentorca/agent-orca/openai-reference:latest"
+        ociRef: "ghcr.io/heddles/agent-orca/openai-reference:latest"
         framework: openai-compatible
         inputMode: http
       resources:

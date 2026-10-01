@@ -164,7 +164,7 @@ agent-orca-resources:
         - github-mcp
       knowledgeBases: []
       runtime:
-        ociRef: "ghcr.io/agentorca/agent-orca/openai-reference:latest"
+        ociRef: "ghcr.io/heddles/agent-orca/openai-reference:latest"
         framework: openai-compatible
         # http mode keeps warm-pool pods alive and reusable for low-latency chat.
         inputMode: http
