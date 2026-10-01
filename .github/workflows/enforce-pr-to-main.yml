@@ -10,22 +10,30 @@ jobs:
     name: Block direct pushes to main
     runs-on: ubuntu-latest
     steps:
-      - name: Fail - Direct pushes to main are not allowed
+      - name: Check if push is a direct push
         run: |
-          echo "❌ ERROR: Direct pushes to 'main' are not allowed."
-          echo ""
-          echo "All changes to main must be submitted via Pull Request."
-          echo ""
-          echo "Workflow:"
-          echo "  1. Create a feature branch from main"
-          echo "  2. Make your changes and commit"
-          echo "  3. Push to your fork/branch"
-          echo "  4. Open a Pull Request"
-          echo "  5. Get required reviews and CI checks to pass"
-          echo "  6. Merge via the PR interface"
-          echo ""
-          echo "This push was blocked to protect the main branch."
-          exit 1
+          # A merge commit typically has more than one parent.
+          # We check the number of parents of the current commit.
+          PARENT_COUNT=$(git rev-list --parents -n 1 ${GITHUB_SHA} | wc -w)
+          
+          if [ "$PARENT_COUNT" -eq 1 ]; then
+            echo "❌ ERROR: Direct pushes to 'main' are not allowed."
+            echo ""
+            echo "All changes to main must be submitted via Pull Request."
+            echo ""
+            echo "Workflow:"
+            echo "  1. Create a feature branch from main"
+            echo "  2. Make your changes and commit"
+            echo "  3. Push to your fork/branch"
+            echo "  4. Open a Pull Request"
+            echo "  5. Get required reviews and CI checks to pass"
+            echo "  6. Merge via the PR interface"
+            echo ""
+            echo "This push was blocked to protect the main branch."
+            exit 1
+          else
+            echo "✅ This push is a merge commit or has multiple parents. Allowed."
+          fi
 
   # Additional check: ensure we're not in a PR context
   # This helps identify if someone somehow bypassed direct push detection
