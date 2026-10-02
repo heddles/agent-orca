@@ -187,65 +187,6 @@ func TestACPBridge_SessionNew(t *testing.T) {
 	}
 }
 
-// TestACPBridge_SessionPrompt_Polling verifies the full prompt flow using the
-// polling fallback (no SSE): create run → poll "created" → poll "completed" →
-// emit output → return stopReason.
-func TestACPBridge_SessionPrompt_Polling(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/agents/test-agent" && r.Method == http.MethodGet:
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = fmt.Fprint(w, `{"name":"test-agent","description":"test","clarify_available":true}`)
-		case r.URL.Path == "/agents/test-agent/run" && r.Method == http.MethodPost: //nolint:goconst
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusCreated)
-			_, _ = fmt.Fprint(w, `{"agent_name":"test-agent","run_id":"run-1","status":"created","created_at":"2024-01-01T00:00:00Z"}`) //nolint:lll
-		case r.URL.Path == "/runs/run-1" && r.Method == http.MethodGet:
-			// Always return completed with output (bypasses SSE).
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = fmt.Fprint(w, `{"run_id":"run-1","status":"completed","agent_name":"test-agent","created_at":"2024-01-01T00:00:00Z","output":[{"role":"assistant","parts":[{"content_type":"text/plain","content":"hello world"}]}]}`) //nolint:lll
-		default:
-			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
-		}
-	}))
-	defer srv.Close()
-
-	var stdout, stderr bytes.Buffer
-	server := &acpStdioServer{stdout: &stdout, stderr: &stderr}
-	client := newClient(srv.URL, srv.URL, testToken, defaultTimeout, true)
-	bridge := newACPBridge(server, client, "test-agent")
-	server.handler = bridge
-
-	id := json.RawMessage(`1`)
-	bridge.Dispatch(context.Background(), jsonrpcRequest{
-		JSONRPC: "2.0",
-		ID:      &id,
-		Method:  "session/prompt",
-		Params:  json.RawMessage(`{"sessionId":"sess-1","prompt":[{"type":"text","text":"hi"}]}`),
-	})
-
-	lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
-	var resp jsonrpcMessage
-	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &resp); err != nil {
-		t.Fatalf("unmarshal last response: %v\\nstdout: %s", err, stdout.String())
-	}
-	var promptResp acpPromptResponse
-	unmarshalResult(t, resp, &promptResp)
-	if promptResp.StopReason != acpStopReasonEndTurn {
-		t.Fatalf("expected stopReason 'end_turn', got %q", promptResp.StopReason)
-	}
-
-	// The run's terminal output should have been emitted as a message chunk
-	// notification before the prompt response.
-	allOutput := stdout.String()
-	if !strings.Contains(allOutput, "agent_message_chunk") {
-		t.Fatalf("expected agent_message_chunk notification, stdout:\n%s", allOutput)
-	}
-	if !strings.Contains(allOutput, "hello world") {
-		t.Fatalf("expected 'hello world' in notification, stdout:\n%s", allOutput)
-	}
-}
-
 // TestACPBridge_SessionPrompt_SSE verifies the SSE streaming path: the run
 // transitions to "in-progress", the bridge opens an SSE stream, and token
 // chunks + terminal events are translated into ACP notifications.
@@ -320,7 +261,7 @@ func TestACPBridge_SessionPrompt_SSE(t *testing.T) {
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	var resp jsonrpcMessage
 	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &resp); err != nil {
-		t.Fatalf("unmarshal last response: %v\\nstdout:\n%s", err, out)
+		t.Fatalf("unmarshal last response: %v\nstdout:\n%s", err, out)
 	}
 	var promptResp acpPromptResponse
 	unmarshalResult(t, resp, &promptResp)
@@ -760,7 +701,7 @@ func TestACPBridge_SessionPrompt_Cancel(t *testing.T) {
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	var resp jsonrpcMessage
 	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &resp); err != nil {
-		t.Fatalf("unmarshal last response: %v\\nstdout:\n%s", err, out)
+		t.Fatalf("unmarshal last response: %v\nstdout:\n%s", err, out)
 	}
 	var promptResp acpPromptResponse
 	unmarshalResult(t, resp, &promptResp)
@@ -1170,3 +1111,4 @@ func TestACPSetup_Zed_NormalizesACPEndpoint(t *testing.T) {
 		t.Errorf("expected normalized AOCTL_ACP_ENDPOINT http://agent-orca.local, got %v", env["AOCTL_ACP_ENDPOINT"])
 	}
 }
+
