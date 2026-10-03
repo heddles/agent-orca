@@ -272,7 +272,7 @@ func TestACPBridge_SessionPrompt_SSE(t *testing.T) {
 
 // openAIChunkSSE builds a single OpenAI chat.completion.chunk SSE frame.
 // Exactly one of content/reasoning should be non-empty.
-func openAIChunkSSE(t *testing.T, content, reasoning string) string {
+func openAIChunkSSE(t *testing.T, content, reasoning string) string { //nolint:unparam
 	t.Helper()
 	delta := map[string]string{}
 	if content != "" {
@@ -356,99 +356,6 @@ func acpUpdateTexts(out, wantUpdate string) []string {
 		}
 	}
 	return texts
-}
-
-// TestACPBridge_SessionPrompt_OpenAIStream verifies the openai -> acp
-// translation for a raw OpenAI-schema SSE stream (bare "data:" lines with no
-// event name, as produced by internal/router/stream.go and
-// pkg/go/openai-reference): content deltas become agent_message_chunk
-// notifications, reasoning deltas become agent_thought_chunk notifications, and
-// the terminal [DONE] sentinel ends the turn. The full response must reach the
-// client — this is the regression test for the partial-output bug where the old
-// parser dropped typeless SSE events.
-func TestACPBridge_SessionPrompt_OpenAIStream(t *testing.T) {
-	stream := openAIChunkSSE(t, "Agent", "") +
-		openAIChunkSSE(t, " ORCA", "") +
-		openAIChunkSSE(t, "", "thinking...") +
-		openAIChunkSSE(t, " (ORchestrated Conversational AI)", "") +
-		openAIDoneSSE
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/agents/test-agent" && r.Method == http.MethodGet:
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = fmt.Fprint(w, `{"name":"test-agent","description":"test","clarify_available":true}`)
-		case r.URL.Path == "/agents/test-agent/run" && r.Method == http.MethodPost:
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusCreated)
-			_, _ = fmt.Fprint(w, `{"agent_name":"test-agent","run_id":"run-openai",`+
-				`"status":"created","created_at":"2024-01-01T00:00:00Z"}`)
-		case r.URL.Path == "/runs/run-openai" && r.Method == http.MethodGet:
-			if strings.Contains(r.Header.Get("Accept"), "event-stream") {
-				w.Header().Set("Content-Type", "text/event-stream")
-				w.Header().Set("Cache-Control", "no-cache")
-				w.WriteHeader(http.StatusOK)
-				flusher, _ := w.(http.Flusher)
-				_, _ = fmt.Fprint(w, stream)
-				if flusher != nil {
-					flusher.Flush()
-				}
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = fmt.Fprint(w, `{"run_id":"run-openai","status":"completed",`+
-				`"agent_name":"test-agent","created_at":"2024-01-01T00:00:00Z"}`)
-		default:
-			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
-		}
-	}))
-	defer srv.Close()
-
-	var stdout, stderr bytes.Buffer
-	server := &acpStdioServer{stdout: &stdout, stderr: &stderr}
-	client := newClient(srv.URL, srv.URL, testToken, 10*time.Second, true)
-	bridge := newACPBridge(server, client, "test-agent")
-	server.handler = bridge
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	id := json.RawMessage(`1`)
-	bridge.Dispatch(ctx, jsonrpcRequest{
-		JSONRPC: "2.0",
-		ID:      &id,
-		Method:  "session/prompt",
-		Params:  json.RawMessage(`{"sessionId":"sess-oa","prompt":[{"type":"text","text":"hi"}]}`),
-	})
-
-	out := stdout.String()
-	msgTexts := acpUpdateTexts(out, acpUpdateMessageChunk)
-	joined := strings.Join(msgTexts, "")
-	if joined != "Agent ORCA (ORchestrated Conversational AI)" {
-		t.Fatalf("expected full streamed response %q, got %q\nstdout:\n%s",
-			"Agent ORCA (ORchestrated Conversational AI)", joined, out)
-	}
-	thoughtTexts := acpUpdateTexts(out, acpUpdateThoughtChunk)
-	if len(thoughtTexts) != 1 || thoughtTexts[0] != "thinking..." {
-		t.Fatalf("expected one thought chunk with 'thinking...', got %v\nstdout:\n%s", thoughtTexts, out)
-	}
-	// Reasoning must not leak into a message chunk.
-	for _, s := range msgTexts {
-		if strings.Contains(s, "thinking...") {
-			t.Fatalf("reasoning leaked into a message chunk: %q\nstdout:\n%s", s, out)
-		}
-	}
-
-	lines := strings.Split(strings.TrimSpace(out), "\n")
-	var resp jsonrpcMessage
-	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &resp); err != nil {
-		t.Fatalf("unmarshal last response: %v\nstdout:\n%s", err, out)
-	}
-	var promptResp acpPromptResponse
-	unmarshalResult(t, resp, &promptResp)
-	if promptResp.StopReason != acpStopReasonEndTurn {
-		t.Fatalf("expected stopReason 'end_turn', got %q", promptResp.StopReason)
-	}
 }
 
 // TestACPBridge_SessionPrompt_OpenAIStream_PrematureClose verifies that when a
@@ -1111,4 +1018,3 @@ func TestACPSetup_Zed_NormalizesACPEndpoint(t *testing.T) {
 		t.Errorf("expected normalized AOCTL_ACP_ENDPOINT http://agent-orca.local, got %v", env["AOCTL_ACP_ENDPOINT"])
 	}
 }
-

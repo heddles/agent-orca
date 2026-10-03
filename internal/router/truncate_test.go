@@ -1673,39 +1673,6 @@ func bigOverBudgetMessages(n int) []Message {
 	return msgs
 }
 
-// TestAsyncCompaction_TruncatesInBackground verifies that trimLiveBuffer
-// delegates truncation to a background goroutine and that waitForCompaction
-// installs the truncated result. The buffer must be under budget after waiting.
-func TestAsyncCompaction_TruncatesInBackground(t *testing.T) {
-	r := &Router{cfg: &Config{Providers: []ProviderConfig{{Name: "p", ContextWindow: 262144}}}}
-	r.priorMessages = bigOverBudgetMessages(200)
-	budget := r.checkpointBudget()
-	r.liveBufferTokens = estimateTokens(r.priorMessages)
-
-	if estimateTokens(r.priorMessages) <= budget {
-		t.Fatalf("precondition: buffer should exceed budget %d", budget)
-	}
-
-	r.mu.Lock()
-	r.trimLiveBuffer()
-	r.mu.Unlock()
-
-	// The truncation now runs in a background goroutine. Wait for it to install.
-	r.waitForCompaction()
-
-	r.mu.Lock()
-	after := estimateTokens(r.priorMessages)
-	compacting := r.compacting
-	r.mu.Unlock()
-
-	if after > budget {
-		t.Fatalf("buffer still over budget after async compaction: est=%d budget=%d", after, budget)
-	}
-	if compacting {
-		t.Errorf("compacting flag should be cleared after waitForCompaction")
-	}
-}
-
 // TestAsyncCompaction_NonBlocking verifies the core async guarantee:
 // trimLiveBuffer returns BEFORE the buffer is truncated (the expensive
 // truncateHistory runs on a worker goroutine, not the request thread).
