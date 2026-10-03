@@ -659,6 +659,7 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 		slog.Debug("recursive HandleChatCompletions returned", "toolCalls", len(toolCalls))
 		return
 	}
+	_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
 	// Notify operator of context usage for UI display (streaming path).
 	go r.notifyOperatorContext()
 }

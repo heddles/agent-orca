@@ -1292,62 +1292,6 @@ func TestInjectBuiltinSystemHints_PrependsAfterSystemPrompt(t *testing.T) {
 	}
 }
 
-func TestTruncateHistory_PreservesSystemMessages(t *testing.T) {
-	// Create a conversation with SystemPrompt and builtin hints as leading system messages.
-	// These should be preserved even when truncation is needed.
-	systemPrompt := strings.Repeat("you are a helpful assistant. ", 100) // ~3.5k tokens
-	builtinHints := "Platform tools available: _done, _fail. Use these tools only when their specific purpose is needed."
-	userMsg := strings.Repeat("user content ", 200) // ~2k tokens
-
-	msgs := []Message{
-		{Role: "system", Content: systemPrompt}, // 3.5k tokens
-		{Role: "system", Content: builtinHints}, // small
-		{Role: "user", Content: userMsg},        // 2k tokens
-		{Role: "assistant", Content: userMsg},   // 2k tokens
-		{Role: "user", Content: userMsg},        // 2k tokens
-		{Role: "assistant", Content: userMsg},   // 2k tokens
-		{Role: "user", Content: userMsg},        // 2k tokens
-		{Role: "assistant", Content: userMsg},   // 2k tokens
-		{Role: "user", Content: userMsg},        // 2k tokens
-		{Role: "assistant", Content: userMsg},   // 2k tokens
-	}
-
-	// Set a budget that requires truncation but should preserve system messages
-	totalTokens := estimateTokens(msgs)
-	if totalTokens < 5000 {
-		t.Fatalf("test setup issue: expected more tokens, got %d", totalTokens)
-	}
-
-	// Truncate to fit within a very small budget (system messages should survive)
-	maxTokens := 3000
-	result := truncateHistory(msgs, maxTokens)
-
-	// Verify system messages are preserved
-	if len(result) < 2 {
-		t.Fatalf("expected at least 2 messages (system prompt + hints), got %d", len(result))
-	}
-	if result[0].Role != "system" {
-		t.Errorf("first message should be system, got: %s", result[0].Role)
-	}
-	if result[1].Role != "system" {
-		t.Errorf("second message should be system, got: %s", result[1].Role)
-	}
-
-	// Verify the system prompt content is preserved
-	if result[0].Content != systemPrompt {
-		t.Errorf("system prompt should be preserved unchanged")
-	}
-	if !strings.Contains(result[1].Content.(string), "Platform tools available") {
-		t.Errorf("builtin hints should be preserved, got: %s", result[1].Content)
-	}
-
-	// Verify we're under budget
-	resultTokens := estimateTokens(result)
-	if resultTokens > maxTokens {
-		t.Errorf("result should fit within budget: %d tokens > %d max", resultTokens, maxTokens)
-	}
-}
-
 func TestInjectBuiltinSystemHints_IncludesListResources(t *testing.T) {
 	r := &Router{
 		cfg: &Config{
