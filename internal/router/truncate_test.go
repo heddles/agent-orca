@@ -1655,20 +1655,3 @@ func TestRouter_EpisodicSummary_IncludesPriorMessages(t *testing.T) {
 		t.Error("expected episodic summary to include content from r.messages")
 	}
 }
-
-// === asynchronous compaction tests (issue #54 — async truncation) ===
-
-// bigOverBudgetMessages builds a slice of messages whose estimated token count
-// exceeds the 80% checkpoint budget for ContextWindow 262144 (budget=209715),
-// forcing truncateHistory to drop messages. Each message is 8004 chars (~2001
-// tokens + 4 overhead), so 200 messages ≈ 402k tokens.
-func bigOverBudgetMessages(n int) []Message {
-	msgs := make([]Message, n)
-	for i := range n {
-		msgs[i] = Message{
-			Role:    "user",
-			Content: fmt.Sprintf("msg %d %s", i, strings.Repeat("x", 8000)),
-		}
-	}
-	return msgs
-}
