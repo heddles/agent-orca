@@ -11,6 +11,8 @@
 [![License: Apache 2.0](https://img.shields.io/github/license/heddles/agent-orca)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/heddles/agent-orca?display_name=tag)](https://github.com/heddles/agent-orca/releases)
 
+[!["Buy Me A Coffee"](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://buymeacoffee.com/mfish551mfg)
+
 Agent orcastrator is a Kubernetes-native platform for deploying, managing, and running AI agents at scale. It lets you declaratively define agents, route them to the correct LLM, equip them with tools, and execute them as one-off jobs or long-running services with checkpoints, cost tracking, guardrails, and RAG built in.
 
 > **Open source, Apache 2.0.** See [CONTRIBUTING.md](CONTRIBUTING.md) to get started,
