@@ -72,16 +72,18 @@ spec:
           env:
             - name: OLLAMA_HOST
               value: "0.0.0.0"
+            - name: OLLAMA_NUM_PARALLEL
+              value: "4"
           volumeMounts:
             - name: models
               mountPath: /root/.ollama
           resources:
             requests:
-              cpu: 500m
+              cpu: 4
               memory: 1Gi
             limits:
-              cpu: 1000m
-              memory: 2Gi
+              cpu: 4
+              memory: 1Gi
       volumes:
         - name: models
           persistentVolumeClaim:
