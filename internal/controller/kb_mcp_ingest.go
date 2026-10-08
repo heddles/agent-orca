@@ -26,6 +26,9 @@ import (
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -37,6 +40,7 @@ import (
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
 	"github.com/heddles/agent-orca/internal/podbuilder"
+	"github.com/heddles/agent-orca/internal/security"
 )
 
 const (
@@ -53,12 +57,29 @@ const (
 	// defaultMCPIngesterImage is the fallback image for the mcp-ingester binary.
 	defaultMCPIngesterImage = "ghcr.io/agentorca/mcp-ingester:latest"
 
-	// labelKBMCPIngest marks resources created for MCP ingestion Jobs.
-	labelKBMCPIngest = "agentorca.io/kb-mcp-ingest"
+	// ingestServiceAccountName is the ServiceAccount used by KnowledgeBase
+	// ingestion Jobs (MCP and static-source). The chart provisions it in the
+	// release namespace; the operator ensures it in each KB namespace.
+	ingestServiceAccountName = "agentorca-mcp-ingester"
+
+	// labelKBMCPIngest marks resources created for KnowledgeBase ingestion Jobs
+	// (both MCP and static-source Jobs). Defined in the security package so the
+	// ingestion NetworkPolicy pod selector matches the Job pod labels.
+	labelKBMCPIngest = security.LabelKBIngest
 )
 
 // mcpIngestConfig mirrors the IngestConfig struct in cmd/mcp-ingester/main.go.
 type mcpIngestConfig struct {
+	// SourceType selects the workflow: "mcp" (default when empty) or "static"
+	// (ConfigMaps, URLs, and/or S3 declared in the KnowledgeBase spec).
+	SourceType     string   `json:"sourceType,omitempty"`
+	ConfigMapNames []string `json:"configMapNames,omitempty"`
+	URLs           []string `json:"urls,omitempty"`
+	S3Bucket       string   `json:"s3Bucket,omitempty"`
+	S3Prefix       string   `json:"s3Prefix,omitempty"`
+	S3Region       string   `json:"s3Region,omitempty"`
+	S3Endpoint     string   `json:"s3Endpoint,omitempty"`
+
 	Transport         string          `json:"transport"`
 	URL               string          `json:"url,omitempty"`
 	BinaryCmd         string          `json:"binaryCmd,omitempty"`
@@ -157,6 +178,16 @@ func (r *KnowledgeBaseReconciler) runMCPIngestion(
 		return false, fmt.Errorf("getting ModelProvider %q: %w", mpName, err)
 	}
 
+	// Ensure the ingester ServiceAccount/RBAC and NetworkPolicy exist in the
+	// KB namespace before creating the Job. The chart only provisions these
+	// in the release namespace; Jobs run in the KB's namespace.
+	if err := r.ensureIngestRBAC(ctx, kb); err != nil {
+		return false, fmt.Errorf("ensuring ingester RBAC: %w", err)
+	}
+	if err := r.ensureIngestNetworkPolicy(ctx, kb); err != nil {
+		return false, fmt.Errorf("ensuring ingestion NetworkPolicy: %w", err)
+	}
+
 	// Build and create resources.
 	logger.Info("Creating MCP ingestion Job", "mcpServer", src.MCPServerRef, "job", jobName)
 
@@ -251,6 +282,381 @@ func (r *KnowledgeBaseReconciler) cleanupIngestResources(ctx context.Context, na
 	}
 }
 
+// hasStaticSources reports whether the ingestion config declares any
+// ConfigMap, URL, or S3 sources (i.e. anything ingested by the static-source
+// Job rather than an MCP Job).
+func hasStaticSources(ing *agentorcav1alpha1.IngestionConfig) bool {
+	return len(ing.ConfigMapRefs) > 0 || len(ing.URLs) > 0 || ing.S3 != nil
+}
+
+// runSourcesIngestion manages the lifecycle of the static-source ingestion Job
+// for a KnowledgeBase (ConfigMaps, URLs, S3). The Job fetches the sources,
+// detects document types, extracts text, and writes vectors directly to
+// Qdrant — keeping fetching/extraction/embedding CPU work out of the
+// operator. Idempotent, mirroring runMCPIngestion.
+//
+// Returns (true, nil) when the Job completed or no Job was needed (sync
+// interval not elapsed). Returns (false, nil) when a Job is still running.
+func (r *KnowledgeBaseReconciler) runSourcesIngestion(ctx context.Context, kb *agentorcav1alpha1.KnowledgeBase) (bool, error) {
+	logger := log.FromContext(ctx)
+
+	jobName := sourcesIngestJobName(kb.Name)
+	configCMName := jobName + "-config"
+
+	// Check for existing Job — always handle completed/running Jobs.
+	var existingJob batchv1.Job
+	err := r.Get(ctx, client.ObjectKey{Name: jobName, Namespace: kb.Namespace}, &existingJob)
+	if err == nil {
+		return r.handleExistingJob(ctx, kb, &existingJob)
+	}
+	if !apierrors.IsNotFound(err) {
+		return false, fmt.Errorf("checking existing Job: %w", err)
+	}
+
+	// No existing Job. Only create a new one if sync interval has elapsed.
+	if kb.Status.LastSyncTime != nil && kb.Spec.Ingestion != nil {
+		interval := time.Duration(kb.Spec.Ingestion.SyncIntervalSeconds) * time.Second
+		if interval > 0 && time.Since(kb.Status.LastSyncTime.Time) < interval {
+			return true, nil
+		}
+	}
+
+	// Resolve embedding ModelProvider (already pinned in KB status).
+	mpName := kb.Status.EmbeddingModelProvider
+	if mpName == "" {
+		return false, fmt.Errorf("KnowledgeBase %q has no pinned embedding provider yet", kb.Name)
+	}
+	var mp agentorcav1alpha1.ModelProvider
+	if err := r.Get(ctx, client.ObjectKey{Name: mpName, Namespace: kb.Namespace}, &mp); err != nil {
+		return false, fmt.Errorf("getting ModelProvider %q: %w", mpName, err)
+	}
+
+	// Ensure the ingester ServiceAccount/RBAC and NetworkPolicy exist in the
+	// KB namespace before creating the Job. The chart only provisions these
+	// in the release namespace; Jobs run in the KB's namespace.
+	if err := r.ensureIngestRBAC(ctx, kb); err != nil {
+		return false, fmt.Errorf("ensuring ingester RBAC: %w", err)
+	}
+	if err := r.ensureIngestNetworkPolicy(ctx, kb); err != nil {
+		return false, fmt.Errorf("ensuring ingestion NetworkPolicy: %w", err)
+	}
+
+	logger.Info("Creating static-source ingestion Job", "job", jobName)
+	ingestCfg := r.buildSourcesIngestConfig(kb, &mp)
+	cfgJSON, err := json.Marshal(ingestCfg)
+	if err != nil {
+		return false, fmt.Errorf("marshaling ingest config: %w", err)
+	}
+
+	// Create config ConfigMap.
+	configCM := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      configCMName,
+			Namespace: kb.Namespace,
+			Labels:    map[string]string{labelKBMCPIngest: kb.Name},
+		},
+		Data: map[string]string{mcpIngestConfigKey: string(cfgJSON)},
+	}
+	if err := ctrl.SetControllerReference(kb, configCM, r.Scheme); err != nil {
+		return false, fmt.Errorf("setting owner ref on config ConfigMap: %w", err)
+	}
+	if err := r.Create(ctx, configCM); err != nil && !apierrors.IsAlreadyExists(err) {
+		return false, fmt.Errorf("creating config ConfigMap: %w", err)
+	}
+
+	// Build and create the Job.
+	job := r.buildSourcesIngestJob(kb, &mp, jobName, configCMName)
+	if err := ctrl.SetControllerReference(kb, job, r.Scheme); err != nil {
+		return false, fmt.Errorf("setting owner ref on Job: %w", err)
+	}
+	if err := r.Create(ctx, job); err != nil {
+		return false, fmt.Errorf("creating Job: %w", err)
+	}
+
+	// Job just started — caller should requeue.
+	return false, nil
+}
+
+// ensureIngestRBAC creates the ingester ServiceAccount, Role, and RoleBinding
+// in the KnowledgeBase's namespace. The Helm chart only provisions these in
+// the release namespace, but ingestion Jobs run in the KB's namespace. Each
+// resource is owned by the KB and self-heals if it was removed (e.g. its
+// previous owner KB was deleted while other KBs remain).
+func (r *KnowledgeBaseReconciler) ensureIngestRBAC(ctx context.Context, kb *agentorcav1alpha1.KnowledgeBase) error {
+	sa := &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      ingestServiceAccountName,
+			Namespace: kb.Namespace,
+			Labels: map[string]string{
+				labelKBMCPIngest:               kb.Name,
+				"app.kubernetes.io/managed-by": "agentorca",
+			},
+		},
+	}
+	if err := r.ensureIngestObject(ctx, kb, sa); err != nil {
+		return fmt.Errorf("ensuring ServiceAccount: %w", err)
+	}
+
+	role := &rbacv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      ingestServiceAccountName,
+			Namespace: kb.Namespace,
+			Labels: map[string]string{
+				labelKBMCPIngest:               kb.Name,
+				"app.kubernetes.io/managed-by": "agentorca",
+			},
+		},
+		Rules: []rbacv1.PolicyRule{
+			{
+				APIGroups: []string{""},
+				Resources: []string{"configmaps"},
+				Verbs:     []string{"get", "list"},
+			},
+		},
+	}
+	if err := r.ensureIngestObject(ctx, kb, role); err != nil {
+		return fmt.Errorf("ensuring Role: %w", err)
+	}
+
+	rb := &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      ingestServiceAccountName,
+			Namespace: kb.Namespace,
+			Labels: map[string]string{
+				labelKBMCPIngest:               kb.Name,
+				"app.kubernetes.io/managed-by": "agentorca",
+			},
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: "rbac.authorization.k8s.io",
+			Kind:     "Role",
+			Name:     ingestServiceAccountName,
+		},
+		Subjects: []rbacv1.Subject{{
+			Kind:      "ServiceAccount",
+			Name:      ingestServiceAccountName,
+			Namespace: kb.Namespace,
+		}},
+	}
+	if err := r.ensureIngestObject(ctx, kb, rb); err != nil {
+		return fmt.Errorf("ensuring RoleBinding: %w", err)
+	}
+	return nil
+}
+
+// ensureIngestObject creates obj (owned by the KB) if it does not exist.
+func (r *KnowledgeBaseReconciler) ensureIngestObject(ctx context.Context, kb *agentorcav1alpha1.KnowledgeBase, obj client.Object) error {
+	if err := ctrl.SetControllerReference(kb, obj, r.Scheme); err != nil {
+		return fmt.Errorf("setting owner ref on %T: %w", obj, err)
+	}
+	if err := r.Create(ctx, obj); err != nil && !apierrors.IsAlreadyExists(err) {
+		return fmt.Errorf("creating %T: %w", obj, err)
+	}
+	return nil
+}
+
+// ensureIngestNetworkPolicy creates (or updates) the NetworkPolicy for the
+// KB's ingestion Job pods. The policy is additive — NetworkPolicy rules from
+// multiple policies are unioned — so creating it is safe in namespaces
+// without default-deny policies and required in namespaces that have them.
+func (r *KnowledgeBaseReconciler) ensureIngestNetworkPolicy(ctx context.Context, kb *agentorcav1alpha1.KnowledgeBase) error {
+	var extraEgress []agentorcav1alpha1.EgressRule
+	if kb.Spec.Ingestion != nil {
+		extraEgress = kb.Spec.Ingestion.NetworkEgress
+	}
+	np := security.BuildIngestNetworkPolicy(kb.Name, kb.Namespace, extraEgress)
+
+	var existing networkingv1.NetworkPolicy
+	err := r.Get(ctx, client.ObjectKey{Name: np.Name, Namespace: kb.Namespace}, &existing)
+	if apierrors.IsNotFound(err) {
+		if err := ctrl.SetControllerReference(kb, np, r.Scheme); err != nil {
+			return fmt.Errorf("setting owner ref on ingestion NetworkPolicy: %w", err)
+		}
+		if err := r.Create(ctx, np); err != nil && !apierrors.IsAlreadyExists(err) {
+			return fmt.Errorf("creating ingestion NetworkPolicy: %w", err)
+		}
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("checking ingestion NetworkPolicy: %w", err)
+	}
+
+	// Update only on drift so reconcile stays read-only in the steady state.
+	if !apiequality.Semantic.DeepEqual(existing.Spec, np.Spec) {
+		existing.Spec = np.Spec
+		if err := r.Update(ctx, &existing); err != nil {
+			return fmt.Errorf("updating ingestion NetworkPolicy: %w", err)
+		}
+	}
+	return nil
+}
+
+// buildSourcesIngestConfig builds the JSON config for the static-source
+// ingestion Job.
+func (r *KnowledgeBaseReconciler) buildSourcesIngestConfig(
+	kb *agentorcav1alpha1.KnowledgeBase,
+	mp *agentorcav1alpha1.ModelProvider,
+) *mcpIngestConfig {
+	embeddingEndpoint, embeddingModel := embeddingConfig(mp)
+
+	var cmNames []string
+	for _, ref := range kb.Spec.Ingestion.ConfigMapRefs {
+		cmNames = append(cmNames, ref.Name)
+	}
+
+	s3 := kb.Spec.Ingestion.S3
+	cfg := &mcpIngestConfig{
+		SourceType:     "static",
+		ConfigMapNames: cmNames,
+		URLs:           kb.Spec.Ingestion.URLs,
+
+		EmbeddingEndpoint:  embeddingEndpoint,
+		EmbeddingModel:     embeddingModel,
+		EmbeddingKeyFile:   fmt.Sprintf("/etc/embed-key/%s", mp.Spec.CredentialsRef.Key),
+		EmbeddingDims:      kb.Status.EmbeddingDimensions,
+		EmbeddingDocPrompt: mp.Spec.DocPrompt,
+		ChunkSize:          kb.Spec.Embedding.ChunkSize,
+		ChunkOverlap:       kb.Spec.Embedding.ChunkOverlap,
+
+		QdrantURL:      kb.Status.VectorStoreURL,
+		CollectionName: kb.Status.CollectionName,
+	}
+	if s3 != nil {
+		cfg.S3Bucket = s3.Bucket
+		cfg.S3Prefix = s3.Prefix
+		cfg.S3Region = s3.Region
+		cfg.S3Endpoint = s3.Endpoint
+	}
+	return cfg
+}
+
+// buildSourcesIngestJob constructs the Kubernetes Job spec for static-source
+// (ConfigMap/URL/S3) ingestion.
+func (r *KnowledgeBaseReconciler) buildSourcesIngestJob(
+	kb *agentorcav1alpha1.KnowledgeBase,
+	mp *agentorcav1alpha1.ModelProvider,
+	jobName, configCMName string,
+) *batchv1.Job {
+	labels := map[string]string{
+		labelKBMCPIngest:               kb.Name,
+		"app.kubernetes.io/name":       "mcp-ingester",
+		"app.kubernetes.io/managed-by": "agentorca",
+	}
+
+	volumes := []corev1.Volume{
+		{
+			Name: "ingest-config",
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{Name: configCMName},
+				},
+			},
+		},
+		{
+			Name: "embed-key",
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName: mp.Spec.CredentialsRef.Name,
+					Items: []corev1.KeyToPath{
+						{Key: mp.Spec.CredentialsRef.Key, Path: mp.Spec.CredentialsRef.Key},
+					},
+				},
+			},
+		},
+	}
+
+	volumeMounts := []corev1.VolumeMount{
+		{
+			Name:      "ingest-config",
+			MountPath: mcpIngestConfigDir,
+			ReadOnly:  true,
+		},
+		{
+			Name:      "embed-key",
+			MountPath: "/etc/embed-key",
+			ReadOnly:  true,
+		},
+	}
+
+	// POD_NAMESPACE tells the ingester where to read source ConfigMaps from.
+	envVars := []corev1.EnvVar{
+		{
+			Name: "POD_NAMESPACE",
+			ValueFrom: &corev1.EnvVarSource{
+				FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.namespace"},
+			},
+		},
+	}
+
+	// S3 credentials come from the referenced Secret as standard AWS env vars.
+	if kb.Spec.Ingestion.S3 != nil && kb.Spec.Ingestion.S3.SecretRef != nil {
+		secretName := kb.Spec.Ingestion.S3.SecretRef.Name
+		envVars = append(envVars,
+			corev1.EnvVar{
+				Name: "AWS_ACCESS_KEY_ID",
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
+						Key:                  "AWS_ACCESS_KEY_ID",
+					},
+				},
+			},
+			corev1.EnvVar{
+				Name: "AWS_SECRET_ACCESS_KEY",
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
+						Key:                  "AWS_SECRET_ACCESS_KEY",
+					},
+				},
+			},
+		)
+	}
+
+	return &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      jobName,
+			Namespace: kb.Namespace,
+			Labels:    labels,
+		},
+		Spec: batchv1.JobSpec{
+			BackoffLimit: ptr.To(int32(3)),
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: labels},
+				Spec: corev1.PodSpec{
+					RestartPolicy:      corev1.RestartPolicyNever,
+					ServiceAccountName: ingestServiceAccountName,
+					Containers: []corev1.Container{
+						{
+							Name:         "ingester",
+							Image:        r.mcpIngesterImageOrDefault(),
+							Command:      []string{"/mcp-ingester"},
+							Env:          envVars,
+							VolumeMounts: volumeMounts,
+							Resources: corev1.ResourceRequirements{
+								Requests: corev1.ResourceList{
+									corev1.ResourceCPU:    resource.MustParse("100m"),
+									corev1.ResourceMemory: resource.MustParse("128Mi"),
+								},
+								Limits: corev1.ResourceList{
+									corev1.ResourceCPU:    resource.MustParse("1"),
+									corev1.ResourceMemory: resource.MustParse("1Gi"),
+								},
+							},
+						},
+					},
+					Volumes: volumes,
+					SecurityContext: &corev1.PodSecurityContext{
+						RunAsNonRoot: ptr.To(true),
+						RunAsUser:    ptr.To(int64(1000)),
+						FSGroup:      ptr.To(int64(1000)),
+					},
+				},
+			},
+		},
+	}
+}
+
 // buildIngestConfig builds the JSON config for the mcp-ingester binary.
 func (r *KnowledgeBaseReconciler) buildIngestConfig(
 	ctx context.Context, //nolint:unparam
@@ -262,14 +668,7 @@ func (r *KnowledgeBaseReconciler) buildIngestConfig(
 	src *agentorcav1alpha1.MCPIngestionSource,
 ) (*mcpIngestConfig, error) { //nolint:unparam
 
-	embeddingEndpoint := mp.Spec.BaseURL
-	if embeddingEndpoint == "" {
-		embeddingEndpoint = embeddingBaseURL(mp.Spec.LiteLLMModel)
-	}
-	embeddingModel := mp.Spec.LiteLLMModel
-	if idx := strings.Index(embeddingModel, "/"); idx >= 0 {
-		embeddingModel = embeddingModel[idx+1:]
-	}
+	embeddingEndpoint, embeddingModel := embeddingConfig(mp)
 
 	dims := kb.Status.EmbeddingDimensions
 
@@ -547,7 +946,7 @@ func (r *KnowledgeBaseReconciler) buildIngestJob(
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
 					RestartPolicy:      corev1.RestartPolicyNever,
-					ServiceAccountName: "agentorca-mcp-ingester",
+					ServiceAccountName: ingestServiceAccountName,
 					Containers: []corev1.Container{
 						{
 							Name:         "ingester",
@@ -603,6 +1002,30 @@ func mcpIngestJobName(kbName string, idx int) string {
 		name = strings.TrimRight(name[:63], "-")
 	}
 	return name
+}
+
+// sourcesIngestJobName returns a DNS-safe Job name for a KB's static-source
+// (ConfigMap/URL/S3) ingestion Job.
+func sourcesIngestJobName(kbName string) string {
+	safe := strings.Trim(dnsUnsafe.ReplaceAllString(strings.ToLower(kbName), "-"), "-")
+	name := "kb-src-" + safe
+	if len(name) > 63 {
+		name = strings.TrimRight(name[:63], "-")
+	}
+	return name
+}
+
+// embeddingConfig returns the embedding endpoint and model for a ModelProvider.
+func embeddingConfig(mp *agentorcav1alpha1.ModelProvider) (endpoint, model string) {
+	endpoint = mp.Spec.BaseURL
+	if endpoint == "" {
+		endpoint = embeddingBaseURL(mp.Spec.LiteLLMModel)
+	}
+	model = mp.Spec.LiteLLMModel
+	if idx := strings.Index(model, "/"); idx >= 0 {
+		model = model[idx+1:]
+	}
+	return endpoint, model
 }
 
 // mcpIngesterImageOrDefault returns the configured ingester image or the built-in default.

@@ -129,6 +129,14 @@ type IngestionConfig struct {
 	// +kubebuilder:default=0
 	// +optional
 	SyncIntervalSeconds int `json:"syncIntervalSeconds,omitempty"`
+
+	// NetworkEgress defines additional outbound network rules for ingestion
+	// Job pods. The operator always creates a NetworkPolicy for ingestion Jobs
+	// allowing DNS, the Kubernetes API, same-namespace services (Qdrant, MCP
+	// servers, in-cluster embedding providers), and HTTP/HTTPS egress; these
+	// rules are added to that allowlist (e.g. S3 on a custom port).
+	// +optional
+	NetworkEgress []EgressRule `json:"networkEgress,omitempty"`
 }
 
 // MCPIngestionSource configures document ingestion from an MCP server.
@@ -255,6 +263,11 @@ type S3IngestionSource struct {
 	// Region is the AWS region (or S3-compatible endpoint region).
 	// +optional
 	Region string `json:"region,omitempty"`
+
+	// Endpoint is the S3-compatible API endpoint (e.g. "http://minio.default.svc:9000"
+	// for MinIO). Empty means AWS S3.
+	// +optional
+	Endpoint string `json:"endpoint,omitempty"`
 
 	// SecretRef references a Secret containing AWS credentials.
 	// Expected keys: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY.

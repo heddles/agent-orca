@@ -77,6 +77,16 @@ type IngestConfig struct {
 	// Qdrant destination.
 	QdrantURL      string `json:"qdrantURL"`
 	CollectionName string `json:"collectionName"`
+
+	// SourceType selects the ingestion workflow: "mcp" (default when empty) or
+	// "static" (ConfigMaps, URLs, and/or S3 declared in the KnowledgeBase spec).
+	SourceType     string   `json:"sourceType,omitempty"`
+	ConfigMapNames []string `json:"configMapNames,omitempty"`
+	URLs           []string `json:"urls,omitempty"`
+	S3Bucket       string   `json:"s3Bucket,omitempty"`
+	S3Prefix       string   `json:"s3Prefix,omitempty"`
+	S3Region       string   `json:"s3Region,omitempty"`
+	S3Endpoint     string   `json:"s3Endpoint,omitempty"`
 }
 
 const configPath = "/etc/mcp-ingest/config.json"
@@ -106,26 +116,37 @@ func run(ctx context.Context) error {
 		return fmt.Errorf("parsing config: %w", err)
 	}
 
-	// Connect to MCP server.
-	serverCfg := mcp.ServerConfig{
-		Name:      cfg.MCPServerName,
-		Transport: mcp.Transport(cfg.Transport),
-		URL:       cfg.URL,
-		Cmd:       cfg.BinaryCmd,
-		Args:      cfg.BinaryArgs,
-		Env:       cfg.Env,
-	}
-	mcpClient := mcp.New(ctx, []mcp.ServerConfig{serverCfg})
-	defer mcpClient.Close()
+	// Run the configured ingestion workflow to get documents.
+	var docs []rag.Document
+	switch cfg.SourceType {
+	case "", "mcp":
+		// Connect to MCP server.
+		serverCfg := mcp.ServerConfig{
+			Name:      cfg.MCPServerName,
+			Transport: mcp.Transport(cfg.Transport),
+			URL:       cfg.URL,
+			Cmd:       cfg.BinaryCmd,
+			Args:      cfg.BinaryArgs,
+			Env:       cfg.Env,
+		}
+		mcpClient := mcp.New(ctx, []mcp.ServerConfig{serverCfg})
+		defer mcpClient.Close()
 
-	if len(mcpClient.Tools()) == 0 {
-		return fmt.Errorf("MCP server %q returned no tools", cfg.MCPServerName)
-	}
+		if len(mcpClient.Tools()) == 0 {
+			return fmt.Errorf("MCP server %q returned no tools", cfg.MCPServerName)
+		}
 
-	// Run discover/fetch workflow to get documents.
-	docs, err := runWorkflow(ctx, mcpClient, &cfg)
-	if err != nil {
-		return fmt.Errorf("workflow: %w", err)
+		docs, err = runWorkflow(ctx, mcpClient, &cfg)
+		if err != nil {
+			return fmt.Errorf("workflow: %w", err)
+		}
+	case "static":
+		docs, err = runStaticWorkflow(ctx, &cfg)
+		if err != nil {
+			return fmt.Errorf("static workflow: %w", err)
+		}
+	default:
+		return fmt.Errorf("unknown sourceType %q", cfg.SourceType)
 	}
 
 	slog.Info("Fetched documents", "count", len(docs))
@@ -213,6 +234,12 @@ func runWorkflow(ctx context.Context, client *mcp.Client, cfg *IngestConfig) ([]
 			continue
 		}
 
+		content, docType, extracted, err := extractDocument(item, "", result)
+		if err != nil {
+			slog.Warn("Extracting document failed, skipping", "item", item, "err", err)
+			continue
+		}
+
 		// Generate document ID.
 		var idBuf bytes.Buffer
 		_ = tmpl.Execute(&idBuf, map[string]string{
@@ -223,13 +250,13 @@ func runWorkflow(ctx context.Context, client *mcp.Client, cfg *IngestConfig) ([]
 
 		docs = append(docs, rag.Document{
 			ID:      idBuf.String(),
-			Content: result,
-			Metadata: map[string]any{
+			Content: content,
+			Metadata: metadataWithDocType(map[string]any{
 				"source":    "mcp",
 				"mcpServer": cfg.MCPServerName,
 				"tool":      cfg.FetchTool,
 				"item":      item,
-			},
+			}, docType, extracted),
 		})
 
 		if (i+1)%50 == 0 {

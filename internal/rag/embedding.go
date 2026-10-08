@@ -22,13 +22,32 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
-const maxEmbeddingBatchSize = 10 // Smaller batches for local models like Ollama
+const (
+	// maxBatchCharacterLimit caps total characters per embedding request so
+	// payload and response sizes stay predictable on memory-constrained runners.
+	maxBatchCharacterLimit = 250000
+	// maxBatchChunks caps the number of texts per request. Smaller batches keep
+	// each request well under the HTTP timeout on slow CPU-only backends and
+	// let parallel workers balance load evenly.
+	maxBatchChunks = 32
+	// defaultEmbedConcurrency is the number of embedding requests sent in
+	// parallel. It matches OLLAMA_NUM_PARALLEL=4 in the sample Ollama
+	// deployment; Ollama continuous-batches parallel requests so cores stay
+	// saturated instead of idling between sequential round-trips.
+	defaultEmbedConcurrency = 4
+	// concurrencyEnvVar lets operators tune embedding concurrency without a
+	// rebuild (e.g. set to 2 under tight memory pressure).
+	concurrencyEnvVar = "EMBEDDING_CONCURRENCY"
+)
 
 // EmbeddingClient calls an OpenAI-compatible /v1/embeddings endpoint.
 type EmbeddingClient struct {
@@ -39,6 +58,8 @@ type EmbeddingClient struct {
 	docPrompt   string // optional prefix prepended to document chunk texts before embedding
 	queryPrompt string // optional prefix prepended to query texts before embedding
 	httpClient  *http.Client
+	// concurrency bounds how many embedding requests are sent in parallel.
+	concurrency int
 }
 
 // NewEmbeddingClient creates an embedding client that reads the API key from a file.
@@ -52,6 +73,7 @@ func NewEmbeddingClient(endpoint, apiKeyFile, model, docPrompt, queryPrompt stri
 		docPrompt:   docPrompt,
 		queryPrompt: queryPrompt,
 		httpClient:  &http.Client{Timeout: 5 * time.Minute},
+		concurrency: embeddingConcurrency(),
 	}
 }
 
@@ -66,6 +88,7 @@ func NewEmbeddingClientWithKey(endpoint, apiKey, model, docPrompt, queryPrompt s
 		docPrompt:   docPrompt,
 		queryPrompt: queryPrompt,
 		httpClient:  &http.Client{Timeout: 5 * time.Minute},
+		concurrency: embeddingConcurrency(),
 	}
 }
 
@@ -87,6 +110,11 @@ type embeddingResponse struct {
 // When the relevant prompt is empty, texts are sent as-is — this preserves
 // backward compatibility for models that do not need a task prefix (e.g.
 // OpenAI's text-embedding-3-*).
+//
+// Texts are grouped into batches bounded by maxBatchCharacterLimit and
+// maxBatchChunks, and batches are dispatched concurrently (up to the
+// configured concurrency) so CPU-bound local backends stay saturated.
+// The returned vectors always align 1:1 with the input texts, in input order.
 func (e *EmbeddingClient) Embed(ctx context.Context, texts []string, forQuery bool) ([][]float32, error) {
 	if len(texts) == 0 {
 		return nil, nil
@@ -97,23 +125,92 @@ func (e *EmbeddingClient) Embed(ctx context.Context, texts []string, forQuery bo
 		return nil, err
 	}
 
-	results := make([][]float32, len(texts))
-
-	// Process in batches.
-	for start := 0; start < len(texts); start += maxEmbeddingBatchSize {
-		end := min(start+maxEmbeddingBatchSize, len(texts))
-		batch := texts[start:end]
-
-		vectors, err := e.embedBatch(ctx, batch, apiKey, forQuery)
-		if err != nil {
-			return nil, fmt.Errorf("embedding batch [%d:%d]: %w", start, end, err)
+	// Split texts into batches bounded by both character count and chunk count.
+	type batchSpan struct {
+		start, end, chars int
+	}
+	var batches []batchSpan
+	for start := 0; start < len(texts); {
+		chars := 0
+		end := start
+		for end < len(texts) && chars < maxBatchCharacterLimit && end-start < maxBatchChunks {
+			chars += len(texts[end])
+			end++
 		}
-		for i, v := range vectors {
-			results[start+i] = v
+		if end == start {
+			// Single text larger than the character limit; send it alone
+			// rather than looping forever.
+			end = start + 1
 		}
+		batches = append(batches, batchSpan{start: start, end: end, chars: chars})
+		start = end
 	}
 
-	return results, nil
+	concurrency := e.concurrency
+	if concurrency > len(batches) {
+		concurrency = len(batches)
+	}
+	if concurrency <= 0 {
+		concurrency = 1
+	}
+
+	results := make([][]float32, len(texts))
+	sem := make(chan struct{}, concurrency)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var firstErr error
+
+	// batchCtx lets the first failing batch cancel all in-flight and queued
+	// batches instead of grinding through the rest of the workload.
+	batchCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	for i, b := range batches {
+		wg.Add(1)
+		go func(i int, b batchSpan) {
+			defer wg.Done()
+
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-batchCtx.Done():
+				return
+			}
+
+			started := time.Now()
+			vectors, err := e.embedBatch(batchCtx, texts[b.start:b.end], apiKey, forQuery)
+			if err != nil {
+				mu.Lock()
+				if firstErr == nil {
+					firstErr = fmt.Errorf("embedding batch %d/%d [%d:%d]: %w", i+1, len(batches), b.start, b.end, err)
+					cancel()
+				}
+				mu.Unlock()
+				return
+			}
+
+			// embedBatch returns vectors in input order (verified by index),
+			// so writing at the batch offset keeps results aligned 1:1 with
+			// the original texts.
+			copy(results[b.start:], vectors)
+
+			slog.Info("embedded batch",
+				"batch", i+1,
+				"total_batches", len(batches),
+				"chunks", b.end-b.start,
+				"chars", b.chars,
+				"duration", time.Since(started).Round(time.Millisecond),
+			)
+		}(i, b)
+	}
+
+	wg.Wait()
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	// Surface caller cancellation: some batches may have been skipped without
+	// recording an error of their own.
+	return results, ctx.Err()
 }
 
 func (e *EmbeddingClient) embedBatch(ctx context.Context, texts []string, apiKey string, forQuery bool) ([][]float32, error) {
@@ -203,6 +300,17 @@ func (e *EmbeddingClient) ProbeDimension(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("embedding probe returned empty vector")
 	}
 	return len(vecs[0]), nil
+}
+
+// embeddingConcurrency returns the configured parallel-request limit for
+// embedding calls, defaulting to defaultEmbedConcurrency.
+func embeddingConcurrency() int {
+	if v := os.Getenv(concurrencyEnvVar); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return defaultEmbedConcurrency
 }
 
 func (e *EmbeddingClient) readAPIKey() (string, error) {

@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"time"
 )
 
 // Document is a single document to ingest.
@@ -66,6 +67,7 @@ func IngestDocuments(
 	}
 
 	slog.Info("ingesting documents", "docs", len(docs))
+	started := time.Now()
 
 	totalChunks := 0
 	for docIdx, doc := range docs {
@@ -78,6 +80,14 @@ func IngestDocuments(
 		if len(chunks) == 0 {
 			continue
 		}
+
+		slog.Info("ingesting document",
+			"document", docIdx+1,
+			"total_documents", len(docs),
+			"id", doc.ID,
+			"chunks", len(chunks),
+			"content_bytes", len(doc.Content),
+		)
 
 		// Extract texts for embedding.
 		texts := make([]string, len(chunks))
@@ -113,6 +123,12 @@ func IngestDocuments(
 		}
 		totalChunks += len(chunks)
 	}
+
+	slog.Info("ingestion finished",
+		"docs", len(docs),
+		"chunks", totalChunks,
+		"duration", time.Since(started).Round(time.Millisecond),
+	)
 
 	return &IngestResult{
 		DocumentCount: len(docs),

@@ -403,13 +403,17 @@ the request cap, you delete it, or you opt into age recycling via a positive `wa
 | `embedding.chunkOverlap` | Overlap tokens between chunks (default 64) |
 | `ingestion.configMapRefs` | ConfigMaps to ingest as documents |
 | `ingestion.urls` | URLs to fetch and ingest |
+| `ingestion.s3` | S3-compatible object storage source (bucket, prefix, region, endpoint, secretRef) |
+| `ingestion.mcp` | MCP servers to fetch documents from via Jobs |
+| `ingestion.networkEgress` | Extra egress ports allowed for ingestion Job pods |
 | `ingestion.syncIntervalSeconds` | Periodic re-ingestion (0 = one-shot) |
 
 **What the controller does:**
 1. Auto-deploys a namespace-shared Qdrant StatefulSet + headless Service
 2. Creates the collection with the configured dimensions and cosine distance
-3. Ingests documents from configured sources (ConfigMaps, URLs)
-4. Sets `status.ready = true` with document/chunk counts
+3. Launches `mcp-ingester` Kubernetes Jobs for all ingestion (ConfigMaps, URLs, S3, MCP) — the Jobs detect document types (PDF, DOCX, PPTX, XLSX, HTML, text), extract text, chunk, embed, and write vectors directly to Qdrant, keeping ingestion CPU work out of the operator
+4. Ensures the ingester ServiceAccount/Role/RoleBinding and an egress NetworkPolicy for ingestion Job pods in the KB's namespace (additive, so it is safe in namespaces without default-deny and required in namespaces with it)
+5. Sets `status.ready = true` with document/chunk counts
 
 **Agent integration:** Add KnowledgeBase names to `Agent.spec.knowledgeBases`. The operator injects `_rag_search` and `_rag_ingest` as built-in tools.
 

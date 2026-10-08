@@ -36,7 +36,13 @@ spec:
               sleep 5
               echo "Pulling nomic-embed-text model..."
               ollama pull nomic-embed-text
-              echo "Model pulled successfully"
+              # Bake num_thread into the model so llama.cpp matches the
+              # container's CPU limit instead of defaulting to the host's
+              # core count (which oversubscribes and thrashes under cgroup
+              # CPU limits).
+              printf 'FROM nomic-embed-text\nPARAMETER num_thread 4\n' > /tmp/Modelfile
+              ollama create nomic-embed-text-4cpu -f /tmp/Modelfile
+              echo "Model pulled and tuned successfully"
           env:
             - name: OLLAMA_HOST
               value: "0.0.0.0"
@@ -74,6 +80,10 @@ spec:
               value: "0.0.0.0"
             - name: OLLAMA_NUM_PARALLEL
               value: "4"
+            # Keep the embedding model resident between requests; reloading
+            # it after every idle gap dominates latency during bulk ingestion.
+            - name: OLLAMA_KEEP_ALIVE
+              value: "-1"
           volumeMounts:
             - name: models
               mountPath: /root/.ollama
@@ -120,7 +130,7 @@ kind: ModelProvider
 metadata:
   name: ollama-embed
 spec:
-  litellmModel: "ollama/nomic-embed-text"
+  litellmModel: "ollama/nomic-embed-text-4cpu"
   baseURL: "http://ollama-embed.agent-orca-system.svc:11434"
   credentialsRef:
     name: ollama-embed-credentials

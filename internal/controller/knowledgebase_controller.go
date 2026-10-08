@@ -19,8 +19,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"runtime/debug"
@@ -173,9 +171,10 @@ func (r *KnowledgeBaseReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		LastTransitionTime: metav1.Now(),
 	})
 
-	// Run source ingestion if configured.
+	// Run source ingestion if configured. Ingestion runs in mcp-ingester
+	// Jobs; the operator only orchestrates Job lifecycle.
 	if kb.Spec.Ingestion != nil {
-		if err := r.runIngestion(ctx, &kb, embedder); err != nil {
+		if err := r.runIngestion(ctx, &kb); err != nil {
 			logger.Error(err, "running ingestion")
 			// Don't fail reconcile — ingestion can retry on next sync.
 		}
@@ -746,65 +745,29 @@ func (r *KnowledgeBaseReconciler) estimateStoragePercent(kb *agentorcav1alpha1.K
 	return pct
 }
 
-// runIngestion processes configured ingestion sources (ConfigMaps, URLs) and upserts documents.
-// embedder must already be resolved and the dimension probed (kb.Status.EmbeddingDimensions > 0).
-func (r *KnowledgeBaseReconciler) runIngestion(ctx context.Context, kb *agentorcav1alpha1.KnowledgeBase, embedder *rag.EmbeddingClient) error {
+// runIngestion launches ingestion Jobs for the configured sources. All
+// fetching, document-type detection, extraction, chunking, and embedding run
+// in mcp-ingester Jobs — the operator only orchestrates Job lifecycle and
+// queries Qdrant for counts.
+func (r *KnowledgeBaseReconciler) runIngestion(ctx context.Context, kb *agentorcav1alpha1.KnowledgeBase) error {
 	logger := log.FromContext(ctx)
 
 	if kb.Spec.Ingestion == nil {
 		return nil
 	}
 
-	chunkCfg := rag.ChunkConfig{
-		ChunkSize:    kb.Spec.Embedding.ChunkSize,
-		ChunkOverlap: kb.Spec.Embedding.ChunkOverlap,
-	}
-	if chunkCfg.ChunkSize == 0 {
-		chunkCfg = rag.DefaultChunkConfig()
-	}
-
-	dims := kb.Status.EmbeddingDimensions
-
-	var docs []rag.Document
-
-	// Ingest from ConfigMaps.
-	for _, ref := range kb.Spec.Ingestion.ConfigMapRefs {
-		var cm corev1.ConfigMap
-		if err := r.Get(ctx, client.ObjectKey{Name: ref.Name, Namespace: kb.Namespace}, &cm); err != nil {
-			logger.Error(err, "fetching ConfigMap for ingestion", "configMap", ref.Name)
-			continue
-		}
-		for key, value := range cm.Data {
-			docs = append(docs, rag.Document{
-				ID:      fmt.Sprintf("configmap/%s/%s", ref.Name, key),
-				Content: value,
-				Metadata: map[string]any{
-					"source":    "configmap",
-					"configmap": ref.Name,
-					"key":       key,
-				},
-			})
-		}
-	}
-
-	// Ingest from URLs.
-	for _, u := range kb.Spec.Ingestion.URLs {
-		content, err := fetchURL(ctx, u)
+	// Static sources (ConfigMaps, URLs, S3) are ingested by a single
+	// mcp-ingester Job per KnowledgeBase.
+	sourcesRunning := false
+	if hasStaticSources(kb.Spec.Ingestion) {
+		done, err := r.runSourcesIngestion(ctx, kb)
 		if err != nil {
-			logger.Error(err, "fetching URL for ingestion", "url", u)
-			continue
+			logger.Error(err, "static-source ingestion failed")
+		} else if !done {
+			sourcesRunning = true
 		}
-		docs = append(docs, rag.Document{
-			ID:      fmt.Sprintf("url/%s", u),
-			Content: content,
-			Metadata: map[string]any{
-				"source": "url",
-				"url":    u,
-			},
-		})
 	}
 
-	// Ingest from MCP sources.
 	// MCP ingestion Jobs embed and write to Qdrant directly. We always call
 	// runMCPIngestion so that we pick up completed/running Jobs. It is
 	// idempotent: it only creates a new Job when none exists and the sync
@@ -821,18 +784,9 @@ func (r *KnowledgeBaseReconciler) runIngestion(ctx context.Context, kb *agentorc
 		}
 	}
 
-	// Ingest ConfigMap/URL docs through the controller's own pipeline.
-	if len(docs) > 0 {
-		result, err := rag.IngestDocuments(ctx, docs, kb.Status.VectorStoreURL, kb.Status.CollectionName, uint64(dims), embedder, chunkCfg)
-		if err != nil {
-			return fmt.Errorf("ingesting documents: %w", err)
-		}
-		logger.Info("ConfigMap/URL ingestion complete", "docs", result.DocumentCount, "chunks", result.ChunkCount)
-	}
-
 	// ChunkCount is set by the caller from Qdrant directly (the single
 	// source of truth). Here we just manage LastSyncTime.
-	if !mcpJobRunning {
+	if !sourcesRunning && !mcpJobRunning {
 		now := metav1.Now()
 		kb.Status.LastSyncTime = &now
 	}
@@ -932,27 +886,6 @@ func (r *KnowledgeBaseReconciler) readSecretKey(ctx context.Context, namespace, 
 		return "", fmt.Errorf("key %q not found in secret %s/%s", key, namespace, name)
 	}
 	return string(val), nil
-}
-
-// fetchURL retrieves text content from a URL.
-func fetchURL(ctx context.Context, url string) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return "", err
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20)) // 10MB limit
-	if err != nil {
-		return "", err
-	}
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
-	}
-	return string(body), nil
 }
 
 func durationFromSeconds(s int) time.Duration {

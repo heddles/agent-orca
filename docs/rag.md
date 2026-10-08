@@ -16,6 +16,7 @@ flowchart TD
     subgraph "Per Namespace"
         QD[(Qdrant StatefulSet<br/>gRPC :6334 / HTTP :6333)]
         CM[ConfigMap Sources]
+        ING[mcp-ingester Job<br/>detect + extract + chunk + embed]
     end
 
     subgraph "Agent Pod"
@@ -29,9 +30,10 @@ flowchart TD
 
     KBC -->|1. auto-deploy| QD
     KBC -->|2. create collection| QD
-    KBC -->|3. read sources| CM
-    KBC -->|4. embed| EP
-    KBC -->|5. upsert vectors| QD
+    KBC -->|3. launch ingestion Job| ING
+    ING -->|4. read sources| CM
+    ING -->|5. embed| EP
+    ING -->|6. upsert vectors| QD
 
     AC -->|chat completions| MR
     MR -->|_rag_search| API
@@ -386,12 +388,26 @@ not accept a `prompt` parameter in the OpenAI-compatible API.
 ### Ingestion Pipeline
 
 ```
-Source Documents → Chunk (sentence-boundary, token-based) → Embed (batch /v1/embeddings) → Upsert (Qdrant gRPC)
+Source Documents → Detect type → Extract text → Chunk (sentence-boundary, token-based) → Embed (batch /v1/embeddings) → Upsert (Qdrant gRPC)
 ```
 
-1. **Chunking**: Splits on sentence boundaries, respecting `chunkSize` tokens with `chunkOverlap` overlap. Uses word count as a token approximation (1 token ~ 1.33 words).
-2. **Embedding**: Batches up to 100 texts per `/v1/embeddings` call. If the ModelProvider has a `docPrompt`, it is prepended to each chunk text before embedding.
-3. **Upsert**: Each chunk gets a deterministic ID (`sha256(docID:chunkIndex)`), enabling idempotent re-ingestion. Points include payload: `text`, `doc_id`, `chunk_index`, plus any user metadata.
+All source ingestion (ConfigMaps, URLs, S3, MCP) runs in **`mcp-ingester` Kubernetes Jobs**, not in the
+operator — the controller only orchestrates Job lifecycle and queries Qdrant for counts. The pipeline:
+
+1. **Type detection & extraction**: `internal/rag/extract` detects the document type from magic bytes
+   (with Content-Type/extension fallbacks) and extracts plain text. Supported: PDF (text layer),
+   DOCX, PPTX, XLSX, HTML, and plain-text formats (markdown, JSON, YAML, CSV, XML). Base64-encoded
+   binaries returned by MCP tools are decoded and retried. Documents that fail extraction are
+   skipped with a warning.
+2. **Chunking**: Splits on sentence boundaries, respecting `chunkSize` tokens with `chunkOverlap` overlap. Uses word count as a token approximation (1 token ~ 1.33 words).
+3. **Embedding**: Batches up to 100 texts per `/v1/embeddings` call. If the ModelProvider has a `docPrompt`, it is prepended to each chunk text before embedding.
+4. **Upsert**: Each chunk gets a deterministic ID (`sha256(docID:chunkIndex)`), enabling idempotent re-ingestion. Points include payload: `text`, `doc_id`, `chunk_index`, plus any user metadata (including `docType`).
+
+The controller ensures an egress NetworkPolicy for ingestion Job pods
+(`agentorca-kb-ingest-<kb>`) allowing DNS, the Kubernetes API, same-namespace services
+(Qdrant, MCP servers, in-cluster embedding providers), and HTTP/HTTPS. Add extra ports via
+`ingestion.networkEgress`. The policy is additive, so it is safe in namespaces without
+default-deny policies and required in namespaces that have them.
 
 ### Search Flow
 
@@ -411,8 +427,11 @@ alignment required by models like `nomic-embed-text`.
 | `internal/rag/qdrant.go` | Qdrant gRPC client wrapper |
 | `internal/rag/embedding.go` | OpenAI-compatible embedding client |
 | `internal/rag/chunker.go` | Sentence-boundary document chunker |
+| `internal/rag/extract/` | Document type detection + text extraction (PDF, OOXML, HTML, text) |
 | `internal/rag/pipeline.go` | Shared ingest pipeline (chunk → embed → upsert) |
-| `internal/controller/knowledgebase_controller.go` | Reconciler: Qdrant deploy, collection create, source ingestion |
+| `internal/controller/knowledgebase_controller.go` | Reconciler: Qdrant deploy, collection create, ingestion Job orchestration |
+| `internal/controller/kb_mcp_ingest.go` | Ingestion Job builders (MCP + static sources), ingester RBAC, NetworkPolicy |
+| `cmd/mcp-ingester/` | Ingestion Job binary: fetch sources, detect/extract, chunk, embed, upsert |
 | `internal/apiserver/apiserver.go` | `/knowledgebase/.../search` and `/knowledgebase/.../ingest` handlers |
 | `internal/controller/agentrun_controller.go` | Resolves KB configs + injects RAG tools in `buildRouterConfig` |
 
