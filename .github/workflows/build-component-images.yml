@@ -47,6 +47,11 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          # For workflow_dispatch, build the requested tag rather than the
+          # branch tip. Empty for release/tag-push events, which checkout
+          # resolves to the tag ref automatically.
+          ref: ${{ inputs.ref }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -60,13 +65,18 @@ jobs:
 
       - name: Determine publish tag
         id: meta
+        env:
+          DISPATCH_REF: ${{ inputs.ref }}
         run: |
-          if [ "$GITHUB_EVENT_NAME" = "release" ]; then
+          # Tag pushes and release events both carry the tag in GITHUB_REF_NAME.
+          # Publishing a release with a new tag fires both events, so both
+          # paths must resolve a tag here.
+          if [ "$GITHUB_EVENT_NAME" = "release" ] || [ "$GITHUB_EVENT_NAME" = "push" ]; then
             TAG="${GITHUB_REF_NAME#refs/tags/}"
-          elif [ -n "${{ inputs.ref }}" ]; then
-            TAG="${{ inputs.ref }}"
+          elif [ -n "$DISPATCH_REF" ]; then
+            TAG="$DISPATCH_REF"
           else
-            echo "::error::No tag available (trigger a Release or pass 'ref' via workflow_dispatch)"
+            echo "::error::No tag available (publish a Release, push a v*.*.* tag, or pass 'ref' via workflow_dispatch)"
             exit 1
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
