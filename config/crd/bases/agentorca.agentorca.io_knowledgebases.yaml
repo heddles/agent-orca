@@ -355,12 +355,45 @@ spec:
                       - mcpServerRef
                       type: object
                     type: array
+                  networkEgress:
+                    description: |-
+                      NetworkEgress defines additional outbound network rules for ingestion
+                      Job pods. The operator always creates a NetworkPolicy for ingestion Jobs
+                      allowing DNS, the Kubernetes API, same-namespace services (Qdrant, MCP
+                      servers, in-cluster embedding providers), and HTTP/HTTPS egress; these
+                      rules are added to that allowlist (e.g. S3 on a custom port).
+                    items:
+                      description: EgressRule defines an allowed outbound network
+                        target for a tool or agent pod.
+                      properties:
+                        host:
+                          description: Host is the target hostname. Wildcards like
+                            "*.example.com" are supported.
+                          type: string
+                        port:
+                          description: Port is the target port.
+                          format: int32
+                          type: integer
+                        protocol:
+                          default: TCP
+                          description: Protocol defaults to TCP.
+                          type: string
+                      required:
+                      - host
+                      - port
+                      type: object
+                    type: array
                   s3:
                     description: S3 configures S3-compatible object storage as a document
                       source.
                     properties:
                       bucket:
                         description: Bucket is the S3 bucket name.
+                        type: string
+                      endpoint:
+                        description: |-
+                          Endpoint is the S3-compatible API endpoint (e.g. "http://minio.default.svc:9000"
+                          for MinIO). Empty means AWS S3.
                         type: string
                       prefix:
                         description: Prefix filters objects by key prefix.

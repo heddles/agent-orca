@@ -170,8 +170,9 @@ graph TD
 provider selection, token streaming, spend accounting, context compaction, checkpoint
 persistence, and built-in tool resolution) + an optional **tool-executor sidecar**
 (dispatches tool calls, including child agents and MCP servers). KnowledgeBases
-auto-deploy a **Qdrant** vector store and use the **MCP-ingester** image to fetch and
-chunk documents. See [docs/crds.md](docs/crds.md) for detailed CRD documentation.
+auto-deploy a **Qdrant** vector store and use the **MCP-ingester** image in Kubernetes Jobs to
+detect document types, extract text (PDF, DOCX, PPTX, XLSX, HTML), chunk, and embed documents.
+See [docs/crds.md](docs/crds.md) for detailed CRD documentation.
 
 ### Operator pod
 
