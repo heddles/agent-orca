@@ -46,7 +46,7 @@ jobs:
             dockerfile: Dockerfile.go.openai-reference
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           # For workflow_dispatch, build the requested tag rather than the
           # branch tip. Empty for release/tag-push events, which checkout
