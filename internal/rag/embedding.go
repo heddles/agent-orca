@@ -47,6 +47,13 @@ const (
 	// concurrencyEnvVar lets operators tune embedding concurrency without a
 	// rebuild (e.g. set to 2 under tight memory pressure).
 	concurrencyEnvVar = "EMBEDDING_CONCURRENCY"
+	// maxEmbedAttempts bounds retries for transient embeddings API failures
+	// (429 rate limit / 503 overloaded) before the batch fails.
+	maxEmbedAttempts = 5
+	// initialRetryDelay/maxRetryDelay bound the exponential backoff between
+	// retry attempts. A shorter Retry-After from the API takes precedence.
+	initialRetryDelay = 1 * time.Second
+	maxRetryDelay     = 30 * time.Second
 )
 
 // EmbeddingClient calls an OpenAI-compatible /v1/embeddings endpoint.
@@ -242,22 +249,60 @@ func (e *EmbeddingClient) embedBatch(ctx context.Context, texts []string, apiKey
 	}
 
 	url := e.endpoint + "/v1/embeddings"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(reqBody))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+apiKey)
+	var resp *http.Response
+	var body []byte
+	for attempt := 0; ; attempt++ {
+		if attempt > 0 {
+			// Back off exponentially before retrying a throttled or overloaded
+			// response; honor Retry-After when the API sends a shorter hint.
+			delay := initialRetryDelay
+			for i := 1; i < attempt && delay < maxRetryDelay; i++ {
+				delay *= 2
+			}
+			if delay > maxRetryDelay {
+				delay = maxRetryDelay
+			}
+			if ra := retryAfter(resp); ra > 0 && ra < delay {
+				delay = ra
+			}
+			slog.Warn("embeddings API throttled, retrying",
+				"status", resp.StatusCode,
+				"attempt", attempt,
+				"max_attempts", maxEmbedAttempts,
+				"retry_in", delay.Round(time.Millisecond),
+			)
+			select {
+			case <-time.After(delay):
+			case <-ctx.Done():
+				return nil, fmt.Errorf("calling embeddings API: %w", ctx.Err())
+			}
+		}
 
-	resp, err := e.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("calling embeddings API: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(reqBody))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+apiKey)
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 50<<20))
-	if err != nil {
-		return nil, fmt.Errorf("reading response: %w", err)
+		resp, err = e.httpClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("calling embeddings API: %w", err)
+		}
+		body, err = io.ReadAll(io.LimitReader(resp.Body, 50<<20))
+		_ = resp.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("reading response: %w", err)
+		}
+
+		// Retry transient throttling/overload responses; anything else falls
+		// through to the terminal-error handling below.
+		if resp.StatusCode != http.StatusTooManyRequests && resp.StatusCode != http.StatusServiceUnavailable {
+			break
+		}
+		if attempt == maxEmbedAttempts-1 {
+			break
+		}
 	}
 
 	if resp.StatusCode != http.StatusOK {
@@ -300,6 +345,23 @@ func (e *EmbeddingClient) ProbeDimension(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("embedding probe returned empty vector")
 	}
 	return len(vecs[0]), nil
+}
+
+// retryAfter parses a Retry-After header (seconds) into a duration, returning
+// 0 when absent or malformed.
+func retryAfter(resp *http.Response) time.Duration {
+	if resp == nil {
+		return 0
+	}
+	v := strings.TrimSpace(resp.Header.Get("Retry-After"))
+	if v == "" {
+		return 0
+	}
+	secs, err := strconv.Atoi(v)
+	if err != nil || secs < 0 {
+		return 0
+	}
+	return time.Duration(secs) * time.Second
 }
 
 // embeddingConcurrency returns the configured parallel-request limit for
