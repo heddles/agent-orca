@@ -101,6 +101,20 @@ type ModelConstraints struct {
 	// Example: "15.00" (i.e. $15 per million output tokens)
 	// +optional
 	CostPerMillionOutputTokens string `json:"costPerMillionOutputTokens,omitempty"`
+
+	// RPM is the account-level requests-per-minute budget for this provider's
+	// API key. Embedding calls are paced to stay under it. When unset, the
+	// operator applies built-in conservative presets keyed by the provider
+	// endpoint (e.g. Google AI Studio free tier, OpenAI tier 1).
+	// +optional
+	RPM int `json:"rpm,omitempty"`
+
+	// TPM is the account-level tokens-per-minute budget for this provider's
+	// API key. Embedding batches are sized and paced to stay under it. When
+	// unset, the operator applies built-in conservative presets keyed by the
+	// provider endpoint.
+	// +optional
+	TPM int `json:"tpm,omitempty"`
 }
 
 // ModelProviderStatus defines the observed state of a ModelProvider.

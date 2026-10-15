@@ -1130,7 +1130,8 @@ func (s *Server) resolveEmbedder(ctx context.Context, namespace string, kb *agen
 		}
 	}
 
-	return rag.NewEmbeddingClientWithKey(endpoint, apiKey, model, mp.Spec.DocPrompt, mp.Spec.QueryPrompt), nil
+	return rag.NewEmbeddingClientWithKey(endpoint, apiKey, model, mp.Spec.DocPrompt, mp.Spec.QueryPrompt).
+		WithRateLimits(mp.Spec.Constraints.RPM, mp.Spec.Constraints.TPM), nil
 }
 
 // embeddingBaseURL returns the base URL for embedding API calls based on the LiteLLM model prefix.

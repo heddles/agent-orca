@@ -853,7 +853,8 @@ func (r *KnowledgeBaseReconciler) resolveEmbedder(ctx context.Context, kb *agent
 		kb.Status.EmbeddingModel = mp.Spec.LiteLLMModel
 	}
 
-	return rag.NewEmbeddingClient(endpoint, keyFile, model, mp.Spec.DocPrompt, mp.Spec.QueryPrompt), nil
+	return rag.NewEmbeddingClient(endpoint, keyFile, model, mp.Spec.DocPrompt, mp.Spec.QueryPrompt).
+		WithRateLimits(mp.Spec.Constraints.RPM, mp.Spec.Constraints.TPM), nil
 }
 
 // embeddingBaseURL returns the provider's base URL for embedding calls.

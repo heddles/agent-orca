@@ -55,7 +55,7 @@ const (
 	mcpIngestConfigDir = "/etc/mcp-ingest"
 
 	// defaultMCPIngesterImage is the fallback image for the mcp-ingester binary.
-	defaultMCPIngesterImage = "ghcr.io/agentorca/mcp-ingester:latest"
+	defaultMCPIngesterImage = "ghcr.io/heddles/agenta-orca/mcp-ingester:latest"
 
 	// ingestServiceAccountName is the ServiceAccount used by KnowledgeBase
 	// ingestion Jobs (MCP and static-source). The chart provisions it in the
@@ -108,6 +108,8 @@ type mcpIngestConfig struct {
 	EmbeddingKeyFile   string `json:"embeddingKeyFile"`
 	EmbeddingDims      int    `json:"embeddingDims"`
 	EmbeddingDocPrompt string `json:"embeddingDocPrompt,omitempty"`
+	EmbeddingRPM       int    `json:"embeddingRPM,omitempty"`
+	EmbeddingTPM       int    `json:"embeddingTPM,omitempty"`
 	ChunkSize          int    `json:"chunkSize"`
 	ChunkOverlap       int    `json:"chunkOverlap"`
 
@@ -497,7 +499,7 @@ func (r *KnowledgeBaseReconciler) buildSourcesIngestConfig(
 	kb *agentorcav1alpha1.KnowledgeBase,
 	mp *agentorcav1alpha1.ModelProvider,
 ) *mcpIngestConfig {
-	embeddingEndpoint, embeddingModel := embeddingConfig(mp)
+	embeddingEndpoint, embeddingModel, rpm, tpm := embeddingConfig(mp)
 
 	var cmNames []string
 	for _, ref := range kb.Spec.Ingestion.ConfigMapRefs {
@@ -515,6 +517,8 @@ func (r *KnowledgeBaseReconciler) buildSourcesIngestConfig(
 		EmbeddingKeyFile:   fmt.Sprintf("/etc/embed-key/%s", mp.Spec.CredentialsRef.Key),
 		EmbeddingDims:      kb.Status.EmbeddingDimensions,
 		EmbeddingDocPrompt: mp.Spec.DocPrompt,
+		EmbeddingRPM:       rpm,
+		EmbeddingTPM:       tpm,
 		ChunkSize:          kb.Spec.Embedding.ChunkSize,
 		ChunkOverlap:       kb.Spec.Embedding.ChunkOverlap,
 
@@ -668,7 +672,7 @@ func (r *KnowledgeBaseReconciler) buildIngestConfig(
 	src *agentorcav1alpha1.MCPIngestionSource,
 ) (*mcpIngestConfig, error) { //nolint:unparam
 
-	embeddingEndpoint, embeddingModel := embeddingConfig(mp)
+	embeddingEndpoint, embeddingModel, rpm, tpm := embeddingConfig(mp)
 
 	dims := kb.Status.EmbeddingDimensions
 
@@ -687,6 +691,8 @@ func (r *KnowledgeBaseReconciler) buildIngestConfig(
 		EmbeddingKeyFile:   fmt.Sprintf("/etc/embed-key/%s", mp.Spec.CredentialsRef.Key),
 		EmbeddingDims:      dims,
 		EmbeddingDocPrompt: mp.Spec.DocPrompt,
+		EmbeddingRPM:       rpm,
+		EmbeddingTPM:       tpm,
 		ChunkSize:          kb.Spec.Embedding.ChunkSize,
 		ChunkOverlap:       kb.Spec.Embedding.ChunkOverlap,
 
@@ -1015,8 +1021,10 @@ func sourcesIngestJobName(kbName string) string {
 	return name
 }
 
-// embeddingConfig returns the embedding endpoint and model for a ModelProvider.
-func embeddingConfig(mp *agentorcav1alpha1.ModelProvider) (endpoint, model string) {
+// embeddingConfig returns the embedding endpoint, model, and any operator-
+// configured rpm/tpm budgets for a ModelProvider. Zero rpm/tpm values mean
+// "use the built-in provider presets".
+func embeddingConfig(mp *agentorcav1alpha1.ModelProvider) (endpoint, model string, rpm, tpm int) {
 	endpoint = mp.Spec.BaseURL
 	if endpoint == "" {
 		endpoint = embeddingBaseURL(mp.Spec.LiteLLMModel)
@@ -1025,7 +1033,7 @@ func embeddingConfig(mp *agentorcav1alpha1.ModelProvider) (endpoint, model strin
 	if idx := strings.Index(model, "/"); idx >= 0 {
 		model = model[idx+1:]
 	}
-	return endpoint, model
+	return endpoint, model, mp.Spec.Constraints.RPM, mp.Spec.Constraints.TPM
 }
 
 // mcpIngesterImageOrDefault returns the configured ingester image or the built-in default.
