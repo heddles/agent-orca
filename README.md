@@ -573,7 +573,7 @@ curl http://localhost:8080/api/deployments/default/support-bot
 
 ## Example: Long-Running Support Bot
 
-> This example uses the **openai reference image** `ghcr.io/agentorca/agent-orca/openai-reference:latest`
+> This example uses the **openai reference image** `ghcr.io/heddles/agent-orca/openai-reference:latest`
 > — a minimal OpenAI-compatible agent that streams input to the model-router and returns the
 > output. The model-router injects `systemPrompt`, `tools`, prior context, and built-in tool
 > resolution, so this image needs no baked-in persona. Published with each release; pin to
@@ -628,7 +628,7 @@ spec:
     You are a helpful support agent for our e-commerce platform.
     Help customers with orders, refunds, and billing.
   runtime:
-    ociRef: ghcr.io/agentorca/agent-orca/openai-reference:latest
+    ociRef: ghcr.io/heddles/agent-orca/openai-reference:latest
     framework: openai-compatible
 
 ---
@@ -706,14 +706,14 @@ skaffold run -p demo-htb-pwn
 helm uninstall demo-soc-triage -n agent-orca-system
 ```
 
-> Demo agents run from `ghcr.io/agentorca/agent-orca/openai-reference:latest` (public GHCR,
+> Demo agents run from `ghcr.io/heddles/agent-orca/openai-reference:latest` (public GHCR,
 > no credentials needed). `skaffold dev -p dev` builds and kind-loads this image as `:latest`
 > automatically. To run offline, or to force a rebuild after editing
 > `examples/agent-sdk-template/agent.py`:
 > ```bash
-> docker build -t ghcr.io/agentorca/agent-orca/openai-reference:latest \
+> docker build -t ghcr.io/heddles/agent-orca/openai-reference:latest \
 >   -f examples/agent-sdk-template/Dockerfile .
-> kind load docker-image ghcr.io/agentorca/agent-orca/openai-reference:latest \
+> kind load docker-image ghcr.io/heddles/agent-orca/openai-reference:latest \
 >   --name agent-orca-dev
 > ```
 
@@ -749,7 +749,7 @@ The script generates unique agent names using timestamps (e.g., `test-agent-0890
 - Calls the model-router's OpenAI-compatible API at `http://localhost:8080/v1/chat/completions`
 - Gets an LLM response via the configured ModelSelector routing
 - Returns the LLM output as the agent result
-- Uses a Python 3.12 slim image (`ghcr.io/agentorca/agent-orca/openai-reference:latest`) with `urllib` for HTTP requests
+- Uses a Python 3.12 slim image (`ghcr.io/heddles/agent-orca/openai-reference:latest`) with `urllib` for HTTP requests
 - Includes error handling and a configurable timeout (default 600s via `AGENTORC_TIMEOUT_SEC`)
 - Configurable resource requests/limits
 
@@ -864,11 +864,11 @@ Helm values so you can point at an internal registry or pin specific versions.
 
 | Component | Helm Value | Env Var | Default |
 |-----------|-----------|---------|---------|
-| Operator | `operator.image.repository` / `tag` | — | `ghcr.io/agentorca/agent-orca/operator:latest` |
-| Model Router (sidecar) | `modelRouter.image.repository` / `tag` | `MODEL_ROUTER_IMAGE` | `ghcr.io/agentorca/agent-orca/model-router:latest` |
-| MCP Ingester (KB jobs) | `mcpIngester.image.repository` / `tag` | `MCP_INGESTER_IMAGE` | `ghcr.io/agentorca/mcp-ingester:latest` |
+| Operator | `operator.image.repository` / `tag` | — | `ghcr.io/heddles/agent-orca/operator:latest` |
+| Model Router (sidecar) | `modelRouter.image.repository` / `tag` | `MODEL_ROUTER_IMAGE` | `ghcr.io/heddles/agent-orca/model-router:latest` |
+| MCP Ingester (KB jobs) | `mcpIngester.image.repository` / `tag` | `MCP_INGESTER_IMAGE` | `ghcr.io/heddles/mcp-ingester:latest` |
 | Qdrant (KB vector store) | `qdrant.image.repository` / `tag` | `QDRANT_IMAGE` | `qdrant/qdrant:v1.17.1` |
-| UIProxy | `ui.image.repository` / `tag` | — | `ghcr.io/agentorca/agent-orca/ui-proxy:latest` |
+| UIProxy | `ui.image.repository` / `tag` | — | `ghcr.io/heddles/agent-orca/ui-proxy:latest` |
 | Bundled Redis | `redis.image.repository` / `tag` | — | `redis:7-alpine` |
 
 All image references support `global.imageRegistry` as a prefix (e.g. set to

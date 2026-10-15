@@ -526,7 +526,7 @@ func ConfigFromEnv() (*Config, error) {
 
 	// Hindsight defaults
 	if cfg.Hindsight.URL == "" {
-		cfg.Hindsight.URL = "http://hindsight-api.agent-orca-system.svc.cluster.local:8888"
+		cfg.Hindsight.URL = "http://hindsight-api.hindsight.svc.cluster.local:8888"
 	}
 	// HINDSIGHT_URL env var overrides the URL when set.
 	if url, _ := os.LookupEnv("HINDSIGHT_URL"); url != "" {
