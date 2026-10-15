@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -32,6 +33,12 @@ import (
 
 	"github.com/heddles/agent-orca/internal/ratelimit"
 )
+
+// ErrDailyQuotaExhausted is returned when the provider reports that a per-day
+// quota (RPD) is exhausted. Retrying before the provider's daily reset is
+// guaranteed to fail (and can cost money on metered APIs), so callers must
+// stop and reschedule instead of backing off.
+var ErrDailyQuotaExhausted = errors.New("embedding provider daily quota exhausted (RPD)")
 
 const (
 	// maxBatchCharacterLimit caps total characters per embedding request
@@ -220,9 +227,10 @@ func (e *EmbeddingClient) Embed(ctx context.Context, texts []string, forQuery bo
 			cursor = end
 			mu.Unlock()
 
-			// ~charsPerTokenEstimate chars per token; min 1 so empty/binary
-			// texts still occupy request slots.
-			estTokens := int64(chars/charsPerTokenEstimate + 1)
+			// ~charsPerTokenEstimate chars per token, calibrated by the
+			// limiter's EWMA of actual API usage; min 1 so empty/binary texts
+			// still occupy request slots.
+			estTokens := e.lim.estimateTokens(chars)
 
 			release, err := e.lim.acquire(batchCtx, estTokens)
 			if err != nil {
@@ -367,10 +375,19 @@ func (e *EmbeddingClient) embedBatch(ctx context.Context, texts []string, apiKey
 			return nil, 0, false, fmt.Errorf("reading response: %w", err)
 		}
 
-		// A 429 means our current budget exceeds the provider's — shrink it
-		// before the retries (and any sibling batches) fire again.
-		if resp.StatusCode == http.StatusTooManyRequests && e.lim != nil {
-			e.lim.penalize()
+		// A 429 means our current budget exceeds the provider's. Daily-quota
+		// exhaustion is terminal for the window — abort without retrying, since
+		// every retry until the provider's reset is guaranteed to fail. Otherwise
+		// shrink the budget before the retries (and any sibling batches) fire again.
+		if resp.StatusCode == http.StatusTooManyRequests {
+			if ratelimit.ClassifyQuotaError(body) == ratelimit.QuotaScopeDay {
+				slog.Error("embedding provider daily quota exhausted; aborting all remaining batches",
+					"hint", "ingestion will resume after the provider's daily quota reset")
+				return nil, 0, false, fmt.Errorf("%w: provider reports per-day request quota exhausted", ErrDailyQuotaExhausted)
+			}
+			if e.lim != nil {
+				e.lim.penalize()
+			}
 		}
 
 		// Retry transient throttling/overload responses; anything else falls

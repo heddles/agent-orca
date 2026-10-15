@@ -23,6 +23,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -173,6 +174,13 @@ func run(ctx context.Context) error {
 
 	result, err := rag.IngestDocuments(ctx, docs, cfg.QdrantURL, cfg.CollectionName, uint64(cfg.EmbeddingDims), embedder, chunkCfg) //nolint:lll
 	if err != nil {
+		if errors.Is(err, rag.ErrDailyQuotaExhausted) {
+			// Final log line: the controller reads the pod termination message
+			// (FallbackToLogsOnError) looking for this marker and pauses
+			// re-ingestion until the provider's daily quota reset. Retrying
+			// here would only burn more of the (already exhausted) budget.
+			slog.Error("QUOTA_EXHAUSTED_DAILY embedding provider daily quota exhausted; aborting ingestion until quota reset")
+		}
 		return fmt.Errorf("ingesting documents: %w", err)
 	}
 

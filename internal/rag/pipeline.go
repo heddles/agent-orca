@@ -19,6 +19,7 @@ package rag
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -81,17 +82,40 @@ func IngestDocuments(
 			continue
 		}
 
+		// Resume: chunks already embedded with identical content are skipped,
+		// so a failed/restarted ingestion run only pays for what's missing
+		// instead of re-burning the provider's quota from scratch.
+		pointIDs := make([]string, len(chunks))
+		for i, c := range chunks {
+			pointIDs[i] = pointID(c.DocID, c.Index)
+		}
+		existing, err := qClient.ExistingPoints(ctx, collection, pointIDs)
+		if err != nil {
+			return nil, fmt.Errorf("document %q: checking existing chunks: %w", doc.ID, err)
+		}
+		todo := pendingChunks(chunks, existing)
+		if len(todo) == 0 {
+			slog.Info("skipping document, all chunks already ingested",
+				"id", doc.ID, "chunks", len(chunks))
+			totalChunks += len(chunks)
+			continue
+		}
+		if len(todo) < len(chunks) {
+			slog.Info("resuming document, skipping already-ingested chunks",
+				"id", doc.ID, "remaining", len(todo), "total", len(chunks))
+		}
+
 		slog.Info("ingesting document",
 			"document", docIdx+1,
 			"total_documents", len(docs),
 			"id", doc.ID,
-			"chunks", len(chunks),
+			"chunks", len(todo),
 			"content_bytes", len(doc.Content),
 		)
 
 		// Extract texts for embedding.
-		texts := make([]string, len(chunks))
-		for i, c := range chunks {
+		texts := make([]string, len(todo))
+		for i, c := range todo {
 			texts[i] = c.Text
 		}
 
@@ -102,14 +126,16 @@ func IngestDocuments(
 		}
 
 		// Build Qdrant points for this document.
-		points := make([]Point, len(chunks))
-		for i, chunk := range chunks {
+		points := make([]Point, len(todo))
+		for i, chunk := range todo {
 			payload := map[string]any{
 				"text":        chunk.Text,
 				"doc_id":      chunk.DocID,
 				"chunk_index": chunk.Index,
 			}
 			maps.Copy(payload, chunk.Metadata)
+			// Set after metadata so source metadata can't clobber the resume hash.
+			payload["content_hash"] = contentHash(chunk.Text)
 			points[i] = Point{
 				ID:      pointID(chunk.DocID, chunk.Index),
 				Vector:  vectors[i],
@@ -140,4 +166,28 @@ func IngestDocuments(
 func pointID(docID string, chunkIndex int) string {
 	h := sha256.Sum256(fmt.Appendf(nil, "%s:%d", docID, chunkIndex))
 	return fmt.Sprintf("%x", h[:16])
+}
+
+// contentHash identifies chunk content for resume decisions. Chunks whose
+// stored hash matches are already embedded and can be skipped.
+func contentHash(text string) string {
+	sum := sha256.Sum256([]byte(text))
+	return hex.EncodeToString(sum[:16])
+}
+
+// pendingChunks filters out chunks that are already embedded: a chunk is done
+// when its point exists AND the stored content hash matches the current text
+// (a hash mismatch means the source content changed and the chunk must be
+// re-embedded and upserted in place). Points predating content hashing store
+// an empty hash and are conservatively re-embedded once, after which resume
+// works fully.
+func pendingChunks(chunks []Chunk, existing map[string]string) []Chunk {
+	todo := make([]Chunk, 0, len(chunks))
+	for _, c := range chunks {
+		if h, ok := existing[pointID(c.DocID, c.Index)]; ok && h == contentHash(c.Text) {
+			continue
+		}
+		todo = append(todo, c)
+	}
+	return todo
 }

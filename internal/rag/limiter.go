@@ -66,8 +66,26 @@ func newTokenBucket(limitPerMinute int) *tokenBucket {
 	}
 }
 
+// newTokenBucketRate is the test constructor: same bucket semantics but with
+// an explicit refill rate so tests can observe pacing in milliseconds instead
+// of waiting out real per-minute budgets.
+func newTokenBucketRate(limitPerMinute int, perSecond float64) *tokenBucket {
+	if limitPerMinute <= 0 {
+		return nil
+	}
+	return &tokenBucket{
+		tokens: float64(limitPerMinute),
+		max:    float64(limitPerMinute),
+		rate:   perSecond,
+	}
+}
+
 // take blocks until n tokens are available or ctx is done.
+// A nil bucket means "unlimited" — no pacing.
 func (b *tokenBucket) take(ctx context.Context, n int64) error {
+	if b == nil {
+		return nil
+	}
 	for {
 		b.mu.Lock()
 		b.refill()
@@ -121,6 +139,9 @@ func (b *tokenBucket) adjust(estimate, actual int64) {
 	defer b.mu.Unlock()
 	b.refill()
 	b.tokens += float64(estimate - actual)
+	if b.tokens > b.max {
+		b.tokens = b.max
+	}
 }
 
 // adaptiveLimiter shapes embedding traffic against a provider's published
@@ -142,6 +163,11 @@ type adaptiveLimiter struct {
 	maxInflight int // current allowed concurrency (>=1)
 	charBudget  int // current per-request char budget
 	successes   int
+	// tokenRatio calibrates the chars→tokens estimate: an EWMA of
+	// (actual tokens charged) / (estimated tokens). Dense text (PDFs) runs
+	// ~1.4× the naive chars/4 estimate; without calibration the client
+	// overshoots the provider's TPM budget on the first pass.
+	tokenRatio float64
 }
 
 var limiters sync.Map // limits key -> *adaptiveLimiter, shared per process
@@ -161,6 +187,7 @@ func limiterFor(base Limits) *adaptiveLimiter {
 		tpm:         newTokenBucket(base.TPM),
 		maxInflight: max(1, base.Concurrency),
 		charBudget:  max(1, base.MaxBatchChars),
+		tokenRatio:  1.0,
 	}
 	actual, loaded := limiters.LoadOrStore(key, l)
 	if loaded {
@@ -192,6 +219,7 @@ func (l *adaptiveLimiter) acquire(ctx context.Context, estTokens int64) (func(),
 		l.mu.Unlock()
 	}
 
+	// Nil buckets mean "unlimited" — take() is nil-safe and skips pacing.
 	if err := l.rpm.take(ctx, 1); err != nil {
 		release()
 		return nil, err
@@ -214,7 +242,9 @@ func (l *adaptiveLimiter) penalize() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.successes = 0
-	floor := min(minBatchCharBudget, l.base.MaxBatchChars)
+	// Floor: a fraction of the base budget so repeated penalties can always
+	// shrink meaningfully, but never below a minimal useful request size.
+	floor := max(1, min(minBatchCharBudget, l.base.MaxBatchChars/4))
 	if next := l.charBudget / 2; next >= floor {
 		l.charBudget = next
 	} else {
@@ -258,8 +288,28 @@ func (l *adaptiveLimiter) batchCharBudget() int {
 	return l.charBudget
 }
 
+// estimateTokens converts a character count into a token estimate using the
+// calibrated chars→tokens ratio (see tokenRatio).
+func (l *adaptiveLimiter) estimateTokens(chars int) int64 {
+	l.mu.Lock()
+	ratio := l.tokenRatio
+	l.mu.Unlock()
+	if chars <= 0 {
+		return 1
+	}
+	return max(1, int64(float64(chars)/float64(charsPerTokenEstimate)*ratio))
+}
+
 // reconcileTokens refunds or debits the difference between the upfront token
-// estimate and the API-reported usage.
+// estimate and the API-reported usage, and folds the observed ratio into the
+// calibration EWMA so future estimates track the provider's tokenizer.
 func (l *adaptiveLimiter) reconcileTokens(estimate, actual int64) {
 	l.tpm.adjust(estimate, actual)
+	if estimate <= 0 || actual <= 0 {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	ratio := float64(actual) / float64(estimate)
+	l.tokenRatio = min(4.0, max(0.5, 0.9*l.tokenRatio+0.1*ratio))
 }

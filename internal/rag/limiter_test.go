@@ -19,6 +19,7 @@ package rag
 import (
 	"context"
 	"encoding/json"
+	"hash/fnv"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -29,27 +30,24 @@ import (
 )
 
 // TestTokenBucketPacesAfterDepletion verifies the bucket empties instantly
-// (no cold-start wait) then refills at limit/60 per second.
+// (no cold-start wait) then refills at the configured rate.
 func TestTokenBucketPacesAfterDepletion(t *testing.T) {
-	// 120 requests/min = 2/s refill rate.
-	b := newTokenBucket(120)
+	// Capacity 100, refill 10/s: draining is instant, the next take waits
+	// ~1s for 10 tokens to accrue.
+	b := newTokenBucketRate(100, 10)
 	if b == nil {
 		t.Fatal("nil bucket for positive limit")
 	}
-	for i := 0; i < 240; i++ {
-		if err := b.take(context.Background(), 1); err != nil {
-			t.Fatalf("take %d failed: %v", i, err)
-		}
+	if err := b.take(context.Background(), 100); err != nil { // drain in one take
+		t.Fatalf("drain take failed: %v", err)
 	}
-	// Bucket is drained (modulo trickle refill); the next take must wait for
-	// refill at 2/s — roughly half a second, definitely not instant.
 	start := time.Now()
-	if err := b.take(context.Background(), 1); err != nil {
+	if err := b.take(context.Background(), 10); err != nil {
 		t.Fatalf("paced take failed: %v", err)
 	}
 	elapsed := time.Since(start)
-	if elapsed < 300*time.Millisecond {
-		t.Errorf("expected bucket to pace the 241st take (~500ms), took %v", elapsed)
+	if elapsed < 500*time.Millisecond {
+		t.Errorf("expected bucket to pace the post-drain take (~1s at 10/s), took %v", elapsed)
 	}
 	if elapsed > 10*time.Second {
 		t.Errorf("paced take waited far too long: %v", elapsed)
@@ -59,7 +57,7 @@ func TestTokenBucketPacesAfterDepletion(t *testing.T) {
 // TestTokenBucketAdjustReconciles verifies usage reconciliation: refunding
 // overestimates and debiting underestimates.
 func TestTokenBucketAdjustReconciles(t *testing.T) {
-	b := newTokenBucket(1000)
+	b := newTokenBucketRate(1000, 1000)                        // 1s to refill fully — fast test
 	if err := b.take(context.Background(), 1000); err != nil { // drain
 		t.Fatal(err)
 	}
@@ -74,7 +72,7 @@ func TestTokenBucketAdjustReconciles(t *testing.T) {
 	if err := b.take(context.Background(), 10); err != nil {
 		t.Fatal(err)
 	}
-	if time.Since(start) < 100*time.Millisecond {
+	if time.Since(start) < 50*time.Millisecond {
 		t.Errorf("expected debt to force a wait, took %v", time.Since(start))
 	}
 }
@@ -101,20 +99,19 @@ func TestAIMDHalvesAndGrows(t *testing.T) {
 		t.Errorf("after one penalize budget = %d, want 60", got)
 	}
 	l.penalize()
-	if got := l.batchCharBudget(); got != 60 {
-		t.Errorf("after two penalizes budget = %d, want floor 60", got)
+	if got := l.batchCharBudget(); got != 30 {
+		t.Errorf("after two penalizes budget = %d, want floor 30", got)
 	}
 	if got := l.adaptiveConcurrency(); got != 1 {
 		t.Errorf("after two penalizes concurrency = %d, want 1", got)
 	}
 
-	// 8 clean successes grow one step: budget 60→120 (capped at base) and
-	// concurrency 1→2.
+	// 8 clean successes grow one step: budget 30→60 and concurrency 1→2.
 	for i := 0; i < 8; i++ {
 		l.reward()
 	}
-	if got := l.batchCharBudget(); got != 120 {
-		t.Errorf("after growth budget = %d, want 120", got)
+	if got := l.batchCharBudget(); got != 60 {
+		t.Errorf("after growth budget = %d, want 60", got)
 	}
 	if got := l.adaptiveConcurrency(); got != 2 {
 		t.Errorf("after growth concurrency = %d, want 2", got)
@@ -153,12 +150,20 @@ func TestAcquireCapsEstimateAtCapacity(t *testing.T) {
 	}
 }
 
-// throttlingMock serves /v1/embeddings, 429ing the first request with a
-// short Retry-After, and captures every request body.
+// throttlingMock serves /v1/embeddings, 429ing the first multi-input request
+// with a short Retry-After, and captures every request body.
 type throttlingMock struct {
 	requests []embeddingRequest
-	four29s  int32
+	four29s  int32 // actual 429 responses served
 	mu       sync.Mutex
+}
+
+// mockEmbeddingValue derives a deterministic, globally-unique-per-content
+// value so the test can verify each result landed at its original index.
+func mockEmbeddingValue(input string) float32 {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(input))
+	return float32(h.Sum32()%9999 + 1)
 }
 
 // TestEmbedShrinksBatchesAfter429 is the end-to-end AIMD test: a single 429
@@ -175,7 +180,7 @@ func TestEmbedShrinksBatchesAfter429(t *testing.T) {
 		mock.requests = append(mock.requests, req)
 		mock.mu.Unlock()
 
-		if atomic.AddInt32(&mock.four29s, 1) == 1 && len(req.Input) > 1 {
+		if len(req.Input) > 1 && atomic.CompareAndSwapInt32(&mock.four29s, 0, 1) {
 			// Throttle exactly once, with a short server-declared delay.
 			w.Header().Set("Retry-After", "0.1")
 			w.WriteHeader(http.StatusTooManyRequests)
@@ -185,7 +190,7 @@ func TestEmbedShrinksBatchesAfter429(t *testing.T) {
 
 		data := make([]embeddingMockData, len(req.Input))
 		for i := range req.Input {
-			data[i] = embeddingMockData{Embedding: []float32{float32(i + 1)}, Index: i}
+			data[i] = embeddingMockData{Embedding: []float32{mockEmbeddingValue(req.Input[i])}, Index: i}
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(embeddingResponse{Data: data})
@@ -207,8 +212,8 @@ func TestEmbedShrinksBatchesAfter429(t *testing.T) {
 		t.Fatalf("Embed failed: %v", err)
 	}
 	for i, v := range vectors {
-		if len(v) == 0 || v[0] != float32(i+1) {
-			t.Errorf("result %d: got %v, want [%d] (order not preserved)", i, v, i+1)
+		if want := mockEmbeddingValue(texts[i]); len(v) == 0 || v[0] != want {
+			t.Errorf("result %d: got %v, want [%v] (order not preserved)", i, v, want)
 		}
 	}
 

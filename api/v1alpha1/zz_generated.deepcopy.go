@@ -1493,6 +1493,10 @@ func (in *KnowledgeBaseStatus) DeepCopyInto(out *KnowledgeBaseStatus) {
 		in, out := &in.LastSyncTime, &out.LastSyncTime
 		*out = (*in).DeepCopy()
 	}
+	if in.NextIngestionAttempt != nil {
+		in, out := &in.NextIngestionAttempt, &out.NextIngestionAttempt
+		*out = (*in).DeepCopy()
+	}
 	if in.Conditions != nil {
 		in, out := &in.Conditions, &out.Conditions
 		*out = make([]v1.Condition, len(*in))

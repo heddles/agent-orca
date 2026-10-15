@@ -330,6 +330,26 @@ type KnowledgeBaseStatus struct {
 	// +optional
 	LastSyncTime *metav1.Time `json:"lastSyncTime,omitempty"`
 
+	// IngestionFailures counts consecutive failed ingestion Job runs. Reset to
+	// zero on success. It drives the exponential re-ingestion backoff so a
+	// persistently failing ingestion (e.g. provider quota exhaustion) cannot
+	// restart Jobs in a tight loop and burn through API budgets.
+	// +optional
+	IngestionFailures int `json:"ingestionFailures,omitempty"`
+
+	// NextIngestionAttempt is the earliest time the controller will launch a
+	// new ingestion Job after failures. Nil when ingestion is healthy. After
+	// provider daily-quota exhaustion this is set to the provider's quota
+	// reset time rather than a short backoff.
+	// +optional
+	NextIngestionAttempt *metav1.Time `json:"nextIngestionAttempt,omitempty"`
+
+	// IngestionBackoffReason explains why ingestion is paused (e.g.
+	// "embedding provider daily quota exhausted; waiting for quota reset").
+	// Empty when ingestion is healthy.
+	// +optional
+	IngestionBackoffReason string `json:"ingestionBackoffReason,omitempty"`
+
 	// QdrantVersion is the currently running Qdrant version as reported by
 	// the instance's HTTP API (e.g. "1.17.1"). Empty until the first probe.
 	// +optional
