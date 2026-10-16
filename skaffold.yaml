@@ -3,10 +3,8 @@ kind: Config
 metadata:
   name: agent-orca
 build:
-  tagPolicy:
-    sha256: {}
   local:
-    push: true
+    push: false
   hooks:
     before: &ensure_kind_build_before
       - command: ["bash", "hack/ensure-kind-cluster.sh"]
@@ -14,7 +12,7 @@ build:
     # Build the reference agent image (ghcr.io/heddles/agent-orca/openai-reference)
     # and load it into the kind cluster as `:latest`, so the demos and
     # hack/test-agents.sh (which pin ociRef => …/openai-reference:latest) resolve
-    # locally — just like the operator/router/ui images, minus the global SHA tag.
+    # locally — just like the operator/router/ui-proxy images, minus the global SHA tag.
     # Skip-if-present keeps the dev loop fast; non-fatal so a docker/kind hiccup
     # never breaks `skaffold dev`. Delete the local `:latest` tag to force a rebuild
     # after changing examples/agent-sdk-template/agent.py.
@@ -41,7 +39,7 @@ build:
       context: .
       docker:
         dockerfile: cmd/model-router/Dockerfile
-    - image: ghcr.io/heddles/agent-orca/ui
+    - image: ghcr.io/heddles/agent-orca/ui-proxy
       context: .
       docker:
         dockerfile: Dockerfile.ui-proxy
@@ -184,7 +182,7 @@ profiles:
               operator.image.tag: "{{.IMAGE_TAG_ghcr_io_heddles_agent_orca_operator}}"
               mcpIngester.image.tag: "{{.IMAGE_TAG_ghcr_io_heddles_agent_orca_mcp_ingester}}"
               modelRouter.image.tag: "{{.IMAGE_TAG_ghcr_io_heddles_agent_orca_model_router}}"
-              ui.image.tag: "{{.IMAGE_TAG_ghcr_io_heddles_agent_orca_ui}}"
+              ui.image.tag: "{{.IMAGE_TAG_ghcr_io_heddles_agent_orca_ui_proxy}}"
               ingress.enabled: "true"
               ingress.ingressClassName: "nginx"
               ingress.host: "agent-orca.local"
@@ -237,9 +235,10 @@ profiles:
             chartPath: charts/demos/demo-financial-analysis
             namespace: agent-orca-system
 
-  # demo-llm-research: deploys the LLM Research Agent demo. By default uses
-  # ghcr.io/heddles/eval-runtime:latest image. For local development, use
-  # --set evalRuntime.image.repository=agent-orca/eval-runtime.
+  # demo-llm-research: deploys the LLM Research Agent demo. The profile builds
+  # the eval-runtime image (ghcr.io/heddles/agent-orca/eval-runtime) and loads
+  # it into the kind cluster for local evaluation runs; the chart's agent
+  # runtime currently pins the openai-reference image via runtime.ociRef.
   # Requires: agent-orca + model-providers already deployed (skaffold dev -p dev).
   # The model-providers chart must have ollama-embeddings enabled for local embeddings.
   # Deploy: skaffold run -p demo-llm-research
@@ -247,14 +246,10 @@ profiles:
   - name: demo-llm-research
     build:
       artifacts:
-        - image: agent-orca/eval-runtime
+        - image: ghcr.io/heddles/agent-orca/eval-runtime
           context: charts/demos/demo-llm-research
           docker:
             dockerfile: Dockerfile.eval
-          hooks:
-            after:
-              - command: ["sh", "-c", "kind load docker-image ${IMAGE:-$SKAFFOLD_IMAGE} --name agent-orca-dev"]
-                os: [darwin, linux]
       # hooks:
         # before: *ensure_kind_build_before
     deploy:
@@ -338,14 +333,15 @@ profiles:
   - name: demo-htb-pwn
     build:
       artifacts:
+        # Note: with build.local.push=false skaffold loads built images into the
+        # kind cluster itself — no hand-rolled kind-load hooks (a ${IMAGE:-
+        # $SKAFFOLD_IMAGE style hook resolves to skaffold's underscore image
+        # form, which never matches a local docker tag, and a failing hook
+        # fails the whole build).
         - image: red-pwnbox
           context: charts/demos/demo-htb-pwn/files
           docker:
             dockerfile: Dockerfile.pwnbox
-          hooks:
-            after:
-              - command: ["sh", "-c", "kind load docker-image ${IMAGE:-$SKAFFOLD_IMAGE} --name agent-orca-dev"]
-                os: [darwin, linux]
       # hooks:
       #   before: *ensure_kind_build_before
     deploy:
