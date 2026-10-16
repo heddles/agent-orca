@@ -3,10 +3,10 @@ kind: Config
 metadata:
   name: agent-orca
 build:
-  tagPolicy:
-    sha256: {}
+  # tagPolicy:
+  #   sha256: {}
   local:
-    push: true
+    push: false
   hooks:
     before: &ensure_kind_build_before
       - command: ["bash", "hack/ensure-kind-cluster.sh"]
@@ -158,6 +158,10 @@ profiles:
               operator.oidc.enabled: "true"
               operator.networkPolicy.oidcEgress.enabled: "true"
             setValueTemplates:
+              operator.image.tag: "{{.IMAGE_TAG_ghcr_io_heddles_agent_orca_operator}}"
+              mcpIngester.image.tag: "{{.IMAGE_TAG_ghcr_io_heddles_agent_orca_mcp_ingester}}"
+              modelRouter.image.tag: "{{.IMAGE_TAG_ghcr_io_heddles_agent_orca_model_router}}"
+              ui.image.tag: "{{.IMAGE_TAG_ghcr_io_heddles_agent_orca_ui}}"
               ingress.enabled: "false"
           - name: model-providers
             chartPath: charts/model-providers
@@ -253,14 +257,10 @@ profiles:
               operator.oidc.enabled: "false"
               operator.networkPolicy.oidcEgress.enabled: "false"
             setValueTemplates:
-              operator.image.repository: "{{.IMAGE_REPO_agent_orca_operator}}"
-              operator.image.tag: "{{.IMAGE_TAG_agent_orca_operator}}"
-              mcpIngester.image.repository: "{{.IMAGE_REPO_agent_orca_mcp_ingester}}"
-              mcpIngester.image.tag: "{{.IMAGE_TAG_agent_orca_mcp_ingester}}"
-              modelRouter.image.repository: "{{.IMAGE_REPO_agent_orca_model_router}}"
-              modelRouter.image.tag: "{{.IMAGE_TAG_agent_orca_model_router}}"
-              ui.image.repository: "{{.IMAGE_REPO_agent_orca_ui}}"
-              ui.image.tag: "{{.IMAGE_TAG_agent_orca_ui}}"
+              operator.image.tag: "{{.IMAGE_TAG_ghcr_io_heddles_agent_orca_operator}}"
+              mcpIngester.image.tag: "{{.IMAGE_TAG_ghcr_io_heddles_agent_orca_mcp_ingester}}"
+              modelRouter.image.tag: "{{.IMAGE_TAG_ghcr_io_heddles_agent_orca_model_router}}"
+              ui.image.tag: "{{.IMAGE_TAG_ghcr_io_heddles_agent_orca_ui}}"
               ingress.enabled: "true"
               ingress.ingressClassName: "nginx"
               ingress.host: "agent-orca.local"

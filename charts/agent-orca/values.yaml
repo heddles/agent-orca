@@ -157,7 +157,7 @@ externalAPI:
 # operator using a projected Kubernetes SA token (audience: agentorca/ui).
 ui:
   image:
-    repository: ghcr.io/heddles/agent-orca/ui-proxy
+    repository: ghcr.io/heddles/agent-orca/ui
     tag: "latest"
     pullPolicy: IfNotPresent
   replicas: 1
