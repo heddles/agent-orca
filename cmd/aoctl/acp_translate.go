@@ -372,11 +372,13 @@ type acpToolCallUpdate struct {
 
 // acpElicitParams is the params of an elicitation/create request sent to the
 // client to ask the user for input (ACP spec: CreateElicitationRequest "form"
-// variant).
+// variant). SessionID is required by the spec's session scope — form-mode
+// elicitations without it are rejected by strict clients (Zed) with -32602.
 type acpElicitParams struct {
+	SessionID       string         `json:"sessionId"`
 	Message         string         `json:"message"`
 	Mode            string         `json:"mode"` // "form"
-	RequestedSchema map[string]any `json:"requestedSchema,omitempty"`
+	RequestedSchema map[string]any `json:"requestedSchema"`
 }
 
 // acpElicitResponse is the client's response to elicitation/create (ACP spec:

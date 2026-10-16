@@ -442,11 +442,6 @@ func (b *acpBridge) consumeAndStreamHTTP(
 			}
 
 			term := b.handleEvent(ev, sessionID, msgID, st)
-
-			if ev.Type != "thought" {
-				b.srv.notify("session/update", ev)
-			}
-
 			if term != "" {
 				return term
 			}
@@ -798,8 +793,9 @@ func (b *acpBridge) handleAwaitingRun(
 	}
 
 	resp, err := b.srv.sendRequest(ctx, acpMethodElicitationCreate, acpElicitParams{
-		Message: question,
-		Mode:    "form",
+		SessionID: sessionID,
+		Message:   question,
+		Mode:      "form",
 		RequestedSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

@@ -293,7 +293,7 @@ func newFSTestBridge(t *testing.T, requireApproval bool, pending []acpfsRelayReq
 		Name:       "test-agent",
 		Filesystem: &ACPFSPolicy{Mode: "readWrite", WriteApproval: false},
 	}
-	bridge.sessions["sess-1"] = &acpSession{SessionID: "sess-1", RunID: "run-1", Cwd: ws}
+	bridge.sessions[fsTestSessionID] = &acpSession{SessionID: fsTestSessionID, RunID: "run-1", Cwd: ws}
 	bridge.mu.Unlock()
 	srv.handler = bridge
 
@@ -320,6 +320,9 @@ func (f *fsFakeACPAPI) responseRecorded(t *testing.T) *acpfsRelayResponse {
 	return f.response
 }
 
+// fsTestSessionID is the ACP session id used across the fs bridge tests.
+const fsTestSessionID = "sess-1"
+
 // fsWaitFor polls a condition until true or a 2s deadline.
 func fsWaitFor(t *testing.T, cond func() bool) {
 	t.Helper()
@@ -336,7 +339,7 @@ func TestFSBridgeRelayRead(t *testing.T) {
 		Params: json.RawMessage(`{"path":"src/main.go","line":1,"limit":10}`),
 	}})
 
-	tb.bridge.serveFSRequest(context.Background(), "sess-1", "run-1", acpfsRelayRequest{
+	tb.bridge.serveFSRequest(context.Background(), fsTestSessionID, "run-1", acpfsRelayRequest{
 		ID: "req-1", Method: acpMethodFSRead,
 		Params: json.RawMessage(`{"path":"src/main.go","line":1,"limit":10}`),
 	}, tb.bridge.fsPolicy())
@@ -354,7 +357,7 @@ func TestFSBridgeRelayRead(t *testing.T) {
 	tb.editor.mu.Lock()
 	gotRead := tb.editor.reads[0]
 	tb.editor.mu.Unlock()
-	if gotRead.SessionID != "sess-1" || gotRead.Path != filepath.Join(tb.workspace, "src/main.go") ||
+	if gotRead.SessionID != fsTestSessionID || gotRead.Path != filepath.Join(tb.workspace, "src/main.go") ||
 		gotRead.Line == nil || *gotRead.Line != 1 || gotRead.Limit == nil || *gotRead.Limit != 10 {
 		t.Fatalf("editor got %+v", gotRead)
 	}
@@ -373,7 +376,7 @@ func TestFSBridgeRelayWriteWithElicitApproval(t *testing.T) {
 	}}
 	tb := newFSTestBridge(t, true, pending) // force approval even though policy says none
 
-	tb.bridge.serveFSRequest(context.Background(), "sess-1", "run-1", pending[0], tb.bridge.fsPolicy())
+	tb.bridge.serveFSRequest(context.Background(), fsTestSessionID, "run-1", pending[0], tb.bridge.fsPolicy())
 
 	fsWaitFor(t, func() bool {
 		tb.editor.mu.Lock()
@@ -383,12 +386,18 @@ func TestFSBridgeRelayWriteWithElicitApproval(t *testing.T) {
 	if len(tb.editor.writes) != 1 {
 		t.Fatal("editor never received fs/write_text_file")
 	}
-	if w := tb.editor.writes[0]; w.SessionID != "sess-1" ||
+	if w := tb.editor.writes[0]; w.SessionID != fsTestSessionID ||
 		w.Path != filepath.Join(tb.workspace, "new.go") || w.Content != "package main" {
 		t.Fatalf("editor write wrong: %+v", w)
 	}
 	if len(tb.editor.elicit) != 1 {
 		t.Fatal("expected one approval elicitation")
+	}
+	// ACP v1 form-mode elicitations require the session scope: without
+	// sessionId strict clients (Zed) reject the request with -32602 Invalid
+	// params and no prompt ever appears.
+	if tb.editor.elicit[0].SessionID != fsTestSessionID {
+		t.Fatalf("elicitation missing sessionId: %+v", tb.editor.elicit[0])
 	}
 	// The requestedSchema must be a proper ElicitationSchema envelope
 	// (type/properties/required) — a bare properties map is rejected by the
@@ -416,7 +425,7 @@ func TestFSBridgeWriteDeniedByUser(t *testing.T) {
 	tb := newFSTestBridge(t, true, pending)
 	tb.editor.elicitDecline = true
 
-	tb.bridge.serveFSRequest(context.Background(), "sess-1", "run-1", pending[0], tb.bridge.fsPolicy())
+	tb.bridge.serveFSRequest(context.Background(), fsTestSessionID, "run-1", pending[0], tb.bridge.fsPolicy())
 
 	resp := tb.api.responseRecorded(t)
 	if resp.Error == nil || resp.Error.Message != "write declined by the user in the editor" {
@@ -440,7 +449,7 @@ func TestFSBridgeWriteApprovedWithEmptyFormContent(t *testing.T) {
 	tb := newFSTestBridge(t, true, pending)
 	tb.editor.elicitAcceptEmpty = true
 
-	tb.bridge.serveFSRequest(context.Background(), "sess-1", "run-1", pending[0], tb.bridge.fsPolicy())
+	tb.bridge.serveFSRequest(context.Background(), fsTestSessionID, "run-1", pending[0], tb.bridge.fsPolicy())
 
 	fsWaitFor(t, func() bool {
 		tb.editor.mu.Lock()
@@ -468,7 +477,7 @@ func TestFSBridgeWriteApprovalPromptFailed(t *testing.T) {
 	tb := newFSTestBridge(t, true, pending)
 	tb.editor.elicitFail = true
 
-	tb.bridge.serveFSRequest(context.Background(), "sess-1", "run-1", pending[0], tb.bridge.fsPolicy())
+	tb.bridge.serveFSRequest(context.Background(), fsTestSessionID, "run-1", pending[0], tb.bridge.fsPolicy())
 
 	resp := tb.api.responseRecorded(t)
 	if resp.Error == nil || !strings.Contains(resp.Error.Message, "write approval prompt failed") {
@@ -485,7 +494,7 @@ func TestFSBridgeWriteBlockedByReadOnlyPolicy(t *testing.T) {
 	tb.bridge.manifest.Filesystem = &ACPFSPolicy{Mode: "readOnly"}
 	tb.bridge.mu.Unlock()
 
-	tb.bridge.serveFSRequest(context.Background(), "sess-1", "run-1", acpfsRelayRequest{
+	tb.bridge.serveFSRequest(context.Background(), fsTestSessionID, "run-1", acpfsRelayRequest{
 		ID: "req-1", Method: acpMethodFSWrite, Params: json.RawMessage(`{"path":"x.go","content":"y"}`),
 	}, tb.bridge.fsPolicy())
 
@@ -500,7 +509,7 @@ func TestFSBridgeWriteBlockedByReadOnlyPolicy(t *testing.T) {
 
 func TestFSBridgePathEscapeRejected(t *testing.T) {
 	tb := newFSTestBridge(t, false, nil)
-	tb.bridge.serveFSRequest(context.Background(), "sess-1", "run-1", acpfsRelayRequest{
+	tb.bridge.serveFSRequest(context.Background(), fsTestSessionID, "run-1", acpfsRelayRequest{
 		ID:     "req-1",
 		Method: acpMethodFSRead,
 		Params: json.RawMessage(`{"path":"../../etc/shadow"}`),
@@ -527,17 +536,17 @@ func TestACPBridgeSessionNewPreservesInFlightRun(t *testing.T) {
 	// Simulate an in-flight prompt: session registered with a run + cancel.
 	_, cancel1 := context.WithCancel(ctx)
 	defer cancel1()
-	bridge.registerRun("sess-1", "run-1", cancel1)
+	bridge.registerRun(fsTestSessionID, "run-1", cancel1)
 
 	// session/new arrives again for the same session with a (new) cwd.
-	params := fmt.Sprintf(`{"sessionId":"sess-1","cwd":"%s"}`, t.TempDir())
+	params := fmt.Sprintf(`{"sessionId":%q,"cwd":"%s"}`, fsTestSessionID, t.TempDir())
 	_, err := handleSessionNew(ctx, bridge, jsonrpcRequest{Params: json.RawMessage(params)})
 	if err != nil {
 		t.Fatal("session/new:", err)
 	}
 
 	bridge.mu.Lock()
-	sess := bridge.sessions["sess-1"]
+	sess := bridge.sessions[fsTestSessionID]
 	var runID, cwd string
 	var cancel context.CancelFunc
 	if sess != nil {
@@ -554,7 +563,7 @@ func TestACPBridgeSessionNewPreservesInFlightRun(t *testing.T) {
 		t.Fatal("cwd not stored by session/new")
 	}
 	// The fs watcher can still resolve the run it polls.
-	if got := bridge.sessionRunID("sess-1"); got != "run-1" {
+	if got := bridge.sessionRunID(fsTestSessionID); got != "run-1" {
 		t.Fatalf("sessionRunID = %q, want run-1", got)
 	}
 }
@@ -612,14 +621,15 @@ func TestACPBridgePromptPreservesSessionCwd(t *testing.T) {
 		})
 	}
 
-	send(`{"jsonrpc":"2.0","id":1,"method":"session/new","params":{"sessionId":"sess-1","cwd":"` + ws + `"}}`)
+	send(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"session/new",`+
+		`"params":{"sessionId":%q,"cwd":%q}}`, fsTestSessionID, ws))
 	waitResponse("1")
-	send(`{"jsonrpc":"2.0","id":2,"method":"session/prompt","params":{"sessionId":"sess-1",` +
+	send(`{"jsonrpc":"2.0","id":2,"method":"session/prompt","params":{"sessionId":fsTestSessionID,` +
 		`"prompt":[{"type":"text","text":"hi"}]}}`)
 	waitResponse("2")
 
 	bridge.mu.Lock()
-	sess := bridge.sessions["sess-1"]
+	sess := bridge.sessions[fsTestSessionID]
 	var cwd string
 	if sess != nil {
 		cwd = sess.Cwd
@@ -628,7 +638,7 @@ func TestACPBridgePromptPreservesSessionCwd(t *testing.T) {
 	if cwd != ws {
 		t.Fatalf("session cwd lost after session/prompt: got %q, want %q", cwd, ws)
 	}
-	roots := bridge.workspaceRoots("sess-1")
+	roots := bridge.workspaceRoots(fsTestSessionID)
 	if len(roots) == 0 || roots[0] != ws {
 		t.Fatalf("workspace roots after prompt = %v, want [%s]", roots, ws)
 	}
@@ -656,7 +666,7 @@ func TestFSBridgeListDirAnsweredLocally(t *testing.T) {
 		t.Fatal("write:", err)
 	}
 
-	tb.bridge.serveFSRequest(context.Background(), "sess-1", "run-1", acpfsRelayRequest{
+	tb.bridge.serveFSRequest(context.Background(), fsTestSessionID, "run-1", acpfsRelayRequest{
 		ID:     "req-1",
 		Method: acpMethodFSList,
 		Params: json.RawMessage(`{"path":"."}`),
@@ -695,7 +705,7 @@ func TestFSBridgeListDirAnsweredLocally(t *testing.T) {
 
 func TestFSBridgeListDirEscapeRejected(t *testing.T) {
 	tb := newFSTestBridge(t, false, nil)
-	tb.bridge.serveFSRequest(context.Background(), "sess-1", "run-1", acpfsRelayRequest{
+	tb.bridge.serveFSRequest(context.Background(), fsTestSessionID, "run-1", acpfsRelayRequest{
 		ID:     "req-1",
 		Method: acpMethodFSList,
 		Params: json.RawMessage(`{"path":"../.."}`),
@@ -710,7 +720,7 @@ func TestFSBridgeListDirEscapeRejected(t *testing.T) {
 func TestFSBridgeEditorErrorRelayed(t *testing.T) {
 	tb := newFSTestBridge(t, false, nil)
 	tb.editor.writeOK = false
-	tb.bridge.serveFSRequest(context.Background(), "sess-1", "run-1", acpfsRelayRequest{
+	tb.bridge.serveFSRequest(context.Background(), fsTestSessionID, "run-1", acpfsRelayRequest{
 		ID:     "req-1",
 		Method: acpMethodFSWrite,
 		Params: json.RawMessage(`{"path":"x.go","content":"y"}`),
@@ -724,14 +734,14 @@ func TestFSBridgeEditorErrorRelayed(t *testing.T) {
 
 func TestBridgeWorkspaceRootsFromSessionCwd(t *testing.T) {
 	tb := newFSTestBridge(t, false, nil)
-	roots := tb.bridge.workspaceRoots("sess-1")
+	roots := tb.bridge.workspaceRoots(fsTestSessionID)
 	if len(roots) != 1 || roots[0] != tb.workspace {
 		t.Fatalf("workspaceRoots = %v, want [%s]", roots, tb.workspace)
 	}
 
 	// Extra --fs-roots come after the session cwd.
 	tb.bridge.fsOpts.extraRoots = []string{"~/extra"}
-	roots = tb.bridge.workspaceRoots("sess-1")
+	roots = tb.bridge.workspaceRoots(fsTestSessionID)
 	if len(roots) != 2 || roots[0] != tb.workspace || !strings.HasSuffix(roots[1], "extra") {
 		t.Fatalf("workspaceRoots with extras = %v", roots)
 	}

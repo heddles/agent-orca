@@ -282,7 +282,7 @@ func (b *acpBridge) serveFSWrite(
 		return
 	}
 	if b.fsOpts.requireApproval || policy.WriteApproval {
-		approved, err := b.fsApproveWrite(ctx, b.agentName, abs, len(p.Content))
+		approved, err := b.fsApproveWrite(ctx, sessionID, b.agentName, abs, len(p.Content))
 		if err != nil {
 			// The prompt itself failed (editor without elicitation support,
 			// transport error, timeout): distinct from a user decline so the
@@ -314,13 +314,13 @@ func (b *acpBridge) serveFSWrite(
 // fsApproveWrite elicits explicit user approval for one write. It returns
 // (false, nil) when the user declined, (true, nil) when the user accepted,
 // and (false, err) when the approval prompt itself failed (editor without
-// elicitation support, transport error, timeout) — a distinct outcome so the
+// elicitation support, invalid params, timeout) — a distinct outcome so the
 // pod-side tool error can say "no prompt appeared" instead of "declined".
 // An accept approves the write regardless of the form content: clients render
 // elicitation forms differently (some submit without the enum field), and the
 // accept action is the approval signal. Any failure refuses the write: it
 // never proceeds unapproved.
-func (b *acpBridge) fsApproveWrite(ctx context.Context, agentName, absPath string, n int) (bool, error) {
+func (b *acpBridge) fsApproveWrite(ctx context.Context, sessionID, agentName, absPath string, n int) (bool, error) {
 	// Show the path relative to the workspace where possible to keep the
 	// prompt readable.
 	display := absPath
@@ -333,8 +333,9 @@ func (b *acpBridge) fsApproveWrite(ctx context.Context, agentName, absPath strin
 	elicitCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	resp, err := b.srv.sendRequest(elicitCtx, acpMethodElicitationCreate, acpElicitParams{
-		Message: fmt.Sprintf("Agent %q wants to write %d bytes to %s. Allow?", agentName, n, display),
-		Mode:    "form",
+		SessionID: sessionID,
+		Message:   fmt.Sprintf("Agent %q wants to write %d bytes to %s. Allow?", agentName, n, display),
+		Mode:      "form",
 		// requestedSchema must be an ElicitationSchema object (type/properties/
 		// required) — passing the properties map directly is rejected by the
 		// client with Invalid params (-32602).
