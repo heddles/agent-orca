@@ -866,7 +866,7 @@ Helm values so you can point at an internal registry or pin specific versions.
 |-----------|-----------|---------|---------|
 | Operator | `operator.image.repository` / `tag` | — | `ghcr.io/heddles/agent-orca/operator:latest` |
 | Model Router (sidecar) | `modelRouter.image.repository` / `tag` | `MODEL_ROUTER_IMAGE` | `ghcr.io/heddles/agent-orca/model-router:latest` |
-| MCP Ingester (KB jobs) | `mcpIngester.image.repository` / `tag` | `MCP_INGESTER_IMAGE` | `ghcr.io/heddles/mcp-ingester:latest` |
+| MCP Ingester (KB jobs) | `mcpIngester.image.repository` / `tag` | `MCP_INGESTER_IMAGE` | `ghcr.io/heddles/agent-orca/mcp-ingester:latest` |
 | Qdrant (KB vector store) | `qdrant.image.repository` / `tag` | `QDRANT_IMAGE` | `qdrant/qdrant:v1.17.1` |
 | UIProxy | `ui.image.repository` / `tag` | — | `ghcr.io/heddles/agent-orca/ui-proxy:latest` |
 | Bundled Redis | `redis.image.repository` / `tag` | — | `redis:7-alpine` |

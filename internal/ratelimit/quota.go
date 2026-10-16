@@ -62,6 +62,11 @@ type googleQuotaBody struct {
 // without recognizable details classify as QuotaScopeNone — callers should
 // treat that as minute-scoped (transient) since per-day exhaustion is
 // practically always annotated.
+//
+// Note: this is Google-specific today (google.rpc.QuotaFailure detail type).
+// Any handler keying off QuotaScopeDay inherits Google's reset semantics
+// (midnight Pacific — see nextQuotaReset in the controller); extend this
+// alongside a per-provider reset policy when supporting other providers.
 func ClassifyQuotaError(body []byte) QuotaScope {
 	if len(body) == 0 {
 		return QuotaScopeNone

@@ -157,7 +157,7 @@ externalAPI:
 # operator using a projected Kubernetes SA token (audience: agentorca/ui).
 ui:
   image:
-    repository: ghcr.io/heddles/agent-orca/ui
+    repository: ghcr.io/heddles/agent-orca/ui-proxy
     tag: "latest"
     pullPolicy: IfNotPresent
   replicas: 1
@@ -260,7 +260,7 @@ hindsight:
   # NetworkPolicies so agent-orca pods can reach hindsight even when the
   # cluster has a default-deny egress policy.
   # Example: "http://hindsight.local"
-  url: "http://hindsight-api.hindsight.svc.cluster.local:8888"
+  url: "http://hindsight-api.agent-orca-system.svc.cluster.local:8888"
   namespace: agent-orca-system
   port: 8888
   # networkPolicy.cidrs is an optional manual override for the egress CIDR

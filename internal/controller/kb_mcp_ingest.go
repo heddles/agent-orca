@@ -55,7 +55,7 @@ const (
 	mcpIngestConfigDir = "/etc/mcp-ingest"
 
 	// defaultMCPIngesterImage is the fallback image for the mcp-ingester binary.
-	defaultMCPIngesterImage = "ghcr.io/heddles/agenta-orca/mcp-ingester:latest"
+	defaultMCPIngesterImage = "ghcr.io/heddles/agent-orca/mcp-ingester:latest"
 
 	// quotaExhaustedMarker is the final log line the mcp-ingester emits when
 	// the embedding provider reports per-day quota exhaustion. The Job pod
@@ -178,7 +178,16 @@ func (r *KnowledgeBaseReconciler) runMCPIngestion(
 		return false, 0, fmt.Errorf("checking existing Job: %w", err)
 	}
 
-	// No existing Job. Only create a new one if sync interval has elapsed.
+	// No existing Job. Hold off while this source's failure backoff runs.
+	if wait, paused := ingestionPaused(kb, jobName); paused {
+		logger.Info("ingestion paused by per-source failure backoff",
+			"job", jobName,
+			"resume_at", kb.Status.IngestionBreakers[jobName].NextAttempt.Time.Format(time.RFC3339),
+			"reason", kb.Status.IngestionBreakers[jobName].Reason)
+		return false, wait, nil
+	}
+
+	// Only create a new one if sync interval has elapsed.
 	if kb.Status.LastSyncTime != nil && kb.Spec.Ingestion != nil {
 		interval := time.Duration(kb.Spec.Ingestion.SyncIntervalSeconds) * time.Second
 		if interval > 0 && time.Since(kb.Status.LastSyncTime.Time) < interval {
@@ -250,9 +259,9 @@ func (r *KnowledgeBaseReconciler) runMCPIngestion(
 // handleExistingJob checks the status of an existing ingestion Job.
 // Documents are already in Qdrant; the caller queries Qdrant for counts.
 //
-// On failure it records a circuit-breaker backoff in the KB status
-// (IngestionFailures / NextIngestionAttempt) so the reconcile loop cannot
-// restart Jobs in a tight loop and burn through the provider's API budget.
+// Breaker state is keyed per source (by Job name) in
+// kb.Status.IngestionBreakers: a sibling source's success only clears its own
+// entry, and concurrent source failures count independently.
 func (r *KnowledgeBaseReconciler) handleExistingJob(
 	ctx context.Context,
 	kb *agentorcav1alpha1.KnowledgeBase,
@@ -263,26 +272,31 @@ func (r *KnowledgeBaseReconciler) handleExistingJob(
 	if job.Status.Succeeded > 0 {
 		logger.Info("ingestion Job completed", "job", job.Name)
 		r.cleanupIngestResources(ctx, kb.Namespace, job.Name)
-		// Success resets the circuit breaker.
-		kb.Status.IngestionFailures = 0
-		kb.Status.NextIngestionAttempt = nil
-		kb.Status.IngestionBackoffReason = ""
+		// Success clears only THIS source's breaker — a static-source Job
+		// completing must not cancel an MCP source's quota pause.
+		delete(kb.Status.IngestionBreakers, job.Name)
 		return true, 0, nil
 	}
 
 	if job.Status.Failed > 0 {
 		dailyQuota := r.ingestJobHitDailyQuota(ctx, kb.Namespace, job)
-		backoff, reason := ingestionBackoff(kb.Status.IngestionFailures, dailyQuota)
+		breaker := kb.Status.IngestionBreakers[job.Name]
+		backoff, reason := ingestionBackoff(breaker.Failures, dailyQuota)
 		next := metav1.NewTime(time.Now().Add(backoff))
-		kb.Status.IngestionFailures++
-		kb.Status.NextIngestionAttempt = &next
-		kb.Status.IngestionBackoffReason = reason
-		kb.Status.Message = fmt.Sprintf("ingestion paused until %s: %s",
-			next.Format(time.RFC3339), reason)
+		if kb.Status.IngestionBreakers == nil {
+			kb.Status.IngestionBreakers = make(map[string]agentorcav1alpha1.IngestionBreakerState, 1)
+		}
+		kb.Status.IngestionBreakers[job.Name] = agentorcav1alpha1.IngestionBreakerState{
+			Failures:    breaker.Failures + 1,
+			NextAttempt: &next,
+			Reason:      reason,
+		}
+		kb.Status.Message = fmt.Sprintf("ingestion Job %q paused until %s: %s",
+			job.Name, next.Format(time.RFC3339), reason)
 		logger.Error(nil, "ingestion Job failed; pausing re-ingestion",
 			"job", job.Name,
 			"backoff", backoff.Round(time.Second),
-			"consecutive_failures", kb.Status.IngestionFailures,
+			"consecutive_failures", breaker.Failures+1,
 			"reason", reason,
 		)
 		r.cleanupIngestResources(ctx, kb.Namespace, job.Name)
@@ -294,10 +308,25 @@ func (r *KnowledgeBaseReconciler) handleExistingJob(
 	return false, 0, nil
 }
 
+// ingestionPaused returns the remaining backoff pause for a source's Job, or
+// (0, false) when the source is healthy to run again.
+func ingestionPaused(kb *agentorcav1alpha1.KnowledgeBase, jobName string) (time.Duration, bool) {
+	b, ok := kb.Status.IngestionBreakers[jobName]
+	if !ok || b.NextAttempt == nil {
+		return 0, false
+	}
+	if wait := time.Until(b.NextAttempt.Time); wait > 0 {
+		return wait, true
+	}
+	return 0, false
+}
+
 // ingestionBackoff computes the pause before the next ingestion attempt.
 // Daily-quota exhaustion waits for the provider's quota reset (Google resets
 // daily quotas at midnight Pacific); anything else backs off exponentially
-// with the consecutive failure count.
+// with the consecutive failure count. Note the daily-quota floor is 0 — at
+// the reset boundary the returned wait may be near-zero, which immediately
+// unblocks the source.
 func ingestionBackoff(consecutiveFailures int, dailyQuota bool) (time.Duration, string) {
 	if dailyQuota {
 		return time.Until(nextQuotaReset()),
@@ -311,7 +340,15 @@ func ingestionBackoff(consecutiveFailures int, dailyQuota bool) (time.Duration, 
 }
 
 // nextQuotaReset returns the next midnight Pacific time, when Google resets
-// daily API quotas. Falls back to a fixed UTC-8 offset if tzdata is missing.
+// daily API quotas.
+//
+// Google-specific by design: day-scope classification (see
+// ratelimit.ClassifyQuotaError) currently only recognizes google.rpc
+// QuotaFailure bodies, so this reset semantics can only be reached for
+// Google endpoints. If another provider gains day-scope classification,
+// move the reset policy into the provider config so classification and
+// reset semantics travel together. Falls back to a fixed UTC-8 offset if
+// tzdata is missing.
 func nextQuotaReset() time.Time {
 	loc, err := time.LoadLocation("America/Los_Angeles")
 	if err != nil {
@@ -331,12 +368,18 @@ func (r *KnowledgeBaseReconciler) ingestJobHitDailyQuota(ctx context.Context, na
 		client.InNamespace(namespace),
 		client.MatchingLabels{"job-name": job.Name},
 	); err != nil {
+		log.FromContext(ctx).Error(err, "listing ingestion Job pods for quota classification",
+			"job", job.Name)
 		return false
 	}
 	return podsReportDailyQuota(pods.Items)
 }
 
 // podsReportDailyQuota inspects pod termination messages for the marker.
+// Only terminated container states are inspected: with backoffLimit 0 a
+// failed pod is terminal by the time the Job reports Failed, so the
+// termination message is guaranteed to be present. Pods stuck in crash
+// backoff report nothing here (also fine — the Job hasn't failed yet).
 func podsReportDailyQuota(pods []corev1.Pod) bool {
 	for _, p := range pods {
 		for _, cs := range p.Status.ContainerStatuses {
@@ -408,7 +451,16 @@ func (r *KnowledgeBaseReconciler) runSourcesIngestion(ctx context.Context, kb *a
 		return false, 0, fmt.Errorf("checking existing Job: %w", err)
 	}
 
-	// No existing Job. Only create a new one if sync interval has elapsed.
+	// No existing Job. Hold off while this source's failure backoff runs.
+	if wait, paused := ingestionPaused(kb, jobName); paused {
+		logger.Info("ingestion paused by per-source failure backoff",
+			"job", jobName,
+			"resume_at", kb.Status.IngestionBreakers[jobName].NextAttempt.Time.Format(time.RFC3339),
+			"reason", kb.Status.IngestionBreakers[jobName].Reason)
+		return false, wait, nil
+	}
+
+	// Only create a new one if sync interval has elapsed.
 	if kb.Status.LastSyncTime != nil && kb.Spec.Ingestion != nil {
 		interval := time.Duration(kb.Spec.Ingestion.SyncIntervalSeconds) * time.Second
 		if interval > 0 && time.Since(kb.Status.LastSyncTime.Time) < interval {

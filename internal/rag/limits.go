@@ -53,6 +53,13 @@ type Limits struct {
 // API keys (Google AI studio free tier, OpenAI pay-as-you-go). Higher tiers
 // only relax the limits, so staying under the smallest published tier is
 // always safe.
+//
+// Note on scope: each process holds its own limiter. The operator, the
+// apiserver's query path (_rag_search), and every mcp-ingester Job pod pace
+// independently against the same API key, so combined dispatch can briefly
+// exceed the account budget until AIMD observes 429s and shrinks. Each
+// fresh Job intentionally starts with a full bucket; EMBEDDING_CONCURRENCY
+// is the operator's knob for dampening that, not an account-level guarantee.
 var providerPresets = map[string]Limits{
 	// Gemini: free-tier gemini-embedding-001 budgets (RPM 100 / TPM 30k).
 	// Batches are kept far below TPM so one request can never exhaust the

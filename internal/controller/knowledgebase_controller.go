@@ -771,19 +771,9 @@ func (r *KnowledgeBaseReconciler) runIngestion(ctx context.Context, kb *agentorc
 		return 0, nil
 	}
 
-	// Circuit breaker: after failed ingestion runs, wait out the recorded
-	// backoff before launching anything new. Without this, the failed-Job
-	// cleanup triggers a watch event, the reconcile recreates the Job
-	// immediately, and the fresh burst re-burns the provider's quota — the
-	// runaway loop that can exhaust a whole day's budget in minutes.
-	if kb.Status.NextIngestionAttempt != nil {
-		if wait := time.Until(kb.Status.NextIngestionAttempt.Time); wait > 0 {
-			logger.Info("ingestion paused by failure backoff",
-				"resume_at", kb.Status.NextIngestionAttempt.Time.Format(time.RFC3339),
-				"reason", kb.Status.IngestionBackoffReason)
-			return wait, nil
-		}
-	}
+	// Per-source circuit breakers are checked inside runSourcesIngestion /
+	// runMCPIngestion (keyed on each Job) so one paused source never blocks
+	// a healthy sibling from ingesting.
 
 	ingestErr := error(nil)
 	minRequeue := time.Duration(0)
