@@ -260,6 +260,27 @@ The bridge handles the core ACP methods: `initialize`, `session/new`,
 `session/close`. If the server has a state store, token chunks arrive via SSE;
 otherwise the bridge transparently falls back to polling `GET /runs/{run_id}`.
 
+#### Filesystem access (`fs/*` relay)
+
+When the served agent has `spec.filesystem` set on its Agent CR, the bridge
+also relays ACP agent→client filesystem calls from the remote pod to Zed: the
+agent calls the built-in `fs_read_text_file` / `fs_write_text_file` tools, the
+bridge forwards each call to the editor, and Zed reads/edits the user's real
+workspace files. Extra flags:
+
+```bash
+# Additional root directories beyond the session workspace (accepts ~)
+aoctl acp serve --agent senior-programmer --fs-roots ~/other-repo
+
+# Force a per-write approval form even when the agent's policy waives it (default true)
+aoctl acp serve --agent senior-programmer --fs-require-approval
+```
+
+The bridge confines every request to the session workspace plus `--fs-roots`,
+and (by default) asks for explicit approval via an editor form before each
+write. See [filesystem-access.md](filesystem-access.md) for the full security
+model and the Agent CRD policy knobs.
+
 #### `aoctl acp setup --editor zed`
 
 `setup` writes a Zed `agent_servers` entry to `~/.config/zed/settings.json`

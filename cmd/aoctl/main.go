@@ -123,6 +123,16 @@ type ACPAgentManifest struct {
 	KnowledgeBases     []string       `json:"knowledge_bases,omitempty"`
 	GuardrailPolicy    string         `json:"guardrail_policy,omitempty"`
 	ClarifyAvailable   bool           `json:"clarify_available"`
+
+	// Filesystem is the agent's ACP fs/* relay policy (issue #34). nil means
+	// the agent has no filesystem tools and the bridge polls nothing.
+	Filesystem *ACPFSPolicy `json:"filesystem,omitempty"`
+}
+
+// ACPFSPolicy mirrors the filesystem policy in the ACP agent manifest.
+type ACPFSPolicy struct {
+	Mode          string `json:"mode"` // "readOnly" | "readWrite"
+	WriteApproval bool   `json:"writeApproval,omitempty"`
 }
 
 // ACPToolInfo mirrors the tool info in the ACP agent manifest.
@@ -893,9 +903,11 @@ type settings struct {
 	rpm               int
 	concurrent        int
 	budgetPerDay      string
-	file              string // --file: read input from a file instead of --input/stdin
-	contentType       string // --content-type: MIME type for the message part (default text/plain)
-	editor            string // --editor: editor to configure for `acp setup` (e.g. zed)
+	file              string   // --file: read input from a file instead of --input/stdin
+	contentType       string   // --content-type: MIME type for the message part (default text/plain)
+	editor            string   // --editor: editor to configure for `acp setup` (e.g. zed)
+	fsRoots           []string // --fs-roots: extra workspace roots for the ACP fs/* relay
+	fsRequireApproval bool     // --fs-require-approval: elicit user approval per workspace write
 	out, errw         io.Writer
 
 	// OIDC interactive-login fields. authMethod/issuerURL/redirectURI/noBrowser

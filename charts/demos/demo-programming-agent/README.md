@@ -29,6 +29,14 @@ concerns).
   `_rag_ingest`s the read content back into the vector store.
 - **Warm-pool chat agent**: `senior-programmer-chat` AgentDeployment with
   `warmPoolSize: 1`, `inputMode: http`, and session checkpointing/resume.
+- **Local workspace edits via the ACP bridge**: the Agent declares
+  `spec.filesystem` (`readWrite`, per-write approval), so when the agent runs
+  through an editor session (`aoctl acp serve` + Zed) it gets the built-in
+  `fs_read_text_file` / `fs_write_text_file` tools and can read/edit the user's
+  real checkout — the editor stays the arbiter of access. Without a bridge
+  connected, fs calls fail with a structured error; the GitHub MCP tools remain
+  the path for changes that must land as commits/PRs. See
+  [docs/filesystem-access.md](../../../docs/filesystem-access.md).
 - **Scoped persona**: the system prompt enforces an agent-orca focus and a
   "handbook first → live code second → back-fill" workflow.
 
@@ -43,7 +51,7 @@ concerns).
 | `github-mcp-<tool>` | Tool (6) | Auto-created child Tool CRs for each declared MCP tool |
 | `_webhook_notify` | Builtin tool | Posts a message to Slack via the incoming webhook (`WEBHOOK_URL`) |
 | `agent-orca-codebase` | KnowledgeBase | Qdrant vector store of the handbook; embedded via `ollama-embed` |
-| `senior-programmer` | Agent | Senior-engineer persona, openai-reference, http warm-pool |
+| `senior-programmer` | Agent | Senior-engineer persona, openai-reference, http warm-pool, `spec.filesystem` readWrite + write approval |
 | `senior-programmer-chat` | AgentDeployment | Chat endpoint, warm pool 1 |
 
 ## Prerequisites
@@ -161,6 +169,10 @@ kubectl get tool -n agent-orca-system -l agentorca.io/managed-by=mcpserver
   image only ships `input → model-router → output`.
 - The GitHub MCP runs **read-only** (`--read-only --tools <allow-list>`), so even
   though the `repos` toolset includes write tools, they cannot mutate anything.
+- Filesystem access is gated by `spec.filesystem` on the Agent CR and enforced
+  again by the bridge (workspace-root confinement + per-write approval
+  elicitation). Set `filesystem.mode: readOnly` in values.yaml to expose only
+  `fs_read_text_file`.
 - Slack is used **outbound only** via the incoming webhook (`_webhook_notify`), mounted
   as `WEBHOOK_URL` into the model-router sidecar from the `webhook-notify`
   Secret. The webhook URL can post to its channel but cannot read Slack history, so

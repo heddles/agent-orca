@@ -57,6 +57,9 @@ type acpSession struct {
 	SessionID string
 	RunID     string
 	Cancel    context.CancelFunc
+	// Cwd is the workspace directory the editor opened the session in
+	// (session/new "cwd"); the primary root for the fs/* relay.
+	Cwd string
 }
 
 // openAIStreamState accumulates translation state across the events of one
@@ -76,17 +79,26 @@ type acpBridge struct {
 	client    *Client
 	agentName string
 	manifest  ACPAgentManifest
+	// fsOpts carries the workstation-side fs policy knobs (--fs-roots,
+	// --fs-require-approval).
+	fsOpts fsBridgeOptions
 
 	mu       sync.Mutex
 	sessions map[string]*acpSession
 	seq      atomic.Int64
 }
 
-func newACPBridge(srv *acpStdioServer, client *Client, agentName string) *acpBridge {
+func newACPBridge(srv *acpStdioServer, client *Client, agentName string) *acpBridge { //nolint:unparam
+	return newACPBridgeWithOptions(srv, client, agentName, fsBridgeOptions{})
+}
+
+// newACPBridgeWithOptions builds the bridge with fs relay policy knobs.
+func newACPBridgeWithOptions(srv *acpStdioServer, client *Client, agentName string, fsOpts fsBridgeOptions) *acpBridge { //nolint:lll
 	return &acpBridge{
 		srv:       srv,
 		client:    client,
 		agentName: agentName,
+		fsOpts:    fsOpts,
 		sessions:  map[string]*acpSession{},
 	}
 }
@@ -160,7 +172,9 @@ func handleInitialize(ctx context.Context, b *acpBridge, req jsonrpcRequest) (an
 		return nil, fmt.Errorf("fetching agent manifest for %q via ACP API (%s): %w — "+
 			"ensure --acp-endpoint points to the agent-orca ACP API host root", b.agentName, b.client.ACP, err)
 	}
+	b.mu.Lock()
 	b.manifest = man
+	b.mu.Unlock()
 
 	version := p.ProtocolVersion
 	if version == 0 || version != acpProtocolVersion {
@@ -168,12 +182,22 @@ func handleInitialize(ctx context.Context, b *acpBridge, req jsonrpcRequest) (an
 		// requested a version we don't support: negotiate down to our latest.
 		version = acpProtocolVersion
 	}
+	// Filesystem capability (issue #34): advertise exactly what the agent's
+	// policy grants, so a readOnly agent never leads the editor to believe it
+	// can write. Zed answers the fs/* calls; the bridge relays pod requests to
+	// it and enforces workspace confinement on every call.
+	fsCaps := acpFSCaps{}
+	if man.Filesystem != nil {
+		fsCaps.ReadTextFile = true
+		fsCaps.WriteTextFile = man.Filesystem.Mode == "readWrite"
+	}
 	return acpInitializeResponse{
 		ProtocolVersion: version,
 		AgentCapabilities: acpAgentCaps{
 			LoadSession:        false,
 			PromptCapabilities: acpPromptCaps{Image: false, Audio: false, EmbeddedContext: false},
 			MCPCapabilities:    acpMCPCaps{HTTP: false, SSE: false},
+			FS:                 fsCaps,
 			// session/new, session/prompt, session/cancel and session/update are
 			// baseline capabilities (all agents MUST support them), so they are
 			// NOT advertised here. Only optional capabilities that this bridge
@@ -205,14 +229,33 @@ func handleAuthenticate(_ context.Context, _ *acpBridge, _ jsonrpcRequest) (any,
 func handleSessionNew(_ context.Context, b *acpBridge, req jsonrpcRequest) (any, error) {
 	var p acpSessionNewParams
 	if len(req.Params) > 0 {
-		_ = json.Unmarshal(req.Params, &p)
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			b.srv.logf("acp: session/new params undecodable (%v): %.200s\n", err, string(req.Params))
+		}
+	}
+	if p.Cwd == "" {
+		// ACP v1 requires cwd on session/new; a client that omits it leaves the
+		// fs/* relay without a workspace root. Surface it — the relay falls back
+		// to the bridge process's working directory (see workspaceRoots).
+		b.srv.logf("acp: session/new arrived without cwd (params: %.200s) — fs relay will "+
+			"confine to the bridge process working directory\n", string(req.Params))
 	}
 	sessionID := p.SessionID
 	if sessionID == "" {
 		sessionID = b.nextSessionID()
+		b.srv.logf("acp: session/new without sessionId — generated %q\n", sessionID)
 	}
+	// Update the session record in place: Zed may re-send session/new for a
+	// session whose prompt turn is still in flight, and replacing the record
+	// would drop its RunID — orphaning the fs/* relay watcher mid-turn (fs
+	// calls then pend until the router's fs timeout).
 	b.mu.Lock()
-	b.sessions[sessionID] = &acpSession{SessionID: sessionID}
+	sess, ok := b.sessions[sessionID]
+	if !ok {
+		sess = &acpSession{SessionID: sessionID}
+		b.sessions[sessionID] = sess
+	}
+	sess.Cwd = p.Cwd
 	b.mu.Unlock()
 	return acpSessionNewResponse{SessionID: sessionID}, nil
 }
@@ -253,11 +296,11 @@ func handleSessionPrompt(ctx context.Context, b *acpBridge, req jsonrpcRequest) 
 
 	// Register a cancellable context so session/cancel can abort a live turn.
 	// Derive from the dispatch context (not Background) so that a shutdown
-	// cancels in-flight runs as well.
+	// cancels in-flight runs as well. The session record may already exist
+	// (session/new stored the workspace cwd): update it in place — replacing
+	// it would drop the cwd and break the fs/* relay's workspace confinement.
 	runCtx, cancel := context.WithCancel(ctx)
-	b.mu.Lock()
-	b.sessions[sessionID] = &acpSession{SessionID: sessionID, RunID: runID, Cancel: cancel}
-	b.mu.Unlock()
+	b.registerRun(sessionID, runID, cancel)
 	defer func() {
 		cancel() // release the context on completion (or cancellation)
 		b.mu.Lock()
@@ -266,6 +309,12 @@ func handleSessionPrompt(ctx context.Context, b *acpBridge, req jsonrpcRequest) 
 		}
 		b.mu.Unlock()
 	}()
+
+	// Start the fs/* relay watcher (issue #34) before the run starts: fs tool
+	// calls fire mid-turn. It follows continuation runs via the session record
+	// (awaiting→resume chains a new run under the same session) and dies with
+	// the run context via the defer above.
+	go b.watchFSSession(runCtx, sessionID)
 
 	stopReason := b.awaitCompletion(runCtx, runID, sessionID)
 	b.srv.respond(req.ID, acpPromptResponse{StopReason: stopReason})
@@ -294,6 +343,9 @@ func (b *acpBridge) awaitCompletion(ctx context.Context, runID, sessionID string
 		contID, resumed := b.handleAwaitingRun(ctx, run, sessionID, runID, st)
 		if resumed {
 			runID = contID
+			// Keep the session record (and the fs/* relay watcher) pointed at
+			// the continuation run.
+			b.setSessionRun(sessionID, contID)
 			continue
 		}
 		return acpStopReasonEndTurn

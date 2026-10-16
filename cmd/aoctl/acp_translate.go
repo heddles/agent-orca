@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
 
 // ----------------------------------------------------------------------------
@@ -214,6 +215,16 @@ const (
 	acpMethodElicitationCreate = "elicitation/create"
 )
 
+// ACP v1 agent→client filesystem methods (the fs/* surface the bridge
+// forwards to the editor; issue #34). acpMethodFSList is an agent-orca relay
+// extension answered by the bridge itself — ACP v1 has no directory-listing
+// method to forward to the editor.
+const (
+	acpMethodFSRead  = "fs/read_text_file"
+	acpMethodFSWrite = "fs/write_text_file"
+	acpMethodFSList  = "fs/list_dir"
+)
+
 // ACP sessionUpdate values emitted by the bridge (see
 // https://agentclientprotocol.com/protocol/v1/session-updates).
 const (
@@ -263,10 +274,14 @@ type acpPromptResponse struct {
 	StopReason string `json:"stopReason"`
 }
 
-// acpSessionNewParams is the params of a session/new request.
+// acpSessionNewParams is the params of a session/new request. Cwd is the
+// workspace directory the editor opened the session in — for ACP v1 it is a
+// required field; the bridge uses it as the primary filesystem root for the
+// fs/* relay (issue #34).
 type acpSessionNewParams struct {
 	SessionID    string `json:"sessionId,omitempty"`
 	Instructions string `json:"instructions,omitempty"`
+	Cwd          string `json:"cwd,omitempty"`
 }
 
 // acpSessionNewResponse is the result of a session/new request.
@@ -296,6 +311,7 @@ type acpAgentCaps struct {
 	LoadSession         bool           `json:"loadSession"`
 	PromptCapabilities  acpPromptCaps  `json:"promptCapabilities"`
 	MCPCapabilities     acpMCPCaps     `json:"mcpCapabilities"`
+	FS                  acpFSCaps      `json:"fs"`
 	SessionCapabilities map[string]any `json:"sessionCapabilities"`
 	Auth                map[string]any `json:"auth"`
 }
@@ -368,6 +384,58 @@ type acpElicitParams struct {
 type acpElicitResponse struct {
 	Action  string         `json:"action"`            // "accept" | "decline" | "cancel"
 	Content map[string]any `json:"content,omitempty"` // form field values
+}
+
+// --- ACP agent→client filesystem methods (relayed from agent pods, #34) ---
+
+// acpFSCaps is the fs block of the agent capabilities advertised in the
+// initialize response (ACP v1 FilesystemCapability).
+type acpFSCaps struct {
+	ReadTextFile  bool `json:"readTextFile"`
+	WriteTextFile bool `json:"writeTextFile"`
+}
+
+// acpFSReadParams mirrors ACP v1 ReadTextFileRequest.
+type acpFSReadParams struct {
+	SessionID string `json:"sessionId"`
+	Path      string `json:"path"`
+	Line      *int   `json:"line,omitempty"`
+	Limit     *int   `json:"limit,omitempty"`
+}
+
+// acpFSWriteParams mirrors ACP v1 WriteTextFileRequest.
+type acpFSWriteParams struct {
+	SessionID string `json:"sessionId"`
+	Path      string `json:"path"`
+	Content   string `json:"content"`
+}
+
+// acpFSReadResult mirrors ACP v1 ReadTextFileResult.
+type acpFSReadResult struct {
+	Content string `json:"content"`
+}
+
+// --- filesystem relay wire types (mirror internal/acpfs) ---
+
+// acpfsRelayRequest is one pending fs request as served by the ACP API.
+type acpfsRelayRequest struct {
+	ID        string          `json:"id"`
+	Method    string          `json:"method"`
+	Params    json.RawMessage `json:"params"`
+	CreatedAt string          `json:"createdAt"`
+}
+
+// acpfsRelayError mirrors the JSON-RPC error the client returned.
+type acpfsRelayError struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
+
+// acpfsRelayResponse is the bridge's answer for one fs request: at most one of
+// Result and Error is set (both empty is a valid null result for writes).
+type acpfsRelayResponse struct {
+	Result json.RawMessage  `json:"result,omitempty"`
+	Error  *acpfsRelayError `json:"error,omitempty"`
 }
 
 // ----------------------------------------------------------------------------
@@ -591,4 +659,81 @@ func (c *Client) ResumeRun( //nolint:revive
 		return "", fmt.Errorf("decoding resume response: %w", err)
 	}
 	return out.ContinuationRunRef, nil
+}
+
+// --- Client methods for the filesystem relay (issue #34) ---
+
+// ListFSPending fetches the pending fs/* requests of one run from the ACP API
+// (GET /runs/{id}/fs/pending), long-polling up to `wait`. A HTTP 501 means the
+// operator deployment has no filesystem relay (feature disabled); 404 means
+// the run does not exist (expired or not owned by this tenant). Both surface
+// as *fsRelayError so callers can distinguish them from transient failures.
+func (c *Client) ListFSPending(ctx context.Context, runID string, wait time.Duration) ([]acpfsRelayRequest, error) { //nolint:lll
+	u := fmt.Sprintf("%s/runs/%s/fs/pending?wait=%g", strings.TrimRight(c.ACP, "/"),
+		url.PathEscape(runID), wait.Seconds())
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	c.tokenAuth(req)
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	switch resp.StatusCode {
+	case http.StatusOK:
+		// fall through to decode
+	case http.StatusNotImplemented, http.StatusNotFound:
+		return nil, &fsRelayError{status: resp.StatusCode, msg: "fs relay unavailable or run not found"}
+	default:
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxJSONBodyBytes))
+		return nil, fmt.Errorf("list fs pending failed (HTTP %d): %s", resp.StatusCode, strings.TrimSpace(string(body))) //nolint:lll
+	}
+	var out struct {
+		Requests []acpfsRelayRequest `json:"requests"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("decoding fs pending list: %w", err)
+	}
+	return out.Requests, nil
+}
+
+// RespondFSPending posts the bridge's answer for one fs request via
+// POST /runs/{id}/fs/pending/{request_id}/response.
+func (c *Client) RespondFSPending(ctx context.Context, runID, requestID string, resp acpfsRelayResponse) error {
+	body, err := json.Marshal(resp)
+	if err != nil {
+		return err
+	}
+	u := fmt.Sprintf("%s/runs/%s/fs/pending/%s/response", strings.TrimRight(c.ACP, "/"),
+		url.PathEscape(runID), url.PathEscape(requestID))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bodyReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	c.tokenAuth(req)
+	httpResp, err := c.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = httpResp.Body.Close() }()
+	if httpResp.StatusCode != http.StatusNoContent {
+		respBody, _ := io.ReadAll(io.LimitReader(httpResp.Body, maxJSONBodyBytes))
+		var acpErr struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		}
+		_ = json.Unmarshal(respBody, &acpErr)
+		detail := strings.TrimSpace(string(respBody))
+		if acpErr.Code != "" || acpErr.Message != "" {
+			detail = fmt.Sprintf("[%s] %s", acpErr.Code, acpErr.Message)
+		}
+		if httpResp.StatusCode == http.StatusNotFound {
+			return &fsRelayError{status: 404, msg: "fs request expired: " + detail}
+		}
+		return fmt.Errorf("respond fs request failed (HTTP %d): %s", httpResp.StatusCode, detail)
+	}
+	return nil
 }

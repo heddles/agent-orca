@@ -112,6 +112,7 @@ In-depth guides, organized by audience. **Developers** start with the first bloc
 | [AgentWorkflow](docs/agentworkflow.md) | Developers | Declarative DAG orchestration |
 | [RAG / KnowledgeBase](docs/rag.md) | Developers | Vector store integration and built-in tools (`_rag_search`, `_rag_ingest`) |
 | [MCP Access Control](docs/mcp-access-control.md) | Developers / Operators | MCP server security, tool exposure, and HTTP bearer-token auth |
+| [Filesystem Access](docs/filesystem-access.md) | Developers / Operators | ACP `fs/*` relay: agents read/edit the user's local workspace via the editor bridge |
 | [Local Model Selection](docs/local-model-selection.md) | Developers | Running with local/Ollama models via LiteLLM |
 | [AI Task Testing](docs/testing-tools.md) | Developers | Test agents, evals, and the `hack/test-agents.sh` harness |
 | [UI Testing](docs/ui-testing.md) | Developers | Running UI unit/e2e (Vitest + Playwright) tests |

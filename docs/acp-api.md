@@ -229,6 +229,22 @@ List events for a run (ACP event stream).
 
 Cancel a running task.
 
+## GET /runs/{run_id}/fs/pending
+
+List the ACP `fs/*` requests the run has queued for the workstation bridge
+(filesystem relay; see [filesystem-access.md](filesystem-access.md)). Used by
+`aoctl acp serve` while watching a run. Accepts `?wait=<seconds>` (max 25) to
+long-poll. Returns `{"requests": [...]}`; `501` when the deployment has no
+filesystem relay.
+
+## POST /runs/{run_id}/fs/pending/{request_id}/response
+
+Post the bridge's answer for one relayed fs request. Body is `{"result":
+{...}}` on success or `{"error": {"code": N, "message": "..."}}` when the
+bridge/editor refused the call. Returns `204`; `404` when the request expired.
+The calling bridge must own the run (tenant-scoped like every other
+`/runs/{id}` endpoint).
+
 ## GET /session/{session_id}
 
 Retrieve session state for conversation continuity.

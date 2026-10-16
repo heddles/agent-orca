@@ -87,6 +87,12 @@ This is the command to put in your editor's agent_servers config. Use
 	}
 	serve.Flags().StringVar(&s.agent, "agent", "", "agent-orca agent to serve (required)")
 	_ = serve.MarkFlagRequired("agent")
+	serve.Flags().StringSliceVar(&s.fsRoots, "fs-roots", nil,
+		"extra workspace root directories the agent may read/write, on top of the session cwd "+
+			"(comma-separated; use ~ for home)")
+	serve.Flags().BoolVar(&s.fsRequireApproval, "fs-require-approval", true,
+		"require explicit user approval via the editor for every workspace write "+
+			"(applies on top of the agent's own writeApproval policy)")
 
 	setup := &cobra.Command{
 		Use:   "setup",
@@ -152,7 +158,11 @@ func (s *settings) runACPServe() error {
 	// server; server dispatches via the bridge). Create the server first with a
 	// nil handler, wire the bridge, then assign it as the handler.
 	srv := newACPStdioServer(nil, os.Stdin, os.Stdout, os.Stderr)
-	bridge := newACPBridge(srv, client, s.agent)
+	fsOpts := fsBridgeOptions{
+		extraRoots:      s.fsRoots,
+		requireApproval: s.fsRequireApproval,
+	}
+	bridge := newACPBridgeWithOptions(srv, client, s.agent, fsOpts)
 	srv.handler = bridge
 
 	_, _ = fmt.Fprintf(s.errw,

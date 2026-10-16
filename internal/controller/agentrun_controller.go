@@ -929,6 +929,12 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 		BackendType: "builtin",
 	})
 
+	// fs_read_text_file / fs_write_text_file: relay the user's local workspace
+	// through the ACP bridge (issue #34), gated by Agent.spec.filesystem.
+	var fsCfg *router.FilesystemConfig
+	fsCfg, fsDefs := filesystemToolCfg(agent.Spec.Filesystem)
+	toolDefs = append(toolDefs, fsDefs...)
+
 	// Resolve KnowledgeBases from Agent spec.
 	var kbConfigs []router.KnowledgeBaseConfig
 	for _, kbName := range agent.Spec.KnowledgeBases {
@@ -1158,6 +1164,7 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 			RecallBudget:      5,
 			RetainOnEveryTurn: true,
 		},
+		Filesystem: fsCfg,
 	}
 	if agent.Spec.Runtime.InputMode == "http" {
 		port := agent.Spec.Runtime.InputPort

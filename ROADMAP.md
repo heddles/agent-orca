@@ -28,10 +28,13 @@ Rejected alternative: shipping workspace files into the pod (volume mounts
 / copy-in) — diverges from live editor state, needs its own sync machinery,
 and is not how ACP-native agents operate.
 
-**Status:** not started — ~4–5 days (bridge reverse proxy ~1.5d, capability
-negotiation on `readTextFile`/`writeTextFile` ~0.5d, security/policy:
-workspace-root confinement, gated writes, Agent CRD policy knobs ~1.5d,
-tests + docs ~1d).
+**Status:** implemented on `feature/acp-filesystem-access` — bridge reverse
+proxy (pod→bridge `fs/*` relay via the operator, `internal/acpfs` + ACP API /
+internal API endpoints), capability negotiation tied to the agent manifest,
+security (workspace-root confinement in the bridge, write refusal in the
+router under `readOnly`, per-write approval elicitation via the ACP
+elicitation flow), `Agent.spec.filesystem` policy knobs, unit + e2e tests
+(`FS_E2E=true`), and docs (`docs/filesystem-access.md`).
 
 **Security notes:** confine paths to workspace roots the client exposes;
 gate writes behind approval/policy, mirroring `docs/mcp-access-control.md`

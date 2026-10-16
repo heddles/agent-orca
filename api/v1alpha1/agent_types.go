@@ -90,6 +90,46 @@ type AgentSpec struct {
 	// +kubebuilder:default=false
 	// +optional
 	DisableClarify bool `json:"disableClarify,omitempty"`
+
+	// Filesystem configures access to the user's local workspace via the ACP
+	// bridge's fs/* relay (issue #34): when set, the agent gets built-in tools
+	// fs_read_text_file / fs_write_text_file whose calls are forwarded through
+	// the `aoctl acp serve` bridge to the ACP client (e.g. Zed), which reads
+	// and edits the user's real files. The bridge is the enforcement point for
+	// workspace-root confinement and (optionally) write approval; this field
+	// only decides whether and in which mode the tools exist. Nil disables
+	// filesystem access entirely.
+	// +optional
+	Filesystem *FilesystemAccessSpec `json:"filesystem,omitempty"`
+}
+
+// FilesystemAccessMode selects how the agent may touch the user's workspace
+// through the ACP bridge relay.
+type FilesystemAccessMode string
+
+const (
+	// FilesystemReadOnly exposes only fs_read_text_file.
+	FilesystemReadOnly FilesystemAccessMode = "readOnly"
+	// FilesystemReadWrite exposes fs_read_text_file and fs_write_text_file.
+	FilesystemReadWrite FilesystemAccessMode = "readWrite"
+)
+
+// FilesystemAccessSpec configures the ACP bridge fs/* relay for an agent.
+type FilesystemAccessSpec struct {
+	// Mode grants read-only or read-write access to the workspace. In readOnly
+	// mode only fs_read_text_file is exposed; fs_write_text_file is refused by
+	// the model-router (defense in depth) and rejected by the bridge.
+	// +kubebuilder:validation:Enum=readOnly;readWrite
+	// +kubebuilder:default=readOnly
+	Mode FilesystemAccessMode `json:"mode"`
+
+	// WriteApproval asks the bridge to request explicit user approval (via the
+	// ACP elicitation flow) before applying every fs_write_text_file. Only
+	// meaningful with mode readWrite. Default: true — the conservative default
+	// given writes land in the user's checked-out workspace.
+	// +kubebuilder:default=true
+	// +optional
+	WriteApproval bool `json:"writeApproval"`
 }
 
 // NetworkIsolationSpec configures split-pod topology for agent/router network separation.

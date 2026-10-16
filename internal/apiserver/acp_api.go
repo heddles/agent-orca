@@ -35,6 +35,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
+	"github.com/heddles/agent-orca/internal/acpfs"
 	"github.com/heddles/agent-orca/internal/checkpoint"
 	"github.com/heddles/agent-orca/internal/security"
 	"github.com/heddles/agent-orca/internal/state"
@@ -58,6 +59,10 @@ type ACPServer struct {
 	// checkpoint persists session LastRunRef chains for warm-pool context continuity
 	// across ACP turns. nil when no state store is configured (local dev).
 	checkpoint checkpoint.Store
+
+	// fsRelay carries ACP fs/* requests from agent pods to the workstation-side
+	// bridge. nil disables filesystem access (fs endpoints return 501).
+	fsRelay acpfs.Relay
 
 	// rateLimiter enforces per-tenant submission rate limits. nil disables it.
 	rateLimiter *RateLimiter
@@ -245,6 +250,20 @@ type ACPAgentManifest struct {
 	// ClarifyAvailable indicates whether the _clarify built-in tool is available
 	// (i.e. human-in-the-loop is possible). False when DisableClarify is true.
 	ClarifyAvailable bool `json:"clarify_available"`
+
+	// Filesystem declares the agent's ACP fs/* relay policy (issue #34). nil
+	// means the agent has no filesystem tools; the bridge's aoctl-side flags
+	// layer on top of this (they can only narrow, never widen, this policy).
+	Filesystem *ACPFilesystemPolicy `json:"filesystem,omitempty"`
+}
+
+// ACPFilesystemPolicy mirrors Agent.spec.filesystem for bridge-side policy
+// enforcement (mode gating and write approval elicitation).
+type ACPFilesystemPolicy struct {
+	// Mode is "readOnly" or "readWrite".
+	Mode string `json:"mode"`
+	// WriteApproval asks the bridge to elicit explicit user approval per write.
+	WriteApproval bool `json:"writeApproval,omitempty"`
 }
 
 // ACPToolInfo describes a tool available to an agent.
@@ -411,6 +430,7 @@ func (s *ACPServer) handleListAgents(w http.ResponseWriter, r *http.Request) {
 			KnowledgeBases:     agent.Spec.KnowledgeBases,
 			GuardrailPolicy:    agent.Spec.GuardrailPolicyRef,
 			ClarifyAvailable:   !agent.Spec.DisableClarify,
+			Filesystem:         filesystemManifestPolicy(agent.Spec.Filesystem),
 		}
 		for _, kb := range agent.Spec.KnowledgeBaseRefs {
 			manifest.KnowledgeBases = append(manifest.KnowledgeBases, kb.Name)
@@ -502,6 +522,7 @@ func (s *ACPServer) writeAgentManifest(w http.ResponseWriter, r *http.Request, a
 	}
 	manifest.GuardrailPolicy = agent.Spec.GuardrailPolicyRef
 	manifest.ClarifyAvailable = !agent.Spec.DisableClarify
+	manifest.Filesystem = filesystemManifestPolicy(agent.Spec.Filesystem)
 
 	// Build input/output schemas from the agent's tools.
 	manifest.InputSchema = buildInputSchema(manifest.AllowedTools)
@@ -905,6 +926,26 @@ func (s *ACPServer) handleRunByID(w http.ResponseWriter, r *http.Request) {
 	if len(parts) >= 2 && parts[1] == "events" {
 		s.handleListRunEvents(w, r, tenant, runID)
 		return
+	}
+
+	// Handle /runs/{run_id}/fs/pending (bridge-side filesystem relay).
+	if len(parts) >= 3 && parts[1] == "fs" && parts[2] == "pending" {
+		switch r.Method {
+		case http.MethodGet:
+			s.handleFSPending(w, r, tenant, runID)
+			return
+		case http.MethodPost:
+			// POST /runs/{run_id}/fs/pending/{request_id}/response
+			if len(parts) >= 5 && parts[4] == "response" {
+				s.handleFSRespond(w, r, tenant, runID, parts[3])
+				return
+			}
+			writeACPError(w, "invalid_input", "request_id and /response required", http.StatusBadRequest)
+			return
+		default:
+			writeACPError(w, "invalid_input", "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
 	}
 
 	// Resolve the run across the tenant's authorized namespaces. findRunInNamespaces

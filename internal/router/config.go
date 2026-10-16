@@ -191,6 +191,11 @@ type Config struct {
 	// When enabled, every LLM turn will recall relevant memories before the call
 	// and retain the conversation after the call.
 	Hindsight HindsightConfig `json:"hindsight,omitempty"`
+
+	// Filesystem enables the built-in fs_read_text_file / fs_write_text_file
+	// tools that relay to the user's workstation via the ACP bridge. nil means
+	// filesystem access is disabled (Agent.spec.filesystem was unset).
+	Filesystem *FilesystemConfig `json:"filesystem,omitempty"`
 }
 
 // ProviderConfig is a fully-resolved LLM provider ready for dispatch.

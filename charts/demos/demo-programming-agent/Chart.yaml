@@ -40,7 +40,7 @@ description: |
   ghcr.io/heddles/agent-orca/openai-reference:latest (built + kind-loaded by
   `skaffold dev`; also publicly pullable from GHCR).
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: "0.1.0"
 keywords:
   - demo
@@ -56,5 +56,5 @@ keywords:
   - slack
 dependencies:
   - name: agent-orca-resources
-    version: "0.2.0"
+    version: "0.2.1"
     repository: "file://../../agent-orca-resources"

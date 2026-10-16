@@ -2179,6 +2179,11 @@ func (r *Router) dispatchToolCall(ctx context.Context, tc ToolCall) string { //n
 	// Built-in tools take priority — they may also appear in cfg.ToolDefinitions
 	// (with BackendType "builtin") for LLM schema injection, but must be handled here.
 	// Accept both underscore-prefixed and non-prefixed forms for backwards compatibility.
+	// fs_* tools relay to the workstation-side editor bridge and run on their own
+	// (longer) deadline — user-approval waits must not hit the generic toolTimeout.
+	fsRelayedTool := tc.Function.Name == fsToolNameRead || tc.Function.Name == "_fs_read_text_file" ||
+		tc.Function.Name == fsToolNameWrite || tc.Function.Name == "_fs_write_text_file" ||
+		tc.Function.Name == fsToolNameList || tc.Function.Name == "_fs_list_dir"
 	switch tc.Function.Name {
 	case "_handoff", "handoff":
 		result = r.executeHandoff(toolCtx, tc.Function.Arguments)
@@ -2222,15 +2227,31 @@ func (r *Router) dispatchToolCall(ctx context.Context, tc ToolCall) string { //n
 		result = r.executeConfirmFix(toolCtx, tc.Function.Arguments)
 	case "_list_resources", "list_resources":
 		result = r.executeListResources(toolCtx, tc.Function.Arguments)
+	case fsToolNameRead, "_fs_read_text_file":
+		result = r.executeFSRead(ctx, tc.Function.Arguments)
+	case fsToolNameList, "_fs_list_dir":
+		result = r.executeFSList(ctx, tc.Function.Arguments)
+	case fsToolNameWrite, "_fs_write_text_file":
+		result = r.executeFSWrite(ctx, tc.Function.Arguments)
 	default:
 		// Find the tool definition.
 		found := false
 		for _, td := range r.cfg.ToolDefinitions {
 			if td.Name == tc.Function.Name {
 				found = true
-				if td.BackendType == backendTypeMCP {
+				switch td.BackendType {
+				case backendTypeMCP:
 					result, appUrl = r.callMCPTool(toolCtx, td, tc.Function.Arguments)
-				} else {
+				case backendTypeBuiltin:
+					// The operator injected a builtin this router build doesn't
+					// know (operator newer than the model-router image). Say so
+					// instead of a cryptic executor error.
+					result = fmt.Sprintf(
+						`{"error": "builtin tool %q is not implemented by this model-router build; "+
+							"rebuild and redeploy the model-router image to match the operator"}`, tc.Function.Name)
+					slog.Warn("builtin tool not implemented by this router build (operator/router version skew)",
+						"tool", tc.Function.Name, "run", r.cfg.RunName)
+				default:
 					result = r.executeToolBackend(toolCtx, td, tc.Function.Arguments)
 				}
 				break
@@ -2242,7 +2263,9 @@ func (r *Router) dispatchToolCall(ctx context.Context, tc ToolCall) string { //n
 	}
 
 	// Check if the tool execution timed out and surface a structured error.
-	if toolCtx.Err() == context.DeadlineExceeded {
+	// Relayed fs tools carry their own, longer deadline (executeFS*) so they
+	// are excluded from the generic per-tool timeout override here.
+	if !fsRelayedTool && toolCtx.Err() == context.DeadlineExceeded {
 		slog.Warn("tool execution timed out", "tool", tc.Function.Name,
 			"timeoutSec", r.cfg.Safeguards.ToolExecutionTimeoutSec,
 			"duration", time.Since(startTime).String())

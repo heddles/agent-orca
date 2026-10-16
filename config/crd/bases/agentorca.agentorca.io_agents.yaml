@@ -98,6 +98,38 @@ spec:
                   Use this for autonomous agents that should not block waiting for human input.
                   When true, the _clarify tool is still available but auto-detection is disabled.
                 type: boolean
+              filesystem:
+                description: |-
+                  Filesystem configures access to the user's local workspace via the ACP
+                  bridge's fs/* relay (issue #34): when set, the agent gets built-in tools
+                  fs_read_text_file / fs_write_text_file whose calls are forwarded through
+                  the `aoctl acp serve` bridge to the ACP client (e.g. Zed), which reads
+                  and edits the user's real files. The bridge is the enforcement point for
+                  workspace-root confinement and (optionally) write approval; this field
+                  only decides whether and in which mode the tools exist. Nil disables
+                  filesystem access entirely.
+                properties:
+                  mode:
+                    default: readOnly
+                    description: |-
+                      Mode grants read-only or read-write access to the workspace. In readOnly
+                      mode only fs_read_text_file is exposed; fs_write_text_file is refused by
+                      the model-router (defense in depth) and rejected by the bridge.
+                    enum:
+                    - readOnly
+                    - readWrite
+                    type: string
+                  writeApproval:
+                    default: true
+                    description: |-
+                      WriteApproval asks the bridge to request explicit user approval (via the
+                      ACP elicitation flow) before applying every fs_write_text_file. Only
+                      meaningful with mode readWrite. Default: true — the conservative default
+                      given writes land in the user's checked-out workspace.
+                    type: boolean
+                required:
+                - mode
+                type: object
               guardrailPolicyRef:
                 description: |-
                   GuardrailPolicyRef names the GuardrailPolicy (same namespace) applied to this agent's

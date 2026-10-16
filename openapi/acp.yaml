@@ -112,7 +112,7 @@ components:
       properties: { required: { type: string } }
     ACPErr:
       $ref: '#/components/schemas/Error'
-    ACRRun:
+    ACPRun:
       type: object
       required: [agent_name, run_id, status, created_at]
       properties:
@@ -217,7 +217,7 @@ paths:
             schema: { $ref: '#/components/schemas/ACPRunCreateRequest' }
       responses:
         '201':
-          content: { application/json: { schema: { $ref: '#/components/schemas/ACRRun' } } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/ACPRun' } } }
         '404':
           description: Agent not found / not allowed.
           content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
@@ -234,7 +234,7 @@ paths:
           schema: { type: string }
       responses:
         '200':
-          content: { application/json: { schema: { $ref: '#/components/schemas/ACRRun' } } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/ACPRun' } } }
         '404':
           content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
     post:
@@ -254,7 +254,7 @@ paths:
             schema: { $ref: '#/components/schemas/ACPRunCreateRequest' }
       responses:
         '200':
-          content: { application/json: { schema: { $ref: '#/components/schemas/ACRRun' } } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/ACPRun' } } }
   /runs/{run_id}/cancel:
     post:
       tags: [runs]
@@ -268,7 +268,7 @@ paths:
           schema: { type: string }
       responses:
         '202':
-          content: { application/json: { schema: { $ref: '#/components/schemas/ACRRun' } } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/ACPRun' } } }
         '409':
           description: Run already terminal.
           content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
@@ -285,10 +285,97 @@ paths:
           schema: { type: string }
       responses:
         '200':
-          description: SSE event stream (`message_created`, `message_part`, `message_completed`, `run.completed`, `run.failed`, ...).
+          description: SSE event stream (`message_created`, `message_part`, `message_completed`, `run.completed`, `run.failed`, `run.awaiting`...).
           content:
             text/event-stream:
               schema: { $ref: '#/components/schemas/EventBatch' }
+  /runs/{run_id}/fs/pending:
+    get:
+      tags: [runs]
+      summary: List pending ACP fs/* requests of a run (workstation bridge poll)
+      description: |
+        Part of the filesystem relay (issue #34): the `aoctl acp serve` bridge
+        polls this endpoint while watching a run and forwards each request to
+        the ACP client over stdio (fs/read_text_file / fs/write_text_file).
+        Paths are confined to the bridge's workspace roots; answers are POSTed
+        back to the response endpoint. Requires a filesystem relay on the
+        deployment (501 otherwise).
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: run_id
+          required: true
+          schema: { type: string }
+        - in: query
+          name: wait
+          description: Long-poll this many seconds before returning an empty list (max 25).
+          schema: { type: number }
+      responses:
+        '200':
+          description: Current pending requests (possibly empty).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  requests:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        method: { type: string, enum: [fs/read_text_file, fs/write_text_file, fs/list_dir] }
+                        params: { type: object }
+                        createdAt: { type: string, format: date-time }
+        '404':
+          description: Run not found (or not owned by the tenant).
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+        '501':
+          description: Filesystem relay not available on this deployment.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+  /runs/{run_id}/fs/pending/{request_id}/response:
+    post:
+      tags: [runs]
+      summary: Post the bridge's answer for one relayed fs request
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: run_id
+          required: true
+          schema: { type: string }
+        - in: path
+          name: request_id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                result:
+                  type: object
+                  description: >-
+                    ACP result on success (e.g. a content object for reads; a
+                    null result is valid for writes).
+                error:
+                  type: object
+                  properties:
+                    code: { type: integer }
+                    message: { type: string }
+                  description: JSON-RPC error when the bridge/editor refused the call
+      responses:
+        '204':
+          description: Response stored; the polling agent picks it up on its next take.
+        '404':
+          description: Run or fs request not found (expired).
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+        '501':
+          description: Filesystem relay not available on this deployment.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
   /session/{session_id}:
     get:
       tags: [sessions]

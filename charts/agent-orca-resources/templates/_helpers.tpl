@@ -108,6 +108,12 @@ spec:
   knowledgeBases:
     {{- toYaml .knowledgeBases | nindent 4 }}
   {{- end }}
+  {{- if .filesystem }}
+  {{/* ACP fs/* relay policy (issue #34): nil omits the field entirely, meaning
+      no filesystem tools — fail closed like the CRD default. */}}
+  filesystem:
+    {{- toYaml .filesystem | nindent 4 }}
+  {{- end }}
   {{- if .memory }}
   memory:
     {{- toYaml .memory | nindent 4 }}

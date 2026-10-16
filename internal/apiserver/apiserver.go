@@ -44,6 +44,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
+	"github.com/heddles/agent-orca/internal/acpfs"
 	"github.com/heddles/agent-orca/internal/rag"
 	"github.com/heddles/agent-orca/internal/security"
 )
@@ -52,6 +53,9 @@ import (
 type Server struct {
 	k8s       kubernetes.Interface
 	crdClient client.Client
+	// fsRelay carries ACP fs/* requests from agent pods to the workstation-side
+	// bridge. nil disables filesystem access (fs requests fail with 501).
+	fsRelay acpfs.Relay
 }
 
 // New creates a new API server.
@@ -118,6 +122,10 @@ func (s *Server) handleAgentRun(w http.ResponseWriter, r *http.Request) { //noli
 		s.emitEventAgentRun(w, r, namespace, parts[1])
 	case r.Method == http.MethodPost && len(parts) == 3 && parts[2] == "route":
 		s.recordRoutingDecision(w, r, namespace, parts[1])
+	case r.Method == http.MethodPost && len(parts) == 3 && parts[2] == "fs":
+		s.enqueueFSRequest(w, r, namespace, parts[1])
+	case r.Method == http.MethodGet && len(parts) == 4 && parts[2] == "fs":
+		s.takeFSResponse(w, r, namespace, parts[1], parts[3])
 	default:
 		http.Error(w, "not found", http.StatusNotFound)
 	}

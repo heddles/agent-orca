@@ -16,7 +16,7 @@ version: 0.1.0
 appVersion: "0.1.0"
 dependencies:
   - name: agent-orca-resources
-    version: "0.2.0"
+    version: "0.2.1"
     repository: "file://../../agent-orca-resources"
 keywords:
   - demo
