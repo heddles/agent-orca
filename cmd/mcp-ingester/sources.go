@@ -82,7 +82,9 @@ func fetchConfigMapDocs(ctx context.Context, cfg *IngestConfig) ([]rag.Document,
 
 	namespace := os.Getenv("POD_NAMESPACE")
 	if namespace == "" {
-		return nil, fmt.Errorf("POD_NAMESPACE is not set but configMapNames is configured; the Job pod spec must set it (fieldRef metadata.namespace)")
+		return nil, fmt.Errorf(
+			"POD_NAMESPACE is not set but configMapNames is configured; the Job pod spec must set it " +
+				"(fieldRef metadata.namespace)")
 	}
 
 	restCfg, err := rest.InClusterConfig()
@@ -203,7 +205,9 @@ func fetchS3Docs(ctx context.Context, cfg *IngestConfig) ([]rag.Document, error)
 	accessKey := os.Getenv("AWS_ACCESS_KEY_ID")
 	secretKey := os.Getenv("AWS_SECRET_ACCESS_KEY")
 	if accessKey == "" || secretKey == "" {
-		return nil, fmt.Errorf("S3 ingestion requires AWS credentials: configure secretRef on the KnowledgeBase S3 source so the Job receives AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY")
+		return nil, fmt.Errorf(
+			"S3 ingestion requires AWS credentials: configure secretRef on the KnowledgeBase S3 source " +
+				"so the Job receives AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY")
 	}
 
 	endpoint, secure := s3Endpoint(cfg.S3Endpoint)

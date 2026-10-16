@@ -71,7 +71,7 @@ modelRouter:
 
 mcpIngester:
   image:
-    repository: ghcr.io/agentorca/mcp-ingester
+    repository: ghcr.io/heddles/agent-orca/mcp-ingester
     tag: "latest"
 
 qdrant:

@@ -24,11 +24,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"math"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
+
+	"github.com/heddles/agent-orca/internal/ratelimit"
 )
 
 const maxRateLimitRetries = 3
@@ -70,7 +70,7 @@ func doWithRateLimitRetry(ctx context.Context, buildReq func() (*http.Request, e
 				Body:       io.NopCloser(strings.NewReader(bodyStr)),
 			}, nil
 		}
-		delay := retryAfterDelay(resp.Header, attempt)
+		delay := retryAfterDelay(resp.Header, body, attempt)
 		slog.Warn("rate limited (429), retrying",
 			"attempt", attempt+1,
 			"delay", delay,
@@ -86,14 +86,13 @@ func doWithRateLimitRetry(ctx context.Context, buildReq func() (*http.Request, e
 	return nil, fmt.Errorf("rate limit retries exhausted")
 }
 
-// retryAfterDelay parses the Retry-After header (seconds) and returns a delay.
-// Falls back to exponential backoff (2^attempt seconds, capped at 30s).
-func retryAfterDelay(headers http.Header, attempt int) time.Duration {
-	if ra := headers.Get("Retry-After"); ra != "" {
-		if secs, err := strconv.ParseFloat(ra, 64); err == nil && secs > 0 {
-			d := min(time.Duration(math.Ceil(secs))*time.Second, 60*time.Second)
-			return d
-		}
+// retryAfterDelay returns the provider-declared retry delay when one exists
+// (google.rpc.RetryInfo retryDelay in the error body, or the Retry-After
+// header), falling back to exponential backoff (2^attempt seconds, capped at
+// 30s). A declared delay wins: retrying sooner just burns quota.
+func retryAfterDelay(headers http.Header, body []byte, attempt int) time.Duration {
+	if d := ratelimit.ParseRetryDelay(headers, body); d > 0 {
+		return min(d, 60*time.Second)
 	}
 	d := min(time.Duration(1<<uint(attempt))*time.Second, 30*time.Second)
 	return d

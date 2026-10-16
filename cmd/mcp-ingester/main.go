@@ -23,6 +23,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -71,6 +72,8 @@ type IngestConfig struct {
 	EmbeddingKeyFile   string `json:"embeddingKeyFile"`
 	EmbeddingDims      int    `json:"embeddingDims"`
 	EmbeddingDocPrompt string `json:"embeddingDocPrompt,omitempty"`
+	EmbeddingRPM       int    `json:"embeddingRPM,omitempty"`
+	EmbeddingTPM       int    `json:"embeddingTPM,omitempty"`
 	ChunkSize          int    `json:"chunkSize"`
 	ChunkOverlap       int    `json:"chunkOverlap"`
 
@@ -158,7 +161,8 @@ func run(ctx context.Context) error {
 
 	// Chunk, embed, and upsert directly into Qdrant.
 	embedder := rag.NewEmbeddingClient(cfg.EmbeddingEndpoint, cfg.EmbeddingKeyFile, cfg.EmbeddingModel,
-		cfg.EmbeddingDocPrompt, "") // queryPrompt unused — MCP ingester only ingests documents
+		cfg.EmbeddingDocPrompt, ""). // queryPrompt unused — MCP ingester only ingests documents
+		WithRateLimits(cfg.EmbeddingRPM, cfg.EmbeddingTPM)
 
 	chunkCfg := rag.ChunkConfig{
 		ChunkSize:    cfg.ChunkSize,
@@ -170,6 +174,13 @@ func run(ctx context.Context) error {
 
 	result, err := rag.IngestDocuments(ctx, docs, cfg.QdrantURL, cfg.CollectionName, uint64(cfg.EmbeddingDims), embedder, chunkCfg) //nolint:lll
 	if err != nil {
+		if errors.Is(err, rag.ErrDailyQuotaExhausted) {
+			// Final log line: the controller reads the pod termination message
+			// (FallbackToLogsOnError) looking for this marker and pauses
+			// re-ingestion until the provider's daily quota reset. Retrying
+			// here would only burn more of the (already exhausted) budget.
+			slog.Error("QUOTA_EXHAUSTED_DAILY embedding provider daily quota exhausted; aborting ingestion until quota reset")
+		}
 		return fmt.Errorf("ingesting documents: %w", err)
 	}
 

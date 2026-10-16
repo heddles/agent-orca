@@ -119,6 +119,49 @@ func (q *QdrantClient) Upsert(ctx context.Context, collection string, points []P
 	return nil
 }
 
+// ExistingPoints returns, for each of the given point IDs that already exists
+// in the collection, the stored "content_hash" payload value (empty string
+// for points written before content hashing was introduced). Missing points
+// are absent from the map.
+func (q *QdrantClient) ExistingPoints(ctx context.Context, collection string, ids []string) (map[string]string, error) {
+	existing := make(map[string]string, len(ids))
+	const batchSize = 500
+	for start := 0; start < len(ids); start += batchSize {
+		end := min(start+batchSize, len(ids))
+		batch := ids[start:end]
+		pbIDs := make([]*pb.PointId, len(batch))
+		for i, id := range batch {
+			pbIDs[i] = pb.NewID(id)
+		}
+		// The input IDs are canonical hyphenated UUIDs (see pointID); Qdrant
+		// returns point keys in the same canonical form, so GetUuid keys map
+		// 1:1 back onto the input IDs.
+		points, err := q.client.Get(ctx, &pb.GetPoints{
+			CollectionName: collection,
+			Ids:            pbIDs,
+			WithPayload: &pb.WithPayloadSelector{
+				SelectorOptions: &pb.WithPayloadSelector_Include{
+					Include: &pb.PayloadIncludeSelector{Fields: []string{"content_hash"}},
+				},
+			},
+			WithVectors: &pb.WithVectorsSelector{
+				SelectorOptions: &pb.WithVectorsSelector_Enable{Enable: false},
+			},
+		})
+		if err != nil {
+			return nil, fmt.Errorf("fetching %d existing points from %q: %w", len(batch), collection, err)
+		}
+		for _, p := range points {
+			hash := ""
+			if v, ok := p.GetPayload()["content_hash"]; ok {
+				hash = v.GetStringValue()
+			}
+			existing[p.GetId().GetUuid()] = hash
+		}
+	}
+	return existing, nil
+}
+
 // Search performs a nearest neighbor search and returns the top-K results.
 func (q *QdrantClient) Search(ctx context.Context, collection string, vector []float32, topK int) ([]SearchResult, error) {
 	limit := uint64(topK)

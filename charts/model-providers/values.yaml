@@ -450,6 +450,11 @@ modelProviders:
     latencyProfile: fast
     constraints:
       contextWindow: 2048
+      # Free-tier (AI Studio key) account budgets. Raise or remove these if
+      # your project is billed — the operator's built-in preset matches these
+      # values, so leaving them unset has the same effect.
+      rpm: 100
+      tpm: 30000
       costPerMillionInputTokens: "0.15"
       costPerMillionOutputTokens: "0.00"
 

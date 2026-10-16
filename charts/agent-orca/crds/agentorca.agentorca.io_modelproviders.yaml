@@ -96,6 +96,20 @@ spec:
                       rate limit (e.g. TPM) is lower than the model's ContextWindow.
                       0 means no per-request limit (ContextWindow is used for sizing decisions).
                     type: integer
+                  rpm:
+                    description: |-
+                      RPM is the account-level requests-per-minute budget for this provider's
+                      API key. Embedding calls are paced to stay under it. When unset, the
+                      operator applies built-in conservative presets keyed by the provider
+                      endpoint (e.g. Google AI Studio free tier, OpenAI tier 1).
+                    type: integer
+                  tpm:
+                    description: |-
+                      TPM is the account-level tokens-per-minute budget for this provider's
+                      API key. Embedding batches are sized and paced to stay under it. When
+                      unset, the operator applies built-in conservative presets keyed by the
+                      provider endpoint.
+                    type: integer
                 type: object
               credentialsRef:
                 description: |-

@@ -90,7 +90,7 @@ No additional Python packages needed — `urllib.request` from stdlib handles HT
 
 Build the image locally:
 ```bash
-docker build -f charts/demos/demo-llm-research/Dockerfile.eval -t ghcr.io/agentorca/eval-runtime:latest .
+docker build -f charts/demos/demo-llm-research/Dockerfile.eval -t ghcr.io/heddles/agent-orca/eval-runtime:latest .
 ```
 
 Push to GitHub Container Registry:
@@ -99,10 +99,12 @@ Push to GitHub Container Registry:
 echo $CR_PAT | docker login ghcr.io -u USERNAME --password-stdin
 
 # Push the image
-docker push ghcr.io/agentorca/eval-runtime:latest
+docker push ghcr.io/heddles/agent-orca/eval-runtime:latest
 ```
 
-For local kind clusters, the skaffold profile automatically loads the image.
+For local kind clusters, the skaffold profile automatically builds and loads
+`ghcr.io/heddles/agent-orca/eval-runtime` (`skaffold run -p demo-llm-research`) —
+no manual build needed.
 
 ### Usage
 

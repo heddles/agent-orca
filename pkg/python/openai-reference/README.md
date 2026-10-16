@@ -1,4 +1,4 @@
-# Reference agent image (`ghcr.io/agentorca/agent-orca/openai-reference`)
+# Reference agent image (`ghcr.io/heddles/agent-orca/openai-reference`)
 
 A minimal, **generic** OpenAI-compatible agent image for agent-orca. It is a thin
 transport that streams a chat request to the model-router and returns the tokens —
@@ -8,7 +8,7 @@ built-in tool resolution (`_done`, `_fail`, `_clarify`, `_handoff`, `_spawn`,
 [docs/agent-images.md](../docs/agent-images.md) for the full contract.
 
 This is the image published alongside releases as
-`ghcr.io/agentorca/agent-orca/openai-reference:<version>` (plus `:latest`).
+`ghcr.io/heddles/agent-orca/openai-reference:<version>` (plus `:latest`).
 
 ## Input modes
 
@@ -22,7 +22,7 @@ This is the image published alongside releases as
 ## Quick start (local)
 
 ```bash
-docker build -t ghcr.io/agentorca/agent-orca/openai-reference:latest -f examples/agent-sdk-template/Dockerfile .
+docker build -t ghcr.io/heddles/agent-orca/openai-reference:latest -f examples/agent-sdk-template/Dockerfile .
 ```
 
 Deploy it:
@@ -36,7 +36,7 @@ spec:
   modelSelectorRef: default
   systemPrompt: "You are a helpful assistant."
   runtime:
-    ociRef: ghcr.io/agentorca/agent-orca/openai-reference:latest
+    ociRef: ghcr.io/heddles/agent-orca/openai-reference:latest
     framework: openai-compatible
 ```
 

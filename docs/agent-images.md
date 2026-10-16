@@ -174,7 +174,7 @@ spec:
   modelSelectorRef: default
   systemPrompt: "You are a helpful assistant."
   runtime:
-    ociRef: ghcr.io/agentorca/agent-orca/openai-reference:latest
+    ociRef: ghcr.io/heddles/agent-orca/openai-reference:latest
     framework: openai-compatible
     inputMode: env
 ```
@@ -199,7 +199,7 @@ CR (the reference image ignores a baked prompt — the model-router injects the 
   (`/v1/chat/completions`); `anthropicToOpenAI` only normalizes *internal* responses. An
   Anthropic-native image needs `framework: shim` or a manually-pointed base URL — not a
   first-class surface worth a dedicated image yet.
-- Optionally ship two variants of the same image: `ghcr.io/agentorca/agent-orca/openai-reference:<version>`
+- Optionally ship two variants of the same image: `ghcr.io/heddles/agent-orca/openai-reference:<version>`
   (minimal, `python:3.12-alpine`) and `:<version>-full` (SDK + common deps) for teams that
   want more out of box. Tag each per release; `:latest` tracks the newest for quick starts.
 

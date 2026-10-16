@@ -55,7 +55,21 @@ const (
 	mcpIngestConfigDir = "/etc/mcp-ingest"
 
 	// defaultMCPIngesterImage is the fallback image for the mcp-ingester binary.
-	defaultMCPIngesterImage = "ghcr.io/agentorca/mcp-ingester:latest"
+	defaultMCPIngesterImage = "ghcr.io/heddles/agent-orca/mcp-ingester:latest"
+
+	// quotaExhaustedMarker is the final log line the mcp-ingester emits when
+	// the embedding provider reports per-day quota exhaustion. The Job pod
+	// uses terminationMessagePolicy FallbackToLogsOnError, so the controller
+	// reads this marker from the pod's termination message and pauses
+	// re-ingestion until the provider's daily quota reset instead of
+	// retrying into a wall.
+	quotaExhaustedMarker = "QUOTA_EXHAUSTED_DAILY"
+
+	// initialIngestionBackoff/maxIngestionBackoff bound the exponential
+	// backoff between failed ingestion Job runs (1m, 2m, 4m, ... capped 1h).
+	// Daily-quota exhaustion bypasses this and waits for the quota reset.
+	initialIngestionBackoff = 1 * time.Minute
+	maxIngestionBackoff     = 1 * time.Hour
 
 	// ingestServiceAccountName is the ServiceAccount used by KnowledgeBase
 	// ingestion Jobs (MCP and static-source). The chart provisions it in the
@@ -108,6 +122,8 @@ type mcpIngestConfig struct {
 	EmbeddingKeyFile   string `json:"embeddingKeyFile"`
 	EmbeddingDims      int    `json:"embeddingDims"`
 	EmbeddingDocPrompt string `json:"embeddingDocPrompt,omitempty"`
+	EmbeddingRPM       int    `json:"embeddingRPM,omitempty"`
+	EmbeddingTPM       int    `json:"embeddingTPM,omitempty"`
 	ChunkSize          int    `json:"chunkSize"`
 	ChunkOverlap       int    `json:"chunkOverlap"`
 
@@ -122,29 +138,31 @@ type mcpIngestConfig struct {
 // already exists it checks status; if it completed it cleans up; if it hasn't
 // been created yet it creates the Job.
 //
-// Returns (true, nil) when the Job completed or no Job was needed (sync
-// interval not elapsed). Returns (false, nil) when a Job is still running.
+// Returns (true, requeueAfter, nil) when the Job completed or no Job was
+// needed (sync interval or failure backoff not elapsed). Returns
+// (false, requeueAfter, nil) when a Job is still running. requeueAfter > 0
+// asks the caller to reconcile again after that delay (e.g. failure backoff).
 func (r *KnowledgeBaseReconciler) runMCPIngestion(
 	ctx context.Context,
 	kb *agentorcav1alpha1.KnowledgeBase,
 	src agentorcav1alpha1.MCPIngestionSource,
 	idx int,
-) (bool, error) {
+) (bool, time.Duration, error) {
 	logger := log.FromContext(ctx)
 
 	// Validate MCPServer exists and grants _controller access.
 	var server agentorcav1alpha1.MCPServer
 	if err := r.Get(ctx, client.ObjectKey{Name: src.MCPServerRef, Namespace: kb.Namespace}, &server); err != nil {
-		return false, fmt.Errorf("getting MCPServer %q: %w", src.MCPServerRef, err)
+		return false, 0, fmt.Errorf("getting MCPServer %q: %w", src.MCPServerRef, err)
 	}
 	if !hasControllerAccess(&server) {
-		return false, fmt.Errorf("MCPServer %q does not include %q in allowedAgents", src.MCPServerRef, ControllerPrincipal)
+		return false, 0, fmt.Errorf("MCPServer %q does not include %q in allowedAgents", src.MCPServerRef, ControllerPrincipal)
 	}
 
 	// Find a child Tool CR to get transport/URL/auth/ociRef details.
 	toolCR, err := r.findMCPTool(ctx, &server)
 	if err != nil {
-		return false, fmt.Errorf("finding Tool for MCPServer %q: %w", src.MCPServerRef, err)
+		return false, 0, fmt.Errorf("finding Tool for MCPServer %q: %w", src.MCPServerRef, err)
 	}
 
 	jobName := mcpIngestJobName(kb.Name, idx)
@@ -157,35 +175,42 @@ func (r *KnowledgeBaseReconciler) runMCPIngestion(
 		return r.handleExistingJob(ctx, kb, &existingJob)
 	}
 	if !apierrors.IsNotFound(err) {
-		return false, fmt.Errorf("checking existing Job: %w", err)
+		return false, 0, fmt.Errorf("checking existing Job: %w", err)
 	}
 
-	// No existing Job. Only create a new one if sync interval has elapsed.
-	if kb.Status.LastSyncTime != nil && kb.Spec.Ingestion != nil {
-		interval := time.Duration(kb.Spec.Ingestion.SyncIntervalSeconds) * time.Second
-		if interval > 0 && time.Since(kb.Status.LastSyncTime.Time) < interval {
-			return true, nil
-		}
+	// No existing Job. Hold off while this source's failure backoff runs.
+	if wait, paused := ingestionPaused(kb, jobName); paused {
+		logger.Info("ingestion paused by per-source failure backoff",
+			"job", jobName,
+			"resume_at", kb.Status.IngestionBreakers[jobName].NextAttempt.Format(time.RFC3339),
+			"reason", kb.Status.IngestionBreakers[jobName].Reason)
+		return false, wait, nil
+	}
+
+	// Only create a new one if this source's sync interval has elapsed
+	// (per-source stamps: a failing sibling can't starve this cadence).
+	if !ingestionSyncIntervalElapsed(kb, jobName) {
+		return true, 0, nil
 	}
 
 	// Resolve embedding ModelProvider (already pinned in KB status).
 	mpName := kb.Status.EmbeddingModelProvider
 	if mpName == "" {
-		return false, fmt.Errorf("KnowledgeBase %q has no pinned embedding provider yet", kb.Name)
+		return false, 0, fmt.Errorf("KnowledgeBase %q has no pinned embedding provider yet", kb.Name)
 	}
 	var mp agentorcav1alpha1.ModelProvider
 	if err := r.Get(ctx, client.ObjectKey{Name: mpName, Namespace: kb.Namespace}, &mp); err != nil {
-		return false, fmt.Errorf("getting ModelProvider %q: %w", mpName, err)
+		return false, 0, fmt.Errorf("getting ModelProvider %q: %w", mpName, err)
 	}
 
 	// Ensure the ingester ServiceAccount/RBAC and NetworkPolicy exist in the
 	// KB namespace before creating the Job. The chart only provisions these
 	// in the release namespace; Jobs run in the KB's namespace.
 	if err := r.ensureIngestRBAC(ctx, kb); err != nil {
-		return false, fmt.Errorf("ensuring ingester RBAC: %w", err)
+		return false, 0, fmt.Errorf("ensuring ingester RBAC: %w", err)
 	}
 	if err := r.ensureIngestNetworkPolicy(ctx, kb); err != nil {
-		return false, fmt.Errorf("ensuring ingestion NetworkPolicy: %w", err)
+		return false, 0, fmt.Errorf("ensuring ingestion NetworkPolicy: %w", err)
 	}
 
 	// Build and create resources.
@@ -193,11 +218,11 @@ func (r *KnowledgeBaseReconciler) runMCPIngestion(
 
 	ingestCfg, err := r.buildIngestConfig(ctx, kb, &server, toolCR, &mp, &src)
 	if err != nil {
-		return false, fmt.Errorf("building ingest config: %w", err)
+		return false, 0, fmt.Errorf("building ingest config: %w", err)
 	}
 	cfgJSON, err := json.Marshal(ingestCfg)
 	if err != nil {
-		return false, fmt.Errorf("marshaling ingest config: %w", err)
+		return false, 0, fmt.Errorf("marshaling ingest config: %w", err)
 	}
 
 	// Create config ConfigMap.
@@ -210,49 +235,185 @@ func (r *KnowledgeBaseReconciler) runMCPIngestion(
 		Data: map[string]string{mcpIngestConfigKey: string(cfgJSON)},
 	}
 	if err := ctrl.SetControllerReference(kb, configCM, r.Scheme); err != nil {
-		return false, fmt.Errorf("setting owner ref on config ConfigMap: %w", err)
+		return false, 0, fmt.Errorf("setting owner ref on config ConfigMap: %w", err)
 	}
 	if err := r.Create(ctx, configCM); err != nil && !apierrors.IsAlreadyExists(err) {
-		return false, fmt.Errorf("creating config ConfigMap: %w", err)
+		return false, 0, fmt.Errorf("creating config ConfigMap: %w", err)
 	}
 
 	// Build and create the Job.
 	job := r.buildIngestJob(kb, toolCR, &src, &mp, jobName, configCMName)
 	if err := ctrl.SetControllerReference(kb, job, r.Scheme); err != nil {
-		return false, fmt.Errorf("setting owner ref on Job: %w", err)
+		return false, 0, fmt.Errorf("setting owner ref on Job: %w", err)
 	}
 	if err := r.Create(ctx, job); err != nil {
-		return false, fmt.Errorf("creating Job: %w", err)
+		return false, 0, fmt.Errorf("creating Job: %w", err)
 	}
 
 	// Job just started — caller should requeue.
-	return false, nil
+	return false, 0, nil
 }
 
-// handleExistingJob checks the status of an existing MCP ingestion Job.
+// handleExistingJob checks the status of an existing ingestion Job.
 // Documents are already in Qdrant; the caller queries Qdrant for counts.
+//
+// Breaker state is keyed per source (by Job name) in
+// kb.Status.IngestionBreakers: a sibling source's success only clears its own
+// entry, and concurrent source failures count independently.
 func (r *KnowledgeBaseReconciler) handleExistingJob(
 	ctx context.Context,
 	kb *agentorcav1alpha1.KnowledgeBase,
 	job *batchv1.Job,
-) (bool, error) {
+) (bool, time.Duration, error) {
 	logger := log.FromContext(ctx)
 
 	if job.Status.Succeeded > 0 {
-		logger.Info("MCP ingestion Job completed", "job", job.Name)
+		logger.Info("ingestion Job completed", "job", job.Name)
 		r.cleanupIngestResources(ctx, kb.Namespace, job.Name)
-		return true, nil
+		// Success clears only THIS source's breaker — a static-source Job
+		// completing must not cancel an MCP source's quota pause.
+		delete(kb.Status.IngestionBreakers, job.Name)
+		// Stamp this source's successful sync for the per-source sync-interval
+		// gate (a failing sibling must not starve this source's cadence).
+		if kb.Status.IngestionSyncTimes == nil {
+			kb.Status.IngestionSyncTimes = make(map[string]metav1.Time, 1)
+		}
+		kb.Status.IngestionSyncTimes[job.Name] = metav1.Now()
+		return true, 0, nil
 	}
 
 	if job.Status.Failed > 0 {
-		logger.Error(nil, "MCP ingestion Job failed", "job", job.Name)
+		dailyQuota := r.ingestJobHitDailyQuota(ctx, kb.Namespace, job)
+		breaker := kb.Status.IngestionBreakers[job.Name]
+		backoff, reason := ingestionBackoff(breaker.Failures, dailyQuota)
+		next := metav1.NewTime(time.Now().Add(backoff))
+		if kb.Status.IngestionBreakers == nil {
+			kb.Status.IngestionBreakers = make(map[string]agentorcav1alpha1.IngestionBreakerState, 1)
+		}
+		kb.Status.IngestionBreakers[job.Name] = agentorcav1alpha1.IngestionBreakerState{
+			Failures:    breaker.Failures + 1,
+			NextAttempt: &next,
+			Reason:      reason,
+		}
+		kb.Status.Message = fmt.Sprintf("ingestion Job %q paused until %s: %s",
+			job.Name, next.Format(time.RFC3339), reason)
+		logger.Error(nil, "ingestion Job failed; pausing re-ingestion",
+			"job", job.Name,
+			"backoff", backoff.Round(time.Second),
+			"consecutive_failures", breaker.Failures+1,
+			"reason", reason,
+		)
 		r.cleanupIngestResources(ctx, kb.Namespace, job.Name)
-		return false, fmt.Errorf("MCP ingestion Job %q failed", job.Name)
+		return false, backoff, fmt.Errorf("ingestion Job %q failed: %s", job.Name, reason)
 	}
 
 	// Still running. Caller will requeue via Job watch.
-	logger.Info("MCP ingestion Job still running", "job", job.Name)
-	return false, nil
+	logger.Info("ingestion Job still running", "job", job.Name)
+	return false, 0, nil
+}
+
+// ingestionSyncIntervalElapsed reports whether a source's sync interval has
+// elapsed (or no interval is configured, or the source never synced). It
+// reads the per-source stamp so a persistently failing sibling — which keeps
+// the KB-level LastSyncTime from advancing — cannot re-create a healthy
+// source's Job on every controller resync.
+func ingestionSyncIntervalElapsed(kb *agentorcav1alpha1.KnowledgeBase, jobName string) bool {
+	if kb.Spec.Ingestion == nil {
+		return true
+	}
+	interval := time.Duration(kb.Spec.Ingestion.SyncIntervalSeconds) * time.Second
+	if interval <= 0 {
+		return true
+	}
+	last, ok := kb.Status.IngestionSyncTimes[jobName]
+	if !ok {
+		return true
+	}
+	return time.Since(last.Time) >= interval
+}
+
+// ingestionPaused returns the remaining backoff pause for a source's Job, or
+// (0, false) when the source is healthy to run again.
+func ingestionPaused(kb *agentorcav1alpha1.KnowledgeBase, jobName string) (time.Duration, bool) {
+	b, ok := kb.Status.IngestionBreakers[jobName]
+	if !ok || b.NextAttempt == nil {
+		return 0, false
+	}
+	if wait := time.Until(b.NextAttempt.Time); wait > 0 {
+		return wait, true
+	}
+	return 0, false
+}
+
+// ingestionBackoff computes the pause before the next ingestion attempt.
+// Daily-quota exhaustion waits for the provider's quota reset (Google resets
+// daily quotas at midnight Pacific); anything else backs off exponentially
+// with the consecutive failure count. Note the daily-quota floor is 0 — at
+// the reset boundary the returned wait may be near-zero, which immediately
+// unblocks the source.
+func ingestionBackoff(consecutiveFailures int, dailyQuota bool) (time.Duration, string) {
+	if dailyQuota {
+		return time.Until(nextQuotaReset()),
+			"embedding provider daily quota exhausted; waiting for quota reset"
+	}
+	backoff := initialIngestionBackoff << uint(min(consecutiveFailures, 6))
+	if backoff > maxIngestionBackoff || backoff <= 0 {
+		backoff = maxIngestionBackoff
+	}
+	return backoff, "ingestion job failed"
+}
+
+// nextQuotaReset returns the next midnight Pacific time, when Google resets
+// daily API quotas.
+//
+// Google-specific by design: day-scope classification (see
+// ratelimit.ClassifyQuotaError) currently only recognizes google.rpc
+// QuotaFailure bodies, so this reset semantics can only be reached for
+// Google endpoints. If another provider gains day-scope classification,
+// move the reset policy into the provider config so classification and
+// reset semantics travel together. Falls back to a fixed UTC-8 offset if
+// tzdata is missing.
+func nextQuotaReset() time.Time {
+	loc, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		loc = time.FixedZone("PST", -8*60*60)
+	}
+	now := time.Now().In(loc)
+	return time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, loc)
+}
+
+// ingestJobHitDailyQuota reports whether any terminated pod of the Job
+// carried the daily-quota exhaustion marker in its termination message.
+func (r *KnowledgeBaseReconciler) ingestJobHitDailyQuota(ctx context.Context, namespace string, job *batchv1.Job) bool {
+	var pods corev1.PodList
+	// Job pods carry both the legacy "job-name" label and
+	// "batch.kubernetes.io/job-name"; matching either is sufficient.
+	if err := r.List(ctx, &pods,
+		client.InNamespace(namespace),
+		client.MatchingLabels{"job-name": job.Name},
+	); err != nil {
+		log.FromContext(ctx).Error(err, "listing ingestion Job pods for quota classification",
+			"job", job.Name)
+		return false
+	}
+	return podsReportDailyQuota(pods.Items)
+}
+
+// podsReportDailyQuota inspects pod termination messages for the marker.
+// Only terminated container states are inspected: with backoffLimit 0 a
+// failed pod is terminal by the time the Job reports Failed, so the
+// termination message is guaranteed to be present. Pods stuck in crash
+// backoff report nothing here (also fine — the Job hasn't failed yet).
+func podsReportDailyQuota(pods []corev1.Pod) bool {
+	for _, p := range pods {
+		for _, cs := range p.Status.ContainerStatuses {
+			term := cs.State.Terminated
+			if term != nil && strings.Contains(term.Message, quotaExhaustedMarker) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // cleanupIngestResources deletes the Job and associated ConfigMaps.
@@ -295,9 +456,10 @@ func hasStaticSources(ing *agentorcav1alpha1.IngestionConfig) bool {
 // Qdrant — keeping fetching/extraction/embedding CPU work out of the
 // operator. Idempotent, mirroring runMCPIngestion.
 //
-// Returns (true, nil) when the Job completed or no Job was needed (sync
-// interval not elapsed). Returns (false, nil) when a Job is still running.
-func (r *KnowledgeBaseReconciler) runSourcesIngestion(ctx context.Context, kb *agentorcav1alpha1.KnowledgeBase) (bool, error) {
+// Returns (true, requeueAfter, nil) when the Job completed or no Job was
+// needed (sync interval or failure backoff not elapsed). Returns
+// (false, requeueAfter, nil) when a Job is still running.
+func (r *KnowledgeBaseReconciler) runSourcesIngestion(ctx context.Context, kb *agentorcav1alpha1.KnowledgeBase) (bool, time.Duration, error) {
 	logger := log.FromContext(ctx)
 
 	jobName := sourcesIngestJobName(kb.Name)
@@ -310,42 +472,49 @@ func (r *KnowledgeBaseReconciler) runSourcesIngestion(ctx context.Context, kb *a
 		return r.handleExistingJob(ctx, kb, &existingJob)
 	}
 	if !apierrors.IsNotFound(err) {
-		return false, fmt.Errorf("checking existing Job: %w", err)
+		return false, 0, fmt.Errorf("checking existing Job: %w", err)
 	}
 
-	// No existing Job. Only create a new one if sync interval has elapsed.
-	if kb.Status.LastSyncTime != nil && kb.Spec.Ingestion != nil {
-		interval := time.Duration(kb.Spec.Ingestion.SyncIntervalSeconds) * time.Second
-		if interval > 0 && time.Since(kb.Status.LastSyncTime.Time) < interval {
-			return true, nil
-		}
+	// No existing Job. Hold off while this source's failure backoff runs.
+	if wait, paused := ingestionPaused(kb, jobName); paused {
+		logger.Info("ingestion paused by per-source failure backoff",
+			"job", jobName,
+			"resume_at", kb.Status.IngestionBreakers[jobName].NextAttempt.Format(time.RFC3339),
+			"reason", kb.Status.IngestionBreakers[jobName].Reason)
+		return false, wait, nil
+	}
+
+	// Only create a new one if this source's sync interval has elapsed
+	// (per-source stamps: a failing sibling can't starve this cadence).
+	if !ingestionSyncIntervalElapsed(kb, jobName) {
+		return true, 0, nil
 	}
 
 	// Resolve embedding ModelProvider (already pinned in KB status).
 	mpName := kb.Status.EmbeddingModelProvider
 	if mpName == "" {
-		return false, fmt.Errorf("KnowledgeBase %q has no pinned embedding provider yet", kb.Name)
+		return false, 0, fmt.Errorf("KnowledgeBase %q has no pinned embedding provider yet", kb.Name)
 	}
 	var mp agentorcav1alpha1.ModelProvider
 	if err := r.Get(ctx, client.ObjectKey{Name: mpName, Namespace: kb.Namespace}, &mp); err != nil {
-		return false, fmt.Errorf("getting ModelProvider %q: %w", mpName, err)
+		return false, 0, fmt.Errorf("getting ModelProvider %q: %w", mpName, err)
 	}
 
 	// Ensure the ingester ServiceAccount/RBAC and NetworkPolicy exist in the
 	// KB namespace before creating the Job. The chart only provisions these
 	// in the release namespace; Jobs run in the KB's namespace.
 	if err := r.ensureIngestRBAC(ctx, kb); err != nil {
-		return false, fmt.Errorf("ensuring ingester RBAC: %w", err)
+		return false, 0, fmt.Errorf("ensuring ingester RBAC: %w", err)
 	}
 	if err := r.ensureIngestNetworkPolicy(ctx, kb); err != nil {
-		return false, fmt.Errorf("ensuring ingestion NetworkPolicy: %w", err)
+		return false, 0, fmt.Errorf("ensuring ingestion NetworkPolicy: %w", err)
 	}
 
 	logger.Info("Creating static-source ingestion Job", "job", jobName)
 	ingestCfg := r.buildSourcesIngestConfig(kb, &mp)
 	cfgJSON, err := json.Marshal(ingestCfg)
 	if err != nil {
-		return false, fmt.Errorf("marshaling ingest config: %w", err)
+		return false, 0, fmt.Errorf("marshaling ingest config: %w", err)
 	}
 
 	// Create config ConfigMap.
@@ -358,23 +527,23 @@ func (r *KnowledgeBaseReconciler) runSourcesIngestion(ctx context.Context, kb *a
 		Data: map[string]string{mcpIngestConfigKey: string(cfgJSON)},
 	}
 	if err := ctrl.SetControllerReference(kb, configCM, r.Scheme); err != nil {
-		return false, fmt.Errorf("setting owner ref on config ConfigMap: %w", err)
+		return false, 0, fmt.Errorf("setting owner ref on config ConfigMap: %w", err)
 	}
 	if err := r.Create(ctx, configCM); err != nil && !apierrors.IsAlreadyExists(err) {
-		return false, fmt.Errorf("creating config ConfigMap: %w", err)
+		return false, 0, fmt.Errorf("creating config ConfigMap: %w", err)
 	}
 
 	// Build and create the Job.
 	job := r.buildSourcesIngestJob(kb, &mp, jobName, configCMName)
 	if err := ctrl.SetControllerReference(kb, job, r.Scheme); err != nil {
-		return false, fmt.Errorf("setting owner ref on Job: %w", err)
+		return false, 0, fmt.Errorf("setting owner ref on Job: %w", err)
 	}
 	if err := r.Create(ctx, job); err != nil {
-		return false, fmt.Errorf("creating Job: %w", err)
+		return false, 0, fmt.Errorf("creating Job: %w", err)
 	}
 
 	// Job just started — caller should requeue.
-	return false, nil
+	return false, 0, nil
 }
 
 // ensureIngestRBAC creates the ingester ServiceAccount, Role, and RoleBinding
@@ -497,9 +666,9 @@ func (r *KnowledgeBaseReconciler) buildSourcesIngestConfig(
 	kb *agentorcav1alpha1.KnowledgeBase,
 	mp *agentorcav1alpha1.ModelProvider,
 ) *mcpIngestConfig {
-	embeddingEndpoint, embeddingModel := embeddingConfig(mp)
+	embeddingEndpoint, embeddingModel, rpm, tpm := embeddingConfig(mp)
 
-	var cmNames []string
+	cmNames := make([]string, 0, len(kb.Spec.Ingestion.ConfigMapRefs))
 	for _, ref := range kb.Spec.Ingestion.ConfigMapRefs {
 		cmNames = append(cmNames, ref.Name)
 	}
@@ -515,6 +684,8 @@ func (r *KnowledgeBaseReconciler) buildSourcesIngestConfig(
 		EmbeddingKeyFile:   fmt.Sprintf("/etc/embed-key/%s", mp.Spec.CredentialsRef.Key),
 		EmbeddingDims:      kb.Status.EmbeddingDimensions,
 		EmbeddingDocPrompt: mp.Spec.DocPrompt,
+		EmbeddingRPM:       rpm,
+		EmbeddingTPM:       tpm,
 		ChunkSize:          kb.Spec.Embedding.ChunkSize,
 		ChunkOverlap:       kb.Spec.Embedding.ChunkOverlap,
 
@@ -620,7 +791,12 @@ func (r *KnowledgeBaseReconciler) buildSourcesIngestJob(
 			Labels:    labels,
 		},
 		Spec: batchv1.JobSpec{
-			BackoffLimit: ptr.To(int32(3)),
+			// BackoffLimit 0: a failing ingestion pod must not be silently
+			// restarted inside the Job — each restart re-bursts embedding
+			// requests against the provider with a fresh rate limiter. The
+			// controller owns retry policy (exponential backoff, quota-aware
+			// circuit breaker) instead.
+			BackoffLimit: ptr.To(int32(0)),
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
@@ -633,6 +809,10 @@ func (r *KnowledgeBaseReconciler) buildSourcesIngestJob(
 							Command:      []string{"/mcp-ingester"},
 							Env:          envVars,
 							VolumeMounts: volumeMounts,
+							// Surface the ingester's final log lines (including the
+							// QUOTA_EXHAUSTED_DAILY marker) as the pod termination
+							// message so the controller can classify failures.
+							TerminationMessagePolicy: corev1.TerminationMessageFallbackToLogsOnError,
 							Resources: corev1.ResourceRequirements{
 								Requests: corev1.ResourceList{
 									corev1.ResourceCPU:    resource.MustParse("100m"),
@@ -668,7 +848,7 @@ func (r *KnowledgeBaseReconciler) buildIngestConfig(
 	src *agentorcav1alpha1.MCPIngestionSource,
 ) (*mcpIngestConfig, error) { //nolint:unparam
 
-	embeddingEndpoint, embeddingModel := embeddingConfig(mp)
+	embeddingEndpoint, embeddingModel, rpm, tpm := embeddingConfig(mp)
 
 	dims := kb.Status.EmbeddingDimensions
 
@@ -687,6 +867,8 @@ func (r *KnowledgeBaseReconciler) buildIngestConfig(
 		EmbeddingKeyFile:   fmt.Sprintf("/etc/embed-key/%s", mp.Spec.CredentialsRef.Key),
 		EmbeddingDims:      dims,
 		EmbeddingDocPrompt: mp.Spec.DocPrompt,
+		EmbeddingRPM:       rpm,
+		EmbeddingTPM:       tpm,
 		ChunkSize:          kb.Spec.Embedding.ChunkSize,
 		ChunkOverlap:       kb.Spec.Embedding.ChunkOverlap,
 
@@ -941,7 +1123,10 @@ func (r *KnowledgeBaseReconciler) buildIngestJob(
 			Labels:    labels,
 		},
 		Spec: batchv1.JobSpec{
-			BackoffLimit: ptr.To(int32(3)),
+			// BackoffLimit 0: the controller owns retry policy (exponential
+			// backoff, quota-aware circuit breaker); silent in-Job pod restarts
+			// would re-burst embedding requests with a fresh rate limiter.
+			BackoffLimit: ptr.To(int32(0)),
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
@@ -954,7 +1139,10 @@ func (r *KnowledgeBaseReconciler) buildIngestJob(
 							Command:      []string{"/mcp-ingester"},
 							Env:          envVars,
 							VolumeMounts: volumeMounts,
-							Resources:    resources,
+							// Surface final log lines (incl. QUOTA_EXHAUSTED_DAILY)
+							// as the termination message for failure classification.
+							TerminationMessagePolicy: corev1.TerminationMessageFallbackToLogsOnError,
+							Resources:                resources,
 						},
 					},
 					Volumes: volumes,
@@ -1015,8 +1203,10 @@ func sourcesIngestJobName(kbName string) string {
 	return name
 }
 
-// embeddingConfig returns the embedding endpoint and model for a ModelProvider.
-func embeddingConfig(mp *agentorcav1alpha1.ModelProvider) (endpoint, model string) {
+// embeddingConfig returns the embedding endpoint, model, and any operator-
+// configured rpm/tpm budgets for a ModelProvider. Zero rpm/tpm values mean
+// "use the built-in provider presets".
+func embeddingConfig(mp *agentorcav1alpha1.ModelProvider) (endpoint, model string, rpm, tpm int) {
 	endpoint = mp.Spec.BaseURL
 	if endpoint == "" {
 		endpoint = embeddingBaseURL(mp.Spec.LiteLLMModel)
@@ -1025,7 +1215,7 @@ func embeddingConfig(mp *agentorcav1alpha1.ModelProvider) (endpoint, model strin
 	if idx := strings.Index(model, "/"); idx >= 0 {
 		model = model[idx+1:]
 	}
-	return endpoint, model
+	return endpoint, model, mp.Spec.Constraints.RPM, mp.Spec.Constraints.TPM
 }
 
 // mcpIngesterImageOrDefault returns the configured ingester image or the built-in default.

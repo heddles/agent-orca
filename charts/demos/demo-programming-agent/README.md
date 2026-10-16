@@ -155,7 +155,7 @@ kubectl get tool -n agent-orca-system -l agentorca.io/managed-by=mcpserver
 ## Notes
 
 - The agent image is the persona-free reference
-  `ghcr.io/agentorca/agent-orca/openai-reference:latest`; the model-router injects the
+  `ghcr.io/heddles/agent-orca/openai-reference:latest`; the model-router injects the
   system prompt, tools, history, and built-in tool resolution (`_done`, `_fail`,
   `_clarify`, `_spawn`, `_rag_search`, `_rag_ingest`, `_webhook_notify`, …), so the
   image only ships `input → model-router → output`.

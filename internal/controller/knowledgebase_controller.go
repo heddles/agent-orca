@@ -25,6 +25,11 @@ import (
 	"strings"
 	"time"
 
+	// Blank import: the daily quota-reset boundary is computed in
+	// America/Los_Angeles, which requires zoneinfo on minimal distroless
+	// images that ship no /usr/share/zoneinfo.
+	_ "time/tzdata"
+
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -173,11 +178,15 @@ func (r *KnowledgeBaseReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 	// Run source ingestion if configured. Ingestion runs in mcp-ingester
 	// Jobs; the operator only orchestrates Job lifecycle.
+	ingestRequeue := time.Duration(0)
 	if kb.Spec.Ingestion != nil {
-		if err := r.runIngestion(ctx, &kb); err != nil {
+		wait, err := r.runIngestion(ctx, &kb)
+		if err != nil {
 			logger.Error(err, "running ingestion")
-			// Don't fail reconcile — ingestion can retry on next sync.
+			// Don't fail reconcile — the failure backoff recorded in the KB
+			// status paces the next attempt instead.
 		}
+		ingestRequeue = wait
 	}
 
 	// Query Qdrant for the authoritative counts. This is the single source
@@ -198,7 +207,10 @@ func (r *KnowledgeBaseReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, err
 	}
 
-	// Re-sync if configured.
+	// Re-sync if configured, or honor an ingestion failure backoff.
+	if ingestRequeue > 0 {
+		return ctrl.Result{RequeueAfter: ingestRequeue}, nil
+	}
 	if kb.Spec.Ingestion != nil && kb.Spec.Ingestion.SyncIntervalSeconds > 0 {
 		return ctrl.Result{RequeueAfter: durationFromSeconds(kb.Spec.Ingestion.SyncIntervalSeconds)}, nil
 	}
@@ -749,22 +761,36 @@ func (r *KnowledgeBaseReconciler) estimateStoragePercent(kb *agentorcav1alpha1.K
 // fetching, document-type detection, extraction, chunking, and embedding run
 // in mcp-ingester Jobs — the operator only orchestrates Job lifecycle and
 // queries Qdrant for counts.
-func (r *KnowledgeBaseReconciler) runIngestion(ctx context.Context, kb *agentorcav1alpha1.KnowledgeBase) error {
+//
+// Returns the earliest requeue delay the caller should honor (e.g. the
+// remaining failure backoff) and any orchestration error.
+func (r *KnowledgeBaseReconciler) runIngestion(ctx context.Context, kb *agentorcav1alpha1.KnowledgeBase) (time.Duration, error) {
 	logger := log.FromContext(ctx)
 
 	if kb.Spec.Ingestion == nil {
-		return nil
+		return 0, nil
 	}
+
+	// Per-source circuit breakers are checked inside runSourcesIngestion /
+	// runMCPIngestion (keyed on each Job) so one paused source never blocks
+	// a healthy sibling from ingesting.
+
+	ingestErr := error(nil)
+	minRequeue := time.Duration(0)
 
 	// Static sources (ConfigMaps, URLs, S3) are ingested by a single
 	// mcp-ingester Job per KnowledgeBase.
 	sourcesRunning := false
 	if hasStaticSources(kb.Spec.Ingestion) {
-		done, err := r.runSourcesIngestion(ctx, kb)
+		done, wait, err := r.runSourcesIngestion(ctx, kb)
 		if err != nil {
 			logger.Error(err, "static-source ingestion failed")
+			ingestErr = err
 		} else if !done {
 			sourcesRunning = true
+		}
+		if wait > 0 && (minRequeue == 0 || wait < minRequeue) {
+			minRequeue = wait
 		}
 	}
 
@@ -774,23 +800,31 @@ func (r *KnowledgeBaseReconciler) runIngestion(ctx context.Context, kb *agentorc
 	// interval has elapsed.
 	mcpJobRunning := false
 	for i, mcpSrc := range kb.Spec.Ingestion.MCP {
-		done, err := r.runMCPIngestion(ctx, kb, mcpSrc, i)
+		done, wait, err := r.runMCPIngestion(ctx, kb, mcpSrc, i)
 		if err != nil {
 			logger.Error(err, "MCP ingestion failed", "mcpServer", mcpSrc.MCPServerRef)
+			if ingestErr == nil {
+				ingestErr = err
+			}
 			continue
 		}
 		if !done {
 			mcpJobRunning = true
 		}
+		if wait > 0 && (minRequeue == 0 || wait < minRequeue) {
+			minRequeue = wait
+		}
 	}
 
 	// ChunkCount is set by the caller from Qdrant directly (the single
-	// source of truth). Here we just manage LastSyncTime.
-	if !sourcesRunning && !mcpJobRunning {
+	// source of truth). Here we just manage LastSyncTime — only on a run
+	// with no orchestration errors, so a failed run doesn't masquerade as a
+	// completed sync and gate the next attempt by the sync interval.
+	if !sourcesRunning && !mcpJobRunning && ingestErr == nil {
 		now := metav1.Now()
 		kb.Status.LastSyncTime = &now
 	}
-	return nil
+	return minRequeue, ingestErr
 }
 
 // resolveEmbedder builds an EmbeddingClient from the KnowledgeBase's embedding config.
@@ -853,7 +887,8 @@ func (r *KnowledgeBaseReconciler) resolveEmbedder(ctx context.Context, kb *agent
 		kb.Status.EmbeddingModel = mp.Spec.LiteLLMModel
 	}
 
-	return rag.NewEmbeddingClient(endpoint, keyFile, model, mp.Spec.DocPrompt, mp.Spec.QueryPrompt), nil
+	return rag.NewEmbeddingClient(endpoint, keyFile, model, mp.Spec.DocPrompt, mp.Spec.QueryPrompt).
+		WithRateLimits(mp.Spec.Constraints.RPM, mp.Spec.Constraints.TPM), nil
 }
 
 // embeddingBaseURL returns the provider's base URL for embedding calls.

@@ -256,7 +256,7 @@ Each demo profile is documented in `skaffold.yaml` with its prerequisites.
 #### The reference agent image
 
 Demos and `hack/test-agents.sh` run agents from the openai reference image
-`ghcr.io/agentorca/agent-orca/openai-reference:latest` — a minimal OpenAI-compatible
+`ghcr.io/heddles/agent-orca/openai-reference:latest` — a minimal OpenAI-compatible
 agent (the model-router injects the system prompt, tools, prior context, and built-in
 tool resolution, so the image itself is persona-free). `skaffold dev` builds and kind-loads
 this image as `:latest` automatically (a non-fatal build hook; Skaffold's tag policy is
@@ -268,9 +268,9 @@ To run demos offline, or before the image has been published to a release, build
 it into Kind once (this is also the command to force a rebuild after editing `agent.py`):
 
 ```bash
-docker build -t ghcr.io/agentorca/agent-orca/openai-reference:latest \
+docker build -t ghcr.io/heddles/agent-orca/openai-reference:latest \
   -f examples/agent-sdk-template/Dockerfile .
-kind load docker-image ghcr.io/agentorca/agent-orca/openai-reference:latest --name agent-orca-dev
+kind load docker-image ghcr.io/heddles/agent-orca/openai-reference:latest --name agent-orca-dev
 ```
 
 To run your own agent image instead, replace `ociRef` in the `Agent` manifest and set
@@ -378,9 +378,9 @@ Helm values so you can point at an internal registry or pin specific versions.
 
 | Component | Helm Value | Env Var | Default |
 |-----------|-----------|---------|---------|
-| Operator | `operator.image.repository` / `tag` | — | `ghcr.io/agentorca/agent-orca/operator:latest` |
-| Model Router (sidecar) | `modelRouter.image.repository` / `tag` | `MODEL_ROUTER_IMAGE` | `ghcr.io/agentorca/agent-orca/model-router:latest` |
-| MCP Ingester (KB jobs) | `mcpIngester.image.repository` / `tag` | `MCP_INGESTER_IMAGE` | `ghcr.io/agentorca/mcp-ingester:latest` |
+| Operator | `operator.image.repository` / `tag` | — | `ghcr.io/heddles/agent-orca/operator:latest` |
+| Model Router (sidecar) | `modelRouter.image.repository` / `tag` | `MODEL_ROUTER_IMAGE` | `ghcr.io/heddles/agent-orca/model-router:latest` |
+| MCP Ingester (KB jobs) | `mcpIngester.image.repository` / `tag` | `MCP_INGESTER_IMAGE` | `ghcr.io/heddles/agent-orca/mcp-ingester:latest` |
 | Qdrant (KB vector store) | `qdrant.image.repository` / `tag` | `QDRANT_IMAGE` | `qdrant/qdrant:v1.17.1` |
 
 All image references support `global.imageRegistry` as a prefix (e.g. set to

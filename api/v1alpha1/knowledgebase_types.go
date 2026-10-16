@@ -330,6 +330,24 @@ type KnowledgeBaseStatus struct {
 	// +optional
 	LastSyncTime *metav1.Time `json:"lastSyncTime,omitempty"`
 
+	// IngestionBreakers tracks the ingestion circuit breaker per source,
+	// keyed by that source's ingestion Job name ("kb-src-<kb>" for static
+	// sources, "kb-mcp-<kb>-<idx>" for MCP sources). Keying per source is
+	// load-bearing: a sibling source's success must not cancel a failed
+	// source's backoff pause (which recreated the runaway Job loop), and
+	// concurrent source failures must not amplify each other's counters.
+	// +optional
+	IngestionBreakers map[string]IngestionBreakerState `json:"ingestionBreakers,omitempty"`
+
+	// IngestionSyncTimes records the last successful sync per source, keyed
+	// by that source's ingestion Job name. The sync-interval gate reads
+	// these instead of the single KB-level LastSyncTime so a persistently
+	// failing sibling source cannot starve a healthy source's configured
+	// sync cadence (LastSyncTime only advances when nothing is running and
+	// no source errored).
+	// +optional
+	IngestionSyncTimes map[string]metav1.Time `json:"ingestionSyncTimes,omitempty"`
+
 	// QdrantVersion is the currently running Qdrant version as reported by
 	// the instance's HTTP API (e.g. "1.17.1"). Empty until the first probe.
 	// +optional
@@ -351,6 +369,29 @@ type KnowledgeBaseStatus struct {
 	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// IngestionBreakerState is the per-source ingestion circuit breaker state.
+type IngestionBreakerState struct {
+	// Failures counts consecutive failed runs of this source's ingestion Job.
+	// Reset to zero when that Job succeeds. Drives the exponential
+	// re-ingestion backoff so a persistently failing source cannot restart
+	// Jobs in a tight loop and burn through API budgets.
+	// +optional
+	Failures int `json:"failures,omitempty"`
+
+	// NextAttempt is the earliest time the controller will launch a new
+	// ingestion Job for this source after a failure. After provider
+	// daily-quota exhaustion this is set to the provider's quota reset time
+	// rather than a short backoff.
+	// +optional
+	NextAttempt *metav1.Time `json:"nextAttempt,omitempty"`
+
+	// Reason explains why this source's ingestion is paused (e.g.
+	// "embedding provider daily quota exhausted; waiting for quota reset").
+	// Empty when the source's ingestion is healthy.
+	// +optional
+	Reason string `json:"reason,omitempty"`
 }
 
 // +kubebuilder:object:root=true
