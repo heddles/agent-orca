@@ -335,7 +335,7 @@ func (s *UIServer) handleRunOrStream(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		switch parts[2] {
-		case "stream":
+		case string(ACPRunModeStream):
 			s.handleStream(w, r, ns, runName)
 		case "stop":
 			s.handleStopRun(w, r, ns, runName)
@@ -1673,7 +1673,7 @@ func (s *UIServer) handleDeployment(w http.ResponseWriter, r *http.Request) {
 			s.handleSaveResponse(w, r, namespace, deploymentName)
 		case r.Method == http.MethodGet && action == "history":
 			s.handleChatHistory(w, r, namespace, deploymentName)
-		case r.Method == http.MethodGet && action == "stream":
+		case r.Method == http.MethodGet && action == string(ACPRunModeStream):
 			s.handleDeploymentStream(w, r, namespace, deploymentName)
 		default:
 			http.Error(w, "not found", http.StatusNotFound)

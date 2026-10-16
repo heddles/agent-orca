@@ -230,7 +230,7 @@ func readZipXMLText(zr *zip.Reader, name string, spec xmlTextSpec) (string, erro
 	if err != nil {
 		return "", err
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 	return xmlText(rc, spec)
 }
 

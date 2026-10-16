@@ -48,7 +48,9 @@ func BuildIngestNetworkPolicy(
 ) *networkingv1.NetworkPolicy {
 	safeName := SafeLabelValue(kbName)
 
-	var egressRules []networkingv1.NetworkPolicyEgressRule
+	// Preallocate: 443+6443, port 80, same-namespace catch-all, DNS UDP+TCP,
+	// then the KnowledgeBase's extra egress rules.
+	egressRules := make([]networkingv1.NetworkPolicyEgressRule, 0, 4+len(extraEgress)+2)
 
 	// Kubernetes API server (ConfigMap reads) and external HTTPS.
 	egressRules = append(egressRules,

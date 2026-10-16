@@ -268,14 +268,12 @@ func TestGetRunScansTraceEvents(t *testing.T) {
 
 	s := &Store{db: db}
 	archive, err := s.GetRun(context.Background(), "default", "my-run")
-	if err != nil {
-		t.Fatalf("GetRun failed: %v", err)
+	if err != nil || archive == nil {
+		t.Fatalf("GetRun: err=%v, archive=%v", err, archive)
 	}
-	if archive == nil {
-		t.Fatal("expected non-nil archive")
-	}
-	if string(archive.TraceEventsJSON) != string(traceJSON) {
-		t.Fatalf("TraceEventsJSON = %s, want %s", archive.TraceEventsJSON, traceJSON)
+	got := string(archive.TraceEventsJSON)
+	if got != string(traceJSON) {
+		t.Fatalf("TraceEventsJSON = %s, want %s", got, string(traceJSON))
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet expectations: %v", err)

@@ -161,7 +161,9 @@ func TestScrapeMetricsReadsEgressRegistry(t *testing.T) {
 	before := s.scrapeMetrics(context.Background())
 	if before == nil {
 		t.Fatal("expected non-nil metrics")
+		return
 	}
+	beforeEgress := before.EgressPublished
 
 	// Publish a result through the egress package; this increments the egress
 	// counter that lives on the DEFAULT registry (promauto).
@@ -170,9 +172,13 @@ func TestScrapeMetricsReadsEgressRegistry(t *testing.T) {
 	})
 
 	after := s.scrapeMetrics(context.Background())
-	if after.EgressPublished < before.EgressPublished+1 {
+	if after == nil {
+		t.Fatal("expected non-nil metrics after publish")
+		return
+	}
+	if after.EgressPublished < beforeEgress+1 {
 		t.Fatalf("EgressPublished = %d, want >= %d (registry wiring not reading egress counters)",
-			after.EgressPublished, before.EgressPublished+1)
+			after.EgressPublished, beforeEgress+1)
 	}
 }
 

@@ -107,7 +107,7 @@ func TestAIMDHalvesAndGrows(t *testing.T) {
 	}
 
 	// 8 clean successes grow one step: budget 30→60 and concurrency 1→2.
-	for i := 0; i < 8; i++ {
+	for range 8 {
 		l.reward()
 	}
 	if got := l.batchCharBudget(); got != 60 {

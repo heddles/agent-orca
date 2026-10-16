@@ -182,7 +182,7 @@ func (r *KnowledgeBaseReconciler) runMCPIngestion(
 	if wait, paused := ingestionPaused(kb, jobName); paused {
 		logger.Info("ingestion paused by per-source failure backoff",
 			"job", jobName,
-			"resume_at", kb.Status.IngestionBreakers[jobName].NextAttempt.Time.Format(time.RFC3339),
+			"resume_at", kb.Status.IngestionBreakers[jobName].NextAttempt.Format(time.RFC3339),
 			"reason", kb.Status.IngestionBreakers[jobName].Reason)
 		return false, wait, nil
 	}
@@ -479,7 +479,7 @@ func (r *KnowledgeBaseReconciler) runSourcesIngestion(ctx context.Context, kb *a
 	if wait, paused := ingestionPaused(kb, jobName); paused {
 		logger.Info("ingestion paused by per-source failure backoff",
 			"job", jobName,
-			"resume_at", kb.Status.IngestionBreakers[jobName].NextAttempt.Time.Format(time.RFC3339),
+			"resume_at", kb.Status.IngestionBreakers[jobName].NextAttempt.Format(time.RFC3339),
 			"reason", kb.Status.IngestionBreakers[jobName].Reason)
 		return false, wait, nil
 	}
@@ -668,7 +668,7 @@ func (r *KnowledgeBaseReconciler) buildSourcesIngestConfig(
 ) *mcpIngestConfig {
 	embeddingEndpoint, embeddingModel, rpm, tpm := embeddingConfig(mp)
 
-	var cmNames []string
+	cmNames := make([]string, 0, len(kb.Spec.Ingestion.ConfigMapRefs))
 	for _, ref := range kb.Spec.Ingestion.ConfigMapRefs {
 		cmNames = append(cmNames, ref.Name)
 	}

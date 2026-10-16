@@ -92,7 +92,7 @@ func TestHandleExistingJobFailureRecordsPerSourceBreaker(t *testing.T) {
 	if breaker.Failures != 1 {
 		t.Errorf("Failures = %d, want 1", breaker.Failures)
 	}
-	if breaker.NextAttempt == nil || !breaker.NextAttempt.Time.After(time.Now()) {
+	if breaker.NextAttempt == nil || !breaker.NextAttempt.After(time.Now()) {
 		t.Error("NextAttempt must be in the future")
 	}
 	if breaker.Reason == "" {
@@ -135,7 +135,7 @@ func TestHandleExistingJobSiblingSuccessDoesNotClearBreaker(t *testing.T) {
 	if !ok {
 		t.Fatal("sibling success cleared the MCP source's breaker — runaway loop would restart")
 	}
-	if mcpBreaker.Failures != 2 || !breakersNextAttempt(mcpBreaker, time.Now()) {
+	if mcpBreaker.Failures != 2 || !breakersNextAttempt(mcpBreaker) {
 		t.Errorf("MCP breaker mutated: %+v", mcpBreaker)
 	}
 }
@@ -325,9 +325,9 @@ func TestRunIngestionHoldsRecreateUntilBackoffElapses(t *testing.T) {
 	}
 }
 
-// breakersNextAttempt reports whether the breaker's NextAttempt is after now.
-func breakersNextAttempt(b agentorcav1alpha1.IngestionBreakerState, now time.Time) bool {
-	return b.NextAttempt != nil && b.NextAttempt.Time.After(now)
+// breakersNextAttempt reports whether the breaker's NextAttempt is in the future.
+func breakersNextAttempt(b agentorcav1alpha1.IngestionBreakerState) bool {
+	return b.NextAttempt != nil && b.NextAttempt.After(time.Now())
 }
 
 // keep corev1 imported for the Job fixture helpers above (statuses).

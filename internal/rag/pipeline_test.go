@@ -43,10 +43,12 @@ func TestPointIDIsCanonicalUUID(t *testing.T) {
 	}
 
 	// Deterministic and injective over (docID, chunkIndex).
-	if pointID("d", 1) != pointID("d", 1) {
+	id1 := pointID("d", 1)
+	id2 := pointID("d", 1)
+	if id1 != id2 {
 		t.Error("pointID not deterministic")
 	}
-	if pointID("d", 1) == pointID("d", 2) || pointID("a", 1) == pointID("b", 1) {
+	if id1 == pointID("d", 2) || pointID("a", 1) == pointID("b", 1) {
 		t.Error("pointID collides across (docID, chunkIndex)")
 	}
 }
@@ -112,7 +114,7 @@ func TestTokenEstimateCalibration(t *testing.T) {
 	}
 
 	// Repeated observations converge toward the true ratio.
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		l.reconcileTokens(10_000, 14_400)
 	}
 	converged := l.estimateTokens(40_000)

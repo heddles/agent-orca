@@ -239,7 +239,7 @@ func (e *EmbeddingClient) Embed(ctx context.Context, texts []string, forQuery bo
 			}
 
 			started := time.Now()
-			vectors, usageTokens, firstTry, err := e.embedBatch(batchCtx, texts[start:end], apiKey, forQuery, estTokens)
+			vectors, usageTokens, firstTry, err := e.embedBatch(batchCtx, texts[start:end], apiKey, forQuery)
 			if err != nil {
 				mu.Lock()
 				if firstErr == nil {
@@ -270,20 +270,11 @@ func (e *EmbeddingClient) Embed(ctx context.Context, texts []string, forQuery bo
 		}
 	}
 
-	workers := e.limits.Concurrency
-	if workers > len(texts) {
-		workers = len(texts)
-	}
-	if workers < 1 {
-		workers = 1
-	}
+	workers := min(e.limits.Concurrency, len(texts))
+	workers = max(workers, 1)
 	var wg sync.WaitGroup
-	for i := 0; i < workers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			worker()
-		}()
+	for range workers {
+		wg.Go(worker)
 	}
 	wg.Wait()
 
@@ -300,7 +291,7 @@ func (e *EmbeddingClient) Embed(ctx context.Context, texts []string, forQuery bo
 // usage the API actually charged (0 when unavailable), and whether the batch
 // succeeded on its first attempt (retry-free successes drive the adaptive
 // limiter's growth).
-func (e *EmbeddingClient) embedBatch(ctx context.Context, texts []string, apiKey string, forQuery bool, tokenEstimate int64) (vectors [][]float32, usageTokens int64, firstTry bool, err error) {
+func (e *EmbeddingClient) embedBatch(ctx context.Context, texts []string, apiKey string, forQuery bool) (vectors [][]float32, usageTokens int64, firstTry bool, err error) {
 	// Select the appropriate prompt prefix. forQuery=true → queryPrompt
 	// (for _rag_search); false → docPrompt (for _rag_ingest).
 	prompt := e.docPrompt
@@ -338,10 +329,7 @@ func (e *EmbeddingClient) embedBatch(ctx context.Context, texts []string, apiKey
 			// Back off exponentially before retrying a throttled or overloaded
 			// response. A provider-declared delay (RetryInfo in the error
 			// body, or Retry-After) is authoritative and takes precedence.
-			delay := initialRetryDelay << uint(attempt-1)
-			if delay > maxRetryDelay {
-				delay = maxRetryDelay
-			}
+			delay := min(initialRetryDelay<<uint(attempt-1), maxRetryDelay)
 			if sd := ratelimit.ParseRetryDelay(resp.Header, body); sd > 0 {
 				delay = min(sd, serverRetryDelayCap)
 			}
