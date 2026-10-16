@@ -653,6 +653,18 @@ spec:
                   source's backoff pause (which recreated the runaway Job loop), and
                   concurrent source failures must not amplify each other's counters.
                 type: object
+              ingestionSyncTimes:
+                additionalProperties:
+                  format: date-time
+                  type: string
+                description: |-
+                  IngestionSyncTimes records the last successful sync per source, keyed
+                  by that source's ingestion Job name. The sync-interval gate reads
+                  these instead of the single KB-level LastSyncTime so a persistently
+                  failing sibling source cannot starve a healthy source's configured
+                  sync cadence (LastSyncTime only advances when nothing is running and
+                  no source errored).
+                type: object
               lastSyncTime:
                 description: LastSyncTime is when documents were last ingested.
                 format: date-time

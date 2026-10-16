@@ -339,6 +339,15 @@ type KnowledgeBaseStatus struct {
 	// +optional
 	IngestionBreakers map[string]IngestionBreakerState `json:"ingestionBreakers,omitempty"`
 
+	// IngestionSyncTimes records the last successful sync per source, keyed
+	// by that source's ingestion Job name. The sync-interval gate reads
+	// these instead of the single KB-level LastSyncTime so a persistently
+	// failing sibling source cannot starve a healthy source's configured
+	// sync cadence (LastSyncTime only advances when nothing is running and
+	// no source errored).
+	// +optional
+	IngestionSyncTimes map[string]metav1.Time `json:"ingestionSyncTimes,omitempty"`
+
 	// QdrantVersion is the currently running Qdrant version as reported by
 	// the instance's HTTP API (e.g. "1.17.1"). Empty until the first probe.
 	// +optional

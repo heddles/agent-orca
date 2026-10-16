@@ -191,6 +191,82 @@ func TestHandleExistingJobEscalatesOnRepeatFailures(t *testing.T) {
 	}
 }
 
+// TestHandleExistingJobSuccessStampsPerSourceSync verifies success stamps the
+// per-source sync time (keyed by Job name) without touching a sibling's stamp.
+func TestHandleExistingJobSuccessStampsPerSourceSync(t *testing.T) {
+	scheme := newBreakerTestScheme(t)
+	oldStamp := metav1.NewTime(time.Now().Add(-2 * time.Hour))
+	kb := &agentorcav1alpha1.KnowledgeBase{
+		ObjectMeta: metav1.ObjectMeta{Name: "demo", Namespace: "test"},
+		Status: agentorcav1alpha1.KnowledgeBaseStatus{
+			IngestionSyncTimes: map[string]metav1.Time{
+				"kb-mcp-demo-0": *oldStamp.DeepCopy(),
+			},
+		},
+	}
+	staticJob := succeededIngestJob("kb-src-demo")
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(kb, staticJob).Build()
+	r := &KnowledgeBaseReconciler{Client: cl, Scheme: scheme}
+
+	before := time.Now()
+	done, _, err := r.handleExistingJob(context.Background(), kb, staticJob)
+	if err != nil {
+		t.Fatalf("handleExistingJob: %v", err)
+	}
+	if !done {
+		t.Error("succeeded Job must report done")
+	}
+
+	stamped, ok := kb.Status.IngestionSyncTimes["kb-src-demo"]
+	if !ok {
+		t.Fatal("success did not stamp the source's sync time")
+	}
+	if stamped.Time.Before(before) {
+		t.Errorf("sync stamp = %v, want ~now", stamped.Time)
+	}
+	// The sibling's older stamp must be untouched (its cadence is its own).
+	if got := kb.Status.IngestionSyncTimes["kb-mcp-demo-0"]; !got.Time.Equal(oldStamp.Time) {
+		t.Errorf("sibling sync stamp mutated: got %v, want %v", got.Time, oldStamp.Time)
+	}
+}
+
+func TestIngestionSyncIntervalElapsed(t *testing.T) {
+	fresh := metav1.NewTime(time.Now().Add(-1 * time.Minute))
+	stale := metav1.NewTime(time.Now().Add(-30 * time.Minute))
+
+	kb := func(intervalSecs int, stamp *metav1.Time) *agentorcav1alpha1.KnowledgeBase {
+		k := &agentorcav1alpha1.KnowledgeBase{
+			ObjectMeta: metav1.ObjectMeta{Name: "demo", Namespace: "test"},
+			Spec: agentorcav1alpha1.KnowledgeBaseSpec{
+				Ingestion: &agentorcav1alpha1.IngestionConfig{SyncIntervalSeconds: intervalSecs},
+			},
+		}
+		if stamp != nil {
+			k.Status.IngestionSyncTimes = map[string]metav1.Time{"kb-src-demo": *stamp}
+		}
+		return k
+	}
+
+	tests := []struct {
+		name string
+		kb   *agentorcav1alpha1.KnowledgeBase
+		want bool
+	}{
+		{"interval 0 always elapsed", kb(0, nil), true},
+		{"never synced — elapsed", kb(600, nil), true},
+		{"fresh stamp — not elapsed", kb(600, &fresh), false},
+		{"stale stamp — elapsed", kb(600, &stale), true},
+		{"nil ingestion spec — elapsed", kb(-1, nil), true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ingestionSyncIntervalElapsed(tc.kb, "kb-src-demo"); got != tc.want {
+				t.Errorf("ingestionSyncIntervalElapsed() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestRunIngestionHoldsRecreateUntilBackoffElapses is the end-to-end guard:
 // while a source's breaker pause is active, runIngestion must NOT create its
 // Job and must surface the remaining wait for requeueing.

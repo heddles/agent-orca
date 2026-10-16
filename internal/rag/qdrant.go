@@ -133,8 +133,9 @@ func (q *QdrantClient) ExistingPoints(ctx context.Context, collection string, id
 		for i, id := range batch {
 			pbIDs[i] = pb.NewID(id)
 		}
-		// NewID wraps the string verbatim as a UUID point ID, so retrieved
-		// IDs round-trip back to the input strings.
+		// The input IDs are canonical hyphenated UUIDs (see pointID); Qdrant
+		// returns point keys in the same canonical form, so GetUuid keys map
+		// 1:1 back onto the input IDs.
 		points, err := q.client.Get(ctx, &pb.GetPoints{
 			CollectionName: collection,
 			Ids:            pbIDs,

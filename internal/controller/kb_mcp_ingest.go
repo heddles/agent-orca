@@ -187,12 +187,10 @@ func (r *KnowledgeBaseReconciler) runMCPIngestion(
 		return false, wait, nil
 	}
 
-	// Only create a new one if sync interval has elapsed.
-	if kb.Status.LastSyncTime != nil && kb.Spec.Ingestion != nil {
-		interval := time.Duration(kb.Spec.Ingestion.SyncIntervalSeconds) * time.Second
-		if interval > 0 && time.Since(kb.Status.LastSyncTime.Time) < interval {
-			return true, 0, nil
-		}
+	// Only create a new one if this source's sync interval has elapsed
+	// (per-source stamps: a failing sibling can't starve this cadence).
+	if !ingestionSyncIntervalElapsed(kb, jobName) {
+		return true, 0, nil
 	}
 
 	// Resolve embedding ModelProvider (already pinned in KB status).
@@ -275,6 +273,12 @@ func (r *KnowledgeBaseReconciler) handleExistingJob(
 		// Success clears only THIS source's breaker — a static-source Job
 		// completing must not cancel an MCP source's quota pause.
 		delete(kb.Status.IngestionBreakers, job.Name)
+		// Stamp this source's successful sync for the per-source sync-interval
+		// gate (a failing sibling must not starve this source's cadence).
+		if kb.Status.IngestionSyncTimes == nil {
+			kb.Status.IngestionSyncTimes = make(map[string]metav1.Time, 1)
+		}
+		kb.Status.IngestionSyncTimes[job.Name] = metav1.Now()
 		return true, 0, nil
 	}
 
@@ -306,6 +310,26 @@ func (r *KnowledgeBaseReconciler) handleExistingJob(
 	// Still running. Caller will requeue via Job watch.
 	logger.Info("ingestion Job still running", "job", job.Name)
 	return false, 0, nil
+}
+
+// ingestionSyncIntervalElapsed reports whether a source's sync interval has
+// elapsed (or no interval is configured, or the source never synced). It
+// reads the per-source stamp so a persistently failing sibling — which keeps
+// the KB-level LastSyncTime from advancing — cannot re-create a healthy
+// source's Job on every controller resync.
+func ingestionSyncIntervalElapsed(kb *agentorcav1alpha1.KnowledgeBase, jobName string) bool {
+	if kb.Spec.Ingestion == nil {
+		return true
+	}
+	interval := time.Duration(kb.Spec.Ingestion.SyncIntervalSeconds) * time.Second
+	if interval <= 0 {
+		return true
+	}
+	last, ok := kb.Status.IngestionSyncTimes[jobName]
+	if !ok {
+		return true
+	}
+	return time.Since(last.Time) >= interval
 }
 
 // ingestionPaused returns the remaining backoff pause for a source's Job, or
@@ -460,12 +484,10 @@ func (r *KnowledgeBaseReconciler) runSourcesIngestion(ctx context.Context, kb *a
 		return false, wait, nil
 	}
 
-	// Only create a new one if sync interval has elapsed.
-	if kb.Status.LastSyncTime != nil && kb.Spec.Ingestion != nil {
-		interval := time.Duration(kb.Spec.Ingestion.SyncIntervalSeconds) * time.Second
-		if interval > 0 && time.Since(kb.Status.LastSyncTime.Time) < interval {
-			return true, 0, nil
-		}
+	// Only create a new one if this source's sync interval has elapsed
+	// (per-source stamps: a failing sibling can't starve this cadence).
+	if !ingestionSyncIntervalElapsed(kb, jobName) {
+		return true, 0, nil
 	}
 
 	// Resolve embedding ModelProvider (already pinned in KB status).

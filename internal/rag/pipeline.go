@@ -162,10 +162,24 @@ func IngestDocuments(
 	}, nil
 }
 
-// pointID generates a deterministic ID from doc ID and chunk index.
+// pointID generates a deterministic per-chunk point ID, formatted as a
+// canonical hyphenated UUID (8-4-4-4-12) from 16 sha256 bytes.
+//
+// The canonical form is load-bearing: Qdrant stores point keys as UUID values
+// and returns them in hyphenated form on retrieval, so upserts and
+// ExistingPoints lookups round-trip exactly. (A bare 32-hex string parses via
+// Qdrant's simple-format UUID input but comes back hyphenated, which would
+// silently break the resume lookup. Pre-existing points written with the old
+// un-hyphenated IDs hold the same UUID bytes and remain reachable.)
 func pointID(docID string, chunkIndex int) string {
 	h := sha256.Sum256(fmt.Appendf(nil, "%s:%d", docID, chunkIndex))
-	return fmt.Sprintf("%x", h[:16])
+	return formatUUID(h[:16])
+}
+
+// formatUUID renders 16 bytes as a canonical hyphenated UUID string
+// (8-4-4-4-12 lowercase hex).
+func formatUUID(b []byte) string {
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
 // contentHash identifies chunk content for resume decisions. Chunks whose

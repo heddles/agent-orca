@@ -1519,6 +1519,13 @@ func (in *KnowledgeBaseStatus) DeepCopyInto(out *KnowledgeBaseStatus) {
 			(*out)[key] = *val.DeepCopy()
 		}
 	}
+	if in.IngestionSyncTimes != nil {
+		in, out := &in.IngestionSyncTimes, &out.IngestionSyncTimes
+		*out = make(map[string]v1.Time, len(*in))
+		for key, val := range *in {
+			(*out)[key] = *val.DeepCopy()
+		}
+	}
 	if in.Conditions != nil {
 		in, out := &in.Conditions, &out.Conditions
 		*out = make([]v1.Condition, len(*in))

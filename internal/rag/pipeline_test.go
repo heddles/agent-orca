@@ -16,7 +16,40 @@ limitations under the License.
 
 package rag
 
-import "testing"
+import (
+	"regexp"
+	"testing"
+)
+
+// uuidRe matches a canonical hyphenated UUID (8-4-4-4-12 lowercase hex) —
+// the form Qdrant stores point keys as and returns on retrieval.
+var uuidRe = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+// TestPointIDIsCanonicalUUID pins the resume look-up contract: every point
+// ID must BE a canonical hyphenated UUID, because Qdrant returns point keys
+// in exactly that form and ExistingPoints keys its result map by it. A
+// non-canonical ID silently breaks resume (every lookup misses → every
+// chunk re-embedded on every run).
+func TestPointIDIsCanonicalUUID(t *testing.T) {
+	for _, id := range []string{
+		pointID("url/http://example.com/doc.pdf", 0),
+		pointID("url/http://example.com/doc.pdf", 1),
+		pointID("mcp/demo/item-42", 7),
+		pointID("", 0),
+	} {
+		if !uuidRe.MatchString(id) {
+			t.Errorf("pointID %q is not a canonical hyphenated UUID", id)
+		}
+	}
+
+	// Deterministic and injective over (docID, chunkIndex).
+	if pointID("d", 1) != pointID("d", 1) {
+		t.Error("pointID not deterministic")
+	}
+	if pointID("d", 1) == pointID("d", 2) || pointID("a", 1) == pointID("b", 1) {
+		t.Error("pointID collides across (docID, chunkIndex)")
+	}
+}
 
 // TestPendingChunks verifies the resume filter: chunks with a matching stored
 // content hash are skipped; missing points, stale hashes (changed content),
