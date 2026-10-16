@@ -102,6 +102,79 @@ portForward:
     port: 8083
     localPort: 8083
 profiles:
+  - name: remote
+    deploy:
+      helm:
+        hooks:
+          before:
+            - host:
+                command: ["bash", "-c", "kubectl create namespace agent-orca-system || true"]
+                os: [darwin, linux]
+            - host:
+                command: ["bash", "-c", "kubectl apply -f charts/agent-orca/crds/"]
+                os: [darwin, linux]
+        releases:
+          # CloudNativePG operator — installs CRDs + operator Deployment (first).
+          - name: cloudnative-pg-operator
+            chartPath: charts/cloudnative-pg
+            namespace: agent-orca-system
+            wait: true
+            setValues:
+              crds.create: "true"
+              config.clusterWide: "true"
+              image.tag: "1.30.0"
+              replicaCount: "1"
+          # CloudNativePG cluster — creates the Cluster CR (after operator is ready).
+          - name: cloudnative-pg-cluster
+            chartPath: charts/cluster
+            namespace: agent-orca-system
+            wait: false
+            setValues:
+              fullnameOverride: "postgres"
+              cluster.instances: "1"
+              cluster.imageName: "ghcr.io/cloudnative-pg/postgresql:16"
+              cluster.storage.size: "10Gi"
+              cluster.initdb.database: "agentorca"
+              cluster.initdb.owner: "agentorca"
+              cluster.enableSuperuserAccess: "true"
+              cluster.superuserSecret: "postgres-superuser"
+              cluster.enablePDB: "true"
+          - name: agent-orca
+            chartPath: charts/agent-orca
+            namespace: agent-orca-system
+            createNamespace: true
+            wait: true
+            setValues:
+              operator.image.pullPolicy: Always
+              modelRouter.image.pullPolicy: Always
+              ui.image.pullPolicy: Always
+              operator.leaderElection: true
+              webhook.certManager: true
+              webhook.failurePolicy: Fail
+              database.enabled: "true"
+              operator.oidc.cookieSecure: "true"
+              operator.oidc.enabled: "true"
+              operator.networkPolicy.oidcEgress.enabled: "true"
+            setValueTemplates:
+              operator.image.tag: "{{.IMAGE_TAG_ghcr_io_heddles_agent_orca_operator}}"
+              mcpIngester.image.tag: "{{.IMAGE_TAG_ghcr_io_heddles_agent_orca_mcp_ingester}}"
+              modelRouter.image.tag: "{{.IMAGE_TAG_ghcr_io_heddles_agent_orca_model_router}}"
+              ui.image.tag: "{{.IMAGE_TAG_ghcr_io_heddles_agent_orca_ui_proxy}}"
+              ingress.enabled: "false"
+          - name: model-providers
+            chartPath: charts/model-providers
+            namespace: agent-orca-system
+            createNamespace: true
+            valuesFiles:
+              - charts/model-providers/values.yaml
+            setValueTemplates:
+              providerSecrets[0].apiKey: "{{.OPENAI_API_KEY}}"
+              providerSecrets[1].apiKey: "{{.ANTHROPIC_API_KEY}}"
+              providerSecrets[2].apiKey: "{{.GOOGLE_API_KEY}}"
+              providerSecrets[3].apiKey: "{{.OPENROUTER_API_KEY}}"
+
+      kubectl:
+        defaultNamespace: agent-orca-system
   - name: dev
     # activation:
     #   - kubeContext: kind-agent-orca-dev
