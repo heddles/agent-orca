@@ -103,6 +103,9 @@ portForward:
     localPort: 8083
 profiles:
   - name: remote
+    build:
+      local:
+        push: true
     deploy:
       helm:
         hooks:
@@ -149,7 +152,7 @@ profiles:
               modelRouter.image.pullPolicy: Always
               ui.image.pullPolicy: Always
               operator.leaderElection: true
-              webhook.certManager: true
+              webhook.certManager: false
               webhook.failurePolicy: Fail
               database.enabled: "true"
               operator.oidc.cookieSecure: "true"
