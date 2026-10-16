@@ -166,8 +166,8 @@ func (s *settings) runACPServe() error {
 	srv.handler = bridge
 
 	_, _ = fmt.Fprintf(s.errw,
-		"aoctl acp serve — agent %q | ACP endpoint %s | JSON-RPC on stdin/stdout, logs on stderr\n",
-		s.agent, s.acp)
+		"aoctl acp serve v%s — agent %q | ACP endpoint %s | JSON-RPC on stdin/stdout, logs on stderr\n",
+		acpBridgeVersion, s.agent, s.acp)
 	return srv.Serve(ctx)
 }
 

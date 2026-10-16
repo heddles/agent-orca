@@ -48,9 +48,11 @@ import (
 const acpProtocolVersion uint16 = 1
 
 // acpBridgeVersion is the ACP protocol-bridge version reported in initialize
-// responses. It is independent of the ACP protocol version (1) and tracks the
-// aoctl bridge implementation.
-const acpBridgeVersion = "0.1.0"
+// responses and logged at serve startup (so a Zed session's log panel shows
+// which bridge build is actually running — stale subprocesses are a real
+// failure mode). It is independent of the ACP protocol version (1).
+// 0.2.0: fs/* relay (read/write/list) + write-approval diagnosability.
+const acpBridgeVersion = "0.2.0"
 
 // acpSession is the live state for one Zed session.
 type acpSession struct {

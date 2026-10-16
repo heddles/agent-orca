@@ -120,7 +120,11 @@ Additional properties:
 - **Failure semantics.** If the bridge is disconnected the fs tool returns a
   structured error telling the agent to ask the user to reconnect
   (`aoctl acp serve`), rather than hanging; a request that expires unserved
-  reports the same.
+  reports the same. Write approvals distinguish "the user declined"
+  (`write declined by the user in the editor`) from "the approval prompt
+  itself failed" (`write approval prompt failed: …`, e.g. an editor without
+  elicitation support) — a failed prompt never proceeds unapproved, and an
+  accepted form approves the write regardless of the form content shape.
 - **No shell, no exec.** The surface is strictly list-dir, read-text and
   write-text; there is no command execution via `fs/*`.
 

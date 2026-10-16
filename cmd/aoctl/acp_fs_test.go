@@ -167,13 +167,15 @@ func newFSFakeACPAPI(t *testing.T, pending []acpfsRelayRequest) *fsFakeACPAPI {
 // stdio channel: answers every fs/read_text_file and fs/write_text_file it
 // sees, recording what it received.
 type fsEditorClient struct {
-	mu       sync.Mutex
-	reads    []acpFSReadParams
-	writes   []acpFSWriteParams
-	elicit   []acpElicitParams
-	readOut  string // content to return for reads
-	writeOK  bool   // whether writes "succeed"
-	denyMode string // when set, respond to elicitation with this answer
+	mu                sync.Mutex
+	reads             []acpFSReadParams
+	writes            []acpFSWriteParams
+	elicit            []acpElicitParams
+	readOut           string // content to return for reads
+	writeOK           bool   // whether writes "succeed"
+	elicitDecline     bool   // respond to the approval form with action "decline"
+	elicitAcceptEmpty bool   // respond accept with no form content (shape-tolerant clients)
+	elicitFail        bool   // fail the elicitation request (no editor support)
 }
 
 // run drives the fake editor loop until ctx is done.
@@ -226,13 +228,19 @@ func (e *fsEditorClient) run(ctx context.Context, out io.Reader, in io.Writer) {
 			e.mu.Lock()
 			e.elicit = append(e.elicit, p)
 			e.mu.Unlock()
-			answer := e.denyMode
-			if answer == "" {
-				answer = "allow"
+			switch {
+			case e.elicitFail:
+				// Editor without elicitation/create support.
+				e.replyErr(in, string(*msg.ID), -32601, "method not found: elicitation/create")
+			case e.elicitDecline:
+				e.reply(in, string(*msg.ID), map[string]any{"action": "decline"})
+			case e.elicitAcceptEmpty:
+				e.reply(in, string(*msg.ID), map[string]any{"action": "accept"})
+			default:
+				e.reply(in, string(*msg.ID), map[string]any{
+					"action": "accept", "content": map[string]any{"answer": "allow"},
+				})
 			}
-			e.reply(in, string(*msg.ID), map[string]any{
-				"action": "accept", "content": map[string]any{"answer": answer},
-			})
 		default:
 			e.replyErr(in, string(*msg.ID), -32601, "method not found: "+msg.Method)
 		}
@@ -382,6 +390,17 @@ func TestFSBridgeRelayWriteWithElicitApproval(t *testing.T) {
 	if len(tb.editor.elicit) != 1 {
 		t.Fatal("expected one approval elicitation")
 	}
+	// The requestedSchema must be a proper ElicitationSchema envelope
+	// (type/properties/required) — a bare properties map is rejected by the
+	// client with Invalid params (-32602).
+	schema := tb.editor.elicit[0].RequestedSchema
+	if schema["type"] != "object" {
+		t.Fatalf("requestedSchema missing type=object: %v", schema)
+	}
+	props, ok := schema["properties"].(map[string]any)
+	if !ok || props["answer"] == nil {
+		t.Fatalf("requestedSchema missing properties.answer: %v", schema)
+	}
 	resp := tb.api.responseRecorded(t)
 	if resp.Error != nil {
 		t.Fatalf("approved write should succeed, got error %+v", resp.Error)
@@ -395,7 +414,7 @@ func TestFSBridgeWriteDeniedByUser(t *testing.T) {
 		Params: json.RawMessage(`{"path":"evil.go","content":"hmm"}`),
 	}}
 	tb := newFSTestBridge(t, true, pending)
-	tb.editor.denyMode = "deny"
+	tb.editor.elicitDecline = true
 
 	tb.bridge.serveFSRequest(context.Background(), "sess-1", "run-1", pending[0], tb.bridge.fsPolicy())
 
@@ -405,6 +424,58 @@ func TestFSBridgeWriteDeniedByUser(t *testing.T) {
 	}
 	if len(tb.editor.writes) != 0 {
 		t.Fatal("declined write must never reach the editor")
+	}
+}
+
+func TestFSBridgeWriteApprovedWithEmptyFormContent(t *testing.T) {
+	// Regression: some clients submit the approval form without the enum
+	// field. The accept action is the approval signal — an accepted form must
+	// not be misread as a decline (which used to surface as the misleading
+	// "write declined by the user in the editor").
+	pending := []acpfsRelayRequest{{
+		ID:     "req-1",
+		Method: acpMethodFSWrite,
+		Params: json.RawMessage(`{"path":"ok.go","content":"package main"}`),
+	}}
+	tb := newFSTestBridge(t, true, pending)
+	tb.editor.elicitAcceptEmpty = true
+
+	tb.bridge.serveFSRequest(context.Background(), "sess-1", "run-1", pending[0], tb.bridge.fsPolicy())
+
+	fsWaitFor(t, func() bool {
+		tb.editor.mu.Lock()
+		defer tb.editor.mu.Unlock()
+		return len(tb.editor.writes) > 0
+	})
+	if len(tb.editor.writes) != 1 {
+		t.Fatal("accepted approval must forward the write to the editor")
+	}
+	resp := tb.api.responseRecorded(t)
+	if resp.Error != nil {
+		t.Fatalf("approved write should succeed, got %+v", resp.Error)
+	}
+}
+
+func TestFSBridgeWriteApprovalPromptFailed(t *testing.T) {
+	// Regression: a failed approval round-trip (editor without elicitation
+	// support) must be reported as "prompt failed", not "declined by the
+	// user" — the two need different remedies.
+	pending := []acpfsRelayRequest{{
+		ID:     "req-1",
+		Method: acpMethodFSWrite,
+		Params: json.RawMessage(`{"path":"x.go","content":"y"}`),
+	}}
+	tb := newFSTestBridge(t, true, pending)
+	tb.editor.elicitFail = true
+
+	tb.bridge.serveFSRequest(context.Background(), "sess-1", "run-1", pending[0], tb.bridge.fsPolicy())
+
+	resp := tb.api.responseRecorded(t)
+	if resp.Error == nil || !strings.Contains(resp.Error.Message, "write approval prompt failed") {
+		t.Fatalf("expected prompt-failed error, got %+v", resp)
+	}
+	if len(tb.editor.writes) != 0 {
+		t.Fatal("write must never proceed when the approval prompt fails")
 	}
 }
 

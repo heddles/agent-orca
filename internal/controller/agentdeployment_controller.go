@@ -509,6 +509,9 @@ func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig( //nolint:gocycl
 		"_memory_store": true, "_mcp_read_resource": true, "_propose_step": true,
 		"_propose_fix": true, "_confirm_fix": true, "_create_workflow": true,
 		"_search_history": true,
+		// fs_* relay tools (issue #34) are injected from Agent.spec.filesystem;
+		// listing them in spec.tools must not require Tool CRs.
+		"fs_read_text_file": true, "fs_write_text_file": true, "fs_list_dir": true,
 	}
 	for _, toolName := range agent.Spec.Tools {
 		// Skip builtin tools - they're injected separately in the router

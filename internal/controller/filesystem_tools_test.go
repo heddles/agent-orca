@@ -29,7 +29,7 @@ func TestFilesystemToolCfg(t *testing.T) {
 		t.Fatalf("nil filesystem should produce nothing, got (%+v, %d defs)", cfg, len(defs))
 	}
 
-	// readWrite exposes both tools and configures the router policy.
+	// readWrite exposes all three tools and configures the router policy.
 	cfg, defs = filesystemToolCfg(&agentorcav1alpha1.FilesystemAccessSpec{
 		Mode:          agentorcav1alpha1.FilesystemReadWrite,
 		WriteApproval: true,
@@ -41,11 +41,11 @@ func TestFilesystemToolCfg(t *testing.T) {
 	for _, d := range defs {
 		names[d.Name] = true
 	}
-	if !names["fs_read_text_file"] || !names["fs_write_text_file"] {
-		t.Fatalf("readWrite should expose both fs tools, got %v", names)
+	if !names["fs_read_text_file"] || !names["fs_write_text_file"] || !names["fs_list_dir"] {
+		t.Fatalf("readWrite should expose read/write/list fs tools, got %v", names)
 	}
 
-	// readOnly exposes only the read tool.
+	// readOnly exposes the read + list tools but never the write tool.
 	cfg, defs = filesystemToolCfg(&agentorcav1alpha1.FilesystemAccessSpec{
 		Mode: agentorcav1alpha1.FilesystemReadOnly,
 	})
@@ -60,7 +60,7 @@ func TestFilesystemToolCfg(t *testing.T) {
 
 	// Empty mode (pre-enum CRs) resolves conservatively to readOnly.
 	cfg, defs = filesystemToolCfg(&agentorcav1alpha1.FilesystemAccessSpec{})
-	if cfg == nil || cfg.Mode != "readOnly" || len(defs) != 1 {
-		t.Fatalf("empty mode should resolve to readOnly with one tool, got (%+v, %d)", cfg, len(defs))
+	if cfg == nil || cfg.Mode != "readOnly" || len(defs) != 2 {
+		t.Fatalf("empty mode should resolve to readOnly with read+list tools, got (%+v, %d)", cfg, len(defs))
 	}
 }

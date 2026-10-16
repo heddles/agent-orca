@@ -308,6 +308,35 @@ func TestFSExecuteListRelay(t *testing.T) {
 	}
 }
 
+func TestFSVersionSkewGuardSurfacesClearError(t *testing.T) {
+	// Regression: an operator newer than the model-router image injects a
+	// builtin the running router doesn't implement. Use a name that is NOT in
+	// this build's dispatch switch (the skew scenario by definition) — the
+	// dispatch must return a clear, actionable error instead of falling
+	// through to the executor (which used to fail with the cryptic
+	// "unknown backend type: builtin").
+	api := newFakeOperatorAPI(t, "")
+	r := newFSTestRouter(t, &FilesystemConfig{Mode: fsModeReadOnly}, api.srv.URL, fsSATokenFile(t))
+	r.cfg.ToolDefinitions = append(r.cfg.ToolDefinitions, ToolDefinition{
+		Name: "fs_chmod", BackendType: backendTypeBuiltin,
+	})
+
+	out := r.dispatchToolCall(context.Background(), ToolCall{
+		Function: FunctionCall{Name: "fs_chmod", Arguments: `{}`},
+	})
+	if !strings.Contains(out, "not implemented by this model-router build") ||
+		!strings.Contains(out, "rebuild and redeploy") {
+		t.Fatalf("expected actionable version-skew error, got %s", out)
+	}
+	if strings.Contains(out, `"+`) {
+		t.Fatalf("error message contains raw string-concat junk: %s", out)
+	}
+	// The executor must never be reached for builtin fall-throughs.
+	if n := len(api.methodsSeen()); n != 0 {
+		t.Fatalf("skew guard must not enqueue anything, saw %d", n)
+	}
+}
+
 func TestFilesystemToolDefinitions(t *testing.T) {
 	if defs := (*FilesystemConfig)(nil).ToolDefinitions(); defs != nil {
 		t.Fatalf("nil config should inject nothing, got %+v", defs)

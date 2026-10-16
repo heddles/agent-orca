@@ -282,7 +282,16 @@ func (b *acpBridge) serveFSWrite(
 		return
 	}
 	if b.fsOpts.requireApproval || policy.WriteApproval {
-		if !b.fsApproveWrite(ctx, b.agentName, abs, len(p.Content)) {
+		approved, err := b.fsApproveWrite(ctx, b.agentName, abs, len(p.Content))
+		if err != nil {
+			// The prompt itself failed (editor without elicitation support,
+			// transport error, timeout): distinct from a user decline so the
+			// agent (and the #34 writeup) can tell "no prompt appeared" apart
+			// from "the user said no".
+			b.respondFSErr(ctx, runID, fr.ID, -32000, fmt.Sprintf("write approval prompt failed: %v", err))
+			return
+		}
+		if !approved {
 			b.respondFSErr(ctx, runID, fr.ID, -32003, "write declined by the user in the editor")
 			return
 		}
@@ -302,9 +311,16 @@ func (b *acpBridge) serveFSWrite(
 	b.respondFSResult(ctx, runID, fr.ID, rawResult)
 }
 
-// fsApproveWrite elicits explicit user approval for one write. Returns false
-// when the user declines (or the elicitation round-trip fails: fail closed).
-func (b *acpBridge) fsApproveWrite(ctx context.Context, agentName, absPath string, n int) bool {
+// fsApproveWrite elicits explicit user approval for one write. It returns
+// (false, nil) when the user declined, (true, nil) when the user accepted,
+// and (false, err) when the approval prompt itself failed (editor without
+// elicitation support, transport error, timeout) — a distinct outcome so the
+// pod-side tool error can say "no prompt appeared" instead of "declined".
+// An accept approves the write regardless of the form content: clients render
+// elicitation forms differently (some submit without the enum field), and the
+// accept action is the approval signal. Any failure refuses the write: it
+// never proceeds unapproved.
+func (b *acpBridge) fsApproveWrite(ctx context.Context, agentName, absPath string, n int) (bool, error) {
 	// Show the path relative to the workspace where possible to keep the
 	// prompt readable.
 	display := absPath
@@ -319,24 +335,40 @@ func (b *acpBridge) fsApproveWrite(ctx context.Context, agentName, absPath strin
 	resp, err := b.srv.sendRequest(elicitCtx, acpMethodElicitationCreate, acpElicitParams{
 		Message: fmt.Sprintf("Agent %q wants to write %d bytes to %s. Allow?", agentName, n, display),
 		Mode:    "form",
+		// requestedSchema must be an ElicitationSchema object (type/properties/
+		// required) — passing the properties map directly is rejected by the
+		// client with Invalid params (-32602).
 		RequestedSchema: map[string]any{
-			"answer": map[string]any{
-				"type": "string",
-				"enum": []string{"allow", "deny"},
+			"type": "object",
+			"properties": map[string]any{
+				"answer": map[string]any{
+					"type":        "string",
+					"enum":        []string{"allow", "deny"},
+					"description": "Allow the agent to write this file?",
+				},
 			},
+			"required": []string{"answer"},
 		},
 	})
 	if err != nil {
 		b.srv.logf("acp: write approval elicitation failed: %v\n", err)
-		return false
+		return false, err
 	}
 	var elicit acpElicitResponse
 	raw, _ := json.Marshal(resp.Result)
-	if err := json.Unmarshal(raw, &elicit); err != nil || elicit.Action != "accept" {
-		return false
+	if err := json.Unmarshal(raw, &elicit); err != nil {
+		b.srv.logf("acp: unreadable write-approval response: %v\n", err)
+		return false, fmt.Errorf("unreadable approval response from the editor: %v", err)
 	}
-	answer, _ := elicit.Content["answer"].(string)
-	return answer == "allow"
+	if elicit.Action != "accept" {
+		return false, nil
+	}
+	if answer, _ := elicit.Content["answer"].(string); answer != "allow" {
+		// Approved via the accept action even though the form field is
+		// missing or unexpected — log it so the behavior is explainable.
+		b.srv.logf("acp: write approved by elicitation accept (form answer %q)", answer)
+	}
+	return true, nil
 }
 
 // watchedRuns lists the run IDs the bridge's sessions currently point at —

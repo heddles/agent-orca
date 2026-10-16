@@ -2247,8 +2247,8 @@ func (r *Router) dispatchToolCall(ctx context.Context, tc ToolCall) string { //n
 					// know (operator newer than the model-router image). Say so
 					// instead of a cryptic executor error.
 					result = fmt.Sprintf(
-						`{"error": "builtin tool %q is not implemented by this model-router build; "+
-							"rebuild and redeploy the model-router image to match the operator"}`, tc.Function.Name)
+						`{"error": "builtin tool %q is not implemented by this model-router build; rebuild and redeploy the model-router image to match the operator"}`, //nolint:lll
+						tc.Function.Name)
 					slog.Warn("builtin tool not implemented by this router build (operator/router version skew)",
 						"tool", tc.Function.Name, "run", r.cfg.RunName)
 				default:
