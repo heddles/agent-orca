@@ -62,6 +62,10 @@ type acpSession struct {
 	// Cwd is the workspace directory the editor opened the session in
 	// (session/new "cwd"); the primary root for the fs/* relay.
 	Cwd string
+	// WritesAllowed is set once the user approves a workspace write with
+	// --fs-remember-approval active: subsequent writes in this session skip
+	// the per-write elicitation.
+	WritesAllowed bool
 }
 
 // openAIStreamState accumulates translation state across the events of one

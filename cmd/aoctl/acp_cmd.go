@@ -93,6 +93,9 @@ This is the command to put in your editor's agent_servers config. Use
 	serve.Flags().BoolVar(&s.fsRequireApproval, "fs-require-approval", true,
 		"require explicit user approval via the editor for every workspace write "+
 			"(applies on top of the agent's own writeApproval policy)")
+	serve.Flags().BoolVar(&s.fsRememberApproval, "fs-remember-approval", false,
+		"after the first approved write, auto-allow subsequent writes in the same "+
+			"session without re-prompting")
 
 	setup := &cobra.Command{
 		Use:   "setup",
@@ -159,8 +162,9 @@ func (s *settings) runACPServe() error {
 	// nil handler, wire the bridge, then assign it as the handler.
 	srv := newACPStdioServer(nil, os.Stdin, os.Stdout, os.Stderr)
 	fsOpts := fsBridgeOptions{
-		extraRoots:      s.fsRoots,
-		requireApproval: s.fsRequireApproval,
+		extraRoots:       s.fsRoots,
+		requireApproval:  s.fsRequireApproval,
+		rememberApproval: s.fsRememberApproval,
 	}
 	bridge := newACPBridgeWithOptions(srv, client, s.agent, fsOpts)
 	srv.handler = bridge

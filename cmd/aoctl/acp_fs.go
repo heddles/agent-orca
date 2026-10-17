@@ -59,6 +59,9 @@ type fsBridgeOptions struct {
 	// requireApproval, when true, forces an approval elicitation for every
 	// write regardless of what the agent policy says.
 	requireApproval bool
+	// rememberApproval (--fs-remember-approval): after the user approves one
+	// write, subsequent writes in the same session skip the elicitation.
+	rememberApproval bool
 }
 
 // watchFSSession polls the ACP API for pending fs requests of the run a
@@ -282,18 +285,25 @@ func (b *acpBridge) serveFSWrite(
 		return
 	}
 	if b.fsOpts.requireApproval || policy.WriteApproval {
-		approved, err := b.fsApproveWrite(ctx, sessionID, b.agentName, abs, len(p.Content))
-		if err != nil {
-			// The prompt itself failed (editor without elicitation support,
-			// transport error, timeout): distinct from a user decline so the
-			// agent (and the #34 writeup) can tell "no prompt appeared" apart
-			// from "the user said no".
-			b.respondFSErr(ctx, runID, fr.ID, -32000, fmt.Sprintf("write approval prompt failed: %v", err))
-			return
-		}
-		if !approved {
-			b.respondFSErr(ctx, runID, fr.ID, -32003, "write declined by the user in the editor")
-			return
+		if b.fsOpts.rememberApproval && b.sessionWritesAllowed(sessionID) {
+			// The user already approved a write in this session — auto-allow.
+		} else {
+			approved, err := b.fsApproveWrite(ctx, sessionID, b.agentName, abs, len(p.Content))
+			if err != nil {
+				// The prompt itself failed (editor without elicitation support,
+				// transport error, timeout): distinct from a user decline so the
+				// agent (and the #34 writeup) can tell "no prompt appeared" apart
+				// from "the user said no".
+				b.respondFSErr(ctx, runID, fr.ID, -32000, fmt.Sprintf("write approval prompt failed: %v", err))
+				return
+			}
+			if !approved {
+				b.respondFSErr(ctx, runID, fr.ID, -32003, "write declined by the user in the editor")
+				return
+			}
+			if b.fsOpts.rememberApproval {
+				b.markSessionWritesAllowed(sessionID)
+			}
 		}
 	}
 	params := acpFSWriteParams{
@@ -385,6 +395,27 @@ func (b *acpBridge) watchedRuns() string {
 		return "(none)"
 	}
 	return strings.Join(runs, ", ")
+}
+
+// sessionWritesAllowed reports whether --fs-remember-approval has already
+// recorded a user-approved write for this session.
+func (b *acpBridge) sessionWritesAllowed(sessionID string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if s, ok := b.sessions[sessionID]; ok {
+		return s.WritesAllowed
+	}
+	return false
+}
+
+// markSessionWritesAllowed records that the user approved a write in this
+// session, so --fs-remember-approval can auto-allow subsequent writes.
+func (b *acpBridge) markSessionWritesAllowed(sessionID string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if s, ok := b.sessions[sessionID]; ok {
+		s.WritesAllowed = true
+	}
 }
 
 // sessionRunID returns the run a session is currently driving (which moves

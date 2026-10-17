@@ -897,18 +897,19 @@ type settings struct {
 	status        string
 	id            string //nolint:unused
 
-	sessionID         string
-	allowedNamespaces []string
-	allowedAgents     []string
-	rpm               int
-	concurrent        int
-	budgetPerDay      string
-	file              string   // --file: read input from a file instead of --input/stdin
-	contentType       string   // --content-type: MIME type for the message part (default text/plain)
-	editor            string   // --editor: editor to configure for `acp setup` (e.g. zed)
-	fsRoots           []string // --fs-roots: extra workspace roots for the ACP fs/* relay
-	fsRequireApproval bool     // --fs-require-approval: elicit user approval per workspace write
-	out, errw         io.Writer
+	sessionID          string
+	allowedNamespaces  []string
+	allowedAgents      []string
+	rpm                int
+	concurrent         int
+	budgetPerDay       string
+	file               string   // --file: read input from a file instead of --input/stdin
+	contentType        string   // --content-type: MIME type for the message part (default text/plain)
+	editor             string   // --editor: editor to configure for `acp setup` (e.g. zed)
+	fsRoots            []string // --fs-roots: extra workspace roots for the ACP fs/* relay
+	fsRequireApproval  bool     // --fs-require-approval: elicit user approval per workspace write
+	fsRememberApproval bool     // --fs-remember-approval: first approved write auto-allows the session
+	out, errw          io.Writer
 
 	// OIDC interactive-login fields. authMethod/issuerURL/redirectURI/noBrowser
 	// mirror the login flags; `in`, `isTerminal` and `openBrowser` are the

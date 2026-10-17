@@ -257,8 +257,10 @@ func (r *Router) relayFSCall(ctx context.Context, method string, params json.Raw
 // awaitFSResponse long-polls the queued request until the bridge answers, the
 // fs deadline expires, or the request expires (bridge disconnected/policy
 // rejected but never answered). Succeeded writes normally carry an ACP null
-// result; those are surfaced to the LLM as a positive confirmation instead of
-// a bare "null" tool result.
+// (or empty-object) result — Zed's WriteTextFileResponse is `{}` — so those
+// are surfaced to the LLM as a positive confirmation instead of a bare
+// "null"/"{}" tool result, which the trivial-result annotation would
+// misreport as an error.
 func (r *Router) awaitFSResponse(ctx context.Context, isWrite bool, saToken, requestID string) string {
 	fsCtx, cancel := context.WithTimeout(ctx, r.cfg.Filesystem.timeout())
 	defer cancel()
@@ -298,7 +300,7 @@ func (r *Router) awaitFSResponse(ctx context.Context, isWrite bool, saToken, req
 					out.Error.Message, out.Error.Code)
 			}
 			result := strings.TrimSpace(string(out.Result))
-			if isWrite && (result == "" || result == "null") {
+			if isWrite && (result == "" || result == "null" || result == "{}" || result == "[]") {
 				return `{"written": true}`
 			}
 			return result

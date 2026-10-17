@@ -19,6 +19,7 @@ package router
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -152,29 +153,29 @@ func TestFSExecuteReadRelaySuccess(t *testing.T) {
 }
 
 func TestFSExecuteWritePolicyGating(t *testing.T) {
-	api := newFakeOperatorAPI(t, `{"id":"req-1","result":null}`)
-
-	// readWrite: the write flows through the relay and a null ACP result is
-	// surfaced as a positive confirmation rather than a bare "null".
-	r := newFSTestRouter(t, &FilesystemConfig{Mode: fsModeReadWrite}, api.srv.URL, fsSATokenFile(t))
-	out := r.executeFSWrite(context.Background(), `{"path":"src/new.go","content":"package main"}`)
-	if strings.Contains(out, "error") {
-		t.Fatalf("expected write to succeed, got %s", out)
-	}
-	var res struct {
-		Written bool `json:"written"`
-	}
-	if err := json.Unmarshal([]byte(out), &res); err != nil || !res.Written {
-		t.Fatalf("write should confirm as {\"written\":true}, got %s", out)
+	// Zed's successful fs/write_text_file response is `{}` (the schema has no
+	// result payload) — it must surface as {"written":true}, not as the
+	// trivial-result "empty response" error the LLM used to see.
+	for _, emptyResult := range []string{"null", "{}"} {
+		api := newFakeOperatorAPI(t, fmt.Sprintf(`{"id":"req-1","result":%s}`, emptyResult))
+		r := newFSTestRouter(t, &FilesystemConfig{Mode: fsModeReadWrite}, api.srv.URL, fsSATokenFile(t))
+		out := r.executeFSWrite(context.Background(), `{"path":"src/new.go","content":"package main"}`)
+		var res struct {
+			Written bool `json:"written"`
+		}
+		if err := json.Unmarshal([]byte(out), &res); err != nil || !res.Written {
+			t.Fatalf("empty result %q should confirm as {\"written\":true}, got %s", emptyResult, out)
+		}
 	}
 
 	// readOnly: refused inside the pod — nothing left the cluster.
-	r = newFSTestRouter(t, &FilesystemConfig{Mode: fsModeReadOnly}, api.srv.URL, fsSATokenFile(t))
-	out = r.executeFSWrite(context.Background(), `{"path":"src/new.go","content":"package main"}`)
+	roAPI := newFakeOperatorAPI(t, "")
+	r := newFSTestRouter(t, &FilesystemConfig{Mode: fsModeReadOnly}, roAPI.srv.URL, fsSATokenFile(t))
+	out := r.executeFSWrite(context.Background(), `{"path":"src/new.go","content":"package main"}`)
 	if !strings.Contains(out, "error") {
 		t.Fatalf("readOnly write should fail, got %s", out)
 	}
-	if n := len(api.methodsSeen()); n != 1 {
+	if n := len(roAPI.methodsSeen()); n != 0 {
 		t.Fatalf("readOnly write must not reach the operator, saw %d enqueues", n)
 	}
 }

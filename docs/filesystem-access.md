@@ -91,9 +91,24 @@ aoctl acp setup --editor zed --agent senior-programmer
 |---|---|---|
 | `--fs-roots <dir>[,<dir>…]` | *(none)* | Extra directory trees the agent may touch, on top of the session's own workspace. Accepts `~`. |
 | `--fs-require-approval` / `--fs-require-approval=false` | `true` | Force (or waive) the per-write approval elicitation. Waiving only works if the agent's own policy allows it. |
+| `--fs-remember-approval` | `false` | After the first approved write, auto-allow subsequent writes in the same session without re-prompting. |
 
 The bridge advertises exactly the capabilities the agent's manifest grants, so
 a `readOnly` agent never leads the editor to believe it can write.
+
+#### Approval-mode matrix
+
+| You want | Agent CRD | Bridge flags |
+|---|---|---|
+| Approve every write (default) | `writeApproval: true` | `--fs-require-approval` (default) |
+| Approve once, then auto-allow for the session | `writeApproval: true` | `--fs-require-approval --fs-remember-approval` |
+| Never prompt (trusted agent / unattended) | `writeApproval: false` | `--fs-require-approval=false` |
+
+Both knobs must agree to skip prompting: the bridge prompt fires when
+`--fs-require-approval` is set **or** the agent policy asks for it, so either
+side can always narrow (force prompts) but only both together can widen
+(silence them). Prompts are also skipped entirely in readOnly mode — reads
+never elicit.
 
 ## Security model
 

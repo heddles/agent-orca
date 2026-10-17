@@ -488,6 +488,71 @@ func TestFSBridgeWriteApprovalPromptFailed(t *testing.T) {
 	}
 }
 
+func TestFSBridgeWriteApprovalRemembered(t *testing.T) {
+	// With --fs-remember-approval, the first approved write elicits approval;
+	// subsequent writes in the same session are auto-allowed (no second form).
+	tb := newFSTestBridge(t, true, nil)
+	tb.bridge.fsOpts.rememberApproval = true
+
+	writeReq := func(id string) acpfsRelayRequest {
+		return acpfsRelayRequest{
+			ID: id, Method: acpMethodFSWrite,
+			Params: json.RawMessage(`{"path":"memo.go","content":"x"}`),
+		}
+	}
+	tb.bridge.serveFSRequest(context.Background(), fsTestSessionID, "run-1", writeReq("req-1"), tb.bridge.fsPolicy())
+	fsWaitFor(t, func() bool {
+		tb.editor.mu.Lock()
+		defer tb.editor.mu.Unlock()
+		return len(tb.editor.writes) >= 1 && len(tb.editor.elicit) >= 1
+	})
+	if len(tb.editor.elicit) != 1 {
+		t.Fatalf("first write should elicit once, got %d", len(tb.editor.elicit))
+	}
+
+	// Second write in the same session: no new elicitation.
+	tb.bridge.serveFSRequest(context.Background(), fsTestSessionID, "run-1", writeReq("req-2"), tb.bridge.fsPolicy())
+	fsWaitFor(t, func() bool {
+		tb.editor.mu.Lock()
+		defer tb.editor.mu.Unlock()
+		return len(tb.editor.writes) >= 2
+	})
+	tb.editor.mu.Lock()
+	elicitN, writeN := len(tb.editor.elicit), len(tb.editor.writes)
+	tb.editor.mu.Unlock()
+	if elicitN != 1 {
+		t.Fatalf("remembered approval must skip the second elicitation, got %d", elicitN)
+	}
+	if writeN != 2 {
+		t.Fatalf("both writes must reach the editor, got %d", writeN)
+	}
+}
+
+func TestFSBridgeWriteApprovalNotRememberedByDefault(t *testing.T) {
+	// Default: every write elicits, even after an approval.
+	tb := newFSTestBridge(t, true, nil)
+	writeReq := func(id string) acpfsRelayRequest {
+		return acpfsRelayRequest{
+			ID: id, Method: acpMethodFSWrite,
+			Params: json.RawMessage(`{"path":"memo.go","content":"x"}`),
+		}
+	}
+	for _, id := range []string{"req-1", "req-2"} {
+		tb.bridge.serveFSRequest(context.Background(), fsTestSessionID, "run-1", writeReq(id), tb.bridge.fsPolicy())
+		fsWaitFor(t, func() bool {
+			tb.editor.mu.Lock()
+			defer tb.editor.mu.Unlock()
+			return len(tb.editor.elicit) >= (map[string]int{"req-1": 1, "req-2": 2}[id])
+		})
+	}
+	tb.editor.mu.Lock()
+	n := len(tb.editor.elicit)
+	tb.editor.mu.Unlock()
+	if n != 2 {
+		t.Fatalf("each write should elicit by default, got %d", n)
+	}
+}
+
 func TestFSBridgeWriteBlockedByReadOnlyPolicy(t *testing.T) {
 	tb := newFSTestBridge(t, false, nil)
 	tb.bridge.mu.Lock()

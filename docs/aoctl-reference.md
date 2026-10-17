@@ -274,6 +274,12 @@ aoctl acp serve --agent senior-programmer --fs-roots ~/other-repo
 
 # Force a per-write approval form even when the agent's policy waives it (default true)
 aoctl acp serve --agent senior-programmer --fs-require-approval
+
+# Approve once, then auto-allow writes for the rest of the session
+aoctl acp serve --agent senior-programmer --fs-require-approval --fs-remember-approval
+
+# Never prompt (only if the agent's own writeApproval policy allows it)
+aoctl acp serve --agent senior-programmer --fs-require-approval=false
 ```
 
 The bridge confines every request to the session workspace plus `--fs-roots`,
