@@ -357,13 +357,23 @@ type acpPlanEntry struct {
 // "tool_call_update" sessionUpdate values. Tool calls carry a distinct shape
 // from message chunks: a toolCallId, title, kind, status and a content-block
 // array rather than a single content block.
+// acpToolCallContent is one entry of a tool call's content list (ACP v1
+// ToolCallContent: discriminated by "type" — "content" wraps a ContentBlock,
+// "diff" and "terminal" carry their own payloads). A bare ContentBlock
+// ("type":"text") in this list is rejected by strict clients (Zed) with
+// "unknown variant" and silently dropped.
+type acpToolCallContent struct {
+	Type    string           `json:"type"`
+	Content *acpContentBlock `json:"content,omitempty"`
+}
+
 type acpToolCallUpdate struct {
-	SessionUpdate string            `json:"sessionUpdate"` // "tool_call" | "tool_call_update"
-	ToolCallID    string            `json:"toolCallId"`
-	Title         string            `json:"title,omitempty"`
-	Kind          string            `json:"kind,omitempty"`   // "command" | "fetch" | "other"
-	Status        string            `json:"status,omitempty"` // "pending" | "in_progress" | "completed"
-	Content       []acpContentBlock `json:"content,omitempty"`
+	SessionUpdate string               `json:"sessionUpdate"` // "tool_call" | "tool_call_update"
+	ToolCallID    string               `json:"toolCallId"`
+	Title         string               `json:"title,omitempty"`
+	Kind          string               `json:"kind,omitempty"`   // "command" | "fetch" | "other"
+	Status        string               `json:"status,omitempty"` // "pending" | "in_progress" | "completed"
+	Content       []acpToolCallContent `json:"content,omitempty"`
 }
 
 // ----------------------------------------------------------------------------

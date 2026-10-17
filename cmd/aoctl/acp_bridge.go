@@ -70,6 +70,13 @@ type acpSession struct {
 	// --fs-remember-approval active: subsequent writes in this session skip
 	// the per-write elicitation.
 	WritesAllowed bool
+
+	// traceToolSeq numbers trace-relayed tool calls so every call gets a
+	// unique ACP toolCallId even when the same tool runs twice in a session
+	// (same-tool calls with a deterministic id collapse into one editor
+	// entry). pendingTraceTool maps toolKey → the id awaiting its result.
+	traceToolSeq     int
+	pendingTraceTool map[string]string
 }
 
 // openAIStreamState accumulates translation state across the events of one
@@ -711,6 +718,12 @@ func (b *acpBridge) emitToolCallUpdate(
 	if title == "" {
 		title = "tool call"
 	}
+	// ACP v1 ToolCallContent entries are discriminated wrappers: a bare
+	// ContentBlock ("type":"text") is an unknown variant for strict clients.
+	wrapped := make([]acpToolCallContent, 0, len(content))
+	for i := range content {
+		wrapped = append(wrapped, acpToolCallContent{Type: "content", Content: &content[i]})
+	}
 	b.srv.notify(acpMethodSessionUpdate, acpUpdateParams{
 		SessionID: sessionID,
 		Update: acpToolCallUpdate{
@@ -719,7 +732,7 @@ func (b *acpBridge) emitToolCallUpdate(
 			Title:         title,
 			Kind:          "other",
 			Status:        status,
-			Content:       content,
+			Content:       wrapped,
 		},
 	})
 }

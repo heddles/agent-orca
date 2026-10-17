@@ -56,10 +56,15 @@ func traceNotifications(t *testing.T, buf *bytes.Buffer) []map[string]any {
 
 // traceTestBridge builds a bridge whose notifications land in an in-memory
 // buffer (notify() only writes; the transport loop is not needed for traces).
+// A session "zed-1" is pre-registered so trace tool-call id sequencing (which
+// lives on the session record) is exercised.
 func traceTestBridge(t *testing.T) (*acpBridge, *openAIStreamState) {
 	t.Helper()
 	srv := newACPStdioServer(nil, strings.NewReader(""), &bytes.Buffer{}, discardWriter{})
 	bridge := newACPBridge(srv, nil, "test-agent")
+	bridge.mu.Lock()
+	bridge.sessions["zed-1"] = &acpSession{SessionID: "zed-1"}
+	bridge.mu.Unlock()
 	st := &openAIStreamState{toolCalls: map[int]openaiToolCall{}, traceSeen: map[string]bool{}}
 	return bridge, st
 }
@@ -83,12 +88,11 @@ func traceToolResultEvent() string {
 
 // TestACPTraceToolCallAndResult verifies a toolCall trace event surfaces as an
 // ACP tool_call update (in_progress) and its toolResult as the matching
-// tool_call_update (completed, content attached) on the SAME toolCallId, so
-// editors render one call→result pair.
+// tool_call_update (completed) on the SAME toolCallId, so editors render one
+// call→result pair — and that the result content uses the ACP v1
+// ToolCallContent wrapper ({"type":"content","content":{…}}); a bare text
+// block is dropped by strict clients as an unknown variant.
 func TestACPTraceToolCallAndResult(t *testing.T) {
-	// The relayed call/result pair must land on the SAME toolCallId so clients
-	// render one call → result entry instead of two unrelated ones.
-	toolCallID := traceToolCallID("issue_read", "github-mcp")
 	bridge, _ := traceTestBridge(t)
 	buf := bridge.srv.stdout.(*bytes.Buffer)
 
@@ -104,8 +108,9 @@ func TestACPTraceToolCallAndResult(t *testing.T) {
 	if !ok || callUpdate["sessionUpdate"] != acpUpdateToolCall {
 		t.Fatalf("first update not a tool_call: %v", notes[0])
 	}
-	if callUpdate["toolCallId"] != toolCallID {
-		t.Fatalf("toolCallId mismatch: %v", callUpdate["toolCallId"])
+	callID, _ := callUpdate["toolCallId"].(string)
+	if !strings.HasPrefix(callID, "trace_issue_read_github-mcp_") {
+		t.Fatalf("toolCallId not trace-prefixed: %q", callID)
 	}
 	if callUpdate["status"] != acpToolStatusInProgress {
 		t.Fatalf("call status = %v, want in_progress", callUpdate["status"])
@@ -119,15 +124,58 @@ func TestACPTraceToolCallAndResult(t *testing.T) {
 	if !ok || resUpdate["sessionUpdate"] != acpUpdateToolCallUpd {
 		t.Fatalf("second update not a tool_call_update: %v", notes[1])
 	}
-	if resUpdate["toolCallId"] != callUpdate["toolCallId"] {
-		t.Fatalf("result toolCallId %v does not match call %v", resUpdate["toolCallId"], callUpdate["toolCallId"])
+	if resUpdate["toolCallId"] != callID {
+		t.Fatalf("result toolCallId %v does not match call %v", resUpdate["toolCallId"], callID)
 	}
 	if resUpdate["status"] != acpToolStatusCompleted {
 		t.Fatalf("result status = %v, want completed", resUpdate["status"])
 	}
+	// Content must be the wrapped ToolCallContent shape.
 	content, _ := resUpdate["content"].([]any)
-	if len(content) == 0 {
-		t.Fatal("result update carries no content")
+	if len(content) != 1 {
+		t.Fatalf("result update content = %v, want one wrapped entry", resUpdate["content"])
+	}
+	entry, _ := content[0].(map[string]any)
+	if entry["type"] != "content" {
+		t.Fatalf("content entry type = %v, want \"content\" (bare blocks are dropped by clients)", entry["type"])
+	}
+	inner, _ := entry["content"].(map[string]any)
+	if text, _ := inner["text"].(string); !strings.Contains(text, "issue_read") || !strings.Contains(text, "34") {
+		t.Fatalf("wrapped content text missing result detail: %v", inner)
+	}
+}
+
+// TestACPTraceSameToolCallsGetDistinctIDs is the regression for the editor
+// showing one entry for multiple calls of the same tool: the two issue_read
+// calls in a live run collapsed onto one deterministic toolCallId, so Zed
+// rendered a single cycling entry instead of two call→result pairs.
+func TestACPTraceSameToolCallsGetDistinctIDs(t *testing.T) {
+	bridge, _ := traceTestBridge(t)
+	buf := bridge.srv.stdout.(*bytes.Buffer)
+
+	// Two calls of the SAME tool (the live failure mode), each with a result.
+	bridge.handleTraceEvent(parse(t, traceToolCallEvent()), "zed-1")
+	bridge.handleTraceEvent(parse(t, traceToolResultEvent()), "zed-1")
+	bridge.handleTraceEvent(parse(t, traceToolCallEvent()), "zed-1")
+	bridge.handleTraceEvent(parse(t, traceToolResultEvent()), "zed-1")
+
+	notes := traceNotifications(t, buf)
+	if len(notes) != 4 {
+		t.Fatalf("expected 4 session updates, got %d: %v", len(notes), notes)
+	}
+	ids := make([]string, 0, 4)
+	for _, n := range notes {
+		if u, ok := n["update"].(map[string]any); ok {
+			ids = append(ids, u["toolCallId"].(string))
+		}
+	}
+	// Pairing: call1→result1 share an id, call2→result2 share another, and the
+	// two pairs are distinct.
+	if ids[0] == ids[2] {
+		t.Fatalf("same-tool calls collapsed onto one id %q", ids[0])
+	}
+	if ids[0] != ids[1] || ids[2] != ids[3] {
+		t.Fatalf("call/result pairing broken: %v", ids)
 	}
 }
 

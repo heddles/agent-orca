@@ -106,13 +106,13 @@ func (b *acpBridge) handleTraceEvent(ev acpTraceEvent, sessionID string) {
 }
 
 // emitTraceToolCall emits a tool call as an ACP tool_call update in the
-// in_progress state. ToolCallID is derived deterministically from name+args
-// so the matching toolResult (same name+args) maps onto the same tool_call id
-// and clients render one call → result pair instead of two unrelated entries.
+// in_progress state. The toolCallId is sequenced per session (unique per call
+// — same-tool calls with a deterministic id collapse into one editor entry)
+// and recorded as pending so the matching toolResult maps onto the same id.
 func (b *acpBridge) emitTraceToolCall(sessionID string, ev acpTraceEvent) {
 	b.emitToolCallUpdate(sessionID, openaiToolCall{
 		Index:     0,
-		ID:        traceToolCallID(ev.Name, ev.BackendRef),
+		ID:        b.nextTraceToolCallID(sessionID, ev),
 		Name:      traceToolTitle(ev),
 		Arguments: "",
 	}, acpUpdateToolCall, acpToolStatusInProgress, nil)
@@ -131,11 +131,54 @@ func (b *acpBridge) emitTraceToolResult(sessionID string, ev acpTraceEvent) {
 	detail := fmt.Sprintf("%s → %s", title, result)
 	b.emitToolCallUpdate(sessionID, openaiToolCall{
 		Index:     0,
-		ID:        traceToolCallID(ev.Name, ev.BackendRef),
+		ID:        b.popTraceToolCallID(sessionID, ev),
 		Name:      title,
 		Arguments: "",
 	}, acpUpdateToolCallUpd, acpToolStatusCompleted,
 		[]acpContentBlock{{Type: "text", Text: detail}})
+}
+
+// nextTraceToolCallID assigns a fresh, session-unique toolCallId for a trace
+// tool call and records it as pending for its result. Falls back to the
+// deterministic name-based id when the session record is gone (id uniqueness
+// then relies on the tool not repeating — acceptable for a degraded path).
+func (b *acpBridge) nextTraceToolCallID(sessionID string, ev acpTraceEvent) string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	s, ok := b.sessions[sessionID]
+	if !ok {
+		return traceToolCallID(ev.Name, ev.BackendRef)
+	}
+	s.traceToolSeq++
+	id := fmt.Sprintf("%s_%d", traceToolCallID(ev.Name, ev.BackendRef), s.traceToolSeq)
+	if s.pendingTraceTool == nil {
+		s.pendingTraceTool = map[string]string{}
+	}
+	s.pendingTraceTool[traceToolKey(ev)] = id
+	return id
+}
+
+// popTraceToolCallID returns the pending toolCallId for this tool (agent-orca
+// serializes tool calls within a run, so the pending entry is the match), or
+// the deterministic fallback when nothing is pending.
+func (b *acpBridge) popTraceToolCallID(sessionID string, ev acpTraceEvent) string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	s, ok := b.sessions[sessionID]
+	if !ok {
+		return traceToolCallID(ev.Name, ev.BackendRef)
+	}
+	key := traceToolKey(ev)
+	if id, ok := s.pendingTraceTool[key]; ok {
+		delete(s.pendingTraceTool, key)
+		return id
+	}
+	return traceToolCallID(ev.Name, ev.BackendRef)
+}
+
+// traceToolKey pairs a toolResult with its toolCall by backend + tool name.
+func traceToolKey(ev acpTraceEvent) string {
+	return ev.BackendRef + ":" + ev.Name
 }
 
 // emitTraceNote surfaces non-tool trace events (guardrail, fallback,
@@ -165,11 +208,9 @@ func traceToolTitle(ev acpTraceEvent) string {
 	return ev.Name
 }
 
-// traceToolCallID derives a stable ACP toolCallId from the tool name + backend
-// ref so toolCall and its matching toolResult collide onto the same update.
-// ACP toolCallIds only need to be unique within a session; name-based ids
-// could collide with concurrent same-tool calls, but agent-orca serializes
-// tool calls within a run, so this is safe and gives clean pairing.
+// traceToolCallID is the deterministic base id for a trace tool call
+// (name + backend). The full id carries a per-session sequence suffix so
+// repeated calls to the same tool stay distinct in the editor.
 func traceToolCallID(name, backendRef string) string {
 	id := "trace_" + strings.ReplaceAll(name, " ", "_")
 	if backendRef != "" {
