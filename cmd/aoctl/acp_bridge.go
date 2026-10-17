@@ -52,7 +52,11 @@ const acpProtocolVersion uint16 = 1
 // which bridge build is actually running — stale subprocesses are a real
 // failure mode). It is independent of the ACP protocol version (1).
 // 0.2.0: fs/* relay (read/write/list) + write-approval diagnosability.
-const acpBridgeVersion = "0.2.0"
+// 0.3.0: trace-event relay — model-router trace events (tool calls, results,
+// guardrails, provider fallbacks, MCP discovery) stream to the editor as
+// session updates during the turn instead of the client showing only a
+// spinner until the final response arrives.
+const acpBridgeVersion = "0.3.0"
 
 // acpSession is the live state for one Zed session.
 type acpSession struct {
@@ -73,10 +77,14 @@ type acpSession struct {
 // close + polling fallback can emit only the remainder), the reasoning
 // streamed so far (same dedup), and the tool-call deltas merged so far
 // (keyed by OpenAI index, mirroring mergeToolCallDeltas in internal/router).
+// traceSeen dedups trace events across reconnects: TailTokens replays all
+// prior Redis entries on each new stream attempt, so without it every 30s
+// window re-emits the tool calls/results already shown.
 type openAIStreamState struct {
 	streamed        strings.Builder // assistant text emitted as message chunks
 	streamedThought strings.Builder // reasoning emitted as thought chunks
 	toolCalls       map[int]openaiToolCall
+	traceSeen       map[string]bool // raw trace-event JSON → already emitted
 }
 
 // acpBridge owns method dispatch and per-session run state.
@@ -335,7 +343,7 @@ func (b *acpBridge) awaitCompletion(ctx context.Context, runID, sessionID string
 	for {
 		// Fresh translation state per run (continuation runs after an await
 		// resume carry their own output).
-		st := &openAIStreamState{toolCalls: map[int]openaiToolCall{}}
+		st := &openAIStreamState{toolCalls: map[int]openaiToolCall{}, traceSeen: map[string]bool{}}
 		// Path 1: Try streaming first
 		term := b.streamRunEvents(ctx, runID, sessionID, st)
 		if term != acpPendingAwaiting {
@@ -443,6 +451,21 @@ func (b *acpBridge) consumeAndStreamHTTP(
 					return acpStopReasonUserCancel
 				}
 				return ""
+			}
+
+			// Model-router trace events (tool calls/results, guardrails,
+			// provider fallbacks, MCP discovery) ride the run stream as
+			// `event: trace` SSE frames. Translate them into session/update
+			// notifications so editors render live agent activity mid-turn
+			// instead of a bare spinner; trace events are never terminal.
+			// st.traceSeen dedups across reconnects: TailTokens replays prior
+			// Redis entries on every new stream attempt.
+			if ev.Type == acpEventTypeTrace {
+				if tev, ok := parseACPTraceEvent(ev.Data); ok && !st.traceSeen[ev.Data] {
+					st.traceSeen[ev.Data] = true
+					b.handleTraceEvent(tev, sessionID)
+				}
+				continue
 			}
 
 			term := b.handleEvent(ev, sessionID, msgID, st)

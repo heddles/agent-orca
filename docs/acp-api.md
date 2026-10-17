@@ -221,6 +221,21 @@ Get the status and output of a run.
 }
 ```
 
+Live streaming (Server-Sent Events): while the run is in progress, requesting
+`Accept: text/event-stream` streams live updates instead of the JSON body.
+Beyond message parts, the stream forwards the model-router's **trace events** —
+tool calls/results, guardrails, provider fallbacks, MCP discovery — as
+`event: trace` frames whose `data` payload is the raw trace event JSON:
+
+```
+event: trace
+data: {"type":"toolCall","name":"issue_read","backendType":"mcp","backendRef":"github-mcp"}
+```
+
+A terminal trace event (`fail` / `finalOutput`) marks the true end of the
+turn: the stream stops and `run.completed` follows. Editors driving the ACP
+bridge render these as live activity instead of a spinner.
+
 ## GET /runs/{run_id}/events
 
 List events for a run (ACP event stream).

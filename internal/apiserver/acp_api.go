@@ -1325,8 +1325,17 @@ func (s *ACPServer) streamACPRun(w http.ResponseWriter, r *http.Request, run *ag
 		if token == "" {
 			break
 		}
-		// Skip trace events (prefixed with \x00)
-		if len(token) > 1 && token[0] == '\x00' {
+		// Forward model-router trace events (toolCall, toolResult, guardrail,
+		// providerFallback, mcpDiscovery, …) as `event: trace` SSE frames so
+		// bridges can render live agent activity mid-turn instead of a spinner.
+		// Trace events are not part of the message output; a terminal trace
+		// event (fail/finalOutput) is the true end of the OpenAI turn loop.
+		if isTraceToken(token) {
+			evJSON := stripTraceMarker(token)
+			writeTraceEvent(w, flusher, evJSON)
+			if isTerminalTracePayload(evJSON) {
+				break
+			}
 			continue
 		}
 		fullOutput.WriteString(token)
