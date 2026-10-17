@@ -102,7 +102,45 @@ func (s *ACPServer) Handler() http.Handler {
 	mux.HandleFunc("/runs", s.handleCreateRun)
 	mux.HandleFunc("/runs/", s.handleRunByID)
 	mux.HandleFunc("/session/", s.handleGetSession)
-	return corsMiddleware(requestTimeoutMiddleware(s.auth.Middleware(instrument("acp", mux)), acpAPIRequestTimeout))
+	return corsMiddleware(acpRequestTimeoutMiddleware(s.auth.Middleware(instrument("acp", mux)), acpAPIRequestTimeout))
+}
+
+// acpStreamWindow is how long one live SSE stream (GET /runs/{run_id} with
+// Accept: text/event-stream) may stay open. It matches the bridge's client
+// timeout (`aoctl acp serve`, 10m): the bridge re-attaches when the stream
+// ends and dedups already-delivered content, but every window boundary
+// introduces a reconnect gap mid-turn, so the window is long enough that a
+// normal turn streams in a single connection instead of 30s slices.
+const acpStreamWindow = 10 * time.Minute
+
+// acpRequestTimeoutMiddleware wraps the request timeout with one exception:
+// the live run stream gets acpStreamWindow instead of acpAPIRequestTimeout —
+// SSE is long-lived by design, and the 30s bound was forcing the bridge to
+// reconnect mid-turn every 30 seconds ("stream ended early").
+func acpRequestTimeoutMiddleware(next http.Handler, defaultTimeout time.Duration) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		timeout := defaultTimeout
+		if isSSEStreamRequest(r) {
+			timeout = acpStreamWindow
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), timeout)
+		defer cancel()
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// isSSEStreamRequest reports whether this request is the live run stream:
+// GET /runs/{run_id} (single segment — not /events lists or /fs/* polls) with
+// an Accept header asking for text/event-stream.
+func isSSEStreamRequest(r *http.Request) bool {
+	if r.Method != http.MethodGet {
+		return false
+	}
+	path := strings.TrimPrefix(r.URL.Path, "/runs/")
+	if path == "" || strings.Contains(path, "/") {
+		return false
+	}
+	return strings.Contains(r.Header.Get("Accept"), "text/event-stream")
 }
 
 // ACP types aligned with ACP v1 spec from https://agentclientprotocol.com/protocol/v1/
