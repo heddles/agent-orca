@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -218,6 +219,65 @@ func TestACPTraceEventsViaStream(t *testing.T) {
 	if notes = traceNotifications(t, buf); len(notes) != 2 {
 		t.Fatalf("replay after reconnect must be fully deduped, got %d updates", len(notes))
 	}
+}
+
+// TestACPTraceInfrastructureEvents verifies the model-router's own background
+// decisions surface in the editor: a routing decision renders like the web
+// UI's modelSelected line, hindsight memory ops render their bank, and failed
+// background ops carry the failure reason (they explain perceived slowness).
+func TestACPTraceInfrastructureEvents(t *testing.T) {
+	bridge, _ := traceTestBridge(t)
+	buf := bridge.srv.stdout.(*bytes.Buffer)
+
+	bank := "agent-orca-system--senior-programmer-chat"
+	bridge.handleTraceEvent(parse(t, traceRoutingEvent()), "zed-1")
+	bridge.handleTraceEvent(parse(t, traceHindsightEvent("recall", bank, "")), "zed-1")
+	bridge.handleTraceEvent(parse(t, traceHindsightEvent("retain", bank, "")), "zed-1")
+	bridge.handleTraceEvent(parse(t, traceHindsightEvent("recall", bank, "connect: refused")), "zed-1")
+
+	notes := traceNotifications(t, buf)
+	if len(notes) != 4 {
+		t.Fatalf("expected 4 thought-chunk notes, got %d: %v", len(notes), notes)
+	}
+	wantTexts := []string{
+		"[model routing] routed z-ai/glm-5.3-flash — [rule-based] openrouter-free — weighted random (confidence: 50%)",
+		fmt.Sprintf("[hindsight memory] recalled relevant memories (bank %q)", bank),
+		fmt.Sprintf("[hindsight memory] retained this turn to memory (bank %q)", bank),
+		fmt.Sprintf("[hindsight memory] recalled relevant memories (bank %q) — FAILED: connect: refused", bank),
+	}
+	for i, want := range wantTexts {
+		update, _ := notes[i]["update"].(map[string]any)
+		content, _ := update["content"].(map[string]any)
+		if text, _ := content["text"].(string); text != want {
+			t.Fatalf("note %d = %q, want %q", i, text, want)
+		}
+		if update["sessionUpdate"] != acpUpdateThoughtChunk {
+			t.Fatalf("note %d: expected agent_thought_chunk, got %v", i, update["sessionUpdate"])
+		}
+	}
+}
+
+// traceRoutingEvent builds a routing-decision trace payload (the per-request
+// model selection the model-router records via postRoutingDecision).
+func traceRoutingEvent() string {
+	return `{"type":"routing","model":"z-ai/glm-5.3-flash",` +
+		`"provider":"openrouter-free","strategy":"rule-based",` +
+		`"reason":"weighted random","confidence":0.5}`
+}
+
+// traceHindsightEvent builds a hindsight memory-system trace payload; a
+// non-empty reason marks the operation as failed.
+func traceHindsightEvent(op, bankID, reason string) string {
+	ev := map[string]any{"type": "hindsight", "op": op, "bankID": bankID}
+	if reason != "" {
+		ev["failed"] = true
+		ev["reason"] = reason
+	}
+	out, err := json.Marshal(ev)
+	if err != nil {
+		panic(err) // cannot happen for these literal fields
+	}
+	return string(out)
 }
 
 // TestACPTraceNonToolEvents verifies guardrail / providerFallback / discovery

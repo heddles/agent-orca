@@ -427,6 +427,40 @@ function TraceRow({ entry, markdown }: { entry: TraceEntry; markdown: boolean })
         </div>
       )
     }
+    case 'routing': {
+      const pct = event.confidence != null ? Math.round(event.confidence * 100) : null
+      return (
+        <div style={row}>
+          <span style={muted}>{time}</span>
+          <Icon icon={ICON.routed} size={14} color="var(--ds-accent)" />
+          <span style={content}>
+            <span style={hi}>routed</span> {event.model}
+            {event.strategy || event.provider ? <> — [{event.strategy}] {event.provider}</> : null}
+            {event.reason ? <> — {event.reason}</> : null}
+            {pct != null ? <> (confidence: {pct}%)</> : null}
+          </span>
+        </div>
+      )
+    }
+    case 'hindsight': {
+      const opLabel =
+        event.op === 'recall'
+          ? 'recalled relevant memories'
+          : event.op === 'retain'
+            ? 'retained this turn to memory'
+            : 'memory bank ready'
+      return (
+        <div style={row}>
+          <span style={muted}>{time}</span>
+          <Icon icon={ICON.database} size={14} color={event.failed ? 'var(--ds-warning)' : 'var(--ds-accent)'} />
+          <span style={content}>
+            <span style={hi}>hindsight</span> {opLabel}
+            {event.bankID ? <> (bank "{event.bankID}")</> : null}
+            {event.failed && <span style={{ color: '#fcd34d' }}> — FAILED: {event.reason}</span>}
+          </span>
+        </div>
+      )
+    }
     default: {
       const t =
         event && typeof event === 'object' && 'type' in event

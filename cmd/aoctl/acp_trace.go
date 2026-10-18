@@ -40,6 +40,14 @@ import (
 //	{"type":"fail","reason":"..."}                 (terminal)
 //	{"type":"finalOutput","output":"..."}           (terminal)
 //
+// Infrastructure-originated events (the model-router/operator deciding things
+// behind the agent's back) keep the human informed about silent background
+// work — without them a run with no visible tool activity looks hung:
+//
+//	{"type":"routing","model":"z-ai/glm-5.3-flash","provider":"openrouter-free",
+//	          "strategy":"rule-based","reason":"weighted random","confidence":0.5}
+//	{"type":"hindsight","op":"bank|recall|retain","bankID":"...","failed":false,"reason":"..."}
+//
 // Terminal trace events (fail/finalOutput) are consumed by the bridge but NOT
 // re-emitted as session updates — the ACP run lifecycle events already end the
 // turn, and a duplicate "fail" message would confuse clients.
@@ -64,6 +72,17 @@ type acpTraceEvent struct {
 	Tools       int    `json:"tools,omitempty"`
 	// toolResult duration, milliseconds.
 	DurationMs int64 `json:"durationMs,omitempty"`
+	// routing fields (mirrors the AgentRun status RoutingDecision). Confidence
+	// is a fraction in [0,1] — rendered as a percentage.
+	Model      string  `json:"model,omitempty"`
+	Provider   string  `json:"provider,omitempty"`
+	Strategy   string  `json:"strategy,omitempty"`
+	Confidence float64 `json:"confidence,omitempty"`
+	// hindsight fields: op is one of bank / recall / retain; failed marks a
+	// failed background operation (they explain perceived slowness).
+	Op     string `json:"op,omitempty"`
+	BankID string `json:"bankID,omitempty"`
+	Failed bool   `json:"failed,omitempty"`
 }
 
 // parseACPTraceEvent decodes one \x00-prefixed trace event payload.
@@ -95,6 +114,10 @@ func (b *acpBridge) handleTraceEvent(ev acpTraceEvent, sessionID string) {
 	case "mcpDiscovery":
 		b.emitTraceNote(sessionID, "MCP discovery",
 			fmt.Sprintf("discovered %d tools from MCP server %q", ev.Tools, ev.Server))
+	case "routing":
+		b.emitTraceNote(sessionID, "model routing", ev.routingText())
+	case "hindsight":
+		b.emitTraceNote(sessionID, "hindsight memory", ev.hindsightText())
 	case "clarify":
 		// The clarify question is surfaced via the elicitation/create flow
 		// (handleAwaitingRun); emitting it as a note would duplicate it.
@@ -252,6 +275,46 @@ func (ev acpTraceEvent) providerFallbackText() string {
 	}
 	if ev.Reason != "" {
 		fmt.Fprintf(&b, ": %s", ev.Reason)
+	}
+	return b.String()
+}
+
+// routingText renders a routing-decision event body, mirroring the web UI's
+// modelSelected line: "routed <model> — [strategy] provider — reason (confidence: NN%)".
+func (ev acpTraceEvent) routingText() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "routed %s", ev.Model)
+	if ev.Strategy != "" || ev.Provider != "" {
+		fmt.Fprintf(&b, " — [%s] %s", ev.Strategy, ev.Provider)
+	}
+	if ev.Reason != "" {
+		fmt.Fprintf(&b, " — %s", ev.Reason)
+	}
+	if ev.Confidence > 0 {
+		fmt.Fprintf(&b, " (confidence: %.0f%%)", ev.Confidence*100)
+	}
+	return b.String()
+}
+
+// hindsightText renders a hindsight memory-system event body — these run
+// silently before/after each LLM call and can add visible latency.
+func (ev acpTraceEvent) hindsightText() string {
+	var b strings.Builder
+	switch ev.Op {
+	case "recall":
+		b.WriteString("recalled relevant memories")
+	case "retain":
+		b.WriteString("retained this turn to memory")
+	case "bank":
+		b.WriteString("memory bank ready")
+	default:
+		fmt.Fprintf(&b, "memory operation %s", ev.Op)
+	}
+	if ev.BankID != "" {
+		fmt.Fprintf(&b, " (bank %q)", ev.BankID)
+	}
+	if ev.Failed {
+		fmt.Fprintf(&b, " — FAILED: %s", ev.Reason)
 	}
 	return b.String()
 }

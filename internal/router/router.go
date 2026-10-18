@@ -135,6 +135,11 @@ type Router struct {
 	// guard since they belong to the same turn. Uses atomic.Bool for
 	// goroutine-safe access without holding r.mu during the entire LLM call.
 	streamingActive atomic.Bool
+
+	// hindsightAnnounced guards the one-time "memory bank ready" trace event:
+	// ensureHindsightBank runs on every request, but the announcement should
+	// appear in the trace stream only once per run, not per LLM call.
+	hindsightAnnounced atomic.Bool
 }
 
 // New creates a Router with the given configuration.
@@ -642,12 +647,14 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 
 	// Ensure hindsight bank exists at startup; if it already exists, continue gracefully.
 	if r.cfg.Hindsight.Enabled && r.cfg.Hindsight.URL != "" {
-		bankID, err := r.ensureHindsightBank(context.Background())
+		bankID, bankErr := r.ensureHindsightBank(context.Background())
 
-		if err != nil {
-			slog.Warn("hindsight memory system did not find or create bankID", bankID, "Error:", err.Error(), "agent memory system is not active.")
+		if bankErr != nil {
+			slog.Warn("hindsight memory system did not find or create bankID", bankID, "Error:", bankErr.Error(), "agent memory system is not active.")
+		} else {
+			slog.Info("hindsight memory bank", bankID, "exists.")
+			r.announceHindsightBank()
 		}
-		slog.Info("hindsight memory bank", bankID, "exists.")
 	}
 
 	// If a handoff, clarify, done, fail, or safeguard trip completed, stop processing further LLM calls.
@@ -878,8 +885,10 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 			if recalled, err := r.hindsightRecall(req.Context(), lastUserMsg); err == nil && recalled != "" {
 				chatReq.Messages = append([]Message{{Role: "system", Content: "<hindsight-recall>\n" + recalled + "\n</hindsight-recall>"}}, chatReq.Messages...)
 				slog.Info("hindsight recall success", "run", r.cfg.RunName, "bankID", r.hindsightBankID())
+				r.emitHindsightTraceEvent("recall", false, "")
 			} else if err != nil {
 				slog.Warn("hindsight recall failed", "run", r.cfg.RunName, "err", err)
+				r.emitHindsightTraceEvent("recall", true, err.Error())
 			}
 		}
 	}
@@ -893,6 +902,10 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 
 	// Record the actual per-request routing decision so the UI shows the model that ran.
 	go r.postRoutingDecision(req.Context(), provider, routeResult)
+	// Trace-stream copy for ACP/editor clients that never poll the AgentRun CRD.
+	// Emitted synchronously BEFORE the LLM call so the editor shows which model
+	// was selected while it works, not after the turn completes.
+	r.emitRoutingTraceEvent(provider, routeResult)
 
 	slog.Info("routing request",
 		"provider", provider.Name,
@@ -2120,6 +2133,76 @@ func (r *Router) emitTraceEventBoth(eventJSON string) {
 	r.emitTraceEventSSE(eventJSON)
 }
 
+// Trace-event type discriminants for the infrastructure-originated events the
+// model-router streams so clients can show what the system is doing while the
+// LLM is silent (routing decisions, memory-system background work). The
+// agent/LLM-originated types (toolCall, toolResult, thought, …) are written
+// inline at their dispatch sites.
+const (
+	// traceEventTypeRouting mirrors the AgentRun status RoutingDecision the
+	// operator records per LLM request (POST /agentrun/…/route): it tells
+	// trace consumers which model actually ran.
+	traceEventTypeRouting = "routing"
+	// traceEventTypeHindsight surfaces hindsight memory-system work
+	// (op: bank/recall/retain) that adds silent latency before the first token.
+	traceEventTypeHindsight = "hindsight"
+)
+
+// emitRoutingTraceEvent writes the per-request routing decision into the trace
+// stream so editor/UI clients see which model ran (mirrors the AgentRun status
+// entry recorded via postRoutingDecision). Fire-and-forget: tracing must never
+// fail a request because routing already happened.
+func (r *Router) emitRoutingTraceEvent(provider *ProviderConfig, result RouteResult) {
+	if r.cfg.RunName == "" {
+		return
+	}
+	ev, err := json.Marshal(map[string]any{
+		"type":       traceEventTypeRouting,
+		"model":      provider.LiteLLMModel,
+		"provider":   provider.Name,
+		"strategy":   r.cfg.Strategy,
+		"reason":     result.Reason,
+		"confidence": result.Confidence,
+	})
+	if err != nil {
+		return
+	}
+	r.emitTraceEventBoth(string(ev))
+}
+
+// emitHindsightTraceEvent writes a hindsight memory-system trace event
+// (op: bank/recall/retain). Failed operations are surfaced too — they explain
+// perceived slowness better than a spinner.
+func (r *Router) emitHindsightTraceEvent(op string, failed bool, detail string) {
+	if r.cfg.RunName == "" {
+		return
+	}
+	ev := map[string]any{
+		"type":   traceEventTypeHindsight,
+		"op":     op,
+		"bankID": r.hindsightBankID(),
+	}
+	if failed {
+		ev["failed"] = true
+		ev["reason"] = detail
+	}
+	data, err := json.Marshal(ev)
+	if err != nil {
+		return
+	}
+	r.emitTraceEventBoth(string(data))
+}
+
+// announceHindsightBank emits the one-time bank-ready trace event per run:
+// ensureHindsightBank runs on every request but the announcement should appear
+// at most once in the trace stream.
+func (r *Router) announceHindsightBank() {
+	if !r.hindsightAnnounced.CompareAndSwap(false, true) {
+		return
+	}
+	r.emitHindsightTraceEvent("bank", false, "")
+}
+
 // Finalize emits a terminal trace-event release decision if no explicit terminal was reached.
 // Call this from the shutdown path before HTTP servers are closed so the operator POST
 // can still reach the apiserver.
@@ -3169,6 +3252,10 @@ func (r *Router) executeEmitEvent(ctx context.Context, args string) string {
 // postRoutingDecision records the actual per-request routing decision to the
 // AgentRun status via the operator API so the UI shows which model was used.
 // Failures are logged but never returned — routing already happened.
+// The trace-stream copy is emitted separately (emitRoutingTraceEvent) from the
+// single HandleChatCompletions dispatch point — this function is invoked twice
+// per streaming request (chat handler + forwardToProviderStream), which would
+// duplicate every trace event.
 func (r *Router) postRoutingDecision(ctx context.Context, provider *ProviderConfig, result RouteResult) {
 
 	if r.cfg.RunName == "" || r.cfg.OperatorAPIURL == "" {

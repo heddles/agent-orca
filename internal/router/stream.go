@@ -520,16 +520,20 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 
 	if r.cfg.Hindsight.Enabled {
 
-		_, errEnsureHindsightBank := r.ensureHindsightBank(req.Context())
+		bankID, errEnsureHindsightBank := r.ensureHindsightBank(req.Context())
 
 		if errEnsureHindsightBank != nil {
 			slog.Warn("hindsight bank does not exist, memory system usage will fail.")
+		} else if bankID != "" {
+			r.announceHindsightBank()
 		}
 		content := fmt.Sprintf("ai assistant: %s", messageText(assistantMsg))
 		if err := r.hindsightRetain(r.cfg.RunName, content); err != nil {
 			slog.Warn("hindsight retain failed", "run", r.cfg.RunName, "err", err)
+			r.emitHindsightTraceEvent("retain", true, err.Error())
 		} else {
 			slog.Info("hindsight retain success", "run", r.cfg.RunName, "bankID", r.hindsightBankID())
+			r.emitHindsightTraceEvent("retain", false, "")
 		}
 	}
 

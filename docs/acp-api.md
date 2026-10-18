@@ -224,12 +224,24 @@ Get the status and output of a run.
 Live streaming (Server-Sent Events): while the run is in progress, requesting
 `Accept: text/event-stream` streams live updates instead of the JSON body.
 Beyond message parts, the stream forwards the model-router's **trace events** —
-tool calls/results, guardrails, provider fallbacks, MCP discovery — as
-`event: trace` frames whose `data` payload is the raw trace event JSON:
+tool calls/results, guardrails, provider fallbacks, MCP discovery, and the
+router/operator's own infrastructure decisions — as `event: trace` frames
+whose `data` payload is the raw trace event JSON:
 
 ```
 event: trace
 data: {"type":"toolCall","name":"issue_read","backendType":"mcp","backendRef":"github-mcp"}
+```
+
+Infrastructure events (`routing`, `hindsight`) surface the model-router's
+background decisions — which model was selected, memory-system recall/retain —
+so clients can show why a run is silent before the first token arrives:
+
+```
+event: trace
+data: {"type":"routing","model":"z-ai/glm-5.3-flash","provider":"openrouter-free","strategy":"rule-based","reason":"weighted random","confidence":0.5}
+event: trace
+data: {"type":"hindsight","op":"recall","bankID":"agent-orca-system--senior-programmer-chat"}
 ```
 
 A terminal trace event (`fail` / `finalOutput`) marks the true end of the
