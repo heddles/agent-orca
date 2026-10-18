@@ -27,10 +27,12 @@ func TestIsTerminalTraceEventJSON(t *testing.T) {
 		// Schema-aligned completion events. `fail` is terminal because it is an
 		// explicit error path. `finalOutput` is terminal because it carries the
 		// authoritative run output and signals the UI API to close the stream.
-		// `done` is intentionally NOT terminal — it carries no output and the UI
-		// relies on finalOutput (or the poll fallback) for completion.
-		{"done with finish_reason", `{"type":"done","finish_reason":"stop"}`, false},
-		{"done with output (explicit _done)", `{"type":"done","output":"x"}`, false},
+		// `done` is terminal: the model-router's streaming path emits it on the
+		// genuine terminal text turn and the _done built-in tool emits it with
+		// output — both mean the turn is over, and TailTokens must close so
+		// consumers (UI, external API, ACP editor bridge) finalize promptly.
+		{"done with finish_reason", `{"type":"done","finish_reason":"stop"}`, true},
+		{"done with output (explicit _done)", `{"type":"done","output":"x"}`, true},
 		{"fail", `{"type":"fail","reason":"deadline"}`, true},
 		{"finalOutput", `{"type":"finalOutput","output":"x"}`, true},
 		// clarify pauses for human input and later resumes on the same key, so it

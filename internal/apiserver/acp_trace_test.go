@@ -203,7 +203,13 @@ func TestStreamACPRun_TerminalTraceEndsStream(t *testing.T) {
 
 // TestIsTerminalTracePayload guards the terminal classification.
 func TestIsTerminalTracePayload(t *testing.T) {
-	terminal := []string{`{"type":"fail","reason":"boom"}`, `{"type":"finalOutput","output":"done"}`}
+	terminal := []string{
+		`{"type":"fail","reason":"boom"}`,
+		`{"type":"finalOutput","output":"done"}`,
+		// done: the model-router emits it on the genuine terminal text turn and
+		// from the _done built-in tool — terminal per state.IsTerminalTraceEventJSON.
+		`{"type":"done","output":"all done"}`,
+	}
 	notTerminal := []string{
 		`{"type":"clarify","question":"..."}`,
 		`{"type":"toolCall","name":"x"}`,

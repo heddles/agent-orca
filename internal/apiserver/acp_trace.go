@@ -17,10 +17,11 @@ limitations under the License.
 package apiserver
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
+
+	"github.com/heddles/agent-orca/internal/state"
 )
 
 // Trace events (structured activity the model-router interleaves into the
@@ -46,23 +47,13 @@ func isTraceToken(token string) bool {
 }
 
 // isTerminalTracePayload reports whether a trace-event JSON payload ends the
-// run stream. The stream ends on a terminal trace event (fail / finalOutput),
-// which the model-router emits at the true end of the OpenAI turn loop.
-// `clarify` is deliberately not terminal — the run pauses and later resumes on
-// the same stream key (closed via the CRD phase poller instead), matching
-// state.IsTerminalTraceEventJSON's rule.
+// run stream. The rule is the state store's terminal classification
+// (fail / finalOutput / done — the model-router emits `done` on the genuine
+// terminal text turn and from the _done built-in tool). `clarify` is
+// deliberately not terminal — a clarified run pauses and later resumes on the
+// same stream key, matching state.IsTerminalTraceEventJSON.
 func isTerminalTracePayload(evJSON string) bool {
-	var m struct {
-		Type string `json:"type"`
-	}
-	if err := json.Unmarshal([]byte(evJSON), &m); err != nil {
-		return false
-	}
-	switch m.Type {
-	case "fail", "finalOutput":
-		return true
-	}
-	return false
+	return state.IsTerminalTraceEventJSON(evJSON)
 }
 
 // writeTraceEvent emits one `event: trace` SSE frame carrying the raw trace

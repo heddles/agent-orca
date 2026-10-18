@@ -374,16 +374,32 @@ func (b *acpBridge) awaitCompletion(ctx context.Context, runID, sessionID string
 }
 
 // streamRunEvents consumes the SSE stream from GET /runs/{id} (Accept:
-// text/event-stream) and translates it into session/update notifications.
+// text/event-stream) and translates it into ACP session/update notifications.
 //
-// The ACP API bounds streaming requests to 30s, so a long response is delivered
+// The ACP API bounds streaming requests (non-SSE requests to 30s; SSE to the
+// 10-minute stream window), so a long response is delivered
 // in windows: each window ends either with a genuine terminal event or with
 // the connection dropping. A terminal event is verified against the run's real
 // status (confirmTerminal) before ending the turn, so a premature run.completed
-// caused by the 30s timeout does not truncate the response — instead the
-// stream is re-attempted.
+// caused by a window boundary does not truncate the response — instead the
+// stream is re-attempted. Before each re-attempt the run's CRD state is polled
+// directly: if the run is already terminal (or awaiting input) the turn
+// finalizes immediately even when the stream never delivered a terminal event
+// (e.g. the terminal trace event landed in the gap between windows).
 func (b *acpBridge) streamRunEvents(ctx context.Context, runID, sessionID string, st *openAIStreamState) string {
 	for attempt := 0; ; attempt++ {
+		// Gap-filling CRD poll: when the previous stream window ended without a
+		// terminal event (the terminal trace marker landed in the gap between
+		// windows, or the stream dropped for any other reason), consult the
+		// run's authoritative CRD state before re-streaming — a terminal (or
+		// awaiting) phase ends the turn immediately.
+		if attempt > 0 {
+			if run, err := b.client.GetACPRun(ctx, runID); err == nil {
+				if stop := b.terminalStopForRun(run, sessionID, st); stop != "" {
+					return stop
+				}
+			}
+		}
 		// Each stream attempt gets its own cancellable context derived from the
 		// run context. When the attempt ends, the attempt context is cancelled
 		// so the producer goroutine inside StreamRunEvents unblocks from its
@@ -504,6 +520,27 @@ func (b *acpBridge) confirmTerminal(ctx context.Context, runID string) bool {
 		return true
 	}
 	return false
+}
+
+// terminalStopForRun maps a fetched run's status to a stop reason when the run
+// has reached a terminal (or input-awaiting) phase, emitting any output that
+// was never streamed (suffix-aware, so already-delivered text is not
+// duplicated). Returned reasons:
+//
+//	completed/failed → end_turn, cancelled → user-cancelled,
+//	awaiting → the internal pending-awaiting sentinel (the caller's loop runs
+//	the elicitation flow). Empty string = still running.
+func (b *acpBridge) terminalStopForRun(run acpRun, sessionID string, st *openAIStreamState) string {
+	switch run.Status {
+	case acpStatusCompleted, acpStatusFailed:
+		b.emitTerminalOutput(run, sessionID, st)
+		return acpStopReasonEndTurn
+	case acpStatusCancelled:
+		return acpStopReasonUserCancel
+	case acpStatusAwaiting:
+		return acpPendingAwaiting
+	}
+	return ""
 }
 
 // handleEvent translates one SSE event into ACP notifications. It handles both
