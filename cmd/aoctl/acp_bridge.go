@@ -85,13 +85,20 @@ type acpSession struct {
 // streamed so far (same dedup), and the tool-call deltas merged so far
 // (keyed by OpenAI index, mirroring mergeToolCallDeltas in internal/router).
 // traceSeen dedups trace events across reconnects: TailTokens replays all
-// prior Redis entries on each new stream attempt, so without it every 30s
+// prior Redis entries on each new stream attempt, so without it every
 // window re-emits the tool calls/results already shown.
 type openAIStreamState struct {
 	streamed        strings.Builder // assistant text emitted as message chunks
 	streamedThought strings.Builder // reasoning emitted as thought chunks
 	toolCalls       map[int]openaiToolCall
 	traceSeen       map[string]bool // raw trace-event JSON → already emitted
+	// Replay swallowing: every stream attempt replays the run's token stream
+	// from the beginning. Before each attempt the bridge snapshots how much
+	// text has already been emitted; the first N bytes of the replay are
+	// known-duplicates and are swallowed instead of re-emitted (which would
+	// duplicate the agent's entire output in the editor on every reconnect).
+	replayTokenSkip   int
+	replayThoughtSkip int
 }
 
 // acpBridge owns method dispatch and per-session run state.
@@ -400,6 +407,11 @@ func (b *acpBridge) streamRunEvents(ctx context.Context, runID, sessionID string
 				}
 			}
 		}
+		// Every attempt replays the run's token stream from the start — arm the
+		// swallow counters so already-emitted text is not re-emitted (which
+		// would duplicate the agent's entire output in the editor).
+		st.replayTokenSkip = st.streamed.Len()
+		st.replayThoughtSkip = st.streamedThought.Len()
 		// Each stream attempt gets its own cancellable context derived from the
 		// run context. When the attempt ends, the attempt context is cancelled
 		// so the producer goroutine inside StreamRunEvents unblocks from its
@@ -436,7 +448,27 @@ func (b *acpBridge) streamRunEvents(ctx context.Context, runID, sessionID string
 			if b.confirmTerminal(ctx, runID) {
 				return term
 			}
-			// Premature terminal event: fall through to re-attempt streaming.
+			// The stream signalled a terminal event but the CRD hasn't flipped yet
+			// (the runner is still persisting output / the operator is patching
+			// status): an imminent event. Poll briefly instead of re-streaming —
+			// re-streaming replays the entire token stream, duplicating every
+			// already-rendered token in the editor. If the CRD still isn't
+			// terminal after the bounded wait, fall back to the re-attempt loop
+			// (replay-safe via the swallow counters).
+			pollDeadline := time.Now().Add(6 * time.Second)
+			for time.Now().Before(pollDeadline) {
+				select {
+				case <-ctx.Done():
+					return acpStopReasonUserCancel
+				case <-time.After(300 * time.Millisecond):
+				}
+				if run, err := b.client.GetACPRun(ctx, runID); err == nil {
+					if stop := b.terminalStopForRun(run, sessionID, st); stop != "" {
+						return stop
+					}
+				}
+			}
+			// Bounded poll exhausted: fall through to re-attempting the stream.
 		}
 		// if attempt >= maxStreamRetries {
 		// b.srv.logf("acp: stream for %s ended early repeatedly, falling back to polling\n", runID)
@@ -635,13 +667,32 @@ func (b *acpBridge) handleOpenAIChunk(data, sessionID, msgID string, st *openAIS
 	// 	return acpStopReasonEndTurn
 	// }
 	if chunk.Reasoning != "" {
-		b.srv.notify(acpMethodSessionUpdate, acpUpdateParams{
-			SessionID: sessionID,
-			Update: acpUpdate{
-				SessionUpdate: acpUpdateThoughtChunk,
-				Content:       &acpContentBlock{Type: "text", Text: chunk.Reasoning},
-			},
-		})
+		reasoning := chunk.Reasoning
+		if st != nil && st.replayThoughtSkip > 0 {
+			// Reconnect replay: swallow the already-streamed prefix (see
+			// emitMessageChunk for the rationale).
+			if len(reasoning) <= st.replayThoughtSkip {
+				st.replayThoughtSkip -= len(reasoning)
+				reasoning = ""
+			} else {
+				reasoning = reasoning[st.replayThoughtSkip:]
+				st.replayThoughtSkip = 0
+			}
+		}
+		if reasoning != "" {
+			b.srv.notify(acpMethodSessionUpdate, acpUpdateParams{
+				SessionID: sessionID,
+				Update: acpUpdate{
+					SessionUpdate: acpUpdateThoughtChunk,
+					Content:       &acpContentBlock{Type: "text", Text: reasoning},
+				},
+			})
+		}
+		if st != nil {
+			// Track the EMITTED suffix (not the raw chunk) so the skip counters
+			// and emitThoughtRemainder's suffix check stay aligned.
+			st.streamedThought.WriteString(reasoning)
+		}
 	}
 	if chunk.Content != "" {
 		b.emitMessageChunk(sessionID, msgID, chunk.Content, st)
@@ -709,6 +760,17 @@ func (b *acpBridge) mergeToolCallChunks(chunk openaiChunk, sessionID string, st 
 func (b *acpBridge) emitMessageChunk(sessionID, msgID, text string, st *openAIStreamState) {
 	if text == "" {
 		return
+	}
+	if st != nil && st.replayTokenSkip > 0 {
+		// Reconnect replay: this and usually several following chunks repeat
+		// text already streamed in a previous window. Swallow the known-
+		// duplicate prefix, emit the remainder.
+		if len(text) <= st.replayTokenSkip {
+			st.replayTokenSkip -= len(text)
+			return
+		}
+		text = text[st.replayTokenSkip:]
+		st.replayTokenSkip = 0
 	}
 	b.srv.notify(acpMethodSessionUpdate, acpUpdateParams{
 		SessionID: sessionID,

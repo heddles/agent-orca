@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -133,4 +134,81 @@ func acpSessionUpdates(t *testing.T, buf *bytes.Buffer) []map[string]any {
 		out = append(out, p)
 	}
 	return out
+}
+
+// TestStreamRunEventsNoDuplicateOutputOnReplayedStreamWithLaggingCRD is the
+// regression test for the mid-run duplication bug: the SSE stream replays the
+// full token history on every (re)attempt, while the run CRD flips to
+// completed only after the stream has already signalled the terminal event.
+// The bridge must (a) swallow already-streamed tokens on replay and (b) not
+// re-stream after the terminal event — instead it polls the CRD briefly.
+func TestStreamRunEventsNoDuplicateOutputOnReplayedStreamWithLaggingCRD(t *testing.T) {
+	ctx := t.Context()
+
+	pollCount := 0
+	var mu sync.Mutex
+	mux := http.NewServeMux()
+	mux.HandleFunc("/runs/run-1", func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.Header.Get("Accept"), "text/event-stream") {
+			// Every stream attempt replays the full token history, then
+			// signals the terminal event.
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = fmt.Fprint(w,
+				"event: message.part\n"+
+					`data: {"type":"message.part","part":{"content_type":"text/plain","content":"Hello "}}`+"\n\n"+
+					"event: message.part\n"+
+					`data: {"type":"message.part","part":{"content_type":"text/plain","content":"world"}}`+"\n\n"+
+					"event: run.completed\n"+
+					`data: {"type":"run.completed"}`+"\n\n")
+			return
+		}
+		// The run CRD lags behind the stream: the runner is still persisting
+		// output / the operator hasn't patched status yet.
+		mu.Lock()
+		pollCount++
+		n := pollCount
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if n <= 2 {
+			_, _ = fmt.Fprint(w, `{"status":"in-progress"}`)
+			return
+		}
+		_, _ = fmt.Fprint(w, `{"status":"completed","output":[{"role":"agent",`+
+			`"parts":[{"content_type":"text/plain","content":"Hello world"}]}]}`)
+	})
+	api := httptest.NewServer(mux)
+	t.Cleanup(api.Close)
+
+	c := newClient(api.URL, api.URL, testToken, time.Second, false)
+	stdout := &bytes.Buffer{}
+	srv := newACPStdioServer(nil, strings.NewReader(""), stdout, discardWriter{})
+	bridge := newACPBridge(srv, c, "test-agent")
+	st := &openAIStreamState{toolCalls: map[int]openaiToolCall{}, traceSeen: map[string]bool{}}
+
+	stop := bridge.streamRunEvents(ctx, "run-1", "zed-1", st)
+	if stop != acpStopReasonEndTurn {
+		t.Fatalf("streamRunEvents stopReason = %q, want end_turn", stop)
+	}
+
+	// Exactly one copy of each token must have been forwarded to the client:
+	// the replayed stream is swallowed, and the lagging-CRD poll path must
+	// not re-stream or re-emit the final output.
+	var chunks []string
+	for _, n := range acpSessionUpdates(t, stdout) {
+		u := n["update"].(map[string]any)
+		if u["sessionUpdate"] == acpUpdateMessageChunk {
+			c := u["content"].(map[string]any)
+			chunks = append(chunks, c["text"].(string))
+		}
+	}
+	want := []string{"Hello ", "world"}
+	if len(chunks) != len(want) {
+		t.Fatalf("got %d message chunks %q, want exactly %q (no duplicates)",
+			len(chunks), chunks, want)
+	}
+	for i, w := range want {
+		if chunks[i] != w {
+			t.Fatalf("chunk %d = %q, want %q", i, chunks[i], w)
+		}
+	}
 }
