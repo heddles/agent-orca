@@ -1,0 +1,106 @@
+# Changelog
+
+All notable changes to agent-orca are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+### Added
+
+- **Native local filesystem access via the ACP bridge (`fs/*` relay)** — "pod drives
+  the workstation": agent pods read and edit the user's real local workspace through
+  the same ACP v1 channel editors like Zed already use, with no workspace copies,
+  sync, or volume mounts (`internal/acpfs` relay, model-router built-ins
+  `fs_read_text_file` / `fs_write_text_file` / `fs_list_dir`, bridge relay in
+  `cmd/aoctl`; fixes #34). Security model: `Agent.spec.filesystem` tool-injection
+  policy (`readOnly` | `readWrite` + `writeApproval`), workspace-root confinement
+  with lexical `..` escape rejection at the bridge, and per-write ACP elicitation
+  approval. Docs: `docs/filesystem-access.md`, `docs/acp-api.md`,
+  `docs/aoctl-reference.md`; e2e suite gated by `FS_E2E=true`.
+- **Stream model-router trace events to ACP editors mid-turn** — `toolCall`,
+  `toolResult`, `guardrail`, `providerFallback` and `mcpDiscovery` events are
+  forwarded as SSE `event: trace` frames by the ACP API and rendered by the bridge
+  as tool-call updates and thought notes; tool-call pairs use session-scoped
+  sequenced ids with pending-result pairing, and content blocks are wrapped in the
+  ACP v1 `{"type":"content",…}` discriminated shape so strict clients render them.
+- **Routing decisions and hindsight memory operations as trace events** — the
+  model-router now emits which model a request routed to (including provider
+  fallbacks) and hindsight bank/recall/retain operations (including failures) into
+  the run's trace stream; the bridge renders them like the web UI's
+  model-selected/notes rows, and the web UI gained the matching `TraceEvent` union
+  members and archived-transcript rendering with live-view dedup against the
+  CRD-backed `modelSelected`.
+- **Extended-thinking streamed to the editor** — reasoning deltas now stream as
+  `agent_thought_chunk` updates on the ACP run stream (previously only reached ACP
+  clients as per-delta trace events the bridge dropped); replay dedup reuses the
+  reasoning byte-swallow counters so thinking text is neither duplicated nor lost.
+- **Write-approval ergonomics** — `aoctl acp serve --fs-remember-approval` stores
+  the first approved write on the session record and skips subsequent write
+  elicitations for that session (default remains approve-per-write); the
+  approval-mode matrix (approve-per-write / remember-session / unattended) is
+  documented in `docs/filesystem-access.md` and `docs/aoctl-reference.md`.
+- Operator API surface for the fs relay: internal endpoints
+  `POST /agentrun/{ns}/{run}/fs` and `GET /agentrun/{ns}/{run}/fs/{id}`
+  (SA-token authenticated, method whitelist) and ACP-API endpoints
+  `GET /runs/{id}/fs/pending` and `POST /runs/{id}/fs/pending/{id}/response`
+  (tenant-ownership enforced; 501 when no relay is wired).
+- `Agent.spec.filesystem` CRD field (deepcopy, `config/crd/bases`,
+  `charts/agent-orca/crds`, embedded + generated OpenAPI, and the
+  `agent-orca-resources` subchart rendering updated); sample manifest
+  `testdata/agents/filesystem.yaml`; demo-programming-agent enables `readWrite`
+  with write approval.
+- ACP live-run streams are held open for a full 10-minute window (matched to the
+  bridge's client timeout) instead of being sliced by the 30-second ACP request
+  timeout; every other ACP route keeps the bounded timeout so auth/fs-poll/resume
+  paths still fail fast under a stuck handler.
+- Bridge `serve` logs its version at startup, and the version skew guard gives a
+  clear "rebuild and redeploy the model-router image" error when the operator
+  injects a built-in tool an older router build does not implement.
+- Test hermeticity: `aoctl` test helpers scrub ambient `AOCTL_*` environment
+  variables so endpoint-resolution tests pass in shells pointing
+  `AOCTL_ENDPOINT` at a remote cluster.
+
+### Changed
+
+- Terminal `done` trace event is now emitted by the model-router whenever the
+  OpenAI turn loop ends without dispatching tools (previously only the `_done`
+  built-in emitted it, so framework agents never produced a terminal marker);
+  `done` counts as terminal everywhere (router `TailTokens`, apiserver
+  classification) so live streams close immediately instead of retrying windows
+  until the deadline. Auto-clarify (paused) turns are excluded by design.
+- The ACP bridge polls the run CRD instead of re-streaming when a terminal event
+  was signalled but the CRD has not caught up, and each stream-reconnect attempt
+  swallows the already-emitted token/reasoning prefix, so replays no longer
+  duplicate output.
+- `elicitation/create` calls (fs write-approval and `_clarify`) are ACP v1
+  spec-compliant: required `sessionId` session scope and an
+  `ElicitationSchema`-shaped `requestedSchema` envelope — forms now surface on
+  strict clients (previously rejected with `-32602 Invalid params`).
+
+### Fixed
+
+- Write-approval diagnostics: a failed elicitation round-trip (editor without
+  elicitation support, transport error, timeout) is reported as a distinct
+  "write approval prompt failed" error instead of collapsing into "declined by
+  the user in the editor"; a failed prompt never proceeds unapproved, and an
+  accepted form approves regardless of the submitted form shape.
+- `fs_write_text_file` results: Zed answers `{}` (no payload per the
+  `WriteTextFileResponse` schema), which previously tripped the empty-result
+  annotation into a spurious "returned no results" error even though the write
+  landed — empty/null write results are now confirmed as `{"written": true}`.
+- Tool-call updates rendered in strict ACP clients: content entries are wrapped in
+  the discriminated `{"type":"content",…}` envelope (previously bare content
+  blocks were silently dropped, e.g. by Zed), and per-session sequenced
+  `toolCallId`s prevent two calls of the same tool in one run from collapsing
+  onto a single cycling editor entry.
+- Duplicate output on ACP stream replay: 30-second slice boundaries caused
+  reconnect + full token-history replay per attempt (final output seen up to 30
+  times); fixed via CRD polling + replay-prefix swallowing.
+- Runs finalize immediately: the router's missing terminal `done` event kept
+  editors and SSE consumers showing "running" long after the final response.
+- Removed a debug leftover that echoed raw ACP-API SSE events as malformed
+  session/update notifications (no `sessionId`, not a spec variant), which
+  spammed client logs with deserialization warnings on every run.
+- README zshrc-path typo (fixed by the ACP agent's first successful local write).
