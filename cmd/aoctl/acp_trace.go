@@ -36,7 +36,7 @@ import (
 //	{"type":"guardrail","action":"blocked","reason":"..."}
 //	{"type":"providerFallback","from":"gpt4","to":"claude","reason":"..."}
 //	{"type":"mcpDiscovery","server":"github-mcp","tools":42}
-//	{"type":"thought","content":"..."}            (also streamed as thought chunks)
+//	{"type":"thought","content":"..."}            (streamed as agent_thought_chunk deltas)
 //	{"type":"fail","reason":"..."}                 (terminal)
 //	{"type":"finalOutput","output":"..."}           (terminal)
 //
@@ -59,6 +59,8 @@ const acpEventTypeTrace = "trace"
 // acpTraceEvent is the generic envelope of a model-router trace event payload.
 type acpTraceEvent struct {
 	Type string `json:"type"`
+	// thought (extended-thinking delta from the model-router).
+	Content string `json:"content,omitempty"`
 	// toolResult / guardrail / providerFallback fields.
 	Name        string `json:"name,omitempty"`
 	Result      string `json:"result,omitempty"`
@@ -121,10 +123,12 @@ func (b *acpBridge) handleTraceEvent(ev acpTraceEvent, sessionID string) {
 	case "clarify":
 		// The clarify question is surfaced via the elicitation/create flow
 		// (handleAwaitingRun); emitting it as a note would duplicate it.
+	// thought trace events are intercepted by the stream consumer before this
+	// switch — they need the per-attempt replay-swallow state (openAIStreamState)
+	// that handleTraceEvent doesn't carry.
 	case "thought", "token":
-		// Streaming deltas already surface as agent_thought_chunk /
-		// agent_message_chunk from the OpenAI chunk path; skip to avoid
-		// duplicates.
+		// `token` is not a trace-event type the router emits. `thought` deltas
+		// are handled by emitTraceThoughtDelta in consumeAndStreamHTTP.
 	}
 }
 
@@ -217,6 +221,43 @@ func (b *acpBridge) emitTraceNote(sessionID, title, text string) {
 		Update: acpUpdate{
 			SessionUpdate: acpUpdateThoughtChunk,
 			Content:       &acpContentBlock{Type: "text", Text: "[" + title + "] " + text},
+		},
+	})
+}
+
+// emitTraceThoughtDelta emits one `thought` trace-event delta — a slice of the
+// model's extended-thinking output — as an agent_thought_chunk. Reasoning
+// reaches ACP clients ONLY as thought trace events (the model-router emits it
+// via emitTraceEventBoth per delta; it is never part of the proxied content),
+// so without this the editor shows no thinking at all.
+//
+// Replay handling mirrors the OpenAI-chunk reasoning path: the per-attempt
+// swallow counter (st.replayThoughtSkip, armed in streamRunEvents before each
+// stream attempt) drops the prefix already emitted on a reconnect replay, and
+// the emitted suffix accumulates in st.streamedThought. Deliberately NOT added
+// to st.traceSeen: trace deltas repeat verbatim for identical consecutive
+// deltas (e.g. whitespace), and exact-JSON dedup would silently drop real
+// thinking text on the live path.
+func (b *acpBridge) emitTraceThoughtDelta(sessionID, text string, st *openAIStreamState) {
+	if text == "" {
+		return
+	}
+	if st != nil {
+		if st.replayThoughtSkip > 0 {
+			if len(text) <= st.replayThoughtSkip {
+				st.replayThoughtSkip -= len(text)
+				return
+			}
+			text = text[st.replayThoughtSkip:]
+			st.replayThoughtSkip = 0
+		}
+		st.streamedThought.WriteString(text)
+	}
+	b.srv.notify(acpMethodSessionUpdate, acpUpdateParams{
+		SessionID: sessionID,
+		Update: acpUpdate{
+			SessionUpdate: acpUpdateThoughtChunk,
+			Content:       &acpContentBlock{Type: "text", Text: text},
 		},
 	})
 }

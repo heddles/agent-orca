@@ -509,16 +509,24 @@ func (b *acpBridge) consumeAndStreamHTTP(
 			}
 
 			// Model-router trace events (tool calls/results, guardrails,
-			// provider fallbacks, MCP discovery) ride the run stream as
-			// `event: trace` SSE frames. Translate them into session/update
-			// notifications so editors render live agent activity mid-turn
-			// instead of a bare spinner; trace events are never terminal.
-			// st.traceSeen dedups across reconnects: TailTokens replays prior
-			// Redis entries on every new stream attempt.
+			// provider fallbacks, MCP discovery, routing, hindsight) ride the
+			// run stream as `event: trace` SSE frames. Translate them into
+			// session/update notifications so editors render live agent
+			// activity mid-turn instead of a bare spinner. st.traceSeen dedups
+			// across reconnects: TailTokens replays prior Redis entries on
+			// every new stream attempt.
 			if ev.Type == acpEventTypeTrace {
-				if tev, ok := parseACPTraceEvent(ev.Data); ok && !st.traceSeen[ev.Data] {
-					st.traceSeen[ev.Data] = true
-					b.handleTraceEvent(tev, sessionID)
+				if tev, ok := parseACPTraceEvent(ev.Data); ok {
+					if tev.Type == "thought" {
+						// Reasoning deltas bypass traceSeen — identical consecutive
+						// deltas produce identical JSON, so exact-JSON dedup would
+						// drop real thinking text. Replay dedup uses the same
+						// byte-swallow counter as the OpenAI-chunk reasoning path.
+						b.emitTraceThoughtDelta(sessionID, tev.Content, st)
+					} else if !st.traceSeen[ev.Data] {
+						st.traceSeen[ev.Data] = true
+						b.handleTraceEvent(tev, sessionID)
+					}
 				}
 				continue
 			}

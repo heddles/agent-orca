@@ -280,6 +280,90 @@ func traceHindsightEvent(op, bankID, reason string) string {
 	return string(out)
 }
 
+// TestACPTraceThoughtDeltasStreamThinking verifies the model-router's
+// per-delta `thought` trace events surface as agent_thought_chunk updates —
+// reasoning never travels in the proxied content, so this is the ONLY path
+// thinking has to the editor (previously handleTraceEvent skipped it and Zed
+// showed no thinking). Identical consecutive deltas must all emit: exact-JSON
+// dedup would silently drop real text (traceSeen lookup happens in the stream
+// consumer, which routes thoughts around it).
+func TestACPTraceThoughtDeltasStreamThinking(t *testing.T) {
+	bridge, st := traceTestBridge(t)
+	buf := bridge.srv.stdout.(*bytes.Buffer)
+
+	thoughtEvent := func(content string) string {
+		out, err := json.Marshal(map[string]string{"type": "thought", "content": content})
+		if err != nil {
+			panic(err)
+		}
+		return string(out)
+	}
+	// "a","a","b" — the repeated delta must not be swallowed by dedup.
+	ch := make(chan Event, 3)
+	for _, content := range []string{"a", "a", "b"} {
+		ch <- Event{Type: acpEventTypeTrace, Data: thoughtEvent(content)}
+	}
+	close(ch)
+	bridge.consumeAndStreamHTTP(context.Background(), ch, "zed-1", "msg_1", st)
+
+	var text strings.Builder
+	for _, n := range traceNotifications(t, buf) {
+		update, _ := n["update"].(map[string]any)
+		if update["sessionUpdate"] != acpUpdateThoughtChunk {
+			t.Fatalf("expected agent_thought_chunk, got %v", update["sessionUpdate"])
+		}
+		content, _ := update["content"].(map[string]any)
+		text.WriteString(content["text"].(string))
+	}
+	if got := text.String(); got != "aab" {
+		t.Fatalf("thinking text = %q, want %q", got, "aab")
+	}
+	if got := st.streamedThought.String(); got != "aab" {
+		t.Fatalf("streamedThought = %q, want %q", got, "aab")
+	}
+}
+
+// TestACPTraceThoughtReplaySwallowed verifies reconnect replays do not
+// duplicate thinking: on each stream attempt the swallow counter is armed with
+// the already-emitted thought length, so replayed deltas deliver only the
+// remainder — the same contract as emitMessageChunk for text.
+func TestACPTraceThoughtReplaySwallowed(t *testing.T) {
+	bridge, st := traceTestBridge(t)
+	buf := bridge.srv.stdout.(*bytes.Buffer)
+
+	thoughtEvent := func(content string) string {
+		out, err := json.Marshal(map[string]string{"type": "thought", "content": content})
+		if err != nil {
+			panic(err)
+		}
+		return string(out)
+	}
+	// First attempt streamed "planning now"; a replay carries those deltas
+	// again, then continues with new thinking.
+	st.streamedThought.WriteString("planning now")
+	st.replayThoughtSkip = st.streamedThought.Len()
+
+	ch := make(chan Event, 4)
+	ch <- Event{Type: acpEventTypeTrace, Data: thoughtEvent("planning")}
+	ch <- Event{Type: acpEventTypeTrace, Data: thoughtEvent(" now")}
+	ch <- Event{Type: acpEventTypeTrace, Data: thoughtEvent(" deeply")}
+	close(ch)
+	bridge.consumeAndStreamHTTP(context.Background(), ch, "zed-1", "msg_1", st)
+
+	var text strings.Builder
+	for _, n := range traceNotifications(t, buf) {
+		update, _ := n["update"].(map[string]any)
+		content, _ := update["content"].(map[string]any)
+		text.WriteString(content["text"].(string))
+	}
+	if got := text.String(); got != " deeply" {
+		t.Fatalf("replayed thought text = %q, want only the new remainder %q", got, " deeply")
+	}
+	if st.replayThoughtSkip != 0 {
+		t.Fatalf("replayThoughtSkip = %d, want 0 after swallow completes", st.replayThoughtSkip)
+	}
+}
+
 // TestACPTraceNonToolEvents verifies guardrail / providerFallback / discovery
 // trace events render as thought-chunk notes and terminal events (fail /
 // finalOutput) are consumed silently (the run lifecycle ends the turn).
