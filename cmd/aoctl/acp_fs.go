@@ -306,6 +306,15 @@ func (b *acpBridge) serveFSWrite(
 			}
 		}
 	}
+	// Issue #40: snapshot the about-to-be-replaced content and stash a
+	// before/after diff for the trace translation (acp_trace.go) to attach to
+	// the fs_write_text_file tool_call entry, so the editor renders the edit
+	// instead of a bare confirmation. Deliberately after approval — the diff
+	// describes state the user just allowed to change — and best-effort: any
+	// failure leaves no diff and the write proceeds exactly as before.
+	if d := b.prepareFSDiff(ctx, sessionID, abs, p.Content); d != nil {
+		b.stashSessionFSDiff(sessionID, d)
+	}
 	params := acpFSWriteParams{
 		SessionID: sessionID,
 		Path:      abs,
@@ -333,13 +342,7 @@ func (b *acpBridge) serveFSWrite(
 func (b *acpBridge) fsApproveWrite(ctx context.Context, sessionID, agentName, absPath string, n int) (bool, error) {
 	// Show the path relative to the workspace where possible to keep the
 	// prompt readable.
-	display := absPath
-	for _, root := range b.allWorkspaceRoots() {
-		if rel, err := filepath.Rel(root, absPath); err == nil && !strings.HasPrefix(rel, "..") {
-			display = rel
-			break
-		}
-	}
+	display := b.fsDisplayPath(absPath)
 	elicitCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	resp, err := b.srv.sendRequest(elicitCtx, acpMethodElicitationCreate, acpElicitParams{

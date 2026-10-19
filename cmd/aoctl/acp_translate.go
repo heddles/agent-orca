@@ -250,6 +250,18 @@ const (
 	acpToolStatusCompleted  = "completed"
 )
 
+// ACP tool-call kinds (per the ACP spec: "read" | "edit" | "delete" |
+// "move" | "search" | "execute" | "think" | "fetch" | "other"). The bridge
+// maps the fs tools onto the matching kinds so editors render them properly
+// (Zed shows a diff panel for "edit").
+const (
+	acpToolKindRead    = "read"
+	acpToolKindEdit    = "edit"
+	acpToolKindFetch   = "fetch"
+	acpToolKindOther   = "other"
+	acpToolKindExecute = "execute"
+)
+
 // ----------------------------------------------------------------------------
 // ACP JSON-RPC content blocks (client -> server)
 // ----------------------------------------------------------------------------
@@ -365,6 +377,12 @@ type acpPlanEntry struct {
 type acpToolCallContent struct {
 	Type    string           `json:"type"`
 	Content *acpContentBlock `json:"content,omitempty"`
+	// diff variant (issue #40): the before/after of a file edit the tool call
+	// performed. OldText omitted means the file is created by this call (full
+	// add); NewText carries the complete new content.
+	Path    string  `json:"path,omitempty"`
+	OldText *string `json:"oldText,omitempty"`
+	NewText string  `json:"newText,omitempty"`
 }
 
 type acpToolCallUpdate struct {

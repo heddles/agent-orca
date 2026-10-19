@@ -156,6 +156,26 @@ Additional properties:
   overwrites a file (only in `readWrite` mode). Writes are full-file
   replacements; the editor may surface them as a diff to the user.
 
+## Write diffs in the editor (issue #40)
+
+The wire write stays a full-file `fs/write_text_file` (ACP v1 has no patch
+method), but the bridge makes the edit reviewable instead of a wholesale
+replace:
+
+1. Just before forwarding an approved write, the bridge snapshots the file's
+   current content (the editor's `fs/read_text_file` channel first — it sees
+   unsaved buffer state — then a plain disk read) and computes a best-effort
+   before/after payload for the target path.
+2. The bridge emits a `session/update` `tool_call_update` for the
+   `fs_write_text_file` call with a `{"type":"diff"}` ToolCallContent entry
+   (`path`, `oldText`, `newText`); `oldText` is absent for created files, so
+   clients render a full add. Zed shows this in its diff panel instead of a
+   whole-file replace.
+3. Rendering is best-effort and capped (old/new payloads ≤ 100 KiB; no-op
+   writes are skipped): anything that can't be diffed renders as a plain tool
+   result, exactly as before. The write itself, approval semantics, and the
+   editor's role as arbiter are unchanged; readOnly agents never emit diffs.
+
 ## Observability
 
 - fs tool calls appear in the run trace as `toolCall`/`toolResult` events

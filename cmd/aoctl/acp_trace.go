@@ -137,17 +137,20 @@ func (b *acpBridge) handleTraceEvent(ev acpTraceEvent, sessionID string) {
 // — same-tool calls with a deterministic id collapse into one editor entry)
 // and recorded as pending so the matching toolResult maps onto the same id.
 func (b *acpBridge) emitTraceToolCall(sessionID string, ev acpTraceEvent) {
-	b.emitToolCallUpdate(sessionID, openaiToolCall{
+	b.emitToolCallUpdateWithKind(sessionID, openaiToolCall{
 		Index:     0,
 		ID:        b.nextTraceToolCallID(sessionID, ev),
 		Name:      traceToolTitle(ev),
 		Arguments: "",
-	}, acpUpdateToolCall, acpToolStatusInProgress, nil)
+	}, acpUpdateToolCall, acpToolStatusInProgress, nil, acpToolKindFor(ev))
 }
 
 // emitTraceToolResult completes the matching tool_call with the result text
 // (truncated — tool results can be very large; the full result is for the
-// model, not the user).
+// model, not the user). For fs_write_text_file (issue #40), the completed
+// update instead carries the before/after diff stashed by serveFSWrite
+// (acp_fs_diff.go) so the editor renders the edit rather than a bare
+// confirmation; when no diff is available it falls back to the plain text.
 func (b *acpBridge) emitTraceToolResult(sessionID string, ev acpTraceEvent) {
 	const maxResult = 2000
 	result := ev.Result
@@ -155,14 +158,26 @@ func (b *acpBridge) emitTraceToolResult(sessionID string, ev acpTraceEvent) {
 		result = result[:maxResult] + "…"
 	}
 	title := traceToolTitle(ev)
-	detail := fmt.Sprintf("%s → %s", title, result)
-	b.emitToolCallUpdate(sessionID, openaiToolCall{
+
+	// A diff payload can only originate from a write relayed by this bridge
+	// (stashed in serveFSWrite); pop it before building the fallback text.
+	var content []acpToolCallContent
+	if ev.Name == fsWriteToolName && ev.BackendType == "builtin" {
+		if d := b.popSessionFSDiff(sessionID); d != nil {
+			content = []acpToolCallContent{d.toolCallContent()}
+		}
+	}
+
+	if content == nil {
+		detail := fmt.Sprintf("%s → %s", title, result)
+		content = []acpToolCallContent{{Type: "content", Content: &acpContentBlock{Type: "text", Text: detail}}}
+	}
+	b.emitToolCallUpdateWithContent(sessionID, openaiToolCall{
 		Index:     0,
 		ID:        b.popTraceToolCallID(sessionID, ev),
 		Name:      title,
 		Arguments: "",
-	}, acpUpdateToolCallUpd, acpToolStatusCompleted,
-		[]acpContentBlock{{Type: "text", Text: detail}})
+	}, acpUpdateToolCallUpd, acpToolStatusCompleted, acpToolKindFor(ev), content)
 }
 
 // nextTraceToolCallID assigns a fresh, session-unique toolCallId for a trace
@@ -281,6 +296,39 @@ func traceToolCallID(name, backendRef string) string {
 		id += "_" + strings.ReplaceAll(backendRef, " ", "_")
 	}
 	return id
+}
+
+// acpToolKindFor maps a tool-call trace event onto the ACP v1 ToolCallKind
+// enum so editors render the entry correctly (Zed shows a diff panel for
+// "edit" and a file preview for "read"). Unknown tools stay "other".
+func acpToolKindFor(ev acpTraceEvent) string {
+	if ev.BackendType == "mcp" {
+		return acpToolKindOther
+	}
+	switch ev.Name {
+	case fsWriteToolName:
+		return acpToolKindEdit
+	case fsReadToolName, fsListToolName:
+		return acpToolKindRead
+	case "run_command", "cmd", "shell":
+		return acpToolKindExecute
+	default:
+		return acpToolKindOther
+	}
+}
+
+// emitToolCallUpdateWithKind is emitToolCallUpdate with an explicit kind
+// (instead of the hard-coded "other") so fs tools render with their natural
+// ACP kind. The content list stays a plain ContentBlock list, wrapped here as
+// ACP "content" variants.
+func (b *acpBridge) emitToolCallUpdateWithKind(
+	sessionID string, tc openaiToolCall, update, status string, content []acpContentBlock, kind string,
+) {
+	wrapped := make([]acpToolCallContent, 0, len(content))
+	for i := range content {
+		wrapped = append(wrapped, acpToolCallContent{Type: "content", Content: &content[i]})
+	}
+	b.emitToolCallUpdateWithContent(sessionID, tc, update, status, kind, wrapped)
 }
 
 // guardrailTitle renders a guardrail event title.
