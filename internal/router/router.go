@@ -928,9 +928,17 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 	}
 	// Tokens the serialized tool definitions consume toward the window.
 	toolTokens := estimateToolTokens(chatReq.Tools)
-	// Reserve headroom for the model's output tokens and a safety margin so we
-	// never land within a token of the hard limit despite estimation error.
-	const outputReserveTokens = 1024
+	// Reserve the provider's real completion budget, not a fixed fiction:
+	// providers count completion tokens toward the window on top of input
+	// (issue #42: 1,021,745 input + 131,072 completion vs a 1,048,576 window).
+	const minOutputReserveTokens = 1024
+	outputReserve := minOutputReserveTokens
+	if provider.MaxOutputTokens > minOutputReserveTokens {
+		outputReserve = provider.MaxOutputTokens
+		// A pathological completion reserve must not eat the entire budget.
+		// Cap at half the window so message compaction always has room.
+		outputReserve = min(outputReserve, hardLimit/2)
+	}
 	// The pre-send budget is the LOWER of:
 	//   - the safety ceiling: hardLimit * (1 - ContextWindowReserve) − tools − output
 	//     (reserves headroom for tool defs and the model's response)
@@ -942,16 +950,24 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 	if ratio <= 0 || ratio >= 1.0 {
 		ratio = 0.5
 	}
-	ceilingBudget := int(float64(hardLimit)*(1.0-r.cfg.ContextWindowReserve)) - toolTokens - outputReserveTokens
-	ratioBudget := int(float64(hardLimit)*ratio) - toolTokens - outputReserveTokens
+	ceilingBudget := int(float64(hardLimit)*(1.0-r.cfg.ContextWindowReserve)) - toolTokens - outputReserve
+	ratioBudget := int(float64(hardLimit)*ratio) - toolTokens - outputReserve
 	budget := min(ratioBudget, ceilingBudget)
 	if budget <= 0 {
 		budget = int(float64(hardLimit) * 0.5) // last-resort floor: keep at least half the window for messages
 	}
-	if est := 0; est > budget {
+	// Real pre-send estimate: messages (incl. tool-call args) plus tool
+	// definitions. This used to be `if est := 0; est > budget` — a hardcoded
+	// zero that made the whole branch dead code, so oversized requests were
+	// forwarded verbatim and every retry replayed them against every fallback
+	// provider (issue #42, "Requested token count exceeds the model's maximum
+	// context length of 1048576 tokens ... 1021745 tokens from the input").
+	msgTokens := estimateTokens(chatReq.Messages)
+	if msgTokens > budget {
 		slog.Warn("pre-send truncation triggered",
-			"estimatedMessageTokens", est,
+			"estimatedMessageTokens", msgTokens,
 			"toolTokens", toolTokens,
+			"outputReserve", outputReserve,
 			"budget", budget,
 			"hardLimit", hardLimit,
 			"reserve", r.cfg.ContextWindowReserve,
@@ -960,6 +976,18 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 			"run", r.cfg.RunName,
 		)
 		chatReq.Messages = truncateHistory(chatReq.Messages, budget)
+		kept := estimateTokens(chatReq.Messages)
+		// Tell trace-stream clients the turn was compacted before sending —
+		// without it a silently-shortened conversation looks like memory loss.
+		if truncEv, err := json.Marshal(map[string]any{
+			"type":     "truncation",
+			"provider": provider.Name,
+			"before":   msgTokens,
+			"after":    kept,
+			"budget":   budget,
+		}); err == nil {
+			r.emitTraceEventBoth(string(truncEv))
+		}
 	}
 
 	// Streaming path: proxy SSE chunks directly from provider to client.

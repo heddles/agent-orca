@@ -212,6 +212,12 @@ type ProviderConfig struct {
 	Capabilities []string
 	// ContextWindow in tokens.
 	ContextWindow int
+	// MaxOutputTokens is the provider's completion-token budget. Providers
+	// count completion tokens toward the context window on top of input, so
+	// pre-send truncation reserves room for it (issue #42: a 131,072-token
+	// completion request on a 1,048,576-window model pushed input over the
+	// limit).
+	MaxOutputTokens int
 	// MaxRequestTokens is the effective per-request token limit.
 	// When > 0, the router skips this provider for requests exceeding this size.
 	MaxRequestTokens int

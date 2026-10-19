@@ -47,6 +47,7 @@ import (
 //	{"type":"routing","model":"z-ai/glm-5.3-flash","provider":"openrouter-free",
 //	          "strategy":"rule-based","reason":"weighted random","confidence":0.5}
 //	{"type":"hindsight","op":"bank|recall|retain","bankID":"...","failed":false,"reason":"..."}
+//	{"type":"truncation","provider":"...","before":1021745,"after":313516,"budget":314363} (pre-send context compaction, issue #42)
 //
 // Terminal trace events (fail/finalOutput) are consumed by the bridge but NOT
 // re-emitted as session updates — the ACP run lifecycle events already end the
@@ -85,6 +86,11 @@ type acpTraceEvent struct {
 	Op     string `json:"op,omitempty"`
 	BankID string `json:"bankID,omitempty"`
 	Failed bool   `json:"failed,omitempty"`
+	// truncation fields: pre-send context compaction in HandleChatCompletions
+	// (before/after = estimated message tokens, budget = the enforced cap).
+	Before int64 `json:"before,omitempty"`
+	After  int64 `json:"after,omitempty"`
+	Budget int64 `json:"budget,omitempty"`
 }
 
 // parseACPTraceEvent decodes one \x00-prefixed trace event payload.
@@ -120,6 +126,8 @@ func (b *acpBridge) handleTraceEvent(ev acpTraceEvent, sessionID string) {
 		b.emitTraceNote(sessionID, "model routing", ev.routingText())
 	case "hindsight":
 		b.emitTraceNote(sessionID, "hindsight memory", ev.hindsightText())
+	case "truncation":
+		b.emitTraceNote(sessionID, "context compaction", ev.truncationText())
 	case "clarify":
 		// The clarify question is surfaced via the elicitation/create flow
 		// (handleAwaitingRun); emitting it as a note would duplicate it.
@@ -404,6 +412,24 @@ func (ev acpTraceEvent) hindsightText() string {
 	}
 	if ev.Failed {
 		fmt.Fprintf(&b, " — FAILED: %s", ev.Reason)
+	}
+	return b.String()
+}
+
+// truncationText renders a pre-send context-compaction event body. Without it
+// a silently-shortened conversation looks like memory loss to the human.
+func (ev acpTraceEvent) truncationText() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "compacted conversation before send: ~%d tokens", ev.Before)
+	if ev.After > 0 {
+		fmt.Fprintf(&b, " → ~%d", ev.After)
+	}
+	if ev.Budget > 0 {
+		fmt.Fprintf(&b, " (budget %d", ev.Budget)
+		if ev.Provider != "" {
+			fmt.Fprintf(&b, ", provider %q", ev.Provider)
+		}
+		b.WriteString(")")
 	}
 	return b.String()
 }
