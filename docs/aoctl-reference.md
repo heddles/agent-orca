@@ -275,17 +275,21 @@ aoctl acp serve --agent senior-programmer --fs-roots ~/other-repo
 # Force a per-write approval form even when the agent's policy waives it (default true)
 aoctl acp serve --agent senior-programmer --fs-require-approval
 
-# Approve once, then auto-allow writes for the rest of the session
-aoctl acp serve --agent senior-programmer --fs-require-approval --fs-remember-approval
+# Approve once, then auto-allow writes for the rest of the session (default)
+aoctl acp serve --agent senior-programmer
+
+# Confirm every write instead (opt out of remembered approval)
+aoctl acp serve --agent senior-programmer --fs-remember-approval=false
 
 # Never prompt (only if the agent's own writeApproval policy allows it)
 aoctl acp serve --agent senior-programmer --fs-require-approval=false
 ```
 
-The bridge confines every request to the session workspace plus `--fs-roots`,
-and (by default) asks for explicit approval via an editor form before each
-write. See [filesystem-access.md](filesystem-access.md) for the full security
-model and the Agent CRD policy knobs.
+The bridge confines every request to the session workspace plus `--fs-roots`.
+By default it asks for explicit approval via an editor form before the first
+write in a session, then auto-allows the rest of that session. See
+[filesystem-access.md](filesystem-access.md) for the full security model and
+the Agent CRD policy knobs.
 
 #### `aoctl acp setup --editor zed`
 

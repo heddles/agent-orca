@@ -93,9 +93,10 @@ This is the command to put in your editor's agent_servers config. Use
 	serve.Flags().BoolVar(&s.fsRequireApproval, "fs-require-approval", true,
 		"require explicit user approval via the editor for every workspace write "+
 			"(applies on top of the agent's own writeApproval policy)")
-	serve.Flags().BoolVar(&s.fsRememberApproval, "fs-remember-approval", false,
+	serve.Flags().BoolVar(&s.fsRememberApproval, "fs-remember-approval", true,
 		"after the first approved write, auto-allow subsequent writes in the same "+
-			"session without re-prompting")
+			"session without re-prompting (default; opt out with --fs-remember-approval=false, "+
+			"or use --fs-require-approval to keep confirming every write)")
 
 	setup := &cobra.Command{
 		Use:   "setup",

@@ -91,7 +91,7 @@ aoctl acp setup --editor zed --agent senior-programmer
 |---|---|---|
 | `--fs-roots <dir>[,<dir>…]` | *(none)* | Extra directory trees the agent may touch, on top of the session's own workspace. Accepts `~`. |
 | `--fs-require-approval` / `--fs-require-approval=false` | `true` | Force (or waive) the per-write approval elicitation. Waiving only works if the agent's own policy allows it. |
-| `--fs-remember-approval` | `false` | After the first approved write, auto-allow subsequent writes in the same session without re-prompting. |
+| `--fs-remember-approval` / `--fs-remember-approval=false` | `true` | After the first approved write, auto-allow subsequent writes in the same session without re-prompting. |
 
 The bridge advertises exactly the capabilities the agent's manifest grants, so
 a `readOnly` agent never leads the editor to believe it can write.
@@ -100,8 +100,8 @@ a `readOnly` agent never leads the editor to believe it can write.
 
 | You want | Agent CRD | Bridge flags |
 |---|---|---|
-| Approve every write (default) | `writeApproval: true` | `--fs-require-approval` (default) |
-| Approve once, then auto-allow for the session | `writeApproval: true` | `--fs-require-approval --fs-remember-approval` |
+| Approve once, then auto-allow for the session (default) | `writeApproval: true` | `--fs-remember-approval` (default) |
+| Approve every write | `writeApproval: true` | `--fs-remember-approval=false --fs-require-approval` |
 | Never prompt (trusted agent / unattended) | `writeApproval: false` | `--fs-require-approval=false` |
 
 Both knobs must agree to skip prompting: the bridge prompt fires when
