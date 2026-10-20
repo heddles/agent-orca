@@ -272,3 +272,32 @@ func TestTransientPrimaryFailureWithTooSmallFallbacksIs502(t *testing.T) {
 			len(primary.requests()), len(fallback.requests()))
 	}
 }
+
+// Second-pass review (#46): a request compacted for the primary AND re-fitted
+// for a fallback must produce ONE truncation note — for the request whose
+// response is actually used — not one per provider tried.
+func TestTruncationEventEmittedOnceForUsedProvider(t *testing.T) {
+	primary := newCapturingProvider(t, true)
+	fallback := newCapturingProvider(t, false)
+	r := newFallbackTestRouter(t, primary, fallback, 100_000, 20_000)
+
+	if rec := serve(r, conversation(t, 20)); rec.Code != http.StatusOK {
+		t.Fatalf("want 200 via fallback, got %d", rec.Code)
+	}
+	store := r.store.(*testStore)
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	var truncations []map[string]any
+	for _, ev := range store.traceEvents {
+		var m map[string]any
+		if json.Unmarshal([]byte(ev), &m) == nil && m["type"] == "truncation" {
+			truncations = append(truncations, m)
+		}
+	}
+	if len(truncations) != 1 {
+		t.Fatalf("want exactly one truncation event, got %d: %v", len(truncations), truncations)
+	}
+	if truncations[0]["provider"] != "fallback" {
+		t.Fatalf("the note must describe the request actually used (fallback), got %v", truncations[0]["provider"])
+	}
+}

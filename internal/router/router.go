@@ -938,8 +938,8 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 	// must not corrupt the original the fallbacks are re-fitted from.
 	origReq.Messages = slices.Clone(chatReq.Messages)
 	primaryName := provider.Name
-	fitted, fitErr := r.fitRequestToProvider(provider, chatReq)
-	chatReq = fitted
+	fit, fitErr := r.fitRequestToProvider(provider, chatReq)
+	chatReq = fit.req
 
 	// Streaming path: proxy SSE chunks directly from provider to client.
 	// Clients may omit stream_options from the request body; initialize it
@@ -958,7 +958,8 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 		slog.Warn("primary provider failed (streaming), trying fallback", "provider", primaryName, "err", err)
 		r.emitTraceEventBoth(fmt.Sprintf(`{"type":"providerFallback","from":%q,"to":"","reason":%q}`, primaryName, err.Error()))
 		origReq.StreamOptions = chatReq.StreamOptions
-		resp, provider, chatReq, err = r.tryFallbackStream(req.Context(), origReq, primaryName)
+		resp, provider, fit, err = r.tryFallbackStream(req.Context(), origReq, primaryName)
+		chatReq = fit.req
 		if err != nil {
 			slog.Error("all providers failed (streaming)", "err", err)
 			r.emitTraceEventBoth(fmt.Sprintf(`{"type":"providerFallback","from":%q,"to":"","reason":%q,"exhausted":true}`, primaryName, err.Error()))
@@ -981,6 +982,11 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 			return
 		}
 		r.emitTraceEventBoth(fmt.Sprintf(`{"type":"providerFallback","from":%q,"to":%q,"reason":%q}`, primaryName, provider.Name, "streaming fallback succeeded"))
+	}
+	// Tell trace-stream clients the turn was compacted before sending —
+	// without it a silently-shortened conversation looks like memory loss.
+	if fit.truncationEvent != "" {
+		r.emitTraceEventBoth(fit.truncationEvent)
 	}
 	r.handleStreamingResponse(w, req, provider, resp, chatReq)
 	// Run episodic summarization if due (async to avoid blocking the response).
@@ -4120,9 +4126,17 @@ var errExceedsContextWindow = errors.New("request exceeds the provider context w
 // chain names no provider other than the one that failed.
 var errNoFallbackProviders = errors.New("all fallback providers exhausted: no fallback provider configured")
 
+// fittedRequest is a request fitted to one provider's window plus the
+// `truncation` trace event describing the compaction (empty when none). The
+// event is emitted by the caller once the request is actually used.
+type fittedRequest struct {
+	req             ChatCompletionRequest
+	truncationEvent string
+}
+
 // fitRequestToProvider returns chatReq with its messages compacted to fit
-// provider's pre-send budget, emitting a `truncation` trace event when it
-// compacts. The budget is the LOWER of:
+// provider's pre-send budget, plus the `truncation` trace event to emit if
+// this request is the one that gets used. The budget is the LOWER of:
 //   - the safety ceiling: window * (1 - ContextWindowReserve) − tools − output
 //   - the compaction target: window * ContextCompactionRatio − tools − output
 //     (issue #54: keeps outgoing context proportional to the compaction ratio)
@@ -4133,7 +4147,7 @@ var errNoFallbackProviders = errors.New("all fallback providers exhausted: no fa
 // when even the compacted request cannot fit — the provider would reject it.
 // chatReq itself is never mutated, so a caller can re-fit the original
 // request for another (fallback) provider.
-func (r *Router) fitRequestToProvider(provider *ProviderConfig, chatReq ChatCompletionRequest) (ChatCompletionRequest, error) {
+func (r *Router) fitRequestToProvider(provider *ProviderConfig, chatReq ChatCompletionRequest) (fittedRequest, error) {
 	// A provider without a configured window inherits the largest configured
 	// one; maxContextWindow floors at 200k, so the guard is never disabled.
 	hardLimit := provider.ContextWindow
@@ -4164,10 +4178,10 @@ func (r *Router) fitRequestToProvider(provider *ProviderConfig, chatReq ChatComp
 		// No compaction needed, but the tools + completion reserve alone can
 		// still overflow the window (e.g. a large toolbelt on a small model).
 		if msgTokens+toolTokens+outputReserve > hardLimit {
-			return chatReq, fmt.Errorf("%w: provider %s, ~%d message + %d tool + %d output tokens vs a %d-token window",
+			return fittedRequest{req: chatReq}, fmt.Errorf("%w: provider %s, ~%d message + %d tool + %d output tokens vs a %d-token window",
 				errExceedsContextWindow, provider.Name, msgTokens, toolTokens, outputReserve, hardLimit)
 		}
-		return chatReq, nil
+		return fittedRequest{req: chatReq}, nil
 	}
 	slog.Warn("pre-send truncation triggered",
 		"estimatedMessageTokens", msgTokens,
@@ -4180,11 +4194,11 @@ func (r *Router) fitRequestToProvider(provider *ProviderConfig, chatReq ChatComp
 		"provider", provider.Name,
 		"run", r.cfg.RunName,
 	)
-	fitted := chatReq
-	fitted.Messages = truncateHistory(chatReq.Messages, budget)
-	kept := estimateTokens(fitted.Messages)
-	// Tell trace-stream clients the turn was compacted before sending —
-	// without it a silently-shortened conversation looks like memory loss.
+	fitted := fittedRequest{req: chatReq}
+	fitted.req.Messages = truncateHistory(chatReq.Messages, budget)
+	kept := estimateTokens(fitted.req.Messages)
+	// The caller emits this only for the request whose response is used, so a
+	// turn compacted for the primary AND a fallback shows one note, not two.
 	if truncEv, err := json.Marshal(map[string]any{
 		"type":     "truncation",
 		"provider": provider.Name,
@@ -4192,10 +4206,10 @@ func (r *Router) fitRequestToProvider(provider *ProviderConfig, chatReq ChatComp
 		"after":    kept,
 		"budget":   budget,
 	}); err == nil {
-		r.emitTraceEventBoth(string(truncEv))
+		fitted.truncationEvent = string(truncEv)
 	}
 	if kept+toolTokens+outputReserve > hardLimit {
-		return chatReq, fmt.Errorf("%w: provider %s, ~%d message + %d tool + %d output tokens vs a %d-token window",
+		return fittedRequest{req: chatReq}, fmt.Errorf("%w: provider %s, ~%d message + %d tool + %d output tokens vs a %d-token window",
 			errExceedsContextWindow, provider.Name, kept, toolTokens, outputReserve, hardLimit)
 	}
 	return fitted, nil

@@ -685,7 +685,7 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 // tryFallbackStream attempts streaming fallback to providers in the fallback chain.
 func (r *Router) tryFallbackStream(
 	ctx context.Context, origReq ChatCompletionRequest, failedProvider string,
-) (*http.Response, *ProviderConfig, ChatCompletionRequest, error) {
+) (*http.Response, *ProviderConfig, fittedRequest, error) {
 	// Each fallback is fitted to its OWN context window from the original
 	// (un-truncated) request: replaying the primary's request verbatim sent
 	// over-window payloads to smaller-window fallbacks, which all answered 400
@@ -706,7 +706,7 @@ func (r *Router) tryFallbackStream(
 					continue
 				}
 				slog.Info("trying fallback provider (streaming)", "provider", name)
-				resp, err := r.forwardToProviderStream(ctx, p, fitted)
+				resp, err := r.forwardToProviderStream(ctx, p, fitted.req)
 				if err == nil {
 					return resp, p, fitted, nil
 				}
@@ -715,12 +715,12 @@ func (r *Router) tryFallbackStream(
 		}
 	}
 	if tried == 0 {
-		return nil, nil, origReq, errNoFallbackProviders
+		return nil, nil, fittedRequest{req: origReq}, errNoFallbackProviders
 	}
 	if skippedForWindow == tried {
-		return nil, nil, origReq, fmt.Errorf("all fallback providers exhausted: %w", errExceedsContextWindow)
+		return nil, nil, fittedRequest{req: origReq}, fmt.Errorf("all fallback providers exhausted: %w", errExceedsContextWindow)
 	}
-	return nil, nil, origReq, fmt.Errorf("all fallback providers exhausted")
+	return nil, nil, fittedRequest{req: origReq}, fmt.Errorf("all fallback providers exhausted")
 }
 
 // mergeToolCallDeltas merges incremental tool call deltas into a running list.
