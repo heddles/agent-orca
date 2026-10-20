@@ -29,7 +29,6 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
-
 )
 
 func TestEstimateTokens_CountsAllPayload(t *testing.T) {

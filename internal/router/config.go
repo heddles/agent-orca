@@ -574,4 +574,3 @@ func ConfigFromEnv() (*Config, error) {
 
 	return &cfg, nil
 }
-
