@@ -31,6 +31,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -1656,6 +1657,20 @@ func (r *Router) checkpointBudget() int {
 	return cw * 8 / 10
 }
 
+// priorRunCandidates names the runs whose checkpoints this run resumed from
+// or falls back to, excluding the run itself. On a restart the resume key is
+// the run's OWN checkpoint, so the prior chat turn is only reachable through
+// the fallback key — without it, _search_history silently lost the prior run.
+func (r *Router) priorRunCandidates() []string {
+	var names []string
+	for _, key := range []string{r.cfg.ResumeCheckpointKey, r.cfg.FallbackCheckpointKey} {
+		if name := runNameFromCheckpointKey(key); name != "" && name != r.cfg.RunName && !slices.Contains(names, name) {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
 // LoadResumeMessages loads the conversation checkpoint at key, falling back to
 // fallback when key holds nothing (a run that restarted before writing its
 // first checkpoint). It returns the key the messages actually came from so
@@ -1671,8 +1686,9 @@ func LoadResumeMessages(ctx context.Context, store state.Store, key, fallback st
 		if fbErr == nil && len(fbMsgs) > 0 {
 			return fbMsgs, fallback, nil
 		}
-		if err == nil {
-			err = fbErr
+		if fbErr != nil {
+			// Report both: the fallback failing is as diagnostic as the primary.
+			err = errors.Join(err, fmt.Errorf("fallback %s: %w", fallback, fbErr))
 		}
 	}
 	return msgs, key, err
@@ -3646,11 +3662,7 @@ func (r *Router) executeSearchHistory(ctx context.Context, args string) string {
 	if currentRun != "" {
 		// Include the immediate prior run (PriorRunRef chain) even if the index
 		// hasn't been refreshed yet for it.
-		if r.cfg.ResumeCheckpointKey != "" {
-			if prior := runNameFromCheckpointKey(r.cfg.ResumeCheckpointKey); prior != "" {
-				runNames = append(runNames, prior)
-			}
-		}
+		runNames = append(runNames, r.priorRunCandidates()...)
 	}
 
 	results := r.searchPriorTurns(ctx, runNames, currentRun, p.Query, p.TopK)
@@ -4404,6 +4416,7 @@ func (r *Router) ClaimRun(input WarmRunInput) {
 		resumeKey = checkpointKeyForRun(input.PriorRunRef)
 	}
 	r.cfg.ResumeCheckpointKey = resumeKey
+	r.cfg.FallbackCheckpointKey = "" // per-run: never inherit a previous claim's fallback
 	r.cfg.HTTPInput.RunName = input.RunName
 	r.cfg.HTTPInput.Input = input.Input
 
@@ -4434,8 +4447,12 @@ func (r *Router) ClaimRun(input WarmRunInput) {
 		if input.PriorRunRef != "" {
 			fallback = checkpointKeyForRun(input.PriorRunRef)
 		}
+		r.cfg.FallbackCheckpointKey = fallback
 		rawMsgs, usedKey, err := LoadResumeMessages(context.Background(), r.store, resumeKey, fallback)
 		resumeKey = usedKey
+		// Record where the history actually came from, as model-router main
+		// does for cold starts (spend restore and _search_history read it).
+		r.cfg.ResumeCheckpointKey = usedKey
 		if err != nil {
 			slog.Warn("could not load checkpoint for warm run",
 				"err", err, "run", input.RunName, "resumeKey", resumeKey)
