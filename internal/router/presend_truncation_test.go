@@ -52,8 +52,9 @@ func TestPreSendTruncationCapsOversizedRequests(t *testing.T) {
 	store := newTestStore(t)
 	r := newStreamingTestRouter(t, srv.URL, keyFile, store)
 
-	// newStreamingTestRouter configures ContextWindow=100000; with the default
-	// compaction fallback ratio (0.5) the message budget is ~49k tokens. Three
+	// newStreamingTestRouter configures ContextWindow=100000: requests over the
+	// 80k trigger (80% of the window) are cut down to the 50k target (the
+	// default compaction ratio, 0.5). Three
 	// 200k-char user messages (~50k tokens each by the whole-word len/4 proxy
 	// estimator) must overflow it and trigger pre-send truncation.
 	const bigLen = 200_000
@@ -97,11 +98,11 @@ func TestPreSendTruncationCapsOversizedRequests(t *testing.T) {
 	if gotTotal >= sentTotal {
 		t.Fatalf("provider received %d content chars un-truncated (sent %d) — pre-send truncation did not fire", gotTotal, sentTotal)
 	}
-	// Budget ≈ 48,976 tokens ⇒ at ~4 chars/token the truncated payload must
+	// Target = 50,000 tokens ⇒ at ~4 chars/token the truncated payload must
 	// fit comfortably under 5× the char budget (generous margin over the
 	// per-message +4-token overhead).
-	if gotTotal > 5*48_976*4 {
-		t.Fatalf("truncated request still too large: %d content chars (budget 48,976 tokens)", gotTotal)
+	if gotTotal > 5*50_000*4 {
+		t.Fatalf("truncated request still too large: %d content chars (target 50,000 tokens)", gotTotal)
 	}
 
 	var truncation []string
@@ -120,9 +121,10 @@ func TestPreSendTruncationCapsOversizedRequests(t *testing.T) {
 	before, _ := tev["before"].(float64)
 	after, _ := tev["after"].(float64)
 	budget, _ := tev["budget"].(float64)
-	// Compare like with like (tokens): the compacted request fits the budget
+	trigger, _ := tev["trigger"].(float64)
+	// Compare like with like (tokens): the compacted request fits the target
 	// and is smaller than the original.
-	if after <= 0 || after >= before || after > budget || budget != 48_976 {
+	if after <= 0 || after >= before || after > budget || budget != 50_000 || trigger != 80_000 {
 		t.Fatalf("unexpected truncation event fields: %v (gotTotal=%d chars)", tev, gotTotal)
 	}
 

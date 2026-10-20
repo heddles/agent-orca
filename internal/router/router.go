@@ -59,9 +59,13 @@ func init() {
 }
 
 // continuationKey is a context key used to mark recursive tool-call continuation
-// requests. When set, HandleChatCompletions skips appending chatReq.Messages to
-// r.messages because those messages were already persisted by the prior iteration.
+// requests. A continuation carries no new client input: the conversation is
+// rebuilt from r.priorMessages and r.messages.
 type continuationKey struct{}
+
+// turnInputKey carries a top-level request's new client messages ([]Message)
+// to handleStreamingResponse, which stores them once the response succeeds.
+type turnInputKey struct{}
 
 // Router is the core model-router sidecar. It is created once at startup and
 // handles all LLM proxy requests for the lifetime of the agent pod.
@@ -71,8 +75,9 @@ type Router struct {
 	ruleRouter        *RuleRouter
 	metaRouter        *MetaRouter
 	store             state.Store
-	priorMessages     []Message // conversation history loaded from prior run's checkpoint; prepended once
-	messages          []Message // current conversation history (accumulated during this run)
+	priorMessages     []Message // conversation history before the current turn (checkpoint + folded turns)
+	messages          []Message // the current turn: client input, assistant replies, tool results
+	turnPreamble      []Message // injected context for the current turn, reused by its continuations; never stored
 	mu                sync.Mutex
 	spendUSD          float64
 	checkpointTTL     time.Duration
@@ -176,6 +181,8 @@ func New(cfg *Config, store state.Store, initialMessages []json.RawMessage, exec
 	// Trim orphaned tool_use messages from the checkpoint. This can happen when a
 	// prior run's safeguards tripped mid-tool-call or the run was interrupted.
 	msgs = sanitizeCheckpoint(msgs)
+	// Drop injected context stored by builds before #47; it is re-injected per request.
+	msgs = stripInjectedContext(msgs, cfg)
 
 	// Truncate oversized checkpoints to fit within provider context windows.
 	// Handles pre-existing large checkpoints or provider config changes.
@@ -375,7 +382,7 @@ func compactDroppedMessages(dropped []Message) Message {
 		totalToolCalls int
 		toolCallTurns  int
 		textResponses  int
-		droppedTokens  = 0
+		droppedTokens  = estimateTokens(dropped)
 	)
 
 	for _, m := range dropped {
@@ -509,7 +516,14 @@ func truncateHistory(msgs []Message, maxTokens int) []Message {
 	if maxTokens <= 0 || len(msgs) == 0 {
 		return msgs
 	}
-	est := estimateTokens(msgs)
+	// Count each message once. Re-estimating the kept tail for every candidate
+	// cut was quadratic: ~10s per call on a ~680K-token conversation (#47).
+	tokens := make([]int, len(msgs))
+	est := 0
+	for i, m := range msgs {
+		tokens[i] = messageTokens(m)
+		est += tokens[i]
+	}
 	if est <= maxTokens {
 		return msgs
 	}
@@ -549,7 +563,16 @@ func truncateHistory(msgs []Message, maxTokens int) []Message {
 
 	// Find the smallest safe cut that fits within budget (preserves maximum history).
 	// Iterate from smallest cut (drop fewest) to largest; the first one that fits is optimal.
-	systemTokens := estimateTokens(systemPrefix)
+	systemTokens := 0
+	for _, t := range tokens[:bodyStart] {
+		systemTokens += t
+	}
+	// suffix[i] = tokens in body[i:].
+	bodyTokens := tokens[bodyStart:]
+	suffix := make([]int, len(body)+1)
+	for i := len(body) - 1; i >= 0; i-- {
+		suffix[i] = suffix[i+1] + bodyTokens[i]
+	}
 	compactionOverhead := 150 // conservative estimate for compaction summary tokens
 
 	bestCut := -1
@@ -558,7 +581,7 @@ func truncateHistory(msgs []Message, maxTokens int) []Message {
 		if cut >= len(body) {
 			break // never drop the newest message: it is the turn being answered
 		}
-		keptTokens := estimateTokens(body[cut:])
+		keptTokens := suffix[cut]
 		if systemTokens+compactionOverhead+keptTokens <= maxTokens {
 			bestCut = cut
 			break
@@ -579,6 +602,7 @@ func truncateHistory(msgs []Message, maxTokens int) []Message {
 		"originalTokens", est,
 		"maxTokens", maxTokens,
 		"droppedMessages", bestCut,
+		"droppedTokens", suffix[0]-suffix[bestCut],
 		"remainingMessages", len(body)-bestCut,
 	)
 
@@ -799,125 +823,50 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 		defer r.streamingActive.Store(false)
 	}
 
-	// For new top-level requests, fold the accumulated in-memory conversation
-	// (r.messages) into r.priorMessages so the LLM has full multi-turn context.
-	// Without this, agents that don't maintain their own message history
-	// (e.g. HTTP/chat-mode) lose the conversation between turns. The Redis
-	// checkpoint is loaded once at startup; this fold keeps priorMessages
-	// fresh within a pod's lifetime, complementary to the per-turn checkpoint
-	// writes that persist to Redis for cross-restart recovery.
-	// Skip for continuations — r.messages is consumed directly by the recursive
-	// HandleChatCompletions call in the streaming tool-call loop.
+	// Conversation state (#47): r.priorMessages is the history before this turn
+	// and r.messages is the turn so far (assistant replies and tool results).
+	// The client's new input for this turn (turnInput) is stored once the
+	// response succeeds (handleStreamingResponse). Context the router injects
+	// per request (system prompt, built-in hints, memory recall) is rebuilt for
+	// every request and never stored. Storing the whole sent request instead
+	// re-appended the history on every turn, doubling the buffer each time.
+	var turnInput []Message
+	r.mu.Lock()
 	if !isContinuation {
-		r.mu.Lock()
+		// Fold the previous turn into the history.
 		if len(r.messages) > 0 {
 			r.priorMessages = append(r.priorMessages, r.messages...)
-			// Incrementally track tokens added in this fold.
-			r.incrementBufferTokens(0) // historical message tokens already tracked via provider Usage from prior turns
 			r.messages = nil
 		}
 		// Cap the live buffer using proactive truncation to avoid latency
-		// spikes when the buffer is near full capacity. trimLiveBuffer uses
-		// the cached liveBufferTokens for an O(1) fast check; if truncation
-		// is needed it is delegated to spawnCompaction, which runs
-		// truncateHistory off the request thread so streaming/routing is not
-		// delayed. The pre-send truncation below caps outgoing messages as a
-		// safety net regardless of whether async compaction has installed yet.
+		// spikes when the buffer is near full capacity. compactStoredConversation
+		// below is the primary compaction; this remains as a backstop.
 		r.trimLiveBuffer()
+		turnInput = r.clientTurnInput(chatReq.Messages)
+	}
+	// A continuation's body is rebuilt from r.messages by the tool-call loop;
+	// the stored conversation is the source of truth for both kinds of request.
+	conversation := slices.Concat(r.priorMessages, r.messages, turnInput)
+	r.mu.Unlock()
+
+	// The injected preamble is built once per turn and reused by the turn's
+	// tool-call continuations, so recall and memory lookups run once per turn.
+	var preamble []Message
+	if !isContinuation {
+		preamble = r.buildPreamble(req.Context(), lastUserMessage(conversation))
+		r.mu.Lock()
+		r.turnPreamble = preamble
+		r.mu.Unlock()
+	} else {
+		r.mu.Lock()
+		preamble = r.turnPreamble
 		r.mu.Unlock()
 	}
-
-	// Inject prior run's conversation history so the LLM has multi-turn context.
-	// Skip if the messages already start with the prior context (i.e., this is a
-	// tool-call continuation where the streaming tool-call loop already built the
-	// full history, or the agent framework sent the full conversation itself).
-	r.mu.Lock()
-	prior := r.priorMessages
-	resumed := r.resumedWithAnswer
-	restartResume := r.restartResume
-	r.mu.Unlock()
-	if len(prior) > 0 {
-		alreadyInjected := len(chatReq.Messages) >= len(prior) &&
-			chatReq.Messages[0].Role == prior[0].Role &&
-			fmt.Sprintf("%v", chatReq.Messages[0].Content) == fmt.Sprintf("%v", prior[0].Content)
-		if !alreadyInjected {
-			// When resuming after a clarify answer, the agent runtime re-sends the
-			// original input as a new user message. Drop it — the prior checkpoint
-			// already contains the full conversation including the answer. Without
-			// this, the model sees the original question twice and restarts the task.
-			if resumed && len(chatReq.Messages) > 0 {
-				last := chatReq.Messages[len(chatReq.Messages)-1]
-				if last.Role == "user" {
-					chatReq.Messages = chatReq.Messages[:len(chatReq.Messages)-1]
-				}
-			}
-			// Same for a restart resume (#37), but only when the re-sent message
-			// is the input the checkpoint already holds — a genuinely new user
-			// message must still reach the model.
-			if restartResume && !resumed {
-				chatReq.Messages = dropResentUserInput(chatReq.Messages, prior)
-			}
-			chatReq.Messages = append(prior, chatReq.Messages...)
-		}
-	}
+	chatReq.Messages = slices.Concat(preamble, conversation)
 
 	// Inject our tool definitions if the agent hasn't set its own.
 	if len(r.cfg.ToolDefinitions) > 0 {
 		chatReq = r.injectTools(chatReq)
-	}
-
-	// Inject episodic memory summaries (if any) as a system message at the front.
-	// Skip for continuations - already in r.messages.
-	if !isContinuation {
-		if summary := r.loadEpisodicSummaries(req.Context()); summary != nil {
-			chatReq.Messages = append([]Message{*summary}, chatReq.Messages...)
-		}
-	}
-
-	// Inject long-term memory context based on the latest user message.
-	// Skip for continuations - already in r.messages.
-	if !isContinuation {
-		if lastUserMsg := lastUserMessage(chatReq.Messages); lastUserMsg != "" {
-			if ltmCtx := r.autoRetrieveLongTermMemory(req.Context(), lastUserMsg); ltmCtx != nil {
-				chatReq.Messages = append([]Message{*ltmCtx}, chatReq.Messages...)
-			}
-		}
-	}
-
-	// Inject the agent's SystemPrompt as a system message for all providers.
-	// This ensures the system prompt survives compaction and is always available.
-	// Skip for continuations - already in r.messages.
-	// Also skip when the system prompt is already present in the conversation
-	// (e.g. after folding r.messages into r.priorMessages), to avoid duplicates.
-	if !isContinuation && r.cfg.SystemPrompt != "" {
-		alreadyHasSystemPrompt := false
-		for _, msg := range chatReq.Messages {
-			if msg.Role == "system" {
-				if s, ok := msg.Content.(string); ok && s == r.cfg.SystemPrompt {
-					alreadyHasSystemPrompt = true
-					break
-				}
-			}
-		}
-		if !alreadyHasSystemPrompt {
-			systemMsg := Message{Role: "system", Content: r.cfg.SystemPrompt}
-			// Find the last system message to insert after all existing system messages
-			// (episodic summaries, LTM context) so ordering is preserved.
-			insertIdx := 0
-			for _, msg := range chatReq.Messages {
-				if msg.Role == "system" {
-					insertIdx++
-				}
-			}
-			chatReq.Messages = append(chatReq.Messages[:insertIdx], append([]Message{systemMsg}, chatReq.Messages[insertIdx:]...)...)
-		}
-	}
-
-	// Inject a system hint about the _clarify tool so the LLM knows it can
-	// pause and ask the human for clarification rather than guessing.
-	// Skip for continuations - already in r.messages.
-	if !isContinuation {
-		chatReq = r.injectBuiltinSystemHints(chatReq)
 	}
 
 	// Apply guardrail input filters to ALL outbound messages before sending to the LLM.
@@ -949,20 +898,10 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 		}
 	}
 
-	// Select the best provider.
-	// Hindsight recall: query hindsight for relevant memories before the LLM call.
-	// This is skipped for continuations (already in r.messages).
-	if r.cfg.Hindsight.Enabled && r.cfg.Hindsight.URL != "" {
-		if lastUserMsg := lastUserMessage(chatReq.Messages); lastUserMsg != "" {
-			if recalled, err := r.hindsightRecall(req.Context(), lastUserMsg); err == nil && recalled != "" {
-				chatReq.Messages = append([]Message{{Role: "system", Content: "<hindsight-recall>\n" + recalled + "\n</hindsight-recall>"}}, chatReq.Messages...)
-				slog.Info("hindsight recall success", "run", r.cfg.RunName, "bankID", r.hindsightBankID())
-				r.emitHindsightTraceEvent("recall", false, "")
-			} else if err != nil {
-				slog.Warn("hindsight recall failed", "run", r.cfg.RunName, "err", err)
-				r.emitHindsightTraceEvent("recall", true, err.Error())
-			}
-		}
+	// The turn input is the tail of the request; keep the guardrail-filtered
+	// copy so redacted content is what gets stored.
+	if len(turnInput) > 0 {
+		turnInput = slices.Clone(chatReq.Messages[len(chatReq.Messages)-len(turnInput):])
 	}
 
 	// Select the best provider.
@@ -970,6 +909,15 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 	if provider == nil {
 		http.Error(w, "no available provider", http.StatusServiceUnavailable)
 		return
+	}
+
+	// Compact the stored conversation itself when this request would cross the
+	// provider's trigger, so the cut is made once and the following turns reuse
+	// it instead of re-truncating the full history on every request (#47).
+	if r.compactStoredConversation(provider, chatReq.Tools, estimateTokens(preamble), turnInput) {
+		r.mu.Lock()
+		chatReq.Messages = slices.Concat(preamble, r.priorMessages, r.messages, turnInput)
+		r.mu.Unlock()
 	}
 
 	// Record the actual per-request routing decision so the UI shows the model that ran.
@@ -1046,6 +994,9 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 	// without it a silently-shortened conversation looks like memory loss.
 	if fit.truncationEvent != "" {
 		r.emitTraceEventBoth(fit.truncationEvent)
+	}
+	if !isContinuation {
+		req = req.WithContext(context.WithValue(req.Context(), turnInputKey{}, turnInput))
 	}
 	r.handleStreamingResponse(w, req, provider, resp, chatReq)
 	// Run episodic summarization if due (async to avoid blocking the response).
@@ -1758,6 +1709,161 @@ func dropResentUserInput(incoming, prior []Message) []Message {
 	return incoming
 }
 
+// clientTurnInput returns the messages a top-level request adds to the stored
+// conversation. Caller must hold r.mu.
+func (r *Router) clientTurnInput(msgs []Message) []Message {
+	input := make([]Message, 0, len(msgs))
+	for _, m := range msgs {
+		// The router injects the system prompt itself (buildPreamble).
+		if m.Role == "system" && r.cfg.SystemPrompt != "" && messageText(m) == r.cfg.SystemPrompt {
+			continue
+		}
+		input = append(input, m)
+	}
+	prior := r.priorMessages
+	if len(prior) == 0 {
+		return input
+	}
+	// A client that resends its whole conversation: only what follows the
+	// stored history is new.
+	if len(input) >= len(prior) && input[0].Role == prior[0].Role &&
+		fmt.Sprintf("%v", input[0].Content) == fmt.Sprintf("%v", prior[0].Content) {
+		return input[len(prior):]
+	}
+	// When resuming after a clarify answer, the agent runtime re-sends the
+	// original input as a new user message. Drop it — the prior checkpoint
+	// already contains the full conversation including the answer. Without
+	// this, the model sees the original question twice and restarts the task.
+	if r.resumedWithAnswer && len(input) > 0 && input[len(input)-1].Role == "user" {
+		return input[:len(input)-1]
+	}
+	// Same for a restart resume (#37), but only when the re-sent message is the
+	// input the checkpoint already holds — a genuinely new user message must
+	// still reach the model.
+	if r.restartResume && !r.resumedWithAnswer {
+		return dropResentUserInput(input, prior)
+	}
+	return input
+}
+
+// buildPreamble assembles the context the router injects ahead of the stored
+// conversation on each request of a turn: the agent's system prompt, built-in
+// tool hints, episodic summaries, long-term memory and hindsight recall. It is
+// never stored. The stable parts come first so providers can cache the prefix.
+func (r *Router) buildPreamble(ctx context.Context, lastUserMsg string) []Message {
+	var msgs []Message
+	if r.cfg.SystemPrompt != "" {
+		msgs = append(msgs, Message{Role: "system", Content: r.cfg.SystemPrompt})
+	}
+	msgs = r.injectBuiltinSystemHints(ChatCompletionRequest{Messages: msgs}).Messages
+	if summary := r.loadEpisodicSummaries(ctx); summary != nil {
+		msgs = append(msgs, *summary)
+	}
+	if lastUserMsg == "" {
+		return msgs
+	}
+	if ltmCtx := r.autoRetrieveLongTermMemory(ctx, lastUserMsg); ltmCtx != nil {
+		msgs = append(msgs, *ltmCtx)
+	}
+	if r.cfg.Hindsight.Enabled && r.cfg.Hindsight.URL != "" {
+		if recalled, err := r.hindsightRecall(ctx, lastUserMsg); err == nil && recalled != "" {
+			msgs = append(msgs, Message{Role: "system", Content: hindsightRecallOpen + recalled + "\n</hindsight-recall>"})
+			slog.Info("hindsight recall success", "run", r.cfg.RunName, "bankID", r.hindsightBankID())
+			r.emitHindsightTraceEvent("recall", false, "")
+		} else if err != nil {
+			slog.Warn("hindsight recall failed", "run", r.cfg.RunName, "err", err)
+			r.emitHindsightTraceEvent("recall", true, err.Error())
+		}
+	}
+	return msgs
+}
+
+// Openings of the injected messages buildPreamble adds. stripInjectedContext
+// recognises them in checkpoints saved before #47.
+const (
+	hindsightRecallOpen = "<hindsight-recall>\n"
+	ltmContextOpen      = "<rag-context trust=\"low\" source=\"memory\">"
+	episodicMemoryOpen  = "[Memory] Previous conversation summaries:"
+)
+
+// stripInjectedContext removes copies of the per-request injected context from
+// a loaded checkpoint. Before #47 the sent request was stored, so checkpoints
+// carry the system prompt, built-in hints and recall blocks of every turn.
+// buildPreamble injects fresh ones on every request.
+func stripInjectedContext(msgs []Message, cfg *Config) []Message {
+	hint := builtinHintContent(cfg)
+	kept := make([]Message, 0, len(msgs))
+	for _, m := range msgs {
+		if m.Role == "system" {
+			text := messageText(m)
+			if (cfg.SystemPrompt != "" && text == cfg.SystemPrompt) || (hint != "" && text == hint) ||
+				strings.HasPrefix(text, hindsightRecallOpen) || strings.HasPrefix(text, ltmContextOpen) ||
+				strings.HasPrefix(text, episodicMemoryOpen) {
+				continue
+			}
+		}
+		kept = append(kept, m)
+	}
+	return kept
+}
+
+// compactStoredConversation compacts the stored conversation (r.priorMessages
+// + r.messages) when a request to provider would exceed its trigger, and keeps
+// the result, so later turns build on the compacted history instead of
+// re-truncating the full one on every request (#47). It cuts down to the
+// target, leaving room for preambleTokens of injected context and the
+// not-yet-stored turnInput. It reports whether it compacted.
+func (r *Router) compactStoredConversation(provider *ProviderConfig, tools []map[string]any, preambleTokens int, turnInput []Message) bool {
+	b := r.contextBudgetFor(provider, tools)
+	turnTokens := estimateTokens(turnInput)
+
+	r.mu.Lock()
+	stored := slices.Concat(r.priorMessages, r.messages)
+	before := estimateTokens(stored)
+	room := b.target - preambleTokens - turnTokens
+	if preambleTokens+before+turnTokens <= b.trigger || room <= 0 || len(stored) == 0 {
+		// Under the trigger, or the new input alone is too large to make room
+		// for: fitRequestToProvider shrinks that per request.
+		r.mu.Unlock()
+		return false
+	}
+	compacted := truncateHistory(stored, room)
+	after := estimateTokens(compacted)
+	if after >= before {
+		r.mu.Unlock()
+		return false
+	}
+	r.priorMessages = compacted
+	r.messages = nil
+	r.liveBufferTokens = after
+	r.mu.Unlock()
+
+	slog.Warn("compacted stored conversation",
+		"run", r.cfg.RunName,
+		"provider", provider.Name,
+		"beforeTokens", before,
+		"afterTokens", after,
+		"trigger", b.trigger,
+		"target", b.target,
+		"preambleTokens", preambleTokens,
+		"turnInputTokens", turnTokens,
+		"breakdown", tokenBreakdown(stored),
+	)
+	// Tell trace-stream clients the conversation was compacted — without it a
+	// silently-shortened conversation looks like memory loss.
+	if ev, err := json.Marshal(map[string]any{
+		"type":     "truncation",
+		"provider": provider.Name,
+		"before":   preambleTokens + before + turnTokens,
+		"after":    preambleTokens + after + turnTokens,
+		"trigger":  b.trigger,
+		"budget":   b.target,
+	}); err == nil {
+		r.emitTraceEventBoth(string(ev))
+	}
+	return true
+}
+
 // canonicalUserText flattens message content (a string, or OpenAI content
 // blocks) to its text, normalizing line endings and surrounding whitespace.
 func canonicalUserText(content any) string {
@@ -2210,25 +2316,24 @@ func (r *Router) shouldAutoTriggerClarify(resp ChatCompletionResponse) bool {
 // hasProviderSpecificSystem returns true if the selected provider handles system prompts
 // through a dedicated API field rather than the messages array. Currently only Anthropic
 // has this behavior; OpenAI and Gemini include system prompts in the messages array.
-// injectBuiltinSystemHints appends a system message that tells the LLM about
-// platform-provided built-in tools and their intended usage. Without this, LLMs
-// tend to guess tool names or ignore the injected tool definitions entirely.
-func (r *Router) injectBuiltinSystemHints(chatReq ChatCompletionRequest) ChatCompletionRequest {
+// builtinHintContent is the text of the built-in tool hint for cfg, or ""
+// when the agent has no built-in tools.
+func builtinHintContent(cfg *Config) string {
 	// Collect all built-in tools from the configuration.
 	var builtinTools []string
 	hasBuiltins := false
-	for _, td := range r.cfg.ToolDefinitions {
+	for _, td := range cfg.ToolDefinitions {
 		if td.BackendType == backendTypeBuiltin {
 			hasBuiltins = true
 			builtinTools = append(builtinTools, td.Name)
 		}
 	}
 	if !hasBuiltins {
-		return chatReq
+		return ""
 	}
 
 	var content string
-	if r.cfg.ChatMode {
+	if cfg.ChatMode {
 		// Chat agents are talking directly to a human. Guide them to answer
 		// conversationally and only reach for tools when genuinely needed.
 		content = "You are having a direct conversation with a human user. " +
@@ -2250,6 +2355,18 @@ func (r *Router) injectBuiltinSystemHints(chatReq ChatCompletionRequest) ChatCom
 			"make a reasonable assumption, proceed with your best answer.\n\n" +
 			"Platform tools available to you: " + strings.Join(builtinTools, ", ") +
 			". Use these tools only when their specific purpose is needed."
+	}
+
+	return content
+}
+
+// injectBuiltinSystemHints appends a system message that tells the LLM about
+// platform-provided built-in tools and their intended usage. Without this, LLMs
+// tend to guess tool names or ignore the injected tool definitions entirely.
+func (r *Router) injectBuiltinSystemHints(chatReq ChatCompletionRequest) ChatCompletionRequest {
+	content := builtinHintContent(r.cfg)
+	if content == "" {
+		return chatReq
 	}
 
 	hint := Message{Role: "system", Content: content}
@@ -4131,30 +4248,73 @@ func (r *Router) HandleState(w http.ResponseWriter, req *http.Request) {
 // ~4 chars/token heuristic; this is a budgeting estimate, not billing.
 const maxExactTokenLen = 16 * 1024
 
+// Exact counts are memoised by text: every request of a run re-counts the same
+// stored conversation (compaction check, pre-send fit, checkpoint), and BPE is
+// nearly all of that cost (~0.2s per pass over ~700K tokens, #47). Short texts
+// are cheaper to encode than to cache. The cache is cleared once the texts it
+// holds exceed tokenCountMaxBytes, so it cannot pin dropped history for long.
+const (
+	tokenCountMinLen   = 256
+	tokenCountMaxBytes = 64 << 20
+)
+
+var (
+	tokenCountMu    sync.Mutex
+	tokenCounts     = map[string]int{}
+	tokenCountBytes int
+)
+
 func countTokens(text string) int {
-	if defaultEncoder != nil && len(text) <= maxExactTokenLen {
+	if defaultEncoder == nil || len(text) > maxExactTokenLen {
+		return len(text) / 4
+	}
+	if len(text) < tokenCountMinLen {
 		return len(defaultEncoder.Encode(text, nil, nil))
 	}
-	return len(text) / 4
+	tokenCountMu.Lock()
+	n, ok := tokenCounts[text]
+	tokenCountMu.Unlock()
+	if ok {
+		return n
+	}
+	n = len(defaultEncoder.Encode(text, nil, nil))
+	tokenCountMu.Lock()
+	if tokenCountBytes+len(text) > tokenCountMaxBytes {
+		tokenCounts = map[string]int{}
+		tokenCountBytes = 0
+	}
+	if _, dup := tokenCounts[text]; !dup {
+		tokenCounts[text] = n
+		tokenCountBytes += len(text)
+	}
+	tokenCountMu.Unlock()
+	return n
 }
 
 func estimateTokens(messages []Message) int {
 	total := 0
 	for _, m := range messages {
-		// Per-message structural overhead (~4 tokens for role/formatting).
-		total += 4
-		switch v := m.Content.(type) {
-		case string:
-			total += countTokens(v)
-		default:
-			b, _ := json.Marshal(v)
-			total += countTokens(string(b))
-		}
-		for _, tc := range m.ToolCalls {
-			total += countTokens(tc.Function.Name)
-			total += countTokens(tc.Function.Arguments)
-			total += 4 // per-tool overhead
-		}
+		total += messageTokens(m)
+	}
+	return total
+}
+
+// messageTokens estimates one message's tokens: content, tool-call names and
+// arguments, plus structural overhead.
+func messageTokens(m Message) int {
+	// Per-message structural overhead (~4 tokens for role/formatting).
+	total := 4
+	switch v := m.Content.(type) {
+	case string:
+		total += countTokens(v)
+	default:
+		b, _ := json.Marshal(v)
+		total += countTokens(string(b))
+	}
+	for _, tc := range m.ToolCalls {
+		total += countTokens(tc.Function.Name)
+		total += countTokens(tc.Function.Arguments)
+		total += 4 // per-tool overhead
 	}
 	return total
 }
@@ -4193,27 +4353,29 @@ type fittedRequest struct {
 	truncationEvent string
 }
 
-// fitRequestToProvider returns chatReq with its messages compacted to fit
-// provider's pre-send budget, plus the `truncation` trace event to emit if
-// this request is the one that gets used. The budget is the LOWER of:
-//   - the safety ceiling: window * (1 - ContextWindowReserve) − tools − output
-//   - the compaction target: window * ContextCompactionRatio − tools − output
-//     (issue #54: keeps outgoing context proportional to the compaction ratio)
-//
-// Tools and the provider's real completion budget count toward the window on
-// top of input (issue #42: 1,021,745 input + 131,072 completion vs a
-// 1,048,576 window), so both are reserved. It returns errExceedsContextWindow
-// when even the compacted request cannot fit — the provider would reject it.
-// chatReq itself is never mutated, so a caller can re-fit the original
-// request for another (fallback) provider.
-func (r *Router) fitRequestToProvider(provider *ProviderConfig, chatReq ChatCompletionRequest) (fittedRequest, error) {
+// contextBudget is one provider's message-token budget. Messages are compacted
+// when they exceed trigger, and cut down to target, so a compaction leaves room
+// for the conversation to grow again before the next one (#47). Both exclude
+// the tool definitions, which count toward the window on every request.
+type contextBudget struct {
+	trigger, target                      int
+	hardLimit, toolTokens, outputReserve int
+}
+
+// contextBudgetFor computes provider's budget for a request carrying tools.
+//   - trigger: the lower of window*(1-ContextWindowReserve) − tools (80% of the
+//     window by default) and window − tools − output (the provider counts the
+//     completion toward the window too: issue #42, 1,021,745 input + 131,072
+//     completion vs a 1,048,576 window).
+//   - target: window*ContextCompactionRatio − tools, capped at trigger.
+func (r *Router) contextBudgetFor(provider *ProviderConfig, tools []map[string]any) contextBudget {
 	// A provider without a configured window inherits the largest configured
 	// one; maxContextWindow floors at 200k, so the guard is never disabled.
 	hardLimit := provider.ContextWindow
 	if hardLimit <= 0 {
 		hardLimit = maxContextWindow(r.cfg.Providers)
 	}
-	toolTokens := estimateToolTokens(chatReq.Tools)
+	toolTokens := estimateToolTokens(tools)
 	const minOutputReserveTokens = 1024
 	outputReserve := minOutputReserveTokens
 	if provider.MaxOutputTokens > minOutputReserveTokens {
@@ -4221,19 +4383,43 @@ func (r *Router) fitRequestToProvider(provider *ProviderConfig, chatReq ChatComp
 		// Cap at half the window so message compaction always has room.
 		outputReserve = min(provider.MaxOutputTokens, hardLimit/2)
 	}
+	reserve := r.cfg.ContextWindowReserve
+	if reserve <= 0 || reserve >= 1.0 {
+		reserve = 0.20
+	}
 	ratio := r.cfg.ContextCompactionRatio
 	if ratio <= 0 || ratio >= 1.0 {
 		ratio = 0.5
 	}
-	ceilingBudget := int(float64(hardLimit)*(1.0-r.cfg.ContextWindowReserve)) - toolTokens - outputReserve
-	ratioBudget := int(float64(hardLimit)*ratio) - toolTokens - outputReserve
-	budget := min(ratioBudget, ceilingBudget)
-	if budget <= 0 {
-		budget = int(float64(hardLimit) * 0.5) // last-resort floor: keep at least half the window for messages
+	trigger := min(int(float64(hardLimit)*(1.0-reserve)), hardLimit-outputReserve) - toolTokens
+	if trigger <= 0 {
+		trigger = hardLimit / 2 // last-resort floor: keep at least half the window for messages
 	}
+	target := min(int(float64(hardLimit)*ratio)-toolTokens, trigger)
+	if target <= 0 {
+		target = trigger
+	}
+	return contextBudget{
+		trigger: trigger, target: target,
+		hardLimit: hardLimit, toolTokens: toolTokens, outputReserve: outputReserve,
+	}
+}
+
+// fitRequestToProvider returns chatReq with its messages compacted to fit
+// provider's budget (contextBudgetFor), plus the `truncation` trace event to
+// emit if this request is the one that gets used. Requests over the trigger
+// are cut down to the target. It is the safety net behind
+// compactStoredConversation: it catches fallback providers with smaller
+// windows and turns whose new input alone is too large. It returns
+// errExceedsContextWindow when even the compacted request cannot fit, since
+// the provider would reject it. chatReq itself is never mutated, so a caller
+// can re-fit the original request for another (fallback) provider.
+func (r *Router) fitRequestToProvider(provider *ProviderConfig, chatReq ChatCompletionRequest) (fittedRequest, error) {
+	b := r.contextBudgetFor(provider, chatReq.Tools)
+	hardLimit, toolTokens, outputReserve, budget := b.hardLimit, b.toolTokens, b.outputReserve, b.target
 
 	msgTokens := estimateTokens(chatReq.Messages)
-	if msgTokens <= budget {
+	if msgTokens <= b.trigger {
 		// No compaction needed, but the tools + completion reserve alone can
 		// still overflow the window (e.g. a large toolbelt on a small model).
 		if msgTokens+toolTokens+outputReserve > hardLimit {
@@ -4246,12 +4432,12 @@ func (r *Router) fitRequestToProvider(provider *ProviderConfig, chatReq ChatComp
 		"estimatedMessageTokens", msgTokens,
 		"toolTokens", toolTokens,
 		"outputReserve", outputReserve,
+		"trigger", b.trigger,
 		"budget", budget,
 		"hardLimit", hardLimit,
-		"reserve", r.cfg.ContextWindowReserve,
-		"compactionRatio", ratio,
 		"provider", provider.Name,
 		"run", r.cfg.RunName,
+		"breakdown", tokenBreakdown(chatReq.Messages),
 	)
 	fitted := fittedRequest{req: chatReq}
 	fitted.req.Messages = truncateHistory(chatReq.Messages, budget)
@@ -4263,6 +4449,7 @@ func (r *Router) fitRequestToProvider(provider *ProviderConfig, chatReq ChatComp
 		"provider": provider.Name,
 		"before":   msgTokens,
 		"after":    kept,
+		"trigger":  b.trigger,
 		"budget":   budget,
 	}); err == nil {
 		fitted.truncationEvent = string(truncEv)
@@ -4272,6 +4459,48 @@ func (r *Router) fitRequestToProvider(provider *ProviderConfig, chatReq ChatComp
 			errExceedsContextWindow, provider.Name, kept, toolTokens, outputReserve, hardLimit)
 	}
 	return fitted, nil
+}
+
+// breakdownTopTools is how many tools tokenBreakdown lists by name.
+const breakdownTopTools = 10
+
+// tokenBreakdown reports where a conversation's tokens are: totals per role
+// and, for tool results, per tool (the top breakdownTopTools by tokens). It is
+// logged on compaction so a large run shows what fills its context without
+// anyone having to read its checkpoint (#47).
+func tokenBreakdown(msgs []Message) map[string]any {
+	byRole := map[string]int{}
+	byTool := map[string]int{}
+	toolNames := map[string]string{} // tool_call_id → tool name
+	for _, m := range msgs {
+		t := messageTokens(m)
+		byRole[m.Role] += t
+		for _, tc := range m.ToolCalls {
+			toolNames[tc.ID] = tc.Function.Name
+		}
+		if m.Role == "tool" {
+			name := toolNames[m.ToolCallID]
+			if name == "" {
+				name = "unknown"
+			}
+			byTool[name] += t
+		}
+	}
+	names := make([]string, 0, len(byTool))
+	for n := range byTool {
+		names = append(names, n)
+	}
+	sort.Slice(names, func(i, j int) bool {
+		if byTool[names[i]] != byTool[names[j]] {
+			return byTool[names[i]] > byTool[names[j]]
+		}
+		return names[i] < names[j]
+	})
+	topTools := make(map[string]int, min(len(names), breakdownTopTools))
+	for _, n := range names[:min(len(names), breakdownTopTools)] {
+		topTools[n] = byTool[n]
+	}
+	return map[string]any{"byRole": byRole, "topTools": topTools}
 }
 
 // maxContextWindow returns the largest ContextWindow across all configured providers.
@@ -4585,6 +4814,7 @@ func (r *Router) ClaimRun(input WarmRunInput) {
 				}
 			}
 			msgs = sanitizeCheckpoint(msgs)
+			msgs = stripInjectedContext(msgs, r.cfg)
 			msgs = truncateHistory(msgs, maxContextWindow(r.cfg.Providers)*80/100)
 			// Inject pending clarify answer, same logic as New().
 			answerKey := fmt.Sprintf("clarify-answer:%s:%s", r.cfg.RunNamespace, input.RunName)

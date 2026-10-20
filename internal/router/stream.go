@@ -537,13 +537,14 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 		}
 	}
 
-	// Update conversation history.
-	// For continuation requests (recursive tool-call loops), chatReq.Messages was
-	// built from r.messages and would duplicate the entire conversation if re-appended.
+	// Update conversation history. Only the client's new input is stored, never
+	// chatReq.Messages: the sent request also holds the stored history and the
+	// injected preamble, and storing it doubled the history every turn (#47).
 	streamIsContinuation := req.Context().Value(continuationKey{}) != nil
 	r.mu.Lock()
 	if !streamIsContinuation {
-		r.messages = append(r.messages, chatReq.Messages...)
+		turnInput, _ := req.Context().Value(turnInputKey{}).([]Message)
+		r.messages = append(r.messages, turnInput...)
 		r.incrementBufferTokens(usage.PromptTokens)
 	}
 	r.messages = append(r.messages, assistantMsg)
@@ -607,7 +608,7 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 		r.emitTraceEventBoth(string(doneEv))
 	}
 	// Handle tool calls if the LLM requested them.
-	// NOTE: r.messages already contains chatReq.Messages + assistantMsg (added above),
+	// NOTE: r.messages already holds this turn's input + assistantMsg (added above),
 	// so we only need to dispatch, append results, and recurse — not re-append the history.
 	//
 	// Dispatch on len(toolCalls) > 0 ALONE — the same predicate the non-streaming path

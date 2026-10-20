@@ -1509,11 +1509,11 @@ func TestRouter_SystemPromptNotDuplicatedAfterFold(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Simulate state after one turn: priorMessages has the system prompt +
-	// conversation, r.messages has the current turn's response.
+	// Simulate state after one turn: priorMessages has the conversation (the
+	// system prompt is injected per request, never stored — #47), r.messages
+	// has the current turn's response.
 	router.mu.Lock()
 	router.priorMessages = []Message{
-		{Role: "system", Content: "You are a helpful assistant."},
 		{Role: "user", Content: "first question"},
 		{Role: "assistant", Content: "first answer"},
 	}
