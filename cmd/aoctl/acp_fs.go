@@ -464,7 +464,7 @@ func (b *acpBridge) setSessionRun(sessionID, runID string) {
 // registerRun points a session at a new run with a cancellable context,
 // creating the record if needed but preserving existing state (notably the
 // workspace cwd captured by session/new).
-func (b *acpBridge) registerRun(sessionID, runID string, cancel context.CancelFunc) {
+func (b *acpBridge) registerRun(sessionID, runID string, cancel context.CancelFunc) uint64 {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	sess, ok := b.sessions[sessionID]
@@ -480,6 +480,19 @@ func (b *acpBridge) registerRun(sessionID, runID string, cancel context.CancelFu
 	}
 	sess.RunID = runID
 	sess.Cancel = cancel
+	sess.turn++
+	return sess.turn
+}
+
+// releaseRun clears the session's Cancel when turn is still the live turn.
+// It never deletes the session record (cwd, remembered approval and the run
+// id stay for the next turn); session/close does that via forgetSession.
+func (b *acpBridge) releaseRun(sessionID string, turn uint64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if cur, ok := b.sessions[sessionID]; ok && cur.turn == turn {
+		cur.Cancel = nil
+	}
 }
 
 // workspaceRoots returns the roots for a session: the session working
