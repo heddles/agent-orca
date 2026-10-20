@@ -418,6 +418,17 @@ type WarmRunInput struct {
 	Input string `json:"input"`
 	// PriorRunRef is the previous AgentRun name whose checkpoint should be loaded (empty = fresh).
 	PriorRunRef string `json:"priorRunRef,omitempty"`
+	// ResumeCheckpointKey, when set, is the checkpoint to resume from and takes
+	// precedence over PriorRunRef. The operator sets it to the run's OWN
+	// checkpoint when re-claiming a warm pod for a restarted run, so the run
+	// continues where it left off instead of replaying from its input (#37).
+	// Older operators omit it; ClaimRun then falls back to PriorRunRef.
+	ResumeCheckpointKey string `json:"resumeCheckpointKey,omitempty"`
+}
+
+// checkpointKeyForRun is the state-store key of a run's conversation checkpoint.
+func checkpointKeyForRun(runName string) string {
+	return fmt.Sprintf("agentorca/runs/%s/state", runName)
 }
 
 // KnowledgeBaseConfig is a resolved KnowledgeBase ready for RAG queries.

@@ -79,6 +79,10 @@ type Router struct {
 	doneExplicit      bool // set to true when _done tool completes; short-circuits further LLM calls
 	failedExplicit    bool // set to true when _fail tool completes; short-circuits further LLM calls
 	resumedWithAnswer bool // set when a clarify answer was injected at startup; suppresses one auto-clarify cycle
+	// restartResume is set when this run resumed from its OWN checkpoint after a
+	// pod restart (#37): the agent runtime re-sends the original input, which
+	// the checkpoint already holds, so the duplicate is dropped.
+	restartResume bool
 
 	// liveBufferTokens caches the incremental token count of the combined
 	// priorMessages + messages buffer. Updated via incrementBufferTokens() on
@@ -234,6 +238,7 @@ func New(cfg *Config, store state.Store, initialMessages []json.RawMessage, exec
 		checkpointTTL:     checkpointTTL,
 		tokens:            NewTokenBroadcaster(),
 		resumedWithAnswer: answerInjected,
+		restartResume:     isRestartResume(cfg),
 		guardrails:        NewGuardrailPipeline(cfg.Guardrails),
 		toolTimeout:       time.Duration(cfg.Safeguards.ToolExecutionTimeoutSec) * time.Second,
 		cancelCtx:         cancelCtx,
@@ -769,6 +774,7 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 	r.mu.Lock()
 	prior := r.priorMessages
 	resumed := r.resumedWithAnswer
+	restartResume := r.restartResume
 	r.mu.Unlock()
 	if len(prior) > 0 {
 		alreadyInjected := len(chatReq.Messages) >= len(prior) &&
@@ -784,6 +790,12 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 				if last.Role == "user" {
 					chatReq.Messages = chatReq.Messages[:len(chatReq.Messages)-1]
 				}
+			}
+			// Same for a restart resume (#37), but only when the re-sent message
+			// is the input the checkpoint already holds — a genuinely new user
+			// message must still reach the model.
+			if restartResume && !resumed {
+				chatReq.Messages = dropResentUserInput(chatReq.Messages, prior)
 			}
 			chatReq.Messages = append(prior, chatReq.Messages...)
 		}
@@ -1642,6 +1654,29 @@ func (r *Router) checkpointBudget() int {
 		cw = 200000
 	}
 	return cw * 8 / 10
+}
+
+// isRestartResume reports whether cfg resumes the run's own checkpoint (pod
+// restart recovery) rather than a prior chat turn or nothing.
+func isRestartResume(cfg *Config) bool {
+	return cfg.ResumeCheckpointKey != "" && cfg.ResumeCheckpointKey == cfg.CheckpointKey
+}
+
+// dropResentUserInput removes the trailing user message of an incoming request
+// when the checkpoint already contains it as a user message: after a restart
+// the agent runtime re-sends the run's original input, and appending it again
+// would make the model restart the task from scratch (#37).
+func dropResentUserInput(incoming, prior []Message) []Message {
+	if len(incoming) == 0 || incoming[len(incoming)-1].Role != "user" {
+		return incoming
+	}
+	resent := fmt.Sprintf("%v", incoming[len(incoming)-1].Content)
+	for _, m := range prior {
+		if m.Role == "user" && fmt.Sprintf("%v", m.Content) == resent {
+			return incoming[:len(incoming)-1]
+		}
+	}
+	return incoming
 }
 
 // checkpoint saves the current conversation history to the state store.
@@ -4297,12 +4332,14 @@ func (r *Router) ClaimRun(input WarmRunInput) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.cfg.RunName = input.RunName
-	r.cfg.CheckpointKey = fmt.Sprintf("agentorca/runs/%s/state", input.RunName)
-	if input.PriorRunRef != "" {
-		r.cfg.ResumeCheckpointKey = fmt.Sprintf("agentorca/runs/%s/state", input.PriorRunRef)
-	} else {
-		r.cfg.ResumeCheckpointKey = ""
+	r.cfg.CheckpointKey = checkpointKeyForRun(input.RunName)
+	// An explicit resume key (restart recovery: the run's own checkpoint) wins
+	// over the chat-turn PriorRunRef chain; older operators only send the latter.
+	resumeKey := input.ResumeCheckpointKey
+	if resumeKey == "" && input.PriorRunRef != "" {
+		resumeKey = checkpointKeyForRun(input.PriorRunRef)
 	}
+	r.cfg.ResumeCheckpointKey = resumeKey
 	r.cfg.HTTPInput.RunName = input.RunName
 	r.cfg.HTTPInput.Input = input.Input
 
@@ -4319,18 +4356,19 @@ func (r *Router) ClaimRun(input WarmRunInput) {
 	r.doneExplicit = false
 	r.failedExplicit = false
 	r.resumedWithAnswer = false
+	r.restartResume = isRestartResume(r.cfg)
 	r.loopDetected = false
 	r.liveBufferTokens = 0
 
-	// Load prior run's conversation history for warm-mode continuation runs.
-	// This mirrors the checkpoint loading done at startup in main.go, but for
-	// pods that are reused via the warm pool rather than freshly launched.
-	if input.PriorRunRef != "" {
-		resumeKey := fmt.Sprintf("agentorca/runs/%s/state", input.PriorRunRef)
+	// Load the resume checkpoint (a prior chat turn, or this run's own state
+	// when it restarted) for warm-mode runs. This mirrors the checkpoint loading
+	// done at startup in main.go, but for pods reused via the warm pool rather
+	// than freshly launched.
+	if resumeKey != "" {
 		rawMsgs, err := r.store.LoadMessages(context.Background(), resumeKey)
 		if err != nil {
-			slog.Warn("could not load prior run checkpoint for warm continuation",
-				"err", err, "run", input.RunName, "priorRunRef", input.PriorRunRef)
+			slog.Warn("could not load checkpoint for warm run",
+				"err", err, "run", input.RunName, "resumeKey", resumeKey)
 		} else {
 			var msgs []Message
 			for _, raw := range rawMsgs {
@@ -4374,10 +4412,10 @@ func (r *Router) ClaimRun(input WarmRunInput) {
 		}
 	}
 
-	// Restore accumulated spend from the prior run so budget tracking and
-	// cost reporting remain accurate across warm-mode continuations.
-	if input.PriorRunRef != "" && r.store != nil {
-		resumeKey := fmt.Sprintf("agentorca/runs/%s/state", input.PriorRunRef)
+	// Restore accumulated spend from the resumed checkpoint so budget tracking
+	// and cost reporting remain accurate across warm-mode continuations and
+	// restarts (a restarted run must not get its budget cap reset to zero).
+	if resumeKey != "" && r.store != nil {
 		if priorSpend, err := r.store.LoadSpend(context.Background(), resumeKey); err == nil && priorSpend > 0 {
 			r.spendUSD = priorSpend
 			r.ruleRouter.UpdateSpend(priorSpend)
