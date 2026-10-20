@@ -461,6 +461,18 @@ function TraceRow({ entry, markdown }: { entry: TraceEntry; markdown: boolean })
         </div>
       )
     }
+    case 'truncation':
+      return (
+        <div style={{ ...row, background: 'var(--ds-trace-warning-bg)', borderRadius: 4, padding: '4px 8px', margin: '2px 0' }}>
+          <span style={muted}>{time}</span>
+          <Icon icon={ICON.database} size={14} color="var(--ds-warning)" />
+          <span style={{ ...content, color: '#fcd34d' }}>
+            <span style={hi}>context compacted</span> before send: ~{event.before.toLocaleString()} tokens
+            {event.after ? <> → ~{event.after.toLocaleString()}</> : null}
+            {event.budget ? <> (budget {event.budget.toLocaleString()})</> : null}
+          </span>
+        </div>
+      )
     default: {
       const t =
         event && typeof event === 'object' && 'type' in event

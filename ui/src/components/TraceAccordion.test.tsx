@@ -245,4 +245,26 @@ describe('TraceAccordion', () => {
     await openAccordion()
     expect(screen.getByText(/exhausted/)).toBeInTheDocument()
   })
+
+  // Regression for #42: the router's pre-send truncation must be visible in the
+  // web trace, not fall through to the unknown-event row.
+  it('renders truncation event with before/after/budget', async () => {
+    render(
+      <TraceAccordion
+        entries={[entry(0, { type: 'truncation', provider: 'openrouter', before: 1021745, after: 800000, budget: 838860 })]}
+      />,
+    )
+    await openAccordion()
+    expect(screen.getByText(/context compacted/)).toBeInTheDocument()
+    expect(screen.getByText(/1,021,745/)).toBeInTheDocument()
+    expect(screen.getByText(/800,000/)).toBeInTheDocument()
+    expect(screen.getByText(/budget 838,860/)).toBeInTheDocument()
+  })
+
+  it('renders truncation event without optional after/budget', async () => {
+    render(<TraceAccordion entries={[entry(0, { type: 'truncation', before: 5000 })]} />)
+    await openAccordion()
+    expect(screen.getByText(/context compacted/)).toBeInTheDocument()
+    expect(screen.queryByText(/budget/)).not.toBeInTheDocument()
+  })
 })
