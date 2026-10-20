@@ -47,7 +47,8 @@ import (
 //	{"type":"routing","model":"z-ai/glm-5.3-flash","provider":"openrouter-free",
 //	          "strategy":"rule-based","reason":"weighted random","confidence":0.5}
 //	{"type":"hindsight","op":"bank|recall|retain","bankID":"...","failed":false,"reason":"..."}
-//	{"type":"truncation","provider":"...","before":1021745,"after":313516,"budget":314363} (pre-send context compaction, issue #42)
+//	{"type":"truncation","provider":"...","before":1021745,"after":313516,"budget":314363}
+//	          (pre-send context compaction, issue #42)
 //
 // Terminal trace events (fail/finalOutput) are consumed by the bridge but NOT
 // re-emitted as session updates — the ACP run lifecycle events already end the
