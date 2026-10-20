@@ -170,7 +170,7 @@ func (b *acpBridge) emitTraceToolResult(sessionID string, ev acpTraceEvent) {
 	// A diff payload can only originate from a write relayed by this bridge
 	// (stashed in serveFSWrite); pop it before building the fallback text.
 	var content []acpToolCallContent
-	if ev.Name == fsWriteToolName && ev.BackendType == "builtin" {
+	if fsToolName(ev.Name) == fsWriteToolName && ev.BackendType == "builtin" {
 		if d := b.popSessionFSDiff(sessionID); d != nil {
 			content = []acpToolCallContent{d.toolCallContent()}
 		}
@@ -313,7 +313,7 @@ func acpToolKindFor(ev acpTraceEvent) string {
 	if ev.BackendType == "mcp" {
 		return acpToolKindOther
 	}
-	switch ev.Name {
+	switch fsToolName(ev.Name) {
 	case fsWriteToolName:
 		return acpToolKindEdit
 	case fsReadToolName, fsListToolName:

@@ -311,10 +311,9 @@ func (b *acpBridge) serveFSWrite(
 	// the fs_write_text_file tool_call entry, so the editor renders the edit
 	// instead of a bare confirmation. Deliberately after approval — the diff
 	// describes state the user just allowed to change — and best-effort: any
-	// failure leaves no diff and the write proceeds exactly as before.
-	if d := b.prepareFSDiff(ctx, sessionID, abs, p.Content); d != nil {
-		b.stashSessionFSDiff(sessionID, d)
-	}
+	// failure leaves no diff and the write proceeds exactly as before. A nil
+	// diff still replaces the slot so a stale one never attaches to this call.
+	b.stashSessionFSDiff(sessionID, b.prepareFSDiff(ctx, sessionID, abs, p.Content))
 	params := acpFSWriteParams{
 		SessionID: sessionID,
 		Path:      abs,
@@ -322,6 +321,9 @@ func (b *acpBridge) serveFSWrite(
 	}
 	msg, err := b.srv.sendRequest(ctx, acpMethodFSWrite, params)
 	if err != nil {
+		// The editor refused the write: drop the diff so the failed tool result
+		// never renders a change that did not happen.
+		b.popSessionFSDiff(sessionID)
 		b.respondFSErr(ctx, runID, fr.ID, -32000, err.Error())
 		return
 	}

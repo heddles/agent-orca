@@ -154,7 +154,8 @@ Additional properties:
   text file from the workspace (paths may be workspace-relative or absolute).
 - `fs_write_text_file(path, content)` → `{"written": true}` — creates or
   overwrites a file (only in `readWrite` mode). Writes are full-file
-  replacements; the editor may surface them as a diff to the user.
+  replacements on the wire; the bridge renders them in the editor as a
+  before/after diff (see below).
 
 ## Write diffs in the editor (issue #40)
 
@@ -173,7 +174,9 @@ replace:
    whole-file replace.
 3. Rendering is best-effort and capped (old/new payloads ≤ 100 KiB; no-op
    writes are skipped): anything that can't be diffed renders as a plain tool
-   result, exactly as before. The write itself, approval semantics, and the
+   result, exactly as before. Writes the editor refuses never render a diff
+   (the change did not happen), and a null/empty editor read falls back to the
+   on-disk content rather than rendering the original as deleted. The write itself, approval semantics, and the
    editor's role as arbiter are unchanged; readOnly agents never emit diffs.
 
 ## Observability

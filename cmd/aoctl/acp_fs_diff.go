@@ -63,6 +63,12 @@ const (
 	fsListToolName  = "fs_list_dir"
 )
 
+// fsToolName folds the router's legacy underscore aliases
+// ("_fs_write_text_file") onto the canonical fs tool names.
+func fsToolName(name string) string {
+	return strings.TrimPrefix(name, "_")
+}
+
 // fsDiffMaxBytes caps the old/new file sizes the bridge ships as diff
 // payloads. Above it the write renders as a plain tool result (the previous
 // behavior) — the diff is a rendering nicety, never a correctness or
@@ -108,10 +114,15 @@ func (b *acpBridge) readFSOriginal(ctx context.Context, sessionID, abs string) (
 		Path:      abs,
 	})
 	if err == nil {
-		var out acpFSReadResult
+		// Require an explicit content field: a null/{} result (seen from Zed on
+		// the write path) must not read as an empty file, which would render
+		// the whole original as deleted.
+		var out struct {
+			Content *string `json:"content"`
+		}
 		raw, _ := json.Marshal(msg.Result)
-		if json.Unmarshal(raw, &out) == nil {
-			return out.Content, true
+		if json.Unmarshal(raw, &out) == nil && out.Content != nil {
+			return *out.Content, true
 		}
 	}
 	raw, rerr := os.ReadFile(abs)
@@ -161,13 +172,15 @@ type fsDiffStore struct {
 var pendingFSDiffs = &fsDiffStore{m: map[string]*fsWriteDiff{}}
 
 // stashSessionFSDiff stores the diff computed for the in-flight write of a
-// session. nil is a no-op (a skipped diff never clobbers an earlier one).
+// session. nil clears the slot: a write whose diff was skipped must render as
+// a plain result, never inherit an earlier write's leftover diff.
 func (b *acpBridge) stashSessionFSDiff(sessionID string, d *fsWriteDiff) {
-	if d == nil {
-		return
-	}
 	pendingFSDiffs.mu.Lock()
 	defer pendingFSDiffs.mu.Unlock()
+	if d == nil {
+		delete(pendingFSDiffs.m, sessionID)
+		return
+	}
 	pendingFSDiffs.m[sessionID] = d
 }
 

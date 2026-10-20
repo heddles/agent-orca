@@ -176,6 +176,9 @@ type fsEditorClient struct {
 	elicitDecline     bool   // respond to the approval form with action "decline"
 	elicitAcceptEmpty bool   // respond accept with no form content (shape-tolerant clients)
 	elicitFail        bool   // fail the elicitation request (no editor support)
+	readNull          bool   // answer fs/read_text_file with a null result (Zed quirk)
+	// session/update notifications the bridge sent (issue #40 diff rendering).
+	updates []json.RawMessage
 }
 
 // run drives the fake editor loop until ctx is done.
@@ -198,10 +201,21 @@ func (e *fsEditorClient) run(ctx context.Context, out io.Reader, in io.Writer) {
 			fmt.Fprintf(os.Stderr, "fsEditor: undecodable line %q: %v\n", line, err)
 			continue
 		}
+		raw, _ := json.Marshal(msg.Params)
+		if msg.ID == nil && msg.Method == acpMethodSessionUpdate {
+			var up struct {
+				Update json.RawMessage `json:"update"`
+			}
+			if json.Unmarshal(raw, &up) == nil {
+				e.mu.Lock()
+				e.updates = append(e.updates, up.Update)
+				e.mu.Unlock()
+			}
+			continue
+		}
 		if msg.ID == nil || msg.Method == "" {
 			continue
 		}
-		raw, _ := json.Marshal(msg.Params)
 		switch msg.Method {
 		case acpMethodFSRead:
 			var p acpFSReadParams
@@ -209,6 +223,10 @@ func (e *fsEditorClient) run(ctx context.Context, out io.Reader, in io.Writer) {
 			e.mu.Lock()
 			e.reads = append(e.reads, p)
 			e.mu.Unlock()
+			if e.readNull {
+				e.reply(in, string(*msg.ID), nil)
+				continue
+			}
 			content := e.readOut
 			e.reply(in, string(*msg.ID), map[string]any{"content": content})
 		case acpMethodFSWrite:

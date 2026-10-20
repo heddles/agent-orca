@@ -38,9 +38,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reasoning byte-swallow counters so thinking text is neither duplicated nor lost.
 - **Write-approval ergonomics** — `aoctl acp serve --fs-remember-approval` stores
   the first approved write on the session record and skips subsequent write
-  elicitations for that session (default remains approve-per-write); the
-  approval-mode matrix (approve-per-write / remember-session / unattended) is
+  elicitations for that session (on by default — opt out with
+  `--fs-remember-approval=false` or force per-write prompts with
+  `--fs-require-approval`); the approval-mode matrix (approve-per-write / remember-session / unattended) is
   documented in `docs/filesystem-access.md` and `docs/aoctl-reference.md`.
+- **fs writes render as before/after diffs in the editor** — the bridge snapshots
+  the file being replaced (editor `fs/read_text_file` first so unsaved buffers
+  win, disk as fallback) and attaches an ACP `{"type":"diff"}` ToolCallContent to
+  the completed `fs_write_text_file` tool call with `kind: "edit"`; created files
+  render as a full add. The wire write stays a full-file `fs/write_text_file`;
+  payloads over 100 KiB, no-op writes, and editor-refused writes fall back to the
+  plain tool result (#40).
+- **Pre-send context compaction is visible** — a `truncation` trace event
+  (`before`/`after`/`budget`) is emitted whenever the router compacts a request
+  before sending; the bridge renders it as a "context compaction" note and the
+  web UI trace as a "context compacted" row (#42).
 - Operator API surface for the fs relay: internal endpoints
   `POST /agentrun/{ns}/{run}/fs` and `GET /agentrun/{ns}/{run}/fs/{id}`
   (SA-token authenticated, method whitelist) and ACP-API endpoints
@@ -80,6 +92,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   strict clients (previously rejected with `-32602 Invalid params`).
 
 ### Fixed
+
+- Pre-send context truncation never fired: the router's token estimate was
+  hardcoded to `0`, so over-window requests were forwarded verbatim, the provider
+  answered `400 context length exceeded`, and the identical oversized request was
+  replayed against every fallback provider. The estimate is now real and the
+  budget reserves the provider's `maxOutputTokens` (capped at half the window)
+  instead of a flat 1024-token reserve (#42).
 
 - Write-approval diagnostics: a failed elicitation round-trip (editor without
   elicitation support, transport error, timeout) is reported as a distinct
