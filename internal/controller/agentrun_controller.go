@@ -1082,7 +1082,6 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 			}
 			episodicMemory = router.EpisodicMemoryConfig{
 				SummaryProviderName: sumPW.Name,
-				SummaryModel:        sumMP.Spec.LiteLLMModel,
 			}
 		}
 	}

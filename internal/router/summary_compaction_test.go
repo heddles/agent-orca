@@ -241,7 +241,7 @@ func TestSummaryCompactionFallsBackToTruncation(t *testing.T) {
 		t.Fatalf("summary requests = %d, want 2", n)
 	}
 	done := eventsOfType(store, "truncation")
-	if len(done) != 1 || done[0]["mode"] != "degraded" || !strings.Contains(fmt.Sprint(done[0]["reason"]), "missing sections") {
+	if len(done) != 1 || done[0]["mode"] != compactionDegraded || !strings.Contains(fmt.Sprint(done[0]["reason"]), "missing sections") {
 		t.Fatalf("truncation events = %v, want one degraded with the reason", done)
 	}
 	if streamed, _ := provider.counts(); streamed != 1 {
@@ -418,5 +418,90 @@ func TestSummaryProvider(t *testing.T) {
 	r.cfg.EpisodicMemory.SummaryProviderName = "missing"
 	if got := r.summaryProvider(main); got != main {
 		t.Fatalf("unknown summary provider: got %q, want the request's", got.Name)
+	}
+}
+
+// Review fix 1 (#51): when the summary provider's window cannot hold a summary
+// request at all, no summary call is made (two certain rejections before) and
+// the oldest messages are dropped instead.
+func TestSummaryCompactionNoRoomSkipsProviderCall(t *testing.T) {
+	srv, provider := newSummaryProvider(t, validSummary("unused"))
+	store := newTestStore(t)
+	r := newStreamingTestRouter(t, srv.URL, writeKeyFile(t), store)
+	// 12k window: a 12k summary leaves no room. Trigger 9.6k, fallback target 6k.
+	r.cfg.Providers[0].ContextWindow = 12_000
+	r.mu.Lock()
+	r.priorMessages = bigMessages(4, 5000) // 20k tokens (over 16k chars each: estimated at 4 chars per token)
+	r.mu.Unlock()
+
+	consumeClientBody(t, r, userTurn(t, "next"))
+
+	if _, n := provider.counts(); n != 0 {
+		t.Fatalf("summary requests = %d, want 0 when no summary request can fit", n)
+	}
+	done := eventsOfType(store, "truncation")
+	if len(done) != 1 || done[0]["mode"] != compactionDegraded || !strings.Contains(fmt.Sprint(done[0]["reason"]), "no room for a summary request") {
+		t.Fatalf("truncation events = %v, want one degraded with the no-room reason", done)
+	}
+}
+
+// Review fix 2 (#51): a huge latest user message mid tool loop keeps only its
+// start and end in the tail and is summarized whole, so the compacted
+// conversation is not held over the trigger by it.
+func TestSplitTurnTailElidesOversizedUserMessage(t *testing.T) {
+	huge := "BEGIN " + strings.Repeat("y", 160_000) + " END" // ~40k tokens
+	msgs := []Message{
+		{Role: testRoleUser, Content: "old question"}, {Role: testRoleAssistant, Content: "old answer"},
+		{Role: testRoleUser, Content: huge},
+		{Role: testRoleAssistant, ToolCalls: []ToolCall{{ID: "c1", Function: FunctionCall{Name: "read"}}}},
+		{Role: "tool", ToolCallID: "c1", Content: "result"},
+	}
+	rest, tail := splitTurnTail(msgs, 10_000)
+	if got, want := roles(rest), "uau"; got != want || messageText(rest[2]) != huge {
+		t.Fatalf("rest roles = %q, want %q ending with the whole user message", got, want)
+	}
+	kept := messageText(tail[0])
+	if !strings.HasPrefix(kept, "BEGIN") || !strings.HasSuffix(kept, "END") || countTokens(kept) > pinnedTaskMaxTokens+100 {
+		t.Fatalf("tail keeps %d tokens of the user message, want its start and end within ~%d", countTokens(kept), pinnedTaskMaxTokens)
+	}
+	if got, want := roles(tail), "uat"; got != want {
+		t.Fatalf("tail roles = %q, want %q", got, want)
+	}
+}
+
+// Review fix 2 (#51): a conversation barely grown since the last compaction is
+// not compacted again, so an irreducible conversation cannot trigger a
+// summary call on every request.
+func TestCompactionNotRepeatedWhenBarelyGrown(t *testing.T) {
+	r, provider, store := summaryTestRouter(t, validSummary("unused"))
+	stored := storedConversation(r)
+	r.mu.Lock()
+	r.lastCompactedTokens = estimateTokens(stored) - 1000 // grown by 1k; tail budget is 5k
+	r.mu.Unlock()
+
+	consumeClientBody(t, r, userTurn(t, "next"))
+
+	if _, n := provider.counts(); n != 0 {
+		t.Fatalf("summary requests = %d, want 0", n)
+	}
+	if n := len(eventsOfType(store, "compaction.started")); n != 0 {
+		t.Fatalf("compaction.started events = %d, want 0", n)
+	}
+}
+
+// Review nit 2 (#51): a mistyped mode falls back to summary (with a warning)
+// rather than being silently treated as a valid choice.
+func TestConfigFromEnv_UnknownCompactionMode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "router-config.json")
+	if err := os.WriteFile(path, []byte(`{"contextCompactionMode":"truncte"}`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("AGENTORC_ROUTER_CONFIG", path)
+	cfg, err := ConfigFromEnv()
+	if err != nil {
+		t.Fatalf("ConfigFromEnv: %v", err)
+	}
+	if cfg.ContextCompactionMode != compactionModeSummary {
+		t.Fatalf("mode = %q, want summary", cfg.ContextCompactionMode)
 	}
 }

@@ -876,7 +876,6 @@ func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig( //nolint:gocycl
 			if err := r.Get(ctx, client.ObjectKey{Name: sumPW.Name, Namespace: deploy.Namespace}, &sumMP); err == nil {
 				episodicMemory = router.EpisodicMemoryConfig{
 					SummaryProviderName: sumPW.Name,
-					SummaryModel:        sumMP.Spec.LiteLLMModel,
 				}
 			}
 		}

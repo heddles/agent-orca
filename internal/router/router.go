@@ -95,6 +95,10 @@ type Router struct {
 	// priorMessages + messages buffer. Updated via incrementBufferTokens() on
 	// every append and re-counted when a turn is folded or compacted.
 	liveBufferTokens int
+	// lastCompactedTokens is the stored conversation's size right after the
+	// last compaction (0 = none this run); compactStoredConversation does not
+	// compact again until the conversation has grown materially past it.
+	lastCompactedTokens int
 
 	// tokens broadcasts streaming LLM content to external subscribers
 	// (e.g. the operator's SSE stream handler) without going through pod logs.
@@ -4317,6 +4321,7 @@ func (r *Router) ClaimRun(input WarmRunInput) {
 	r.restartResume = input.Restart
 	r.loopDetected = false
 	r.liveBufferTokens = 0
+	r.lastCompactedTokens = 0
 
 	// Load the resume checkpoint (a prior chat turn, or this run's own state
 	// when it restarted) for warm-mode runs. This mirrors the checkpoint loading

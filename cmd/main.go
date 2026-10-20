@@ -276,6 +276,10 @@ func main() {
 	// modelRouter.contextCompaction{Threshold,Mode,Ratio}.
 	compactionThreshold := parseFractionEnv("CONTEXT_COMPACTION_THRESHOLD")
 	compactionMode := strings.TrimSpace(os.Getenv("CONTEXT_COMPACTION_MODE"))
+	if compactionMode != "" && compactionMode != "summary" && compactionMode != "truncate" {
+		setupLog.Info("WARNING: unrecognized CONTEXT_COMPACTION_MODE; routers will use summary",
+			"mode", compactionMode, "valid", "summary|truncate")
+	}
 	compactionRatio := parseFractionEnv("CONTEXT_COMPACTION_RATIO")
 	if compactionRatio > 0 && compactionMode != "truncate" {
 		setupLog.Info("CONTEXT_COMPACTION_RATIO is deprecated: summary compaction has no fixed target, "+

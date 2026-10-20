@@ -37,6 +37,10 @@ import (
 const (
 	compactionModeSummary  = "summary"
 	compactionModeTruncate = "truncate"
+	// Compaction results reported in the trace event besides the modes: a
+	// summary that fell back to truncation, and no compaction at all.
+	compactionDegraded = "degraded"
+	compactionSkipped  = "skipped"
 
 	// pinnedTaskOpen opens the system message that keeps the conversation's
 	// original task verbatim across compactions.
@@ -47,7 +51,8 @@ const (
 	summaryOpenFmt    = summaryOpenPrefix + "%d — replaces %d earlier messages]\n"
 
 	// pinnedTaskMaxTokens caps the verbatim original task; a longer one keeps
-	// its start and end and the summary covers the middle.
+	// its start and end and the summary covers the middle. The latest user
+	// message kept mid tool loop is capped the same way.
 	pinnedTaskMaxTokens = 8000
 	// summaryMaxTokens caps the summary (and the provider's MaxOutputTokens).
 	summaryMaxTokens = 12000
@@ -104,9 +109,20 @@ func (r *Router) compactStoredConversation(ctx context.Context, provider *Provid
 	// cannot change before it is replaced below.
 	r.mu.Lock()
 	stored := slices.Concat(r.priorMessages, r.messages)
+	lastCompacted := r.lastCompactedTokens
 	r.mu.Unlock()
 	before := estimateTokens(stored)
 	if len(stored) == 0 || preambleTokens+before+turnTokens <= b.trigger {
+		return false
+	}
+	// A conversation that has barely grown since the last compaction cannot
+	// be made materially smaller (on a small window the pinned task, summary
+	// and tail alone can exceed the trigger), so compacting again would repeat
+	// a summary call on every request. fitRequestToProvider still keeps each
+	// request within the window.
+	if lastCompacted > 0 && before-lastCompacted < r.tailBudget(provider) {
+		slog.Debug("conversation over the compaction trigger but barely grown since the last compaction; not compacting again",
+			"run", r.cfg.RunName, "tokens", before, "lastCompacted", lastCompacted)
 		return false
 	}
 
@@ -142,7 +158,7 @@ func (r *Router) compactStoredConversation(ctx context.Context, provider *Provid
 		// The new input alone leaves no room (fitRequestToProvider shrinks it
 		// per request), or nothing could be cut.
 		r.emitCompactionEvent(map[string]any{
-			"type": "truncation", "mode": "skipped", "provider": provider.Name,
+			"type": "truncation", "mode": compactionSkipped, "provider": provider.Name,
 			"before": preambleTokens + before + turnTokens, "trigger": b.trigger, "reason": reason,
 		})
 		return false
@@ -153,11 +169,12 @@ func (r *Router) compactStoredConversation(ctx context.Context, provider *Provid
 	r.priorMessages = compacted
 	r.messages = nil
 	r.liveBufferTokens = after
+	r.lastCompactedTokens = after
 	r.mu.Unlock()
 
 	result := mode
 	if mode == compactionModeSummary && summary == "" {
-		result = "degraded"
+		result = compactionDegraded
 	}
 	slog.Warn("compacted stored conversation",
 		"run", r.cfg.RunName,
@@ -219,13 +236,12 @@ func (r *Router) summarizeConversation(ctx context.Context, provider *ProviderCo
 	pinned, toSummarize := pinnedTask(stored)
 	var tail []Message
 	if isContinuation {
-		toSummarize, tail = splitTurnTail(toSummarize, r.tailBudget(provider))
 		// A single long turn: the original task is the latest user message,
-		// which the tail already keeps verbatim.
-		if pinned != nil && len(tail) > 0 &&
-			messageText(*pinned) == pinnedTaskOpen+elideMiddle(canonicalUserText(tail[0].Content), pinnedTaskMaxTokens) {
+		// which the tail already keeps, so do not pin it twice.
+		if pinned != nil && !slices.ContainsFunc(stored, isPinnedTask) && countUserMessages(stored) == 1 {
 			pinned = nil
 		}
+		toSummarize, tail = splitTurnTail(toSummarize, r.tailBudget(provider))
 	}
 	if len(toSummarize) == 0 {
 		return nil, "", errors.New("nothing to summarize")
@@ -241,8 +257,19 @@ func (r *Router) summarizeConversation(ctx context.Context, provider *ProviderCo
 	// is dropped first and the summary covers the rest.
 	replaced := len(toSummarize)
 	b := r.contextBudgetFor(provider, chatReq.Tools)
-	if room := b.hardLimit - b.toolTokens - maxTokens - estimateTokens(preamble) - 1024; estimateTokens(toSummarize) > room {
+	room := b.hardLimit - b.toolTokens - maxTokens - estimateTokens(preamble) - 1024
+	if room <= 0 {
+		// truncateHistory is a no-op on a non-positive budget, so the full
+		// conversation would be sent to a window that cannot hold it: two
+		// rejected calls before the fallback. Fail before any call instead.
+		return nil, "", fmt.Errorf("no room for a summary request on provider %s: %d-token window, %d tool tokens, %d-token preamble, %d-token summary",
+			provider.Name, b.hardLimit, b.toolTokens, estimateTokens(preamble), maxTokens)
+	}
+	if estimateTokens(toSummarize) > room {
 		toSummarize = truncateHistory(toSummarize, room)
+		if estimateTokens(toSummarize) > room {
+			return nil, "", fmt.Errorf("conversation does not fit a summary request on provider %s (%d-token budget)", provider.Name, room)
+		}
 	}
 	instruction := fmt.Sprintf(summaryInstructionFmt, strings.Join(summarySections, "\n"), maxTokens)
 	req := ChatCompletionRequest{
@@ -251,6 +278,9 @@ func (r *Router) summarizeConversation(ctx context.Context, provider *ProviderCo
 		Tools:     chatReq.Tools,
 		MaxTokens: maxTokens,
 	}
+	// tool_choice "none" keeps OpenAI-compatible providers from answering with
+	// a tool call. The native Anthropic path (forwardToAnthropic) never sends a
+	// tools array, so no tool_choice mapping is needed there.
 	if len(req.Tools) > 0 {
 		req.ToolChoice = "none"
 	}
@@ -308,6 +338,17 @@ func missingSummarySections(summary string) []string {
 	return missing
 }
 
+// countUserMessages counts the user messages in msgs.
+func countUserMessages(msgs []Message) int {
+	n := 0
+	for _, m := range msgs {
+		if m.Role == "user" {
+			n++
+		}
+	}
+	return n
+}
+
 // isPinnedTask reports whether m is the pinned original-task message.
 func isPinnedTask(m Message) bool {
 	return m.Role == "system" && strings.HasPrefix(messageText(m), pinnedTaskOpen)
@@ -316,7 +357,9 @@ func isPinnedTask(m Message) bool {
 // pinnedTask returns the message pinning the conversation's original task (an
 // existing pinned message, else one built from the first user message) and the
 // conversation without an existing pinned message. It returns nil when there
-// is no user message with text.
+// is no user message with text. A freshly built pin leaves the first user
+// message in the returned conversation on purpose: it is summarized too, so
+// the summary's Goal section can restate it alongside later context.
 func pinnedTask(stored []Message) (*Message, []Message) {
 	for i, m := range stored {
 		if isPinnedTask(m) {
@@ -360,7 +403,10 @@ func elideMiddle(text string, maxTokens int) string {
 // the last tailToolGroups assistant groups after it (an assistant message plus
 // its tool results), dropping the oldest of those groups while they exceed
 // maxTokens. The rest is returned for summarizing; the groups between the
-// user message and the kept ones are summarized too.
+// user message and the kept ones are summarized too. A latest user message
+// over pinnedTaskMaxTokens keeps only its start and end in the tail and goes
+// to the summary whole: kept verbatim, it alone could hold the compacted
+// conversation over the trigger, so every continuation would re-compact.
 func splitTurnTail(msgs []Message, maxTokens int) (rest, tail []Message) {
 	u := -1
 	for i := len(msgs) - 1; i >= 0; i-- {
@@ -385,8 +431,17 @@ func splitTurnTail(msgs []Message, maxTokens int) (rest, tail []Message) {
 			break
 		}
 	}
-	rest = slices.Concat(msgs[:u], msgs[u+1:keepFrom])
-	tail = slices.Concat([]Message{msgs[u]}, msgs[keepFrom:])
+	latest, summarizeLatest := msgs[u], false
+	if text, ok := latest.Content.(string); ok && countTokens(text) > pinnedTaskMaxTokens {
+		latest.Content = elideMiddle(text, pinnedTaskMaxTokens)
+		summarizeLatest = true
+	}
+	restEnd := u
+	if summarizeLatest {
+		restEnd = u + 1
+	}
+	rest = slices.Concat(msgs[:restEnd], msgs[u+1:keepFrom])
+	tail = slices.Concat([]Message{latest}, msgs[keepFrom:])
 	return rest, tail
 }
 

@@ -363,8 +363,6 @@ type EpisodicMemoryConfig struct {
 	// SummaryProviderName names the provider that writes compaction summaries;
 	// used only when it is one of Providers.
 	SummaryProviderName string `json:"summaryProviderName,omitempty"`
-	// SummaryModel is the LiteLLM model identifier for summarization.
-	SummaryModel string `json:"summaryModel,omitempty"`
 }
 
 // LongTermMemoryConfig wires a KnowledgeBase as the agent's persistent long-term memory.
@@ -547,7 +545,15 @@ func ConfigFromEnv() (*Config, error) {
 	if cfg.ContextCompactionThreshold <= 0 || cfg.ContextCompactionThreshold >= 1.0 {
 		cfg.ContextCompactionThreshold = 0.8
 	}
-	if cfg.ContextCompactionMode != compactionModeTruncate {
+	switch cfg.ContextCompactionMode {
+	case compactionModeSummary, compactionModeTruncate:
+	default:
+		if cfg.ContextCompactionMode != "" {
+			// Keep the rollback switch trustworthy: a typo silently selecting
+			// the default would look like "truncate" did not work.
+			slog.Warn("unrecognized contextCompactionMode; using summary",
+				"mode", cfg.ContextCompactionMode, "valid", compactionModeSummary+"|"+compactionModeTruncate)
+		}
 		cfg.ContextCompactionMode = compactionModeSummary
 	}
 	if cfg.EpisodicMemory.SummaryEvery > 0 {
