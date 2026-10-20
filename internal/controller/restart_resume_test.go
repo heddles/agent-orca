@@ -82,3 +82,21 @@ func TestWarmRunInput_RestartCarriesOwnCheckpoint(t *testing.T) {
 		t.Fatalf("first claim of a chat turn must resume the prior run, got %q", got)
 	}
 }
+
+func TestFallbackCheckpointKey(t *testing.T) {
+	run := &agentorcav1alpha1.AgentRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "run-1"},
+		Spec:       agentorcav1alpha1.AgentRunSpec{PriorRunRef: "prev"},
+	}
+	if got := fallbackCheckpointKey(run); got != "" {
+		t.Fatalf("first start resumes the prior run directly; want no fallback, got %q", got)
+	}
+	run.Status.RestartCount = 1
+	if got := fallbackCheckpointKey(run); got != "agentorca/runs/prev/state" {
+		t.Fatalf("restarted chat turn must fall back to the prior run, got %q", got)
+	}
+	run.Spec.PriorRunRef = ""
+	if got := fallbackCheckpointKey(run); got != "" {
+		t.Fatalf("no prior run, no fallback; got %q", got)
+	}
+}

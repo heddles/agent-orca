@@ -1036,6 +1036,7 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 		checkpointEvery = agent.Spec.Memory.CheckpointEvery
 	}
 	resumeKey := resumeCheckpointKey(run)
+	fallbackKey := fallbackCheckpointKey(run)
 
 	// Resolve safeguards from AgentRun spec.
 	var safeguards router.RouterSafeguards
@@ -1141,6 +1142,7 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 		CheckpointEvery:        checkpointEvery,
 		CheckpointKey:          fmt.Sprintf("agentorca/runs/%s/state", run.Name),
 		ResumeCheckpointKey:    resumeKey,
+		FallbackCheckpointKey:  fallbackKey,
 		StateConfig:            r.StateConfig,
 		KubeAPIURL:             "https://kubernetes.default.svc",
 		OperatorAPIURL:         r.OperatorAPIURL,
@@ -2179,6 +2181,17 @@ func resumeCheckpointKey(run *agentorcav1alpha1.AgentRun) string {
 		return run.Status.CheckpointRef
 	}
 	if run.Spec.PriorRunRef != "" {
+		return fmt.Sprintf("agentorca/runs/%s/state", run.Spec.PriorRunRef)
+	}
+	return ""
+}
+
+// fallbackCheckpointKey is what a restarted chat turn loads when it died
+// before writing its own first checkpoint: the prior turn's history. Empty for
+// non-restarts (resumeCheckpointKey already points at the prior run) and for
+// runs with no prior turn.
+func fallbackCheckpointKey(run *agentorcav1alpha1.AgentRun) string {
+	if run.Status.RestartCount > 0 && run.Spec.PriorRunRef != "" {
 		return fmt.Sprintf("agentorca/runs/%s/state", run.Spec.PriorRunRef)
 	}
 	return ""

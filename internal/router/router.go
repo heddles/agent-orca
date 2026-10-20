@@ -1656,6 +1656,20 @@ func (r *Router) checkpointBudget() int {
 	return cw * 8 / 10
 }
 
+// LoadResumeMessages loads the conversation checkpoint at key, falling back to
+// fallback when key holds nothing (a run that restarted before writing its
+// first checkpoint). It returns the key the messages actually came from so
+// callers restore spend from the same checkpoint.
+func LoadResumeMessages(ctx context.Context, store state.Store, key, fallback string) ([]json.RawMessage, string, error) {
+	msgs, err := store.LoadMessages(ctx, key)
+	if err == nil && len(msgs) == 0 && fallback != "" && fallback != key {
+		slog.Info("resume checkpoint empty, falling back", "key", key, "fallback", fallback)
+		msgs, err = store.LoadMessages(ctx, fallback)
+		return msgs, fallback, err
+	}
+	return msgs, key, err
+}
+
 // isRestartResume reports whether cfg resumes the run's own checkpoint (pod
 // restart recovery) rather than a prior chat turn or nothing.
 func isRestartResume(cfg *Config) bool {
@@ -4365,7 +4379,12 @@ func (r *Router) ClaimRun(input WarmRunInput) {
 	// done at startup in main.go, but for pods reused via the warm pool rather
 	// than freshly launched.
 	if resumeKey != "" {
-		rawMsgs, err := r.store.LoadMessages(context.Background(), resumeKey)
+		fallback := ""
+		if input.PriorRunRef != "" {
+			fallback = checkpointKeyForRun(input.PriorRunRef)
+		}
+		rawMsgs, usedKey, err := LoadResumeMessages(context.Background(), r.store, resumeKey, fallback)
+		resumeKey = usedKey
 		if err != nil {
 			slog.Warn("could not load checkpoint for warm run",
 				"err", err, "run", input.RunName, "resumeKey", resumeKey)

@@ -85,7 +85,8 @@ func main() { //nolint:gocyclo
 	var initialMessages []json.RawMessage
 	if cfg.ResumeCheckpointKey != "" {
 		slog.Info("resuming from checkpoint", "key", cfg.ResumeCheckpointKey)
-		initialMessages, err = store.LoadMessages(context.Background(), cfg.ResumeCheckpointKey)
+		initialMessages, _, err = router.LoadResumeMessages(context.Background(), store,
+			cfg.ResumeCheckpointKey, cfg.FallbackCheckpointKey)
 		if err != nil {
 			slog.Warn("could not load checkpoint, starting fresh", "err", err)
 		}
@@ -163,7 +164,8 @@ func main() { //nolint:gocyclo
 			r.ClaimRun(input)
 			bindExecutor(input.RunName)
 			w.WriteHeader(http.StatusOK)
-			slog.Info("warm pod claimed", "run", input.RunName, "priorRun", input.PriorRunRef)
+			slog.Info("warm pod claimed", "run", input.RunName, "priorRun", input.PriorRunRef,
+				"resumeKey", input.ResumeCheckpointKey)
 			// Signal the http-input goroutine to process this run. Non-blocking: if the
 			// goroutine is still driving a previous claim (only possible if the
 			// warm-pool controller mis-labels a busy pod as idle), drop the signal and

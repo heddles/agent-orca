@@ -79,6 +79,10 @@ type Config struct {
 	CheckpointKey string
 	// ResumeCheckpointKey is the checkpoint key to load on startup (empty = fresh start).
 	ResumeCheckpointKey string
+	// FallbackCheckpointKey is loaded when ResumeCheckpointKey holds nothing:
+	// a restarted chat turn that died before its first checkpoint must still
+	// start from the prior turn's history rather than lose the conversation.
+	FallbackCheckpointKey string
 
 	// StateConfig is the connection config for the conversation state store.
 	StateConfig state.Config

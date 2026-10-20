@@ -165,3 +165,41 @@ func TestDropResentUserInput(t *testing.T) {
 		t.Fatalf("trailing tool message must be untouched, got %+v", got)
 	}
 }
+
+// A chat turn that restarts before writing its first checkpoint must fall back
+// to the prior turn's history (and spend) rather than lose the conversation.
+func TestClaimRun_RestartBeforeFirstCheckpointFallsBackToPrior(t *testing.T) {
+	store := newKeyedCheckpointStore(t)
+	store.put(t, checkpointKeyForRun("prior"), 0.10, Message{Role: "user", Content: "previous turn"})
+
+	r := newClaimTestRouter(store)
+	defer r.cancelFunc()
+	r.ClaimRun(WarmRunInput{
+		RunName: "run-1", Input: "next question", PriorRunRef: "prior",
+		ResumeCheckpointKey: checkpointKeyForRun("run-1"), // own checkpoint: empty
+	})
+
+	if len(r.priorMessages) != 1 || r.priorMessages[0].Content != "previous turn" {
+		t.Fatalf("want the prior turn's history, got %+v", r.priorMessages)
+	}
+	if r.spendUSD != 0.10 {
+		t.Fatalf("spend must come from the checkpoint actually loaded, got %v", r.spendUSD)
+	}
+}
+
+func TestLoadResumeMessages(t *testing.T) {
+	store := newKeyedCheckpointStore(t)
+	store.put(t, "own", 0, Message{Role: "user", Content: "own"})
+	store.put(t, "prior", 0, Message{Role: "user", Content: "prior"})
+	ctx := context.Background()
+
+	if msgs, key, _ := LoadResumeMessages(ctx, store, "own", "prior"); key != "own" || len(msgs) != 1 {
+		t.Fatalf("non-empty primary must win, got key %q (%d msgs)", key, len(msgs))
+	}
+	if msgs, key, _ := LoadResumeMessages(ctx, store, "missing", "prior"); key != "prior" || len(msgs) != 1 {
+		t.Fatalf("empty primary must fall back, got key %q (%d msgs)", key, len(msgs))
+	}
+	if msgs, key, _ := LoadResumeMessages(ctx, store, "missing", ""); key != "missing" || len(msgs) != 0 {
+		t.Fatalf("no fallback: want empty from primary, got key %q (%d msgs)", key, len(msgs))
+	}
+}
