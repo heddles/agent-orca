@@ -362,3 +362,43 @@ func benchConversation() []Message {
 	}
 	return msgs
 }
+
+// Regression for #47 (seen live on the cluster): liveBufferTokens added the
+// provider's whole prompt count every turn, on top of the stored conversation it
+// already counted, and concludeTurn trusted it without re-checking. A 600K-token
+// conversation in a 1M window (800K budget) was cut to 300K at turn end.
+func TestConcludeTurnIgnoresInflatedTokenCache(t *testing.T) {
+	r := &Router{cfg: &Config{
+		Providers:              []ProviderConfig{{Name: "p", ContextWindow: 1_000_000}},
+		ContextCompactionRatio: 0.3,
+	}}
+	r.priorMessages = bigMessages(4, 150_000) // 600K tokens, under the 800K budget
+	r.liveBufferTokens = 1_100_000            // stale, over the budget
+	r.mu.Lock()
+	r.concludeTurn()
+	r.mu.Unlock()
+	r.waitForCompaction()
+	if got := len(storedConversation(r)); got != 4 {
+		t.Fatalf("stored conversation has %d messages after concludeTurn, want all 4 kept", got)
+	}
+	if want := estimateTokens(storedConversation(r)); r.liveBufferTokens != want {
+		t.Fatalf("liveBufferTokens = %d, want the re-scanned %d", r.liveBufferTokens, want)
+	}
+}
+
+// liveBufferTokens tracks the stored conversation across turns, not the size
+// of the requests sent (which also carry the preamble and tool definitions).
+func TestLiveBufferTokensTrackStoredConversation(t *testing.T) {
+	srv, _ := newSequenceProvider(t, textTurnSSE("stop"), textTurnSSE("stop"), textTurnSSE("stop"))
+	r := newStreamingTestRouter(t, srv.URL, writeKeyFile(t), newTestStore(t))
+	r.cfg.SystemPrompt = strings.Repeat("Be careful. ", 2000)
+	for i := 1; i <= 3; i++ {
+		consumeClientBody(t, r, userTurn(t, fmt.Sprintf("question %d %s", i, strings.Repeat("y", 40_000))))
+		r.mu.Lock()
+		got := r.liveBufferTokens
+		r.mu.Unlock()
+		if want := estimateTokens(storedConversation(r)); got != want {
+			t.Fatalf("turn %d: liveBufferTokens = %d, want the stored conversation's %d", i, got, want)
+		}
+	}
+}

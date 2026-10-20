@@ -542,13 +542,17 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 	// injected preamble, and storing it doubled the history every turn (#47).
 	streamIsContinuation := req.Context().Value(continuationKey{}) != nil
 	r.mu.Lock()
+	// liveBufferTokens counts the stored conversation, so add only what is
+	// stored. usage.PromptTokens is the whole request (stored history,
+	// preamble, tools): adding it double-counted the history and tripped the
+	// live-buffer compaction far below its budget (#47).
 	if !streamIsContinuation {
 		turnInput, _ := req.Context().Value(turnInputKey{}).([]Message)
 		r.messages = append(r.messages, turnInput...)
-		r.incrementBufferTokens(usage.PromptTokens)
+		r.incrementBufferTokens(estimateTokens(turnInput))
 	}
 	r.messages = append(r.messages, assistantMsg)
-	r.incrementBufferTokens(usage.CompletionTokens)
+	r.incrementBufferTokens(messageTokens(assistantMsg))
 	r.updateSpend(usage, provider)
 	r.ruleRouter.IncrementTurn()
 	// concludeTurn folds the finished turn and caps the buffer. It is gated to

@@ -1526,10 +1526,10 @@ func (r *Router) concludeTurn() {
 		needsTrunc := false
 		if cached > 0 {
 			switch {
-			case cached > budget:
-				needsTrunc = true
 			case cached > int(float64(budget)*r.cfg.proactiveThreshold()):
-				// Near proactive threshold — full scan to confirm.
+				// At or over the threshold: confirm with a full scan before
+				// compacting. Token counts are memoised, so this is cheap, and
+				// a stale cache must never trigger a cut on its own (#47).
 				fullEst := estimateTokens(combined)
 				r.liveBufferTokens = fullEst
 				if fullEst > budget {
