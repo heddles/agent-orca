@@ -123,6 +123,26 @@ type ACPAgentManifest struct {
 	KnowledgeBases     []string       `json:"knowledge_bases,omitempty"`
 	GuardrailPolicy    string         `json:"guardrail_policy,omitempty"`
 	ClarifyAvailable   bool           `json:"clarify_available"`
+
+	// Filesystem is the agent's ACP fs/* relay policy (issue #34). nil means
+	// the agent has no filesystem tools and the bridge polls nothing.
+	Filesystem *ACPFSPolicy `json:"filesystem,omitempty"`
+}
+
+// ACPFSPolicy mirrors the filesystem policy in the ACP agent manifest.
+type ACPFSPolicy struct {
+	Mode          string `json:"mode"` // "readOnly" | "readWrite"
+	WriteApproval bool   `json:"writeApproval,omitempty"`
+	// RememberApproval false = the agent requires approval for every write
+	// (issue #41); nil (older operators, or unset) leaves it to the bridge flag.
+	RememberApproval *bool `json:"rememberApproval,omitempty"`
+}
+
+// rememberAllowed reports whether the agent policy lets the bridge remember a
+// write approval for the rest of the session. nil policy fields defer to the
+// workstation flag.
+func (p *ACPFSPolicy) rememberAllowed() bool {
+	return p == nil || p.RememberApproval == nil || *p.RememberApproval
 }
 
 // ACPToolInfo mirrors the tool info in the ACP agent manifest.
@@ -887,16 +907,19 @@ type settings struct {
 	status        string
 	id            string //nolint:unused
 
-	sessionID         string
-	allowedNamespaces []string
-	allowedAgents     []string
-	rpm               int
-	concurrent        int
-	budgetPerDay      string
-	file              string // --file: read input from a file instead of --input/stdin
-	contentType       string // --content-type: MIME type for the message part (default text/plain)
-	editor            string // --editor: editor to configure for `acp setup` (e.g. zed)
-	out, errw         io.Writer
+	sessionID          string
+	allowedNamespaces  []string
+	allowedAgents      []string
+	rpm                int
+	concurrent         int
+	budgetPerDay       string
+	file               string   // --file: read input from a file instead of --input/stdin
+	contentType        string   // --content-type: MIME type for the message part (default text/plain)
+	editor             string   // --editor: editor to configure for `acp setup` (e.g. zed)
+	fsRoots            []string // --fs-roots: extra workspace roots for the ACP fs/* relay
+	fsRequireApproval  bool     // --fs-require-approval: elicit user approval per workspace write
+	fsRememberApproval bool     // --fs-remember-approval: first approved write auto-allows the session
+	out, errw          io.Writer
 
 	// OIDC interactive-login fields. authMethod/issuerURL/redirectURI/noBrowser
 	// mirror the login flags; `in`, `isTerminal` and `openBrowser` are the

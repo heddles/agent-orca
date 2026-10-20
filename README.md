@@ -24,7 +24,7 @@ Agent orcastrator is a Kubernetes-native platform for deploying, managing, and r
 ## Quick Start
 
 **Quick-start prerequisites:**
->__NOTE__: You need to activate mise in your shell for this to work. Here is an zsh example: `echo 'eval "$(mise activate zsh)"' >> ~/.zshr`
+>__NOTE__: You need to activate mise in your shell for this to work. Here is an zsh example: `echo 'eval "$(mise activate zsh)"' >> ~/.zshrc`
 1. Install `mise` via Homebrew: `brew install mise`
 1. Bootstrap the environment: `sudo mise install --system`
 1. Ensure Docker is running.
@@ -112,6 +112,7 @@ In-depth guides, organized by audience. **Developers** start with the first bloc
 | [AgentWorkflow](docs/agentworkflow.md) | Developers | Declarative DAG orchestration |
 | [RAG / KnowledgeBase](docs/rag.md) | Developers | Vector store integration and built-in tools (`_rag_search`, `_rag_ingest`) |
 | [MCP Access Control](docs/mcp-access-control.md) | Developers / Operators | MCP server security, tool exposure, and HTTP bearer-token auth |
+| [Filesystem Access](docs/filesystem-access.md) | Developers / Operators | ACP `fs/*` relay: agents read/edit the user's local workspace via the editor bridge |
 | [Local Model Selection](docs/local-model-selection.md) | Developers | Running with local/Ollama models via LiteLLM |
 | [AI Task Testing](docs/testing-tools.md) | Developers | Test agents, evals, and the `hack/test-agents.sh` harness |
 | [UI Testing](docs/ui-testing.md) | Developers | Running UI unit/e2e (Vitest + Playwright) tests |

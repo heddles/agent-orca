@@ -221,6 +221,35 @@ Get the status and output of a run.
 }
 ```
 
+Live streaming (Server-Sent Events): while the run is in progress, requesting
+`Accept: text/event-stream` streams live updates instead of the JSON body.
+Beyond message parts, the stream forwards the model-router's **trace events** —
+tool calls/results, guardrails, provider fallbacks, MCP discovery, and the
+router/operator's own infrastructure decisions — as `event: trace` frames
+whose `data` payload is the raw trace event JSON:
+
+```
+event: trace
+data: {"type":"toolCall","name":"issue_read","backendType":"mcp","backendRef":"github-mcp"}
+```
+
+Infrastructure events (`routing`, `hindsight`) surface the model-router's
+background decisions — which model was selected, memory-system recall/retain —
+so clients can show why a run is silent before the first token arrives:
+
+```
+event: trace
+data: {"type":"routing","model":"z-ai/glm-5.3-flash","provider":"openrouter-free","strategy":"rule-based","reason":"weighted random","confidence":0.5}
+event: trace
+data: {"type":"hindsight","op":"recall","bankID":"agent-orca-system--senior-programmer-chat"}
+event: trace
+data: {"type":"truncation","provider":"openrouter-free","before":1021745,"after":313516,"budget":314366}
+```
+
+A terminal trace event (`fail` / `finalOutput`) marks the true end of the
+turn: the stream stops and `run.completed` follows. Editors driving the ACP
+bridge render these as live activity instead of a spinner.
+
 ## GET /runs/{run_id}/events
 
 List events for a run (ACP event stream).
@@ -228,6 +257,22 @@ List events for a run (ACP event stream).
 ## POST /runs/{run_id}/cancel
 
 Cancel a running task.
+
+## GET /runs/{run_id}/fs/pending
+
+List the ACP `fs/*` requests the run has queued for the workstation bridge
+(filesystem relay; see [filesystem-access.md](filesystem-access.md)). Used by
+`aoctl acp serve` while watching a run. Accepts `?wait=<seconds>` (max 25) to
+long-poll. Returns `{"requests": [...]}`; `501` when the deployment has no
+filesystem relay.
+
+## POST /runs/{run_id}/fs/pending/{request_id}/response
+
+Post the bridge's answer for one relayed fs request. Body is `{"result":
+{...}}` on success or `{"error": {"code": N, "message": "..."}}` when the
+bridge/editor refused the call. Returns `204`; `404` when the request expired.
+The calling bridge must own the run (tenant-scoped like every other
+`/runs/{id}` endpoint).
 
 ## GET /session/{session_id}
 

@@ -35,6 +35,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
+	"github.com/heddles/agent-orca/internal/acpfs"
 	"github.com/heddles/agent-orca/internal/checkpoint"
 	"github.com/heddles/agent-orca/internal/security"
 	"github.com/heddles/agent-orca/internal/state"
@@ -58,6 +59,10 @@ type ACPServer struct {
 	// checkpoint persists session LastRunRef chains for warm-pool context continuity
 	// across ACP turns. nil when no state store is configured (local dev).
 	checkpoint checkpoint.Store
+
+	// fsRelay carries ACP fs/* requests from agent pods to the workstation-side
+	// bridge. nil disables filesystem access (fs endpoints return 501).
+	fsRelay acpfs.Relay
 
 	// rateLimiter enforces per-tenant submission rate limits. nil disables it.
 	rateLimiter *RateLimiter
@@ -97,7 +102,45 @@ func (s *ACPServer) Handler() http.Handler {
 	mux.HandleFunc("/runs", s.handleCreateRun)
 	mux.HandleFunc("/runs/", s.handleRunByID)
 	mux.HandleFunc("/session/", s.handleGetSession)
-	return corsMiddleware(requestTimeoutMiddleware(s.auth.Middleware(instrument("acp", mux)), acpAPIRequestTimeout))
+	return corsMiddleware(acpRequestTimeoutMiddleware(s.auth.Middleware(instrument("acp", mux)), acpAPIRequestTimeout))
+}
+
+// acpStreamWindow is how long one live SSE stream (GET /runs/{run_id} with
+// Accept: text/event-stream) may stay open. It matches the bridge's client
+// timeout (`aoctl acp serve`, 10m): the bridge re-attaches when the stream
+// ends and dedups already-delivered content, but every window boundary
+// introduces a reconnect gap mid-turn, so the window is long enough that a
+// normal turn streams in a single connection instead of 30s slices.
+const acpStreamWindow = 10 * time.Minute
+
+// acpRequestTimeoutMiddleware wraps the request timeout with one exception:
+// the live run stream gets acpStreamWindow instead of acpAPIRequestTimeout —
+// SSE is long-lived by design, and the 30s bound was forcing the bridge to
+// reconnect mid-turn every 30 seconds ("stream ended early").
+func acpRequestTimeoutMiddleware(next http.Handler, defaultTimeout time.Duration) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		timeout := defaultTimeout
+		if isSSEStreamRequest(r) {
+			timeout = acpStreamWindow
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), timeout)
+		defer cancel()
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// isSSEStreamRequest reports whether this request is the live run stream:
+// GET /runs/{run_id} (single segment — not /events lists or /fs/* polls) with
+// an Accept header asking for text/event-stream.
+func isSSEStreamRequest(r *http.Request) bool {
+	if r.Method != http.MethodGet {
+		return false
+	}
+	path := strings.TrimPrefix(r.URL.Path, "/runs/")
+	if path == "" || strings.Contains(path, "/") {
+		return false
+	}
+	return strings.Contains(r.Header.Get("Accept"), "text/event-stream")
 }
 
 // ACP types aligned with ACP v1 spec from https://agentclientprotocol.com/protocol/v1/
@@ -245,6 +288,24 @@ type ACPAgentManifest struct {
 	// ClarifyAvailable indicates whether the _clarify built-in tool is available
 	// (i.e. human-in-the-loop is possible). False when DisableClarify is true.
 	ClarifyAvailable bool `json:"clarify_available"`
+
+	// Filesystem declares the agent's ACP fs/* relay policy (issue #34). nil
+	// means the agent has no filesystem tools; the bridge's aoctl-side flags
+	// layer on top of this (they can only narrow, never widen, this policy).
+	Filesystem *ACPFilesystemPolicy `json:"filesystem,omitempty"`
+}
+
+// ACPFilesystemPolicy mirrors Agent.spec.filesystem for bridge-side policy
+// enforcement (mode gating and write approval elicitation).
+type ACPFilesystemPolicy struct {
+	// Mode is "readOnly" or "readWrite".
+	Mode string `json:"mode"`
+	// WriteApproval asks the bridge to elicit explicit user approval per write.
+	WriteApproval bool `json:"writeApproval,omitempty"`
+	// RememberApproval, when false, forbids the bridge from remembering an
+	// approval for the rest of the session (approve every write). nil means
+	// the agent does not constrain it (issue #41).
+	RememberApproval *bool `json:"rememberApproval,omitempty"`
 }
 
 // ACPToolInfo describes a tool available to an agent.
@@ -411,6 +472,7 @@ func (s *ACPServer) handleListAgents(w http.ResponseWriter, r *http.Request) {
 			KnowledgeBases:     agent.Spec.KnowledgeBases,
 			GuardrailPolicy:    agent.Spec.GuardrailPolicyRef,
 			ClarifyAvailable:   !agent.Spec.DisableClarify,
+			Filesystem:         filesystemManifestPolicy(agent.Spec.Filesystem),
 		}
 		for _, kb := range agent.Spec.KnowledgeBaseRefs {
 			manifest.KnowledgeBases = append(manifest.KnowledgeBases, kb.Name)
@@ -502,6 +564,7 @@ func (s *ACPServer) writeAgentManifest(w http.ResponseWriter, r *http.Request, a
 	}
 	manifest.GuardrailPolicy = agent.Spec.GuardrailPolicyRef
 	manifest.ClarifyAvailable = !agent.Spec.DisableClarify
+	manifest.Filesystem = filesystemManifestPolicy(agent.Spec.Filesystem)
 
 	// Build input/output schemas from the agent's tools.
 	manifest.InputSchema = buildInputSchema(manifest.AllowedTools)
@@ -907,6 +970,26 @@ func (s *ACPServer) handleRunByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Handle /runs/{run_id}/fs/pending (bridge-side filesystem relay).
+	if len(parts) >= 3 && parts[1] == "fs" && parts[2] == "pending" {
+		switch r.Method {
+		case http.MethodGet:
+			s.handleFSPending(w, r, tenant, runID)
+			return
+		case http.MethodPost:
+			// POST /runs/{run_id}/fs/pending/{request_id}/response
+			if len(parts) >= 5 && parts[4] == "response" {
+				s.handleFSRespond(w, r, tenant, runID, parts[3])
+				return
+			}
+			writeACPError(w, "invalid_input", "request_id and /response required", http.StatusBadRequest)
+			return
+		default:
+			writeACPError(w, "invalid_input", "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+	}
+
 	// Resolve the run across the tenant's authorized namespaces. findRunInNamespaces
 	// also enforces tenant ownership via the agentorca.io/tenant label.
 	run, err := findRunInNamespaces(r.Context(), s.crdClient, tenant, runID)
@@ -1246,8 +1329,17 @@ func (s *ACPServer) streamACPRun(w http.ResponseWriter, r *http.Request, run *ag
 		if token == "" {
 			break
 		}
-		// Skip trace events (prefixed with \x00)
-		if len(token) > 1 && token[0] == '\x00' {
+		// Forward model-router trace events (toolCall, toolResult, guardrail,
+		// providerFallback, mcpDiscovery, …) as `event: trace` SSE frames so
+		// bridges can render live agent activity mid-turn instead of a spinner.
+		// Trace events are not part of the message output; a terminal trace
+		// event (fail/finalOutput) is the true end of the OpenAI turn loop.
+		if isTraceToken(token) {
+			evJSON := stripTraceMarker(token)
+			writeTraceEvent(w, flusher, evJSON)
+			if isTerminalTracePayload(evJSON) {
+				break
+			}
 			continue
 		}
 		fullOutput.WriteString(token)

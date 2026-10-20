@@ -454,6 +454,7 @@ func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig( //nolint:gocycl
 			Weight:             pw.Weight,
 			Capabilities:       mp.Spec.Capabilities,
 			ContextWindow:      mp.Spec.Constraints.ContextWindow,
+			MaxOutputTokens:    mp.Spec.Constraints.MaxOutputTokens,
 			MaxRequestTokens:   mp.Spec.Constraints.MaxRequestTokens,
 			LatencyProfile:     mp.Spec.LatencyProfile,
 			CostPerInputToken:  parseFloat(mp.Spec.Constraints.CostPerMillionInputTokens) / 1e6,
@@ -490,6 +491,7 @@ func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig( //nolint:gocycl
 			Weight:             0,
 			Capabilities:       mp.Spec.Capabilities,
 			ContextWindow:      mp.Spec.Constraints.ContextWindow,
+			MaxOutputTokens:    mp.Spec.Constraints.MaxOutputTokens,
 			MaxRequestTokens:   mp.Spec.Constraints.MaxRequestTokens,
 			LatencyProfile:     mp.Spec.LatencyProfile,
 			CostPerInputToken:  parseFloat(mp.Spec.Constraints.CostPerMillionInputTokens) / 1e6,
@@ -509,6 +511,9 @@ func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig( //nolint:gocycl
 		"_memory_store": true, "_mcp_read_resource": true, "_propose_step": true,
 		"_propose_fix": true, "_confirm_fix": true, "_create_workflow": true,
 		"_search_history": true,
+		// fs_* relay tools (issue #34) are injected from Agent.spec.filesystem;
+		// listing them in spec.tools must not require Tool CRs.
+		"fs_read_text_file": true, "fs_write_text_file": true, "fs_list_dir": true,
 	}
 	for _, toolName := range agent.Spec.Tools {
 		// Skip builtin tools - they're injected separately in the router
@@ -700,6 +705,12 @@ func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig( //nolint:gocycl
 		Parameters:  []byte(`{"type":"object","properties":{"query":{"type":"string","minLength":1,"description":"The specific facts or topics to search prior conversation turns for. Use concrete terms, not vague phrases."},"topK":{"type":"integer","default":3,"description":"Maximum number of matching turn snippets to return"}},"required":["query"]}`),
 		BackendType: "builtin",
 	})
+
+	// fs_read_text_file / fs_write_text_file: relay the user's local workspace
+	// through the ACP bridge (issue #34), gated by Agent.spec.filesystem.
+	var fsCfg *router.FilesystemConfig
+	fsCfg, fsDefs := filesystemToolCfg(agent.Spec.Filesystem)
+	toolDefs = append(toolDefs, fsDefs...)
 
 	// Resolve KnowledgeBases from Agent spec and inject _rag tools.
 	var kbConfigs []router.KnowledgeBaseConfig
@@ -898,6 +909,7 @@ func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig( //nolint:gocycl
 			RecallBudget:      5,
 			RetainOnEveryTurn: true,
 		},
+		Filesystem: fsCfg,
 	}
 
 	// Per-tool-result token cap and loop guards. We deliberately seed sane defaults

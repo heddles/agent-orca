@@ -49,7 +49,7 @@ func adminScheme(t *testing.T) *runtime.Scheme {
 
 func newAdminServer(t *testing.T, objs ...client.Object) *ExternalAPIServer {
 	t.Helper()
-	t.Setenv("POD_NAMESPACE", "agent-orca-system")
+	t.Setenv("POD_NAMESPACE", testSystemNS)
 	return &ExternalAPIServer{
 		auth:      &ExternalAuth{},
 		crdClient: fake.NewClientBuilder().WithScheme(adminScheme(t)).WithObjects(objs...).Build(),
@@ -156,14 +156,14 @@ func TestAdminCreateTenant(t *testing.T) {
 
 	// The TenantConfig + client-secret Secret must now exist in the admin namespace.
 	var tc agentorcav1alpha1.TenantConfig
-	if err := s.crdClient.Get(context.Background(), client.ObjectKey{Name: "acme", Namespace: "agent-orca-system"}, &tc); err != nil {
+	if err := s.crdClient.Get(context.Background(), client.ObjectKey{Name: "acme", Namespace: testSystemNS}, &tc); err != nil {
 		t.Fatalf("tenant not created: %v", err)
 	}
 	if firstNamespace(tc.Spec.AllowedNamespaces) != "tenant-acme" || tc.Spec.Issued == nil || tc.Spec.Issued.ClientID != "acme-client" {
 		t.Fatalf("bad tenant spec: %+v", tc.Spec)
 	}
 	var sec corev1.Secret
-	if err := s.crdClient.Get(context.Background(), client.ObjectKey{Name: "acme-client-secret", Namespace: "agent-orca-system"}, &sec); err != nil {
+	if err := s.crdClient.Get(context.Background(), client.ObjectKey{Name: "acme-client-secret", Namespace: testSystemNS}, &sec); err != nil {
 		t.Fatalf("client secret not created: %v", err)
 	}
 }
@@ -179,7 +179,7 @@ func TestAdminCreateTenant_MissingFields(t *testing.T) {
 
 func TestAdminCreateTenant_AlreadyExists(t *testing.T) {
 	existing := &agentorcav1alpha1.TenantConfig{
-		ObjectMeta: metav1.ObjectMeta{Name: "acme", Namespace: "agent-orca-system"},
+		ObjectMeta: metav1.ObjectMeta{Name: "acme", Namespace: testSystemNS},
 		Spec: agentorcav1alpha1.TenantConfigSpec{
 			AuthMode:          tenantAuthModeIssued,
 			AllowedNamespaces: []string{"tenant-acme"},
@@ -197,7 +197,7 @@ func TestAdminCreateTenant_AlreadyExists(t *testing.T) {
 
 func TestAdminGetAndListTenants(t *testing.T) {
 	existing := &agentorcav1alpha1.TenantConfig{
-		ObjectMeta: metav1.ObjectMeta{Name: "acme", Namespace: "agent-orca-system"},
+		ObjectMeta: metav1.ObjectMeta{Name: "acme", Namespace: testSystemNS},
 		Spec: agentorcav1alpha1.TenantConfigSpec{
 			AuthMode:          tenantAuthModeIssued,
 			AllowedNamespaces: []string{"tenant-acme"},
@@ -241,11 +241,11 @@ func TestAdminGetAndListTenants(t *testing.T) {
 
 func TestAdminRotateSecret(t *testing.T) {
 	existingSec := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "acme-client-secret", Namespace: "agent-orca-system"},
+		ObjectMeta: metav1.ObjectMeta{Name: "acme-client-secret", Namespace: testSystemNS},
 		Data:       map[string][]byte{"client-secret": []byte("old-secret")},
 	}
 	existingTC := &agentorcav1alpha1.TenantConfig{
-		ObjectMeta: metav1.ObjectMeta{Name: "acme", Namespace: "agent-orca-system"},
+		ObjectMeta: metav1.ObjectMeta{Name: "acme", Namespace: testSystemNS},
 		Spec: agentorcav1alpha1.TenantConfigSpec{
 			AuthMode:          tenantAuthModeIssued,
 			AllowedNamespaces: []string{"tenant-acme"},
@@ -274,7 +274,7 @@ func TestAdminRotateSecret(t *testing.T) {
 	}
 	// Verify the Secret was actually updated.
 	var sec corev1.Secret
-	if err := s.crdClient.Get(context.Background(), client.ObjectKey{Name: "acme-client-secret", Namespace: "agent-orca-system"}, &sec); err != nil {
+	if err := s.crdClient.Get(context.Background(), client.ObjectKey{Name: "acme-client-secret", Namespace: testSystemNS}, &sec); err != nil {
 		t.Fatalf("secret not found: %v", err)
 	}
 	if string(sec.Data["client-secret"]) == "old-secret" {
@@ -284,11 +284,11 @@ func TestAdminRotateSecret(t *testing.T) {
 
 func TestAdminDeleteTenant(t *testing.T) {
 	sec := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "acme-client-secret", Namespace: "agent-orca-system"},
+		ObjectMeta: metav1.ObjectMeta{Name: "acme-client-secret", Namespace: testSystemNS},
 		Data:       map[string][]byte{"client-secret": []byte("x")},
 	}
 	tc := &agentorcav1alpha1.TenantConfig{
-		ObjectMeta: metav1.ObjectMeta{Name: "acme", Namespace: "agent-orca-system"},
+		ObjectMeta: metav1.ObjectMeta{Name: "acme", Namespace: testSystemNS},
 		Spec: agentorcav1alpha1.TenantConfigSpec{
 			AuthMode:          tenantAuthModeIssued,
 			AllowedNamespaces: []string{"tenant-acme"},
@@ -306,10 +306,10 @@ func TestAdminDeleteTenant(t *testing.T) {
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("delete: expected 204, got %d: %s", rec.Code, rec.Body.String())
 	}
-	if err := s.crdClient.Get(context.Background(), client.ObjectKey{Name: "acme", Namespace: "agent-orca-system"}, &agentorcav1alpha1.TenantConfig{}); err == nil {
+	if err := s.crdClient.Get(context.Background(), client.ObjectKey{Name: "acme", Namespace: testSystemNS}, &agentorcav1alpha1.TenantConfig{}); err == nil {
 		t.Fatal("tenant still exists after delete")
 	}
-	if err := s.crdClient.Get(context.Background(), client.ObjectKey{Name: "acme-client-secret", Namespace: "agent-orca-system"}, &corev1.Secret{}); err == nil {
+	if err := s.crdClient.Get(context.Background(), client.ObjectKey{Name: "acme-client-secret", Namespace: testSystemNS}, &corev1.Secret{}); err == nil {
 		t.Fatal("client secret still exists after tenant delete")
 	}
 }
@@ -370,7 +370,7 @@ func TestAdminRotateSecret_NotFound(t *testing.T) {
 // TestAdminRotateSecret_NoSecretRef verifies 400 when the tenant has no client secret ref.
 func TestAdminRotateSecret_NoSecretRef(t *testing.T) {
 	tc := &agentorcav1alpha1.TenantConfig{
-		ObjectMeta: metav1.ObjectMeta{Name: "bare", Namespace: "agent-orca-system"},
+		ObjectMeta: metav1.ObjectMeta{Name: "bare", Namespace: testSystemNS},
 		Spec: agentorcav1alpha1.TenantConfigSpec{
 			AuthMode:          tenantAuthModeIssued,
 			AllowedNamespaces: []string{"tenant-bare"},
@@ -397,7 +397,7 @@ func TestAdminCreateTenant_WithRateLimitAndBudget(t *testing.T) {
 		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
 	}
 	var tc agentorcav1alpha1.TenantConfig
-	if err := s.crdClient.Get(context.Background(), client.ObjectKey{Name: "rate-limited", Namespace: "agent-orca-system"}, &tc); err != nil {
+	if err := s.crdClient.Get(context.Background(), client.ObjectKey{Name: "rate-limited", Namespace: testSystemNS}, &tc); err != nil {
 		t.Fatalf("tenant not created: %v", err)
 	}
 	if tc.Spec.RateLimit == nil || tc.Spec.RateLimit.RequestsPerMinute != 10 || tc.Spec.RateLimit.ConcurrentRuns != 3 {
@@ -428,7 +428,7 @@ func TestAdminCreateTenant_ProvidedSecret(t *testing.T) {
 		t.Fatalf("expected provided secret, got %q", resp.ClientSecret)
 	}
 	var sec corev1.Secret
-	if err := s.crdClient.Get(context.Background(), client.ObjectKey{Name: "acme2-client-secret", Namespace: "agent-orca-system"}, &sec); err != nil {
+	if err := s.crdClient.Get(context.Background(), client.ObjectKey{Name: "acme2-client-secret", Namespace: testSystemNS}, &sec); err != nil {
 		t.Fatalf("secret not found: %v", err)
 	}
 	if string(sec.Data["client-secret"]) != "my-custom-secret" {
@@ -527,7 +527,9 @@ func TestRequireAdminAuth_IsAdminSAError(t *testing.T) {
 	}
 }
 
-// TestAdminFromContext verifies the admin identity round-trips through context.
+// testSystemNS is the operator system namespace used across admin tests.
+const testSystemNS = "agent-orca-system"
+
 func TestAdminFromContext(t *testing.T) {
 	s := newAdminServer(t)
 	h := s.requireAdminAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -535,7 +537,7 @@ func TestAdminFromContext(t *testing.T) {
 		if !ok {
 			t.Fatal("AdminFromContext returned false")
 		}
-		if id.Namespace != "agent-orca-system" || id.Name != "admin-sa" {
+		if id.Namespace != testSystemNS || id.Name != "admin-sa" {
 			t.Fatalf("bad identity: %+v", id)
 		}
 		w.WriteHeader(http.StatusOK)
@@ -550,7 +552,7 @@ func TestAdminFromContext(t *testing.T) {
 // TestAdminDeleteTenant_DeleteError verifies 500 when the CR delete fails.
 func TestAdminDeleteTenant_DeleteError(t *testing.T) {
 	tc := &agentorcav1alpha1.TenantConfig{
-		ObjectMeta: metav1.ObjectMeta{Name: "acme", Namespace: "agent-orca-system"},
+		ObjectMeta: metav1.ObjectMeta{Name: "acme", Namespace: testSystemNS},
 		Spec: agentorcav1alpha1.TenantConfigSpec{
 			AuthMode:          tenantAuthModeIssued,
 			AllowedNamespaces: []string{"tenant-acme"},
@@ -579,7 +581,7 @@ func TestAdminDeleteTenant_DeleteError(t *testing.T) {
 // TestTenantToResponse_NoIssued verifies the response when Issued is nil.
 func TestTenantToResponse_NoIssued(t *testing.T) {
 	tc := &agentorcav1alpha1.TenantConfig{
-		ObjectMeta: metav1.ObjectMeta{Name: "noauth", Namespace: "agent-orca-system"},
+		ObjectMeta: metav1.ObjectMeta{Name: "noauth", Namespace: testSystemNS},
 		Spec: agentorcav1alpha1.TenantConfigSpec{
 			AuthMode:          "federated",
 			AllowedNamespaces: []string{"tenant-noauth"},
@@ -594,7 +596,7 @@ func TestTenantToResponse_NoIssued(t *testing.T) {
 // TestTenantToResponse_WithSecret verifies the secret is included when provided.
 func TestTenantToResponse_WithSecret(t *testing.T) {
 	tc := &agentorcav1alpha1.TenantConfig{
-		ObjectMeta: metav1.ObjectMeta{Name: "acme", Namespace: "agent-orca-system"},
+		ObjectMeta: metav1.ObjectMeta{Name: "acme", Namespace: testSystemNS},
 		Spec: agentorcav1alpha1.TenantConfigSpec{
 			AuthMode:          tenantAuthModeIssued,
 			AllowedNamespaces: []string{"tenant-acme"},
@@ -630,7 +632,7 @@ func TestAdminCreateTenant_CreateError(t *testing.T) {
 	// path (idempotent re-create) which is already covered by TestAdminCreateTenant_AlreadyExists.
 	// This test covers the upsertSecret update path (secret already exists, gets patched).
 	existingSec := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "acme-client-secret", Namespace: "agent-orca-system"},
+		ObjectMeta: metav1.ObjectMeta{Name: "acme-client-secret", Namespace: testSystemNS},
 		Data:       map[string][]byte{"client-secret": []byte("old-secret")},
 	}
 	s := newAdminServer(t, existingSec)
@@ -642,7 +644,7 @@ func TestAdminCreateTenant_CreateError(t *testing.T) {
 	}
 	// Verify the secret was updated (patched).
 	var sec corev1.Secret
-	if err := s.crdClient.Get(context.Background(), client.ObjectKey{Name: "acme-client-secret", Namespace: "agent-orca-system"}, &sec); err != nil {
+	if err := s.crdClient.Get(context.Background(), client.ObjectKey{Name: "acme-client-secret", Namespace: testSystemNS}, &sec); err != nil {
 		t.Fatalf("secret not found: %v", err)
 	}
 	if string(sec.Data["client-secret"]) != "new-secret" {
@@ -690,7 +692,7 @@ func TestAdminCreateTenant_CreateCRFailed(t *testing.T) {
 // TestAdminUpsertSecret_PatchError verifies the patch error path in upsertSecret.
 func TestAdminUpsertSecret_PatchError(t *testing.T) {
 	existingSec := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "acme-client-secret", Namespace: "agent-orca-system"},
+		ObjectMeta: metav1.ObjectMeta{Name: "acme-client-secret", Namespace: testSystemNS},
 		Data:       map[string][]byte{"client-secret": []byte("old")},
 	}
 	s := newAdminServer(t, existingSec)
@@ -712,7 +714,7 @@ func TestAdminUpsertSecret_PatchError(t *testing.T) {
 // TestAdminDeleteTenant_DeleteError_Interceptor verifies 500 when the K8s delete call fails.
 func TestAdminDeleteTenant_DeleteError_Interceptor(t *testing.T) {
 	tc := &agentorcav1alpha1.TenantConfig{
-		ObjectMeta: metav1.ObjectMeta{Name: "acme", Namespace: "agent-orca-system"},
+		ObjectMeta: metav1.ObjectMeta{Name: "acme", Namespace: testSystemNS},
 		Spec: agentorcav1alpha1.TenantConfigSpec{
 			AuthMode:          tenantAuthModeIssued,
 			AllowedNamespaces: []string{"tenant-acme"},
@@ -741,7 +743,7 @@ func TestAdminDeleteTenant_DeleteError_Interceptor(t *testing.T) {
 // TestAdminRotateSecret_SecretNotFound verifies 500 when the secret can't be found during rotation.
 func TestAdminRotateSecret_SecretNotFound(t *testing.T) {
 	tc := &agentorcav1alpha1.TenantConfig{
-		ObjectMeta: metav1.ObjectMeta{Name: "acme", Namespace: "agent-orca-system"},
+		ObjectMeta: metav1.ObjectMeta{Name: "acme", Namespace: testSystemNS},
 		Spec: agentorcav1alpha1.TenantConfigSpec{
 			AuthMode:          tenantAuthModeIssued,
 			AllowedNamespaces: []string{"tenant-acme"},

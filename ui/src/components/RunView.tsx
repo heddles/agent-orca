@@ -74,7 +74,9 @@ export function RunView({
       if (event.type !== STREAM_EVENT_TYPE.token) {
         // Suppress pre-populated candidate entries — only show the actual runtime selection.
         const isCandidate = event.type === STREAM_EVENT_TYPE.modelSelected && event.reason.includes('configured provider')
-        if (!isCandidate) {
+        // Trace-stream `routing` entries duplicate the CRD-backed `modelSelected` event
+        // (the model-router records each decision as AgentRun status); keep one row.
+        if (!isCandidate && event.type !== 'routing') {
           // Group consecutive `thought` (reasoning) deltas into a single expandable
           // entry so each thinking block renders as one collapsible panel that accumulates
           // progressively, rather than one trace row per reasoning delta.
@@ -158,7 +160,7 @@ export function RunView({
         if (event.type === STREAM_EVENT_TYPE.token) return
         if (event.type === STREAM_EVENT_TYPE.error && event.message === 'Stream connection lost') return
         const isCandidate = event.type === STREAM_EVENT_TYPE.modelSelected && event.reason.includes('configured provider')
-        if (!isCandidate) {
+        if (!isCandidate && event.type !== 'routing') {
           setEntries((prev) => [...prev, { id: counter.current++, event, ts: new Date().toISOString(), childRunName: childName }])
         }
       }, namespace)

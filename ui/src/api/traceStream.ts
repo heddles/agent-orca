@@ -29,6 +29,9 @@ export type TraceEvent =
   | { type: 'mcpDiscovery'; server: string; tools: number }
   | { type: 'guardrail'; action: string; reason: string }
   | { type: 'providerFallback'; from: string; to: string; reason: string; exhausted?: boolean }
+  | { type: 'routing'; model: string; provider?: string; strategy?: string; reason?: string; confidence?: number }
+  | { type: 'hindsight'; op: 'bank' | 'recall' | 'retain' | string; bankID?: string; failed?: boolean; reason?: string }
+  | { type: 'truncation'; provider?: string; before: number; after?: number; budget?: number }
 
 /** True when the server typically closes the SSE connection after this event (uiapi finalOutput, or an error/clarify/fail path). */
 export function isTerminalTraceEvent(event: TraceEvent): boolean {

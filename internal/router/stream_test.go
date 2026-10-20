@@ -331,8 +331,8 @@ func TestStreamingToolCallWithNullFinishReasonIsDispatched(t *testing.T) {
 	if toolCalls != 1 {
 		t.Errorf("expected the tool call to be dispatched (1 toolCall trace event), got %d", toolCalls)
 	}
-	if doneEvents != 0 {
-		t.Errorf("expected zero done trace events (emitDoneEvent removed) (terminal text turn), got %d", doneEvents)
+	if doneEvents != 1 {
+		t.Errorf("expected exactly one done trace event on the terminal text turn (stream consumers finalize on it), got %d", doneEvents)
 	}
 	if got := strings.Count(out, "data: [DONE]"); got != 1 {
 		t.Errorf("expected exactly one client [DONE] (turn1 suppressed, turn2 emitted), got %d", got)
@@ -379,8 +379,8 @@ func TestStreamingTextResponseWritesDoneEvent(t *testing.T) {
 	if toolCalls != 0 {
 		t.Errorf("expected no tool calls on a text response, got %d", toolCalls)
 	}
-	if doneEvents != 0 {
-		t.Errorf("expected zero done trace events (emitDoneEvent removed), got %d", doneEvents)
+	if doneEvents != 1 {
+		t.Errorf("expected exactly one done trace event on the terminal text turn (stream consumers finalize on it), got %d", doneEvents)
 	}
 	if strings.Count(out, "data: [DONE]") != 1 {
 		t.Errorf("expected exactly one client [DONE], got body:\n%s", out)
@@ -440,8 +440,8 @@ func TestStreamingReasoningIsCapturedAsThoughtEvents(t *testing.T) {
 	if thoughts != 2 {
 		t.Errorf("expected 2 thought trace events (one per reasoning delta), got %d", thoughts)
 	}
-	if doneEvents != 0 {
-		t.Errorf("expected zero done trace events (emitDoneEvent removed) (at true end), got %d", doneEvents)
+	if doneEvents != 1 {
+		t.Errorf("expected exactly one done trace event on the terminal text turn (stream consumers finalize on it), got %d", doneEvents)
 	}
 	if strings.Count(out, "data: [DONE]") != 1 {
 		t.Errorf("expected exactly one client [DONE], got body:\n%s", out)
@@ -517,8 +517,8 @@ func TestStreamingMidStreamDoneDoesNotTruncateClient(t *testing.T) {
 	if got := strings.Count(out, "data: [DONE]"); got != 1 {
 		t.Errorf("expected exactly one canonical [DONE] (withheld the premature one), got %d; body:\n%s", got, out)
 	}
-	if doneEvents != 0 {
-		t.Errorf("expected zero done trace events (emitDoneEvent removed), got %d", doneEvents)
+	if doneEvents != 1 {
+		t.Errorf("expected exactly one done trace event on the terminal text turn (stream consumers finalize on it), got %d", doneEvents)
 	}
 	if c := calls.Load(); c != 1 {
 		t.Errorf("expected exactly one provider call, got %d", c)
@@ -563,8 +563,8 @@ func TestStreamingMultiTurnLoopEmitsSingleDoneEvent(t *testing.T) {
 	if toolCalls != 3 {
 		t.Errorf("expected 3 dispatched tool calls (one per tool-call turn), got %d", toolCalls)
 	}
-	if doneEvents != 0 {
-		t.Errorf("expected zero done trace events (emitDoneEvent removed) at true end of loop, got %d", doneEvents)
+	if doneEvents != 1 {
+		t.Errorf("expected exactly one done trace event at the true end of the loop, got %d", doneEvents)
 	}
 	if got := strings.Count(out, "data: [DONE]"); got != 1 {
 		t.Errorf("expected exactly one canonical client [DONE], got %d", got)
@@ -607,8 +607,8 @@ func TestStreamingTerminalTurnEmitsDoneSSE(t *testing.T) {
 	})
 	out, doneEvents, _, _ := consumeClientBody(t, r, body)
 
-	if doneEvents != 0 {
-		t.Fatalf("expected zero done trace events (emitDoneEvent removed), got %d", doneEvents)
+	if doneEvents != 1 {
+		t.Fatalf("expected exactly one done trace event on the terminal turn (stream consumers finalize on it), got %d", doneEvents)
 	}
 	if strings.Count(out, "data: [DONE]") != 1 {
 		t.Errorf("expected exactly one client [DONE] frame, got body:\n%s", out)
@@ -690,8 +690,8 @@ func TestStreamingTerminalTurnNormalizesNullFinishReason(t *testing.T) {
 	})
 	out, doneEvents, _, _ := consumeClientBody(t, r, body)
 
-	if doneEvents != 0 {
-		t.Fatalf("expected zero done trace events (emitDoneEvent removed), got %d (out: %s)", doneEvents, out)
+	if doneEvents != 1 {
+		t.Fatalf("expected exactly one done trace event on the terminal turn (null finish also ends the loop; stream consumers finalize on it), got %d (out: %s)", doneEvents, out)
 	}
 	if strings.Count(out, "data: [DONE]") != 1 {
 		t.Errorf("expected exactly one client [DONE] frame, got body:\n%s", out)
@@ -810,5 +810,61 @@ func TestConcurrentStreamingRequestRejected(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("third request did not return within 3s")
+	}
+}
+
+// TestStreamTerminalTextTurnEmitsDoneTraceEvent is the regression for runs
+// staying "running" in ACP clients after the agent finished: the router's
+// streaming path defined traceEventTypeDone but never emitted it, so a genuine
+// terminal text turn left NO terminal marker in the token stream — TailTokens
+// tailed the dead stream until its deadline and the editor bridge never saw a
+// terminal event. The terminal text turn must emit `done`.
+func TestStreamTerminalTextTurnEmitsDoneTraceEvent(t *testing.T) {
+	srv, _ := fakeProvider(t, textTurnSSE("stop"))
+	keyFile := writeKeyFile(t)
+	store := newTestStore(t)
+	r := newStreamingTestRouter(t, srv.URL, keyFile, store)
+
+	body := []byte(`{"model":"default","stream":true,"messages":[{"role":"user","content":"say hi"}]}`)
+	_, doneEvents, _, _ := consumeClientBody(t, r, body)
+
+	if doneEvents != 1 {
+		t.Fatalf("terminal text turn emitted %d done trace events, want exactly 1", doneEvents)
+	}
+	// The done event carries the turn's full output so consumers can emit any
+	// un-streamed remainder.
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	doneWithOutput := false
+	for _, ev := range store.traceEvents {
+		var m map[string]any
+		if json.Unmarshal([]byte(ev), &m) != nil {
+			continue
+		}
+		if t, _ := m["type"].(string); t == traceEventTypeDone {
+			if o, _ := m["output"].(string); o != "" {
+				doneWithOutput = true
+			}
+		}
+	}
+	if !doneWithOutput {
+		t.Fatalf("done trace event missing output; events: %v", store.traceEvents)
+	}
+}
+
+// TestStreamToolLoopEmitsSingleDone keeps the terminal emission honest: a
+// tool-call turn must NOT emit done (only the final text turn does), so a
+// multi-turn run records exactly one done event.
+func TestStreamToolLoopEmitsSingleDone(t *testing.T) {
+	srv, _ := fakeProvider(t, toolCallTurnSSE(), textTurnSSE("stop"))
+	keyFile := writeKeyFile(t)
+	store := newTestStore(t)
+	r := newStreamingTestRouter(t, srv.URL, keyFile, store)
+
+	body := []byte(`{"model":"default","stream":true,"messages":[{"role":"user","content":"store this"}]}`)
+	_, doneEvents, _, _ := consumeClientBody(t, r, body)
+
+	if doneEvents != 1 {
+		t.Fatalf("tool-loop run emitted %d done trace events, want exactly 1 (final turn only)", doneEvents)
 	}
 }

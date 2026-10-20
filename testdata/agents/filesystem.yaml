@@ -1,0 +1,26 @@
+# Sample Agent CR enabling ACP filesystem access (issue #34): the agent gets
+# built-in fs_read_text_file / fs_write_text_file tools whose calls are relayed
+# to the user's local workspace through `aoctl acp serve` and the editor.
+# See docs/filesystem-access.md for the full security model.
+apiVersion: agentorca.agentorca.io/v1alpha1
+kind: Agent
+metadata:
+  name: filesystem-programmer
+  namespace: default
+spec:
+  modelSelectorRef: default
+  runtime:
+    ociRef: "python:3.12-slim"
+    framework: openai-compatible
+    command: ["sleep"]
+    args: ["infinity"]
+  systemPrompt: >-
+    You are a senior programmer working directly inside the user's editor.
+    Use fs_read_text_file to read files and fs_write_text_file to apply edits.
+    Paths must stay inside the workspace the user opened. Announce every edit
+    you make and keep diffs minimal.
+  filesystem:
+    mode: readWrite      # readOnly = read-only access (no write tool exposed)
+    writeApproval: true  # the bridge asks the user to approve writes
+    rememberApproval: true  # approve once per session; false = approve every write
+  tools: []

@@ -109,7 +109,11 @@ export function WorkflowView({ name, namespace }: Props) {
         }
         return
       }
-      
+
+      // Trace-stream `routing` entries duplicate the CRD-backed `modelSelected` event;
+      // keep one row.
+      if (event.type === 'routing') return
+
       // For all other events, add to trace
       setStepTraceEntries((prev) => [...prev, { id: stepTraceCounter.current++, event, ts: new Date().toISOString(), childRunName }])
     }

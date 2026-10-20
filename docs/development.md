@@ -61,6 +61,7 @@ Multi-group layout organizes APIs by group name (e.g., `batch`, `apps`). Check t
 | [rag.md](rag.md) | Developers | KnowledgeBase / RAG integration |
 | [redis.md](redis.md) | Operators | Redis setup and configuration |
 | [mcp-access-control.md](mcp-access-control.md) | Operators | MCP server access control |
+| [filesystem-access.md](filesystem-access.md) | Developers / Operators | ACP `fs/*` relay — agents drive the user's local workspace via the editor bridge |
 | [agentworkflow.md](agentworkflow.md) | Developers | AgentWorkflow CRD (declarative DAG) |
 | [alternatives.md](alternatives.md) | Architects | agent-orca vs OpenClaw comparison |
 | [cost-tracking.md](cost-tracking.md) | Operators | LLM spend tracking |

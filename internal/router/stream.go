@@ -520,16 +520,20 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 
 	if r.cfg.Hindsight.Enabled {
 
-		_, errEnsureHindsightBank := r.ensureHindsightBank(req.Context())
+		bankID, errEnsureHindsightBank := r.ensureHindsightBank(req.Context())
 
 		if errEnsureHindsightBank != nil {
 			slog.Warn("hindsight bank does not exist, memory system usage will fail.")
+		} else if bankID != "" {
+			r.announceHindsightBank()
 		}
 		content := fmt.Sprintf("ai assistant: %s", messageText(assistantMsg))
 		if err := r.hindsightRetain(r.cfg.RunName, content); err != nil {
 			slog.Warn("hindsight retain failed", "run", r.cfg.RunName, "err", err)
+			r.emitHindsightTraceEvent("retain", true, err.Error())
 		} else {
 			slog.Info("hindsight retain success", "run", r.cfg.RunName, "bankID", r.hindsightBankID())
+			r.emitHindsightTraceEvent("retain", false, "")
 		}
 	}
 
@@ -564,9 +568,11 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 	// detect it and synthetically trigger _clarify. The SSE stream has already been
 	// proxied to the agent, but we can still intercept here: trigger clarify, which
 	// sets WaitingForInput on the run and causes the next agent request to get 410 Gone.
+	autoClarify := false
+	fullText := ""
+	// The clarify safety net only applies to genuine text-completion finishes.
 	if len(toolCalls) == 0 && (finishReason == finishReasonStop || finishReason == "") {
-
-		fullText := contentBuilder.String()
+		fullText = contentBuilder.String()
 		syntheticResp := ChatCompletionResponse{
 			Choices: []Choice{{
 				Message:      Message{Role: "assistant", Content: fullText},
@@ -574,6 +580,7 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 			}},
 		}
 		if r.shouldAutoTriggerClarify(syntheticResp) {
+			autoClarify = true
 			slog.Info("auto-triggering _clarify from streaming response", "run", r.cfg.RunName)
 			// Checkpoint conversation so the pod can resume with the answer.
 			r.checkpoint(context.Background())
@@ -583,9 +590,21 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 			if err := r.notifyOperatorClarify(fullText); err != nil {
 				slog.Error("failed to notify operator for clarify", "err", err)
 			}
-
-			// Fall through to the done sentinel below so the UI SSE handler exits.
+			// No `done` trace event here: the run PAUSED (WaitingForInput), it did
+			// not complete — stream consumers close this stream via the CRD terminal
+			// state instead.
 		}
+	}
+	// Emit the terminal `done` trace event whenever the OpenAI turn loop ended
+	// without dispatching tools (stop, length, or null finish — all terminate the
+	// loop): TailTokens closes on it (state.IsTerminalTraceEventJSON), ending the
+	// run's SSE stream immediately instead of tailing an already-finished stream
+	// (the editor bridge then finalized the turn seconds — not minutes — after
+	// the final response arrived). Auto-clarify turns are excluded: the run
+	// PAUSED (WaitingForInput), it did not complete.
+	if len(toolCalls) == 0 && !autoClarify {
+		doneEv, _ := json.Marshal(map[string]string{"type": traceEventTypeDone, "output": fullText})
+		r.emitTraceEventBoth(string(doneEv))
 	}
 	// Handle tool calls if the LLM requested them.
 	// NOTE: r.messages already contains chatReq.Messages + assistantMsg (added above),

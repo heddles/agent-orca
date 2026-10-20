@@ -87,6 +87,16 @@ This is the command to put in your editor's agent_servers config. Use
 	}
 	serve.Flags().StringVar(&s.agent, "agent", "", "agent-orca agent to serve (required)")
 	_ = serve.MarkFlagRequired("agent")
+	serve.Flags().StringSliceVar(&s.fsRoots, "fs-roots", nil,
+		"extra workspace root directories the agent may read/write, on top of the session cwd "+
+			"(comma-separated; use ~ for home)")
+	serve.Flags().BoolVar(&s.fsRequireApproval, "fs-require-approval", true,
+		"require explicit user approval via the editor for every workspace write "+
+			"(applies on top of the agent's own writeApproval policy)")
+	serve.Flags().BoolVar(&s.fsRememberApproval, "fs-remember-approval", true,
+		"after the first approved write, auto-allow subsequent writes in the same "+
+			"session without re-prompting (default; opt out with --fs-remember-approval=false, "+
+			"or use --fs-require-approval to keep confirming every write)")
 
 	setup := &cobra.Command{
 		Use:   "setup",
@@ -152,12 +162,24 @@ func (s *settings) runACPServe() error {
 	// server; server dispatches via the bridge). Create the server first with a
 	// nil handler, wire the bridge, then assign it as the handler.
 	srv := newACPStdioServer(nil, os.Stdin, os.Stdout, os.Stderr)
-	bridge := newACPBridge(srv, client, s.agent)
+	// workspaceRoots skips --fs-roots entries it cannot make absolute; say so
+	// once at startup instead of silently narrowing what the agent can reach.
+	for _, root := range s.fsRoots {
+		if _, err := abspath(root); err != nil {
+			_, _ = fmt.Fprintf(s.errw, "aoctl acp serve: ignoring --fs-roots entry %q: %v\n", root, err)
+		}
+	}
+	fsOpts := fsBridgeOptions{
+		extraRoots:       s.fsRoots,
+		requireApproval:  s.fsRequireApproval,
+		rememberApproval: s.fsRememberApproval,
+	}
+	bridge := newACPBridgeWithOptions(srv, client, s.agent, fsOpts)
 	srv.handler = bridge
 
 	_, _ = fmt.Fprintf(s.errw,
-		"aoctl acp serve — agent %q | ACP endpoint %s | JSON-RPC on stdin/stdout, logs on stderr\n",
-		s.agent, s.acp)
+		"aoctl acp serve v%s — agent %q | ACP endpoint %s | JSON-RPC on stdin/stdout, logs on stderr\n",
+		acpBridgeVersion, s.agent, s.acp)
 	return srv.Serve(ctx)
 }
 

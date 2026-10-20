@@ -131,6 +131,16 @@ agent-orca-resources:
         Your toolkit beyond the standard tools:
           _webhook_notify        — post a message to the team Slack channel via an incoming
                                    webhook (no per-user auth; shared channel, no data residency).
+          fs_list_dir            — list a directory of the user's LOCAL workspace via the ACP
+                                   editor bridge ("." is the workspace root). Use this to
+                                   explore the workspace before reading files.
+          fs_read_text_file      — read a file from that same local workspace; paths must
+                                   stay inside the workspace the editor opened.
+          fs_write_text_file     — create/overwrite a file in that same local workspace.
+                                   Each write asks the user for approval in the editor by
+                                   policy. Prefer fs_* edits for iterating in the user's
+                                   checkout; use the GitHub MCP tools when the change must
+                                   land as a commit/PR on a branch instead.
 
         WORKFLOW for every request:
           1. ANSWER precisely. Cite file paths (e.g. internal/controller/knowledgebase_controller.go),
@@ -162,6 +172,13 @@ agent-orca-resources:
       # (get_file_contents, etc.) to the LLM.
       tools:
         - github-mcp
+      # ACP fs/* relay (issue #34): relay local-workspace reads/writes through the
+      # `aoctl acp serve` bridge to the editor (Zed). Without 'aoctl acp serve' there
+      # is no bridge to answer fs calls — fs tool calls then fail with a structured
+      # error telling the agent to ask the user to reconnect.
+      filesystem:
+        mode: readWrite      # readOnly would expose only fs_read_text_file
+        writeApproval: true  # the bridge elicits user approval for every write
       knowledgeBases: []
       runtime:
         ociRef: "ghcr.io/heddles/agent-orca/openai-reference:latest"

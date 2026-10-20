@@ -90,6 +90,7 @@ type acpStdioServer struct {
 	pending   map[string]chan jsonrpcMessage // requestID → response channel
 }
 
+//nolint:unparam // handler is nil in transport-level tests
 func newACPStdioServer(handler acpRequestHandler, stdin io.Reader, stdout, stderr io.Writer) *acpStdioServer {
 	return &acpStdioServer{
 		handler: handler,

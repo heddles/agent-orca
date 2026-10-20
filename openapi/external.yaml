@@ -74,8 +74,12 @@ components:
           description: URL POSTed on task completion (Succeeded) or failure.
         secretRef:
           type: string
-          description: Optional reference (name of a K8s Secret in the tenant namespace)
-            used to authenticate the webhook delivery to the customer.
+          description: |
+            Optional name of a Kubernetes Secret in the tenant namespace holding the
+            shared `hmac-key`. When set, agent-orca signs each callback delivery with
+            `X-Agentorc-Signature: sha256=<hex>` (HMAC-SHA256 over the raw body) and
+            `X-Agentorc-Timestamp`; receivers verify with the same key. When absent,
+            the callback is delivered unsigned (backward compatible).
     TaskSubmission:
       type: object
       required: [agent, input]

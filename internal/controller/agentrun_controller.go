@@ -641,6 +641,7 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 			Weight:             pw.Weight,
 			Capabilities:       mp.Spec.Capabilities,
 			ContextWindow:      mp.Spec.Constraints.ContextWindow,
+			MaxOutputTokens:    mp.Spec.Constraints.MaxOutputTokens,
 			MaxRequestTokens:   mp.Spec.Constraints.MaxRequestTokens,
 			LatencyProfile:     mp.Spec.LatencyProfile,
 			CostPerInputToken:  parseFloat(mp.Spec.Constraints.CostPerMillionInputTokens) / 1e6,
@@ -677,6 +678,7 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 			Weight:             0,
 			Capabilities:       mp.Spec.Capabilities,
 			ContextWindow:      mp.Spec.Constraints.ContextWindow,
+			MaxOutputTokens:    mp.Spec.Constraints.MaxOutputTokens,
 			MaxRequestTokens:   mp.Spec.Constraints.MaxRequestTokens,
 			LatencyProfile:     mp.Spec.LatencyProfile,
 			CostPerInputToken:  parseFloat(mp.Spec.Constraints.CostPerMillionInputTokens) / 1e6,
@@ -706,6 +708,9 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 		"_memory_store": true, "_mcp_read_resource": true, "_propose_step": true,
 		"_propose_fix": true, "_confirm_fix": true, "_create_workflow": true, "_list_resources": true,
 		"_search_history": true,
+		// fs_* relay tools (issue #34) are injected from Agent.spec.filesystem;
+		// listing them in spec.tools must not require Tool CRs.
+		"fs_read_text_file": true, "fs_write_text_file": true, "fs_list_dir": true,
 	}
 	for _, toolName := range agent.Spec.Tools {
 		// Skip builtin tools - they're injected separately in the router
@@ -928,6 +933,12 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 		Parameters:  []byte(`{"type":"object","properties":{}}`),
 		BackendType: "builtin",
 	})
+
+	// fs_read_text_file / fs_write_text_file: relay the user's local workspace
+	// through the ACP bridge (issue #34), gated by Agent.spec.filesystem.
+	var fsCfg *router.FilesystemConfig
+	fsCfg, fsDefs := filesystemToolCfg(agent.Spec.Filesystem)
+	toolDefs = append(toolDefs, fsDefs...)
 
 	// Resolve KnowledgeBases from Agent spec.
 	var kbConfigs []router.KnowledgeBaseConfig
@@ -1158,6 +1169,7 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 			RecallBudget:      5,
 			RetainOnEveryTurn: true,
 		},
+		Filesystem: fsCfg,
 	}
 	if agent.Spec.Runtime.InputMode == "http" {
 		port := agent.Spec.Runtime.InputPort

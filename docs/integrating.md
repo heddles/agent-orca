@@ -222,3 +222,10 @@ reference and Prometheus scrape config.
 If you configure `callback.url` on a task, verify the delivery with HMAC-SHA256
 — see [Webhook signature verification](enterprise-integration.md#webhook-signature-verification-hmac)
 in the enterprise guide.
+
+## 9. Edit the user's workspace through an editor bridge
+
+Agents declared with `spec.filesystem` get `fs_read_text_file` / `fs_write_text_file`
+built-in tools that relay to the user's local editor (Zed) via `aoctl acp serve`.
+The editor stays the arbiter of what is actually touched. See
+[filesystem-access.md](filesystem-access.md) for the architecture and policy knobs.

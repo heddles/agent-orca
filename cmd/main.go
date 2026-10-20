@@ -50,6 +50,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
+	"github.com/heddles/agent-orca/internal/acpfs"
 	"github.com/heddles/agent-orca/internal/apiserver"
 	"github.com/heddles/agent-orca/internal/controller"
 	"github.com/heddles/agent-orca/internal/postgresql"
@@ -488,6 +489,18 @@ func main() {
 
 	// Start the internal API server (port 8082) for agent-to-agent communication.
 	internalAPI := apiserver.New(k8sClient, mgr.GetClient())
+	// Filesystem relay (issue #34): carries ACP fs/* requests from agent pods to
+	// the workstation-side bridge. Requires the redis-backed shared state; with
+	// no relay both the internal and ACP fs endpoints fail fast with 501.
+	fsRelay, fsRelayErr := acpfs.New(acpfs.StateConfig{Backend: stateConfig.Backend, RedisURL: stateConfig.RedisURL}) //nolint:lll
+	if fsRelayErr != nil {
+		setupLog.Error(fsRelayErr, "Filesystem relay disabled (failed to initialize)")
+	} else if fsRelay != nil {
+		setupLog.Info("Filesystem relay enabled", "backend", stateConfig.Backend)
+	}
+	if fsRelay != nil {
+		internalAPI.SetFilesystemRelay(fsRelay)
+	}
 	go func() {
 		srv := newHTTPServer(":8082", internalAPI.Handler())
 		setupLog.Info("Starting internal API server", "addr", srv.Addr, "tls", internalAPICert != "")
@@ -564,6 +577,9 @@ func main() {
 
 	// Start the ACP API server (port 8000) for ACP-compatible clients.
 	acpAPI := apiserver.NewACPServer(k8sClient, mgr.GetClient(), externalAuth, stateStore)
+	if fsRelay != nil {
+		acpAPI.SetFilesystemRelay(fsRelay)
+	}
 	go func() {
 		srv := newHTTPServer(":8000", acpAPI.Handler())
 		setupLog.Info("Starting ACP API server", "addr", srv.Addr, "tls", internalAPICert != "")

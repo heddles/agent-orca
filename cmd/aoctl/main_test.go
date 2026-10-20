@@ -333,6 +333,13 @@ func runCLI(t *testing.T, env map[string]string, args ...string) (string, string
 
 	t.Helper()
 	t.Setenv("AOCTL_CONFIG_DIR", t.TempDir())
+	// Scrub ambient AOCTL_* env so tests are hermetic: a developer shell with
+	// AOCTL_ENDPOINT/AOCTL_ACP_ENDPOINT/AOCTL_TOKEN exported (e.g. pointing at
+	// a remote cluster) must not leak into endpoint-resolution assertions.
+	// Values passed in env below still win (applied after this scrub).
+	for _, k := range []string{"AOCTL_ENDPOINT", "AOCTL_ACP_ENDPOINT", "AOCTL_TOKEN", "AOCTL_OUTPUT_FORMAT"} {
+		t.Setenv(k, "")
+	}
 	root, s := newRootCmd()
 	var out, errb bytes.Buffer
 	s.out = &out

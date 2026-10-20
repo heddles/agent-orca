@@ -135,6 +135,11 @@ type Router struct {
 	// guard since they belong to the same turn. Uses atomic.Bool for
 	// goroutine-safe access without holding r.mu during the entire LLM call.
 	streamingActive atomic.Bool
+
+	// hindsightAnnounced guards the one-time "memory bank ready" trace event:
+	// ensureHindsightBank runs on every request, but the announcement should
+	// appear in the trace stream only once per run, not per LLM call.
+	hindsightAnnounced atomic.Bool
 }
 
 // New creates a Router with the given configuration.
@@ -642,12 +647,14 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 
 	// Ensure hindsight bank exists at startup; if it already exists, continue gracefully.
 	if r.cfg.Hindsight.Enabled && r.cfg.Hindsight.URL != "" {
-		bankID, err := r.ensureHindsightBank(context.Background())
+		bankID, bankErr := r.ensureHindsightBank(context.Background())
 
-		if err != nil {
-			slog.Warn("hindsight memory system did not find or create bankID", bankID, "Error:", err.Error(), "agent memory system is not active.")
+		if bankErr != nil {
+			slog.Warn("hindsight memory system did not find or create bankID", bankID, "Error:", bankErr.Error(), "agent memory system is not active.")
+		} else {
+			slog.Info("hindsight memory bank", bankID, "exists.")
+			r.announceHindsightBank()
 		}
-		slog.Info("hindsight memory bank", bankID, "exists.")
 	}
 
 	// If a handoff, clarify, done, fail, or safeguard trip completed, stop processing further LLM calls.
@@ -878,8 +885,10 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 			if recalled, err := r.hindsightRecall(req.Context(), lastUserMsg); err == nil && recalled != "" {
 				chatReq.Messages = append([]Message{{Role: "system", Content: "<hindsight-recall>\n" + recalled + "\n</hindsight-recall>"}}, chatReq.Messages...)
 				slog.Info("hindsight recall success", "run", r.cfg.RunName, "bankID", r.hindsightBankID())
+				r.emitHindsightTraceEvent("recall", false, "")
 			} else if err != nil {
 				slog.Warn("hindsight recall failed", "run", r.cfg.RunName, "err", err)
+				r.emitHindsightTraceEvent("recall", true, err.Error())
 			}
 		}
 	}
@@ -893,6 +902,10 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 
 	// Record the actual per-request routing decision so the UI shows the model that ran.
 	go r.postRoutingDecision(req.Context(), provider, routeResult)
+	// Trace-stream copy for ACP/editor clients that never poll the AgentRun CRD.
+	// Emitted synchronously BEFORE the LLM call so the editor shows which model
+	// was selected while it works, not after the turn completes.
+	r.emitRoutingTraceEvent(provider, routeResult)
 
 	slog.Info("routing request",
 		"provider", provider.Name,
@@ -915,9 +928,17 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 	}
 	// Tokens the serialized tool definitions consume toward the window.
 	toolTokens := estimateToolTokens(chatReq.Tools)
-	// Reserve headroom for the model's output tokens and a safety margin so we
-	// never land within a token of the hard limit despite estimation error.
-	const outputReserveTokens = 1024
+	// Reserve the provider's real completion budget, not a fixed fiction:
+	// providers count completion tokens toward the window on top of input
+	// (issue #42: 1,021,745 input + 131,072 completion vs a 1,048,576 window).
+	const minOutputReserveTokens = 1024
+	outputReserve := minOutputReserveTokens
+	if provider.MaxOutputTokens > minOutputReserveTokens {
+		outputReserve = provider.MaxOutputTokens
+		// A pathological completion reserve must not eat the entire budget.
+		// Cap at half the window so message compaction always has room.
+		outputReserve = min(outputReserve, hardLimit/2)
+	}
 	// The pre-send budget is the LOWER of:
 	//   - the safety ceiling: hardLimit * (1 - ContextWindowReserve) − tools − output
 	//     (reserves headroom for tool defs and the model's response)
@@ -929,16 +950,24 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 	if ratio <= 0 || ratio >= 1.0 {
 		ratio = 0.5
 	}
-	ceilingBudget := int(float64(hardLimit)*(1.0-r.cfg.ContextWindowReserve)) - toolTokens - outputReserveTokens
-	ratioBudget := int(float64(hardLimit)*ratio) - toolTokens - outputReserveTokens
+	ceilingBudget := int(float64(hardLimit)*(1.0-r.cfg.ContextWindowReserve)) - toolTokens - outputReserve
+	ratioBudget := int(float64(hardLimit)*ratio) - toolTokens - outputReserve
 	budget := min(ratioBudget, ceilingBudget)
 	if budget <= 0 {
 		budget = int(float64(hardLimit) * 0.5) // last-resort floor: keep at least half the window for messages
 	}
-	if est := 0; est > budget {
+	// Real pre-send estimate: messages (incl. tool-call args) plus tool
+	// definitions. This used to be `if est := 0; est > budget` — a hardcoded
+	// zero that made the whole branch dead code, so oversized requests were
+	// forwarded verbatim and every retry replayed them against every fallback
+	// provider (issue #42, "Requested token count exceeds the model's maximum
+	// context length of 1048576 tokens ... 1021745 tokens from the input").
+	msgTokens := estimateTokens(chatReq.Messages)
+	if msgTokens > budget {
 		slog.Warn("pre-send truncation triggered",
-			"estimatedMessageTokens", est,
+			"estimatedMessageTokens", msgTokens,
 			"toolTokens", toolTokens,
+			"outputReserve", outputReserve,
 			"budget", budget,
 			"hardLimit", hardLimit,
 			"reserve", r.cfg.ContextWindowReserve,
@@ -947,6 +976,18 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 			"run", r.cfg.RunName,
 		)
 		chatReq.Messages = truncateHistory(chatReq.Messages, budget)
+		kept := estimateTokens(chatReq.Messages)
+		// Tell trace-stream clients the turn was compacted before sending —
+		// without it a silently-shortened conversation looks like memory loss.
+		if truncEv, err := json.Marshal(map[string]any{
+			"type":     "truncation",
+			"provider": provider.Name,
+			"before":   msgTokens,
+			"after":    kept,
+			"budget":   budget,
+		}); err == nil {
+			r.emitTraceEventBoth(string(truncEv))
+		}
 	}
 
 	// Streaming path: proxy SSE chunks directly from provider to client.
@@ -2120,6 +2161,76 @@ func (r *Router) emitTraceEventBoth(eventJSON string) {
 	r.emitTraceEventSSE(eventJSON)
 }
 
+// Trace-event type discriminants for the infrastructure-originated events the
+// model-router streams so clients can show what the system is doing while the
+// LLM is silent (routing decisions, memory-system background work). The
+// agent/LLM-originated types (toolCall, toolResult, thought, …) are written
+// inline at their dispatch sites.
+const (
+	// traceEventTypeRouting mirrors the AgentRun status RoutingDecision the
+	// operator records per LLM request (POST /agentrun/…/route): it tells
+	// trace consumers which model actually ran.
+	traceEventTypeRouting = "routing"
+	// traceEventTypeHindsight surfaces hindsight memory-system work
+	// (op: bank/recall/retain) that adds silent latency before the first token.
+	traceEventTypeHindsight = "hindsight"
+)
+
+// emitRoutingTraceEvent writes the per-request routing decision into the trace
+// stream so editor/UI clients see which model ran (mirrors the AgentRun status
+// entry recorded via postRoutingDecision). Fire-and-forget: tracing must never
+// fail a request because routing already happened.
+func (r *Router) emitRoutingTraceEvent(provider *ProviderConfig, result RouteResult) {
+	if r.cfg.RunName == "" {
+		return
+	}
+	ev, err := json.Marshal(map[string]any{
+		"type":       traceEventTypeRouting,
+		"model":      provider.LiteLLMModel,
+		"provider":   provider.Name,
+		"strategy":   r.cfg.Strategy,
+		"reason":     result.Reason,
+		"confidence": result.Confidence,
+	})
+	if err != nil {
+		return
+	}
+	r.emitTraceEventBoth(string(ev))
+}
+
+// emitHindsightTraceEvent writes a hindsight memory-system trace event
+// (op: bank/recall/retain). Failed operations are surfaced too — they explain
+// perceived slowness better than a spinner.
+func (r *Router) emitHindsightTraceEvent(op string, failed bool, detail string) {
+	if r.cfg.RunName == "" {
+		return
+	}
+	ev := map[string]any{
+		"type":   traceEventTypeHindsight,
+		"op":     op,
+		"bankID": r.hindsightBankID(),
+	}
+	if failed {
+		ev["failed"] = true
+		ev["reason"] = detail
+	}
+	data, err := json.Marshal(ev)
+	if err != nil {
+		return
+	}
+	r.emitTraceEventBoth(string(data))
+}
+
+// announceHindsightBank emits the one-time bank-ready trace event per run:
+// ensureHindsightBank runs on every request but the announcement should appear
+// at most once in the trace stream.
+func (r *Router) announceHindsightBank() {
+	if !r.hindsightAnnounced.CompareAndSwap(false, true) {
+		return
+	}
+	r.emitHindsightTraceEvent("bank", false, "")
+}
+
 // Finalize emits a terminal trace-event release decision if no explicit terminal was reached.
 // Call this from the shutdown path before HTTP servers are closed so the operator POST
 // can still reach the apiserver.
@@ -2179,6 +2290,11 @@ func (r *Router) dispatchToolCall(ctx context.Context, tc ToolCall) string { //n
 	// Built-in tools take priority — they may also appear in cfg.ToolDefinitions
 	// (with BackendType "builtin") for LLM schema injection, but must be handled here.
 	// Accept both underscore-prefixed and non-prefixed forms for backwards compatibility.
+	// fs_* tools relay to the workstation-side editor bridge and run on their own
+	// (longer) deadline — user-approval waits must not hit the generic toolTimeout.
+	fsRelayedTool := tc.Function.Name == fsToolNameRead || tc.Function.Name == "_fs_read_text_file" ||
+		tc.Function.Name == fsToolNameWrite || tc.Function.Name == "_fs_write_text_file" ||
+		tc.Function.Name == fsToolNameList || tc.Function.Name == "_fs_list_dir"
 	switch tc.Function.Name {
 	case "_handoff", "handoff":
 		result = r.executeHandoff(toolCtx, tc.Function.Arguments)
@@ -2222,15 +2338,31 @@ func (r *Router) dispatchToolCall(ctx context.Context, tc ToolCall) string { //n
 		result = r.executeConfirmFix(toolCtx, tc.Function.Arguments)
 	case "_list_resources", "list_resources":
 		result = r.executeListResources(toolCtx, tc.Function.Arguments)
+	case fsToolNameRead, "_fs_read_text_file":
+		result = r.executeFSRead(ctx, tc.Function.Arguments)
+	case fsToolNameList, "_fs_list_dir":
+		result = r.executeFSList(ctx, tc.Function.Arguments)
+	case fsToolNameWrite, "_fs_write_text_file":
+		result = r.executeFSWrite(ctx, tc.Function.Arguments)
 	default:
 		// Find the tool definition.
 		found := false
 		for _, td := range r.cfg.ToolDefinitions {
 			if td.Name == tc.Function.Name {
 				found = true
-				if td.BackendType == backendTypeMCP {
+				switch td.BackendType {
+				case backendTypeMCP:
 					result, appUrl = r.callMCPTool(toolCtx, td, tc.Function.Arguments)
-				} else {
+				case backendTypeBuiltin:
+					// The operator injected a builtin this router build doesn't
+					// know (operator newer than the model-router image). Say so
+					// instead of a cryptic executor error.
+					result = fmt.Sprintf(
+						`{"error": "builtin tool %q is not implemented by this model-router build; rebuild and redeploy the model-router image to match the operator"}`, //nolint:lll
+						tc.Function.Name)
+					slog.Warn("builtin tool not implemented by this router build (operator/router version skew)",
+						"tool", tc.Function.Name, "run", r.cfg.RunName)
+				default:
 					result = r.executeToolBackend(toolCtx, td, tc.Function.Arguments)
 				}
 				break
@@ -2242,7 +2374,9 @@ func (r *Router) dispatchToolCall(ctx context.Context, tc ToolCall) string { //n
 	}
 
 	// Check if the tool execution timed out and surface a structured error.
-	if toolCtx.Err() == context.DeadlineExceeded {
+	// Relayed fs tools carry their own, longer deadline (executeFS*) so they
+	// are excluded from the generic per-tool timeout override here.
+	if !fsRelayedTool && toolCtx.Err() == context.DeadlineExceeded {
 		slog.Warn("tool execution timed out", "tool", tc.Function.Name,
 			"timeoutSec", r.cfg.Safeguards.ToolExecutionTimeoutSec,
 			"duration", time.Since(startTime).String())
@@ -3146,6 +3280,10 @@ func (r *Router) executeEmitEvent(ctx context.Context, args string) string {
 // postRoutingDecision records the actual per-request routing decision to the
 // AgentRun status via the operator API so the UI shows which model was used.
 // Failures are logged but never returned — routing already happened.
+// The trace-stream copy is emitted separately (emitRoutingTraceEvent) from the
+// single HandleChatCompletions dispatch point — this function is invoked twice
+// per streaming request (chat handler + forwardToProviderStream), which would
+// duplicate every trace event.
 func (r *Router) postRoutingDecision(ctx context.Context, provider *ProviderConfig, result RouteResult) {
 
 	if r.cfg.RunName == "" || r.cfg.OperatorAPIURL == "" {

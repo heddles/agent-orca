@@ -48,15 +48,41 @@ import (
 const acpProtocolVersion uint16 = 1
 
 // acpBridgeVersion is the ACP protocol-bridge version reported in initialize
-// responses. It is independent of the ACP protocol version (1) and tracks the
-// aoctl bridge implementation.
-const acpBridgeVersion = "0.1.0"
+// responses and logged at serve startup (so a Zed session's log panel shows
+// which bridge build is actually running — stale subprocesses are a real
+// failure mode). It is independent of the ACP protocol version (1).
+// 0.2.0: fs/* relay (read/write/list) + write-approval diagnosability.
+// 0.3.0: trace-event relay — model-router trace events (tool calls, results,
+// guardrails, provider fallbacks, MCP discovery) stream to the editor as
+// session updates during the turn instead of the client showing only a
+// spinner until the final response arrives.
+const acpBridgeVersion = "0.3.0"
 
 // acpSession is the live state for one Zed session.
 type acpSession struct {
 	SessionID string
 	RunID     string
 	Cancel    context.CancelFunc
+	// Cwd is the workspace directory the editor opened the session in
+	// (session/new "cwd"); the primary root for the fs/* relay.
+	Cwd string
+	// WritesAllowed is set once the user approves a workspace write with
+	// --fs-remember-approval active: subsequent writes in this session skip
+	// the per-write elicitation.
+	WritesAllowed bool
+
+	// traceToolSeq numbers trace-relayed tool calls so every call gets a
+	// unique ACP toolCallId even when the same tool runs twice in a session
+	// (same-tool calls with a deterministic id collapse into one editor
+	// entry). pendingTraceTool maps toolKey → the id awaiting its result.
+	traceToolSeq     int
+	pendingTraceTool map[string]string
+
+	// turn identifies the live session/prompt turn. registerRun bumps it;
+	// releaseRun only clears Cancel for its own turn. Matching on RunID is not
+	// enough: a superseding prompt can resume the SAME run (tryResumeAwaiting),
+	// and the superseded turn's cleanup must not clear the live turn's Cancel.
+	turn uint64
 }
 
 // openAIStreamState accumulates translation state across the events of one
@@ -64,10 +90,21 @@ type acpSession struct {
 // close + polling fallback can emit only the remainder), the reasoning
 // streamed so far (same dedup), and the tool-call deltas merged so far
 // (keyed by OpenAI index, mirroring mergeToolCallDeltas in internal/router).
+// traceSeen dedups trace events across reconnects: TailTokens replays all
+// prior Redis entries on each new stream attempt, so without it every
+// window re-emits the tool calls/results already shown.
 type openAIStreamState struct {
 	streamed        strings.Builder // assistant text emitted as message chunks
 	streamedThought strings.Builder // reasoning emitted as thought chunks
 	toolCalls       map[int]openaiToolCall
+	traceSeen       map[string]bool // raw trace-event JSON → already emitted
+	// Replay swallowing: every stream attempt replays the run's token stream
+	// from the beginning. Before each attempt the bridge snapshots how much
+	// text has already been emitted; the first N bytes of the replay are
+	// known-duplicates and are swallowed instead of re-emitted (which would
+	// duplicate the agent's entire output in the editor on every reconnect).
+	replayTokenSkip   int
+	replayThoughtSkip int
 }
 
 // acpBridge owns method dispatch and per-session run state.
@@ -76,17 +113,26 @@ type acpBridge struct {
 	client    *Client
 	agentName string
 	manifest  ACPAgentManifest
+	// fsOpts carries the workstation-side fs policy knobs (--fs-roots,
+	// --fs-require-approval).
+	fsOpts fsBridgeOptions
 
 	mu       sync.Mutex
 	sessions map[string]*acpSession
 	seq      atomic.Int64
 }
 
-func newACPBridge(srv *acpStdioServer, client *Client, agentName string) *acpBridge {
+func newACPBridge(srv *acpStdioServer, client *Client, agentName string) *acpBridge { //nolint:unparam
+	return newACPBridgeWithOptions(srv, client, agentName, fsBridgeOptions{})
+}
+
+// newACPBridgeWithOptions builds the bridge with fs relay policy knobs.
+func newACPBridgeWithOptions(srv *acpStdioServer, client *Client, agentName string, fsOpts fsBridgeOptions) *acpBridge { //nolint:lll
 	return &acpBridge{
 		srv:       srv,
 		client:    client,
 		agentName: agentName,
+		fsOpts:    fsOpts,
 		sessions:  map[string]*acpSession{},
 	}
 }
@@ -160,7 +206,9 @@ func handleInitialize(ctx context.Context, b *acpBridge, req jsonrpcRequest) (an
 		return nil, fmt.Errorf("fetching agent manifest for %q via ACP API (%s): %w — "+
 			"ensure --acp-endpoint points to the agent-orca ACP API host root", b.agentName, b.client.ACP, err)
 	}
+	b.mu.Lock()
 	b.manifest = man
+	b.mu.Unlock()
 
 	version := p.ProtocolVersion
 	if version == 0 || version != acpProtocolVersion {
@@ -168,12 +216,22 @@ func handleInitialize(ctx context.Context, b *acpBridge, req jsonrpcRequest) (an
 		// requested a version we don't support: negotiate down to our latest.
 		version = acpProtocolVersion
 	}
+	// Filesystem capability (issue #34): advertise exactly what the agent's
+	// policy grants, so a readOnly agent never leads the editor to believe it
+	// can write. Zed answers the fs/* calls; the bridge relays pod requests to
+	// it and enforces workspace confinement on every call.
+	fsCaps := acpFSCaps{}
+	if man.Filesystem != nil {
+		fsCaps.ReadTextFile = true
+		fsCaps.WriteTextFile = man.Filesystem.Mode == "readWrite"
+	}
 	return acpInitializeResponse{
 		ProtocolVersion: version,
 		AgentCapabilities: acpAgentCaps{
 			LoadSession:        false,
 			PromptCapabilities: acpPromptCaps{Image: false, Audio: false, EmbeddedContext: false},
 			MCPCapabilities:    acpMCPCaps{HTTP: false, SSE: false},
+			FS:                 fsCaps,
 			// session/new, session/prompt, session/cancel and session/update are
 			// baseline capabilities (all agents MUST support them), so they are
 			// NOT advertised here. Only optional capabilities that this bridge
@@ -205,14 +263,33 @@ func handleAuthenticate(_ context.Context, _ *acpBridge, _ jsonrpcRequest) (any,
 func handleSessionNew(_ context.Context, b *acpBridge, req jsonrpcRequest) (any, error) {
 	var p acpSessionNewParams
 	if len(req.Params) > 0 {
-		_ = json.Unmarshal(req.Params, &p)
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			b.srv.logf("acp: session/new params undecodable (%v): %.200s\n", err, string(req.Params))
+		}
+	}
+	if p.Cwd == "" {
+		// ACP v1 requires cwd on session/new; a client that omits it leaves the
+		// fs/* relay without a workspace root. Surface it — the relay falls back
+		// to the bridge process's working directory (see workspaceRoots).
+		b.srv.logf("acp: session/new arrived without cwd (params: %.200s) — fs relay will "+
+			"confine to the bridge process working directory\n", string(req.Params))
 	}
 	sessionID := p.SessionID
 	if sessionID == "" {
 		sessionID = b.nextSessionID()
+		b.srv.logf("acp: session/new without sessionId — generated %q\n", sessionID)
 	}
+	// Update the session record in place: Zed may re-send session/new for a
+	// session whose prompt turn is still in flight, and replacing the record
+	// would drop its RunID — orphaning the fs/* relay watcher mid-turn (fs
+	// calls then pend until the router's fs timeout).
 	b.mu.Lock()
-	b.sessions[sessionID] = &acpSession{SessionID: sessionID}
+	sess, ok := b.sessions[sessionID]
+	if !ok {
+		sess = &acpSession{SessionID: sessionID}
+		b.sessions[sessionID] = sess
+	}
+	sess.Cwd = p.Cwd
 	b.mu.Unlock()
 	return acpSessionNewResponse{SessionID: sessionID}, nil
 }
@@ -253,19 +330,21 @@ func handleSessionPrompt(ctx context.Context, b *acpBridge, req jsonrpcRequest) 
 
 	// Register a cancellable context so session/cancel can abort a live turn.
 	// Derive from the dispatch context (not Background) so that a shutdown
-	// cancels in-flight runs as well.
+	// cancels in-flight runs as well. The session record may already exist
+	// (session/new stored the workspace cwd): update it in place — replacing
+	// it would drop the cwd and break the fs/* relay's workspace confinement.
 	runCtx, cancel := context.WithCancel(ctx)
-	b.mu.Lock()
-	b.sessions[sessionID] = &acpSession{SessionID: sessionID, RunID: runID, Cancel: cancel}
-	b.mu.Unlock()
+	turn := b.registerRun(sessionID, runID, cancel)
 	defer func() {
 		cancel() // release the context on completion (or cancellation)
-		b.mu.Lock()
-		if cur, ok := b.sessions[sessionID]; ok && cur.RunID == runID {
-			cur.Cancel = nil
-		}
-		b.mu.Unlock()
+		b.releaseRun(sessionID, turn)
 	}()
+
+	// Start the fs/* relay watcher (issue #34) before the run starts: fs tool
+	// calls fire mid-turn. It follows continuation runs via the session record
+	// (awaiting→resume chains a new run under the same session) and dies with
+	// the run context via the defer above.
+	go b.watchFSSession(runCtx, sessionID)
 
 	stopReason := b.awaitCompletion(runCtx, runID, sessionID)
 	b.srv.respond(req.ID, acpPromptResponse{StopReason: stopReason})
@@ -280,7 +359,7 @@ func (b *acpBridge) awaitCompletion(ctx context.Context, runID, sessionID string
 	for {
 		// Fresh translation state per run (continuation runs after an await
 		// resume carry their own output).
-		st := &openAIStreamState{toolCalls: map[int]openaiToolCall{}}
+		st := &openAIStreamState{toolCalls: map[int]openaiToolCall{}, traceSeen: map[string]bool{}}
 		// Path 1: Try streaming first
 		term := b.streamRunEvents(ctx, runID, sessionID, st)
 		if term != acpPendingAwaiting {
@@ -294,6 +373,9 @@ func (b *acpBridge) awaitCompletion(ctx context.Context, runID, sessionID string
 		contID, resumed := b.handleAwaitingRun(ctx, run, sessionID, runID, st)
 		if resumed {
 			runID = contID
+			// Keep the session record (and the fs/* relay watcher) pointed at
+			// the continuation run.
+			b.setSessionRun(sessionID, contID)
 			continue
 		}
 		return acpStopReasonEndTurn
@@ -301,16 +383,37 @@ func (b *acpBridge) awaitCompletion(ctx context.Context, runID, sessionID string
 }
 
 // streamRunEvents consumes the SSE stream from GET /runs/{id} (Accept:
-// text/event-stream) and translates it into session/update notifications.
+// text/event-stream) and translates it into ACP session/update notifications.
 //
-// The ACP API bounds streaming requests to 30s, so a long response is delivered
+// The ACP API bounds streaming requests (non-SSE requests to 30s; SSE to the
+// 10-minute stream window), so a long response is delivered
 // in windows: each window ends either with a genuine terminal event or with
 // the connection dropping. A terminal event is verified against the run's real
 // status (confirmTerminal) before ending the turn, so a premature run.completed
-// caused by the 30s timeout does not truncate the response — instead the
-// stream is re-attempted.
+// caused by a window boundary does not truncate the response — instead the
+// stream is re-attempted. Before each re-attempt the run's CRD state is polled
+// directly: if the run is already terminal (or awaiting input) the turn
+// finalizes immediately even when the stream never delivered a terminal event
+// (e.g. the terminal trace event landed in the gap between windows).
 func (b *acpBridge) streamRunEvents(ctx context.Context, runID, sessionID string, st *openAIStreamState) string {
 	for attempt := 0; ; attempt++ {
+		// Gap-filling CRD poll: when the previous stream window ended without a
+		// terminal event (the terminal trace marker landed in the gap between
+		// windows, or the stream dropped for any other reason), consult the
+		// run's authoritative CRD state before re-streaming — a terminal (or
+		// awaiting) phase ends the turn immediately.
+		if attempt > 0 {
+			if run, err := b.client.GetACPRun(ctx, runID); err == nil {
+				if stop := b.terminalStopForRun(run, sessionID, st); stop != "" {
+					return stop
+				}
+			}
+		}
+		// Every attempt replays the run's token stream from the start — arm the
+		// swallow counters so already-emitted text is not re-emitted (which
+		// would duplicate the agent's entire output in the editor).
+		st.replayTokenSkip = st.streamed.Len()
+		st.replayThoughtSkip = st.streamedThought.Len()
 		// Each stream attempt gets its own cancellable context derived from the
 		// run context. When the attempt ends, the attempt context is cancelled
 		// so the producer goroutine inside StreamRunEvents unblocks from its
@@ -347,7 +450,27 @@ func (b *acpBridge) streamRunEvents(ctx context.Context, runID, sessionID string
 			if b.confirmTerminal(ctx, runID) {
 				return term
 			}
-			// Premature terminal event: fall through to re-attempt streaming.
+			// The stream signalled a terminal event but the CRD hasn't flipped yet
+			// (the runner is still persisting output / the operator is patching
+			// status): an imminent event. Poll briefly instead of re-streaming —
+			// re-streaming replays the entire token stream, duplicating every
+			// already-rendered token in the editor. If the CRD still isn't
+			// terminal after the bounded wait, fall back to the re-attempt loop
+			// (replay-safe via the swallow counters).
+			pollDeadline := time.Now().Add(6 * time.Second)
+			for time.Now().Before(pollDeadline) {
+				select {
+				case <-ctx.Done():
+					return acpStopReasonUserCancel
+				case <-time.After(300 * time.Millisecond):
+				}
+				if run, err := b.client.GetACPRun(ctx, runID); err == nil {
+					if stop := b.terminalStopForRun(run, sessionID, st); stop != "" {
+						return stop
+					}
+				}
+			}
+			// Bounded poll exhausted: fall through to re-attempting the stream.
 		}
 		// if attempt >= maxStreamRetries {
 		// b.srv.logf("acp: stream for %s ended early repeatedly, falling back to polling\n", runID)
@@ -387,12 +510,30 @@ func (b *acpBridge) consumeAndStreamHTTP(
 				return ""
 			}
 
-			term := b.handleEvent(ev, sessionID, msgID, st)
-
-			if ev.Type != "thought" {
-				b.srv.notify("session/update", ev)
+			// Model-router trace events (tool calls/results, guardrails,
+			// provider fallbacks, MCP discovery, routing, hindsight) ride the
+			// run stream as `event: trace` SSE frames. Translate them into
+			// session/update notifications so editors render live agent
+			// activity mid-turn instead of a bare spinner. st.traceSeen dedups
+			// across reconnects: TailTokens replays prior Redis entries on
+			// every new stream attempt.
+			if ev.Type == acpEventTypeTrace {
+				if tev, ok := parseACPTraceEvent(ev.Data); ok {
+					if tev.Type == "thought" {
+						// Reasoning deltas bypass traceSeen — identical consecutive
+						// deltas produce identical JSON, so exact-JSON dedup would
+						// drop real thinking text. Replay dedup uses the same
+						// byte-swallow counter as the OpenAI-chunk reasoning path.
+						b.emitTraceThoughtDelta(sessionID, tev.Content, st)
+					} else if !st.traceSeen[ev.Data] {
+						st.traceSeen[ev.Data] = true
+						b.handleTraceEvent(tev, sessionID)
+					}
+				}
+				continue
 			}
 
+			term := b.handleEvent(ev, sessionID, msgID, st)
 			if term != "" {
 				return term
 			}
@@ -421,6 +562,27 @@ func (b *acpBridge) confirmTerminal(ctx context.Context, runID string) bool {
 		return true
 	}
 	return false
+}
+
+// terminalStopForRun maps a fetched run's status to a stop reason when the run
+// has reached a terminal (or input-awaiting) phase, emitting any output that
+// was never streamed (suffix-aware, so already-delivered text is not
+// duplicated). Returned reasons:
+//
+//	completed/failed → end_turn, cancelled → user-cancelled,
+//	awaiting → the internal pending-awaiting sentinel (the caller's loop runs
+//	the elicitation flow). Empty string = still running.
+func (b *acpBridge) terminalStopForRun(run acpRun, sessionID string, st *openAIStreamState) string {
+	switch run.Status {
+	case acpStatusCompleted, acpStatusFailed:
+		b.emitTerminalOutput(run, sessionID, st)
+		return acpStopReasonEndTurn
+	case acpStatusCancelled:
+		return acpStopReasonUserCancel
+	case acpStatusAwaiting:
+		return acpPendingAwaiting
+	}
+	return ""
 }
 
 // handleEvent translates one SSE event into ACP notifications. It handles both
@@ -515,13 +677,32 @@ func (b *acpBridge) handleOpenAIChunk(data, sessionID, msgID string, st *openAIS
 	// 	return acpStopReasonEndTurn
 	// }
 	if chunk.Reasoning != "" {
-		b.srv.notify(acpMethodSessionUpdate, acpUpdateParams{
-			SessionID: sessionID,
-			Update: acpUpdate{
-				SessionUpdate: acpUpdateThoughtChunk,
-				Content:       &acpContentBlock{Type: "text", Text: chunk.Reasoning},
-			},
-		})
+		reasoning := chunk.Reasoning
+		if st != nil && st.replayThoughtSkip > 0 {
+			// Reconnect replay: swallow the already-streamed prefix (see
+			// emitMessageChunk for the rationale).
+			if len(reasoning) <= st.replayThoughtSkip {
+				st.replayThoughtSkip -= len(reasoning)
+				reasoning = ""
+			} else {
+				reasoning = reasoning[st.replayThoughtSkip:]
+				st.replayThoughtSkip = 0
+			}
+		}
+		if reasoning != "" {
+			b.srv.notify(acpMethodSessionUpdate, acpUpdateParams{
+				SessionID: sessionID,
+				Update: acpUpdate{
+					SessionUpdate: acpUpdateThoughtChunk,
+					Content:       &acpContentBlock{Type: "text", Text: reasoning},
+				},
+			})
+		}
+		if st != nil {
+			// Track the EMITTED suffix (not the raw chunk) so the skip counters
+			// and emitThoughtRemainder's suffix check stay aligned.
+			st.streamedThought.WriteString(reasoning)
+		}
 	}
 	if chunk.Content != "" {
 		b.emitMessageChunk(sessionID, msgID, chunk.Content, st)
@@ -590,6 +771,17 @@ func (b *acpBridge) emitMessageChunk(sessionID, msgID, text string, st *openAISt
 	if text == "" {
 		return
 	}
+	if st != nil && st.replayTokenSkip > 0 {
+		// Reconnect replay: this and usually several following chunks repeat
+		// text already streamed in a previous window. Swallow the known-
+		// duplicate prefix, emit the remainder.
+		if len(text) <= st.replayTokenSkip {
+			st.replayTokenSkip -= len(text)
+			return
+		}
+		text = text[st.replayTokenSkip:]
+		st.replayTokenSkip = 0
+	}
 	b.srv.notify(acpMethodSessionUpdate, acpUpdateParams{
 		SessionID: sessionID,
 		Update: acpUpdate{
@@ -635,6 +827,12 @@ func (b *acpBridge) emitToolCallUpdate(
 	if title == "" {
 		title = "tool call"
 	}
+	// ACP v1 ToolCallContent entries are discriminated wrappers: a bare
+	// ContentBlock ("type":"text") is an unknown variant for strict clients.
+	wrapped := make([]acpToolCallContent, 0, len(content))
+	for i := range content {
+		wrapped = append(wrapped, acpToolCallContent{Type: "content", Content: &content[i]})
+	}
 	b.srv.notify(acpMethodSessionUpdate, acpUpdateParams{
 		SessionID: sessionID,
 		Update: acpToolCallUpdate{
@@ -643,7 +841,7 @@ func (b *acpBridge) emitToolCallUpdate(
 			Title:         title,
 			Kind:          "other",
 			Status:        status,
-			Content:       content,
+			Content:       wrapped,
 		},
 	})
 }
@@ -744,8 +942,9 @@ func (b *acpBridge) handleAwaitingRun(
 	}
 
 	resp, err := b.srv.sendRequest(ctx, acpMethodElicitationCreate, acpElicitParams{
-		Message: question,
-		Mode:    "form",
+		SessionID: sessionID,
+		Message:   question,
+		Mode:      "form",
 		RequestedSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

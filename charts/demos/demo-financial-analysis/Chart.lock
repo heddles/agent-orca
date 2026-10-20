@@ -1,6 +1,6 @@
 dependencies:
 - name: agent-orca-resources
   repository: file://../../agent-orca-resources
-  version: 0.2.0
-digest: sha256:c551a4dc724a1781c6f04fe3dc948cd88c404e3fcd88f71b351705cb6d711be3
-generated: "2026-08-25T07:31:52.244823-07:00"
+  version: 0.2.1
+digest: sha256:55ef586a7b21a718fd0cf8fadb2eb604ffd7d639f62ed13c6573096c1745205c
+generated: "2026-10-16T13:51:53.71195-07:00"

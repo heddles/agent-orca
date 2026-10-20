@@ -637,12 +637,15 @@ func (s *redisStore) sendStreamEntry(ctx context.Context, ch chan<- string, entr
 
 // terminalTraceEventTypes are trace-event types that mark the end of an OpenAI
 // streaming turn loop. They mirror the UI's isTerminalTraceEvent (ui/src/api/traceStream.ts).
+// `done` is emitted by the model-router's streaming path on the genuine terminal
+// text turn and by the _done built-in tool — both mean the turn is over.
 // `clarify` is intentionally excluded: a clarified run pauses for human input and
 // later resumes on the same token-stream key, so it is not a hard close — that path
 // is closed via the CRD WaitingForInput phase (uiapi terminal-state poller) instead.
 var terminalTraceEventTypes = map[string]struct{}{
 	"fail":        {},
 	"finalOutput": {},
+	"done":        {},
 }
 
 // IsTerminalTraceEventJSON reports whether a trace-event JSON payload (the value of

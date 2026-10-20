@@ -106,6 +106,24 @@ components:
           items: { type: string }
         metadata: { $ref: '#/components/schemas/ACPAgentMetadata' }
         status: { $ref: '#/components/schemas/ACPAgentStatus' }
+        filesystem: { $ref: '#/components/schemas/ACPFilesystemPolicy' }
+    ACPFilesystemPolicy:
+      type: object
+      description: >-
+        Projection of Agent.spec.filesystem for the `aoctl acp serve` bridge.
+        Absent when the agent has no filesystem tools. Workstation flags can
+        only narrow this policy, never widen it.
+      required: [mode]
+      properties:
+        mode: { type: string, enum: [readOnly, readWrite] }
+        writeApproval:
+          type: boolean
+          description: Ask the user to approve writes via the editor.
+        rememberApproval:
+          type: boolean
+          description: >-
+            false requires approval for every write; absent or true lets the
+            bridge remember the first approval for the rest of the session.
     ACPAwaitRequest:
       type: object
       description: Describes what the client should send next (e.g., a clarification answer).
@@ -289,6 +307,93 @@ paths:
           content:
             text/event-stream:
               schema: { $ref: '#/components/schemas/EventBatch' }
+  /runs/{run_id}/fs/pending:
+    get:
+      tags: [runs]
+      summary: List pending ACP fs/* requests of a run (workstation bridge poll)
+      description: |
+        Part of the filesystem relay (issue #34): the `aoctl acp serve` bridge
+        polls this endpoint while watching a run and forwards each request to
+        the ACP client over stdio (fs/read_text_file / fs/write_text_file).
+        Paths are confined to the bridge's workspace roots; answers are POSTed
+        back to the response endpoint. Requires a filesystem relay on the
+        deployment (501 otherwise).
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: run_id
+          required: true
+          schema: { type: string }
+        - in: query
+          name: wait
+          description: Long-poll this many seconds before returning an empty list (max 25).
+          schema: { type: number }
+      responses:
+        '200':
+          description: Current pending requests (possibly empty).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  requests:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        method: { type: string, enum: [fs/read_text_file, fs/write_text_file, fs/list_dir] }
+                        params: { type: object }
+                        createdAt: { type: string, format: date-time }
+        '404':
+          description: Run not found (or not owned by the tenant).
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+        '501':
+          description: Filesystem relay not available on this deployment.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+  /runs/{run_id}/fs/pending/{request_id}/response:
+    post:
+      tags: [runs]
+      summary: Post the bridge's answer for one relayed fs request
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: run_id
+          required: true
+          schema: { type: string }
+        - in: path
+          name: request_id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                result:
+                  type: object
+                  description: >-
+                    ACP result on success (e.g. a content object for reads; a
+                    null result is valid for writes).
+                error:
+                  type: object
+                  properties:
+                    code: { type: integer }
+                    message: { type: string }
+                  description: JSON-RPC error when the bridge/editor refused the call
+      responses:
+        '204':
+          description: Response stored; the polling agent picks it up on its next take.
+        '404':
+          description: Run or fs request not found (expired).
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+        '501':
+          description: Filesystem relay not available on this deployment.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
   /session/{session_id}:
     get:
       tags: [sessions]
