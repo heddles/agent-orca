@@ -104,9 +104,11 @@ func fsDiffFor(path, oldContent, newContent string, existed bool) *fsWriteDiff {
 
 // readFSOriginal fetches the content the editor is about to replace: the
 // editor's own fs/read_text_file channel first (it sees unsaved buffer state
-// and is the arbiter of access), then a plain disk read as fallback. ok=false
-// when neither can provide the before-state.
-func (b *acpBridge) readFSOriginal(ctx context.Context, sessionID, abs string) (string, bool) {
+// and is the arbiter of access), then a plain disk read as fallback. The disk
+// fallback is the bridge reading the host itself, so it only runs when the
+// symlink-resolved path stays inside the workspace roots. ok=false when
+// neither can provide the before-state.
+func (b *acpBridge) readFSOriginal(ctx context.Context, sessionID string, roots []string, abs string) (string, bool) {
 	editorCtx, cancel := context.WithTimeout(ctx, fsDiffReadTimeout)
 	defer cancel()
 	msg, err := b.srv.sendRequest(editorCtx, acpMethodFSRead, acpFSReadParams{
@@ -125,7 +127,11 @@ func (b *acpBridge) readFSOriginal(ctx context.Context, sessionID, abs string) (
 			return *out.Content, true
 		}
 	}
-	raw, rerr := os.ReadFile(abs)
+	real, cerr := fsWithinRealRoots(roots, abs)
+	if cerr != nil {
+		return "", false
+	}
+	raw, rerr := os.ReadFile(real)
 	if rerr != nil {
 		return "", false
 	}
@@ -137,7 +143,9 @@ func (b *acpBridge) readFSOriginal(ctx context.Context, sessionID, abs string) (
 // original content is gone from disk. A missing file renders as a full-add
 // diff; a directory target (which the editor will refuse anyway) and an
 // unreadable original skip the diff rather than guess.
-func (b *acpBridge) prepareFSDiff(ctx context.Context, sessionID, abs, content string) *fsWriteDiff {
+func (b *acpBridge) prepareFSDiff(
+	ctx context.Context, sessionID string, roots []string, abs, content string,
+) *fsWriteDiff {
 	info, statErr := os.Stat(abs)
 	if statErr != nil && !os.IsNotExist(statErr) {
 		return nil
@@ -149,7 +157,7 @@ func (b *acpBridge) prepareFSDiff(ctx context.Context, sessionID, abs, content s
 	if !existed {
 		return fsDiffFor(abs, "", content, false)
 	}
-	old, ok := b.readFSOriginal(ctx, sessionID, abs)
+	old, ok := b.readFSOriginal(ctx, sessionID, roots, abs)
 	if !ok {
 		return nil
 	}

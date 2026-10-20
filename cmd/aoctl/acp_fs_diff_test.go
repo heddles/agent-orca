@@ -230,3 +230,23 @@ func TestFSWriteSkippedDiffClearsStaleSlot(t *testing.T) {
 		t.Fatalf("oversized write must render as plain text, got stale diff %+v", d)
 	}
 }
+
+// Regression (PR #45 review): the write-diff disk fallback is the bridge
+// reading the host itself, so a workspace symlink pointing outside must not
+// leak the outside file's content into the editor diff.
+func TestFSWriteDiffDiskFallbackRespectsSymlinkConfinement(t *testing.T) {
+	tb := newFSTestBridge(t, false, nil)
+	outsideFile := filepath.Join(t.TempDir(), "secret.txt")
+	if err := os.WriteFile(outsideFile, []byte("TOP SECRET\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outsideFile, filepath.Join(tb.workspace, "f.txt")); err != nil {
+		t.Fatal(err)
+	}
+	tb.editor.readNull = true // force the disk fallback
+
+	u := fsDiffWriteTurn(t, tb, "fs_write_text_file", "new\n")
+	if d := fsDiffEntry(u); d != nil && d.OldText != nil && strings.Contains(*d.OldText, "TOP SECRET") {
+		t.Fatalf("disk fallback leaked a file outside the workspace: %q", *d.OldText)
+	}
+}

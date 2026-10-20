@@ -913,3 +913,70 @@ func TestACPFSPolicyRememberAllowed(t *testing.T) {
 		t.Fatal("rememberApproval=false must forbid remembering")
 	}
 }
+
+// Regression (PR #45 review): fs_list_dir is answered by the bridge reading
+// the disk itself, so a symlink inside the workspace must not let the agent
+// enumerate host directories outside it — neither as the final component nor
+// as an intermediate directory.
+func TestFSBridgeListDirSymlinkEscapeRejected(t *testing.T) {
+	outside := t.TempDir()
+	if err := os.Mkdir(filepath.Join(outside, "secret"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"link", "link/secret"} {
+		t.Run(path, func(t *testing.T) {
+			tb := newFSTestBridge(t, false, nil)
+			if err := os.Symlink(outside, filepath.Join(tb.workspace, "link")); err != nil {
+				t.Fatal(err)
+			}
+			params, _ := json.Marshal(map[string]string{"path": path})
+			tb.bridge.serveFSRequest(context.Background(), fsTestSessionID, "run-1", acpfsRelayRequest{
+				ID: "req-1", Method: acpMethodFSList, Params: params,
+			}, tb.bridge.fsPolicy())
+
+			resp := tb.api.responseRecorded(t)
+			if resp.Error == nil || resp.Error.Code != -32002 {
+				t.Fatalf("listing through an escaping symlink must be refused with -32002, got %+v (result %s)",
+					resp.Error, resp.Result)
+			}
+		})
+	}
+}
+
+// A symlink that stays inside the workspace keeps working.
+func TestFSBridgeListDirInWorkspaceSymlinkAllowed(t *testing.T) {
+	tb := newFSTestBridge(t, false, nil)
+	if err := os.MkdirAll(filepath.Join(tb.workspace, "real", "child"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(tb.workspace, "real"), filepath.Join(tb.workspace, "alias")); err != nil {
+		t.Fatal(err)
+	}
+	tb.bridge.serveFSRequest(context.Background(), fsTestSessionID, "run-1", acpfsRelayRequest{
+		ID: "req-1", Method: acpMethodFSList, Params: json.RawMessage(`{"path":"alias"}`),
+	}, tb.bridge.fsPolicy())
+	resp := tb.api.responseRecorded(t)
+	if resp.Error != nil || !strings.Contains(string(resp.Result), `"child"`) {
+		t.Fatalf("in-workspace symlink must list normally, got %+v / %s", resp.Error, resp.Result)
+	}
+}
+
+// A new prompt on a session cancels the turn it supersedes, so only one fs
+// watcher polls the session and session/cancel reaches the live turn.
+func TestRegisterRunCancelsSupersededTurn(t *testing.T) {
+	b := &acpBridge{sessions: map[string]*acpSession{}}
+	firstCtx, firstCancel := context.WithCancel(context.Background())
+	defer firstCancel()
+	b.registerRun("s", "run-1", firstCancel)
+
+	_, secondCancel := context.WithCancel(context.Background())
+	defer secondCancel()
+	b.registerRun("s", "run-2", secondCancel)
+
+	if firstCtx.Err() == nil {
+		t.Fatal("the superseded turn's context must be cancelled")
+	}
+	if b.sessions["s"].RunID != "run-2" {
+		t.Fatalf("session must track the new run, got %q", b.sessions["s"].RunID)
+	}
+}
