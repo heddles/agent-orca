@@ -93,22 +93,12 @@ type Router struct {
 
 	// liveBufferTokens caches the incremental token count of the combined
 	// priorMessages + messages buffer. Updated via incrementBufferTokens() on
-	// every append and reset by truncateHistory/trimLiveBuffer. This avoids
-	// the O(n) estimateTokens scan on every turn for budget checks.
+	// every append and re-counted when a turn is folded or compacted.
 	liveBufferTokens int
-
-	// compacting is true while an async compaction goroutine is running. When
-	// set, trimLiveBuffer/concludeTurn skip spawning additional concurrent
-	// truncations — the in-flight goroutine will install the result (or skip
-	// it if the buffer changed, in which case the next turn re-evaluates).
-	// Guarded by r.mu.
-	compacting bool
-
-	// compactDone is closed when the in-flight async compaction goroutine
-	// finishes. nil when no compaction is pending. Allows callers (tests,
-	// Finalize) to wait for a background truncation to install before
-	// reading priorMessages. Guarded by r.mu.
-	compactDone chan struct{}
+	// lastCompactedTokens is the stored conversation's size right after the
+	// last compaction (0 = none this run); compactStoredConversation does not
+	// compact again until the conversation has grown materially past it.
+	lastCompactedTokens int
 
 	// tokens broadcasts streaming LLM content to external subscribers
 	// (e.g. the operator's SSE stream handler) without going through pod logs.
@@ -184,9 +174,8 @@ func New(cfg *Config, store state.Store, initialMessages []json.RawMessage, exec
 	// Drop injected context stored by builds before #47; it is re-injected per request.
 	msgs = stripInjectedContext(msgs, cfg)
 
-	// Truncate oversized checkpoints to fit within provider context windows.
-	// Handles pre-existing large checkpoints or provider config changes.
-	msgs = truncateHistory(msgs, maxContextWindow(cfg.Providers)*80/100)
+	// An oversized checkpoint is not cut here: its first request summarizes
+	// it (compactStoredConversation), which keeps far more than a cut would.
 
 	// Check for a pending clarify answer (human-in-the-loop resume).
 	// When a previous pod called _clarify, the conversation was checkpointed with the
@@ -801,6 +790,9 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 		http.Error(w, "invalid JSON", http.StatusBadRequest)
 		return
 	}
+	// The router has never forwarded a client's max_tokens or tool_choice;
+	// these fields exist for router-internal requests (compaction summaries).
+	chatReq.MaxTokens, chatReq.ToolChoice = 0, nil
 
 	// Determine if this is a continuation (recursive tool-call loop within the
 	// same LLM invocation) vs. a new top-level request from the agent framework.
@@ -838,10 +830,6 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 			r.priorMessages = append(r.priorMessages, r.messages...)
 			r.messages = nil
 		}
-		// Cap the live buffer using proactive truncation to avoid latency
-		// spikes when the buffer is near full capacity. compactStoredConversation
-		// below is the primary compaction; this remains as a backstop.
-		r.trimLiveBuffer()
 		turnInput = r.clientTurnInput(chatReq.Messages)
 	}
 	// A continuation's body is rebuilt from r.messages by the tool-call loop;
@@ -914,7 +902,7 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 	// Compact the stored conversation itself when this request would cross the
 	// provider's trigger, so the cut is made once and the following turns reuse
 	// it instead of re-truncating the full history on every request (#47).
-	if r.compactStoredConversation(provider, chatReq.Tools, estimateTokens(preamble), turnInput) {
+	if r.compactStoredConversation(req.Context(), provider, chatReq, preamble, turnInput, isContinuation) {
 		r.mu.Lock()
 		chatReq.Messages = slices.Concat(preamble, r.priorMessages, r.messages, turnInput)
 		r.mu.Unlock()
@@ -999,9 +987,6 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 		req = req.WithContext(context.WithValue(req.Context(), turnInputKey{}, turnInput))
 	}
 	r.handleStreamingResponse(w, req, provider, resp, chatReq)
-	// Run episodic summarization if due (async to avoid blocking the response).
-	go r.maybeRunEpisodicSummary(context.Background())
-
 	// Checkpoint periodically for crash recovery.
 	if r.cfg.CheckpointEvery > 0 && r.ruleRouter.TurnCount()%r.cfg.CheckpointEvery == 0 {
 		go r.checkpoint(context.Background())
@@ -1290,10 +1275,14 @@ func (r *Router) forwardToAnthropic(ctx context.Context, provider *ProviderConfi
 	// Extract model name after "anthropic/".
 	modelName := strings.TrimPrefix(provider.LiteLLMModel, "anthropic/")
 
+	maxTokens := 4096
+	if chatReq.MaxTokens > 0 {
+		maxTokens = chatReq.MaxTokens // e.g. a compaction summary
+	}
 	reqBody := map[string]any{
 		"model":      modelName,
 		"messages":   anthropicMessages,
-		"max_tokens": 4096,
+		"max_tokens": maxTokens,
 	}
 	if len(systemParts) > 0 {
 		reqBody["system"] = strings.Join(systemParts, "\n\n")
@@ -1396,238 +1385,19 @@ func (r *Router) aggregateChildSpend(spendStr string) {
 	}
 }
 
-// trimLiveBuffer caps r.priorMessages to checkpointBudget() BY TOKENS (not message
-// count), preserving a compaction summary of dropped turns. Invoked right after the
-// per-turn fold so the in-memory buffer cannot grow unboundedly across turns — without
-// it, checkpoint() and maybeRunEpisodicSummary re-scan a giant history every turn and
-// compaction never sticks ("only get rid of some messages and resend a giant context").
-// Uses the cached liveBufferTokens for the initial check to avoid a full O(n) scan
-// when the buffer is well under budget. Caller must hold r.mu.
-func (r *Router) trimLiveBuffer() {
-	budget := r.checkpointBudget()
-	if budget <= 0 || len(r.priorMessages) == 0 {
-		return
-	}
-
-	// Fast path: check cached token count first. Only fall back to a full
-	// estimateTokens scan if the cached value is stale or suggests we're near budget.
-	cached := r.liveBufferTokens
-	if cached > 0 && cached < int(float64(budget)*r.cfg.proactiveThreshold()) {
-		return
-	}
-
-	// Slow path: full scan to get the accurate token count.
-	est := estimateTokens(r.priorMessages)
-	r.liveBufferTokens = est
-	if est > budget {
-		// Buffer exceeds the 80% ceiling — trigger compaction. The actual
-		// truncation reduces to compactionTarget() (configurable, default 50%,
-		// settable to ~10%) rather than all the way down to the ceiling, so the
-		// buffer doesn't linger at 60–80% of the context window after compaction.
-		r.spawnCompaction(r.priorMessages, r.compactionTarget())
-	}
-}
-
-// spawnCompaction launches a background goroutine to run truncateHistory on a
-// snapshot of msgs, so the expensive O(n) compaction (token estimation + cut
-// point search + compaction-summary generation) runs off the request thread
-// that holds r.mu and does not block streaming/routing. The goroutine installs
-// the truncated result back under r.mu when complete.
-//
-// Concurrency safety: only one compaction goroutine runs at a time (guarded
-// by r.compacting). At install time the goroutine checks whether priorMessages
-// was modified while it was working (length-based guard — the buffer only grows
-// by appends/folds which preserve its prefix, so a length change means another
-// turn mutated it). If unchanged, the truncated result is installed directly;
-// if changed, the install is skipped and the cache is re-synced — the next
-// trimLiveBuffer call re-evaluates. No messages are ever lost: skipped installs
-// simply defer to the next turn's attempt.
-//
-// Caller must hold r.mu.
-func (r *Router) spawnCompaction(msgs []Message, budget int) {
-	if r.compacting {
-		return // a compaction is already in flight
-	}
-	r.compacting = true
-	// Capture the done channel so the goroutine can signal completion.
-	done := make(chan struct{})
-	r.compactDone = done
-	// Copy the snapshot so the goroutine owns independent data; the caller may
-	// continue mutating r.priorMessages after releasing r.mu.
-	snapshot := append([]Message{}, msgs...)
-	snapLen := len(snapshot)
-	go func() {
-		// Always release the compaction slot + signal completion, even if
-		// truncation panics, so the router isn't permanently stuck with
-		// compacting=true (which would suppress all future truncations).
-		defer func() {
-			r.mu.Lock()
-			r.compacting = false
-			r.compactDone = nil
-			r.mu.Unlock()
-			close(done)
-		}()
-
-		// Expensive O(n) truncation — runs WITHOUT holding r.mu.
-		truncated := truncateHistory(snapshot, budget)
-		newTokens := estimateTokens(truncated)
-
-		r.mu.Lock()
-		if len(r.priorMessages) == snapLen {
-			// Buffer unchanged since snapshot → install the truncated result.
-			r.priorMessages = truncated
-			r.liveBufferTokens = newTokens
-		} else {
-			// Buffer was mutated (e.g. turn-end fold appended new messages).
-			// Re-sync the cache to the current state; the next trimLiveBuffer
-			// / concludeTurn will re-trigger compaction if still over budget.
-			r.liveBufferTokens = estimateTokens(r.priorMessages)
-		}
-		r.mu.Unlock()
-	}()
-}
-
-// waitForCompaction blocks until any in-flight async compaction goroutine
-// completes. Safe to call without holding r.mu. Primarily used by tests and
-// Finalize; the normal request path does not wait (the pre-send truncation
-// and checkpoint()'s own copy-truncation act as safety nets while an async
-// compaction is pending).
-func (r *Router) waitForCompaction() {
-	r.mu.Lock()
-	ch := r.compactDone
-	r.mu.Unlock()
-	if ch != nil {
-		<-ch
-	}
-}
-
 // incrementBufferTokens adds delta to the cached incremental token counter for the
 // combined prior+messages buffer. Caller must hold r.mu.
 func (r *Router) incrementBufferTokens(delta int) {
 	r.liveBufferTokens += delta
 }
 
-// concludeTurn folds the just-finished turn into priorMessages and caps the live
-// buffer to the checkpoint budget. For re-sending chat agents this is critical:
-// without it, retaining the full turn (the agent's entire conversation re-sent
-// each turn) leaves prior+messages ~2x the budget, so checkpoint() re-truncates a
-// giant buffer every turn and compaction never sticks ("only get rid of some
-// messages and resend a giant context"). truncateHistory keeps the most-recent
-// messages and replaces dropped oldest turns with a compaction summary.
-// Caller must hold r.mu. Invoked at the true turn-end (final, non-tool response)
-// in both the streaming and non-streaming paths — NOT mid tool-call loop.
+// concludeTurn folds the just-finished turn into priorMessages. Compaction
+// happens before each request (compactStoredConversation), not here.
+// Caller must hold r.mu. Invoked at the true turn-end (final, non-tool response).
 func (r *Router) concludeTurn() {
-	if budget := r.checkpointBudget(); budget > 0 {
-		combined := append(append([]Message{}, r.priorMessages...), r.messages...)
-
-		// Use cached token count for the initial check to avoid O(n) scan.
-		// Only do full estimation if we're near the budget threshold.
-		cached := r.liveBufferTokens
-		needsTrunc := false
-		if cached > 0 {
-			switch {
-			case cached > int(float64(budget)*r.cfg.proactiveThreshold()):
-				// At or over the threshold: confirm with a full scan before
-				// compacting. Token counts are memoised, so this is cheap, and
-				// a stale cache must never trigger a cut on its own (#47).
-				fullEst := estimateTokens(combined)
-				r.liveBufferTokens = fullEst
-				if fullEst > budget {
-					needsTrunc = true
-				}
-			}
-		} else {
-			// No cached value; do full scan.
-			fullEst := estimateTokens(combined)
-			r.liveBufferTokens = fullEst
-			if fullEst > budget {
-				needsTrunc = true
-			}
-		}
-
-		// Always fold the finished turn into priorMessages. When truncation is
-		// needed it runs asynchronously via spawnCompaction so the O(n)
-		// truncateHistory work does not block the response path. Pre-send
-		// truncation and checkpoint()'s copy-truncation are safety nets that
-		// cap outgoing/persisted data while async compaction is pending.
-		r.priorMessages = combined
-		if needsTrunc {
-			r.spawnCompaction(combined, r.compactionTarget())
-		}
-		r.messages = nil
-	}
-}
-
-// capLiveBufferDuringToolLoop bounds the live conversation buffer mid tool-call loop.
-//
-// The top-level request path caps the buffer via trimLiveBuffer() at the start of
-// each new top-level request and via concludeTurn() at the terminal text turn.
-// But the tool-call loop recurses through HandleChatCompletions with a
-// continuationKey (isContinuation == true), for which BOTH cap points are gated
-// off — trimLiveBuffer is guarded by `!isContinuation` (router.go:726) and
-// concludeTurn by `len(toolCalls) == 0` (stream.go:528). The only truncation that
-// runs during the loop is pre-send truncation (a copy of the OUTGOING messages)
-// and checkpoint()'s persistence truncation (a local copy built from
-// prior+messages) — neither writes back to r.priorMessages/r.messages. As a
-// result the live buffer and liveBufferTokens only GROW for the whole tool loop,
-// so context stays at or above the budget for every tool call until the loop
-// finally resolves to a terminal text turn (observed in the red-team run: the
-// buffer sat ~92% of the 1M window, checkpoints persisted at the 80% ceiling,
-// and only the outbound copy was clipped each iteration).
-//
-// This caps the COMBINED priorMessages+messages buffer down to compactionTarget()
-// when the proactive threshold is exceeded, persists the compacted result back
-// into r.messages (clearing priorMessages — the recursion reloads the combined
-// buffer via the alreadyInjected short-circuit, so no history is doubled), and
-// resyncs liveBufferTokens so notifyOperatorContext reports accurate usage. The
-// pre-send truncation remains as a safety net for the outgoing payload.
-//
-// Caller must hold r.mu.
-func (r *Router) capLiveBufferDuringToolLoop() {
-	budget := r.checkpointBudget()
-	if budget <= 0 {
-		return
-	}
-	// Fast path: cached count is well under the proactive threshold — skip the
-	// O(n) scan. (Mirrors trimLiveBuffer's fast path; the cache is kept current
-	// by the incrementBufferTokens calls in both the streaming and non-streaming
-	// turn/tool paths. If it's ever stale this degrades to the slow path below.)
-	cached := r.liveBufferTokens
-	proactive := int(float64(budget) * r.cfg.proactiveThreshold())
-	if cached > 0 && cached < proactive {
-		return
-	}
-	// Slow path: full scan of the combined live buffer.
-	combined := append(append([]Message{}, r.priorMessages...), r.messages...)
-	est := estimateTokens(combined)
-	r.liveBufferTokens = est
-	if est <= budget {
-		return // under the hard ceiling — no compaction needed
-	}
-	// Over budget: compact down to the configured target (default 50% of the
-	// context window; 30% in the red-team deployment). truncateHistory
-	// preserves the system-message prefix and tool_call/tool_result pairings and
-	// replaces dropped turns with a compaction summary message.
-	compacted := truncateHistory(combined, r.compactionTarget())
-	r.priorMessages = nil
-	r.messages = compacted
-	r.liveBufferTokens = estimateTokens(compacted)
-	slog.Debug("compacted live buffer during tool-call loop",
-		"run", r.cfg.RunName, "fromTokens", est, "toTokens", r.liveBufferTokens,
-		"budget", budget, "target", r.compactionTarget())
-}
-
-// checkpointBudget is the in-memory cap for the conversation buffer: 80% of the
-// largest configured provider context window (matching the per-turn checkpoint
-// save at this function). Capping the live buffer — not just the persisted
-// checkpoint — stops unbounded growth so compaction is performed once and
-// re-consumed rather than re-derived from a giant history every turn.
-func (r *Router) checkpointBudget() int {
-	cw := maxContextWindow(r.cfg.Providers)
-	if cw <= 0 {
-		cw = 200000
-	}
-	return cw * 8 / 10
+	r.priorMessages = append(r.priorMessages, r.messages...)
+	r.messages = nil
+	r.liveBufferTokens = estimateTokens(r.priorMessages)
 }
 
 // priorRunCandidates names the runs whose checkpoints this run resumed from
@@ -1756,9 +1526,6 @@ func (r *Router) buildPreamble(ctx context.Context, lastUserMsg string) []Messag
 		msgs = append(msgs, Message{Role: "system", Content: r.cfg.SystemPrompt})
 	}
 	msgs = r.injectBuiltinSystemHints(ChatCompletionRequest{Messages: msgs}).Messages
-	if summary := r.loadEpisodicSummaries(ctx); summary != nil {
-		msgs = append(msgs, *summary)
-	}
 	if lastUserMsg == "" {
 		return msgs
 	}
@@ -1807,63 +1574,6 @@ func stripInjectedContext(msgs []Message, cfg *Config) []Message {
 	return kept
 }
 
-// compactStoredConversation compacts the stored conversation (r.priorMessages
-// + r.messages) when a request to provider would exceed its trigger, and keeps
-// the result, so later turns build on the compacted history instead of
-// re-truncating the full one on every request (#47). It cuts down to the
-// target, leaving room for preambleTokens of injected context and the
-// not-yet-stored turnInput. It reports whether it compacted.
-func (r *Router) compactStoredConversation(provider *ProviderConfig, tools []map[string]any, preambleTokens int, turnInput []Message) bool {
-	b := r.contextBudgetFor(provider, tools)
-	turnTokens := estimateTokens(turnInput)
-
-	r.mu.Lock()
-	stored := slices.Concat(r.priorMessages, r.messages)
-	before := estimateTokens(stored)
-	room := b.target - preambleTokens - turnTokens
-	if preambleTokens+before+turnTokens <= b.trigger || room <= 0 || len(stored) == 0 {
-		// Under the trigger, or the new input alone is too large to make room
-		// for: fitRequestToProvider shrinks that per request.
-		r.mu.Unlock()
-		return false
-	}
-	compacted := truncateHistory(stored, room)
-	after := estimateTokens(compacted)
-	if after >= before {
-		r.mu.Unlock()
-		return false
-	}
-	r.priorMessages = compacted
-	r.messages = nil
-	r.liveBufferTokens = after
-	r.mu.Unlock()
-
-	slog.Warn("compacted stored conversation",
-		"run", r.cfg.RunName,
-		"provider", provider.Name,
-		"beforeTokens", before,
-		"afterTokens", after,
-		"trigger", b.trigger,
-		"target", b.target,
-		"preambleTokens", preambleTokens,
-		"turnInputTokens", turnTokens,
-		"breakdown", tokenBreakdown(stored),
-	)
-	// Tell trace-stream clients the conversation was compacted — without it a
-	// silently-shortened conversation looks like memory loss.
-	if ev, err := json.Marshal(map[string]any{
-		"type":     "truncation",
-		"provider": provider.Name,
-		"before":   preambleTokens + before + turnTokens,
-		"after":    preambleTokens + after + turnTokens,
-		"trigger":  b.trigger,
-		"budget":   b.target,
-	}); err == nil {
-		r.emitTraceEventBoth(string(ev))
-	}
-	return true
-}
-
 // canonicalUserText flattens message content (a string, or OpenAI content
 // blocks) to its text, normalizing line endings and surrounding whitespace.
 func canonicalUserText(content any) string {
@@ -1898,10 +1608,8 @@ func (r *Router) checkpoint(ctx context.Context) {
 	msgs = append(msgs, r.messages...)
 	r.mu.Unlock()
 
-	// Truncate before persisting so the next continuation loads a right-sized checkpoint.
-	// Reserve 20% headroom for the next turn's system prompt injections, tool definitions, etc.
-	budget := r.checkpointBudget()
-	msgs = truncateHistory(msgs, budget)
+	// Saved whole: an oversized conversation is summarized on its next request
+	// (compactStoredConversation), which keeps far more than a cut here would.
 
 	rawMsgs := make([]json.RawMessage, len(msgs))
 	for i, m := range msgs {
@@ -1915,177 +1623,6 @@ func (r *Router) checkpoint(ctx context.Context) {
 	if err := r.store.SaveMessages(ctx, r.cfg.CheckpointKey, rawMsgs, r.checkpointTTL); err != nil {
 		slog.Warn("checkpoint write failed", "err", err)
 	}
-}
-
-// maybeRunEpisodicSummary checks whether it's time to generate an episodic summary
-// and, if so, summarizes the last N turns and stores the result in the state store.
-// Called after each turn increment, must be called with r.mu unlocked.
-func (r *Router) maybeRunEpisodicSummary(ctx context.Context) {
-	em := r.cfg.EpisodicMemory
-	if em.SummaryEvery <= 0 || r.store == nil {
-		return
-	}
-	turn := r.ruleRouter.TurnCount()
-	if turn == 0 || turn%em.SummaryEvery != 0 {
-		return
-	}
-
-	// Slice the last SummaryEvery turns from the full conversation.
-	// Combine priorMessages + messages because, after the per-turn fold in
-	// HandleChatCompletions, prior turns live in r.priorMessages and only the
-	// current turn is in r.messages.
-	r.mu.Lock()
-	allMsgs := make([]Message, 0, len(r.priorMessages)+len(r.messages))
-	allMsgs = append(allMsgs, r.priorMessages...)
-	allMsgs = append(allMsgs, r.messages...)
-	r.mu.Unlock()
-
-	start := max(
-		// rough estimate: 2 messages per turn
-		len(allMsgs)-em.SummaryEvery*2, 0)
-	chunk := allMsgs[start:]
-
-	// Build summarization prompt.
-	var buf strings.Builder
-	for _, m := range chunk {
-		content := ""
-		switch v := m.Content.(type) {
-		case string:
-			content = v
-		default:
-			b, _ := json.Marshal(v)
-			content = string(b)
-		}
-		buf.WriteString(m.Role + ": " + content + "\n")
-	}
-	summaryReq := ChatCompletionRequest{
-		Model: em.SummaryModel,
-		Messages: []Message{
-			{Role: "user", Content: "Summarize the following conversation chunk concisely, preserving key facts, decisions, and outcomes:\n\n" + buf.String()},
-		},
-	}
-
-	// Find the summary provider.
-	var summaryProvider *ProviderConfig
-	for i := range r.cfg.Providers {
-		if r.cfg.Providers[i].Name == em.SummaryProviderName {
-			summaryProvider = &r.cfg.Providers[i]
-			break
-		}
-	}
-	if summaryProvider == nil && len(r.cfg.Providers) > 0 {
-		summaryProvider = &r.cfg.Providers[0]
-	}
-	if summaryProvider == nil {
-		return
-	}
-
-	respBody, err := r.forwardToProvider(ctx, summaryProvider, summaryReq)
-	if err != nil {
-		slog.Warn("episodic summarization failed", "err", err, "run", r.cfg.RunName)
-		return
-	}
-	var resp ChatCompletionResponse
-	if err := json.Unmarshal(respBody, &resp); err != nil || len(resp.Choices) == 0 {
-		return
-	}
-	r.updateSpend(resp.Usage, summaryProvider)
-	summary := ""
-	if s, ok := resp.Choices[0].Message.Content.(string); ok {
-		summary = s
-	}
-	if summary == "" {
-		return
-	}
-
-	// Compute chunk index (how many summaries have been written for this run).
-	chunkIdx := turn / em.SummaryEvery
-	key := fmt.Sprintf("episodic:%s:%d", r.cfg.RunName, chunkIdx)
-	if err := r.store.SaveKV(ctx, "episodic", key, []byte(summary), r.checkpointTTL); err != nil {
-		slog.Warn("saving episodic summary failed", "err", err, "run", r.cfg.RunName)
-		return
-	}
-	slog.Info("episodic summary stored", "run", r.cfg.RunName, "chunk", chunkIdx)
-
-	// Compact the live buffer: replace the summarized chunk with a single summary
-	// message so the in-memory conversation actually shrinks across turns. Previously
-	// the summary was only persisted; the detailed turns stayed in priorMessages /
-	// messages, so the buffer never shrank — compaction didn't stick and the next
-	// turn re-truncated the same giant history ("only get rid of some messages and
-	// resend a giant context"). The detailed turns are now dropped, the summary
-	// retained, and the buffer re-capped; the persisted checkpoint below then saves
-	// the compacted state for resume.
-	summaryMsg := Message{
-		Role:    "system",
-		Content: fmt.Sprintf("[Episodic summary — last ~%d turns, chunk %d]\n%s", em.SummaryEvery, chunkIdx, summary),
-	}
-	r.mu.Lock()
-	before := len(r.priorMessages) + len(r.messages)
-	r.priorMessages = compactEpisodic(r.priorMessages, r.messages, summaryMsg, start, r.checkpointBudget())
-	r.messages = nil
-	// Update cached token count after compaction.
-	r.liveBufferTokens = 0
-	r.mu.Unlock()
-	slog.Info("episodic summary compacted live buffer",
-		"run", r.cfg.RunName, "beforeMessages", before,
-		"afterMessages", len(r.priorMessages), "chunk", chunkIdx)
-}
-
-// compactEpisodic implements the episodic compaction step tested in isolation.
-// It treats prior+messages as the full live buffer, drops the summarized chunk
-// (everything from index `start` onward), inserts `summaryMsg` in its place, and
-// caps the result to `budget` (via truncateHistory, which preserves a compaction
-// summary of anything still dropped). Returns the new priorMessages; the caller
-// discards the in-memory current turn (it has been folded into the summary and
-// is also on the just-saved checkpoint). Returns `prior` unchanged if budget<=0.
-func compactEpisodic(prior, messages []Message, summaryMsg Message, start, budget int) []Message {
-	if budget <= 0 {
-		return prior
-	}
-	cur := make([]Message, 0, len(prior)+len(messages))
-	cur = append(cur, prior...)
-	cur = append(cur, messages...)
-	if start > len(cur) {
-		start = len(cur)
-	}
-	if start < 0 {
-		start = 0
-	}
-	compacted := append(append([]Message{}, cur[:start]...), summaryMsg)
-	return truncateHistory(compacted, budget)
-}
-
-// loadEpisodicSummaries retrieves all episodic summaries for this run from the store
-// and returns them as a single system message to inject at conversation start.
-// Returns nil if no summaries exist or episodic memory is disabled.
-func (r *Router) loadEpisodicSummaries(ctx context.Context) *Message {
-	if r.cfg.EpisodicMemory.SummaryEvery <= 0 || r.store == nil {
-		return nil
-	}
-	keys, err := r.store.ListKV(ctx, "episodic")
-	if err != nil {
-		return nil
-	}
-	prefix := "episodic:" + r.cfg.RunName + ":"
-	var summaries []string
-	for _, key := range keys {
-		if !strings.HasPrefix(key, prefix) {
-			continue
-		}
-		data, err := r.store.LoadKV(ctx, "episodic", key)
-		if err == nil && len(data) > 0 {
-			summaries = append(summaries, string(data))
-		}
-	}
-	if len(summaries) == 0 {
-		return nil
-	}
-	var content strings.Builder
-	content.WriteString("[Memory] Previous conversation summaries:\n")
-	for i, s := range summaries {
-		content.WriteString(fmt.Sprintf("Chunk %d: %s\n", i+1, s))
-	}
-	return &Message{Role: "system", Content: content.String()}
 }
 
 // autoRetrieveLongTermMemory embeds the latest user message and queries the
@@ -2504,11 +2041,6 @@ func (r *Router) Finalize() {
 	// This is critical for chat sessions where the LLM's final response
 	// hasn't been checkpointed yet (not enough turns to trigger periodic checkpoint).
 	if r.store != nil && r.cfg.CheckpointKey != "" {
-		// Wait for any in-flight async compaction so the final checkpoint
-		// reflects the compacted buffer (and avoids re-truncating a giant
-		// copy here). The async truncation goroutine only writes briefly under
-		// r.mu at install time, so this wait is bounded by the truncation cost.
-		r.waitForCompaction()
 		r.checkpoint(context.Background())
 	}
 }
@@ -4363,11 +3895,12 @@ type contextBudget struct {
 }
 
 // contextBudgetFor computes provider's budget for a request carrying tools.
-//   - trigger: the lower of window*(1-ContextWindowReserve) − tools (80% of the
-//     window by default) and window − tools − output (the provider counts the
-//     completion toward the window too: issue #42, 1,021,745 input + 131,072
-//     completion vs a 1,048,576 window).
-//   - target: window*ContextCompactionRatio − tools, capped at trigger.
+//   - trigger: the lower of window*ContextCompactionThreshold − tools (80% of
+//     the window by default) and window − tools − output (the provider counts
+//     the completion toward the window too: issue #42, 1,021,745 input +
+//     131,072 completion vs a 1,048,576 window).
+//   - target: window*ContextCompactionRatio − tools, capped at trigger. Only
+//     drop-oldest truncation uses it; a summary has no fixed size.
 func (r *Router) contextBudgetFor(provider *ProviderConfig, tools []map[string]any) contextBudget {
 	// A provider without a configured window inherits the largest configured
 	// one; maxContextWindow floors at 200k, so the guard is never disabled.
@@ -4383,15 +3916,15 @@ func (r *Router) contextBudgetFor(provider *ProviderConfig, tools []map[string]a
 		// Cap at half the window so message compaction always has room.
 		outputReserve = min(provider.MaxOutputTokens, hardLimit/2)
 	}
-	reserve := r.cfg.ContextWindowReserve
-	if reserve <= 0 || reserve >= 1.0 {
-		reserve = 0.20
+	threshold := r.cfg.ContextCompactionThreshold
+	if threshold <= 0 || threshold >= 1.0 {
+		threshold = 0.8
 	}
 	ratio := r.cfg.ContextCompactionRatio
 	if ratio <= 0 || ratio >= 1.0 {
 		ratio = 0.5
 	}
-	trigger := min(int(float64(hardLimit)*(1.0-reserve)), hardLimit-outputReserve) - toolTokens
+	trigger := min(int(float64(hardLimit)*threshold), hardLimit-outputReserve) - toolTokens
 	if trigger <= 0 {
 		trigger = hardLimit / 2 // last-resort floor: keep at least half the window for messages
 	}
@@ -4525,6 +4058,8 @@ type ChatCompletionRequest struct {
 	Model         string           `json:"model"`
 	Messages      []Message        `json:"messages"`
 	Tools         []map[string]any `json:"tools,omitempty"`
+	ToolChoice    any              `json:"tool_choice,omitempty"`
+	MaxTokens     int              `json:"max_tokens,omitempty"`
 	Stream        bool             `json:"stream,omitempty"`
 	StreamOptions *StreamOptions   `json:"stream_options,omitempty"`
 }
@@ -4786,6 +4321,7 @@ func (r *Router) ClaimRun(input WarmRunInput) {
 	r.restartResume = input.Restart
 	r.loopDetected = false
 	r.liveBufferTokens = 0
+	r.lastCompactedTokens = 0
 
 	// Load the resume checkpoint (a prior chat turn, or this run's own state
 	// when it restarted) for warm-mode runs. This mirrors the checkpoint loading
@@ -4815,7 +4351,6 @@ func (r *Router) ClaimRun(input WarmRunInput) {
 			}
 			msgs = sanitizeCheckpoint(msgs)
 			msgs = stripInjectedContext(msgs, r.cfg)
-			msgs = truncateHistory(msgs, maxContextWindow(r.cfg.Providers)*80/100)
 			// Inject pending clarify answer, same logic as New().
 			answerKey := fmt.Sprintf("clarify-answer:%s:%s", r.cfg.RunNamespace, input.RunName)
 			if answer, aErr := r.store.LoadAnswer(context.Background(), answerKey); aErr == nil && answer != "" {

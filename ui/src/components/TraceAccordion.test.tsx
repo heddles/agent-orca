@@ -261,6 +261,34 @@ describe('TraceAccordion', () => {
     expect(screen.getByText(/budget 838,860/)).toBeInTheDocument()
   })
 
+  // #47: summary compaction says how the context was compacted, and the start
+  // of a compaction is visible so the summary call's pause does not look hung.
+  it('renders summary compaction and its start', async () => {
+    render(
+      <TraceAccordion
+        entries={[
+          entry(0, { type: 'compaction.started', mode: 'summary', before: 803741 }),
+          entry(1, { type: 'truncation', mode: 'summary', before: 803741, after: 201214 }),
+        ]}
+      />,
+    )
+    await openAccordion()
+    expect(screen.getByText(/compacting context/)).toBeInTheDocument()
+    expect(screen.getByText(/context summarized/)).toBeInTheDocument()
+    expect(screen.getByText(/201,214/)).toBeInTheDocument()
+  })
+
+  it('renders a degraded compaction with its reason', async () => {
+    render(
+      <TraceAccordion
+        entries={[entry(0, { type: 'truncation', mode: 'degraded', before: 900, after: 400, budget: 500, reason: 'missing sections' })]}
+      />,
+    )
+    await openAccordion()
+    expect(screen.getByText(/summary failed/)).toBeInTheDocument()
+    expect(screen.getByText(/missing sections/)).toBeInTheDocument()
+  })
+
   it('renders truncation event without optional after/budget', async () => {
     render(<TraceAccordion entries={[entry(0, { type: 'truncation', before: 5000 })]} />)
     await openAccordion()

@@ -45,7 +45,8 @@ type testStore struct {
 	doneEvents    int      // count of terminal `done` trace events with finish_reason (0 — emitDoneEvent removed)
 	traceEvents   []string // captured trace-event JSON
 	savedMessages []json.RawMessage
-	saveCount     int // number of checkpoint() (SaveMessages) calls
+	saveCount     int      // number of checkpoint() (SaveMessages) calls
+	savedKeys     []string // keys passed to SaveMessages, in order
 }
 
 func newTestStore(t *testing.T) *testStore {
@@ -67,9 +68,10 @@ func (s *testStore) SaveToken(_ context.Context, _ string, _ string) error {
 
 // SaveMessages records checkpoint() writes so tests can assert the conversation
 // is persisted on run completion (used by reused warm pods via PriorRunRef).
-func (s *testStore) SaveMessages(_ context.Context, _ string, messages []json.RawMessage, _ time.Duration) error {
+func (s *testStore) SaveMessages(_ context.Context, key string, messages []json.RawMessage, _ time.Duration) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.savedKeys = append(s.savedKeys, key)
 	s.savedMessages = messages
 	s.saveCount++
 	return nil

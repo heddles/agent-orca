@@ -389,3 +389,23 @@ func TestACPTraceNonToolEvents(t *testing.T) {
 		}
 	}
 }
+
+// Compaction notes say how the conversation was compacted (#47).
+func TestACPTraceTruncationText(t *testing.T) {
+	cases := []struct {
+		ev   acpTraceEvent
+		want string
+	}{
+		{acpTraceEvent{Mode: "summary", Before: 803741, After: 201214},
+			"summarized conversation: ~803741 tokens → ~201214"},
+		{acpTraceEvent{Mode: "degraded", Before: 900, After: 400, Budget: 500, Provider: "p", Reason: "missing sections"},
+			`summary failed; dropped oldest messages: ~900 tokens → ~400 (budget 500, provider "p") — missing sections`},
+		{acpTraceEvent{Before: 900, After: 400, Budget: 500},
+			"compacted conversation before send: ~900 tokens → ~400 (budget 500)"},
+	}
+	for _, c := range cases {
+		if got := c.ev.truncationText(); got != c.want {
+			t.Errorf("truncationText() = %q, want %q", got, c.want)
+		}
+	}
+}

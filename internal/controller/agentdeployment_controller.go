@@ -71,10 +71,16 @@ type AgentDeploymentReconciler struct {
 	// LLMRequestTimeout is the per-LLM-request timeout written into every router
 	// config (default 1h). Injected from the LLM_REQUEST_TIMEOUT env var.
 	LLMRequestTimeout time.Duration
-	// ContextCompactionRatio is the target fraction of the context window to
-	// compact the in-memory buffer down to when truncation fires (issue #54).
-	// Default 0.5 (50%); set to 0.1 for aggressive compaction to ~10%.
-	// Injected from the CONTEXT_COMPACTION_RATIO env var.
+	// ContextCompactionThreshold is the fraction of a provider's window at
+	// which the router compacts the conversation (default 0.8, #47). Injected
+	// from the CONTEXT_COMPACTION_THRESHOLD env var.
+	ContextCompactionThreshold float64
+	// ContextCompactionMode is "summary" (default) or "truncate", the rollback
+	// switch (#47). Injected from the CONTEXT_COMPACTION_MODE env var.
+	ContextCompactionMode string
+	// ContextCompactionRatio is the fraction of the window drop-oldest
+	// truncation cuts down to ("truncate" mode and the summary fallback).
+	// Injected from the deprecated CONTEXT_COMPACTION_RATIO env var.
 	ContextCompactionRatio float64
 
 	// HindsightURL is the configured hindsight API endpoint (e.g. http://hindsight.local).
@@ -845,17 +851,18 @@ func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig( //nolint:gocycl
 		checkpointEvery = agent.Spec.Memory.CheckpointEvery
 	}
 
-	// Resolve episodic memory config from the Agent spec (mirrors the per-run wiring
-	// in agentrun_controller.buildRouterConfig). Enabling summarization on warm pools
-	// means long red-team sessions compact (the summarized turns are replaced by a
-	// summary in the live buffer and the checkpoint) instead of being re-truncated
-	// from a giant history every turn.
+	// Resolve the compaction-summary model from the Agent spec (mirrors the
+	// per-run wiring in agentrun_controller.buildRouterConfig). The router
+	// summarizes the conversation at the compaction threshold (#47);
+	// EpisodicSummaryEvery is deprecated and ignored.
 	var episodicMemory router.EpisodicMemoryConfig
+	//nolint:staticcheck // reads the deprecated field only to warn that it is ignored
 	if agent.Spec.Memory != nil && agent.Spec.Memory.EpisodicSummaryEvery > 0 {
+		slog.Warn("memory.episodicSummaryEvery is deprecated and ignored: the conversation is summarized at the compaction threshold",
+			"agent", agent.Name, "deployment", deploy.Name)
+	}
+	if agent.Spec.Memory != nil && agent.Spec.Memory.SummaryModelSelectorRef != "" {
 		summaryMSRef := agent.Spec.Memory.SummaryModelSelectorRef
-		if summaryMSRef == "" {
-			summaryMSRef = agent.Spec.ModelSelectorRef
-		}
 		var summaryMS agentorcav1alpha1.ModelSelector
 		if summaryMSRef == agent.Spec.ModelSelectorRef {
 			summaryMS = selector // already loaded as the agent's ModelSelector
@@ -868,40 +875,40 @@ func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig( //nolint:gocycl
 			var sumMP agentorcav1alpha1.ModelProvider
 			if err := r.Get(ctx, client.ObjectKey{Name: sumPW.Name, Namespace: deploy.Namespace}, &sumMP); err == nil {
 				episodicMemory = router.EpisodicMemoryConfig{
-					SummaryEvery:        agent.Spec.Memory.EpisodicSummaryEvery,
 					SummaryProviderName: sumPW.Name,
-					SummaryModel:        sumMP.Spec.LiteLLMModel,
 				}
 			}
 		}
 	}
 
 	cfg := &router.Config{
-		RunName:                deploy.Name,
-		RunNamespace:           deploy.Namespace,
-		AgentSAName:            saName,
-		DeploymentName:         deploy.Name,
-		DisableClarify:         agent.Spec.DisableClarify,
-		Providers:              providers,
-		Strategy:               selector.Spec.Strategy,
-		CapabilityRouting:      selector.Spec.CapabilityRouting,
-		FallbackChain:          selector.Spec.FallbackChain,
-		MetaRouterProviderName: metaRouterProvider,
-		MetaRouterThreshold:    threshold,
-		BudgetPerRunUSD:        budget,
-		ToolDefinitions:        toolDefs,
-		MCPServers:             mcpServers,
-		CheckpointEvery:        checkpointEvery,
-		CheckpointKey:          fmt.Sprintf("agentorca/deployments/%s/state", deploy.Name),
-		StateConfig:            r.StateConfig,
-		EpisodicMemory:         episodicMemory,
-		KubeAPIURL:             "https://kubernetes.default.svc",
-		OperatorAPIURL:         r.OperatorAPIURL,
-		LLMRequestTimeout:      r.LLMRequestTimeout,
-		ContextCompactionRatio: r.ContextCompactionRatio,
-		SystemPrompt:           agent.Spec.SystemPrompt,
-		KnowledgeBases:         kbConfigs,
-		LongTermMemory:         longTermMemory,
+		RunName:                    deploy.Name,
+		RunNamespace:               deploy.Namespace,
+		AgentSAName:                saName,
+		DeploymentName:             deploy.Name,
+		DisableClarify:             agent.Spec.DisableClarify,
+		Providers:                  providers,
+		Strategy:                   selector.Spec.Strategy,
+		CapabilityRouting:          selector.Spec.CapabilityRouting,
+		FallbackChain:              selector.Spec.FallbackChain,
+		MetaRouterProviderName:     metaRouterProvider,
+		MetaRouterThreshold:        threshold,
+		BudgetPerRunUSD:            budget,
+		ToolDefinitions:            toolDefs,
+		MCPServers:                 mcpServers,
+		CheckpointEvery:            checkpointEvery,
+		CheckpointKey:              fmt.Sprintf("agentorca/deployments/%s/state", deploy.Name),
+		StateConfig:                r.StateConfig,
+		EpisodicMemory:             episodicMemory,
+		KubeAPIURL:                 "https://kubernetes.default.svc",
+		OperatorAPIURL:             r.OperatorAPIURL,
+		LLMRequestTimeout:          r.LLMRequestTimeout,
+		ContextCompactionRatio:     r.ContextCompactionRatio,
+		ContextCompactionThreshold: r.ContextCompactionThreshold,
+		ContextCompactionMode:      r.ContextCompactionMode,
+		SystemPrompt:               agent.Spec.SystemPrompt,
+		KnowledgeBases:             kbConfigs,
+		LongTermMemory:             longTermMemory,
 		Hindsight: router.HindsightConfig{
 			Enabled:           true,
 			URL:               r.HindsightURL,

@@ -24,6 +24,13 @@ linters:
     - unused
     - logcheck
   settings:
+    goconst:
+      # Chat-message roles and MCP transports are protocol words, not magic
+      # strings. goconst reports one occurrence per string in a nondeterministic
+      # order, so per-line nolint comments made the lint pass or fail at random.
+      ignore-string-values:
+        - "^(system|user|assistant|tool)$"
+        - "^(stdio|http|sse)$"
     custom:
       logcheck:
         type: "module"

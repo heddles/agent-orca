@@ -1,84 +1,64 @@
 # Context Management
 
-This guide covers how agent-orca manages LLM context windows across turns and runs — including context compaction, episodic summaries, warm-pool session chaining, tool-call-loop buffer capping, and MCP auth.
+This guide covers how agent-orca manages LLM context windows across turns and runs — including context compaction, warm-pool session chaining, and MCP auth.
 
 ## Overview
 
-agent-orca enforces a hard cap on the conversation sent to each LLM request, measured in estimated tokens. The cap is derived from the largest configured `ModelProvider.contextWindow`. At 80% of that window, the router triggers **proactive async compaction**: it drops the oldest turns and replaces them with a condensed summary message.
+The model-router stores each run's conversation (the history before the current turn plus the turn in progress) and builds every LLM request from it. Context it injects per request — the agent's system prompt, built-in tool hints, long-term memory and hindsight recall — is rebuilt for each request and never stored, so it cannot pile up in the history.
 
-| Layer | Description |
-|-------|-------------|
-| **Context window ceiling** | 80% of the largest provider's `contextWindow` (see `ContextWindowReserve`) |
-| **Compaction target** | Configurable fraction (`contextCompactionRatio`) of the context window to compact **down to** |
-| **Proactive threshold** | Fraction of the ceiling at which truncation is triggered proactively (strategy-based: 0.6 for `balanced`, 0.4 for `aggressive`, 0.0 for `max-fidelity`) |
-| **Episodic summary** | A `[Compacted: Nmsg/~Xk]` system message replacing dropped turns |
-| **Token streaming cap** | Redis stream auto-trims at 100k entries (was 10k) to avoid losing history on replay |
-| **Tool-loop cap** | Mid tool-call loop, the live buffer is capped via `capLiveBufferDuringToolLoop()` so it doesn't grow unboundedly during multi-step tool chains |
+When a request would carry more than **80%** of the selected provider's `contextWindow` (minus the tool definitions, which count toward the window on every request), the router **compacts the stored conversation once**, before sending, and keeps the result. Later turns build on the compacted history until it grows past the threshold again.
 
-## Configuring the compaction target
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `contextCompactionThreshold` | `0.8` | Fraction of the selected provider's window at which the conversation is compacted |
+| `contextCompactionMode` | `summary` | `summary`: the model replaces the history with a structured summary. `truncate`: rollback switch, drops the oldest messages |
+| `contextCompactionRatio` | `0.3` (chart), `0.5` (code) | **Deprecated.** The fraction of the window drop-oldest truncation cuts down to: `truncate` mode and the fallback when a summary fails |
 
-By default, compaction reduces the conversation to **30%** of the context window (set via the Helm chart). The code-level default (when unset) is 50%. You can tune this to aggressively reclaim context — for example, to compact down to ~10% of the window, set `contextCompactionRatio: 0.1`.
+## Configuration
 
-### Helm values
+These are operator-level settings (chart values or env vars) that apply to every deployment the operator manages.
 
 ```yaml
 modelRouter:
-  contextCompactionRatio: 0.1  # default: 0.3
+  contextCompactionThreshold: 0.8
+  contextCompactionMode: summary   # or: truncate
+  contextCompactionRatio: 0.3      # deprecated; truncate mode and fallback only
 ```
-
-### Environment variable (operator level)
 
 ```yaml
 env:
-  - name: CONTEXT_COMPACTION_RATIO
-    value: "0.1"
+  - name: CONTEXT_COMPACTION_THRESHOLD
+    value: "0.8"
+  - name: CONTEXT_COMPACTION_MODE
+    value: "summary"
 ```
 
-> **Note:** `contextCompactionRatio` is **not** configurable per-AgentDeployment. It is an operator-level setting (chart value or env var) that applies to all deployments managed by the operator. To use different ratios per deployment, run separate operator instances.
+## How summary compaction works
 
-## Context management strategies
+1. **Trigger.** Before each request (including tool-call continuations), the router estimates preamble + stored conversation + new input. Above the threshold it emits a `compaction.started` trace event and compacts synchronously; the turn waits for it.
+2. **Summary.** The provider serving the request (or the Agent's `memory.summaryModelSelectorRef` provider, when that is one of the run's providers) is sent the current request's prefix plus a summarize instruction, so providers with prompt caching serve most of it from cache. The summary must contain these sections, and is capped at `min(12000, maxOutputTokens)` tokens:
+   - Goal & original constraints
+   - Decisions made (and why)
+   - Files & resources touched (current state)
+   - Work completed
+   - Open todos / next step
+   - Errors & dead ends (don't retry)
+   - Key facts/identifiers
+3. **What stays verbatim.**
+   - The original task (the first user message), pinned as `[Original task — kept verbatim by compaction]`. Over ~8K tokens, its start and end are kept and the summary covers the middle.
+   - The latest user message.
+   - Mid tool loop, the last 3 complete tool-call groups. The oldest of them are dropped while they exceed 5% of the window.
+4. **Rolling.** A later compaction summarizes the previous `[Conversation summary #n]` plus everything since. The pinned task is carried over unchanged.
+5. **Fallback.** An error or a summary missing sections is retried once. After that, the oldest messages are dropped down to `contextCompactionRatio` of the window, and the trace event's mode is `degraded`. The turn always continues.
+6. **Archive and memory.** The conversation as it was before compaction is saved to `agentorca/runs/<run>/archive/<unix-ms>` (zstd, checkpoint TTL), for a future recall tool (#48). When hindsight is enabled, the summary is also retained to the agent's bank in the background.
 
-The `contextManagementStrategy` field controls how aggressively the router manages context. Set via the Helm value `modelRouter.contextManagementStrategy` or the `CONTEXT_MANAGEMENT_STRATEGY` env var.
+The completion trace event keeps the `truncation` type that the editor bridge and web UI already render, with a `mode` field: `summary`, `truncate`, `degraded` or `skipped`.
 
-| Strategy | Proactive threshold | Behavior |
-|----------|-------------------|----------|
-| `balanced` (default) | 60% of budget | Triggers truncation at 60% of the checkpoint budget; suitable for most workloads |
-| `aggressive` | 40% of budget | Triggers truncation earlier; reduces memory and latency spikes at the cost of more frequent compaction |
-| `max-fidelity` | 0.0 (disabled) | Only truncates when the buffer exceeds the 80% ceiling; preserves maximum context |
+Checkpoints are saved whole and loaded whole: an oversized checkpoint is summarized on its first request instead of being cut on load.
 
-### Explicit proactive threshold override
+### Pre-send safety net
 
-You can override the strategy-based proactive threshold with an explicit value:
-
-```yaml
-modelRouter:
-  contextManagementStrategy: balanced
-  proactiveTruncationThreshold: 0.5  # triggers at 50% of budget
-```
-
-## How compaction works
-
-When `priorMessages + messages` exceeds the context window ceiling during `trimLiveBuffer` or `concludeTurn`, the router:
-
-1. Delegates truncation to a **background goroutine** (`spawnCompaction`) so the request thread is not blocked.
-2. Calls `truncateHistory` with the **compaction target** (not just the ceiling). The target is `max(min(CW * ratio, checkpointBudget), 2000)`.
-3. Drops the oldest **safe** message boundaries (never splitting a `tool_use`/`tool_result` pair) until the sum fits the target.
-4. Replaces the dropped messages with a single **`[Compacted: Nmsg/~Xk]`** system message containing:
-     - The first user intent (truncated to 75 chars)
-     - The 2 most recent user follow-ups (50 chars each)
-     - Sorted list of tool calls made + count of unique vs. total calls
-5. Preserves all leading system messages (system prompt, builtin tool hints, RAG trust boundary).
-
-The compaction summary itself is ~100–200 tokens, so the effective residual context lands near the requested ratio, not the 80% ceiling.
-
-### Tool-call loop buffer capping
-
-The top-level request path caps the buffer via `trimLiveBuffer()` at the start of each new top-level request and via `concludeTurn()` at the terminal text turn. However, the tool-call loop recurses through `HandleChatCompletions` with a continuation context, for which **both cap points are gated off**. As a result, the live buffer and its incremental token cache (`liveBufferTokens`) only **grow** during the tool-call loop — they are never capped until the loop resolves into a terminal text turn. This caused buffers to stay at ~92% of the window during multi-step tool chains, with checkpoints persisting at the 80% ceiling on every tool-call iteration.
-
-`capLiveBufferDuringToolLoop()` (in `internal/router/router.go`) fixes this: it synchronously compacts the combined `priorMessages + messages` buffer down to `compactionTarget()` when the proactive threshold is exceeded, persists the result back into `r.messages` (clearing `priorMessages`), and resyncs `liveBufferTokens`. The pre-send truncation remains as a safety net for the outgoing payload. It is wired into both:
-
-- Non-streaming tool dispatch: `router.go` → `handleToolCalls`
-- Streaming tool dispatch: `stream.go` → `handleStreamingResponse`
+`fitRequestToProvider` applies the same budget to the request actually sent. It catches fallback providers with smaller windows and new input that is too large by itself (the newest message is shortened, never dropped).
 
 ## Warm-pool session chaining
 
@@ -94,25 +74,9 @@ Long-running `AgentDeployment`s with `inputSource.type: chat` use **warm pods** 
 
 Each warm pod receives a **freshly minted SA token Secret** (not the shared deployment-level token) at creation time. The token expiry is derived from `WarmPodMaxAge` so it always outlives the pod. When age-based recycling is disabled (the default — `WarmPodMaxAge` not set), the token is minted with the maximum Kubernetes-allowed lifetime (8760h = 1 year) so an indefinitely-lived pod can keep authenticating `claim-run` POSTs. This prevents the warm pod from becoming unclaimable due to a stale deployment-level token secret (which has a 15-minute expiry).
 
-## Episodic summaries
+## Episodic summaries (deprecated)
 
-For very long runs (or runs with `CheckpointEvery` spilling across many turns), the router can generate an **episodic summary** via `maybeRunEpisodicSummary`. Triggered every `episodicMemory.summaryEvery` turns (default: 2), it:
-
-- Reads from both `priorMessages` and `messages` (after fold)
-- Sends the conversation to a configured provider (`summaryProviderName`)
-- Persists the summary to the KV key `episodic:<run>:<n>`
-- Replaces the summarized turns in the in-memory buffer
-
-```yaml
-apiVersion: v1
-kind: Config
-stringData:
-  config.json:
-    EpisodicMemory:
-      SummaryEvery: 2
-      SummaryProviderName: openai-gpt4o-mini
-      SummaryModel: gpt-4o-mini
-```
+`memory.episodicSummaryEvery` used to summarize the conversation every N turns. It is now ignored, with a warning: the conversation is summarized when it reaches the compaction threshold instead (see above). `memory.summaryModelSelectorRef` still selects the model that writes the summary.
 
 ## MCP auth for HTTP/SSE servers
 
@@ -175,8 +139,7 @@ When a tool result is actually truncated, a trace event is emitted (`toolResultT
 | Symptom | Check |
 |--------|-------|
 | Agent "forgets" prior chat turns after warm-pod reuse | `kubectl logs deploy/<agent-deployment> -c model-router \| grep ClaimRun` — confirm `PriorRunRef` is non-empty |
-| High latency on a single turn | Look for `truncating conversation history` log lines — indicates sync pre-send truncation may be running |
-| Buffer only grows during long tool-call chains | Look for `compacted live buffer during tool-call loop` debug log lines — confirms `capLiveBufferDuringToolLoop` is firing |
+| A slow turn | Look for `compacted stored conversation` log lines: the summary call runs synchronously. The line includes `durationMs`, `mode` and a token `breakdown` by role and top tools |
+| Compaction keeps falling back (`mode: degraded`) | The line's `reason` says why. Usually the model ignored the section headings, or the summary hit its output cap |
 | Tool results getting cut off | Check `MaxToolResultTokens` in the generated ConfigMap; ensure it's ≥ 10% of CW |
-| Episodic summary not firing | Verify `EpisodicMemory.SummaryEvery` and that a provider is configured |
 | Warm pod can't be claimed (401/403) | Verify the per-pod SA token Secret expiry (`warmPodTokenExpirySeconds` derives from `WarmPodMaxAge`) |

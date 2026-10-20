@@ -94,10 +94,16 @@ type AgentRunReconciler struct {
 	// LLMRequestTimeout is the per-LLM-request timeout written into every router
 	// config (default 1h). Injected from the LLM_REQUEST_TIMEOUT env var.
 	LLMRequestTimeout time.Duration
-	// ContextCompactionRatio is the target fraction of the context window to
-	// compact the in-memory buffer down to when truncation fires (issue #54).
-	// Default 0.5 (50%); set to 0.1 for aggressive compaction to ~10%.
-	// Injected from the CONTEXT_COMPACTION_RATIO env var.
+	// ContextCompactionThreshold is the fraction of a provider's window at
+	// which the router compacts the conversation (default 0.8, #47). Injected
+	// from the CONTEXT_COMPACTION_THRESHOLD env var.
+	ContextCompactionThreshold float64
+	// ContextCompactionMode is "summary" (default) or "truncate", the rollback
+	// switch (#47). Injected from the CONTEXT_COMPACTION_MODE env var.
+	ContextCompactionMode string
+	// ContextCompactionRatio is the fraction of the window drop-oldest
+	// truncation cuts down to ("truncate" mode and the summary fallback).
+	// Injected from the deprecated CONTEXT_COMPACTION_RATIO env var.
 	ContextCompactionRatio float64
 
 	// HindsightURL is the configured hindsight API endpoint (e.g. http://hindsight.local).
@@ -1054,11 +1060,16 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 	// Resolve episodic memory config from Agent spec.
 	var episodicMemory router.EpisodicMemoryConfig
 	var longTermMemory router.LongTermMemoryConfig
-	if agent.Spec.Memory != nil && agent.Spec.Memory.EpisodicSummaryEvery > 0 {
+	// The router summarizes the conversation when it reaches the compaction
+	// threshold (#47); SummaryModelSelectorRef, when set, names the model that
+	// writes the summary. EpisodicSummaryEvery is deprecated and ignored.
+	//nolint:staticcheck // reads the deprecated field only to warn that it is ignored
+	if agent.Spec.Memory != nil && agent.Spec.Memory.EpisodicSummaryEvery > 0 && r.Recorder != nil {
+		r.Recorder.Eventf(run, corev1.EventTypeWarning, "DeprecatedField",
+			"agent %s sets memory.episodicSummaryEvery, which is ignored: the conversation is summarized at the compaction threshold", agent.Name)
+	}
+	if agent.Spec.Memory != nil && agent.Spec.Memory.SummaryModelSelectorRef != "" {
 		summaryMSRef := agent.Spec.Memory.SummaryModelSelectorRef
-		if summaryMSRef == "" {
-			summaryMSRef = agent.Spec.ModelSelectorRef
-		}
 		var summaryMS agentorcav1alpha1.ModelSelector
 		if err := r.Get(ctx, client.ObjectKey{Name: summaryMSRef, Namespace: run.Namespace}, &summaryMS); err != nil {
 			return nil, nil, false, fmt.Errorf("getting summary ModelSelector %q: %w", summaryMSRef, err)
@@ -1070,9 +1081,7 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 				return nil, nil, false, fmt.Errorf("getting summary ModelProvider %q: %w", sumPW.Name, err)
 			}
 			episodicMemory = router.EpisodicMemoryConfig{
-				SummaryEvery:        agent.Spec.Memory.EpisodicSummaryEvery,
 				SummaryProviderName: sumPW.Name,
-				SummaryModel:        sumMP.Spec.LiteLLMModel,
 			}
 		}
 	}
@@ -1126,37 +1135,39 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 	}
 
 	cfg := &router.Config{
-		RunName:                run.Name,
-		RunNamespace:           run.Namespace,
-		AgentSAName:            saName,
-		DisableClarify:         agent.Spec.DisableClarify,
-		Providers:              providers,
-		Strategy:               selector.Spec.Strategy,
-		CapabilityRouting:      selector.Spec.CapabilityRouting,
-		FallbackChain:          selector.Spec.FallbackChain,
-		MetaRouterProviderName: metaRouterProvider,
-		MetaRouterThreshold:    threshold,
-		BudgetPerRunUSD:        budget,
-		ToolDefinitions:        toolDefs,
-		MCPServers:             mcpServers,
-		CheckpointEvery:        checkpointEvery,
-		CheckpointKey:          fmt.Sprintf("agentorca/runs/%s/state", run.Name),
-		ResumeCheckpointKey:    resumeKey,
-		FallbackCheckpointKey:  fallbackKey,
-		RestartResume:          isRestartRecovery(run),
-		StateConfig:            r.StateConfig,
-		KubeAPIURL:             "https://kubernetes.default.svc",
-		OperatorAPIURL:         r.OperatorAPIURL,
-		LLMRequestTimeout:      r.LLMRequestTimeout,
-		ContextCompactionRatio: r.ContextCompactionRatio,
-		SystemPrompt:           agent.Spec.SystemPrompt,
-		ChatMode:               agent.Spec.Runtime.InputMode == "http" || agent.Spec.Runtime.InputMode == "chat",
-		WorkflowName:           run.Labels["agentorca.io/workflow"],
-		DeploymentName:         run.Labels["agentorca.io/deployment"],
-		KnowledgeBases:         kbConfigs,
-		Safeguards:             safeguards,
-		EpisodicMemory:         episodicMemory,
-		LongTermMemory:         longTermMemory,
+		RunName:                    run.Name,
+		RunNamespace:               run.Namespace,
+		AgentSAName:                saName,
+		DisableClarify:             agent.Spec.DisableClarify,
+		Providers:                  providers,
+		Strategy:                   selector.Spec.Strategy,
+		CapabilityRouting:          selector.Spec.CapabilityRouting,
+		FallbackChain:              selector.Spec.FallbackChain,
+		MetaRouterProviderName:     metaRouterProvider,
+		MetaRouterThreshold:        threshold,
+		BudgetPerRunUSD:            budget,
+		ToolDefinitions:            toolDefs,
+		MCPServers:                 mcpServers,
+		CheckpointEvery:            checkpointEvery,
+		CheckpointKey:              fmt.Sprintf("agentorca/runs/%s/state", run.Name),
+		ResumeCheckpointKey:        resumeKey,
+		FallbackCheckpointKey:      fallbackKey,
+		RestartResume:              isRestartRecovery(run),
+		StateConfig:                r.StateConfig,
+		KubeAPIURL:                 "https://kubernetes.default.svc",
+		OperatorAPIURL:             r.OperatorAPIURL,
+		LLMRequestTimeout:          r.LLMRequestTimeout,
+		ContextCompactionRatio:     r.ContextCompactionRatio,
+		ContextCompactionThreshold: r.ContextCompactionThreshold,
+		ContextCompactionMode:      r.ContextCompactionMode,
+		SystemPrompt:               agent.Spec.SystemPrompt,
+		ChatMode:                   agent.Spec.Runtime.InputMode == "http" || agent.Spec.Runtime.InputMode == "chat",
+		WorkflowName:               run.Labels["agentorca.io/workflow"],
+		DeploymentName:             run.Labels["agentorca.io/deployment"],
+		KnowledgeBases:             kbConfigs,
+		Safeguards:                 safeguards,
+		EpisodicMemory:             episodicMemory,
+		LongTermMemory:             longTermMemory,
 		Hindsight: router.HindsightConfig{
 			Enabled:           true,
 			URL:               r.HindsightURL,

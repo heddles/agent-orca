@@ -656,12 +656,8 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 		r.mu.Lock()
 		r.messages = append(r.messages, toolResults...)
 		r.incrementBufferTokens(estimateTokens(toolResults))
-		// Cap the live buffer mid tool-call loop. concludTurn/trimLiveBuffer are
-		// gated off for continuations, so without this the buffer (and
-		// liveBufferTokens, reported via notifyOperatorContext) only grows across
-		// tool calls. The pre-send truncation remains a safety net for the
-		// outgoing payload.
-		r.capLiveBufferDuringToolLoop()
+		// The continuation compacts the conversation if it has grown past the
+		// threshold (compactStoredConversation), like any other request.
 		continueReq := ChatCompletionRequest{
 			Model:         chatReq.Model,
 			Messages:      r.messages,
