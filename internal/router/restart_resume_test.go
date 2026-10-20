@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/heddles/agent-orca/internal/state"
@@ -65,6 +66,12 @@ func (s *keyedCheckpointStore) put(t *testing.T, key string, spend float64, msgs
 	}
 	s.spend[key] = spend
 }
+
+// Synthetic state-store keys for the LoadResumeMessages/restoreSpend tests.
+const (
+	testOwnKey   = "own"
+	testPriorKey = "prior"
+)
 
 func newClaimTestRouter(store state.Store) *Router {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -157,27 +164,27 @@ func TestClaimRun_RestartKeepsOwnSpendOverFallback(t *testing.T) {
 // the fallback instead of starting the conversation from nothing.
 func TestLoadResumeMessages_FallsBackOnStoreError(t *testing.T) {
 	store := newKeyedCheckpointStore(t)
-	store.put(t, "prior", 0, Message{Role: "user", Content: "prior"})
-	store.failKey = "own"
+	store.put(t, testPriorKey, 0, Message{Role: "user", Content: testPriorKey})
+	store.failKey = testOwnKey
 
-	msgs, key, err := LoadResumeMessages(context.Background(), store, "own", "prior")
-	if err != nil || key != "prior" || len(msgs) != 1 {
+	msgs, key, err := LoadResumeMessages(context.Background(), store, testOwnKey, testPriorKey)
+	if err != nil || key != testPriorKey || len(msgs) != 1 {
 		t.Fatalf("want fallback after a primary store error, got key %q, %d msgs, err %v", key, len(msgs), err)
 	}
 	// Without a usable fallback the primary error is reported.
-	if _, _, err := LoadResumeMessages(context.Background(), store, "own", "missing"); err == nil {
+	if _, _, err := LoadResumeMessages(context.Background(), store, testOwnKey, "missing"); err == nil {
 		t.Fatal("primary error must surface when the fallback has nothing")
 	}
 }
 
 func TestRestoreSpend(t *testing.T) {
 	store := newKeyedCheckpointStore(t)
-	store.spend["own"], store.spend["prior"] = 0.5, 0.2
+	store.spend[testOwnKey], store.spend[testPriorKey] = 0.5, 0.2
 	ctx := context.Background()
-	if got := restoreSpend(ctx, store, "own", "prior"); got != 0.5 {
+	if got := restoreSpend(ctx, store, testOwnKey, testPriorKey); got != 0.5 {
 		t.Fatalf("own spend must win, got %v", got)
 	}
-	if got := restoreSpend(ctx, store, "fresh", "prior"); got != 0.2 {
+	if got := restoreSpend(ctx, store, "fresh", testPriorKey); got != 0.2 {
 		t.Fatalf("no own spend: want the resumed checkpoint's, got %v", got)
 	}
 	if got := restoreSpend(ctx, store, "fresh", ""); got != 0 {
@@ -253,17 +260,59 @@ func TestClaimRun_RestartBeforeFirstCheckpointFallsBackToPrior(t *testing.T) {
 
 func TestLoadResumeMessages(t *testing.T) {
 	store := newKeyedCheckpointStore(t)
-	store.put(t, "own", 0, Message{Role: "user", Content: "own"})
-	store.put(t, "prior", 0, Message{Role: "user", Content: "prior"})
+	store.put(t, testOwnKey, 0, Message{Role: "user", Content: testOwnKey})
+	store.put(t, testPriorKey, 0, Message{Role: "user", Content: testPriorKey})
 	ctx := context.Background()
 
-	if msgs, key, _ := LoadResumeMessages(ctx, store, "own", "prior"); key != "own" || len(msgs) != 1 {
+	if msgs, key, _ := LoadResumeMessages(ctx, store, testOwnKey, testPriorKey); key != testOwnKey || len(msgs) != 1 {
 		t.Fatalf("non-empty primary must win, got key %q (%d msgs)", key, len(msgs))
 	}
-	if msgs, key, _ := LoadResumeMessages(ctx, store, "missing", "prior"); key != "prior" || len(msgs) != 1 {
+	if msgs, key, _ := LoadResumeMessages(ctx, store, "missing", testPriorKey); key != testPriorKey || len(msgs) != 1 {
 		t.Fatalf("empty primary must fall back, got key %q (%d msgs)", key, len(msgs))
 	}
 	if msgs, key, _ := LoadResumeMessages(ctx, store, "missing", ""); key != "missing" || len(msgs) != 0 {
 		t.Fatalf("no fallback: want empty from primary, got key %q (%d msgs)", key, len(msgs))
 	}
+}
+
+// Second-pass review (#44): after a restart claim the resume key is the run's
+// OWN checkpoint, so the prior chat turn must still be offered to
+// _search_history via the fallback key (it used to drop out silently).
+func TestClaimRun_RestartKeepsPriorRunSearchable(t *testing.T) {
+	store := newKeyedCheckpointStore(t)
+	store.put(t, checkpointKeyForRun("run-1"), 0.2, Message{Role: "user", Content: "q"})
+
+	r := newClaimTestRouter(store)
+	defer r.cancelFunc()
+	r.ClaimRun(WarmRunInput{
+		RunName: "run-1", PriorRunRef: "prior",
+		ResumeCheckpointKey: checkpointKeyForRun("run-1"), Restart: true,
+	})
+	if got := r.priorRunCandidates(); len(got) != 1 || got[0] != "prior" {
+		t.Fatalf("want the prior run as the only search candidate, got %v", got)
+	}
+
+	// A later fresh claim on the same warm pod must not inherit that fallback.
+	r.ClaimRun(WarmRunInput{RunName: "run-2"})
+	if got := r.priorRunCandidates(); len(got) != 0 {
+		t.Fatalf("fresh claim inherited a stale fallback: %v", got)
+	}
+}
+
+// When both the primary and the fallback fail, both errors are reported.
+func TestLoadResumeMessages_ReportsBothErrors(t *testing.T) {
+	store := &bothFailStore{}
+	_, _, err := LoadResumeMessages(context.Background(), store, testOwnKey, testPriorKey)
+	if err == nil || !strings.Contains(err.Error(), "primary down") || !strings.Contains(err.Error(), "fallback prior") {
+		t.Fatalf("want both the primary and fallback errors, got %v", err)
+	}
+}
+
+type bothFailStore struct{ state.Store }
+
+func (bothFailStore) LoadMessages(_ context.Context, key string) ([]json.RawMessage, error) {
+	if key == testOwnKey {
+		return nil, errors.New("primary down")
+	}
+	return nil, errors.New("fallback down")
 }

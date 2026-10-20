@@ -77,6 +77,12 @@ type acpSession struct {
 	// entry). pendingTraceTool maps toolKey → the id awaiting its result.
 	traceToolSeq     int
 	pendingTraceTool map[string]string
+
+	// turn identifies the live session/prompt turn. registerRun bumps it;
+	// releaseRun only clears Cancel for its own turn. Matching on RunID is not
+	// enough: a superseding prompt can resume the SAME run (tryResumeAwaiting),
+	// and the superseded turn's cleanup must not clear the live turn's Cancel.
+	turn uint64
 }
 
 // openAIStreamState accumulates translation state across the events of one
@@ -328,14 +334,10 @@ func handleSessionPrompt(ctx context.Context, b *acpBridge, req jsonrpcRequest) 
 	// (session/new stored the workspace cwd): update it in place — replacing
 	// it would drop the cwd and break the fs/* relay's workspace confinement.
 	runCtx, cancel := context.WithCancel(ctx)
-	b.registerRun(sessionID, runID, cancel)
+	turn := b.registerRun(sessionID, runID, cancel)
 	defer func() {
 		cancel() // release the context on completion (or cancellation)
-		b.mu.Lock()
-		if cur, ok := b.sessions[sessionID]; ok && cur.RunID == runID {
-			cur.Cancel = nil
-		}
-		b.mu.Unlock()
+		b.releaseRun(sessionID, turn)
 	}()
 
 	// Start the fs/* relay watcher (issue #34) before the run starts: fs tool

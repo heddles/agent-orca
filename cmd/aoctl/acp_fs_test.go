@@ -980,3 +980,38 @@ func TestRegisterRunCancelsSupersededTurn(t *testing.T) {
 		t.Fatalf("session must track the new run, got %q", b.sessions["s"].RunID)
 	}
 }
+
+// resumedRunID is the run a superseding prompt resumes in place.
+const resumedRunID = "run-resumed"
+
+// Second-pass review (#45): the superseded turn's cleanup must leave the live
+// turn intact — the session record (cwd, run, remembered approval) survives,
+// and the live turn's Cancel is kept even when the new prompt resumed the
+// SAME run id (tryResumeAwaiting), where matching on RunID cannot tell the
+// turns apart.
+func TestReleaseRunOnlyClearsItsOwnTurn(t *testing.T) {
+	b := &acpBridge{sessions: map[string]*acpSession{
+		"s": {SessionID: "s", Cwd: "/ws", WritesAllowed: true},
+	}}
+	_, oldCancel := context.WithCancel(context.Background())
+	defer oldCancel()
+	oldTurn := b.registerRun("s", resumedRunID, oldCancel)
+
+	liveCtx, liveCancel := context.WithCancel(context.Background())
+	defer liveCancel()
+	b.registerRun("s", resumedRunID, liveCancel) // same run id, resumed in place
+
+	b.releaseRun("s", oldTurn) // the superseded prompt's deferred cleanup
+
+	sess := b.sessions["s"]
+	if sess == nil || sess.RunID != resumedRunID || sess.Cwd != "/ws" || !sess.WritesAllowed {
+		t.Fatalf("superseded cleanup must not touch the session record, got %+v", sess)
+	}
+	if sess.Cancel == nil {
+		t.Fatal("superseded cleanup cleared the live turn's Cancel")
+	}
+	sess.Cancel()
+	if liveCtx.Err() == nil {
+		t.Fatal("the kept Cancel must be the live turn's")
+	}
+}

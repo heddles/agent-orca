@@ -137,7 +137,7 @@ Additional properties:
 
 - **Editor is the final arbiter.** The relay can never grant more than Zed is
   willing to do; the editor may still refuse (its own trust prompts, missing
-  file, symlink policies). Symlink escape detection for editor-mediated reads/writes is delegated to the editor; the bridge resolves symlinks itself for the operations it answers from disk.
+  file, symlink policies). Symlink escape detection for editor-mediated reads/writes is delegated to the editor; the bridge resolves symlinks itself for the operations it answers from disk. That check is time-of-check/time-of-use: a symlink swapped between the check and the read is not caught. This is acceptable for a workstation bridge, where the threat is the remote agent's requested paths, not a local process racing the bridge.
 - **Run-scoped transport.** fs requests are keyed `<namespace>:<run>`; the
   bridge can only see requests of runs it created (tenant-owned). Pod-side
   enqueue is authenticated with the run's ServiceAccount (TokenReview, like
