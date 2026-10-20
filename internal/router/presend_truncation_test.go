@@ -120,7 +120,19 @@ func TestPreSendTruncationCapsOversizedRequests(t *testing.T) {
 	before, _ := tev["before"].(float64)
 	after, _ := tev["after"].(float64)
 	budget, _ := tev["budget"].(float64)
-	if before < float64(gotTotal) || after <= 0 || after > before || budget != 48_976 {
+	// Compare like with like (tokens): the compacted request fits the budget
+	// and is smaller than the original.
+	if after <= 0 || after >= before || after > budget || budget != 48_976 {
 		t.Fatalf("unexpected truncation event fields: %v (gotTotal=%d chars)", tev, gotTotal)
+	}
+
+	// The newest message (the user's current turn) alone exceeds the budget.
+	// It must be truncated, not dropped: previously only a compaction summary
+	// reached the provider and the model never saw the user's input.
+	last := sent.Messages[len(sent.Messages)-1]
+	if last.Role != testRoleUser || !strings.HasPrefix(last.Content, big[:1000]) ||
+		!strings.Contains(last.Content, "[... truncated") {
+		t.Fatalf("newest user message must be kept with a truncation marker, got role %q content %.120q…",
+			last.Role, last.Content)
 	}
 }

@@ -113,6 +113,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   replayed against every fallback provider. The estimate is now real and the
   budget reserves the provider's `maxOutputTokens` (capped at half the window)
   instead of a flat 1024-token reserve (#42).
+- Fallback providers were sent the request fitted to the PRIMARY's window;
+  each provider is now fitted to its own window from the original request, a
+  request no provider can hold fails fast with 413 (502 when the primary fit
+  but failed and only the fallbacks were too small), and one `truncation`
+  note is emitted per turn for the request actually used (#42).
+- A newest message larger than the whole context budget was dropped and
+  replaced by a compaction summary, so the model never saw the user's input.
+  It is now kept with its content truncated (marked `[... truncated …]`) and
+  older history compacted; truncation no longer splits multi-byte UTF-8
+  characters (#42).
 
 - Write-approval diagnostics: a failed elicitation round-trip (editor without
   elicitation support, transport error, timeout) is reported as a distinct

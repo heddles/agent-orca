@@ -38,6 +38,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/heddles/agent-orca/internal/executor"
 	"github.com/heddles/agent-orca/internal/mcp"
@@ -451,10 +452,59 @@ func messageText(m Message) string {
 	}
 }
 
+// minNewestMessageTokens is the floor shrinkNewestMessage keeps of the newest
+// message even when older kept context leaves less room; the pre-send window
+// check then decides whether the request can be sent at all.
+const minNewestMessageTokens = 256
+
+// truncationMarkerTokens covers the "[... truncated — …]" marker
+// truncateToolResult appends, so the shrunk message still fits the budget.
+const truncationMarkerTokens = 32
+
+// shrinkNewestMessage keeps the shortest safe tail of body that still contains
+// the newest message (compacting everything older), then caps the newest
+// message's text content to the remaining budget with a visible truncation
+// marker. Only string content can be shrunk; other content is kept as is and
+// the caller's window check rejects the request if it still cannot fit.
+func shrinkNewestMessage(systemPrefix, body []Message, safeCuts []int, maxTokens, est int) []Message {
+	keepFrom := 0
+	for _, c := range safeCuts {
+		if c < len(body) {
+			keepFrom = c // largest safe cut that still keeps the newest message
+		}
+	}
+	tail := append([]Message(nil), body[keepFrom:]...) // copy: never mutate the caller's slice
+	room := maxTokens - estimateTokens(systemPrefix) - estimateTokens(tail[:len(tail)-1]) - truncationMarkerTokens
+	if keepFrom > 0 {
+		room -= 150 // compaction summary overhead, as in truncateHistory
+	}
+	room = max(room, minNewestMessageTokens)
+	newest := &tail[len(tail)-1]
+	if s, ok := newest.Content.(string); ok {
+		newest.Content = truncateToolResult(s, room)
+	}
+	slog.Warn("newest message exceeds the context budget; truncating its content",
+		"originalTokens", est,
+		"maxTokens", maxTokens,
+		"droppedMessages", keepFrom,
+		"newestRole", newest.Role,
+		"newestBudgetTokens", room,
+	)
+
+	result := make([]Message, 0, len(systemPrefix)+1+len(tail))
+	result = append(result, systemPrefix...)
+	if keepFrom > 0 {
+		result = append(result, compactDroppedMessages(body[:keepFrom]))
+	}
+	return append(result, tail...)
+}
+
 // truncateHistory drops the oldest non-system messages from msgs until the estimated
 // token count fits within maxTokens. It preserves leading system messages, never splits
 // tool_use/tool_result pairs, and inserts a compaction summary of the dropped messages
-// so the LLM retains key context (user identity, topic, tool usage history).
+// so the LLM retains key context (user identity, topic, tool usage history). The
+// newest message is never dropped: when it alone exceeds the budget its content is
+// truncated instead (shrinkNewestMessage).
 func truncateHistory(msgs []Message, maxTokens int) []Message {
 	if maxTokens <= 0 || len(msgs) == 0 {
 		return msgs
@@ -505,6 +555,9 @@ func truncateHistory(msgs []Message, maxTokens int) []Message {
 	bestCut := -1
 	for i := 1; i < len(safeCuts); i++ { // skip index 0 (drop nothing — already over budget)
 		cut := safeCuts[i]
+		if cut >= len(body) {
+			break // never drop the newest message: it is the turn being answered
+		}
 		keptTokens := estimateTokens(body[cut:])
 		if systemTokens+compactionOverhead+keptTokens <= maxTokens {
 			bestCut = cut
@@ -513,10 +566,11 @@ func truncateHistory(msgs []Message, maxTokens int) []Message {
 	}
 
 	if bestCut <= 0 {
-		// No safe cut brings us under budget. Return unchanged; the provider will reject.
-		slog.Warn("conversation history exceeds context window but no safe truncation point found",
-			"estimatedTokens", est, "maxTokens", maxTokens)
-		return msgs
+		// No cut that keeps the newest message fits: the newest message itself
+		// is too large. Shrink its content instead of dropping it — dropping it
+		// sent only a compaction summary and the model never saw the user's
+		// input (#42).
+		return shrinkNewestMessage(systemPrefix, body, safeCuts, maxTokens, est)
 	}
 
 	compaction := compactDroppedMessages(body[:bestCut])
@@ -545,6 +599,11 @@ func truncateToolResult(result string, maxTokens int) string {
 	maxChars := maxTokens * 4
 	if len(result) <= maxChars {
 		return result
+	}
+	// Back up to a rune boundary so a multi-byte character is never split
+	// into invalid UTF-8.
+	for maxChars > 0 && !utf8.RuneStart(result[maxChars]) {
+		maxChars--
 	}
 	return result[:maxChars] + "\n\n[... truncated — original was " +
 		strconv.Itoa(len(result)) + " chars, capped to " +

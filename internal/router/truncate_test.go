@@ -28,6 +28,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/heddles/agent-orca/internal/state"
 )
@@ -1653,5 +1654,59 @@ func TestRouter_EpisodicSummary_IncludesPriorMessages(t *testing.T) {
 	}
 	if !foundRecent {
 		t.Error("expected episodic summary to include content from r.messages")
+	}
+}
+
+// #42 follow-up: the newest message is never dropped. When it alone exceeds
+// the budget its content is truncated (with a marker) and older history is
+// compacted; previously only a compaction summary survived.
+func TestTruncateHistory_KeepsAndShrinksOversizedNewestMessage(t *testing.T) {
+	huge := strings.Repeat("word ", 40_000) // ~50k tokens
+	t.Run("single message", func(t *testing.T) {
+		out := truncateHistory([]Message{{Role: "user", Content: huge}}, 5_000)
+		if len(out) != 1 || out[0].Role != "user" {
+			t.Fatalf("want the user message kept, got %d messages", len(out))
+		}
+		s, _ := out[0].Content.(string)
+		if !strings.HasPrefix(s, "word word") || !strings.Contains(s, "[... truncated") {
+			t.Fatalf("want a truncated prefix with a marker, got %.80q…", s)
+		}
+		if got := estimateTokens(out); got > 5_000 {
+			t.Fatalf("shrunk request still over budget: %d tokens", got)
+		}
+	})
+	t.Run("older history is compacted, newest kept", func(t *testing.T) {
+		in := []Message{
+			{Role: "system", Content: "sys"},
+			{Role: "user", Content: "earlier question"},
+			{Role: "assistant", Content: "earlier answer"},
+			{Role: "user", Content: huge},
+		}
+		out := truncateHistory(in, 5_000)
+		if out[0].Content != "sys" {
+			t.Fatalf("system prefix must be kept, got %+v", out[0])
+		}
+		newest := out[len(out)-1]
+		if newest.Role != "user" || !strings.Contains(newest.Content.(string), "[... truncated") {
+			t.Fatalf("newest user message must be kept and truncated, got %+v", newest.Role)
+		}
+		if got := estimateTokens(out); got > 5_000 {
+			t.Fatalf("over budget: %d tokens", got)
+		}
+		if in[3].Content != huge {
+			t.Fatal("the caller's slice must not be mutated")
+		}
+	})
+}
+
+func TestTruncateToolResult_RuneSafe(t *testing.T) {
+	s := strings.Repeat("é", 100)   // 2 bytes per rune
+	out := truncateToolResult(s, 1) // 4-byte cap lands mid-rune for odd offsets
+	if !utf8.ValidString(out) {
+		t.Fatalf("truncation split a multi-byte rune: %q", out)
+	}
+	odd := "a" + strings.Repeat("é", 100) // shift so the 4-byte cut is mid-rune
+	if out := truncateToolResult(odd, 1); !utf8.ValidString(out) {
+		t.Fatalf("truncation split a multi-byte rune: %q", out)
 	}
 }
