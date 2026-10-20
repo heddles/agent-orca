@@ -129,7 +129,7 @@ Three enforcement layers, each where the corresponding resource lives:
 | Layer | Enforced by | Mechanism |
 |---|---|---|
 | Tool existence | model-router (in-cluster) | `Agent.spec.filesystem` decides which fs tools are injected; readOnly refuses writes before any traffic leaves the cluster |
-| Workspace confinement | bridge (workstation) | every path is resolved against the session workspace (`session/new` `cwd`) + `--fs-roots`; lexical `..` escapes are rejected and the call never reaches the editor |
+| Workspace confinement | bridge (workstation) | every path is resolved against the session workspace (`session/new` `cwd`) + `--fs-roots`; lexical `..` escapes are rejected and the call never reaches the editor. Anything the bridge reads from disk itself (`fs_list_dir`, the write-diff disk fallback) is additionally symlink-resolved and must still land inside a root |
 | Write approval | bridge (workstation) | ACP `elicitation/create` form per write ("Agent X wants to write N bytes to path") unless policy/flag waives it |
 | Listing scope | bridge (workstation) | `fs_list_dir` is enumerated by the bridge itself (ACP v1 has no list method), confined to the same roots; names/sizes only, no content |
 
@@ -137,7 +137,7 @@ Additional properties:
 
 - **Editor is the final arbiter.** The relay can never grant more than Zed is
   willing to do; the editor may still refuse (its own trust prompts, missing
-  file, symlink policies). Symlink escape detection is delegated to the editor.
+  file, symlink policies). Symlink escape detection for editor-mediated reads/writes is delegated to the editor; the bridge resolves symlinks itself for the operations it answers from disk.
 - **Run-scoped transport.** fs requests are keyed `<namespace>:<run>`; the
   bridge can only see requests of runs it created (tenant-owned). Pod-side
   enqueue is authenticated with the run's ServiceAccount (TokenReview, like

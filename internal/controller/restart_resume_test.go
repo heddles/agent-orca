@@ -66,6 +66,9 @@ func TestWarmRunInput_RestartCarriesOwnCheckpoint(t *testing.T) {
 		},
 	}
 	in := warmRunInput(run)
+	if !in.Restart {
+		t.Fatal("a restarted run's claim must carry the explicit Restart flag")
+	}
 	if in.ResumeCheckpointKey != run.Status.CheckpointRef {
 		t.Fatalf("restart claim must resume the run's own checkpoint, got %q", in.ResumeCheckpointKey)
 	}
@@ -78,6 +81,9 @@ func TestWarmRunInput_RestartCarriesOwnCheckpoint(t *testing.T) {
 	}
 
 	run.Status.RestartCount = 0
+	if warmRunInput(run).Restart {
+		t.Fatal("a first claim is not a restart")
+	}
 	if got := warmRunInput(run).ResumeCheckpointKey; got != "agentorca/runs/acp-senior-programmer-4kk8x/state" {
 		t.Fatalf("first claim of a chat turn must resume the prior run, got %q", got)
 	}

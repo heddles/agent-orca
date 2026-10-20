@@ -83,6 +83,11 @@ type Config struct {
 	// a restarted chat turn that died before its first checkpoint must still
 	// start from the prior turn's history rather than lose the conversation.
 	FallbackCheckpointKey string
+	// RestartResume marks a run recovering from a pod restart (set by the
+	// operator from AgentRun.status.restartCount). Explicit rather than
+	// inferred from key equality so an unusual CheckpointRef cannot silently
+	// disable restart handling.
+	RestartResume bool
 
 	// StateConfig is the connection config for the conversation state store.
 	StateConfig state.Config
@@ -428,6 +433,9 @@ type WarmRunInput struct {
 	// continues where it left off instead of replaying from its input (#37).
 	// Older operators omit it; ClaimRun then falls back to PriorRunRef.
 	ResumeCheckpointKey string `json:"resumeCheckpointKey,omitempty"`
+	// Restart marks a re-claim for a run recovering from a pod restart, so
+	// the router drops the original input the agent runtime re-sends.
+	Restart bool `json:"restart,omitempty"`
 }
 
 // checkpointKeyForRun is the state-store key of a run's conversation checkpoint.
