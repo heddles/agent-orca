@@ -38,6 +38,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/heddles/agent-orca/internal/executor"
 	"github.com/heddles/agent-orca/internal/mcp"
@@ -451,10 +452,59 @@ func messageText(m Message) string {
 	}
 }
 
+// minNewestMessageTokens is the floor shrinkNewestMessage keeps of the newest
+// message even when older kept context leaves less room; the pre-send window
+// check then decides whether the request can be sent at all.
+const minNewestMessageTokens = 256
+
+// truncationMarkerTokens covers the "[... truncated — …]" marker
+// truncateToolResult appends, so the shrunk message still fits the budget.
+const truncationMarkerTokens = 32
+
+// shrinkNewestMessage keeps the shortest safe tail of body that still contains
+// the newest message (compacting everything older), then caps the newest
+// message's text content to the remaining budget with a visible truncation
+// marker. Only string content can be shrunk; other content is kept as is and
+// the caller's window check rejects the request if it still cannot fit.
+func shrinkNewestMessage(systemPrefix, body []Message, safeCuts []int, maxTokens, est int) []Message {
+	keepFrom := 0
+	for _, c := range safeCuts {
+		if c < len(body) {
+			keepFrom = c // largest safe cut that still keeps the newest message
+		}
+	}
+	tail := append([]Message(nil), body[keepFrom:]...) // copy: never mutate the caller's slice
+	room := maxTokens - estimateTokens(systemPrefix) - estimateTokens(tail[:len(tail)-1]) - truncationMarkerTokens
+	if keepFrom > 0 {
+		room -= 150 // compaction summary overhead, as in truncateHistory
+	}
+	room = max(room, minNewestMessageTokens)
+	newest := &tail[len(tail)-1]
+	if s, ok := newest.Content.(string); ok {
+		newest.Content = truncateToolResult(s, room)
+	}
+	slog.Warn("newest message exceeds the context budget; truncating its content",
+		"originalTokens", est,
+		"maxTokens", maxTokens,
+		"droppedMessages", keepFrom,
+		"newestRole", newest.Role,
+		"newestBudgetTokens", room,
+	)
+
+	result := make([]Message, 0, len(systemPrefix)+1+len(tail))
+	result = append(result, systemPrefix...)
+	if keepFrom > 0 {
+		result = append(result, compactDroppedMessages(body[:keepFrom]))
+	}
+	return append(result, tail...)
+}
+
 // truncateHistory drops the oldest non-system messages from msgs until the estimated
 // token count fits within maxTokens. It preserves leading system messages, never splits
 // tool_use/tool_result pairs, and inserts a compaction summary of the dropped messages
-// so the LLM retains key context (user identity, topic, tool usage history).
+// so the LLM retains key context (user identity, topic, tool usage history). The
+// newest message is never dropped: when it alone exceeds the budget its content is
+// truncated instead (shrinkNewestMessage).
 func truncateHistory(msgs []Message, maxTokens int) []Message {
 	if maxTokens <= 0 || len(msgs) == 0 {
 		return msgs
@@ -505,6 +555,9 @@ func truncateHistory(msgs []Message, maxTokens int) []Message {
 	bestCut := -1
 	for i := 1; i < len(safeCuts); i++ { // skip index 0 (drop nothing — already over budget)
 		cut := safeCuts[i]
+		if cut >= len(body) {
+			break // never drop the newest message: it is the turn being answered
+		}
 		keptTokens := estimateTokens(body[cut:])
 		if systemTokens+compactionOverhead+keptTokens <= maxTokens {
 			bestCut = cut
@@ -513,10 +566,11 @@ func truncateHistory(msgs []Message, maxTokens int) []Message {
 	}
 
 	if bestCut <= 0 {
-		// No safe cut brings us under budget. Return unchanged; the provider will reject.
-		slog.Warn("conversation history exceeds context window but no safe truncation point found",
-			"estimatedTokens", est, "maxTokens", maxTokens)
-		return msgs
+		// No cut that keeps the newest message fits: the newest message itself
+		// is too large. Shrink its content instead of dropping it — dropping it
+		// sent only a compaction summary and the model never saw the user's
+		// input (#42).
+		return shrinkNewestMessage(systemPrefix, body, safeCuts, maxTokens, est)
 	}
 
 	compaction := compactDroppedMessages(body[:bestCut])
@@ -545,6 +599,11 @@ func truncateToolResult(result string, maxTokens int) string {
 	maxChars := maxTokens * 4
 	if len(result) <= maxChars {
 		return result
+	}
+	// Back up to a rune boundary so a multi-byte character is never split
+	// into invalid UTF-8.
+	for maxChars > 0 && !utf8.RuneStart(result[maxChars]) {
+		maxChars--
 	}
 	return result[:maxChars] + "\n\n[... truncated — original was " +
 		strconv.Itoa(len(result)) + " chars, capped to " +
@@ -928,80 +987,18 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 		"run", r.cfg.RunName,
 	)
 
-	// Pre-send truncation: ensure the FULL request fits the selected provider's
-	// context window. The reserve (and an additional output + tool-defs margin)
-	// accounts for the fact that providers count `tools`, injected system prompt,
-	// and the response toward ContextWindow — not just `messages`. Previously the
-	// budget was messages-only, so tool-heavy agents (e.g. the pwnbox toolbelt with
-	// ~25 schema'd tools) overflowed the window immediately after message truncation
-	// landed at 0.8*CW (the reported "262145 input tokens" hard-400 by 1).
-	hardLimit := provider.ContextWindow
-	if hardLimit <= 0 {
-		hardLimit = maxContextWindow(r.cfg.Providers)
-	}
-	// Tokens the serialized tool definitions consume toward the window.
-	toolTokens := estimateToolTokens(chatReq.Tools)
-	// Reserve the provider's real completion budget, not a fixed fiction:
-	// providers count completion tokens toward the window on top of input
-	// (issue #42: 1,021,745 input + 131,072 completion vs a 1,048,576 window).
-	const minOutputReserveTokens = 1024
-	outputReserve := minOutputReserveTokens
-	if provider.MaxOutputTokens > minOutputReserveTokens {
-		outputReserve = provider.MaxOutputTokens
-		// A pathological completion reserve must not eat the entire budget.
-		// Cap at half the window so message compaction always has room.
-		outputReserve = min(outputReserve, hardLimit/2)
-	}
-	// The pre-send budget is the LOWER of:
-	//   - the safety ceiling: hardLimit * (1 - ContextWindowReserve) − tools − output
-	//     (reserves headroom for tool defs and the model's response)
-	//   - the compaction target: hardLimit * ContextCompactionRatio − tools − output
-	//     (issue #54: keeps outgoing context proportional to the configured
-	//      compaction ratio, e.g. 0.1 → ~10% of the window instead of 80%)
-	// Taking the min ensures we never send more than either limit allows.
-	ratio := r.cfg.ContextCompactionRatio
-	if ratio <= 0 || ratio >= 1.0 {
-		ratio = 0.5
-	}
-	ceilingBudget := int(float64(hardLimit)*(1.0-r.cfg.ContextWindowReserve)) - toolTokens - outputReserve
-	ratioBudget := int(float64(hardLimit)*ratio) - toolTokens - outputReserve
-	budget := min(ratioBudget, ceilingBudget)
-	if budget <= 0 {
-		budget = int(float64(hardLimit) * 0.5) // last-resort floor: keep at least half the window for messages
-	}
-	// Real pre-send estimate: messages (incl. tool-call args) plus tool
-	// definitions. This used to be `if est := 0; est > budget` — a hardcoded
-	// zero that made the whole branch dead code, so oversized requests were
-	// forwarded verbatim and every retry replayed them against every fallback
-	// provider (issue #42, "Requested token count exceeds the model's maximum
-	// context length of 1048576 tokens ... 1021745 tokens from the input").
-	msgTokens := estimateTokens(chatReq.Messages)
-	if msgTokens > budget {
-		slog.Warn("pre-send truncation triggered",
-			"estimatedMessageTokens", msgTokens,
-			"toolTokens", toolTokens,
-			"outputReserve", outputReserve,
-			"budget", budget,
-			"hardLimit", hardLimit,
-			"reserve", r.cfg.ContextWindowReserve,
-			"compactionRatio", ratio,
-			"provider", provider.Name,
-			"run", r.cfg.RunName,
-		)
-		chatReq.Messages = truncateHistory(chatReq.Messages, budget)
-		kept := estimateTokens(chatReq.Messages)
-		// Tell trace-stream clients the turn was compacted before sending —
-		// without it a silently-shortened conversation looks like memory loss.
-		if truncEv, err := json.Marshal(map[string]any{
-			"type":     "truncation",
-			"provider": provider.Name,
-			"before":   msgTokens,
-			"after":    kept,
-			"budget":   budget,
-		}); err == nil {
-			r.emitTraceEventBoth(string(truncEv))
-		}
-	}
+	// Pre-send truncation: fit the request to the selected provider's window
+	// (fitRequestToProvider). The un-fitted request is kept so fallback
+	// providers are fitted to their OWN windows rather than inheriting the
+	// primary's (#42: a smaller-window fallback otherwise gets the same 400).
+	origReq := chatReq
+	// Own backing array: truncateHistory allocates a fresh slice today, but a
+	// later in-place edit of the request sent to the primary (e.g. redaction)
+	// must not corrupt the original the fallbacks are re-fitted from.
+	origReq.Messages = slices.Clone(chatReq.Messages)
+	primaryName := provider.Name
+	fit, fitErr := r.fitRequestToProvider(provider, chatReq)
+	chatReq = fit.req
 
 	// Streaming path: proxy SSE chunks directly from provider to client.
 	// Clients may omit stream_options from the request body; initialize it
@@ -1011,19 +1008,44 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 	}
 	chatReq.StreamOptions.IncludeUsage = true
 
-	resp, err := r.forwardToProviderStream(req.Context(), provider, chatReq)
+	var resp *http.Response
+	err = fitErr
+	if err == nil {
+		resp, err = r.forwardToProviderStream(req.Context(), provider, chatReq)
+	}
 	if err != nil {
-		primaryName := provider.Name
 		slog.Warn("primary provider failed (streaming), trying fallback", "provider", primaryName, "err", err)
 		r.emitTraceEventBoth(fmt.Sprintf(`{"type":"providerFallback","from":%q,"to":"","reason":%q}`, primaryName, err.Error()))
-		resp, provider, err = r.tryFallbackStream(req.Context(), chatReq, primaryName)
+		origReq.StreamOptions = chatReq.StreamOptions
+		resp, provider, fit, err = r.tryFallbackStream(req.Context(), origReq, primaryName)
+		chatReq = fit.req
 		if err != nil {
 			slog.Error("all providers failed (streaming)", "err", err)
 			r.emitTraceEventBoth(fmt.Sprintf(`{"type":"providerFallback","from":%q,"to":"","reason":%q,"exhausted":true}`, primaryName, err.Error()))
+			// A request no configured provider can hold is a client-side
+			// condition, not an upstream outage: fail fast with a clear
+			// status instead of a generic 502 (#42).
+			// 413 only when the PRIMARY could not hold the request either. If
+			// it fit but failed (e.g. a transient 500) and the fallbacks were
+			// merely too small, that is a retriable upstream failure (502).
+			if fitErr != nil && (errors.Is(err, errExceedsContextWindow) || errors.Is(err, errNoFallbackProviders)) {
+				http.Error(w, fitErr.Error(), http.StatusRequestEntityTooLarge)
+				return
+			}
+			if errors.Is(err, errExceedsContextWindow) {
+				http.Error(w, "upstream error: primary provider failed and every fallback is too small for this request",
+					http.StatusBadGateway)
+				return
+			}
 			http.Error(w, "upstream error", http.StatusBadGateway)
 			return
 		}
 		r.emitTraceEventBoth(fmt.Sprintf(`{"type":"providerFallback","from":%q,"to":%q,"reason":%q}`, primaryName, provider.Name, "streaming fallback succeeded"))
+	}
+	// Tell trace-stream clients the turn was compacted before sending —
+	// without it a silently-shortened conversation looks like memory loss.
+	if fit.truncationEvent != "" {
+		r.emitTraceEventBoth(fit.truncationEvent)
 	}
 	r.handleStreamingResponse(w, req, provider, resp, chatReq)
 	// Run episodic summarization if due (async to avoid blocking the response).
@@ -4152,6 +4174,104 @@ func estimateToolTokens(tools []map[string]any) int {
 	}
 	// ~8 tokens of envelope overhead per tool ({"type":"function","function":{...}}).
 	return len(b)/4 + 8*len(tools)
+}
+
+// errExceedsContextWindow marks a request that cannot be compacted to fit a
+// provider's context window (no safe truncation point). Sending it would only
+// produce a provider 400, so callers skip the provider instead (#42).
+var errExceedsContextWindow = errors.New("request exceeds the provider context window and cannot be compacted")
+
+// errNoFallbackProviders is returned by tryFallbackStream when the fallback
+// chain names no provider other than the one that failed.
+var errNoFallbackProviders = errors.New("all fallback providers exhausted: no fallback provider configured")
+
+// fittedRequest is a request fitted to one provider's window plus the
+// `truncation` trace event describing the compaction (empty when none). The
+// event is emitted by the caller once the request is actually used.
+type fittedRequest struct {
+	req             ChatCompletionRequest
+	truncationEvent string
+}
+
+// fitRequestToProvider returns chatReq with its messages compacted to fit
+// provider's pre-send budget, plus the `truncation` trace event to emit if
+// this request is the one that gets used. The budget is the LOWER of:
+//   - the safety ceiling: window * (1 - ContextWindowReserve) − tools − output
+//   - the compaction target: window * ContextCompactionRatio − tools − output
+//     (issue #54: keeps outgoing context proportional to the compaction ratio)
+//
+// Tools and the provider's real completion budget count toward the window on
+// top of input (issue #42: 1,021,745 input + 131,072 completion vs a
+// 1,048,576 window), so both are reserved. It returns errExceedsContextWindow
+// when even the compacted request cannot fit — the provider would reject it.
+// chatReq itself is never mutated, so a caller can re-fit the original
+// request for another (fallback) provider.
+func (r *Router) fitRequestToProvider(provider *ProviderConfig, chatReq ChatCompletionRequest) (fittedRequest, error) {
+	// A provider without a configured window inherits the largest configured
+	// one; maxContextWindow floors at 200k, so the guard is never disabled.
+	hardLimit := provider.ContextWindow
+	if hardLimit <= 0 {
+		hardLimit = maxContextWindow(r.cfg.Providers)
+	}
+	toolTokens := estimateToolTokens(chatReq.Tools)
+	const minOutputReserveTokens = 1024
+	outputReserve := minOutputReserveTokens
+	if provider.MaxOutputTokens > minOutputReserveTokens {
+		// A pathological completion reserve must not eat the entire budget.
+		// Cap at half the window so message compaction always has room.
+		outputReserve = min(provider.MaxOutputTokens, hardLimit/2)
+	}
+	ratio := r.cfg.ContextCompactionRatio
+	if ratio <= 0 || ratio >= 1.0 {
+		ratio = 0.5
+	}
+	ceilingBudget := int(float64(hardLimit)*(1.0-r.cfg.ContextWindowReserve)) - toolTokens - outputReserve
+	ratioBudget := int(float64(hardLimit)*ratio) - toolTokens - outputReserve
+	budget := min(ratioBudget, ceilingBudget)
+	if budget <= 0 {
+		budget = int(float64(hardLimit) * 0.5) // last-resort floor: keep at least half the window for messages
+	}
+
+	msgTokens := estimateTokens(chatReq.Messages)
+	if msgTokens <= budget {
+		// No compaction needed, but the tools + completion reserve alone can
+		// still overflow the window (e.g. a large toolbelt on a small model).
+		if msgTokens+toolTokens+outputReserve > hardLimit {
+			return fittedRequest{req: chatReq}, fmt.Errorf("%w: provider %s, ~%d message + %d tool + %d output tokens vs a %d-token window",
+				errExceedsContextWindow, provider.Name, msgTokens, toolTokens, outputReserve, hardLimit)
+		}
+		return fittedRequest{req: chatReq}, nil
+	}
+	slog.Warn("pre-send truncation triggered",
+		"estimatedMessageTokens", msgTokens,
+		"toolTokens", toolTokens,
+		"outputReserve", outputReserve,
+		"budget", budget,
+		"hardLimit", hardLimit,
+		"reserve", r.cfg.ContextWindowReserve,
+		"compactionRatio", ratio,
+		"provider", provider.Name,
+		"run", r.cfg.RunName,
+	)
+	fitted := fittedRequest{req: chatReq}
+	fitted.req.Messages = truncateHistory(chatReq.Messages, budget)
+	kept := estimateTokens(fitted.req.Messages)
+	// The caller emits this only for the request whose response is used, so a
+	// turn compacted for the primary AND a fallback shows one note, not two.
+	if truncEv, err := json.Marshal(map[string]any{
+		"type":     "truncation",
+		"provider": provider.Name,
+		"before":   msgTokens,
+		"after":    kept,
+		"budget":   budget,
+	}); err == nil {
+		fitted.truncationEvent = string(truncEv)
+	}
+	if kept+toolTokens+outputReserve > hardLimit {
+		return fittedRequest{req: chatReq}, fmt.Errorf("%w: provider %s, ~%d message + %d tool + %d output tokens vs a %d-token window",
+			errExceedsContextWindow, provider.Name, kept, toolTokens, outputReserve, hardLimit)
+	}
+	return fitted, nil
 }
 
 // maxContextWindow returns the largest ContextWindow across all configured providers.

@@ -683,7 +683,14 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 }
 
 // tryFallbackStream attempts streaming fallback to providers in the fallback chain.
-func (r *Router) tryFallbackStream(ctx context.Context, chatReq ChatCompletionRequest, failedProvider string) (*http.Response, *ProviderConfig, error) {
+func (r *Router) tryFallbackStream(
+	ctx context.Context, origReq ChatCompletionRequest, failedProvider string,
+) (*http.Response, *ProviderConfig, fittedRequest, error) {
+	// Each fallback is fitted to its OWN context window from the original
+	// (un-truncated) request: replaying the primary's request verbatim sent
+	// over-window payloads to smaller-window fallbacks, which all answered 400
+	// (#42). A provider the request cannot fit is skipped without a call.
+	skippedForWindow, tried := 0, 0
 	for _, name := range r.cfg.FallbackChain {
 		if name == failedProvider {
 			continue
@@ -691,16 +698,29 @@ func (r *Router) tryFallbackStream(ctx context.Context, chatReq ChatCompletionRe
 		for i := range r.cfg.Providers {
 			if r.cfg.Providers[i].Name == name {
 				p := &r.cfg.Providers[i]
+				tried++
+				fitted, err := r.fitRequestToProvider(p, origReq)
+				if err != nil {
+					skippedForWindow++
+					slog.Warn("fallback provider skipped: request does not fit its window", "provider", name, "err", err)
+					continue
+				}
 				slog.Info("trying fallback provider (streaming)", "provider", name)
-				resp, err := r.forwardToProviderStream(ctx, p, chatReq)
+				resp, err := r.forwardToProviderStream(ctx, p, fitted.req)
 				if err == nil {
-					return resp, p, nil
+					return resp, p, fitted, nil
 				}
 				slog.Warn("fallback provider failed (streaming)", "provider", name, "err", err)
 			}
 		}
 	}
-	return nil, nil, fmt.Errorf("all fallback providers exhausted")
+	if tried == 0 {
+		return nil, nil, fittedRequest{req: origReq}, errNoFallbackProviders
+	}
+	if skippedForWindow == tried {
+		return nil, nil, fittedRequest{req: origReq}, fmt.Errorf("all fallback providers exhausted: %w", errExceedsContextWindow)
+	}
+	return nil, nil, fittedRequest{req: origReq}, fmt.Errorf("all fallback providers exhausted")
 }
 
 // mergeToolCallDeltas merges incremental tool call deltas into a running list.
