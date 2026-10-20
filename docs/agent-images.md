@@ -205,7 +205,7 @@ CR (the reference image ignores a baked prompt — the model-router injects the 
 
 **Concrete next step (already staged):** `examples/agent-sdk-template/Dockerfile` builds the
 reference image; `.github/workflows/build-reference-image.yml` publishes it on GitHub Release;
-`.github/workflows/build-component-images.yml` publishes operator/model-router/mcp-ingester/ui-proxy;
+`.github/workflows/release.yml` publishes operator/model-router/mcp-ingester/ui-proxy;
 `skaffold dev` builds+kind-loads `openai-reference:latest` via a non-fatal build hook; and the demos,
 `hack/test-agents.sh`, and the Quick Start default to it. The component-image workflow uses
 `docker/build-push-action` multi-arch and should be run/sign/SCA-scanned like the other releases.
