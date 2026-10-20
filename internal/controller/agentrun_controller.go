@@ -1143,6 +1143,7 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 		CheckpointKey:          fmt.Sprintf("agentorca/runs/%s/state", run.Name),
 		ResumeCheckpointKey:    resumeKey,
 		FallbackCheckpointKey:  fallbackKey,
+		RestartResume:          isRestartRecovery(run),
 		StateConfig:            r.StateConfig,
 		KubeAPIURL:             "https://kubernetes.default.svc",
 		OperatorAPIURL:         r.OperatorAPIURL,
@@ -2177,13 +2178,19 @@ func truncate(s string, n int) string {
 //   - new chat turn: the previous run's accumulated history
 //   - otherwise: fresh start ("")
 func resumeCheckpointKey(run *agentorcav1alpha1.AgentRun) string {
-	if run.Status.CheckpointRef != "" && run.Status.RestartCount > 0 {
+	if isRestartRecovery(run) {
 		return run.Status.CheckpointRef
 	}
 	if run.Spec.PriorRunRef != "" {
 		return fmt.Sprintf("agentorca/runs/%s/state", run.Spec.PriorRunRef)
 	}
 	return ""
+}
+
+// isRestartRecovery reports whether run is restarting after a pod failure
+// with a checkpoint of its own to resume.
+func isRestartRecovery(run *agentorcav1alpha1.AgentRun) bool {
+	return run.Status.CheckpointRef != "" && run.Status.RestartCount > 0
 }
 
 // fallbackCheckpointKey is what a restarted chat turn loads when it died
@@ -2205,6 +2212,7 @@ func warmRunInput(run *agentorcav1alpha1.AgentRun) router.WarmRunInput {
 		Input:               run.Spec.Input,
 		PriorRunRef:         run.Spec.PriorRunRef,
 		ResumeCheckpointKey: resumeCheckpointKey(run),
+		Restart:             isRestartRecovery(run),
 	}
 }
 

@@ -85,8 +85,11 @@ func main() { //nolint:gocyclo
 	var initialMessages []json.RawMessage
 	if cfg.ResumeCheckpointKey != "" {
 		slog.Info("resuming from checkpoint", "key", cfg.ResumeCheckpointKey)
-		initialMessages, _, err = router.LoadResumeMessages(context.Background(), store,
+		var usedKey string
+		initialMessages, usedKey, err = router.LoadResumeMessages(context.Background(), store,
 			cfg.ResumeCheckpointKey, cfg.FallbackCheckpointKey)
+		// Restore spend from the checkpoint the history actually came from.
+		cfg.ResumeCheckpointKey = usedKey
 		if err != nil {
 			slog.Warn("could not load checkpoint, starting fresh", "err", err)
 		}

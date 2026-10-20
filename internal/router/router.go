@@ -238,7 +238,7 @@ func New(cfg *Config, store state.Store, initialMessages []json.RawMessage, exec
 		checkpointTTL:     checkpointTTL,
 		tokens:            NewTokenBroadcaster(),
 		resumedWithAnswer: answerInjected,
-		restartResume:     isRestartResume(cfg),
+		restartResume:     cfg.RestartResume,
 		guardrails:        NewGuardrailPipeline(cfg.Guardrails),
 		toolTimeout:       time.Duration(cfg.Safeguards.ToolExecutionTimeoutSec) * time.Second,
 		cancelCtx:         cancelCtx,
@@ -252,9 +252,9 @@ func New(cfg *Config, store state.Store, initialMessages []json.RawMessage, exec
 	// survives pod restarts. Without this, a restarted pod loses all
 	// prior spend and budget enforcement becomes inaccurate.
 	if store != nil && cfg.CheckpointKey != "" {
-		if priorSpend, err := store.LoadSpend(context.Background(), cfg.CheckpointKey); err == nil && priorSpend > 0 {
-			r.spendUSD = priorSpend
-			r.ruleRouter.UpdateSpend(priorSpend)
+		if spend := restoreSpend(context.Background(), store, cfg.CheckpointKey, cfg.ResumeCheckpointKey); spend > 0 {
+			r.spendUSD = spend
+			r.ruleRouter.UpdateSpend(spend)
 		}
 	}
 
@@ -1662,35 +1662,85 @@ func (r *Router) checkpointBudget() int {
 // callers restore spend from the same checkpoint.
 func LoadResumeMessages(ctx context.Context, store state.Store, key, fallback string) ([]json.RawMessage, string, error) {
 	msgs, err := store.LoadMessages(ctx, key)
-	if err == nil && len(msgs) == 0 && fallback != "" && fallback != key {
-		slog.Info("resume checkpoint empty, falling back", "key", key, "fallback", fallback)
-		msgs, err = store.LoadMessages(ctx, fallback)
-		return msgs, fallback, err
+	if (err != nil || len(msgs) == 0) && fallback != "" && fallback != key {
+		// A store error on the primary (Redis blip) must not lose the
+		// conversation when the fallback is still readable — e.g. from the
+		// warm pod's local cache.
+		slog.Info("resume checkpoint unavailable, falling back", "key", key, "fallback", fallback, "err", err)
+		fbMsgs, fbErr := store.LoadMessages(ctx, fallback)
+		if fbErr == nil && len(fbMsgs) > 0 {
+			return fbMsgs, fallback, nil
+		}
+		if err == nil {
+			err = fbErr
+		}
 	}
 	return msgs, key, err
 }
 
-// isRestartResume reports whether cfg resumes the run's own checkpoint (pod
-// restart recovery) rather than a prior chat turn or nothing.
-func isRestartResume(cfg *Config) bool {
-	return cfg.ResumeCheckpointKey != "" && cfg.ResumeCheckpointKey == cfg.CheckpointKey
+// restoreSpend returns the spend a (re)started run resumes with. The run's own
+// spend counter is saved every turn — independently of the message checkpoint
+// cadence — so when it is non-zero it is authoritative (it already includes
+// any prior-run spend the run was seeded with). Otherwise the run starts from
+// the spend of the checkpoint its history was resumed from.
+func restoreSpend(ctx context.Context, store state.Store, ownKey, resumeKey string) float64 {
+	if ownKey != "" {
+		if own, err := store.LoadSpend(ctx, ownKey); err == nil && own > 0 {
+			return own
+		}
+	}
+	if resumeKey != "" && resumeKey != ownKey {
+		if prior, err := store.LoadSpend(ctx, resumeKey); err == nil && prior > 0 {
+			return prior
+		}
+	}
+	return 0
 }
 
 // dropResentUserInput removes the trailing user message of an incoming request
-// when the checkpoint already contains it as a user message: after a restart
+// when it repeats the checkpoint's most recent user message: after a restart
 // the agent runtime re-sends the run's original input, and appending it again
-// would make the model restart the task from scratch (#37).
+// would make the model restart the task from scratch (#37). Only the latest
+// checkpointed user message is compared — an earlier repeated phrase ("go on")
+// is a genuinely new message — and both sides are canonicalized so whitespace,
+// line-ending and string-vs-content-block differences still match.
 func dropResentUserInput(incoming, prior []Message) []Message {
 	if len(incoming) == 0 || incoming[len(incoming)-1].Role != "user" {
 		return incoming
 	}
-	resent := fmt.Sprintf("%v", incoming[len(incoming)-1].Content)
-	for _, m := range prior {
-		if m.Role == "user" && fmt.Sprintf("%v", m.Content) == resent {
+	for i := len(prior) - 1; i >= 0; i-- {
+		if prior[i].Role != "user" {
+			continue
+		}
+		if canonicalUserText(prior[i].Content) == canonicalUserText(incoming[len(incoming)-1].Content) {
 			return incoming[:len(incoming)-1]
 		}
+		return incoming
 	}
 	return incoming
+}
+
+// canonicalUserText flattens message content (a string, or OpenAI content
+// blocks) to its text, normalizing line endings and surrounding whitespace.
+func canonicalUserText(content any) string {
+	var text string
+	switch v := content.(type) {
+	case string:
+		text = v
+	case []any:
+		var b strings.Builder
+		for _, part := range v {
+			if m, ok := part.(map[string]any); ok {
+				if t, ok := m["text"].(string); ok {
+					b.WriteString(t)
+				}
+			}
+		}
+		text = b.String()
+	default:
+		text = fmt.Sprintf("%v", v)
+	}
+	return strings.TrimSpace(strings.ReplaceAll(text, "\r\n", "\n"))
 }
 
 // checkpoint saves the current conversation history to the state store.
@@ -4370,7 +4420,8 @@ func (r *Router) ClaimRun(input WarmRunInput) {
 	r.doneExplicit = false
 	r.failedExplicit = false
 	r.resumedWithAnswer = false
-	r.restartResume = isRestartResume(r.cfg)
+	r.cfg.RestartResume = input.Restart
+	r.restartResume = input.Restart
 	r.loopDetected = false
 	r.liveBufferTokens = 0
 
@@ -4431,13 +4482,13 @@ func (r *Router) ClaimRun(input WarmRunInput) {
 		}
 	}
 
-	// Restore accumulated spend from the resumed checkpoint so budget tracking
-	// and cost reporting remain accurate across warm-mode continuations and
-	// restarts (a restarted run must not get its budget cap reset to zero).
-	if resumeKey != "" && r.store != nil {
-		if priorSpend, err := r.store.LoadSpend(context.Background(), resumeKey); err == nil && priorSpend > 0 {
-			r.spendUSD = priorSpend
-			r.ruleRouter.UpdateSpend(priorSpend)
+	// Restore accumulated spend so budget tracking and cost reporting remain
+	// accurate across warm-mode continuations and restarts (a restarted run
+	// must not get its budget cap reset).
+	if r.store != nil {
+		if spend := restoreSpend(context.Background(), r.store, r.cfg.CheckpointKey, resumeKey); spend > 0 {
+			r.spendUSD = spend
+			r.ruleRouter.UpdateSpend(spend)
 		}
 	}
 
