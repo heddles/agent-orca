@@ -31,6 +31,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -932,6 +933,10 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 	// providers are fitted to their OWN windows rather than inheriting the
 	// primary's (#42: a smaller-window fallback otherwise gets the same 400).
 	origReq := chatReq
+	// Own backing array: truncateHistory allocates a fresh slice today, but a
+	// later in-place edit of the request sent to the primary (e.g. redaction)
+	// must not corrupt the original the fallbacks are re-fitted from.
+	origReq.Messages = slices.Clone(chatReq.Messages)
 	primaryName := provider.Name
 	fitted, fitErr := r.fitRequestToProvider(provider, chatReq)
 	chatReq = fitted
@@ -960,11 +965,16 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 			// A request no configured provider can hold is a client-side
 			// condition, not an upstream outage: fail fast with a clear
 			// status instead of a generic 502 (#42).
-			if errors.Is(err, errExceedsContextWindow) || (fitErr != nil && errors.Is(err, errNoFallbackProviders)) {
-				if fitErr != nil && !errors.Is(err, errExceedsContextWindow) {
-					err = fitErr
-				}
-				http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
+			// 413 only when the PRIMARY could not hold the request either. If
+			// it fit but failed (e.g. a transient 500) and the fallbacks were
+			// merely too small, that is a retriable upstream failure (502).
+			if fitErr != nil && (errors.Is(err, errExceedsContextWindow) || errors.Is(err, errNoFallbackProviders)) {
+				http.Error(w, fitErr.Error(), http.StatusRequestEntityTooLarge)
+				return
+			}
+			if errors.Is(err, errExceedsContextWindow) {
+				http.Error(w, "upstream error: primary provider failed and every fallback is too small for this request",
+					http.StatusBadGateway)
 				return
 			}
 			http.Error(w, "upstream error", http.StatusBadGateway)
@@ -4113,12 +4123,11 @@ var errNoFallbackProviders = errors.New("all fallback providers exhausted: no fa
 // chatReq itself is never mutated, so a caller can re-fit the original
 // request for another (fallback) provider.
 func (r *Router) fitRequestToProvider(provider *ProviderConfig, chatReq ChatCompletionRequest) (ChatCompletionRequest, error) {
+	// A provider without a configured window inherits the largest configured
+	// one; maxContextWindow floors at 200k, so the guard is never disabled.
 	hardLimit := provider.ContextWindow
 	if hardLimit <= 0 {
 		hardLimit = maxContextWindow(r.cfg.Providers)
-	}
-	if hardLimit <= 0 {
-		return chatReq, nil // no window known: nothing to enforce
 	}
 	toolTokens := estimateToolTokens(chatReq.Tools)
 	const minOutputReserveTokens = 1024

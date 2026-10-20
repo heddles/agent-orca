@@ -28,6 +28,10 @@ import (
 	"time"
 )
 
+// approxCharsPerToken is the estimator's rough ratio for these ASCII fixtures
+// (countTokens ≈ len/4), used to turn a token budget into a char ceiling.
+const approxCharsPerToken = 4
+
 // testRoleUser avoids repeating the role literal across this file's fixtures.
 const testRoleUser = "user"
 
@@ -157,7 +161,7 @@ func TestFallbackRequestFittedToFallbackWindow(t *testing.T) {
 		t.Fatalf("fallback got the primary's request (%d chars) instead of one fitted to its smaller window (%d chars)",
 			primaryChars, fallbackChars)
 	}
-	if fallbackChars > 5*8_976*4 {
+	if fallbackChars > 5*8_976*approxCharsPerToken {
 		t.Fatalf("fallback request still too large for its window: %d chars (budget 8,976 tokens)", fallbackChars)
 	}
 }
@@ -247,6 +251,24 @@ func TestOversizedForPrimaryServedByLargerFallback(t *testing.T) {
 	}
 	if len(primary.requests()) != 0 || len(fallback.requests()) != 1 {
 		t.Fatalf("want primary skipped and one fallback call, got %d / %d",
+			len(primary.requests()), len(fallback.requests()))
+	}
+}
+
+// PR #46 review: when the request FITS the primary but the primary fails
+// transiently and every fallback is too small, the client must get a
+// retriable 502 — not a 413 claiming the request exceeds the window.
+func TestTransientPrimaryFailureWithTooSmallFallbacksIs502(t *testing.T) {
+	primary := newCapturingProvider(t, true) // fits, but answers 500
+	fallback := newCapturingProvider(t, false)
+	r := newFallbackTestRouter(t, primary, fallback, 400_000, 20_000)
+
+	rec := serve(r, oversizedToolsRequest(t)) // ~25k tool tokens: fits 400k, not 20k
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("want 502 for a transient primary failure, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if len(primary.requests()) != 1 || len(fallback.requests()) != 0 {
+		t.Fatalf("want one primary call and the too-small fallback skipped, got %d / %d",
 			len(primary.requests()), len(fallback.requests()))
 	}
 }
