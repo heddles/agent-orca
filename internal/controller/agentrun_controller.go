@@ -1032,18 +1032,11 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 	}
 
 	checkpointEvery := 1
-	resumeKey := ""
 	if agent.Spec.Memory != nil {
 		checkpointEvery = agent.Spec.Memory.CheckpointEvery
 	}
-	if run.Status.CheckpointRef != "" && run.Status.RestartCount > 0 {
-		// Restart recovery: resume from this run's own last checkpoint.
-		resumeKey = run.Status.CheckpointRef
-	} else if run.Spec.PriorRunRef != "" {
-		// New turn in a chat session: load the previous run's accumulated history
-		// so the model-router starts with full multi-turn context.
-		resumeKey = fmt.Sprintf("agentorca/runs/%s/state", run.Spec.PriorRunRef)
-	}
+	resumeKey := resumeCheckpointKey(run)
+	fallbackKey := fallbackCheckpointKey(run)
 
 	// Resolve safeguards from AgentRun spec.
 	var safeguards router.RouterSafeguards
@@ -1149,6 +1142,8 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 		CheckpointEvery:        checkpointEvery,
 		CheckpointKey:          fmt.Sprintf("agentorca/runs/%s/state", run.Name),
 		ResumeCheckpointKey:    resumeKey,
+		FallbackCheckpointKey:  fallbackKey,
+		RestartResume:          isRestartRecovery(run),
 		StateConfig:            r.StateConfig,
 		KubeAPIURL:             "https://kubernetes.default.svc",
 		OperatorAPIURL:         r.OperatorAPIURL,
@@ -2174,6 +2169,53 @@ func truncate(s string, n int) string {
 	return s[:n]
 }
 
+// resumeCheckpointKey is the checkpoint a (re)started run must resume from.
+// Shared by the cold-start router config and the warm-pod claim so the two
+// paths cannot drift: previously only the cold path knew about restart
+// recovery, and a restarted run that re-claimed a warm pod replayed from its
+// input and overwrote its own checkpoint (#37).
+//   - restart recovery: the run's own last checkpoint
+//   - new chat turn: the previous run's accumulated history
+//   - otherwise: fresh start ("")
+func resumeCheckpointKey(run *agentorcav1alpha1.AgentRun) string {
+	if isRestartRecovery(run) {
+		return run.Status.CheckpointRef
+	}
+	if run.Spec.PriorRunRef != "" {
+		return fmt.Sprintf("agentorca/runs/%s/state", run.Spec.PriorRunRef)
+	}
+	return ""
+}
+
+// isRestartRecovery reports whether run is restarting after a pod failure
+// with a checkpoint of its own to resume.
+func isRestartRecovery(run *agentorcav1alpha1.AgentRun) bool {
+	return run.Status.CheckpointRef != "" && run.Status.RestartCount > 0
+}
+
+// fallbackCheckpointKey is what a restarted chat turn loads when it died
+// before writing its own first checkpoint: the prior turn's history. Empty for
+// non-restarts (resumeCheckpointKey already points at the prior run) and for
+// runs with no prior turn.
+func fallbackCheckpointKey(run *agentorcav1alpha1.AgentRun) string {
+	if run.Status.RestartCount > 0 && run.Spec.PriorRunRef != "" {
+		return fmt.Sprintf("agentorca/runs/%s/state", run.Spec.PriorRunRef)
+	}
+	return ""
+}
+
+// warmRunInput builds the /v1/claim-run payload for run. PriorRunRef stays set
+// for routers that predate ResumeCheckpointKey.
+func warmRunInput(run *agentorcav1alpha1.AgentRun) router.WarmRunInput {
+	return router.WarmRunInput{
+		RunName:             run.Name,
+		Input:               run.Spec.Input,
+		PriorRunRef:         run.Spec.PriorRunRef,
+		ResumeCheckpointKey: resumeCheckpointKey(run),
+		Restart:             isRestartRecovery(run),
+	}
+}
+
 // claimWarmPod finds an idle warm pod for this run's AgentDeployment, POSTs /v1/claim-run
 // to it, and returns the pod name. Returns ("", nil) if no warm pod is available (caller
 // should fall through to normal pod creation).
@@ -2243,19 +2285,8 @@ func (r *AgentRunReconciler) claimWarmPod(ctx context.Context, run *agentorcav1a
 			continue
 		}
 
-		// Determine prior run ref for checkpoint resumption.
-		priorRunRef := ""
-		if run.Spec.PriorRunRef != "" {
-			priorRunRef = run.Spec.PriorRunRef
-		}
-
 		// POST /v1/claim-run to the warm pod's management port.
-		payload := router.WarmRunInput{
-			RunName:     run.Name,
-			Input:       run.Spec.Input,
-			PriorRunRef: priorRunRef,
-		}
-		body, _ := json.Marshal(payload)
+		body, _ := json.Marshal(warmRunInput(run))
 		claimURL := fmt.Sprintf("http://%s:9090/v1/claim-run", pod.Status.PodIP)
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, claimURL, bytes.NewReader(body))
 		if err != nil {

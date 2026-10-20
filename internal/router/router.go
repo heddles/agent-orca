@@ -31,6 +31,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -79,6 +80,10 @@ type Router struct {
 	doneExplicit      bool // set to true when _done tool completes; short-circuits further LLM calls
 	failedExplicit    bool // set to true when _fail tool completes; short-circuits further LLM calls
 	resumedWithAnswer bool // set when a clarify answer was injected at startup; suppresses one auto-clarify cycle
+	// restartResume is set when this run resumed from its OWN checkpoint after a
+	// pod restart (#37): the agent runtime re-sends the original input, which
+	// the checkpoint already holds, so the duplicate is dropped.
+	restartResume bool
 
 	// liveBufferTokens caches the incremental token count of the combined
 	// priorMessages + messages buffer. Updated via incrementBufferTokens() on
@@ -234,6 +239,7 @@ func New(cfg *Config, store state.Store, initialMessages []json.RawMessage, exec
 		checkpointTTL:     checkpointTTL,
 		tokens:            NewTokenBroadcaster(),
 		resumedWithAnswer: answerInjected,
+		restartResume:     cfg.RestartResume,
 		guardrails:        NewGuardrailPipeline(cfg.Guardrails),
 		toolTimeout:       time.Duration(cfg.Safeguards.ToolExecutionTimeoutSec) * time.Second,
 		cancelCtx:         cancelCtx,
@@ -247,9 +253,9 @@ func New(cfg *Config, store state.Store, initialMessages []json.RawMessage, exec
 	// survives pod restarts. Without this, a restarted pod loses all
 	// prior spend and budget enforcement becomes inaccurate.
 	if store != nil && cfg.CheckpointKey != "" {
-		if priorSpend, err := store.LoadSpend(context.Background(), cfg.CheckpointKey); err == nil && priorSpend > 0 {
-			r.spendUSD = priorSpend
-			r.ruleRouter.UpdateSpend(priorSpend)
+		if spend := restoreSpend(context.Background(), store, cfg.CheckpointKey, cfg.ResumeCheckpointKey); spend > 0 {
+			r.spendUSD = spend
+			r.ruleRouter.UpdateSpend(spend)
 		}
 	}
 
@@ -769,6 +775,7 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 	r.mu.Lock()
 	prior := r.priorMessages
 	resumed := r.resumedWithAnswer
+	restartResume := r.restartResume
 	r.mu.Unlock()
 	if len(prior) > 0 {
 		alreadyInjected := len(chatReq.Messages) >= len(prior) &&
@@ -784,6 +791,12 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 				if last.Role == "user" {
 					chatReq.Messages = chatReq.Messages[:len(chatReq.Messages)-1]
 				}
+			}
+			// Same for a restart resume (#37), but only when the re-sent message
+			// is the input the checkpoint already holds — a genuinely new user
+			// message must still reach the model.
+			if restartResume && !resumed {
+				chatReq.Messages = dropResentUserInput(chatReq.Messages, prior)
 			}
 			chatReq.Messages = append(prior, chatReq.Messages...)
 		}
@@ -1642,6 +1655,108 @@ func (r *Router) checkpointBudget() int {
 		cw = 200000
 	}
 	return cw * 8 / 10
+}
+
+// priorRunCandidates names the runs whose checkpoints this run resumed from
+// or falls back to, excluding the run itself. On a restart the resume key is
+// the run's OWN checkpoint, so the prior chat turn is only reachable through
+// the fallback key — without it, _search_history silently lost the prior run.
+func (r *Router) priorRunCandidates() []string {
+	var names []string
+	for _, key := range []string{r.cfg.ResumeCheckpointKey, r.cfg.FallbackCheckpointKey} {
+		if name := runNameFromCheckpointKey(key); name != "" && name != r.cfg.RunName && !slices.Contains(names, name) {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+// LoadResumeMessages loads the conversation checkpoint at key, falling back to
+// fallback when key holds nothing (a run that restarted before writing its
+// first checkpoint). It returns the key the messages actually came from so
+// callers restore spend from the same checkpoint.
+func LoadResumeMessages(ctx context.Context, store state.Store, key, fallback string) ([]json.RawMessage, string, error) {
+	msgs, err := store.LoadMessages(ctx, key)
+	if (err != nil || len(msgs) == 0) && fallback != "" && fallback != key {
+		// A store error on the primary (Redis blip) must not lose the
+		// conversation when the fallback is still readable — e.g. from the
+		// warm pod's local cache.
+		slog.Info("resume checkpoint unavailable, falling back", "key", key, "fallback", fallback, "err", err)
+		fbMsgs, fbErr := store.LoadMessages(ctx, fallback)
+		if fbErr == nil && len(fbMsgs) > 0 {
+			return fbMsgs, fallback, nil
+		}
+		if fbErr != nil {
+			// Report both: the fallback failing is as diagnostic as the primary.
+			err = errors.Join(err, fmt.Errorf("fallback %s: %w", fallback, fbErr))
+		}
+	}
+	return msgs, key, err
+}
+
+// restoreSpend returns the spend a (re)started run resumes with. The run's own
+// spend counter is saved every turn — independently of the message checkpoint
+// cadence — so when it is non-zero it is authoritative (it already includes
+// any prior-run spend the run was seeded with). Otherwise the run starts from
+// the spend of the checkpoint its history was resumed from.
+func restoreSpend(ctx context.Context, store state.Store, ownKey, resumeKey string) float64 {
+	if ownKey != "" {
+		if own, err := store.LoadSpend(ctx, ownKey); err == nil && own > 0 {
+			return own
+		}
+	}
+	if resumeKey != "" && resumeKey != ownKey {
+		if prior, err := store.LoadSpend(ctx, resumeKey); err == nil && prior > 0 {
+			return prior
+		}
+	}
+	return 0
+}
+
+// dropResentUserInput removes the trailing user message of an incoming request
+// when it repeats the checkpoint's most recent user message: after a restart
+// the agent runtime re-sends the run's original input, and appending it again
+// would make the model restart the task from scratch (#37). Only the latest
+// checkpointed user message is compared — an earlier repeated phrase ("go on")
+// is a genuinely new message — and both sides are canonicalized so whitespace,
+// line-ending and string-vs-content-block differences still match.
+func dropResentUserInput(incoming, prior []Message) []Message {
+	if len(incoming) == 0 || incoming[len(incoming)-1].Role != "user" {
+		return incoming
+	}
+	for i := len(prior) - 1; i >= 0; i-- {
+		if prior[i].Role != "user" {
+			continue
+		}
+		if canonicalUserText(prior[i].Content) == canonicalUserText(incoming[len(incoming)-1].Content) {
+			return incoming[:len(incoming)-1]
+		}
+		return incoming
+	}
+	return incoming
+}
+
+// canonicalUserText flattens message content (a string, or OpenAI content
+// blocks) to its text, normalizing line endings and surrounding whitespace.
+func canonicalUserText(content any) string {
+	var text string
+	switch v := content.(type) {
+	case string:
+		text = v
+	case []any:
+		var b strings.Builder
+		for _, part := range v {
+			if m, ok := part.(map[string]any); ok {
+				if t, ok := m["text"].(string); ok {
+					b.WriteString(t)
+				}
+			}
+		}
+		text = b.String()
+	default:
+		text = fmt.Sprintf("%v", v)
+	}
+	return strings.TrimSpace(strings.ReplaceAll(text, "\r\n", "\n"))
 }
 
 // checkpoint saves the current conversation history to the state store.
@@ -3547,11 +3662,7 @@ func (r *Router) executeSearchHistory(ctx context.Context, args string) string {
 	if currentRun != "" {
 		// Include the immediate prior run (PriorRunRef chain) even if the index
 		// hasn't been refreshed yet for it.
-		if r.cfg.ResumeCheckpointKey != "" {
-			if prior := runNameFromCheckpointKey(r.cfg.ResumeCheckpointKey); prior != "" {
-				runNames = append(runNames, prior)
-			}
-		}
+		runNames = append(runNames, r.priorRunCandidates()...)
 	}
 
 	results := r.searchPriorTurns(ctx, runNames, currentRun, p.Query, p.TopK)
@@ -4297,12 +4408,15 @@ func (r *Router) ClaimRun(input WarmRunInput) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.cfg.RunName = input.RunName
-	r.cfg.CheckpointKey = fmt.Sprintf("agentorca/runs/%s/state", input.RunName)
-	if input.PriorRunRef != "" {
-		r.cfg.ResumeCheckpointKey = fmt.Sprintf("agentorca/runs/%s/state", input.PriorRunRef)
-	} else {
-		r.cfg.ResumeCheckpointKey = ""
+	r.cfg.CheckpointKey = checkpointKeyForRun(input.RunName)
+	// An explicit resume key (restart recovery: the run's own checkpoint) wins
+	// over the chat-turn PriorRunRef chain; older operators only send the latter.
+	resumeKey := input.ResumeCheckpointKey
+	if resumeKey == "" && input.PriorRunRef != "" {
+		resumeKey = checkpointKeyForRun(input.PriorRunRef)
 	}
+	r.cfg.ResumeCheckpointKey = resumeKey
+	r.cfg.FallbackCheckpointKey = "" // per-run: never inherit a previous claim's fallback
 	r.cfg.HTTPInput.RunName = input.RunName
 	r.cfg.HTTPInput.Input = input.Input
 
@@ -4319,18 +4433,29 @@ func (r *Router) ClaimRun(input WarmRunInput) {
 	r.doneExplicit = false
 	r.failedExplicit = false
 	r.resumedWithAnswer = false
+	r.cfg.RestartResume = input.Restart
+	r.restartResume = input.Restart
 	r.loopDetected = false
 	r.liveBufferTokens = 0
 
-	// Load prior run's conversation history for warm-mode continuation runs.
-	// This mirrors the checkpoint loading done at startup in main.go, but for
-	// pods that are reused via the warm pool rather than freshly launched.
-	if input.PriorRunRef != "" {
-		resumeKey := fmt.Sprintf("agentorca/runs/%s/state", input.PriorRunRef)
-		rawMsgs, err := r.store.LoadMessages(context.Background(), resumeKey)
+	// Load the resume checkpoint (a prior chat turn, or this run's own state
+	// when it restarted) for warm-mode runs. This mirrors the checkpoint loading
+	// done at startup in main.go, but for pods reused via the warm pool rather
+	// than freshly launched.
+	if resumeKey != "" {
+		fallback := ""
+		if input.PriorRunRef != "" {
+			fallback = checkpointKeyForRun(input.PriorRunRef)
+		}
+		r.cfg.FallbackCheckpointKey = fallback
+		rawMsgs, usedKey, err := LoadResumeMessages(context.Background(), r.store, resumeKey, fallback)
+		resumeKey = usedKey
+		// Record where the history actually came from, as model-router main
+		// does for cold starts (spend restore and _search_history read it).
+		r.cfg.ResumeCheckpointKey = usedKey
 		if err != nil {
-			slog.Warn("could not load prior run checkpoint for warm continuation",
-				"err", err, "run", input.RunName, "priorRunRef", input.PriorRunRef)
+			slog.Warn("could not load checkpoint for warm run",
+				"err", err, "run", input.RunName, "resumeKey", resumeKey)
 		} else {
 			var msgs []Message
 			for _, raw := range rawMsgs {
@@ -4374,13 +4499,13 @@ func (r *Router) ClaimRun(input WarmRunInput) {
 		}
 	}
 
-	// Restore accumulated spend from the prior run so budget tracking and
-	// cost reporting remain accurate across warm-mode continuations.
-	if input.PriorRunRef != "" && r.store != nil {
-		resumeKey := fmt.Sprintf("agentorca/runs/%s/state", input.PriorRunRef)
-		if priorSpend, err := r.store.LoadSpend(context.Background(), resumeKey); err == nil && priorSpend > 0 {
-			r.spendUSD = priorSpend
-			r.ruleRouter.UpdateSpend(priorSpend)
+	// Restore accumulated spend so budget tracking and cost reporting remain
+	// accurate across warm-mode continuations and restarts (a restarted run
+	// must not get its budget cap reset).
+	if r.store != nil {
+		if spend := restoreSpend(context.Background(), r.store, r.cfg.CheckpointKey, resumeKey); spend > 0 {
+			r.spendUSD = spend
+			r.ruleRouter.UpdateSpend(spend)
 		}
 	}
 
