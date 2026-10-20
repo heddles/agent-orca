@@ -145,7 +145,8 @@ func serve(r *Router, body []byte) *httptest.ResponseRecorder {
 func TestFallbackRequestFittedToFallbackWindow(t *testing.T) {
 	primary := newCapturingProvider(t, true)
 	fallback := newCapturingProvider(t, false)
-	// primary budget 0.5*100k-1024 = 48,976 tokens; fallback 0.5*20k-1024 = 8,976.
+	// Over the trigger (80% of the window), each request is cut to its target:
+	// 0.5*100k = 50,000 tokens for the primary, 0.5*20k = 10,000 for the fallback.
 	r := newFallbackTestRouter(t, primary, fallback, 100_000, 20_000)
 
 	rec := serve(r, conversation(t, 20))

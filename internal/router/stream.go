@@ -537,17 +537,22 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 		}
 	}
 
-	// Update conversation history.
-	// For continuation requests (recursive tool-call loops), chatReq.Messages was
-	// built from r.messages and would duplicate the entire conversation if re-appended.
+	// Update conversation history. Only the client's new input is stored, never
+	// chatReq.Messages: the sent request also holds the stored history and the
+	// injected preamble, and storing it doubled the history every turn (#47).
 	streamIsContinuation := req.Context().Value(continuationKey{}) != nil
 	r.mu.Lock()
+	// liveBufferTokens counts the stored conversation, so add only what is
+	// stored. usage.PromptTokens is the whole request (stored history,
+	// preamble, tools): adding it double-counted the history and tripped the
+	// live-buffer compaction far below its budget (#47).
 	if !streamIsContinuation {
-		r.messages = append(r.messages, chatReq.Messages...)
-		r.incrementBufferTokens(usage.PromptTokens)
+		turnInput, _ := req.Context().Value(turnInputKey{}).([]Message)
+		r.messages = append(r.messages, turnInput...)
+		r.incrementBufferTokens(estimateTokens(turnInput))
 	}
 	r.messages = append(r.messages, assistantMsg)
-	r.incrementBufferTokens(usage.CompletionTokens)
+	r.incrementBufferTokens(messageTokens(assistantMsg))
 	r.updateSpend(usage, provider)
 	r.ruleRouter.IncrementTurn()
 	// concludeTurn folds the finished turn and caps the buffer. It is gated to
@@ -607,7 +612,7 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 		r.emitTraceEventBoth(string(doneEv))
 	}
 	// Handle tool calls if the LLM requested them.
-	// NOTE: r.messages already contains chatReq.Messages + assistantMsg (added above),
+	// NOTE: r.messages already holds this turn's input + assistantMsg (added above),
 	// so we only need to dispatch, append results, and recurse — not re-append the history.
 	//
 	// Dispatch on len(toolCalls) > 0 ALONE — the same predicate the non-streaming path
