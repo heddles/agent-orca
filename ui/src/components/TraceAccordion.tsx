@@ -461,18 +461,39 @@ function TraceRow({ entry, markdown }: { entry: TraceEntry; markdown: boolean })
         </div>
       )
     }
-    case 'truncation':
+    case 'compaction.started':
       return (
         <div style={{ ...row, background: 'var(--ds-trace-warning-bg)', borderRadius: 4, padding: '4px 8px', margin: '2px 0' }}>
           <span style={muted}>{time}</span>
           <Icon icon={ICON.database} size={14} color="var(--ds-warning)" />
           <span style={{ ...content, color: '#fcd34d' }}>
-            <span style={hi}>context compacted</span> before send: ~{event.before.toLocaleString()} tokens
-            {event.after ? <> → ~{event.after.toLocaleString()}</> : null}
-            {event.budget ? <> (budget {event.budget.toLocaleString()})</> : null}
+            <span style={hi}>compacting context</span> (~{event.before.toLocaleString()} tokens
+            {event.mode ? <>, {event.mode}</> : null})…
           </span>
         </div>
       )
+    case 'truncation': {
+      const label =
+        event.mode === 'summary'
+          ? 'context summarized'
+          : event.mode === 'degraded'
+            ? 'summary failed — oldest messages dropped'
+            : event.mode === 'skipped'
+              ? 'context could not be compacted'
+              : 'context compacted before send'
+      return (
+        <div style={{ ...row, background: 'var(--ds-trace-warning-bg)', borderRadius: 4, padding: '4px 8px', margin: '2px 0' }}>
+          <span style={muted}>{time}</span>
+          <Icon icon={ICON.database} size={14} color="var(--ds-warning)" />
+          <span style={{ ...content, color: '#fcd34d' }}>
+            <span style={hi}>{label}</span>: ~{event.before.toLocaleString()} tokens
+            {event.after ? <> → ~{event.after.toLocaleString()}</> : null}
+            {event.budget ? <> (budget {event.budget.toLocaleString()})</> : null}
+            {event.reason ? <> — {event.reason}</> : null}
+          </span>
+        </div>
+      )
+    }
     default: {
       const t =
         event && typeof event === 'object' && 'type' in event

@@ -57,6 +57,10 @@ spec:
               value: "http://{{ include "agent-orca.fullname" . }}-internal-api.{{ .Release.Namespace }}.svc.cluster.local:8082"
             - name: LLM_REQUEST_TIMEOUT
               value: {{ .Values.modelRouter.llmRequestTimeout | default "1h" | quote }}
+            - name: CONTEXT_COMPACTION_THRESHOLD
+              value: {{ .Values.modelRouter.contextCompactionThreshold | default 0.8 | quote }}
+            - name: CONTEXT_COMPACTION_MODE
+              value: {{ .Values.modelRouter.contextCompactionMode | default "summary" | quote }}
             - name: CONTEXT_COMPACTION_RATIO
               value: {{ .Values.modelRouter.contextCompactionRatio | default 0.5 | quote }}
             {{- if .Values.operator.allowedRegistries }}

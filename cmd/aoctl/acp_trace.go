@@ -47,8 +47,10 @@ import (
 //	{"type":"routing","model":"z-ai/glm-5.3-flash","provider":"openrouter-free",
 //	          "strategy":"rule-based","reason":"weighted random","confidence":0.5}
 //	{"type":"hindsight","op":"bank|recall|retain","bankID":"...","failed":false,"reason":"..."}
-//	{"type":"truncation","provider":"...","before":1021745,"after":313516,"budget":314363}
-//	          (pre-send context compaction, issue #42)
+//	{"type":"compaction.started","provider":"...","mode":"summary","before":803741,"trigger":798134}
+//	{"type":"truncation","mode":"summary|truncate|degraded|skipped","provider":"...",
+//	          "before":803741,"after":201214,"trigger":798134,"budget":0,"reason":"..."}
+//	          (context compaction, issues #42 and #47)
 //
 // Terminal trace events (fail/finalOutput) are consumed by the bridge but NOT
 // re-emitted as session updates — the ACP run lifecycle events already end the
@@ -87,11 +89,14 @@ type acpTraceEvent struct {
 	Op     string `json:"op,omitempty"`
 	BankID string `json:"bankID,omitempty"`
 	Failed bool   `json:"failed,omitempty"`
-	// truncation fields: pre-send context compaction in HandleChatCompletions
-	// (before/after = estimated message tokens, budget = the enforced cap).
-	Before int64 `json:"before,omitempty"`
-	After  int64 `json:"after,omitempty"`
-	Budget int64 `json:"budget,omitempty"`
+	// truncation / compaction.started fields: context compaction
+	// (before/after = estimated tokens, trigger = the compaction threshold,
+	// budget = the drop-oldest target, mode = how it was compacted).
+	Before  int64  `json:"before,omitempty"`
+	After   int64  `json:"after,omitempty"`
+	Budget  int64  `json:"budget,omitempty"`
+	Trigger int64  `json:"trigger,omitempty"`
+	Mode    string `json:"mode,omitempty"`
 }
 
 // parseACPTraceEvent decodes one \x00-prefixed trace event payload.
@@ -127,6 +132,10 @@ func (b *acpBridge) handleTraceEvent(ev acpTraceEvent, sessionID string) {
 		b.emitTraceNote(sessionID, "model routing", ev.routingText())
 	case "hindsight":
 		b.emitTraceNote(sessionID, "hindsight memory", ev.hindsightText())
+	case "compaction.started":
+		// A summary takes a model call; without this note the pause looks hung.
+		b.emitTraceNote(sessionID, "context compaction",
+			fmt.Sprintf("compacting conversation (~%d tokens, %s)…", ev.Before, ev.Mode))
 	case "truncation":
 		b.emitTraceNote(sessionID, "context compaction", ev.truncationText())
 	case "clarify":
@@ -417,11 +426,21 @@ func (ev acpTraceEvent) hindsightText() string {
 	return b.String()
 }
 
-// truncationText renders a pre-send context-compaction event body. Without it
-// a silently-shortened conversation looks like memory loss to the human.
+// truncationText renders a context-compaction event body. Without it a
+// silently-shortened conversation looks like memory loss to the human.
 func (ev acpTraceEvent) truncationText() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "compacted conversation before send: ~%d tokens", ev.Before)
+	switch ev.Mode {
+	case "summary":
+		b.WriteString("summarized conversation")
+	case "degraded":
+		b.WriteString("summary failed; dropped oldest messages")
+	case "skipped":
+		b.WriteString("could not compact conversation")
+	default:
+		b.WriteString("compacted conversation before send")
+	}
+	fmt.Fprintf(&b, ": ~%d tokens", ev.Before)
 	if ev.After > 0 {
 		fmt.Fprintf(&b, " → ~%d", ev.After)
 	}
@@ -431,6 +450,9 @@ func (ev acpTraceEvent) truncationText() string {
 			fmt.Fprintf(&b, ", provider %q", ev.Provider)
 		}
 		b.WriteString(")")
+	}
+	if ev.Reason != "" {
+		fmt.Fprintf(&b, " — %s", ev.Reason)
 	}
 	return b.String()
 }

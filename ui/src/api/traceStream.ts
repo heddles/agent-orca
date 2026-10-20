@@ -31,7 +31,17 @@ export type TraceEvent =
   | { type: 'providerFallback'; from: string; to: string; reason: string; exhausted?: boolean }
   | { type: 'routing'; model: string; provider?: string; strategy?: string; reason?: string; confidence?: number }
   | { type: 'hindsight'; op: 'bank' | 'recall' | 'retain' | string; bankID?: string; failed?: boolean; reason?: string }
-  | { type: 'truncation'; provider?: string; before: number; after?: number; budget?: number }
+  | {
+      type: 'truncation'
+      provider?: string
+      before: number
+      after?: number
+      budget?: number
+      /** How it was compacted (#47): summary | truncate | degraded | skipped; absent = pre-send truncation. */
+      mode?: string
+      reason?: string
+    }
+  | { type: 'compaction.started'; provider?: string; mode?: string; before: number; trigger?: number }
 
 /** True when the server typically closes the SSE connection after this event (uiapi finalOutput, or an error/clarify/fail path). */
 export function isTerminalTraceEvent(event: TraceEvent): boolean {

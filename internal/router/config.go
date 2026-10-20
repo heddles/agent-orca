@@ -108,9 +108,10 @@ type Config struct {
 	// LongTermMemory configures a KnowledgeBase as persistent agent memory.
 	LongTermMemory LongTermMemoryConfig
 
-	// ContextWindowReserve is the fraction of a provider's context window to reserve
-	// for the response and system overhead when performing pre-send truncation.
-	// Range 0.0–1.0. Default: 0.20 (80% usable for conversation history).
+	// ContextWindowReserve was the fraction of the window reserved before
+	// truncation.
+	//
+	// Deprecated: unused since #47; the trigger is ContextCompactionThreshold.
 	ContextWindowReserve float64 `json:"contextWindowReserve,omitempty"`
 
 	// MaxToolResultTokens caps the estimated token count of any single tool result
@@ -172,28 +173,22 @@ type Config struct {
 	// (chart value modelRouter.llmRequestTimeout), configurable per deployment.
 	LLMRequestTimeout time.Duration `json:"llmRequestTimeout,omitempty"`
 
-	// ProactiveTruncationThreshold is the fraction of the live buffer budget at which
-	// truncation is triggered proactively (before the 80% budget is reached). This
-	// prevents large spikes in latency when the buffer is near full capacity.
-	// Range 0.0–1.0. Default: 0.6 (trigger at 60% of budget).
-	// Set to 0.0 to disable proactive truncation (only truncate when over budget).
-	ProactiveTruncationThreshold float64 `json:"proactiveTruncationThreshold,omitempty"`
+	// ContextCompactionThreshold is the fraction of the selected provider's
+	// context window at which the conversation is compacted (#47). Default 0.8.
+	ContextCompactionThreshold float64 `json:"contextCompactionThreshold,omitempty"`
 
-	// ContextManagementStrategy controls how aggressively the router manages context:
-	//   - "balanced": proactive truncation at 60% budget, episodic summaries if enabled
-	//   - "aggressive": proactive truncation at 40% budget, more frequent compaction
-	//   - "max-fidelity": minimal truncation, only when hard limit is reached
-	// Default: "balanced"
-	ContextManagementStrategy string `json:"contextManagementStrategy,omitempty"`
+	// ContextCompactionMode selects how the conversation is compacted:
+	// "summary" (default) replaces the history with a structured summary written
+	// by the model; "truncate" drops the oldest messages down to
+	// ContextCompactionRatio. "truncate" is a rollback switch (#47).
+	ContextCompactionMode string `json:"contextCompactionMode,omitempty"`
 
-	// ContextCompactionRatio is the target fraction of the context window to
-	// compact the in-memory buffer down to when truncation fires. The checkpoint
-	// budget (80%) remains the safety ceiling — buffers exceeding it trigger
-	// compaction, which then reduces to this target rather than to the ceiling.
-	// Lower values retain less recent history in memory (reducing per-turn
-	// token-counting cost and checkpoint size) while the compaction summary
-	// carries the dropped context. Default 0.5; set to 0.1 for aggressive
-	// compaction down to ~10% of the window (issue #54).
+	// ContextCompactionRatio is the fraction of the window that drop-oldest
+	// truncation cuts down to: in "truncate" mode, and as the fallback when a
+	// summary cannot be produced. Default 0.5.
+	//
+	// Deprecated: summary compaction has no fixed target. Kept for the
+	// "truncate" mode and the fallback (#47).
 	ContextCompactionRatio float64 `json:"contextCompactionRatio,omitempty"`
 
 	// Hindsight configures the hindsight memory system integration.
@@ -360,9 +355,13 @@ type RouterSafeguards struct {
 // EpisodicMemoryConfig enables periodic summarization of the conversation to keep the
 // active context window compact across long-running runs.
 type EpisodicMemoryConfig struct {
-	// SummaryEvery is the number of LLM turns between summarization calls. 0 = disabled.
+	// SummaryEvery was the number of LLM turns between summarization calls.
+	//
+	// Deprecated: ignored; the conversation is summarized at
+	// ContextCompactionThreshold (#47).
 	SummaryEvery int `json:"summaryEvery,omitempty"`
-	// SummaryProviderName is the ModelProvider name to use for the summarization call.
+	// SummaryProviderName names the provider that writes compaction summaries;
+	// used only when it is one of Providers.
 	SummaryProviderName string `json:"summaryProviderName,omitempty"`
 	// SummaryModel is the LiteLLM model identifier for summarization.
 	SummaryModel string `json:"summaryModel,omitempty"`
@@ -525,9 +524,6 @@ func ConfigFromEnv() (*Config, error) {
 	if cfg.LongTermMemory.Enabled && cfg.LongTermMemory.TopK <= 0 {
 		cfg.LongTermMemory.TopK = 5
 	}
-	if cfg.ContextWindowReserve <= 0 || cfg.ContextWindowReserve >= 1.0 {
-		cfg.ContextWindowReserve = 0.20
-	}
 	// MaxToolResultTokens caps the size of any single tool result before it enters
 	// conversation history. The operator always sets a context-window-aware value in
 	// the router config (see AgentDeployment.buildDeploymentRouterConfig →
@@ -542,20 +538,22 @@ func ConfigFromEnv() (*Config, error) {
 		// reasoning/tool results) routinely exceed the old 120s hard-coded cap.
 		cfg.LLMRequestTimeout = time.Hour
 	}
-	// Proactive truncation threshold: trigger truncation before the buffer reaches
-	// its hard budget to avoid latency spikes when near full capacity.
-	if cfg.ProactiveTruncationThreshold <= 0 || cfg.ProactiveTruncationThreshold >= 1.0 {
-		cfg.ProactiveTruncationThreshold = 0.6
-	}
-	// Context management strategy: controls aggressiveness of buffer management.
-	if cfg.ContextManagementStrategy == "" {
-		cfg.ContextManagementStrategy = "balanced"
-	}
 	// Compaction target ratio: the fraction of the context window to compact
 	// down to when truncation fires (default 0.5; set to 0.1 for aggressive
 	// compaction). Must be in (0, 1).
 	if cfg.ContextCompactionRatio <= 0 || cfg.ContextCompactionRatio >= 1.0 {
 		cfg.ContextCompactionRatio = 0.5
+	}
+	if cfg.ContextCompactionThreshold <= 0 || cfg.ContextCompactionThreshold >= 1.0 {
+		cfg.ContextCompactionThreshold = 0.8
+	}
+	if cfg.ContextCompactionMode != compactionModeTruncate {
+		cfg.ContextCompactionMode = compactionModeSummary
+	}
+	if cfg.EpisodicMemory.SummaryEvery > 0 {
+		slog.Warn("episodic memory summaryEvery is deprecated and ignored: the conversation is now summarized when it reaches contextCompactionThreshold (#47)",
+			"summaryEvery", cfg.EpisodicMemory.SummaryEvery)
+		cfg.EpisodicMemory.SummaryEvery = 0
 	}
 
 	// Hindsight defaults
@@ -577,44 +575,3 @@ func ConfigFromEnv() (*Config, error) {
 	return &cfg, nil
 }
 
-// proactiveThreshold returns the fraction of the checkpoint budget at which proactive
-// truncation is triggered, based on the configured strategy.
-func (c *Config) proactiveThreshold() float64 {
-	if c.ProactiveTruncationThreshold > 0 && c.ProactiveTruncationThreshold < 1.0 {
-		return c.ProactiveTruncationThreshold
-	}
-	// Fall back to strategy-based defaults.
-	switch c.ContextManagementStrategy {
-	case "aggressive":
-		return 0.4
-	case "max-fidelity":
-		return 0.0 // disabled; only truncate when over budget
-	default: // "balanced"
-		return 0.6
-	}
-}
-
-// compactionTarget returns the token budget to compact the in-memory buffer
-// DOWN TO — distinct from checkpointBudget() which is the safety ceiling
-// (the level at which truncation is *triggered*). Truncation fires when the
-// buffer exceeds the 80% ceiling, then reduces to this target so the buffer
-// doesn't linger at 60–80% of the context window (issue #54). Capped at
-// checkpointBudget() so the target never exceeds the ceiling.
-func (r *Router) compactionTarget() int {
-	cw := maxContextWindow(r.cfg.Providers)
-	if cw <= 0 {
-		cw = 200000
-	}
-	ratio := r.cfg.ContextCompactionRatio
-	if ratio <= 0 || ratio >= 1.0 {
-		ratio = 0.5 // default: compact to 50% of the context window
-	}
-	// Floor: never compact below 2k tokens — that would discard too much
-	// context for the compaction summary to be useful.
-	target := max(int(float64(cw)*ratio), 2000)
-	// Cap: the target must never exceed the checkpoint budget (safety ceiling).
-	if budget := r.checkpointBudget(); target > budget {
-		target = budget
-	}
-	return target
-}

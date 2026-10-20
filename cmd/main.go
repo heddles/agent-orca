@@ -269,12 +269,19 @@ func main() {
 	llmReqTimeout := parseLLMRequestTimeout()
 	setupLog.Info("LLM request timeout", "timeout", llmReqTimeout)
 
-	// Context compaction ratio: target fraction of the context window to compact
-	// down to when truncation fires (issue #54). Default 0.5 (50%); set to 0.1
-	// for aggressive compaction to ~10%. CONTEXT_COMPACTION_RATIO env var /
-	// chart value modelRouter.contextCompactionRatio.
-	compactionRatio := parseContextCompactionRatio()
-	setupLog.Info("Context compaction ratio", "ratio", compactionRatio)
+	// Context compaction (#47): the conversation is compacted when it reaches
+	// CONTEXT_COMPACTION_THRESHOLD of the window (default 0.8), by a model-written
+	// summary or, with CONTEXT_COMPACTION_MODE=truncate, by dropping the oldest
+	// messages down to CONTEXT_COMPACTION_RATIO. Chart values
+	// modelRouter.contextCompaction{Threshold,Mode,Ratio}.
+	compactionThreshold := parseFractionEnv("CONTEXT_COMPACTION_THRESHOLD")
+	compactionMode := strings.TrimSpace(os.Getenv("CONTEXT_COMPACTION_MODE"))
+	compactionRatio := parseFractionEnv("CONTEXT_COMPACTION_RATIO")
+	if compactionRatio > 0 && compactionMode != "truncate" {
+		setupLog.Info("CONTEXT_COMPACTION_RATIO is deprecated: summary compaction has no fixed target, "+
+			"so it only applies to CONTEXT_COMPACTION_MODE=truncate and the summary fallback (#47)", "ratio", compactionRatio)
+	}
+	setupLog.Info("Context compaction", "threshold", compactionThreshold, "mode", compactionMode, "ratio", compactionRatio)
 
 	modelRouterImage := os.Getenv("MODEL_ROUTER_IMAGE")
 	if modelRouterImage == "" {
@@ -397,36 +404,40 @@ func main() {
 		os.Exit(1)
 	}
 	if err := (&controller.AgentRunReconciler{
-		Client:                   mgr.GetClient(),
-		Scheme:                   mgr.GetScheme(),
-		K8s:                      k8sClient,
-		Dynamic:                  dynamicClient,
-		ModelRouterImage:         modelRouterImage,
-		StateConfig:              stateConfig,
-		StateStore:               stateStore,
-		CloudProvider:            cloudProvider,
-		PostgresStore:            pgStore,
-		TokenReviewerClusterRole: os.Getenv("TOKEN_REVIEWER_CLUSTER_ROLE"),
-		OperatorAPIURL:           os.Getenv("OPERATOR_API_URL"),
-		LLMRequestTimeout:        llmReqTimeout,
-		ContextCompactionRatio:   compactionRatio,
-		HindsightURL:             os.Getenv("HINDSIGHT_URL"),
+		Client:                     mgr.GetClient(),
+		Scheme:                     mgr.GetScheme(),
+		K8s:                        k8sClient,
+		Dynamic:                    dynamicClient,
+		ModelRouterImage:           modelRouterImage,
+		StateConfig:                stateConfig,
+		StateStore:                 stateStore,
+		CloudProvider:              cloudProvider,
+		PostgresStore:              pgStore,
+		TokenReviewerClusterRole:   os.Getenv("TOKEN_REVIEWER_CLUSTER_ROLE"),
+		OperatorAPIURL:             os.Getenv("OPERATOR_API_URL"),
+		LLMRequestTimeout:          llmReqTimeout,
+		ContextCompactionRatio:     compactionRatio,
+		ContextCompactionThreshold: compactionThreshold,
+		ContextCompactionMode:      compactionMode,
+		HindsightURL:               os.Getenv("HINDSIGHT_URL"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "AgentRun")
 		os.Exit(1)
 	}
 	if err := (&controller.AgentDeploymentReconciler{
-		Client:                   mgr.GetClient(),
-		Scheme:                   mgr.GetScheme(),
-		K8s:                      k8sClient,
-		ModelRouterImage:         modelRouterImage,
-		StateConfig:              stateConfig,
-		CloudProvider:            cloudProvider,
-		TokenReviewerClusterRole: os.Getenv("TOKEN_REVIEWER_CLUSTER_ROLE"),
-		OperatorAPIURL:           os.Getenv("OPERATOR_API_URL"),
-		LLMRequestTimeout:        llmReqTimeout,
-		ContextCompactionRatio:   compactionRatio,
-		HindsightURL:             os.Getenv("HINDSIGHT_URL"),
+		Client:                     mgr.GetClient(),
+		Scheme:                     mgr.GetScheme(),
+		K8s:                        k8sClient,
+		ModelRouterImage:           modelRouterImage,
+		StateConfig:                stateConfig,
+		CloudProvider:              cloudProvider,
+		TokenReviewerClusterRole:   os.Getenv("TOKEN_REVIEWER_CLUSTER_ROLE"),
+		OperatorAPIURL:             os.Getenv("OPERATOR_API_URL"),
+		LLMRequestTimeout:          llmReqTimeout,
+		ContextCompactionRatio:     compactionRatio,
+		ContextCompactionThreshold: compactionThreshold,
+		ContextCompactionMode:      compactionMode,
+		HindsightURL:               os.Getenv("HINDSIGHT_URL"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "AgentDeployment")
 		os.Exit(1)
@@ -685,12 +696,10 @@ func parseLLMRequestTimeout() time.Duration {
 	return d
 }
 
-// parseContextCompactionRatio reads the CONTEXT_COMPACTION_RATIO env var (a
-// float in (0, 1)) and returns it. When unset or invalid, returns 0 which
-// the router interprets as the default 0.5. Set to 0.1 for aggressive
-// compaction to ~10% of the context window (issue #54).
-func parseContextCompactionRatio() float64 {
-	v := strings.TrimSpace(os.Getenv("CONTEXT_COMPACTION_RATIO"))
+// parseFractionEnv reads env var name as a float in (0, 1). When unset or
+// invalid it returns 0, which the router replaces with its default.
+func parseFractionEnv(name string) float64 {
+	v := strings.TrimSpace(os.Getenv(name))
 	if v == "" {
 		return 0
 	}

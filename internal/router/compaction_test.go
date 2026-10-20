@@ -194,11 +194,13 @@ func bigMessages(n, tokensEach int) []Message {
 
 // Regression for #47: the pre-send step cut the outgoing request but never the
 // stored conversation, so every turn re-truncated the same full history. The
-// stored conversation is now compacted once and later turns build on it.
+// stored conversation is now compacted once and later turns build on it. This
+// covers "truncate" mode (drop-oldest), the rollback switch.
 func TestStoredConversationCompactedOnceAcrossTurns(t *testing.T) {
 	srv, provider := newSequenceProvider(t, textTurnSSE("stop"), textTurnSSE("stop"), textTurnSSE("stop"))
 	store := newTestStore(t)
 	r := newStreamingTestRouter(t, srv.URL, writeKeyFile(t), store)
+	r.cfg.ContextCompactionMode = compactionModeTruncate
 	// Window 100k: trigger 80k (80%), target 50k (ratio 0.5). 20 × 5k = 100k.
 	r.mu.Lock()
 	r.priorMessages = bigMessages(20, 5000)
@@ -229,7 +231,7 @@ func TestStoredConversationCompactedOnceAcrossTurns(t *testing.T) {
 // The stored conversation is compacted against the selected provider's
 // budget, which leaves room for the tool definitions.
 func TestContextBudgetFor(t *testing.T) {
-	r := &Router{cfg: &Config{ContextWindowReserve: 0.2, ContextCompactionRatio: 0.3}}
+	r := &Router{cfg: &Config{ContextCompactionThreshold: 0.8, ContextCompactionRatio: 0.3}}
 	cases := []struct {
 		name            string
 		window, maxOut  int
@@ -364,9 +366,9 @@ func benchConversation() []Message {
 }
 
 // Regression for #47 (seen live on the cluster): liveBufferTokens added the
-// provider's whole prompt count every turn, on top of the stored conversation it
-// already counted, and concludeTurn trusted it without re-checking. A 600K-token
-// conversation in a 1M window (800K budget) was cut to 300K at turn end.
+// provider's whole prompt count every turn, and concludeTurn compacted on that
+// inflated count. A 600K-token conversation in a 1M window was cut to 300K at
+// turn end. concludeTurn now only folds the turn and re-counts.
 func TestConcludeTurnIgnoresInflatedTokenCache(t *testing.T) {
 	r := &Router{cfg: &Config{
 		Providers:              []ProviderConfig{{Name: "p", ContextWindow: 1_000_000}},
@@ -377,7 +379,6 @@ func TestConcludeTurnIgnoresInflatedTokenCache(t *testing.T) {
 	r.mu.Lock()
 	r.concludeTurn()
 	r.mu.Unlock()
-	r.waitForCompaction()
 	if got := len(storedConversation(r)); got != 4 {
 		t.Fatalf("stored conversation has %d messages after concludeTurn, want all 4 kept", got)
 	}

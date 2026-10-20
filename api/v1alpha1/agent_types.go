@@ -288,14 +288,18 @@ type AgentMemoryConfig struct {
 	// +optional
 	ArchiveOnCompletion bool `json:"archiveOnCompletion,omitempty"`
 
-	// EpisodicSummaryEvery summarizes the conversation every N LLM turns and injects
-	// the summary as context, keeping the active context window compact.
-	// 0 disables episodic memory.
+	// EpisodicSummaryEvery used to summarize the conversation every N LLM turns.
+	//
+	// Deprecated: ignored. The model-router now summarizes the conversation when
+	// it reaches the compaction threshold (80% of the window by default).
 	// +optional
 	EpisodicSummaryEvery int `json:"episodicSummaryEvery,omitempty"`
 
-	// SummaryModelSelectorRef names the ModelSelector used for summarization calls.
-	// Defaults to the agent's own ModelSelectorRef when unset.
+	// SummaryModelSelectorRef names the ModelSelector whose first provider writes
+	// the conversation summaries made at the compaction threshold. It is used only
+	// when that provider is also one of the agent's providers (its ModelSelector
+	// or fallback chain); otherwise, and when unset, the provider serving the
+	// request writes the summary.
 	// +optional
 	SummaryModelSelectorRef string `json:"summaryModelSelectorRef,omitempty"`
 
