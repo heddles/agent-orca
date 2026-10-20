@@ -6,7 +6,7 @@
 #   docker buildx build -f Dockerfile.ui-proxy -t agent-orca/ui-proxy:dev .
 
 # ── Stage 1: React SPA ───────────────────────────────────────────────────────
-FROM node:20-alpine AS ui-builder
+FROM --platform=$BUILDPLATFORM node:20-alpine AS ui-builder
 WORKDIR /ui
 COPY ui/package.json ui/package-lock.json* ./
 RUN npm install
@@ -18,7 +18,7 @@ COPY assets/logo.png /assets/logo.png
 RUN npm run build
 
 # ── Stage 2: Go proxy binary ─────────────────────────────────────────────────
-FROM golang:1.25 AS go-builder
+FROM --platform=$BUILDPLATFORM golang:1.25 AS go-builder
 ARG TARGETOS
 ARG TARGETARCH
 WORKDIR /workspace

@@ -1275,6 +1275,9 @@ func (s *settings) runTokenRefresher(ctx context.Context, c *Client) {
 	}
 }
 
+// version is stamped at release build time via -ldflags "-X main.version=<tag>".
+var version = "dev"
+
 // newRootCmd builds the command tree and returns it. Split out so tests can
 // construct it with an isolated config dir.
 func newRootCmd() (*cobra.Command, *settings) { //nolint:gocyclo
@@ -1282,9 +1285,10 @@ func newRootCmd() (*cobra.Command, *settings) { //nolint:gocyclo
 	s := &settings{}
 
 	root := &cobra.Command{
-		Use:   appName,
-		Short: "CLI for agent-orca's external APIs (tasks + agent discovery)",
-		Long:  `aoctl submits tasks to agent-orca and streams results. Run ` + "`aoctl login`" + ` first.`,
+		Use:     appName,
+		Short:   "CLI for agent-orca's external APIs (tasks + agent discovery)",
+		Long:    `aoctl submits tasks to agent-orca and streams results. Run ` + "`aoctl login`" + ` first.`,
+		Version: version,
 	}
 	s.out = os.Stdout
 	s.errw = os.Stderr
