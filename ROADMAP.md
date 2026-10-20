@@ -40,7 +40,13 @@ elicitation flow), `Agent.spec.filesystem` policy knobs, unit + e2e tests
 gate writes behind approval/policy, mirroring `docs/mcp-access-control.md`
 patterns.
 
-## 2. ACP v2 dialect support
+## 2. NVIDIA OpenShell integration (high priority)
+
+Integrate agent-orca with NVIDIA OpenShell.
+
+**Status:** not started; scope and tracking issue to come.
+
+## 3. ACP v2 dialect support
 
 **Tracking issue:** [#33](https://github.com/heddles/agent-orca/issues/33)
 
@@ -66,10 +72,10 @@ messageId #2175, foreground state transitions #2411/#2387). Gate v2 behind
 `acpDialect: v2` and keep v1 as the default. Session notices (#2336) and
 compaction (#2334) are already stable in v1 and can ship independently.
 
-## 3. Further out
+## 4. Further out
 
 _(fill in as items are scoped)_
 
 ---
 
-*Last updated: 2026-10-16*
+*Last updated: 2026-10-20*
