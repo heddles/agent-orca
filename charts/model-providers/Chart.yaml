@@ -1,18 +1,6 @@
 apiVersion: v2
 name: model-providers
-description: |
-  Ready-to-use ModelProvider CRs and credential Secrets for the most popular
-  cloud LLM providers: OpenAI, Anthropic, Google Gemini, Mistral, Cohere,
-  xAI (Grok), Groq, Together AI, and DeepSeek.
-
-  Usage:
-    1. Enable the providers you want under `providerSecrets`.
-    2. Set `apiKey` for each provider (or point to an external secret).
-    3. Enable the individual model entries you want under `modelProviders`.
-    4. Enable and configure `modelSelectors` to route traffic across models.
-
-  No infrastructure is deployed — only Secrets, ModelProvider CRs, and
-  ModelSelector CRs managed by the agent-orca operator.
+description: Ready-to-use ModelProvider CRs and credential Secrets for popular cloud LLM providers
 type: application
 version: 0.1.0
 appVersion: "0.1.0"
