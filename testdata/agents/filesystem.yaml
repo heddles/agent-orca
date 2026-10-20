@@ -21,5 +21,6 @@ spec:
     you make and keep diffs minimal.
   filesystem:
     mode: readWrite      # readOnly = read-only access (no write tool exposed)
-    writeApproval: true  # the bridge asks the user to approve every write
+    writeApproval: true  # the bridge asks the user to approve writes
+    rememberApproval: true  # approve once per session; false = approve every write
   tools: []

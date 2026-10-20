@@ -299,4 +299,20 @@ func TestFilesystemManifestPolicy_Projection(t *testing.T) {
 	if p.Mode != "readOnly" || p.WriteApproval {
 		t.Fatalf("empty-mode projection should be readOnly without approval: %+v", p)
 	}
+	// rememberApproval (issue #41): unset stays nil so the bridge defers to
+	// its own flag; an explicit value passes through as a copy.
+	if p.RememberApproval != nil {
+		t.Fatalf("unset rememberApproval must project to nil, got %v", *p.RememberApproval)
+	}
+	off := false
+	spec := &agentorcav1alpha1.FilesystemAccessSpec{
+		Mode: agentorcav1alpha1.FilesystemReadWrite, WriteApproval: true, RememberApproval: &off,
+	}
+	p = filesystemManifestPolicy(spec)
+	if p.RememberApproval == nil || *p.RememberApproval {
+		t.Fatalf("rememberApproval=false must pass through, got %+v", p)
+	}
+	if p.RememberApproval == spec.RememberApproval {
+		t.Fatal("projection must copy rememberApproval, not alias the CR's pointer")
+	}
 }

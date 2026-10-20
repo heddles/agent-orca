@@ -284,8 +284,12 @@ func (b *acpBridge) serveFSWrite(
 			"path escapes the workspace roots this session exposes: "+p.Path)
 		return
 	}
+	// Each side can only narrow the other (issue #41): a prompt is required
+	// when either the workstation or the agent asks for one, and an approval
+	// is remembered only when both allow it.
+	remember := b.fsOpts.rememberApproval && policy.rememberAllowed()
 	if b.fsOpts.requireApproval || policy.WriteApproval {
-		if b.fsOpts.rememberApproval && b.sessionWritesAllowed(sessionID) {
+		if remember && b.sessionWritesAllowed(sessionID) {
 			// The user already approved a write in this session — auto-allow.
 		} else {
 			approved, err := b.fsApproveWrite(ctx, sessionID, b.agentName, abs, len(p.Content))
@@ -301,7 +305,7 @@ func (b *acpBridge) serveFSWrite(
 				b.respondFSErr(ctx, runID, fr.ID, -32003, "write declined by the user in the editor")
 				return
 			}
-			if b.fsOpts.rememberApproval {
+			if remember {
 				b.markSessionWritesAllowed(sessionID)
 			}
 		}

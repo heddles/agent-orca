@@ -49,6 +49,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   render as a full add. The wire write stays a full-file `fs/write_text_file`;
   payloads over 100 KiB, no-op writes, and editor-refused writes fall back to the
   plain tool result (#40).
+- **`Agent.spec.filesystem.rememberApproval`** — agent policy for the
+  approve-once vs approve-every write modes (default `true`; `false` makes every
+  write prompt even when the workstation runs `--fs-remember-approval`). Agent
+  policy and workstation flags narrow each other: prompts fire when either side
+  asks, approvals are remembered only when both allow it, and unattended writes
+  still need `--fs-require-approval=false` on the workstation. Projected into the
+  ACP agent manifest (now documented in the ACP OpenAPI spec); CRDs regenerated
+  (#41).
 - **Pre-send context compaction is visible** — a `truncation` trace event
   (`before`/`after`/`budget`) is emitted whenever the router compacts a request
   before sending; the bridge renders it as a "context compaction" note and the

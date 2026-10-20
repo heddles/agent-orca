@@ -57,7 +57,12 @@ func filesystemManifestPolicy(fs *agentorcav1alpha1.FilesystemAccessSpec) *ACPFi
 	if mode == "" {
 		mode = string(agentorcav1alpha1.FilesystemReadOnly)
 	}
-	return &ACPFilesystemPolicy{Mode: mode, WriteApproval: fs.WriteApproval}
+	p := &ACPFilesystemPolicy{Mode: mode, WriteApproval: fs.WriteApproval}
+	if fs.RememberApproval != nil {
+		remember := *fs.RememberApproval
+		p.RememberApproval = &remember
+	}
+	return p
 }
 
 // SetFilesystemRelay wires the fs/* relay. Call with nil to disable

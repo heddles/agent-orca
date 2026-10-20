@@ -57,7 +57,8 @@ spec:
   # ...
   filesystem:
     mode: readWrite      # readOnly | readWrite (default readOnly)
-    writeApproval: true  # ask the user before every write (default true)
+    writeApproval: true     # ask the user before writes (default true)
+    rememberApproval: true  # approve once per session; false = every write (default true)
 ```
 
 - `nil` (unset) — **no filesystem tools at all** (default; fail closed).
@@ -69,6 +70,10 @@ spec:
   manifest so `aoctl acp serve` can elicit an explicit user approval for every
   write. The workstation flag `--fs-require-approval` can force approvals on
   regardless of this knob; it can never turn the *agent's* requirement off.
+- `rememberApproval` (issue #41) decides whether one approval covers the rest
+  of the ACP session. `false` makes every write prompt, even on a workstation
+  running with `--fs-remember-approval`. Unset or `true` defers to the
+  workstation flag (on by default).
 
 A sample Agent CR lives in [`testdata/agents/filesystem.yaml`](../testdata/agents/filesystem.yaml).
 
@@ -100,14 +105,21 @@ a `readOnly` agent never leads the editor to believe it can write.
 
 | You want | Agent CRD | Bridge flags |
 |---|---|---|
-| Approve once, then auto-allow for the session (default) | `writeApproval: true` | `--fs-remember-approval` (default) |
-| Approve every write | `writeApproval: true` | `--fs-remember-approval=false --fs-require-approval` |
-| Never prompt (trusted agent / unattended) | `writeApproval: false` | `--fs-require-approval=false` |
+| Approve once, then auto-allow for the session (default) | `writeApproval: true` | *(defaults)* |
+| Approve every write | `writeApproval: true`, `rememberApproval: false` | *(defaults)* — or, workstation-side only: `--fs-remember-approval=false` |
+| Never prompt (trusted agent / unattended) | `writeApproval: false` | `--fs-require-approval=false` (required) |
 
-Both knobs must agree to skip prompting: the bridge prompt fires when
-`--fs-require-approval` is set **or** the agent policy asks for it, so either
-side can always narrow (force prompts) but only both together can widen
-(silence them). Prompts are also skipped entirely in readOnly mode — reads
+Agent policy and workstation flags can only narrow each other:
+
+- a prompt fires when `--fs-require-approval` is set **or** the agent's
+  `writeApproval` asks for it;
+- an approval is remembered for the session only when `--fs-remember-approval`
+  **and** the agent's `rememberApproval` both allow it.
+
+So approve-once and approve-every are expressible on the Agent CRD alone,
+while unattended writes deliberately still need the workstation's consent
+(`--fs-require-approval=false`): cluster policy can never silence prompts on a
+developer's machine by itself. Prompts are also skipped entirely in readOnly mode — reads
 never elicit.
 
 ## Security model

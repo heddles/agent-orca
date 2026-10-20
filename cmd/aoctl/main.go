@@ -133,6 +133,16 @@ type ACPAgentManifest struct {
 type ACPFSPolicy struct {
 	Mode          string `json:"mode"` // "readOnly" | "readWrite"
 	WriteApproval bool   `json:"writeApproval,omitempty"`
+	// RememberApproval false = the agent requires approval for every write
+	// (issue #41); nil (older operators, or unset) leaves it to the bridge flag.
+	RememberApproval *bool `json:"rememberApproval,omitempty"`
+}
+
+// rememberAllowed reports whether the agent policy lets the bridge remember a
+// write approval for the rest of the session. nil policy fields defer to the
+// workstation flag.
+func (p *ACPFSPolicy) rememberAllowed() bool {
+	return p == nil || p.RememberApproval == nil || *p.RememberApproval
 }
 
 // ACPToolInfo mirrors the tool info in the ACP agent manifest.

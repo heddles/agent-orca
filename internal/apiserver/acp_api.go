@@ -302,6 +302,10 @@ type ACPFilesystemPolicy struct {
 	Mode string `json:"mode"`
 	// WriteApproval asks the bridge to elicit explicit user approval per write.
 	WriteApproval bool `json:"writeApproval,omitempty"`
+	// RememberApproval, when false, forbids the bridge from remembering an
+	// approval for the rest of the session (approve every write). nil means
+	// the agent does not constrain it (issue #41).
+	RememberApproval *bool `json:"rememberApproval,omitempty"`
 }
 
 // ACPToolInfo describes a tool available to an agent.

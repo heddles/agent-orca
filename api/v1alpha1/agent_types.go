@@ -130,6 +130,16 @@ type FilesystemAccessSpec struct {
 	// +kubebuilder:default=true
 	// +optional
 	WriteApproval bool `json:"writeApproval"`
+
+	// RememberApproval lets the bridge stop re-prompting for the rest of an
+	// ACP session once the user approves one write ("approve once"). Set false
+	// to require approval for every write. Only meaningful with writeApproval
+	// true. Agent policy and the workstation's --fs-remember-approval flag can
+	// only narrow each other: approvals are remembered only when both allow
+	// it (issue #41). Default: true.
+	// +kubebuilder:default=true
+	// +optional
+	RememberApproval *bool `json:"rememberApproval,omitempty"`
 }
 
 // NetworkIsolationSpec configures split-pod topology for agent/router network separation.

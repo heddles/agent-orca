@@ -841,3 +841,75 @@ func TestBridgeWorkspaceRootsFromSessionCwd(t *testing.T) {
 		t.Fatalf("unknown-session roots = %v, want [%s …extra]", roots, wd)
 	}
 }
+
+// TestFSBridgeApprovalModeMatrix pins the approval-mode matrix from
+// docs/filesystem-access.md (issue #41): agent policy and workstation flags
+// can only narrow each other — a prompt is required when either side asks,
+// and an approval is remembered only when both allow it.
+func TestFSBridgeApprovalModeMatrix(t *testing.T) {
+	off, on := false, true
+	cases := []struct {
+		name            string
+		agentApproval   bool
+		agentRemember   *bool
+		wsRequire       bool
+		wsRemember      bool
+		wantElicitCount int // over two writes in one session
+	}{
+		{"default: approve once per session", true, nil, true, true, 1},
+		{"CRD-only once (workstation not forcing)", true, &on, false, true, 1},
+		{"CRD-only every: agent forbids remembering", true, &off, false, true, 2},
+		{"agent every wins over workstation remember", true, &off, true, true, 2},
+		{"workstation every wins over agent remember", true, &on, true, false, 2},
+		{"never: both sides waive approval", false, nil, false, true, 0},
+		{"agent never + --fs-require-approval still prompts", false, nil, true, true, 1},
+		{"agent never + workstation every", false, nil, true, false, 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tb := newFSTestBridge(t, tc.wsRequire, nil)
+			tb.bridge.fsOpts.rememberApproval = tc.wsRemember
+			tb.bridge.mu.Lock()
+			tb.bridge.manifest.Filesystem = &ACPFSPolicy{
+				Mode: "readWrite", WriteApproval: tc.agentApproval, RememberApproval: tc.agentRemember,
+			}
+			tb.bridge.mu.Unlock()
+
+			for i, id := range []string{"req-1", "req-2"} {
+				tb.bridge.serveFSRequest(context.Background(), fsTestSessionID, "run-1", acpfsRelayRequest{
+					ID: id, Method: acpMethodFSWrite,
+					Params: json.RawMessage(`{"path":"m.go","content":"x"}`),
+				}, tb.bridge.fsPolicy())
+				fsWaitFor(t, func() bool {
+					tb.editor.mu.Lock()
+					defer tb.editor.mu.Unlock()
+					return len(tb.editor.writes) > i
+				})
+			}
+			tb.editor.mu.Lock()
+			defer tb.editor.mu.Unlock()
+			if len(tb.editor.writes) != 2 {
+				t.Fatalf("both approved writes must reach the editor, got %d", len(tb.editor.writes))
+			}
+			if got := len(tb.editor.elicit); got != tc.wantElicitCount {
+				t.Fatalf("want %d approval prompts, got %d", tc.wantElicitCount, got)
+			}
+		})
+	}
+}
+
+func TestACPFSPolicyRememberAllowed(t *testing.T) {
+	off, on := false, true
+	if !(*ACPFSPolicy)(nil).rememberAllowed() {
+		t.Fatal("nil policy must defer to the workstation flag")
+	}
+	if !(&ACPFSPolicy{}).rememberAllowed() {
+		t.Fatal("unset rememberApproval (older operator) must defer to the workstation flag")
+	}
+	if !(&ACPFSPolicy{RememberApproval: &on}).rememberAllowed() {
+		t.Fatal("rememberApproval=true must allow remembering")
+	}
+	if (&ACPFSPolicy{RememberApproval: &off}).rememberAllowed() {
+		t.Fatal("rememberApproval=false must forbid remembering")
+	}
+}

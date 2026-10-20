@@ -278,7 +278,8 @@ aoctl acp serve --agent senior-programmer --fs-require-approval
 # Approve once, then auto-allow writes for the rest of the session (default)
 aoctl acp serve --agent senior-programmer
 
-# Confirm every write instead (opt out of remembered approval)
+# Confirm every write instead (opt out of remembered approval). An agent with
+# spec.filesystem.rememberApproval: false gets this without the flag.
 aoctl acp serve --agent senior-programmer --fs-remember-approval=false
 
 # Never prompt (only if the agent's own writeApproval policy allows it)
