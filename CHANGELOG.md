@@ -101,6 +101,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `fs_list_dir` symlink escape: the bridge answers directory listings from
+  disk itself, and lexical confinement let a workspace symlink (final or
+  intermediate component) enumerate host directories outside the roots. Paths
+  the bridge reads itself (listing, the write-diff disk fallback) are now
+  symlink-resolved and re-checked against the real roots.
+
 - Pre-send context truncation never fired: the router's token estimate was
   hardcoded to `0`, so over-window requests were forwarded verbatim, the provider
   answered `400 context length exceeded`, and the identical oversized request was

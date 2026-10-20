@@ -162,6 +162,13 @@ func (s *settings) runACPServe() error {
 	// server; server dispatches via the bridge). Create the server first with a
 	// nil handler, wire the bridge, then assign it as the handler.
 	srv := newACPStdioServer(nil, os.Stdin, os.Stdout, os.Stderr)
+	// workspaceRoots skips --fs-roots entries it cannot make absolute; say so
+	// once at startup instead of silently narrowing what the agent can reach.
+	for _, root := range s.fsRoots {
+		if _, err := abspath(root); err != nil {
+			_, _ = fmt.Fprintf(s.errw, "aoctl acp serve: ignoring --fs-roots entry %q: %v\n", root, err)
+		}
+	}
 	fsOpts := fsBridgeOptions{
 		extraRoots:       s.fsRoots,
 		requireApproval:  s.fsRequireApproval,

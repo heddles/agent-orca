@@ -45,8 +45,9 @@ import (
 //     before it reaches the editor.
 
 // fsPollInterval is the cadence for relaying fs requests off the ACP API during
-// an active run. Readlatency budget is ~1 poll; the relayed tool call itself
-// waits up to Agent.spec.filesystem.toolTimeoutSeconds (default 300s) pod-side.
+// an active run. Read latency budget is ~1 poll; the relayed tool call itself
+// waits up to 300s pod-side (internal/router defaultFSToolTimeoutSeconds; not
+// configurable on the Agent CRD).
 const fsPollInterval = 500 * time.Millisecond
 
 // fsBridgeOptions carries the operator-side (workstation) filesystem policy
@@ -194,7 +195,20 @@ func (b *acpBridge) serveFSList(ctx context.Context, runID string, roots []strin
 			"path escapes the workspace roots this session exposes: "+p.Path)
 		return
 	}
-	entries, err := os.ReadDir(dir)
+	// The bridge reads the disk itself here (no editor in the loop), so the
+	// lexical confinement is not enough: a symlink inside the workspace could
+	// point anywhere on the host. Resolve it and re-check containment.
+	realDir, err := fsWithinRealRoots(roots, dir)
+	if errors.Is(err, errFSSymlinkEscape) {
+		b.respondFSErr(ctx, runID, fr.ID, -32002,
+			"path resolves outside the workspace roots this session exposes (symlink): "+p.Path)
+		return
+	}
+	if err != nil {
+		b.respondFSErr(ctx, runID, fr.ID, -32000, fmt.Sprintf("listing directory: %v", err))
+		return
+	}
+	entries, err := os.ReadDir(realDir)
 	if err != nil {
 		b.respondFSErr(ctx, runID, fr.ID, -32000, fmt.Sprintf("listing directory: %v", err))
 		return
@@ -317,7 +331,7 @@ func (b *acpBridge) serveFSWrite(
 	// describes state the user just allowed to change — and best-effort: any
 	// failure leaves no diff and the write proceeds exactly as before. A nil
 	// diff still replaces the slot so a stale one never attaches to this call.
-	b.stashSessionFSDiff(sessionID, b.prepareFSDiff(ctx, sessionID, abs, p.Content))
+	b.stashSessionFSDiff(sessionID, b.prepareFSDiff(ctx, sessionID, roots, abs, p.Content))
 	params := acpFSWriteParams{
 		SessionID: sessionID,
 		Path:      abs,
@@ -458,6 +472,12 @@ func (b *acpBridge) registerRun(sessionID, runID string, cancel context.CancelFu
 		sess = &acpSession{SessionID: sessionID}
 		b.sessions[sessionID] = sess
 	}
+	// A new prompt supersedes any turn still running on this session: cancel
+	// it so its fs watcher stops and session/cancel keeps reaching the live
+	// turn (otherwise two watchers race on the same session).
+	if sess.Cancel != nil {
+		sess.Cancel()
+	}
 	sess.RunID = runID
 	sess.Cancel = cancel
 }
@@ -514,8 +534,10 @@ func (b *acpBridge) allWorkspaceRoots() []string {
 // fsConfine resolves userPath against the configured roots (relative paths are
 // resolved against each root; absolute paths must already sit inside one) and
 // returns the absolute path that stays inside a root after lexical cleanup.
-// Symlink escapes are not followed here — the editor remains the final arbiter
-// of real filesystem access.
+// Symlinks are not resolved here. That is sufficient for fs/read_text_file and
+// fs/write_text_file, where the editor performs the access; anything the
+// bridge reads from disk itself (fs_list_dir, the write-diff disk fallback)
+// must also pass fsWithinRealRoots.
 func fsConfine(roots []string, userPath string) (string, bool) {
 	if strings.TrimSpace(userPath) == "" {
 		return "", false
@@ -542,6 +564,35 @@ func fsConfine(roots []string, userPath string) (string, bool) {
 		return abs, true
 	}
 	return "", false
+}
+
+// errFSSymlinkEscape marks a lexically confined path whose real (symlink-
+// resolved) location lies outside every workspace root.
+var errFSSymlinkEscape = errors.New("path resolves outside the workspace roots")
+
+// fsWithinRealRoots resolves every symlink in abs (already lexically confined
+// by fsConfine) and returns the real path when it still lies inside one of the
+// real roots. It is the enforcement point for operations the bridge performs
+// on disk itself: there, unlike for editor-mediated reads/writes, nothing else
+// stands between the agent and the host filesystem. A missing path returns the
+// underlying stat error.
+func fsWithinRealRoots(roots []string, abs string) (string, error) {
+	real, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", err
+	}
+	for _, root := range roots {
+		realRoot, err := filepath.EvalSymlinks(root)
+		if err != nil {
+			continue
+		}
+		rel, err := filepath.Rel(realRoot, real)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		return real, nil
+	}
+	return "", errFSSymlinkEscape
 }
 
 // abspath expands ~ and makes a path absolute for confinement checks.
