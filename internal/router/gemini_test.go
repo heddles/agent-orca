@@ -56,7 +56,7 @@ func TestAdaptToolCallsForProvider_NonGeminiStripsExtraContent(t *testing.T) {
 }
 
 func TestAdaptToolCallsForProvider_NoOpReturnsSameSlice(t *testing.T) {
-	msgs := []Message{{Role: "user", Content: "hi"}, toolMsg(ToolCall{ID: "x", ExtraContent: json.RawMessage(realSig)})}
+	msgs := []Message{{Role: "user", Content: "hi"}, toolMsg(ToolCall{ID: "x", Function: FunctionCall{Arguments: "{}"}, ExtraContent: json.RawMessage(realSig)})}
 	got := adaptToolCallsForProvider(geminiProvider(), msgs)
 	if &got[0] != &msgs[0] {
 		t.Error("expected no copy when nothing needs changing")
@@ -185,5 +185,28 @@ func TestMergeToolCallDeltas_SameIDContinuationStillMerges(t *testing.T) {
 	merged = mergeToolCallDeltas(merged, []ToolCall{{Index: 1, ID: "d", Function: FunctionCall{Name: "g", Arguments: `{}`}}})
 	if len(merged) != 2 || merged[0].Function.Arguments != `{"a":1}` || merged[1].Function.Name != "g" {
 		t.Errorf("unexpected merge: %+v", merged)
+	}
+}
+
+// Regression: a Haiku turn recorded `_list_resources` with arguments "", and the next
+// Gemini request failed with 400 "Request contains an invalid argument" (verified
+// against the live API: "" is rejected, "{}" accepted).
+func TestAdaptToolCallsForProvider_EmptyArgumentsBecomeEmptyObject(t *testing.T) {
+	for _, p := range []*ProviderConfig{geminiProvider(), {LiteLLMModel: "openai/gpt-6-luna"}} {
+		msgs := []Message{toolMsg(
+			ToolCall{ID: "a", Function: FunctionCall{Name: "f", Arguments: ""}},
+			ToolCall{ID: "b", Function: FunctionCall{Name: "g", Arguments: "  "}},
+			ToolCall{ID: "c", Function: FunctionCall{Name: "h", Arguments: `{"x":1}`}},
+		)}
+		got := adaptToolCallsForProvider(p, msgs)
+		want := []string{"{}", "{}", `{"x":1}`}
+		for i, tc := range got[0].ToolCalls {
+			if tc.Function.Arguments != want[i] {
+				t.Errorf("%s call %d arguments = %q, want %q", p.LiteLLMModel, i, tc.Function.Arguments, want[i])
+			}
+		}
+		if msgs[0].ToolCalls[0].Function.Arguments != "" {
+			t.Error("stored conversation was mutated")
+		}
 	}
 }
