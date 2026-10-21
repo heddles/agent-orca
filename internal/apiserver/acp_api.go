@@ -1290,6 +1290,12 @@ func (s *ACPServer) streamACPRun(w http.ResponseWriter, r *http.Request, run *ag
 		return errors.New("streaming not available (no state store)")
 	}
 
+	// The http.Server's WriteTimeout (120s, see newHTTPServer) bounds the whole
+	// response, which would cut the stream off long before acpStreamWindow and
+	// force a mid-turn reconnect every two minutes. Extend the write deadline
+	// to the request's own deadline (set by acpRequestTimeoutMiddleware).
+	extendSSEWriteDeadline(w, r)
+
 	// Get session ID from labels if present
 	sessionID := run.Labels["agentorca.io/session-id"]
 

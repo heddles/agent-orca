@@ -202,6 +202,12 @@ const (
 	acpStopReasonEndTurn    = "end_turn"
 	acpStopReasonUserCancel = "cancelled"
 
+	// The remaining spec values are never produced by the bridge today; they
+	// are listed so normalizeStopReason accepts the complete enum.
+	acpStopReasonMaxTokens       = "max_tokens"
+	acpStopReasonMaxTurnRequests = "max_turn_requests"
+	acpStopReasonRefusal         = "refusal"
+
 	// acpPendingAwaiting is an internal sentinel returned by streamRunEvents
 	// to signal that the run entered the "awaiting" state.
 	// awaitCompletion handles it by asking the user via elicitation/create, then

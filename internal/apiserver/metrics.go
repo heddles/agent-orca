@@ -85,6 +85,12 @@ func (w *recordingResponseWriter) Flush() {
 	}
 }
 
+// Unwrap exposes the underlying ResponseWriter to http.ResponseController so
+// SSE handlers can extend their write deadline past the server's WriteTimeout.
+func (w *recordingResponseWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
 // probePaths are endpoints not worth writing to the audit log on every hit.
 // The status page polls /api/system/status and the history tab polls
 // /api/runs/history every 5s; with the UI server now instrumented, counting
