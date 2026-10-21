@@ -119,6 +119,13 @@ spec:
             {{- end }}
             - name: HINDSIGHT_URL
               value: {{ .Values.hindsight.url | quote }}
+            {{- if .Values.hindsight.apiKeySecret.name }}
+            - name: HINDSIGHT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.hindsight.apiKeySecret.name | quote }}
+                  key: {{ .Values.hindsight.apiKeySecret.key | default "api-key" | quote }}
+            {{- end }}
           args:
             - --leader-elect={{ .Values.operator.leaderElection }}
             - --health-probe-bind-address=:8081

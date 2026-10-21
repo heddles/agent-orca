@@ -435,6 +435,7 @@ func main() {
 		ContextCompactionThreshold: compactionThreshold,
 		ContextCompactionMode:      compactionMode,
 		HindsightURL:               os.Getenv("HINDSIGHT_URL"),
+		HindsightAPIKey:            os.Getenv("HINDSIGHT_API_KEY"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "AgentRun")
 		os.Exit(1)
@@ -454,6 +455,7 @@ func main() {
 		ContextCompactionThreshold: compactionThreshold,
 		ContextCompactionMode:      compactionMode,
 		HindsightURL:               os.Getenv("HINDSIGHT_URL"),
+		HindsightAPIKey:            os.Getenv("HINDSIGHT_API_KEY"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "AgentDeployment")
 		os.Exit(1)

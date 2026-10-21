@@ -113,6 +113,10 @@ type AgentRunReconciler struct {
 	// Injected from the HINDSIGHT_URL env var. Used to generate ipBlock egress rules
 	// in the per-run NetworkPolicies when the cluster has a default-deny egress policy.
 	HindsightURL string
+	// HindsightAPIKey authenticates the model-router to a hindsight API that
+	// requires a tenant API key. Injected from the HINDSIGHT_API_KEY env var; the
+	// operator mirrors it into each run namespace (see ensureHindsightKeySecret).
+	HindsightAPIKey string
 }
 
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
@@ -267,6 +271,9 @@ func (r *AgentRunReconciler) startRun(ctx context.Context, run *agentorcav1alpha
 	}
 	tokenSecretName, err := r.ensureTokenSecret(ctx, run, saName, routerServiceURL)
 	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if err := ensureHindsightKeySecret(ctx, r.Client, run.Namespace, r.HindsightAPIKey); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -1325,8 +1332,9 @@ func (r *AgentRunReconciler) buildRouterPod(
 	mcpBinMounts []corev1.VolumeMount,
 ) *corev1.Pod {
 	return podbuilder.BuildRouterOnly(podbuilder.PodConfig{
-		PodName:   "agentorca-router-" + run.Name,
-		Namespace: run.Namespace,
+		HindsightAPIKeySecretRef: hindsightKeyRef(r.HindsightAPIKey),
+		PodName:                  "agentorca-router-" + run.Name,
+		Namespace:                run.Namespace,
 		Labels: map[string]string{
 			security.LabelAgentRunName: security.SafeLabelValue(run.Name),
 			security.LabelManagedBy:    security.ManagedByValue,
@@ -1565,8 +1573,9 @@ func (r *AgentRunReconciler) buildAgentPod(
 	agentSecretVolumes, agentSecretMounts := podbuilder.ResolveAgentSecretRefs(agent)
 
 	return podbuilder.Build(podbuilder.PodConfig{
-		PodName:   "agentorca-run-" + run.Name,
-		Namespace: run.Namespace,
+		HindsightAPIKeySecretRef: hindsightKeyRef(r.HindsightAPIKey),
+		PodName:                  "agentorca-run-" + run.Name,
+		Namespace:                run.Namespace,
 		Labels: map[string]string{
 			security.LabelAgentRunName: security.SafeLabelValue(run.Name),
 			security.LabelManagedBy:    security.ManagedByValue,

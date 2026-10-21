@@ -270,6 +270,18 @@ hindsight:
   url: "http://hindsight-api.hindsight.svc.cluster.local:8888"
   namespace: agent-orca-system
   port: 8888
+  # apiKeySecret references an existing Secret holding the hindsight tenant API
+  # key (the value hindsight runs with as HINDSIGHT_API_TENANT_API_KEY when
+  # HINDSIGHT_API_TENANT_EXTENSION=hindsight_api.extensions.builtin.tenant:ApiKeyTenantExtension).
+  # When set, the operator reads the key, mirrors it into each run namespace and
+  # injects it into model-router containers only (never the agent container),
+  # which send it as "Authorization: Bearer <key>". Leave name empty when
+  # hindsight does not require authentication. Keep the key in a Secret, not in
+  # inline Helm values. Rotation: update the Secret, restart the operator, then
+  # recycle warm pods (pods read the key at start).
+  apiKeySecret:
+    name: ""
+    key: api-key
   # networkPolicy.cidrs is an optional manual override for the egress CIDR
   # allowlist. Use this when the operator cannot resolve the hindsight URL
   # (e.g. DNS is not yet available at policy-creation time). Each entry is

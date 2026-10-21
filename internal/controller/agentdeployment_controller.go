@@ -90,6 +90,10 @@ type AgentDeploymentReconciler struct {
 	// Injected from the HINDSIGHT_URL env var. Used to generate ipBlock egress rules
 	// in the per-run NetworkPolicies when the cluster has a default-deny egress policy.
 	HindsightURL string
+	// HindsightAPIKey authenticates the model-router to a hindsight API that
+	// requires a tenant API key. Injected from the HINDSIGHT_API_KEY env var; the
+	// operator mirrors it into each run namespace (see ensureHindsightKeySecret).
+	HindsightAPIKey string
 }
 
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
@@ -278,6 +282,9 @@ func (r *AgentDeploymentReconciler) reconcileDeployment(
 ) error {
 	deploymentName := agentDeploy.Name
 	namespace := agentDeploy.Namespace
+	if err := ensureHindsightKeySecret(ctx, r.Client, namespace, r.HindsightAPIKey); err != nil {
+		return err
+	}
 
 	// Get or create the Kubernetes Deployment
 	var k8sDeploy appsv1.Deployment
@@ -326,8 +333,9 @@ func (r *AgentDeploymentReconciler) reconcileDeployment(
 	agentSecretVolumes, agentSecretMounts := podbuilder.ResolveAgentSecretRefs(agent)
 
 	pod := podbuilder.Build(podbuilder.PodConfig{
-		Namespace: namespace,
-		Labels:    labels,
+		HindsightAPIKeySecretRef: hindsightKeyRef(r.HindsightAPIKey),
+		Namespace:                namespace,
+		Labels:                   labels,
 		Annotations: map[string]string{
 			"agentorca.io/router-config-hash": routerConfigHash,
 		},
@@ -1348,6 +1356,9 @@ func (r *AgentDeploymentReconciler) reconcileWarmPool(
 	mcpBinVolumes []corev1.Volume,
 	mcpBinMounts []corev1.VolumeMount,
 ) error {
+	if err := ensureHindsightKeySecret(ctx, r.Client, deploy.Namespace, r.HindsightAPIKey); err != nil {
+		return err
+	}
 	// Ensure deployment-scoped RBAC for warm pods.
 	if err := r.ensureWarmPoolRBAC(ctx, deploy, saName); err != nil {
 		return fmt.Errorf("ensuring warm pool RBAC: %w", err)
@@ -1615,8 +1626,9 @@ func (r *AgentDeploymentReconciler) buildWarmPod(
 		webhookNotifyRef = deploy.Spec.WebhookNotify.WebhookSecretRef
 	}
 	return podbuilder.Build(podbuilder.PodConfig{
-		GenerateName: "warm-" + deploy.Name + "-",
-		Namespace:    deploy.Namespace,
+		HindsightAPIKeySecretRef: hindsightKeyRef(r.HindsightAPIKey),
+		GenerateName:             "warm-" + deploy.Name + "-",
+		Namespace:                deploy.Namespace,
 		Labels: map[string]string{
 			"app.kubernetes.io/name":       "agent-orca",
 			"app.kubernetes.io/component":  "warm-pod",
