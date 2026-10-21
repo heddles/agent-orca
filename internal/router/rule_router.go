@@ -17,7 +17,9 @@ limitations under the License.
 package router
 
 import (
+	"log/slog"
 	"math/rand"
+	"os"
 	"slices"
 	"strings"
 	"time"
@@ -55,6 +57,8 @@ func NewRuleRouter(cfg *Config) *RuleRouter {
 //  2. Context length: estimated tokens > 80% of model context window → long-context model
 //  3. Budget: remaining budget < 20% → cheapest model
 //  4. Timeout proximity: elapsed > 70% of run timeout → fastest model
+//  4.5. Stage routing: high-confidence task stage (tool-exec/code/summarize)
+//       mapped via CapabilityRouting — unless disabled (#60)
 //  5. Capability routing map: check configured tag hints
 //  6. Default: weighted random selection
 func (r *RuleRouter) Route(messages []Message, estimatedTokens int, remainingTimeoutSec float64) RouteResult {
@@ -120,6 +124,17 @@ func (r *RuleRouter) routeInner(messages []Message, estimatedTokens int, remaini
 		}
 	}
 
+	// Rule 4.5: Stage routing — classify the send and route a high-confidence
+	// stage through CapabilityRouting when a mapping exists (#60 F3). Stage
+	// names are data keys, so any stage maps to any provider by configuration.
+	if stageRoutingEnabled() {
+		st := classifyStage(messages)
+		if p := r.stageProvider(st); p != nil {
+			return RouteResult{ProviderName: p.Name, Confidence: st.confidence,
+				Reason: "stage routing: " + st.stage}
+		}
+	}
+
 	// Rule 5: Capability routing map — check message content hints.
 	for capability, providerName := range r.cfg.CapabilityRouting {
 		if messagesMentionCapability(messages, capability) {
@@ -131,6 +146,25 @@ func (r *RuleRouter) routeInner(messages []Message, estimatedTokens int, remaini
 	// Rule 6: Weighted random default.
 	p := r.weightedRandom()
 	return RouteResult{ProviderName: p.Name, Confidence: 0.50, Reason: "weighted random"}
+}
+
+// stageProvider returns the provider mapped to the given stage via
+// CapabilityRouting, or nil when the stage has no mapping or its
+// confidence falls below the routing gate (0.8).
+func (r *RuleRouter) stageProvider(st stageResult) *ProviderConfig {
+	if st.confidence < 0.80 {
+		return nil
+	}
+	providerName, ok := r.cfg.CapabilityRouting[st.stage]
+	if !ok || providerName == "" {
+		return nil
+	}
+	for i := range r.cfg.Providers {
+		if r.cfg.Providers[i].Name == providerName {
+			return &r.cfg.Providers[i]
+		}
+	}
+	return nil
 }
 
 // filterByRequestTokens returns providers that can handle the given token count.
@@ -262,7 +296,8 @@ func hasImageContent(messages []Message) bool {
 }
 
 // messagesMentionCapability checks if a capability keyword appears in the conversation.
-// This is a lightweight heuristic; the meta-router handles nuanced cases.
+// Demoted below stage routing (#60): keyword hints are a heuristic backstop — a
+// vocabulary hit can no longer override a high-confidence stage classification.
 func messagesMentionCapability(messages []Message, capability string) bool {
 	keywords := capabilityKeywords(capability)
 	for _, m := range messages {
