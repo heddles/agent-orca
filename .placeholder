@@ -1,0 +1,19 @@
+package router
+
+import (
+	"math/rand"
+	"slices"
+	"strings"
+	"time"
+)
+
+// RouteResult is the output of the rule-based router.
+type RouteResult struct {
+	// ProviderName is the selected ModelProvider CRD name.
+	ProviderName string
+	// Confidence is a 0.0–1.0 score indicating how certain the rule-based router is.
+	// Low confidence triggers the LLM meta-router in hybrid mode.
+	Confidence float64
+	// Reason is a human-readable explanation for the routing decision.
+	Reason string
+}
