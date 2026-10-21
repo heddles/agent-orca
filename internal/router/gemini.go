@@ -20,6 +20,9 @@ func isGeminiProvider(p *ProviderConfig) bool {
 // target provider and returns the (possibly copied) slice; the input, which
 // aliases the router's stored conversation, is never mutated.
 //
+//   - Every provider: empty tool-call arguments become "{}". Anthropic streams
+//     no input for a tool that takes none, so the stored call has "" — invalid
+//     JSON that Gemini rejects ("Request contains an invalid argument").
 //   - Gemini: every tool call must carry a thought signature. Real signatures
 //     (kept in ExtraContent when Gemini produced the call) pass through; calls
 //     without one — made by a different model earlier in the conversation —
@@ -35,20 +38,23 @@ func adaptToolCallsForProvider(p *ProviderConfig, msgs []Message) []Message {
 		}
 		var calls []ToolCall
 		for j, tc := range m.ToolCalls {
-			want := tc.ExtraContent
+			adapted := tc
+			if strings.TrimSpace(adapted.Function.Arguments) == "" {
+				adapted.Function.Arguments = "{}"
+			}
 			switch {
 			case !gemini:
-				want = nil
+				adapted.ExtraContent = nil
 			case !hasThoughtSignature(tc.ExtraContent):
-				want = json.RawMessage(`{"google":{"thought_signature":"` + geminiSkipThoughtSignature + `"}}`)
+				adapted.ExtraContent = json.RawMessage(`{"google":{"thought_signature":"` + geminiSkipThoughtSignature + `"}}`)
 			}
-			if string(want) == string(tc.ExtraContent) {
+			if adapted.Function.Arguments == tc.Function.Arguments && string(adapted.ExtraContent) == string(tc.ExtraContent) {
 				continue
 			}
 			if calls == nil {
 				calls = append([]ToolCall(nil), m.ToolCalls...)
 			}
-			calls[j].ExtraContent = want
+			calls[j] = adapted
 		}
 		if calls == nil {
 			continue
