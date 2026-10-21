@@ -114,10 +114,8 @@ func TestForwardToProvider_GeminiRequestCarriesThoughtSignatures(t *testing.T) {
 	}
 	p := geminiProvider()
 	p.APIKeyFile = keyFile
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	cfg := &Config{Providers: []ProviderConfig{*p}, LLMRequestTimeout: time.Minute}
-	r := &Router{cfg: cfg, cancelCtx: ctx, ruleRouter: NewRuleRouter(cfg)}
+	r := &Router{cfg: cfg, cancelCtx: t.Context(), ruleRouter: NewRuleRouter(cfg)}
 
 	history := []Message{
 		{Role: "user", Content: "go"},
