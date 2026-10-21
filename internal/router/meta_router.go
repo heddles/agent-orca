@@ -32,10 +32,67 @@ import (
 	"time"
 )
 
-// metaRouterCacheEntry caches a meta-router decision for (task-hash, available-models).
+// metaRouterCacheEntry caches a meta-router decision for
+// (task-hash, available-models, state-buckets).
 type metaRouterCacheEntry struct {
 	providerName string
 	expiresAt    time.Time
+}
+
+// RoutingState carries the live run state that can invalidate a cached
+// meta-router decision (#60 F2). A decision cached at turn 1 must not be
+// served at turn 30 once the budget crosses the rule-router's <20% gate:
+// a stale cached provider defeats BudgetCap enforcement in hybrid mode.
+// The zero value means "state unknown" — all buckets collapse to their
+// neutral form and the cache behaves exactly as before.
+type RoutingState struct {
+	// BudgetUSD is the total run budget; 0 = unlimited.
+	BudgetUSD float64
+	// SpentUSD is the USD spent so far on the run.
+	SpentUSD float64
+	// TimeoutTotalSec is the total run timeout; 0 = none.
+	TimeoutTotalSec float64
+	// TimeoutElapsedSec is the elapsed portion of the timeout.
+	TimeoutElapsedSec float64
+	// TurnCount is the number of completed LLM turns.
+	TurnCount int
+}
+
+// budgetBucket maps the run's budget state to a cache-key bucket.
+// The boundary (20% remaining) matches rule-router Rule 3 exactly, so a
+// cached decision can never override a state-forced cheapest-provider route.
+func (s RoutingState) budgetBucket() string {
+	if s.BudgetUSD <= 0 {
+		return "unlimited"
+	}
+	if s.BudgetUSD-s.SpentUSD < s.BudgetUSD*0.20 {
+		return "low"
+	}
+	return "high"
+}
+
+// timeoutBucket maps the run's timeout state to a cache-key bucket.
+// The boundary (70% elapsed) matches rule-router Rule 4 exactly.
+func (s RoutingState) timeoutBucket() string {
+	if s.TimeoutTotalSec <= 0 {
+		return "none"
+	}
+	if s.TimeoutElapsedSec/s.TimeoutTotalSec > 0.70 {
+		return "urgent"
+	}
+	return "ok"
+}
+
+// turnBucket maps the turn count to a coarse cache-key bucket.
+func (s RoutingState) turnBucket() string {
+	switch {
+	case s.TurnCount == 0:
+		return "fresh"
+	case s.TurnCount <= 10:
+		return "early"
+	default:
+		return "deep"
+	}
 }
 
 // MetaRouter uses a cheap/fast LLM to decide which model to use for ambiguous requests.
@@ -57,8 +114,9 @@ func NewMetaRouter(cfg *Config) *MetaRouter {
 }
 
 // Route asks the meta-router LLM to select the best provider for the given messages.
+// The optional state captures the live run state used to bucket the cache key.
 // Returns the provider name or an error; callers fall back to rule-based routing on error.
-func (m *MetaRouter) Route(ctx context.Context, messages []Message) (string, TokenUsage, error) {
+func (m *MetaRouter) Route(ctx context.Context, messages []Message, state ...RoutingState) (string, TokenUsage, error) {
 	// Find the meta-router provider.
 	var metaProvider *ProviderConfig
 	for i := range m.cfg.Providers {
@@ -71,8 +129,10 @@ func (m *MetaRouter) Route(ctx context.Context, messages []Message) (string, Tok
 		return "", TokenUsage{}, fmt.Errorf("meta-router provider %q not found in provider list", m.cfg.MetaRouterProviderName)
 	}
 
-	// Build a cache key from the task content hash + available model names.
-	cacheKey := m.cacheKey(messages)
+	// Build a cache key from the task content hash + available model names
+	// + live state buckets, so a stale decision can never override a
+	// budget/timeout-forced route (#60 F2).
+	cacheKey := m.cacheKey(messages, routingState(state))
 	if entry := m.getCached(cacheKey); entry != "" {
 		return entry, TokenUsage{}, nil
 	}
@@ -84,29 +144,72 @@ func (m *MetaRouter) Route(ctx context.Context, messages []Message) (string, Tok
 		return "", usage, err
 	}
 
-	// Validate the returned provider name.
-	providerName = strings.TrimSpace(providerName)
-	slog.Info("meta-router LLM response", "raw", providerName)
+	resolved, ok := m.resolveProviderName(providerName)
+	if !ok {
+		return "", usage, fmt.Errorf("meta-router returned unknown provider %q", providerName)
+	}
+	slog.Info("meta-router LLM response", "raw", providerName, "resolved", resolved)
+	m.setCached(cacheKey, resolved)
+	return resolved, usage, nil
+}
 
-	// Exact match first.
+// resolveProviderName maps a raw meta-router LLM response to a configured
+// provider name deterministically (#60 F1, F5):
+//
+//  1. exact match (trimmed)
+//  2. case-insensitive exact match (LLMs return "GPT-4o-Mini")
+//  3. substring fallback — the LONGEST provider name contained in the
+//     response wins, because longer names are the more specific match:
+//     "gpt-4o" is a substring of "gpt-4o-mini", so a literal "gpt-4o-mini"
+//     response must resolve to gpt-4o-mini regardless of provider list order.
+//     Ambiguity (more than one candidate) is logged, never silently resolved.
+//
+// Blank/whitespace responses are rejected with ok=false so the caller's
+// error is distinct from a genuine unknown-provider error.
+func (m *MetaRouter) resolveProviderName(raw string) (string, bool) {
+	name := strings.TrimSpace(raw)
+	if name == "" {
+		return "", false
+	}
+
+	// 1. Exact match.
 	for _, p := range m.cfg.Providers {
-		if p.Name == providerName {
-			m.setCached(cacheKey, providerName)
-			return providerName, usage, nil
+		if p.Name == name {
+			return p.Name, true
 		}
 	}
 
-	// Fuzzy fallback: LLM may have added surrounding text — find the first provider
-	// name that appears as a substring in the response.
+	// 2. Case-insensitive exact match.
 	for _, p := range m.cfg.Providers {
-		if strings.Contains(providerName, p.Name) {
-			slog.Info("meta-router fuzzy match", "provider", p.Name, "raw", providerName)
-			m.setCached(cacheKey, p.Name)
-			return p.Name, usage, nil
+		if strings.EqualFold(p.Name, name) {
+			return p.Name, true
 		}
 	}
 
-	return "", usage, fmt.Errorf("meta-router returned unknown provider %q", providerName)
+	// 3. Substring fallback: longest contained provider name wins.
+	lower := strings.ToLower(name)
+	best := ""
+	candidates := 0
+	for _, p := range m.cfg.Providers {
+		if p.Name == "" {
+			continue
+		}
+		if strings.Contains(lower, strings.ToLower(p.Name)) {
+			candidates++
+			if len(p.Name) > len(best) {
+				best = p.Name
+			}
+		}
+	}
+	if best != "" {
+		if candidates > 1 {
+			slog.Info("meta-router fuzzy match ambiguous, chose longest", "raw", name, "provider", best, "candidates", candidates)
+		} else {
+			slog.Info("meta-router fuzzy match", "provider", best, "raw", name)
+		}
+		return best, true
+	}
+	return "", false
 }
 
 // buildRoutingPrompt constructs a routing decision prompt.
@@ -196,7 +299,7 @@ func (m *MetaRouter) callLLM(ctx context.Context, provider *ProviderConfig, prom
 	return result.Choices[0].Message.Content, result.Usage, nil
 }
 
-func (m *MetaRouter) cacheKey(messages []Message) string {
+func (m *MetaRouter) cacheKey(messages []Message, state RoutingState) string {
 	h := sha256.New()
 	for _, msg := range messages {
 		if text, ok := msg.Content.(string); ok {
@@ -206,6 +309,11 @@ func (m *MetaRouter) cacheKey(messages []Message) string {
 	for _, p := range m.cfg.Providers {
 		h.Write([]byte(p.Name))
 	}
+	// State buckets — coarse enough to keep hit rate high, sharp enough at
+	// the rule-router boundaries that a stale decision is always a miss.
+	h.Write([]byte("b:" + state.budgetBucket()))
+	h.Write([]byte(";t:" + state.timeoutBucket()))
+	h.Write([]byte(";turn:" + state.turnBucket()))
 	return hex.EncodeToString(h.Sum(nil))[:16]
 }
 
@@ -226,6 +334,15 @@ func (m *MetaRouter) setCached(key, providerName string) {
 		providerName: providerName,
 		expiresAt:    time.Now().Add(m.cacheTTL),
 	}
+}
+
+// routingState returns the first RoutingState, or the zero value when none
+// was supplied (keeps existing call sites compiling unchanged).
+func routingState(states []RoutingState) RoutingState {
+	if len(states) > 0 {
+		return states[0]
+	}
+	return RoutingState{}
 }
 
 // liteLLMEndpoint returns the LiteLLM proxy endpoint for a provider.
