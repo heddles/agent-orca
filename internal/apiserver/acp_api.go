@@ -1331,6 +1331,7 @@ func (s *ACPServer) streamACPRun(w http.ResponseWriter, r *http.Request, run *ag
 	flusher.Flush()
 
 	var fullOutput strings.Builder
+	var doneOutput string
 	for token := range tokenCh {
 		if token == "" {
 			break
@@ -1344,6 +1345,7 @@ func (s *ACPServer) streamACPRun(w http.ResponseWriter, r *http.Request, run *ag
 			evJSON := stripTraceMarker(token)
 			writeTraceEvent(w, flusher, evJSON)
 			if isTerminalTracePayload(evJSON) {
+				doneOutput = terminalTraceOutput(evJSON)
 				break
 			}
 			continue
@@ -1356,6 +1358,14 @@ func (s *ACPServer) streamACPRun(w http.ResponseWriter, r *http.Request, run *ag
 		msg.Parts = append(msg.Parts, part)
 		_, _ = fmt.Fprintf(w, "event: message.part\ndata: %s\n\n", mustJSON(ACPMessagePartEvent{Type: "message.part", Part: part}))
 		flusher.Flush()
+	}
+
+	// An agent that ends via _done(output=...) delivers its answer in the
+	// terminal trace event, not as tokens. Carry it in run.completed so
+	// bridges that rebuild the turn from the run output (rather than the raw
+	// trace frame) still show the final answer.
+	if rest := finalOutputSuffix(fullOutput.String(), doneOutput); rest != "" {
+		msg.Parts = append(msg.Parts, ACPMessagePart{ContentType: "text/plain", Content: rest})
 	}
 
 	acpRun.Status = ACPRunCompleted
