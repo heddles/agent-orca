@@ -17,9 +17,7 @@ limitations under the License.
 package router
 
 import (
-	"log/slog"
 	"math/rand"
-	"os"
 	"slices"
 	"strings"
 	"time"
@@ -127,6 +125,7 @@ func (r *RuleRouter) routeInner(messages []Message, estimatedTokens int, remaini
 	// Rule 4.5: Stage routing — classify the send and route a high-confidence
 	// stage through CapabilityRouting when a mapping exists (#60 F3). Stage
 	// names are data keys, so any stage maps to any provider by configuration.
+	// Unmapped stages fall through to the keyword hint rule below.
 	if stageRoutingEnabled() {
 		st := classifyStage(messages)
 		if p := r.stageProvider(st); p != nil {
