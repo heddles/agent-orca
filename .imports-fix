@@ -1,0 +1,11 @@
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+const realSig = `{"google":{"thought_signature":"REAL-SIG"}}`
