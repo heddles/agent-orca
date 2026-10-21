@@ -56,7 +56,7 @@ func TestAdaptToolCallsForProvider_NonGeminiStripsExtraContent(t *testing.T) {
 }
 
 func TestAdaptToolCallsForProvider_NoOpReturnsSameSlice(t *testing.T) {
-	msgs := []Message{{Role: "user", Content: "hi"}, toolMsg(ToolCall{ID: "x", ExtraContent: json.RawMessage(realSig)})}
+	msgs := []Message{{Role: "user", Content: "hi"}, toolMsg(ToolCall{ID: "x", Function: FunctionCall{Arguments: "{}"}, ExtraContent: json.RawMessage(realSig)})}
 	got := adaptToolCallsForProvider(geminiProvider(), msgs)
 	if &got[0] != &msgs[0] {
 		t.Error("expected no copy when nothing needs changing")
@@ -114,10 +114,8 @@ func TestForwardToProvider_GeminiRequestCarriesThoughtSignatures(t *testing.T) {
 	}
 	p := geminiProvider()
 	p.APIKeyFile = keyFile
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	cfg := &Config{Providers: []ProviderConfig{*p}, LLMRequestTimeout: time.Minute}
-	r := &Router{cfg: cfg, cancelCtx: ctx, ruleRouter: NewRuleRouter(cfg)}
+	r := &Router{cfg: cfg, cancelCtx: t.Context(), ruleRouter: NewRuleRouter(cfg)}
 
 	history := []Message{
 		{Role: "user", Content: "go"},
@@ -150,6 +148,64 @@ func TestForwardToProvider_GeminiRequestCarriesThoughtSignatures(t *testing.T) {
 		}
 		if got := string(body.Messages[3].ToolCalls[0].ExtraContent); got != realSig {
 			t.Errorf("stream=%v: real signature sent as %q", stream, got)
+		}
+	}
+}
+
+// Regression: Gemini streams parallel tool calls without an "index" (all 0) but
+// with distinct IDs. They used to merge into one call named after the last and
+// carrying both calls' JSON arguments concatenated, which Gemini then rejected
+// with "Request contains an invalid argument" on the next turn.
+func TestMergeToolCallDeltas_GeminiParallelCallsWithoutIndex(t *testing.T) {
+	var merged []ToolCall
+	merged = mergeToolCallDeltas(merged, []ToolCall{{ID: "call_1", Type: "function",
+		Function: FunctionCall{Name: "get_weather", Arguments: `{"city":"Paris"}`}, ExtraContent: json.RawMessage(realSig)}})
+	merged = mergeToolCallDeltas(merged, []ToolCall{{ID: "call_2", Type: "function",
+		Function: FunctionCall{Name: "get_time", Arguments: `{"city":"Tokyo"}`}}})
+
+	if len(merged) != 2 {
+		t.Fatalf("got %d calls, want 2: %+v", len(merged), merged)
+	}
+	if merged[0].Function.Name != "get_weather" || merged[0].Function.Arguments != `{"city":"Paris"}` || string(merged[0].ExtraContent) != realSig {
+		t.Errorf("first call corrupted: %+v", merged[0])
+	}
+	if merged[1].ID != "call_2" || merged[1].Function.Name != "get_time" || merged[1].Function.Arguments != `{"city":"Tokyo"}` {
+		t.Errorf("second call wrong: %+v", merged[1])
+	}
+	if merged[0].Index == merged[1].Index {
+		t.Errorf("calls share index %d", merged[0].Index)
+	}
+}
+
+// OpenAI-style streams repeat the same ID (or none) on continuation chunks; those must still merge.
+func TestMergeToolCallDeltas_SameIDContinuationStillMerges(t *testing.T) {
+	merged := mergeToolCallDeltas(nil, []ToolCall{{Index: 0, ID: "c", Function: FunctionCall{Name: "f", Arguments: `{"a"`}}})
+	merged = mergeToolCallDeltas(merged, []ToolCall{{Index: 0, ID: "c", Function: FunctionCall{Arguments: `:1}`}}})
+	merged = mergeToolCallDeltas(merged, []ToolCall{{Index: 1, ID: "d", Function: FunctionCall{Name: "g", Arguments: `{}`}}})
+	if len(merged) != 2 || merged[0].Function.Arguments != `{"a":1}` || merged[1].Function.Name != "g" {
+		t.Errorf("unexpected merge: %+v", merged)
+	}
+}
+
+// Regression: a Haiku turn recorded `_list_resources` with arguments "", and the next
+// Gemini request failed with 400 "Request contains an invalid argument" (verified
+// against the live API: "" is rejected, "{}" accepted).
+func TestAdaptToolCallsForProvider_EmptyArgumentsBecomeEmptyObject(t *testing.T) {
+	for _, p := range []*ProviderConfig{geminiProvider(), {LiteLLMModel: "openai/gpt-6-luna"}} {
+		msgs := []Message{toolMsg(
+			ToolCall{ID: "a", Function: FunctionCall{Name: "f", Arguments: ""}},
+			ToolCall{ID: "b", Function: FunctionCall{Name: "g", Arguments: "  "}},
+			ToolCall{ID: "c", Function: FunctionCall{Name: "h", Arguments: `{"x":1}`}},
+		)}
+		got := adaptToolCallsForProvider(p, msgs)
+		want := []string{"{}", "{}", `{"x":1}`}
+		for i, tc := range got[0].ToolCalls {
+			if tc.Function.Arguments != want[i] {
+				t.Errorf("%s call %d arguments = %q, want %q", p.LiteLLMModel, i, tc.Function.Arguments, want[i])
+			}
+		}
+		if msgs[0].ToolCalls[0].Function.Arguments != "" {
+			t.Error("stored conversation was mutated")
 		}
 	}
 }
