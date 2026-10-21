@@ -116,6 +116,28 @@ for the operator's own metrics port (8080). Label your scraper namespace:
 kubectl label namespace prometheus-operator metrics=enabled
 ```
 
+### In-flight spend in the cost dashboard
+
+The operator scrapes the model-router's `:9091` itself to show spend for runs that
+have not finished (`inFlightUSD` in `GET /api/costs`). A running run's
+`status.spendUSD` stays empty until the controller stamps it at a terminal state or
+retry, so the router's `agentorca_modelrouter_spend_usd_total` counter is the only
+live source.
+
+- Only **unfinished** runs are read, one request per run's (router) pod, in parallel
+  with a 3s overall budget and at most 50 pods per request. Finished runs use their
+  stamped status, so a warm pod that still holds an old run's series is not counted twice.
+- Every per-run NetworkPolicy therefore also admits the operator's own pods on `:9091`
+  (namespace `POD_NAMESPACE`, pods labeled `app.kubernetes.io/name: agent-orca` and
+  `app.kubernetes.io/component: operator`), in addition to `metrics: enabled`
+  namespaces. No other pod in the operator's namespace and no other port is opened.
+- When a run's router cannot be read (pod not scheduled yet, scrape timeout, policy
+  mismatch), the response reports it in `inFlightUnscraped` instead of treating the
+  run as $0.
+
+To check that a cluster's policies let the operator reach a router, run
+`hack/verify-router-metrics.sh <namespace> [pod]`.
+
 ### Datadog / external scrapers
 
 Point a Datadog OpenMetrics integration at the **same** targets:

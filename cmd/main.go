@@ -436,6 +436,7 @@ func main() {
 		ContextCompactionMode:      compactionMode,
 		HindsightURL:               os.Getenv("HINDSIGHT_URL"),
 		HindsightAPIKey:            os.Getenv("HINDSIGHT_API_KEY"),
+		OperatorNamespace:          os.Getenv("POD_NAMESPACE"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "AgentRun")
 		os.Exit(1)

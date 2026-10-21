@@ -86,6 +86,9 @@ type costResponse struct {
 	AvgRunUSD string `json:"avgRunUSD"`
 	// FailedRunUSD is spend on runs that ended Failed.
 	FailedRunUSD string `json:"failedRunUSD"`
+	// InFlightUnscraped counts unfinished runs whose model-router could not be
+	// read, so their live spend is missing from InFlightUSD and the total.
+	InFlightUnscraped int `json:"inFlightUnscraped,omitempty"`
 	// ArchiveUnavailable is set when the run archive is configured but could not
 	// be read, so the totals cover live runs only.
 	ArchiveUnavailable bool `json:"archiveUnavailable,omitempty"`
@@ -265,6 +268,7 @@ func (s *UIServer) handleCosts(w http.ResponseWriter, r *http.Request) {
 	}
 
 	live := make([]costEntry, 0, len(list.Items))
+	var unfinished []*agentorcav1alpha1.AgentRun
 	for i := range list.Items {
 		run := &list.Items[i]
 		if runFilter != "" && run.Name != runFilter {
@@ -275,7 +279,12 @@ func (s *UIServer) handleCosts(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		live = append(live, e)
+		if isUnfinished(run) {
+			unfinished = append(unfinished, run)
+		}
 	}
+	// Unfinished runs have no stamped spend yet: read it from their routers.
+	unscraped := s.applyInFlightSpend(r.Context(), live, unfinished)
 
 	var archived []costEntry
 	archiveFailed := false
@@ -306,5 +315,6 @@ func (s *UIServer) handleCosts(w http.ResponseWriter, r *http.Request) {
 
 	resp := aggregateCosts(mergeCostEntries(live, archived))
 	resp.ArchiveUnavailable = archiveFailed
+	resp.InFlightUnscraped = unscraped
 	jsonResponse(w, resp)
 }
