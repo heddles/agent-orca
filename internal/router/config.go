@@ -233,6 +233,10 @@ type ProviderConfig struct {
 	CostPerOutputToken float64
 	// BaseURL is an optional API endpoint override for self-hosted models (e.g. "http://ollama.svc:11434").
 	BaseURL string
+	// WorkspaceID is sent as the "anthropic-workspace-id" header on Anthropic
+	// Messages API calls. Required by Anthropic for API keys that are not scoped
+	// to a single workspace. Ignored for other providers.
+	WorkspaceID string
 	// RoutingHint is passed to the LLM meta-router to help it decide when to select this provider.
 	RoutingHint string
 	// TokenEncoding is the tiktoken encoding name for this provider (e.g. "cl100k_base", "o200k_base").

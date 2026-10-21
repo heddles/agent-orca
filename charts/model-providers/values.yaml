@@ -113,6 +113,10 @@ providerSecrets:
 #   Azure OpenAI requires baseURL to be set to your resource endpoint, e.g.:
 #     baseURL: "https://my-resource.openai.azure.com/"
 #
+# workspaceID: optional — Anthropic workspace ID, sent as the
+#   "anthropic-workspace-id" header.  Required when the API key is not scoped
+#   to a single workspace (Anthropic otherwise returns HTTP 400).
+#
 # maxRequestTokens: optional — set when your account's per-request or TPM limit
 #   is lower than the model's contextWindow.  The router will skip this provider
 #   for requests whose estimated token count exceeds this value.  0 = no limit.

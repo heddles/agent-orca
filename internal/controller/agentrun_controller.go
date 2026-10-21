@@ -640,21 +640,7 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 		}
 		seenProviders[pw.Name] = true
 		apiKeyFile := fmt.Sprintf("%s/%s/api-key", podbuilder.ProviderSecretsDir, pw.Name)
-		providers = append(providers, router.ProviderConfig{
-			Name:               pw.Name,
-			LiteLLMModel:       mp.Spec.LiteLLMModel,
-			APIKeyFile:         apiKeyFile,
-			Weight:             pw.Weight,
-			Capabilities:       mp.Spec.Capabilities,
-			ContextWindow:      mp.Spec.Constraints.ContextWindow,
-			MaxOutputTokens:    mp.Spec.Constraints.MaxOutputTokens,
-			MaxRequestTokens:   mp.Spec.Constraints.MaxRequestTokens,
-			LatencyProfile:     mp.Spec.LatencyProfile,
-			CostPerInputToken:  parseFloat(mp.Spec.Constraints.CostPerMillionInputTokens) / 1e6,
-			CostPerOutputToken: parseFloat(mp.Spec.Constraints.CostPerMillionOutputTokens) / 1e6,
-			BaseURL:            mp.Spec.BaseURL,
-			RoutingHint:        pw.RoutingHint,
-		})
+		providers = append(providers, providerConfigFromSpec(pw.Name, &mp, pw.Weight, pw.RoutingHint, apiKeyFile))
 	}
 	// Load fallback chain providers with Weight=0 so tryFallback can find them
 	// but they are excluded from weighted primary selection.
@@ -677,20 +663,7 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 			return nil, nil, false, fmt.Errorf("getting fallback ModelProvider %q: %w", name, err)
 		}
 		apiKeyFile := fmt.Sprintf("%s/%s/api-key", podbuilder.ProviderSecretsDir, name)
-		providers = append(providers, router.ProviderConfig{
-			Name:               name,
-			LiteLLMModel:       mp.Spec.LiteLLMModel,
-			APIKeyFile:         apiKeyFile,
-			Weight:             0,
-			Capabilities:       mp.Spec.Capabilities,
-			ContextWindow:      mp.Spec.Constraints.ContextWindow,
-			MaxOutputTokens:    mp.Spec.Constraints.MaxOutputTokens,
-			MaxRequestTokens:   mp.Spec.Constraints.MaxRequestTokens,
-			LatencyProfile:     mp.Spec.LatencyProfile,
-			CostPerInputToken:  parseFloat(mp.Spec.Constraints.CostPerMillionInputTokens) / 1e6,
-			CostPerOutputToken: parseFloat(mp.Spec.Constraints.CostPerMillionOutputTokens) / 1e6,
-			BaseURL:            mp.Spec.BaseURL,
-		})
+		providers = append(providers, providerConfigFromSpec(name, &mp, 0, "", apiKeyFile))
 	}
 
 	// Resolve Tools.

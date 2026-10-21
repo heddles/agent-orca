@@ -218,64 +218,7 @@ func (r *Router) forwardToAnthropicStream(ctx context.Context, provider *Provide
 	// Concatenate system messages (user prompt + builtin hints) rather than replacing.
 	// Note: SystemPrompt is now always injected into the messages array in HandleChatCompletions,
 	// so we don't need to add it from config separately.
-	var systemParts []string
-	var anthropicMessages []map[string]any
-	for _, msg := range chatReq.Messages {
-		if msg.Role == "system" {
-			if text, ok := msg.Content.(string); ok {
-				if len(systemParts) == 0 {
-					systemParts = []string{text}
-				} else {
-					systemParts = append(systemParts, text)
-				}
-			}
-			continue
-		}
-
-		// Convert assistant messages with tool_calls to Anthropic format.
-		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
-			var content []map[string]any
-			if text, ok := msg.Content.(string); ok && text != "" {
-				content = append(content, map[string]any{"type": "text", "text": text})
-			}
-			for _, tc := range msg.ToolCalls {
-				args := tc.Function.Arguments
-				if args == "" {
-					args = "{}"
-				}
-				content = append(content, map[string]any{
-					"type":  "tool_use",
-					"id":    tc.ID,
-					"name":  tc.Function.Name,
-					"input": json.RawMessage(args),
-				})
-			}
-			anthropicMessages = append(anthropicMessages, map[string]any{
-				"role":    "assistant",
-				"content": content,
-			})
-			continue
-		}
-
-		// Convert tool result messages to Anthropic tool_result blocks.
-		if msg.Role == "tool" {
-			resultContent, _ := msg.Content.(string)
-			anthropicMessages = append(anthropicMessages, map[string]any{
-				"role": "user",
-				"content": []map[string]any{{
-					"type":        "tool_result",
-					"tool_use_id": msg.ToolCallID,
-					"content":     resultContent,
-				}},
-			})
-			continue
-		}
-
-		anthropicMessages = append(anthropicMessages, map[string]any{
-			"role":    msg.Role,
-			"content": msg.Content,
-		})
-	}
+	systemParts, anthropicMessages := toAnthropicMessages(chatReq.Messages)
 	if len(anthropicMessages) == 0 {
 		return nil, fmt.Errorf("anthropic: no user messages in request")
 	}
@@ -291,28 +234,8 @@ func (r *Router) forwardToAnthropicStream(ctx context.Context, provider *Provide
 		reqBody["system"] = strings.Join(systemParts, "\n\n")
 	}
 
-	// Convert OpenAI tool definitions to Anthropic format.
 	if len(chatReq.Tools) > 0 {
-		var anthropicTools []map[string]any
-		for _, t := range chatReq.Tools {
-			fn, _ := t["function"].(map[string]any)
-			if fn == nil {
-				continue
-			}
-			at := map[string]any{
-				"name": fn["name"],
-			}
-			if desc, ok := fn["description"]; ok {
-				at["description"] = desc
-			}
-			if params, ok := fn["parameters"]; ok {
-				at["input_schema"] = params
-			} else {
-				at["input_schema"] = map[string]any{"type": "object", "properties": map[string]any{}}
-			}
-			anthropicTools = append(anthropicTools, at)
-		}
-		reqBody["tools"] = anthropicTools
+		reqBody["tools"] = toAnthropicTools(chatReq.Tools)
 	}
 
 	body, err := json.Marshal(reqBody)
@@ -322,13 +245,11 @@ func (r *Router) forwardToAnthropicStream(ctx context.Context, provider *Provide
 
 	resp, err := doWithRateLimitRetry(ctx, func() (*http.Request, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-			"https://api.anthropic.com/v1/messages", bytes.NewReader(body))
+			anthropicMessagesURL, bytes.NewReader(body))
 		if err != nil {
 			return nil, err
 		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("x-api-key", key)
-		req.Header.Set("anthropic-version", "2023-06-01")
+		setAnthropicHeaders(req, provider, key)
 		return req, nil
 	})
 	if err != nil {

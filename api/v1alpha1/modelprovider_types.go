@@ -38,6 +38,14 @@ type ModelProviderSpec struct {
 	// +optional
 	BaseURL string `json:"baseURL,omitempty"`
 
+	// WorkspaceID is the Anthropic workspace the request is billed to. When set,
+	// the model-router sends it as the "anthropic-workspace-id" header on every
+	// Messages API call. Anthropic rejects requests (HTTP 400) from API keys that
+	// are not scoped to a single workspace unless this header is present.
+	// Only used for "anthropic/" models without a baseURL override.
+	// +optional
+	WorkspaceID string `json:"workspaceID,omitempty"`
+
 	// CredentialsRef points to the Secret containing the provider API key.
 	// The model-router sidecar mounts this secret directly; the operator never reads it.
 	CredentialsRef SecretKeyRef `json:"credentialsRef"`

@@ -23,6 +23,9 @@ spec:
   capabilities:
     {{- toYaml .capabilities | nindent 4 }}
   {{- end }}
+  {{- if .workspaceID }}
+  workspaceID: {{ .workspaceID | quote }}
+  {{- end }}
   {{- if .latencyProfile }}
   latencyProfile: {{ .latencyProfile }}
   {{- end }}
