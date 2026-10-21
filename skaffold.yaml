@@ -175,9 +175,8 @@ profiles:
               providerSecrets[1].apiKey: "{{.ANTHROPIC_API_KEY}}"
               providerSecrets[2].apiKey: "{{.GOOGLE_API_KEY}}"
               providerSecrets[3].apiKey: "{{.OPENROUTER_API_KEY}}"
-
-      kubectl:
-        defaultNamespace: agent-orca-system
+      # No kubectl deployer here: with no manifests to apply it prints
+      # "nothing to deploy" and fails the run with exit code 1.
   - name: dev
     # activation:
     #   - kubeContext: kind-agent-orca-dev

@@ -1147,6 +1147,7 @@ func (r *Router) forwardToProvider(ctx context.Context, provider *ProviderConfig
 		}
 	}
 	chatReq.Model = modelName
+	chatReq.Messages = adaptToolCallsForProvider(provider, chatReq.Messages)
 
 	// Inject trust-boundary hint for any <rag-context> content present in the messages.
 	chatReq = r.injectRAGTrustBoundaryHint(chatReq)
@@ -1188,71 +1189,10 @@ func (r *Router) forwardToProvider(ctx context.Context, provider *ProviderConfig
 // forwardToAnthropic sends a request to the Anthropic Messages API.
 // Converts OpenAI chat format to Anthropic format and back.
 func (r *Router) forwardToAnthropic(ctx context.Context, provider *ProviderConfig, chatReq ChatCompletionRequest, apiKey []byte) ([]byte, error) {
-	// Extract system messages and user messages.
 	// Multiple system messages (e.g. user prompt + _clarify hint) are concatenated.
 	// Note: SystemPrompt is now always injected into the messages array in HandleChatCompletions,
 	// so we don't need to add it from config separately.
-	var systemParts []string
-	var anthropicMessages []map[string]any
-
-	for _, msg := range chatReq.Messages {
-		if msg.Role == "system" {
-			if text, ok := msg.Content.(string); ok {
-				if len(systemParts) == 0 {
-					// First system message replaces the router-level prompt.
-					systemParts = []string{text}
-				} else {
-					systemParts = append(systemParts, text)
-				}
-			}
-			continue
-		}
-
-		// Convert assistant messages with tool_calls to Anthropic format.
-		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
-			var content []map[string]any
-			if text, ok := msg.Content.(string); ok && text != "" {
-				content = append(content, map[string]any{"type": "text", "text": text})
-			}
-			for _, tc := range msg.ToolCalls {
-				args := tc.Function.Arguments
-				if args == "" {
-					args = "{}"
-				}
-				content = append(content, map[string]any{
-					"type":  "tool_use",
-					"id":    tc.ID,
-					"name":  tc.Function.Name,
-					"input": json.RawMessage(args),
-				})
-			}
-			anthropicMessages = append(anthropicMessages, map[string]any{
-				"role":    "assistant",
-				"content": content,
-			})
-			continue
-		}
-
-		// Convert tool result messages to Anthropic tool_result blocks in a user message.
-		if msg.Role == "tool" {
-			resultContent, _ := msg.Content.(string)
-			anthropicMessages = append(anthropicMessages, map[string]any{
-				"role": "user",
-				"content": []map[string]any{{
-					"type":        "tool_result",
-					"tool_use_id": msg.ToolCallID,
-					"content":     resultContent,
-				}},
-			})
-			continue
-		}
-
-		anthropicMsg := map[string]any{
-			"role":    msg.Role,
-			"content": msg.Content,
-		}
-		anthropicMessages = append(anthropicMessages, anthropicMsg)
-	}
+	systemParts, anthropicMessages := toAnthropicMessages(chatReq.Messages)
 
 	// Anthropic requires at least one user message.
 	if len(anthropicMessages) == 0 {
@@ -1288,28 +1228,8 @@ func (r *Router) forwardToAnthropic(ctx context.Context, provider *ProviderConfi
 		reqBody["system"] = strings.Join(systemParts, "\n\n")
 	}
 
-	// Convert OpenAI tool definitions to Anthropic format.
 	if len(chatReq.Tools) > 0 {
-		var anthropicTools []map[string]any
-		for _, t := range chatReq.Tools {
-			fn, _ := t["function"].(map[string]any)
-			if fn == nil {
-				continue
-			}
-			at := map[string]any{
-				"name": fn["name"],
-			}
-			if desc, ok := fn["description"]; ok {
-				at["description"] = desc
-			}
-			if params, ok := fn["parameters"]; ok {
-				at["input_schema"] = params
-			} else {
-				at["input_schema"] = map[string]any{"type": "object", "properties": map[string]any{}}
-			}
-			anthropicTools = append(anthropicTools, at)
-		}
-		reqBody["tools"] = anthropicTools
+		reqBody["tools"] = toAnthropicTools(chatReq.Tools)
 	}
 
 	body, err := json.Marshal(reqBody)
@@ -1319,13 +1239,11 @@ func (r *Router) forwardToAnthropic(ctx context.Context, provider *ProviderConfi
 	key := strings.TrimSpace(string(apiKey))
 	resp, err := doWithRateLimitRetry(ctx, func() (*http.Request, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-			"https://api.anthropic.com/v1/messages", bytes.NewReader(body))
+			anthropicMessagesURL, bytes.NewReader(body))
 		if err != nil {
 			return nil, err
 		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("x-api-key", key)
-		req.Header.Set("anthropic-version", "2023-06-01")
+		setAnthropicHeaders(req, provider, key)
 		return req, nil
 	})
 	if err != nil {

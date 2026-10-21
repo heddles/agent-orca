@@ -166,6 +166,14 @@ spec:
                   vectors. When set, this prefix is applied to _rag_search query embeddings.
                   Example: "search_query: "
                 type: string
+              workspaceID:
+                description: |-
+                  WorkspaceID is the Anthropic workspace the request is billed to. When set,
+                  the model-router sends it as the "anthropic-workspace-id" header on every
+                  Messages API call. Anthropic rejects requests (HTTP 400) from API keys that
+                  are not scoped to a single workspace unless this header is present.
+                  Only used for "anthropic/" models without a baseURL override.
+                type: string
             required:
             - credentialsRef
             - litellmModel
