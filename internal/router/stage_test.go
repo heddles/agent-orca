@@ -20,9 +20,9 @@ import "testing"
 
 func TestClassifyStage(t *testing.T) {
 	tests := []struct {
-		name       string
-		messages   []Message
-		wantStage  string
+		name        string
+		messages    []Message
+		wantStage   string
 		wantMinConf float64
 	}{
 		{
@@ -37,7 +37,7 @@ func TestClassifyStage(t *testing.T) {
 		},
 		{
 			name: "assistant message with code fence → code",
-			messages: [
+			messages: []Message{
 				{Role: "user", Content: "go"},
 				{Role: "assistant", Content: "here: ```go\nfunc f() {}\n```"},
 			},
@@ -46,54 +46,54 @@ func TestClassifyStage(t *testing.T) {
 		},
 		{
 			name: "diff marker in assistant message → code",
-			messages: [
+			messages: []Message{
 				{Role: "assistant", Content: "diff --git a/x.go b/x.go\n@@ -1 +1 @@\n-x\n+y"},
-			],
+			},
 			wantStage:   stageCode,
 			wantMinConf: stageConfCode,
 		},
 		{
 			name: "code fence in system prompt ignored",
-			messages: [
+			messages: []Message{
 				{Role: "system", Content: "always answer in ``` fenced blocks```"},
 				{Role: "user", Content: "what is kubernetes?"},
-			],
-			wantStage:  stageChat,
+			},
+			wantStage:   stageChat,
 			wantMinConf: stageConfChat,
 		},
 		{
 			name: "latest user message asks for summary",
-			messages: [
+			messages: []Message{
 				{Role: "user", Content: "long discussion..."},
 				{Role: "assistant", Content: "long answer..."},
 				{Role: "user", Content: "summarize this conversation"},
-			],
+			},
 			wantStage:   stageSummarize,
 			wantMinConf: stageConfSummarize,
 		},
 		{
 			name: "summary phrase in earlier turn ignored (latest user wins)",
-			messages: [
+			messages: []Message{
 				{Role: "user", Content: "recap the plan"},
 				{Role: "assistant", Content: "ok"},
 				{Role: "user", Content: "now write the code"},
-			],
-			wantStage:  stageChat,
+			},
+			wantStage:   stageChat,
 			wantMinConf: stageConfChat,
 		},
 		{
-			name:       "plain question → chat",
-			messages:   []Message{{Role: "user", Content: "what is kubernetes?"}},
-			wantStage:  stageChat,
+			name:        "plain question → chat",
+			messages:    []Message{{Role: "user", Content: "what is kubernetes?"}},
+			wantStage:   stageChat,
 			wantMinConf: stageConfChat,
 		},
 		{
 			name: "summary phrase only inside system prompt ignored",
-			messages: [
+			messages: []Message{
 				{Role: "system", Content: "if asked to summarize, be concise"},
 				{Role: "user", Content: "hello"},
-			],
-			wantStage:  stageChat,
+			},
+			wantStage:   stageChat,
 			wantMinConf: stageConfChat,
 		},
 	}
