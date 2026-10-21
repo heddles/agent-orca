@@ -18,10 +18,17 @@ package apiserver
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
+	"github.com/heddles/agent-orca/internal/state"
 )
 
 // TestACPRequestTimeoutMiddleware_Selection verifies the per-request timeout
@@ -83,4 +90,93 @@ func TestACPRequestTimeoutMiddleware_Selection(t *testing.T) {
 // ctxDeadline is context.Deadline for test readability.
 func ctxDeadline(ctx context.Context) (time.Time, bool) {
 	return ctx.Deadline()
+}
+
+// slowTailStore yields tokens with a delay between each, modelling a run that
+// keeps streaming longer than the http.Server's WriteTimeout.
+type slowTailStore struct {
+	state.Store
+	tokens []string
+	gap    time.Duration
+}
+
+func (s *slowTailStore) TailTokens(ctx context.Context, _ string) (<-chan string, error) {
+	ch := make(chan string)
+	go func() {
+		defer close(ch)
+		for _, tok := range s.tokens {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(s.gap):
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case ch <- tok:
+			}
+		}
+	}()
+	return ch, nil
+}
+
+// TestStreamACPRun_OutlivesServerWriteTimeout is the regression for SSE
+// streams being cut at the server's WriteTimeout (120s in newHTTPServer)
+// instead of acpStreamWindow: the stream must extend its write deadline so a
+// long run is delivered in one connection. The chain mirrors production
+// (timeout middleware → instrument wrapper → handler) so the
+// recordingResponseWriter must expose Unwrap for ResponseController.
+func TestStreamACPRun_OutlivesServerWriteTimeout(t *testing.T) {
+	run := &agentorcav1alpha1.AgentRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "acp-run-1", Namespace: "tenant-acme"},
+	}
+	s := newACPServer(t, run)
+	tokens := []string{"a", "b", "c", "d", "e"}
+	s.store = &slowTailStore{tokens: tokens, gap: 100 * time.Millisecond}
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := s.streamACPRun(w, r, run); err != nil {
+			t.Errorf("streamACPRun: %v", err)
+		}
+	})
+	api := httptest.NewUnstartedServer(acpRequestTimeoutMiddleware(instrument("acp", handler), time.Second))
+	// Far shorter than the ~500ms stream: without the deadline extension the
+	// connection is torn down mid-stream.
+	api.Config.WriteTimeout = 200 * time.Millisecond
+	api.Start()
+	t.Cleanup(api.Close)
+
+	req, err := http.NewRequest(http.MethodGet, api.URL+"/runs/acp-run-1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	resp, err := api.Client().Do(req)
+	if err != nil {
+		t.Fatalf("GET stream: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("stream cut off before completion: %v (got %q)", err, body)
+	}
+	got := string(body)
+	for _, tok := range tokens {
+		if !strings.Contains(got, `"content":"`+tok+`"`) {
+			t.Fatalf("token %q missing from stream:\n%s", tok, got)
+		}
+	}
+	if !strings.Contains(got, "event: run.completed") {
+		t.Fatalf("stream ended without run.completed:\n%s", got)
+	}
+}
+
+// TestRecordingResponseWriterUnwrap verifies ResponseController can reach the
+// underlying writer through the instrument wrapper.
+func TestRecordingResponseWriterUnwrap(t *testing.T) {
+	rec := httptest.NewRecorder()
+	rw := &recordingResponseWriter{ResponseWriter: rec}
+	if rw.Unwrap() != rec {
+		t.Fatal("Unwrap did not return the wrapped ResponseWriter")
+	}
 }

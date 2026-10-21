@@ -347,6 +347,10 @@ func handleSessionPrompt(ctx context.Context, b *acpBridge, req jsonrpcRequest) 
 	go b.watchFSSession(runCtx, sessionID)
 
 	stopReason := b.awaitCompletion(runCtx, runID, sessionID)
+	if normalized := normalizeStopReason(stopReason); normalized != stopReason {
+		b.srv.logf("acp: run %s ended with invalid stopReason %q, sending %q\n", runID, stopReason, normalized)
+		stopReason = normalized
+	}
 	b.srv.respond(req.ID, acpPromptResponse{StopReason: stopReason})
 	return promptHandled{}, nil
 }
@@ -396,6 +400,7 @@ func (b *acpBridge) awaitCompletion(ctx context.Context, runID, sessionID string
 // finalizes immediately even when the stream never delivered a terminal event
 // (e.g. the terminal trace event landed in the gap between windows).
 func (b *acpBridge) streamRunEvents(ctx context.Context, runID, sessionID string, st *openAIStreamState) string {
+	connectFailures := 0
 	for attempt := 0; ; attempt++ {
 		// Gap-filling CRD poll: when the previous stream window ended without a
 		// terminal event (the terminal trace marker landed in the gap between
@@ -423,14 +428,26 @@ func (b *acpBridge) streamRunEvents(ctx context.Context, runID, sessionID string
 		streamCtx, streamCancel := context.WithCancel(ctx)
 		ch, err := b.client.StreamRunEvents(streamCtx, runID)
 		if err != nil {
-			// streamCancel()
-			// SSE unavailable (run not yet in-progress, no state store, etc.).
-			// Fall back to polling.
-			b.srv.logf("acp: streaming of run (%v) failed with error: %s\n", err, runID)
+			// The stream could not be (re)opened — e.g. a 504 from the ingress
+			// while the operator pod serving the API is being replaced. The run
+			// itself is unaffected, so this must not end the turn: back off and
+			// re-attempt, letting the gap-filling CRD poll above finalize the
+			// turn once the run is terminal. Only a sustained outage gives up.
 			streamCancel()
-			return ""
-			// return b.pollToCompletion(ctx, runID, sessionID, st)
+			connectFailures++
+			b.srv.logf("acp: streaming of run %s failed (attempt %d): %v\n", runID, connectFailures, err)
+			if connectFailures >= maxStreamConnectFailures {
+				b.srv.logf("acp: giving up on run %s after %d consecutive stream failures\n", runID, connectFailures)
+				b.emitMessageChunk(sessionID, "msg_"+runID, fmt.Sprintf(
+					"\n\n[agent-orca] Lost the connection to run %s; it may still be running on the server.\n", runID), st)
+				return acpStopReasonEndTurn
+			}
+			if !b.retryWait(ctx, streamRetryBackoff(connectFailures)) {
+				return acpStopReasonUserCancel
+			}
+			continue
 		}
+		connectFailures = 0
 
 		term := b.consumeAndStreamHTTP(streamCtx, ch, sessionID, "msg_"+runID, st)
 		// Tear down this attempt before deciding what to do next: cancelling
@@ -1021,6 +1038,42 @@ func (b *acpBridge) tryResumeAwaiting(ctx context.Context, sessionID string, pro
 		return continuationID, true
 	}
 	return sess.RunID, true
+}
+
+// Stream reconnect policy. Vars (not consts) so tests can shrink them.
+var (
+	// streamRetryBaseDelay is the first backoff after a failed stream open;
+	// it doubles per consecutive failure up to streamRetryMaxDelay.
+	streamRetryBaseDelay = 250 * time.Millisecond
+	streamRetryMaxDelay  = 5 * time.Second
+	// maxStreamConnectFailures bounds consecutive failed stream opens before
+	// the turn ends: ~2.7 min of backoff at the default delays, plus however
+	// long each failed request takes (an ingress 504 can take ~30s). Long
+	// enough to ride out an operator rollout without hanging the editor forever.
+	maxStreamConnectFailures = 36
+)
+
+// streamRetryBackoff returns the delay before re-opening the stream after the
+// given number of consecutive failures (1-based).
+func streamRetryBackoff(failures int) time.Duration {
+	d := streamRetryBaseDelay
+	for i := 1; i < failures && d < streamRetryMaxDelay; i++ {
+		d *= 2
+	}
+	return min(d, streamRetryMaxDelay)
+}
+
+// normalizeStopReason guarantees the session/prompt response carries a value
+// from the ACP StopReason enum. Clients deserialize it strictly (Zed fails the
+// turn with an "unknown variant" parse error), so an empty or internal sentinel value is
+// mapped to end_turn.
+func normalizeStopReason(reason string) string {
+	switch reason {
+	case acpStopReasonEndTurn, acpStopReasonUserCancel,
+		acpStopReasonMaxTokens, acpStopReasonMaxTurnRequests, acpStopReasonRefusal:
+		return reason
+	}
+	return acpStopReasonEndTurn
 }
 
 func (b *acpBridge) retryWait(ctx context.Context, d time.Duration) bool {
