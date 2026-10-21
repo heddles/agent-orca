@@ -25,16 +25,22 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+)
+
+const (
+	testProviderFull  = "gpt-4o"
+	testProviderMini  = "gpt-4o-mini"
 )
 
 // fakeMetaProviderConfig builds a Config with two providers (whose names
 // deliberately collide on substring: gpt-4o ⊂ gpt-4o-mini) pointed at the
 // given LiteLLM-compatible test server.
 func fakeMetaProviderConfig(baseURL, apiKeyFile string, order int) *Config {
-	a, b := "gpt-4o", "gpt-4o-mini"
+	a, b := testProviderFull, testProviderMini
 	if order == 1 {
-		a, b = "gpt-4o-mini", "gpt-4o"
+		a, b = testProviderMini, testProviderFull
 	}
 	return &Config{
 		Providers: []ProviderConfig{
@@ -80,29 +86,29 @@ func TestResolveProviderName(t *testing.T) {
 	}{
 		{
 			name:      "exact match",
-			providers: []string{"gpt-4o", "gpt-4o-mini"},
-			raw:       "gpt-4o",
-			want:      "gpt-4o",
+			providers: []string{testProviderFull, testProviderMini},
+			raw:       testProviderFull,
+			want:      testProviderFull,
 			wantOK:    true,
 		},
 		{
 			name:      "mini response resolves to mini even when gpt-4o is first",
-			providers: []string{"gpt-4o", "gpt-4o-mini"},
-			raw:       "gpt-4o-mini",
-			want:      "gpt-4o-mini",
+			providers: []string{testProviderFull, testProviderMini},
+			raw:       testProviderMini,
+			want:      testProviderMini,
 			wantOK:    true,
 		},
 		{
 			name:      "mini response resolves to mini when mini is first",
-			providers: []string{"gpt-4o-mini", "gpt-4o"},
-			raw:       "gpt-4o-mini",
-			want:      "gpt-4o-mini",
+			providers: []string{testProviderMini, testProviderFull},
+			raw:       testProviderMini,
+			want:      testProviderMini,
 			wantOK:    true,
 		},
 		{
 			name:      "case-insensitive exact",
 			providers: []string{"GPT-4o-Mini"},
-			raw:       "gpt-4o-mini",
+			raw:       testProviderMini,
 			want:      "GPT-4o-Mini",
 			wantOK:    true,
 		},
@@ -115,21 +121,21 @@ func TestResolveProviderName(t *testing.T) {
 		},
 		{
 			name:      "blank response rejected",
-			providers: []string{"gpt-4o"},
+			providers: []string{testProviderFull},
 			raw:       "   ",
 			want:      "",
 			wantOK:    false,
 		},
 		{
 			name:      "empty response rejected",
-			providers: []string{"gpt-4o"},
+			providers: []string{testProviderFull},
 			raw:       "",
 			want:      "",
 			wantOK:    false,
 		},
 		{
 			name:      "unknown provider rejected",
-			providers: []string{"gpt-4o"},
+			providers: []string{testProviderFull},
 			raw:       "gpt-5",
 			want:      "",
 			wantOK:    false,
@@ -151,10 +157,10 @@ func TestResolveProviderName(t *testing.T) {
 }
 
 func TestRouteResolvesMiniRegardlessOfProviderOrder(t *testing.T) {
-	for order := 0; order < 2; order++ {
+	for order := range 2 {
 		t.Run(fmt.Sprintf("order%d", order), func(t *testing.T) {
 			apiKeyFile := writeTestAPIKeyFile(t)
-			srv := fakeMetaLLMServer(t, "gpt-4o-mini")
+			srv := fakeMetaLLMServer(t, testProviderMini)
 			defer srv.Close()
 			cfg := fakeMetaProviderConfig(srv.URL, apiKeyFile, order)
 			m := NewMetaRouter(cfg)
@@ -162,8 +168,8 @@ func TestRouteResolvesMiniRegardlessOfProviderOrder(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Route: %v", err)
 			}
-			if name != "gpt-4o-mini" {
-				t.Errorf("got %q, want gpt-4o-mini (order %d)", name, order)
+			if name != testProviderMini {
+				t.Errorf("got %q, want %q (order %d)", name, testProviderMini, order)
 			}
 		})
 	}
@@ -171,7 +177,7 @@ func TestRouteResolvesMiniRegardlessOfProviderOrder(t *testing.T) {
 
 func TestRouteCacheKeyRespectsStateBuckets(t *testing.T) {
 	apiKeyFile := writeTestAPIKeyFile(t)
-	srv := fakeMetaLLMServer(t, "gpt-4o-mini")
+	srv := fakeMetaLLMServer(t, testProviderMini)
 	defer srv.Close()
 	cfg := fakeMetaProviderConfig(srv.URL, apiKeyFile, 0)
 	m := NewMetaRouter(cfg)
@@ -222,13 +228,13 @@ func TestRouteCacheKeyRespectsStateBuckets(t *testing.T) {
 
 func TestRouteCacheHitReturnsCachedProvider(t *testing.T) {
 	apiKeyFile := writeTestAPIKeyFile(t)
-	calls := 0
+	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls++
+		calls.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"choices": []map[string]any{
-				{"message": map[string]any{"content": "gpt-4o-mini"}},
+				{"message": map[string]any{"content": testProviderMini}},
 			},
 		})
 	}))
@@ -244,8 +250,8 @@ func TestRouteCacheHitReturnsCachedProvider(t *testing.T) {
 	if _, _, err := m.Route(context.Background(), msgs, state); err != nil {
 		t.Fatalf("second Route: %v", err)
 	}
-	if calls != 1 {
-		t.Errorf("expected 1 LLM call (cache hit on second), got %d", calls)
+	if got := calls.Load(); got != 1 {
+		t.Errorf("expected 1 LLM call (cache hit on second), got %d", got)
 	}
 }
 
