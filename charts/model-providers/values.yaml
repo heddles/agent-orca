@@ -271,12 +271,95 @@ modelProviders:
 
   # ════════════════════════════════════════════════════════════════════════════
   # Anthropic
-  # https://docs.anthropic.com/en/docs/about-claude/models
+  # https://platform.claude.com/docs/en/models/overview
   # ════════════════════════════════════════════════════════════════════════════
 
-  # claude-opus-4-6 — frontier model, exceptional reasoning and writing
-  - name: anthropic-claude-opus-4-6
+  # claude-fable-5-1 — most capable model, demanding reasoning and long-horizon agentic work
+  # Requires 30-day data retention (unavailable to zero-data-retention orgs).
+  - name: anthropic-claude-fable-5-1
+    enabled: false
+    litellmModel: "anthropic/claude-fable-5-1"
+    credentialsRef:
+      existingSecret: "anthropic-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+      - vision
+      - long-context
+    latencyProfile: slow
+    constraints:
+      contextWindow: 1000000
+      maxOutputTokens: 128000
+      maxRequestTokens: 0
+      costPerMillionInputTokens: "10.00"
+      costPerMillionOutputTokens: "50.00"
+
+  # claude-opus-5-5 — frontier model for long-running agentic coding and knowledge work
+  - name: anthropic-claude-opus-5-5
     enabled: true
+    litellmModel: "anthropic/claude-opus-5-5"
+    credentialsRef:
+      existingSecret: "anthropic-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+      - vision
+      - long-context
+    latencyProfile: medium
+    constraints:
+      contextWindow: 1000000
+      maxOutputTokens: 128000
+      maxRequestTokens: 0
+      costPerMillionInputTokens: "4.00"
+      costPerMillionOutputTokens: "20.00"
+
+  # claude-sonnet-5-5 — best balance of intelligence and speed
+  - name: anthropic-claude-sonnet-5-5
+    enabled: true
+    litellmModel: "anthropic/claude-sonnet-5-5"
+    credentialsRef:
+      existingSecret: "anthropic-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+      - vision
+      - fast
+      - long-context
+    latencyProfile: fast
+    constraints:
+      contextWindow: 1000000
+      maxOutputTokens: 128000
+      maxRequestTokens: 0
+      costPerMillionInputTokens: "2.00"
+      costPerMillionOutputTokens: "10.00"
+
+  # claude-haiku-5-5 — fastest Claude model, for high-volume classification, extraction, routing
+  # Pricing is for prompts up to 100K tokens ($0.50 / $2.50 beyond).
+  - name: anthropic-claude-haiku-5-5
+    enabled: true
+    litellmModel: "anthropic/claude-haiku-5-5"
+    credentialsRef:
+      existingSecret: "anthropic-api-key"
+      key: "api-key"
+    capabilities:
+      - fast
+      - cheap
+      - vision
+      - long-context
+    latencyProfile: fast
+    constraints:
+      contextWindow: 1000000
+      maxOutputTokens: 128000
+      maxRequestTokens: 0
+      costPerMillionInputTokens: "0.10"
+      costPerMillionOutputTokens: "0.50"
+
+  # claude-opus-4-6 — legacy Opus, still available
+  - name: anthropic-claude-opus-4-6
+    enabled: false
     litellmModel: "anthropic/claude-opus-4-6"
     credentialsRef:
       existingSecret: "anthropic-api-key"
@@ -288,15 +371,15 @@ modelProviders:
       - long-context
     latencyProfile: slow
     constraints:
-      contextWindow: 200000
-      maxOutputTokens: 32000
+      contextWindow: 1000000
+      maxOutputTokens: 128000
       maxRequestTokens: 0
       costPerMillionInputTokens: "5.00"
       costPerMillionOutputTokens: "25.00"
 
-  # claude-sonnet-4-6 — best balance of intelligence and speed
+  # claude-sonnet-4-6 — legacy Sonnet, still available
   - name: anthropic-claude-sonnet-4-6
-    enabled: true
+    enabled: false
     litellmModel: "anthropic/claude-sonnet-4-6"
     credentialsRef:
       existingSecret: "anthropic-api-key"
@@ -309,69 +392,30 @@ modelProviders:
       - long-context
     latencyProfile: medium
     constraints:
+      contextWindow: 1000000
+      maxOutputTokens: 128000
+      maxRequestTokens: 0
+      costPerMillionInputTokens: "3.00"
+      costPerMillionOutputTokens: "15.00"
+
+  # claude-haiku-4-5 — legacy Haiku, still available
+  - name: anthropic-claude-haiku-4-5
+    enabled: false
+    litellmModel: "anthropic/claude-haiku-4-5"
+    credentialsRef:
+      existingSecret: "anthropic-api-key"
+      key: "api-key"
+    capabilities:
+      - fast
+      - cheap
+      - vision
+    latencyProfile: fast
+    constraints:
       contextWindow: 200000
       maxOutputTokens: 64000
       maxRequestTokens: 0
-      costPerMillionInputTokens: "3.00"
-      costPerMillionOutputTokens: "15.00"
-
-  # claude-haiku-4-5 — fastest and most compact Claude model
-  - name: anthropic-claude-haiku-4-5
-    enabled: true
-    litellmModel: "anthropic/claude-haiku-4-5-20251001"
-    credentialsRef:
-      existingSecret: "anthropic-api-key"
-      key: "api-key"
-    capabilities:
-      - fast
-      - cheap
-      - vision
-    latencyProfile: fast
-    constraints:
-      contextWindow: 200000
-      maxOutputTokens: 8096
-      maxRequestTokens: 0
       costPerMillionInputTokens: "1.00"
       costPerMillionOutputTokens: "5.00"
-
-  # claude-3-5-sonnet — previous flagship, still highly capable
-  - name: anthropic-claude-3-5-sonnet
-    enabled: false
-    litellmModel: "anthropic/claude-3-5-sonnet-20241022"
-    credentialsRef:
-      existingSecret: "anthropic-api-key"
-      key: "api-key"
-    capabilities:
-      - reasoning
-      - code
-      - vision
-      - fast
-    latencyProfile: medium
-    constraints:
-      contextWindow: 200000
-      maxOutputTokens: 8096
-      maxRequestTokens: 0
-      costPerMillionInputTokens: "3.00"
-      costPerMillionOutputTokens: "15.00"
-
-  # claude-3-5-haiku — previous fast model
-  - name: anthropic-claude-3-5-haiku
-    enabled: false
-    litellmModel: "anthropic/claude-3-5-haiku-20241022"
-    credentialsRef:
-      existingSecret: "anthropic-api-key"
-      key: "api-key"
-    capabilities:
-      - fast
-      - cheap
-      - vision
-    latencyProfile: fast
-    constraints:
-      contextWindow: 200000
-      maxOutputTokens: 8096
-      maxRequestTokens: 0
-      costPerMillionInputTokens: "0.80"
-      costPerMillionOutputTokens: "4.00"
 
   # ════════════════════════════════════════════════════════════════════════════
   # Google Gemini (direct API key, not Vertex AI)
@@ -930,13 +974,13 @@ modelSelectors:
     providers:
       - name: openrouter-free
         weight: 80
-      - name: anthropic-claude-sonnet-4-6
+      - name: anthropic-claude-sonnet-5-5
         weight: 60
       - name: openai-gpt-4o
         weight: 40
     fallbackChain:
       - google-gemini-2-5-flash
-      - anthropic-claude-haiku-4-5
+      - anthropic-claude-haiku-5-5
       - openrouter-free
 
   # fast — lowest latency, optimised for interactive / high-volume workloads
@@ -946,7 +990,7 @@ modelSelectors:
     providers:
       - name: openai-gpt-4o-mini
         weight: 40
-      - name: anthropic-claude-haiku-4-5
+      - name: anthropic-claude-haiku-5-5
         weight: 40
       - name: google-gemini-2-5-flash-lite
         weight: 20
@@ -960,7 +1004,7 @@ modelSelectors:
     providers:
       - name: openai-o3-mini
         weight: 50
-      - name: anthropic-claude-opus-4-6
+      - name: anthropic-claude-opus-5-5
         weight: 30
       - name: deepseek-r1
         weight: 20
@@ -973,7 +1017,7 @@ modelSelectors:
     enabled: false
     strategy: rule-based
     providers:
-      - name: anthropic-claude-sonnet-4-6
+      - name: anthropic-claude-sonnet-5-5
         weight: 40
       - name: openai-gpt-4o
         weight: 30
@@ -986,7 +1030,7 @@ modelSelectors:
     enabled: false
     strategy: rule-based
     providers:
-      - name: anthropic-claude-sonnet-4-6
+      - name: anthropic-claude-sonnet-5-5
         weight: 40
       - name: openai-gpt-4o
         weight: 40
@@ -1002,7 +1046,7 @@ modelSelectors:
     providers:
       - name: google-gemini-2-5-pro
         weight: 50
-      - name: anthropic-claude-sonnet-4-6
+      - name: anthropic-claude-sonnet-5-5
         weight: 30
       - name: google-gemini-2-5-flash
         weight: 20
