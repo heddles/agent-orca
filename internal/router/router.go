@@ -1147,6 +1147,7 @@ func (r *Router) forwardToProvider(ctx context.Context, provider *ProviderConfig
 		}
 	}
 	chatReq.Model = modelName
+	chatReq.Messages = adaptToolCallsForProvider(provider, chatReq.Messages)
 
 	// Inject trust-boundary hint for any <rag-context> content present in the messages.
 	chatReq = r.injectRAGTrustBoundaryHint(chatReq)

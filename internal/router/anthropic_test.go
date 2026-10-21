@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,14 +19,23 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
-// captureAnthropic swaps http.DefaultTransport for the test and records the
-// request sent to the Anthropic Messages API.
-func captureAnthropic(t *testing.T, respBody string) *http.Request {
+// capturedRequest is what an intercepted provider call looked like on the wire.
+type capturedRequest struct {
+	URL    *url.URL
+	Header http.Header
+	Body   []byte
+}
+
+// captureHTTP swaps http.DefaultTransport for the test, records the request
+// sent to a provider, and answers 200 with respBody.
+func captureHTTP(t *testing.T, respBody string) *capturedRequest {
 	t.Helper()
-	captured := &http.Request{}
+	captured := &capturedRequest{}
 	orig := http.DefaultTransport
 	http.DefaultTransport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		*captured = *r.Clone(context.Background())
+		captured.URL = r.URL
+		captured.Header = r.Header.Clone()
+		captured.Body, _ = io.ReadAll(r.Body)
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     http.Header{"Content-Type": []string{"application/json"}},
@@ -80,7 +90,7 @@ func TestAnthropic_WorkspaceHeader(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := captureAnthropic(t, anthropicOKResponse)
+			req := captureHTTP(t, anthropicOKResponse)
 			r, p := anthropicTestRouter(t, tt.workspaceID)
 
 			if tt.stream {
@@ -114,7 +124,7 @@ func TestAnthropic_WorkspaceHeader(t *testing.T) {
 
 // A custom BaseURL means an OpenAI-compatible proxy; Anthropic headers must not leak to it.
 func TestAnthropic_WorkspaceHeaderNotSentToBaseURLProxy(t *testing.T) {
-	req := captureAnthropic(t, `{"choices":[{"message":{"role":"assistant","content":"hi"}}]}`)
+	req := captureHTTP(t, `{"choices":[{"message":{"role":"assistant","content":"hi"}}]}`)
 	r, p := anthropicTestRouter(t, "wrkspc_123")
 	p.BaseURL = "http://proxy.local"
 	if _, err := r.forwardToProvider(context.Background(), p, chatReqUser()); err != nil {

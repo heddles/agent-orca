@@ -155,6 +155,7 @@ func (r *Router) forwardToProviderStream(ctx context.Context, provider *Provider
 		}
 	}
 	chatReq.Model = modelName
+	chatReq.Messages = adaptToolCallsForProvider(provider, chatReq.Messages)
 	chatReq.Stream = true
 
 	reqBody, err := json.Marshal(chatReq)
@@ -663,6 +664,9 @@ func mergeToolCallDeltas(existing []ToolCall, deltas []ToolCall) []ToolCall {
 				}
 				if d.Type != "" {
 					existing[i].Type = d.Type
+				}
+				if len(d.ExtraContent) > 0 {
+					existing[i].ExtraContent = d.ExtraContent
 				}
 				found = true
 				break

@@ -475,6 +475,11 @@ type ToolCall struct {
 	Type     string       `json:"type"`            // always "function"
 	Index    int          `json:"index,omitempty"` // used in streaming deltas to identify which call a chunk belongs to
 	Function FunctionCall `json:"function"`
+	// ExtraContent carries provider-specific metadata that must round-trip
+	// verbatim. Gemini's OpenAI-compatible endpoint returns
+	// {"google":{"thought_signature":"..."}} here and rejects the next request
+	// (HTTP 400) if the assistant tool call is not echoed back with it.
+	ExtraContent json.RawMessage `json:"extra_content,omitempty"`
 }
 
 // FunctionCall holds the name and arguments of a tool call.
