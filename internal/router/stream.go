@@ -651,6 +651,16 @@ func (r *Router) tryFallbackStream(
 // Each parallel tool call has a unique index; chunks with the same index are merged.
 func mergeToolCallDeltas(existing []ToolCall, deltas []ToolCall) []ToolCall {
 	for _, d := range deltas {
+		// Gemini's OpenAI-compatible stream omits "index", so every parallel tool
+		// call arrives as index 0. A different non-empty ID on an occupied index
+		// is therefore a new call, not a continuation: give it its own index
+		// instead of concatenating its name and arguments onto the first call.
+		for i := range existing {
+			if existing[i].Index == d.Index && d.ID != "" && existing[i].ID != "" && d.ID != existing[i].ID {
+				d.Index = nextToolCallIndex(existing)
+				break
+			}
+		}
 		// Find existing entry by index.
 		found := false
 		for i := range existing {
@@ -677,6 +687,17 @@ func mergeToolCallDeltas(existing []ToolCall, deltas []ToolCall) []ToolCall {
 		}
 	}
 	return existing
+}
+
+// nextToolCallIndex returns the smallest index above every index in calls.
+func nextToolCallIndex(calls []ToolCall) int {
+	next := 0
+	for _, c := range calls {
+		if c.Index >= next {
+			next = c.Index + 1
+		}
+	}
+	return next
 }
 
 // translateAnthropicSSE reads Anthropic SSE events and writes OpenAI-format SSE events to w.
