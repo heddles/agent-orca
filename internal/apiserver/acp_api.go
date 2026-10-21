@@ -129,19 +129,6 @@ func acpRequestTimeoutMiddleware(next http.Handler, defaultTimeout time.Duration
 	})
 }
 
-// extendSSEWriteDeadline moves the connection's write deadline to the
-// request context's deadline (or acpStreamWindow from now when it has none).
-// Failure is logged, not fatal: the stream still works up to WriteTimeout.
-func extendSSEWriteDeadline(w http.ResponseWriter, r *http.Request) {
-	deadline, ok := r.Context().Deadline()
-	if !ok {
-		deadline = time.Now().Add(acpStreamWindow)
-	}
-	if err := http.NewResponseController(w).SetWriteDeadline(deadline); err != nil {
-		slog.Warn("failed to extend SSE write deadline", "path", r.URL.Path, "err", err)
-	}
-}
-
 // isSSEStreamRequest reports whether this request is the live run stream:
 // GET /runs/{run_id} (single segment — not /events lists or /fs/* polls) with
 // an Accept header asking for text/event-stream.

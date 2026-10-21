@@ -541,6 +541,8 @@ func (s *ExternalAPIServer) streamTask(w http.ResponseWriter, r *http.Request, t
 		http.Error(w, `{"error":"streaming not supported"}`, http.StatusInternalServerError)
 		return
 	}
+	// Renew the write deadline per event so the stream outlives WriteTimeout.
+	flusher = newRollingDeadlineFlusher(w, r, flusher, sseWriteIdleTimeout)
 
 	// Emit initial status event.
 	_, _ = fmt.Fprintf(w, "event: status\ndata: %s\n\n", mustJSON(map[string]string{

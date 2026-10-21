@@ -427,6 +427,8 @@ func (s *UIServer) handleStream(w http.ResponseWriter, r *http.Request, ns, runN
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
 		return
 	}
+	// Renew the write deadline per event so the stream outlives WriteTimeout.
+	flusher = newRollingDeadlineFlusher(w, r, flusher, sseWriteIdleTimeout)
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
