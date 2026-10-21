@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mirrors the key into each run namespace and injects it into the model-router
   container only (never the agent container, never the router ConfigMap). Rollout and
   rotation runbook: `docs/hindsight-auth.md`.
+- **`CostCapture` condition on AgentRun** (#76) — `Status.SpendUSD: ""` used to mean both
+  "this run cost nothing" and "its spend could not be read". The controller now sets
+  `CostCapture=True` (reason `Complete`) when the spend was read from the state store and
+  `CostCapture=False` (reason `Incomplete`, with the cause) when it could not be, e.g.
+  the store was unreachable or none is configured (dev profile), so cost views can show
+  such runs as untracked instead of $0.
 - **Per-run spend metric with call outcomes** (`agentorca_modelrouter_spend_usd_total{namespace,run,provider,model,outcome}`,
   #75) — the model-router now exports the USD it spends split by `success`,
   `provider_error`, `cancelled` and `stream_interrupted` (all four series from the first
@@ -118,6 +124,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   discarded. The bridge now emits it as a suffix-aware message chunk (no duplication on
   reconnect replay), `run.completed` carries it, and `Status.Output` truncation (10 KiB,
   kept for etcd) is now rune-safe and marked with `[output truncated]`.
+- AgentRun spend was dropped on several terminal paths (#76): a restart reset the run to
+  `Pending` without writing the partial spend (lost entirely without a state store), runs
+  the router ended through `_fail`/`_done` never had their spend loaded, and any state
+  store error silently became `""`. Spend is now stamped on every retry and on every
+  terminal run (with a bounded retry while the store is unreachable); a failed read keeps
+  the earlier value as a lower bound and flags `CostCapture=Incomplete`.
 - Router spend lost on failure paths (#75): a run cancelled mid-call returned before its
   spend was recorded, a stream cut off before the provider's usage chunk recorded $0
   (now approximated from the request and the received output, or taken from usage the
