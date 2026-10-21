@@ -152,3 +152,38 @@ func TestForwardToProvider_GeminiRequestCarriesThoughtSignatures(t *testing.T) {
 		}
 	}
 }
+
+// Regression: Gemini streams parallel tool calls without an "index" (all 0) but
+// with distinct IDs. They used to merge into one call named after the last and
+// carrying both calls' JSON arguments concatenated, which Gemini then rejected
+// with "Request contains an invalid argument" on the next turn.
+func TestMergeToolCallDeltas_GeminiParallelCallsWithoutIndex(t *testing.T) {
+	var merged []ToolCall
+	merged = mergeToolCallDeltas(merged, []ToolCall{{ID: "call_1", Type: "function",
+		Function: FunctionCall{Name: "get_weather", Arguments: `{"city":"Paris"}`}, ExtraContent: json.RawMessage(realSig)}})
+	merged = mergeToolCallDeltas(merged, []ToolCall{{ID: "call_2", Type: "function",
+		Function: FunctionCall{Name: "get_time", Arguments: `{"city":"Tokyo"}`}}})
+
+	if len(merged) != 2 {
+		t.Fatalf("got %d calls, want 2: %+v", len(merged), merged)
+	}
+	if merged[0].Function.Name != "get_weather" || merged[0].Function.Arguments != `{"city":"Paris"}` || string(merged[0].ExtraContent) != realSig {
+		t.Errorf("first call corrupted: %+v", merged[0])
+	}
+	if merged[1].ID != "call_2" || merged[1].Function.Name != "get_time" || merged[1].Function.Arguments != `{"city":"Tokyo"}` {
+		t.Errorf("second call wrong: %+v", merged[1])
+	}
+	if merged[0].Index == merged[1].Index {
+		t.Errorf("calls share index %d", merged[0].Index)
+	}
+}
+
+// OpenAI-style streams repeat the same ID (or none) on continuation chunks; those must still merge.
+func TestMergeToolCallDeltas_SameIDContinuationStillMerges(t *testing.T) {
+	merged := mergeToolCallDeltas(nil, []ToolCall{{Index: 0, ID: "c", Function: FunctionCall{Name: "f", Arguments: `{"a"`}}})
+	merged = mergeToolCallDeltas(merged, []ToolCall{{Index: 0, ID: "c", Function: FunctionCall{Arguments: `:1}`}}})
+	merged = mergeToolCallDeltas(merged, []ToolCall{{Index: 1, ID: "d", Function: FunctionCall{Name: "g", Arguments: `{}`}}})
+	if len(merged) != 2 || merged[0].Function.Arguments != `{"a":1}` || merged[1].Function.Name != "g" {
+		t.Errorf("unexpected merge: %+v", merged)
+	}
+}
