@@ -16,7 +16,10 @@ limitations under the License.
 
 package router
 
-import "strings"
+import (
+	"os"
+	"strings"
+)
 
 // Task stages produced by classifyStage. Stage names double as
 // CapabilityRouting map keys, so routing a stage to a provider is pure
@@ -38,7 +41,8 @@ const (
 	stageConfChat      = 0.40
 )
 
-// stageRoutingEnabled reports whether stage routing is active.// Rollback switch (#60): ROUTER_STAGE_ROUTING=false restores the
+// stageRoutingEnabled reports whether stage routing is active.
+// Rollback switch (#60): ROUTER_STAGE_ROUTING=false restores the
 // pre-stage rule order. Any other value (including unset) enables it.
 func stageRoutingEnabled() bool {
 	return os.Getenv("ROUTER_STAGE_ROUTING") != "false"
@@ -119,12 +123,10 @@ func containsCodeSignal(text string) bool {
 	return strings.Contains(text, "diff --git")
 }
 
-// asksForSummary reports whether a user message asks for a summary,
-// recap, or digest of the conversation.
+// asksForSummary reports whether text asks for a summary/recap of the
+// conversation. Phrase list matches keyword-hint style so operators can
+// predict what triggers the summarize stage.
 func asksForSummary(text string) bool {
-	if text == "" {
-		return false
-	}
 	lower := strings.ToLower(text)
 	for _, phrase := range []string{"summarize", "write a summary", "give me a summary", "summary of", "recap", "tl;dr"} {
 		if strings.Contains(lower, phrase) {
