@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mirrors the key into each run namespace and injects it into the model-router
   container only (never the agent container, never the router ConfigMap). Rollout and
   rotation runbook: `docs/hindsight-auth.md`.
+- **Per-run spend metric with call outcomes** (`agentorca_modelrouter_spend_usd_total{namespace,run,provider,model,outcome}`,
+  #75) — the model-router now exports the USD it spends split by `success`,
+  `provider_error`, `cancelled` and `stream_interrupted` (all four series from the first
+  scrape), so cost that never reaches a success path is visible on `:9091/metrics`.
 - **Native local filesystem access via the ACP bridge (`fs/*` relay)** — "pod drives
   the workstation": agent pods read and edit the user's real local workspace through
   the same ACP v1 channel editors like Zed already use, with no workspace copies,
@@ -114,6 +118,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   discarded. The bridge now emits it as a suffix-aware message chunk (no duplication on
   reconnect replay), `run.completed` carries it, and `Status.Output` truncation (10 KiB,
   kept for etcd) is now rune-safe and marked with `[output truncated]`.
+- Router spend lost on failure paths (#75): a run cancelled mid-call returned before its
+  spend was recorded, a stream cut off before the provider's usage chunk recorded $0
+  (now approximated from the request and the received output, or taken from usage the
+  provider already sent), and non-streaming Gemini-format calls were never counted
+  toward run spend or the budget cap at all. `_fail` now flushes spend before notifying
+  the operator.
 - `fs_list_dir` symlink escape: the bridge answers directory listings from
   disk itself, and lexical confinement let a workspace symlink (final or
   intermediate component) enumerate host directories outside the roots. Paths

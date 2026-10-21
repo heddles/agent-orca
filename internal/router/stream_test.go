@@ -45,8 +45,9 @@ type testStore struct {
 	doneEvents    int      // count of terminal `done` trace events with finish_reason (0 — emitDoneEvent removed)
 	traceEvents   []string // captured trace-event JSON
 	savedMessages []json.RawMessage
-	saveCount     int      // number of checkpoint() (SaveMessages) calls
-	savedKeys     []string // keys passed to SaveMessages, in order
+	saveCount     int       // number of checkpoint() (SaveMessages) calls
+	savedKeys     []string  // keys passed to SaveMessages, in order
+	savedSpend    []float64 // cumulative spend values passed to SaveSpend, in order
 }
 
 func newTestStore(t *testing.T) *testStore {
@@ -81,6 +82,24 @@ func (s *testStore) checkpointCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.saveCount
+}
+
+func (s *testStore) SaveSpend(_ context.Context, _ string, usd float64, _ time.Duration) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.savedSpend = append(s.savedSpend, usd)
+	return nil
+}
+
+// lastSavedSpend returns the most recently persisted cumulative spend and
+// whether SaveSpend was called at all.
+func (s *testStore) lastSavedSpend() (float64, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.savedSpend) == 0 {
+		return 0, false
+	}
+	return s.savedSpend[len(s.savedSpend)-1], true
 }
 
 func (s *testStore) savedMessageCount() int {
