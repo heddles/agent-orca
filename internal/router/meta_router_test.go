@@ -39,7 +39,7 @@ func fakeMetaProviderConfig(baseURL, apiKeyFile string, order int) *Config {
 	return &Config{
 		Providers: []ProviderConfig{
 			{Name: a, LiteLLMModel: a, BaseURL: baseURL, APIKeyFile: apiKeyFile},
-			{Name: b, LiteLLMModel: b, BaseURL: baseURL, APIKeyKeyFile: apiKeyFile},
+			{Name: b, LiteLLMModel: b, BaseURL: baseURL, APIKeyFile: apiKeyFile},
 		},
 		MetaRouterProviderName: a,
 	}
@@ -67,72 +67,72 @@ func fakeMetaLLMServer(t *testing.T, response string) *httptest.Server {
 			},
 			"usage": map[string]any{"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
 		})
-	})
+	}))
 }
 
 func TestResolveProviderName(t *testing.T) {
 	tests := []struct {
-		name     string
+		name      string
 		providers []string
-		raw      string
-		want     string
-		wantOK   bool
+		raw       string
+		want      string
+		wantOK    bool
 	}{
 		{
-			name:     "exact match",
+			name:      "exact match",
 			providers: []string{"gpt-4o", "gpt-4o-mini"},
-			raw:      "gpt-4o",
-			want:     "gpt-4o",
-			wantOK:   true,
+			raw:       "gpt-4o",
+			want:      "gpt-4o",
+			wantOK:    true,
 		},
 		{
-			name:     "mini response resolves to mini even when gpt-4o is first",
+			name:      "mini response resolves to mini even when gpt-4o is first",
 			providers: []string{"gpt-4o", "gpt-4o-mini"},
-			raw:      "gpt-4o-mini",
-			want:     "gpt-4o-mini",
-			wantOK:   true,
+			raw:       "gpt-4o-mini",
+			want:      "gpt-4o-mini",
+			wantOK:    true,
 		},
 		{
-			name:     "mini response resolves to mini when mini is first",
+			name:      "mini response resolves to mini when mini is first",
 			providers: []string{"gpt-4o-mini", "gpt-4o"},
-			raw:      "gpt-4o-mini",
-			want:     "gpt-4o-mini",
-			wantOK:   true,
+			raw:       "gpt-4o-mini",
+			want:      "gpt-4o-mini",
+			wantOK:    true,
 		},
 		{
-			name:     "case-insensitive exact",
+			name:      "case-insensitive exact",
 			providers: []string{"GPT-4o-Mini"},
-			raw:      "gpt-4o-mini",
-			want:     "GPT-4o-Mini",
-			wantOK:   true,
+			raw:       "gpt-4o-mini",
+			want:      "GPT-4o-Mini",
+			wantOK:    true,
 		},
 		{
-			name:     "fuzzy with surrounding text",
+			name:      "fuzzy with surrounding text",
 			providers: []string{"claude-sonnet-4-6"},
-			raw:      "The best provider is claude-sonnet-4-6.",
-			want:     "claude-sonnet-4-6",
-			wantOK:   true,
+			raw:       "The best provider is claude-sonnet-4-6.",
+			want:      "claude-sonnet-4-6",
+			wantOK:    true,
 		},
 		{
-			name:     "blank response rejected",
+			name:      "blank response rejected",
 			providers: []string{"gpt-4o"},
-			raw:      "   ",
-			want:     "",
-			wantOK:   false,
+			raw:       "   ",
+			want:      "",
+			wantOK:    false,
 		},
 		{
-			name:     "empty response rejected",
+			name:      "empty response rejected",
 			providers: []string{"gpt-4o"},
-			raw:      "",
-			want:     "",
-			wantOK:   false,
+			raw:       "",
+			want:      "",
+			wantOK:    false,
 		},
 		{
-			name:     "unknown provider rejected",
+			name:      "unknown provider rejected",
 			providers: []string{"gpt-4o"},
-			raw:      "gpt-5",
-			want:     "",
-			wantOK:   false,
+			raw:       "gpt-5",
+			want:      "",
+			wantOK:    false,
 		},
 	}
 	for _, tt := range tests {
@@ -183,10 +183,7 @@ func TestRouteCacheKeyRespectsStateBuckets(t *testing.T) {
 		t.Fatalf("first Route: %v", err)
 	}
 
-	// Same bucket → cache hit (server never consulted; server returns the
-	// same name anyway, so verify by clearing the cache and observing
-	// behavior instead: a miss would still succeed. Instead assert the
-	// cache map directly.)
+	// Same bucket (different raw values, same buckets) → same cache key.
 	sameBucket := RoutingState{BudgetUSD: 10, SpentUSD: 5, TurnCount: 5}
 	m.cacheMu.Lock()
 	_, cachedSame := m.cache[m.cacheKey(msgs, sameBucket)]
