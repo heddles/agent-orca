@@ -2,7 +2,7 @@ apiVersion: v2
 name: model-providers
 description: Ready-to-use ModelProvider CRs and credential Secrets for popular cloud LLM providers
 type: application
-version: 0.1.0
+version: 0.2.0
 appVersion: "0.1.0"
 keywords:
   - ai
