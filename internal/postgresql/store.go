@@ -30,6 +30,9 @@ import (
 	"strings"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
 	_ "github.com/jackc/pgx/v5/stdlib" // pgx as database/sql driver
 )
@@ -50,9 +53,13 @@ type RunArchive struct {
 	PriorRunRef  string        `db:"prior_run_ref"`
 	TimeoutSec   sql.NullInt64 `db:"timeout_sec"`
 	// Status-level fields (captured at archival time).
-	Phase             string     `db:"phase"`
-	PodName           string     `db:"pod_name"`
-	SpendUSD          string     `db:"spend_usd"`
+	Phase    string `db:"phase"`
+	PodName  string `db:"pod_name"`
+	SpendUSD string `db:"spend_usd"`
+	// CostCapture mirrors the run's CostCapture condition: "complete" when the
+	// spend was read from the state store, "incomplete" when it could not be,
+	// "" for rows archived before the column existed (spend unknown either way).
+	CostCapture       string     `db:"cost_capture"`
 	Output            string     `db:"output"`
 	RawOutput         string     `db:"raw_output"`
 	RestartCount      int        `db:"restart_count"`
@@ -182,14 +189,16 @@ func (s *Store) ArchiveRun(ctx context.Context, run *agentorcav1alpha1.AgentRun,
 			prior_run_ref, timeout_sec, phase, pod_name, spend_usd, output,
 			raw_output, restart_count, start_time, completion_time,
 			context_used_tokens, max_context_tokens, tenant,
-			routing_decisions, child_run_refs, trace_events, created_at, updated_at
+			routing_decisions, child_run_refs, trace_events, created_at, updated_at,
+			cost_capture
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-			$15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25
+			$15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26
 		)
 		ON CONFLICT (id) DO UPDATE SET
 			phase = EXCLUDED.phase,
 			spend_usd = EXCLUDED.spend_usd,
+			cost_capture = EXCLUDED.cost_capture,
 			output = EXCLUDED.output,
 			raw_output = EXCLUDED.raw_output,
 			restart_count = EXCLUDED.restart_count,
@@ -212,7 +221,7 @@ func (s *Store) ArchiveRun(ctx context.Context, run *agentorcav1alpha1.AgentRun,
 		archived.RestartCount, archived.StartTime, archived.CompletionTime,
 		archived.ContextUsedTokens, archived.MaxContextTokens, archived.Tenant,
 		archived.RoutingDecisionsJSON, archived.ChildRunRefsJSON,
-		archived.TraceEventsJSON, now, now,
+		archived.TraceEventsJSON, now, now, archived.CostCapture,
 	)
 	if err != nil {
 		return fmt.Errorf("archiving run %s: %w", archived.ID, err)
@@ -323,6 +332,106 @@ func (s *Store) QueryHistory(ctx context.Context, q HistoryQuery) (*HistoryPage,
 	}, nil
 }
 
+// CostQuery filters the archived runs that feed the cost dashboard.
+type CostQuery struct {
+	// Namespaces restricts results to these namespaces. Empty = all.
+	Namespaces []string
+	// Deployment restricts to runs labelled agentorca.io/deployment=<name>.
+	Deployment string
+	// Run restricts to a single run name.
+	Run string
+	// Since drops runs that finished (or, if unfinished, started) before it.
+	Since *time.Time
+}
+
+// CostRow is the slice of an archived run that cost aggregation needs.
+type CostRow struct {
+	Name      string
+	Namespace string
+	AgentRef  string
+	Phase     string
+	SpendUSD  string
+	// CostIncomplete is true when the run's spend could not be captured.
+	CostIncomplete bool
+	// Model is the model of the run's last routing decision ("" if none).
+	Model string
+	// When is the completion time, falling back to start then creation time.
+	When time.Time
+}
+
+// maxCostRows bounds one cost query so a very large archive cannot exhaust
+// memory; the newest rows win.
+const maxCostRows = 100000
+
+// QueryCostRows returns the archived runs matching q, newest first, in the
+// narrow shape cost aggregation needs (no output, input or trace payloads).
+func (s *Store) QueryCostRows(ctx context.Context, q CostQuery) ([]CostRow, error) {
+	var (
+		where  []string
+		args   []any
+		paramN = 1
+	)
+	if len(q.Namespaces) > 0 {
+		ph := make([]string, len(q.Namespaces))
+		for i, n := range q.Namespaces {
+			ph[i] = fmt.Sprintf("$%d", paramN)
+			args = append(args, n)
+			paramN++
+		}
+		where = append(where, fmt.Sprintf("namespace IN (%s)", strings.Join(ph, ", ")))
+	}
+	if q.Deployment != "" {
+		where = append(where, fmt.Sprintf("labels ->> 'agentorca.io/deployment' = $%d", paramN))
+		args = append(args, q.Deployment)
+		paramN++
+	}
+	if q.Run != "" {
+		where = append(where, fmt.Sprintf("name = $%d", paramN))
+		args = append(args, q.Run)
+		paramN++
+	}
+	if q.Since != nil {
+		where = append(where, fmt.Sprintf("COALESCE(completion_time, start_time, created_at) >= $%d", paramN))
+		args = append(args, *q.Since)
+		paramN++
+	}
+	whereClause := ""
+	if len(where) > 0 {
+		whereClause = "WHERE " + strings.Join(where, " AND ")
+	}
+	dataQ := fmt.Sprintf(`
+		SELECT name, namespace, agent_ref, phase, COALESCE(spend_usd, ''),
+		       COALESCE(cost_capture, ''),
+		       COALESCE(routing_decisions -> -1 ->> 'model', ''),
+		       COALESCE(completion_time, start_time, created_at)
+		FROM archived_runs %s
+		ORDER BY COALESCE(completion_time, start_time, created_at) DESC
+		LIMIT $%d
+	`, whereClause, paramN)
+	args = append(args, maxCostRows)
+
+	rows, err := s.db.QueryContext(ctx, dataQ, args...)
+	if err != nil {
+		return nil, fmt.Errorf("querying archived run costs: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := []CostRow{}
+	for rows.Next() {
+		var r CostRow
+		var capture string
+		if err := rows.Scan(&r.Name, &r.Namespace, &r.AgentRef, &r.Phase, &r.SpendUSD, &capture, &r.Model, &r.When); err != nil {
+			return nil, fmt.Errorf("scanning cost row: %w", err)
+		}
+		r.CostIncomplete = capture == "incomplete"
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating cost rows: %w", err)
+	}
+	return out, nil
+}
+
 // GetRun retrieves a single archived run by namespace/name.
 func (s *Store) GetRun(ctx context.Context, namespace, name string) (*RunArchive, error) {
 	const q = `SELECT id, name, namespace, labels, agent_ref, input, parent_run_ref,
@@ -392,6 +501,11 @@ CREATE INDEX IF NOT EXISTS idx_archived_runs_name      ON archived_runs(name);
 -- for fresh tables (which already declare the column above).
 ALTER TABLE archived_runs ADD COLUMN IF NOT EXISTS trace_events JSONB;
 
+-- Mirrors the AgentRun CostCapture condition so archived runs whose spend could
+-- not be read stay distinguishable from runs that cost nothing: 'complete',
+-- 'incomplete', or NULL for rows archived before the column existed.
+ALTER TABLE archived_runs ADD COLUMN IF NOT EXISTS cost_capture TEXT;
+
 -- Enable lz4 TOAST compression on columns that can hold large values
 -- (trace events, routing decisions, output). PostgreSQL automatically TOASTs
 -- values > 2KB; SET COMPRESSION controls the algorithm. lz4 is fast and gives
@@ -433,6 +547,13 @@ func fromAgentRun(run *agentorcav1alpha1.AgentRun) RunArchive {
 		ContextUsedTokens: run.Status.ContextUsedTokens,
 		MaxContextTokens:  run.Status.MaxContextTokens,
 		Labels:            run.Labels,
+	}
+	if c := meta.FindStatusCondition(run.Status.Conditions, "CostCapture"); c != nil {
+		if c.Status == metav1.ConditionFalse {
+			r.CostCapture = "incomplete"
+		} else if c.Status == metav1.ConditionTrue {
+			r.CostCapture = "complete"
+		}
 	}
 	if run.Spec.Timeout != nil {
 		r.TimeoutSec = sql.NullInt64{Int64: int64(run.Spec.Timeout.Seconds()), Valid: true}

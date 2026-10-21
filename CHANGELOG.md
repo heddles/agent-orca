@@ -16,6 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mirrors the key into each run namespace and injects it into the model-router
   container only (never the agent container, never the router ConfigMap). Rollout and
   rotation runbook: `docs/hindsight-auth.md`.
+- **Cost API: model, day, outcome and untracked breakdowns** (`GET /api/costs`, #77) —
+  `byModel` and `byDay` are now populated (they were always empty), archived runs from
+  PostgreSQL are included once their CRDs are garbage-collected (live copy wins, no
+  double counting), and the response adds `byOutcome` (spend by run phase, also split per
+  day), `untrackedCount` / `untrackedSample` (finished runs flagged `CostCapture=Incomplete`,
+  reported instead of counted as $0), `inFlightUSD`, `avgRunUSD` and `failedRunUSD`. Optional
+  `days=N` limits the window. `byModel` attributes a run's whole spend to its last routing
+  decision. The archive gains a `cost_capture` column (added by the startup migration).
 - **`CostCapture` condition on AgentRun** (#76) — `Status.SpendUSD: ""` used to mean both
   "this run cost nothing" and "its spend could not be read". The controller now sets
   `CostCapture=True` (reason `Complete`) when the spend was read from the state store and
