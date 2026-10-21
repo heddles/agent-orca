@@ -36,3 +36,9 @@ declare module '*.webp' {
   const src: string
   export default src
 }
+// `import src from './file.tsx?raw'` — Vite inlines the file's text. Used by
+// tests that assert source-level conventions (no raw hex, no hand-rolled buttons).
+declare module '*?raw' {
+  const src: string
+  export default src
+}

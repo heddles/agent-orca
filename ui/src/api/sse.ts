@@ -110,7 +110,7 @@ export async function getCosts(
   if (opts?.deployment) url += `&deployment=${encodeURIComponent(opts.deployment)}`
   const res = await apiFetch(url)
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  return res.json()
+  return normalizeCostData(await res.json())
 }
 
 // ── Type shapes returned by the operator API ───────────────────────────────
@@ -262,11 +262,89 @@ export interface AgentRunDetail {
   maxContextTokens?: number
 }
 
+/** One day of spend, split by run outcome (the run phase). */
+export interface CostDay {
+  date: string
+  usd: string
+  byOutcome: Record<string, string>
+}
+
 export interface CostData {
   totalUSD: string
   byAgent: Record<string, string>
+  /** A run's whole spend is attributed to the model of its last routing decision. */
   byModel: Record<string, string>
-  byDay: Array<{ date: string; usd: string }>
+  byDay: CostDay[]
+  /** Spend by run phase (Succeeded, Failed, Running, ...). */
+  byOutcome: Record<string, string>
+  /** Finished runs whose spend could not be captured (shown as untracked, never as $0). */
+  untrackedCount: number
+  /** `namespace/name` of a few untracked runs. */
+  untrackedSample: string[]
+  /** Spend recorded on runs that have not finished. */
+  inFlightUSD: string
+  /** Mean spend of finished runs whose spend was captured. */
+  avgRunUSD: string
+  /** Spend on runs that ended Failed. */
+  failedRunUSD: string
+  /** The run archive could not be read: totals cover live runs only. */
+  archiveUnavailable: boolean
+}
+
+/** A CostData with no spend, for loading fallbacks and tests. */
+export function emptyCostData(): CostData {
+  return {
+    totalUSD: '0.0000',
+    byAgent: {},
+    byModel: {},
+    byDay: [],
+    byOutcome: {},
+    untrackedCount: 0,
+    untrackedSample: [],
+    inFlightUSD: '0.0000',
+    avgRunUSD: '0.0000',
+    failedRunUSD: '0.0000',
+    archiveUnavailable: false,
+  }
+}
+
+function asUSD(v: unknown, fallback = '0.0000'): string {
+  if (typeof v === 'number' && Number.isFinite(v)) return v.toFixed(4)
+  if (typeof v === 'string' && v !== '' && Number.isFinite(Number(v))) return v
+  return fallback
+}
+
+function asUSDMap(v: unknown): Record<string, string> {
+  const out: Record<string, string> = {}
+  if (v && typeof v === 'object' && !Array.isArray(v)) {
+    for (const [k, val] of Object.entries(v as Record<string, unknown>)) out[k] = asUSD(val)
+  }
+  return out
+}
+
+/**
+ * Coerces an /api/costs payload into a CostData, tolerating an operator that
+ * predates a field, a null map or array (Go serialises nil as null), and
+ * non-numeric amounts, so the dashboard never crashes on a partial response.
+ */
+export function normalizeCostData(raw: unknown): CostData {
+  const r = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+  const days = Array.isArray(r.byDay) ? r.byDay : []
+  return {
+    totalUSD: asUSD(r.totalUSD),
+    byAgent: asUSDMap(r.byAgent),
+    byModel: asUSDMap(r.byModel),
+    byDay: days
+      .filter((d): d is Record<string, unknown> => !!d && typeof d === 'object' && typeof (d as { date?: unknown }).date === 'string')
+      .map((d) => ({ date: d.date as string, usd: asUSD(d.usd), byOutcome: asUSDMap(d.byOutcome) })),
+    byOutcome: asUSDMap(r.byOutcome),
+    untrackedCount: typeof r.untrackedCount === 'number' && r.untrackedCount > 0 ? r.untrackedCount : 0,
+    untrackedSample: Array.isArray(r.untrackedSample) ? r.untrackedSample.filter((x): x is string => typeof x === 'string') : [],
+    inFlightUSD: asUSD(r.inFlightUSD),
+    avgRunUSD: asUSD(r.avgRunUSD),
+    failedRunUSD: asUSD(r.failedRunUSD),
+    archiveUnavailable: r.archiveUnavailable === true,
+  }
 }
 
 // ── Workflow API ─────────────────────────────────────────────────────────────
