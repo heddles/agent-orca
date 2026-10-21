@@ -1,0 +1,8 @@
+	keyFile := filepath.Join(t.TempDir(), "api-key")
+	if err := os.WriteFile(keyFile, []byte("g-key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p := geminiProvider()
+	p.APIKeyFile = keyFile
+	cfg := &Config{Providers: []ProviderConfig{*p}, LLMRequestTimeout: time.Minute}
+	r := &Router{cfg: cfg, cancelCtx: t.Context(), ruleRouter: NewRuleRouter(cfg)}
