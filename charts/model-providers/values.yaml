@@ -140,12 +140,74 @@ modelProviders:
 
   # ════════════════════════════════════════════════════════════════════════════
   # OpenAI
-  # https://platform.openai.com/docs/models
+  # https://developers.openai.com/api/docs/models
   # ════════════════════════════════════════════════════════════════════════════
+  # GPT-6 models accept up to 922K input tokens of their 1.05M context window.
+  # Prompts over 272K input tokens are billed at 2x input / 1.5x output.
 
-  # gpt-4o — flagship multimodal model, vision + function calling
-  - name: openai-gpt-4o
+  # gpt-6-astra — most capable OpenAI model, for the most demanding work
+  - name: openai-gpt-6-astra
     enabled: true
+    litellmModel: "openai/gpt-6-astra"
+    credentialsRef:
+      existingSecret: "openai-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+      - vision
+      - long-context
+    latencyProfile: slow
+    constraints:
+      contextWindow: 1050000
+      maxOutputTokens: 128000
+      maxRequestTokens: 922000
+      costPerMillionInputTokens: "10.00"
+      costPerMillionOutputTokens: "50.00"
+
+  # gpt-6.1-sol — near-Astra performance for complex work at a lower cost
+  - name: openai-gpt-6-1-sol
+    enabled: true
+    litellmModel: "openai/gpt-6.1-sol"
+    credentialsRef:
+      existingSecret: "openai-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+      - vision
+      - long-context
+    latencyProfile: medium
+    constraints:
+      contextWindow: 1050000
+      maxOutputTokens: 128000
+      maxRequestTokens: 922000
+      costPerMillionInputTokens: "2.00"
+      costPerMillionOutputTokens: "10.00"
+
+  # gpt-6-luna — most efficient OpenAI model, for focused high-volume tasks
+  - name: openai-gpt-6-luna
+    enabled: true
+    litellmModel: "openai/gpt-6-luna"
+    credentialsRef:
+      existingSecret: "openai-api-key"
+      key: "api-key"
+    capabilities:
+      - fast
+      - cheap
+      - vision
+      - long-context
+    latencyProfile: fast
+    constraints:
+      contextWindow: 1050000
+      maxOutputTokens: 128000
+      maxRequestTokens: 922000
+      costPerMillionInputTokens: "0.10"
+      costPerMillionOutputTokens: "0.50"
+
+  # gpt-4o — legacy; dated snapshots shut down 2027-01-14 (replacement: gpt-6-luna)
+  - name: openai-gpt-4o
+    enabled: false
     litellmModel: "openai/gpt-4o"
     credentialsRef:
       existingSecret: "openai-api-key"
@@ -163,7 +225,7 @@ modelProviders:
       costPerMillionInputTokens: "2.50"
       costPerMillionOutputTokens: "10.00"
 
-  # gpt-4o-mini — fast and cheap, still vision-capable
+  # gpt-4o-mini — legacy; shuts down 2027-01-14 (replacement: gpt-6-luna)
   - name: openai-gpt-4o-mini
     enabled: false
     litellmModel: "openai/gpt-4o-mini"
@@ -181,62 +243,6 @@ modelProviders:
       maxRequestTokens: 0
       costPerMillionInputTokens: "0.15"
       costPerMillionOutputTokens: "0.60"
-
-  # o1 — advanced reasoning (chain-of-thought)
-  - name: openai-o1
-    enabled: false
-    litellmModel: "openai/o1"
-    credentialsRef:
-      existingSecret: "openai-api-key"
-      key: "api-key"
-    capabilities:
-      - reasoning
-      - code
-    latencyProfile: slow
-    constraints:
-      contextWindow: 200000
-      maxOutputTokens: 100000
-      maxRequestTokens: 0
-      costPerMillionInputTokens: "15.00"
-      costPerMillionOutputTokens: "60.00"
-
-  # o1-mini — fast reasoning, lower cost than o1
-  - name: openai-o1-mini
-    enabled: false
-    litellmModel: "openai/o1-mini"
-    credentialsRef:
-      existingSecret: "openai-api-key"
-      key: "api-key"
-    capabilities:
-      - reasoning
-      - code
-      - fast
-    latencyProfile: medium
-    constraints:
-      contextWindow: 128000
-      maxOutputTokens: 65536
-      maxRequestTokens: 0
-      costPerMillionInputTokens: "1.10"
-      costPerMillionOutputTokens: "4.40"
-
-  # o3-mini — latest fast reasoning model
-  - name: openai-o3-mini
-    enabled: false
-    litellmModel: "openai/o3-mini"
-    credentialsRef:
-      existingSecret: "openai-api-key"
-      key: "api-key"
-    capabilities:
-      - reasoning
-      - code
-      - fast
-    latencyProfile: medium
-    constraints:
-      contextWindow: 200000
-      maxOutputTokens: 100000
-      maxRequestTokens: 0
-      costPerMillionInputTokens: "1.10"
-      costPerMillionOutputTokens: "4.40"
 
   # text-embedding-3-large — best OpenAI embedding model (3072-dim)
   - name: openai-text-embedding-3-large
@@ -419,12 +425,76 @@ modelProviders:
 
   # ════════════════════════════════════════════════════════════════════════════
   # Google Gemini (direct API key, not Vertex AI)
-  # https://ai.google.dev/gemini-api/docs/models/gemini
+  # https://ai.google.dev/gemini-api/docs/models
   # ════════════════════════════════════════════════════════════════════════════
 
-  # gemini-2.5-pro — strongest Gemini model, 1M context
-  - name: google-gemini-2-5-pro
+  # gemini-4-argon — flagship Gemini reasoning model, 1M context
+  # Introductory pricing through 2026-11-30; $4.00 / $20.00 from 2026-12-01.
+  - name: google-gemini-4-argon
     enabled: true
+    litellmModel: "gemini/gemini-4-argon"
+    credentialsRef:
+      existingSecret: "google-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+      - vision
+      - long-context
+    latencyProfile: medium
+    constraints:
+      contextWindow: 1048576
+      maxOutputTokens: 65536
+      maxRequestTokens: 0
+      costPerMillionInputTokens: "2.00"
+      costPerMillionOutputTokens: "10.00"
+
+  # gemini-3.8-flash — most intelligent Flash model, for coding and agents
+  # Introductory pricing through 2026-12-31; $1.50 / $7.50 from 2027-01-01.
+  - name: google-gemini-3-8-flash
+    enabled: true
+    litellmModel: "gemini/gemini-3.8-flash"
+    credentialsRef:
+      existingSecret: "google-api-key"
+      key: "api-key"
+    capabilities:
+      - reasoning
+      - code
+      - vision
+      - fast
+      - long-context
+    latencyProfile: fast
+    constraints:
+      contextWindow: 1048576
+      maxOutputTokens: 65536
+      maxRequestTokens: 0
+      costPerMillionInputTokens: "0.75"
+      costPerMillionOutputTokens: "3.75"
+
+  # gemini-3.5-flash-lite — fastest, most cost-effective Gemini for high-volume tasks
+  - name: google-gemini-3-5-flash-lite
+    enabled: false
+    litellmModel: "gemini/gemini-3.5-flash-lite"
+    credentialsRef:
+      existingSecret: "google-api-key"
+      key: "api-key"
+    capabilities:
+      - fast
+      - cheap
+      - vision
+      - long-context
+    latencyProfile: fast
+    constraints:
+      contextWindow: 1048576
+      maxOutputTokens: 65536
+      maxRequestTokens: 0
+      costPerMillionInputTokens: "0.30"
+      costPerMillionOutputTokens: "2.50"
+
+  # Gemini 2.5 — legacy; still served, but Google recommends 3.8 Flash or
+  # 3.5 Flash-Lite for new projects.
+  - name: google-gemini-2-5-pro
+    enabled: false
     litellmModel: "gemini/gemini-2.5-pro"
     credentialsRef:
       existingSecret: "google-api-key"
@@ -442,9 +512,8 @@ modelProviders:
       costPerMillionInputTokens: "1.25"
       costPerMillionOutputTokens: "10.00"
 
-  # gemini-2.5-flash — fast multimodal model, 1M context
   - name: google-gemini-2-5-flash
-    enabled: true
+    enabled: false
     litellmModel: "gemini/gemini-2.5-flash"
     credentialsRef:
       existingSecret: "google-api-key"
@@ -463,7 +532,6 @@ modelProviders:
       costPerMillionInputTokens: "0.30"
       costPerMillionOutputTokens: "2.50"
 
-  # gemini-2.5-flash-lite — cheapest Gemini, great for high-volume tasks
   - name: google-gemini-2-5-flash-lite
     enabled: false
     litellmModel: "gemini/gemini-2.5-flash-lite"
@@ -967,7 +1035,7 @@ modelProviders:
 modelSelectors:
 
   # default — balanced quality/cost, multi-provider fallback
-  # Enable if you have at least one of: claude-sonnet-4-6, gpt-4o, gemini-2.0-flash
+  # Enable if you have at least one of: claude-sonnet-5-5, gpt-6.1-sol, gemini-3.8-flash
   - name: default
     enabled: true
     strategy: rule-based
@@ -976,10 +1044,10 @@ modelSelectors:
         weight: 80
       - name: anthropic-claude-sonnet-5-5
         weight: 60
-      - name: openai-gpt-4o
+      - name: openai-gpt-6-1-sol
         weight: 40
     fallbackChain:
-      - google-gemini-2-5-flash
+      - google-gemini-3-8-flash
       - anthropic-claude-haiku-5-5
       - openrouter-free
 
@@ -988,11 +1056,11 @@ modelSelectors:
     enabled: false
     strategy: rule-based
     providers:
-      - name: openai-gpt-4o-mini
+      - name: openai-gpt-6-luna
         weight: 40
       - name: anthropic-claude-haiku-5-5
         weight: 40
-      - name: google-gemini-2-5-flash-lite
+      - name: google-gemini-3-5-flash-lite
         weight: 20
     fallbackChain:
       - groq-llama-3-1-8b
@@ -1002,14 +1070,14 @@ modelSelectors:
     enabled: false
     strategy: rule-based
     providers:
-      - name: openai-o3-mini
+      - name: openai-gpt-6-astra
         weight: 50
       - name: anthropic-claude-opus-5-5
         weight: 30
       - name: deepseek-r1
         weight: 20
     fallbackChain:
-      - openai-o1
+      - openai-gpt-6-1-sol
       - groq-deepseek-r1-distill-llama-70b
 
   # coding — code generation, review, and debugging
@@ -1019,7 +1087,7 @@ modelSelectors:
     providers:
       - name: anthropic-claude-sonnet-5-5
         weight: 40
-      - name: openai-gpt-4o
+      - name: openai-gpt-6-1-sol
         weight: 30
     fallbackChain:
       - deepseek-v3
@@ -1032,9 +1100,9 @@ modelSelectors:
     providers:
       - name: anthropic-claude-sonnet-5-5
         weight: 40
-      - name: openai-gpt-4o
+      - name: openai-gpt-6-1-sol
         weight: 40
-      - name: google-gemini-2-5-flash
+      - name: google-gemini-3-8-flash
         weight: 20
     fallbackChain:
       - xai-grok-2-vision
@@ -1044,14 +1112,14 @@ modelSelectors:
     enabled: false
     strategy: rule-based
     providers:
-      - name: google-gemini-2-5-pro
+      - name: google-gemini-4-argon
         weight: 50
       - name: anthropic-claude-sonnet-5-5
         weight: 30
-      - name: google-gemini-2-5-flash
+      - name: google-gemini-3-8-flash
         weight: 20
     fallbackChain:
-      - google-gemini-2-5-flash-lite
+      - google-gemini-3-5-flash-lite
 
   # embeddings — vector embedding generation for RAG / semantic search
   - name: embeddings
@@ -1082,10 +1150,10 @@ modelSelectors:
     providers:
       - name: deepseek-v3
         weight: 40
-      - name: google-gemini-2-5-flash-lite
+      - name: google-gemini-3-5-flash-lite
         weight: 30
       - name: groq-llama-3-1-8b
         weight: 30
     fallbackChain:
-      - openai-gpt-4o-mini
+      - openai-gpt-6-luna
       - mistral-small
