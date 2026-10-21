@@ -353,7 +353,8 @@ func ingestionPaused(kb *agentorcav1alpha1.KnowledgeBase, jobName string) (time.
 // unblocks the source.
 func ingestionBackoff(consecutiveFailures int, dailyQuota bool) (time.Duration, string) {
 	if dailyQuota {
-		return time.Until(nextQuotaReset()),
+		now := time.Now()
+		return nextQuotaReset(now).Sub(now),
 			"embedding provider daily quota exhausted; waiting for quota reset"
 	}
 	backoff := initialIngestionBackoff << uint(min(consecutiveFailures, 6))
@@ -363,8 +364,8 @@ func ingestionBackoff(consecutiveFailures int, dailyQuota bool) (time.Duration, 
 	return backoff, "ingestion job failed"
 }
 
-// nextQuotaReset returns the next midnight Pacific time, when Google resets
-// daily API quotas.
+// nextQuotaReset returns the first midnight Pacific after now, when Google
+// resets daily API quotas.
 //
 // Google-specific by design: day-scope classification (see
 // ratelimit.ClassifyQuotaError) currently only recognizes google.rpc
@@ -373,13 +374,13 @@ func ingestionBackoff(consecutiveFailures int, dailyQuota bool) (time.Duration, 
 // move the reset policy into the provider config so classification and
 // reset semantics travel together. Falls back to a fixed UTC-8 offset if
 // tzdata is missing.
-func nextQuotaReset() time.Time {
+func nextQuotaReset(now time.Time) time.Time {
 	loc, err := time.LoadLocation("America/Los_Angeles")
 	if err != nil {
 		loc = time.FixedZone("PST", -8*60*60)
 	}
-	now := time.Now().In(loc)
-	return time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, loc)
+	local := now.In(loc)
+	return time.Date(local.Year(), local.Month(), local.Day()+1, 0, 0, 0, 0, loc)
 }
 
 // ingestJobHitDailyQuota reports whether any terminated pod of the Job

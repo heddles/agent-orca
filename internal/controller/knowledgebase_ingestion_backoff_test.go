@@ -54,9 +54,11 @@ func TestIngestionBackoffExponential(t *testing.T) {
 // the provider's quota reset (next midnight Pacific) rather than a short
 // exponential backoff — retrying sooner is guaranteed to fail.
 func TestIngestionBackoffDailyQuota(t *testing.T) {
+	// The wait depends on the time of day, so only bound it here; the reset
+	// instant itself is pinned in TestNextQuotaReset.
 	backoff, reason := ingestionBackoff(0, true)
-	if backoff <= time.Hour {
-		t.Errorf("daily-quota backoff = %v, want > 1h (until quota reset)", backoff)
+	if backoff <= 0 || backoff > 25*time.Hour {
+		t.Errorf("daily-quota backoff = %v, want within (0, 25h] (until quota reset)", backoff)
 	}
 	if reason != "embedding provider daily quota exhausted; waiting for quota reset" {
 		t.Errorf("unexpected reason: %q", reason)
@@ -71,6 +73,36 @@ func TestIngestionBackoffDailyQuota(t *testing.T) {
 	local := reset.In(loc)
 	if local.Hour() != 0 || local.Minute() != 0 || local.Second() > 5 {
 		t.Errorf("quota reset = %v, want midnight Pacific", local)
+	}
+}
+
+// TestNextQuotaReset pins the clock to check the reset lands on the next
+// midnight Pacific, including just before midnight and across DST changes.
+func TestNextQuotaReset(t *testing.T) {
+	loc, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		t.Skipf("tzdata unavailable: %v", err)
+	}
+	tests := []struct {
+		name string
+		now  time.Time
+		want time.Time
+	}{
+		{"just after midnight", time.Date(2026, 10, 20, 0, 0, 1, 0, loc), time.Date(2026, 10, 21, 0, 0, 0, 0, loc)},
+		{"midday", time.Date(2026, 10, 20, 12, 0, 0, 0, loc), time.Date(2026, 10, 21, 0, 0, 0, 0, loc)},
+		{"last hour before midnight", time.Date(2026, 10, 20, 23, 25, 0, 0, loc), time.Date(2026, 10, 21, 0, 0, 0, 0, loc)},
+		{"exactly midnight", time.Date(2026, 10, 21, 0, 0, 0, 0, loc), time.Date(2026, 10, 22, 0, 0, 0, 0, loc)},
+		{"UTC input", time.Date(2026, 10, 21, 6, 25, 0, 0, time.UTC), time.Date(2026, 10, 21, 0, 0, 0, 0, loc)},
+		{"end of month", time.Date(2026, 10, 31, 18, 0, 0, 0, loc), time.Date(2026, 11, 1, 0, 0, 0, 0, loc)},
+		{"spring forward", time.Date(2026, 3, 7, 22, 0, 0, 0, loc), time.Date(2026, 3, 8, 0, 0, 0, 0, loc)},
+		{"fall back", time.Date(2026, 11, 1, 22, 0, 0, 0, loc), time.Date(2026, 11, 2, 0, 0, 0, 0, loc)},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := nextQuotaReset(tc.now); !got.Equal(tc.want) {
+				t.Errorf("nextQuotaReset(%v) = %v, want %v", tc.now, got.In(loc), tc.want)
+			}
+		})
 	}
 }
 
