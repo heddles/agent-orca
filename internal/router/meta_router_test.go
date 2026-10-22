@@ -30,8 +30,8 @@ import (
 )
 
 const (
-	testProviderFull  = "gpt-4o"
-	testProviderMini  = "gpt-4o-mini"
+	testProviderFull = "gpt-4o"
+	testProviderMini = "gpt-4o-mini"
 )
 
 // fakeMetaProviderConfig builds a Config with two providers (whose names
