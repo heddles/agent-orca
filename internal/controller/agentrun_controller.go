@@ -151,7 +151,17 @@ func (r *AgentRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	// Terminal — ensure cleanup has run then stop reconciling.
 	if isTerminal(run.Status.Phase) {
-		return r.ensureCleanup(ctx, &run)
+		// Stamp spend first: cleanup can recycle the run's pod, and a run the
+		// router ended through the internal API has not been stamped by anyone.
+		retryAfter, err := r.ensureSpendStamped(ctx, &run)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		result, err := r.ensureCleanup(ctx, &run)
+		if retryAfter > 0 && (result.RequeueAfter == 0 || retryAfter < result.RequeueAfter) {
+			result.RequeueAfter = retryAfter
+		}
+		return result, err
 	}
 
 	// Ensure finalizer.
@@ -472,7 +482,10 @@ func (r *AgentRunReconciler) handlePodSuccess(ctx context.Context, run *agentorc
 		// the internal API. The pod exit is expected — skip re-processing.
 		if latest.Status.Phase == agentorcav1alpha1.AgentRunPhaseSucceeded ||
 			latest.Status.Phase == agentorcav1alpha1.AgentRunPhaseFailed {
-			return ctrl.Result{}, nil
+			// The router ended the run itself, so no handler has stamped its
+			// spend yet; without this a _fail run reports SpendUSD: "".
+			after, err := r.ensureSpendStamped(ctx, &latest)
+			return ctrl.Result{RequeueAfter: after}, err
 		}
 		// Safeguard trip: the model-router set LoopDetected via the internal API
 		// just before returning 410 Gone to the agent process. Fail the run.
@@ -506,9 +519,6 @@ func (r *AgentRunReconciler) handlePodSuccess(ctx context.Context, run *agentorc
 	raw := truncate(output, 4096)
 	finalOutput := truncate(output, 10240)
 
-	// Load spend from the state store (persisted by the model-router on each LLM call).
-	spendUSD := r.loadSpendFromStore(ctx, run.Name)
-
 	// Safety net: if the output looks like a question directed at the user (e.g.
 	// "Please specify the data source..."), the LLM failed to call _clarify.
 	// Intercept here and set WaitingForInput instead of Succeeded so the human
@@ -524,7 +534,7 @@ func (r *AgentRunReconciler) handlePodSuccess(ctx context.Context, run *agentorc
 		run.Status.ClarifyQuestion = finalOutput
 		run.Status.ClarifyAnswer = ""
 		run.Status.WaitingSince = &now
-		run.Status.SpendUSD = spendUSD
+		r.stampSpend(ctx, run)
 		run.Status.PodName = ""
 		if err := r.Status().Patch(ctx, run, patch); err != nil {
 			return ctrl.Result{}, fmt.Errorf("patching WaitingForInput status: %w", err)
@@ -536,7 +546,8 @@ func (r *AgentRunReconciler) handlePodSuccess(ctx context.Context, run *agentorc
 	run.Status.Phase = agentorcav1alpha1.AgentRunPhaseSucceeded
 	run.Status.Output = finalOutput
 	run.Status.RawOutput = raw
-	run.Status.SpendUSD = spendUSD
+	// Spend is persisted by the model-router on each LLM call.
+	r.stampSpend(ctx, run)
 	now := metav1.Now()
 	run.Status.CompletionTime = &now
 	if err := r.Status().Patch(ctx, run, patch); err != nil {
@@ -617,6 +628,9 @@ func (r *AgentRunReconciler) handlePodFailure(ctx context.Context, run *agentorc
 			_ = r.K8s.CoreV1().Pods(run.Namespace).Delete(ctx, run.Status.PodName, metav1.DeleteOptions{})
 		}
 		patch := client.MergeFrom(run.DeepCopy())
+		// Stamp the partial spend now: the router checkpoint is the only other
+		// copy and is lost with the pod when no state store is configured.
+		r.stampSpend(ctx, run)
 		run.Status.RestartCount++
 		run.Status.LastRestartReason = reason
 		run.Status.PodName = ""
@@ -1798,7 +1812,7 @@ func (r *AgentRunReconciler) failRun(ctx context.Context, run *agentorcav1alpha1
 
 	patch := client.MergeFrom(run.DeepCopy())
 	run.Status.Phase = agentorcav1alpha1.AgentRunPhaseFailed
-	run.Status.SpendUSD = r.loadSpendFromStore(ctx, run.Name)
+	r.stampSpend(ctx, run)
 	now := metav1.Now()
 	run.Status.CompletionTime = &now
 	run.Status.LastRestartReason = reason
@@ -2105,24 +2119,6 @@ func (r *AgentRunReconciler) enrichFailureReason(ctx context.Context, namespace,
 		return reason
 	}
 	return strings.Join(parts, "\n")
-}
-
-// loadSpendFromStore reads the cumulative spend for a run from the state store.
-// Returns "" if the store is unavailable or no spend was recorded.
-func (r *AgentRunReconciler) loadSpendFromStore(ctx context.Context, runName string) string {
-	if r.StateStore == nil {
-		return ""
-	}
-	key := fmt.Sprintf("agentorca/runs/%s/state", runName)
-	usd, err := r.StateStore.LoadSpend(ctx, key)
-	if err != nil {
-		log.FromContext(ctx).Error(err, "failed to load spend from state store", "run", runName, "key", key)
-		return ""
-	}
-	if usd == 0 {
-		return ""
-	}
-	return fmt.Sprintf("%.6f", usd)
 }
 
 // recordRunInDeploymentIndex writes a marker KV entry under the deployment's run
