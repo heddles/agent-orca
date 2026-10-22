@@ -23,8 +23,9 @@ jobs:
           # - refactor/description
           # - test/description
           # - perf/description
+          # - dependabot/<ecosystem>/... (bot-generated dependency bumps)
           
-          if [[ ! "$BRANCH_NAME" =~ ^(feat|fix|docs|chore|refactor|test|perf|ci|build)\/.+$ ]]; then
+          if [[ ! "$BRANCH_NAME" =~ ^(feat|fix|docs|chore|refactor|test|perf|ci|build|dependabot)\/.+$ ]]; then
             echo "❌ Invalid branch name: $BRANCH_NAME"
             echo ""
             echo "Branch names must follow the convention: type/description"
