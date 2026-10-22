@@ -22,7 +22,6 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/ptr"
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
 )
@@ -78,8 +77,8 @@ func TestEffectiveWarmLocalCache(t *testing.T) {
 		{name: "nil deploy", deploy: nil, want: false},
 		{name: "no warm pool, no explicit setting -> disabled", deploy: &agentorcav1alpha1.AgentDeployment{}, want: false},
 		{name: "warm pool set, no explicit setting -> defaults on", deploy: &agentorcav1alpha1.AgentDeployment{Spec: agentorcav1alpha1.AgentDeploymentSpec{WarmPoolSize: 2}}, want: true},
-		{name: "warm pool set but explicit false -> disabled", deploy: &agentorcav1alpha1.AgentDeployment{Spec: agentorcav1alpha1.AgentDeploymentSpec{WarmPoolSize: 2, WarmLocalCache: ptr.To(false)}}, want: false},
-		{name: "no warm pool but explicit true -> still on", deploy: &agentorcav1alpha1.AgentDeployment{Spec: agentorcav1alpha1.AgentDeploymentSpec{WarmLocalCache: ptr.To(true)}}, want: true},
+		{name: "warm pool set but explicit false -> disabled", deploy: &agentorcav1alpha1.AgentDeployment{Spec: agentorcav1alpha1.AgentDeploymentSpec{WarmPoolSize: 2, WarmLocalCache: new(false)}}, want: false},
+		{name: "no warm pool but explicit true -> still on", deploy: &agentorcav1alpha1.AgentDeployment{Spec: agentorcav1alpha1.AgentDeploymentSpec{WarmLocalCache: new(true)}}, want: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -126,7 +125,7 @@ func TestRecycleOnConfigDrift(t *testing.T) {
 
 func warmupDeployWithDrift(v bool) *agentorcav1alpha1.AgentDeployment {
 	return &agentorcav1alpha1.AgentDeployment{
-		Spec: agentorcav1alpha1.AgentDeploymentSpec{RecycleOnConfigDrift: ptr.To(v)},
+		Spec: agentorcav1alpha1.AgentDeploymentSpec{RecycleOnConfigDrift: new(v)},
 	}
 }
 
@@ -200,7 +199,7 @@ func TestClassifyWarmPod(t *testing.T) {
 			// Regression: the DEFAULT (nil WarmPodMaxAge) must keep an old idle
 			// pod indefinitely — age recycling is opt-in, not opt-out.
 			name:     "default nil max age keeps old pod indefinitely",
-			deploy:   &agentorcav1alpha1.AgentDeployment{Spec: agentorcav1alpha1.AgentDeploymentSpec{RecycleOnConfigDrift: ptr.To(true), MaxRequestsPerPod: 0}},
+			deploy:   &agentorcav1alpha1.AgentDeployment{Spec: agentorcav1alpha1.AgentDeploymentSpec{RecycleOnConfigDrift: new(true), MaxRequestsPerPod: 0}},
 			pod:      makeWarmPod("p", "dep", hash, now.Add(-24*time.Hour), true),
 			wantDisp: warmDisposeIdle,
 		},

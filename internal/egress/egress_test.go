@@ -28,15 +28,16 @@ import (
 	"testing"
 	"time"
 
-	"cloud.google.com/go/pubsub"
-	pubsubapiv1 "cloud.google.com/go/pubsub/apiv1"
-	pubsubpb "cloud.google.com/go/pubsub/apiv1/pubsubpb"
-	"cloud.google.com/go/pubsub/pstest"
+	"cloud.google.com/go/pubsub/v2"
+	"cloud.google.com/go/pubsub/v2/apiv1/pubsubpb"
+	"cloud.google.com/go/pubsub/v2/pstest"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 	"google.golang.org/api/option"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -992,7 +993,7 @@ func TestNewPubSubPublisherInvalidCredentials(t *testing.T) {
 }
 
 func TestNewPubSubPublisherTopicExistsFails(t *testing.T) {
-	// Test that newPubSubPublisher fails when topic.Exists returns false.
+	// Test the NotFound signal newPubSubPublisher relies on for a missing topic.
 	srv := pstest.NewServer()
 	defer func() { _ = srv.Close() }()
 
@@ -1005,28 +1006,26 @@ func TestNewPubSubPublisherTopicExistsFails(t *testing.T) {
 	defer func() { _ = conn.Close() }()
 
 	// We can't easily call newPubSubPublisher with a custom gRPC conn,
-	// so test the topic.Exists failure path directly.
+	// so test the GetTopic NotFound path directly.
 	psClient, err := pubsub.NewClient(ctx, "test-project", option.WithGRPCConn(conn))
 	if err != nil {
 		t.Fatalf("creating pubsub client: %v", err)
 	}
 	defer func() { _ = psClient.Close() }()
 
-	// Topic doesn't exist — Exists should return false.
-	topic := psClient.Topic("nonexistent-topic")
-	exists, err := topic.Exists(ctx)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if exists {
-		t.Fatal("expected topic to not exist")
+	// Topic doesn't exist — GetTopic should report NotFound.
+	_, err = psClient.TopicAdminClient.GetTopic(ctx, &pubsubpb.GetTopicRequest{
+		Topic: "projects/test-project/topics/nonexistent-topic",
+	})
+	if status.Code(err) != codes.NotFound {
+		t.Fatalf("expected NotFound, got %v", err)
 	}
 }
 
 func TestNewPubSubPublisherTopicNotExists(t *testing.T) {
 	// Test that newPubSubPublisher returns an error when the topic doesn't exist.
-	// Uses a real project ID — NewClient is lazy, so it succeeds, but
-	// topic.Exists returns false.
+	// Uses a real project ID — NewClient is lazy, so it succeeds, but the
+	// topic lookup fails.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	cl := newFakeClient().Build()
@@ -1060,18 +1059,13 @@ func TestPubSubPublishSuccessWithFakeServer(t *testing.T) {
 	}
 	defer func() { _ = psClient.Close() }()
 
-	// Create the topic using the publisher admin client.
-	adminClient, err := pubsubapiv1.NewPublisherClient(ctx, option.WithGRPCConn(conn))
-	if err != nil {
-		t.Fatalf("creating publisher admin client: %v", err)
-	}
-	defer func() { _ = adminClient.Close() }()
+	// Create the topic using the client's topic admin client.
 	topicPath := "projects/test-project/topics/test-topic"
-	if _, err := adminClient.CreateTopic(ctx, &pubsubpb.Topic{Name: topicPath}); err != nil {
+	if _, err := psClient.TopicAdminClient.CreateTopic(ctx, &pubsubpb.Topic{Name: topicPath}); err != nil {
 		t.Fatalf("creating topic: %v", err)
 	}
 
-	topic := psClient.Topic("test-topic")
+	topic := psClient.Publisher(topicPath)
 	p := &pubsubPublisher{client: psClient, topic: topic}
 	result := agentorcav1alpha1.EgressResult{
 		RunID:  "ps-run-123",

@@ -698,7 +698,9 @@ func bootstrapAdminSA(ctx context.Context, k8s kubernetes.Interface) error {
 }
 
 // ptrInt64 returns a pointer to i.
-func ptrInt64(i int64) *int64 { return &i }
+//
+//go:fix inline
+func ptrInt64(i int64) *int64 { return new(i) }
 
 // parseLLMRequestTimeout reads the LLM_REQUEST_TIMEOUT env var (a Go duration such as
 // "1h", "5m", "90s") and returns it. Defaults to 1 hour when unset or invalid, so the

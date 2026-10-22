@@ -38,7 +38,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
@@ -384,7 +383,7 @@ func (r *KnowledgeBaseReconciler) ensureQdrant(ctx context.Context, namespace st
 		},
 		Spec: appsv1.StatefulSetSpec{
 			ServiceName: resourceName,
-			Replicas:    ptr.To(int32(1)),
+			Replicas:    new(int32(1)),
 			Selector: &metav1.LabelSelector{
 				MatchLabels: podLabels,
 			},
@@ -425,9 +424,9 @@ func (r *KnowledgeBaseReconciler) ensureQdrant(ctx context.Context, namespace st
 						},
 					},
 					SecurityContext: &corev1.PodSecurityContext{
-						RunAsNonRoot: ptr.To(true),
-						RunAsUser:    ptr.To(int64(1000)),
-						FSGroup:      ptr.To(int64(1000)),
+						RunAsNonRoot: new(true),
+						RunAsUser:    new(int64(1000)),
+						FSGroup:      new(int64(1000)),
 					},
 				},
 			},

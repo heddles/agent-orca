@@ -4535,7 +4535,7 @@ func (r *Router) hindsightRecall(ctx context.Context, query string) (string, err
 
 	// Build recall request
 	recallReq := hindsight.NewRecallRequest(query)
-	recallReq.MaxTokens = hindsight.PtrInt32(int32(r.cfg.Hindsight.RecallBudget))
+	recallReq.MaxTokens = new(int32(r.cfg.Hindsight.RecallBudget))
 
 	// Call hindsight recall API
 	resp, _, err := client.MemoryAPI.RecallMemories(ctx, bankID).RecallRequest(*recallReq).Execute()
@@ -4574,7 +4574,7 @@ func (r *Router) hindsightRetain(runName, content string) error {
 	async := true
 	retainReq := hindsight.NewRetainRequest([]hindsight.MemoryItem{
 		{
-			Content:    hindsight.Content{String: hindsight.PtrString(content)},
+			Content:    hindsight.Content{String: new(content)},
 			Context:    stringToNullable("agent-run-" + runName),
 			DocumentId: stringToNullable("agent-run-" + runName),
 		},

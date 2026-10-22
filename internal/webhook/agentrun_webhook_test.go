@@ -93,7 +93,8 @@ func newValidator(nsName string, labelled bool) *AgentValidator {
 	return &AgentValidator{Client: cl}
 }
 
-func ptrTo[T any](v T) *T { return &v }
+//go:fix inline
+func ptrTo[T any](v T) *T { return new(v) }
 
 func TestAgentValidatorSecurityContextOverride(t *testing.T) {
 	ctx := context.Background()
