@@ -74,9 +74,12 @@ type AgentRunReconciler struct {
 	K8s              kubernetes.Interface
 	Dynamic          dynamic.Interface
 	ModelRouterImage string
-	StateConfig      state.Config
-	StateStore       state.Store
-	CloudProvider    security.CloudProvider
+	// StateConfig is injected into router configs. The operator strips the Redis
+	// password from it; RedisPassword carries it to a mounted Secret instead.
+	StateConfig   state.Config
+	RedisPassword string
+	StateStore    state.Store
+	CloudProvider security.CloudProvider
 	// PostgresStore is the optional PostgreSQL archival store. When non-nil,
 	// terminal-phase AgentRuns are snapshotted here for long-term retention
 	// and historical querying by the UI.
@@ -247,6 +250,12 @@ func (r *AgentRunReconciler) startRun(ctx context.Context, run *agentorcav1alpha
 
 	// 5. Create RouterConfig ConfigMap.
 	if err := r.ensureRouterConfigMap(ctx, run, routerCfg); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// 5b. Create the Redis password Secret the router mounts (issue #107).
+	if err := ensureRedisPasswordSecret(ctx, r.Client, r.Scheme, run,
+		redisSecretName("agentorca-run-"+run.Name, r.RedisPassword), r.RedisPassword); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -1329,6 +1338,7 @@ func (r *AgentRunReconciler) buildRouterPod(
 		RestartPolicy:     corev1.RestartPolicyNever,
 		ModelRouterImage:  r.ModelRouterImage,
 		RouterConfigName:  "agentorca-run-" + run.Name,
+		RedisSecretName:   redisSecretName("agentorca-run-"+run.Name, r.RedisPassword),
 		ProviderVolumes:   providerVolumes,
 		ProviderMounts:    providerMounts,
 		ToolSecretVolumes: toolSecretVolumes,
@@ -1569,6 +1579,7 @@ func (r *AgentRunReconciler) buildAgentPod(
 		RestartPolicy:       corev1.RestartPolicyNever,
 		ModelRouterImage:    r.ModelRouterImage,
 		RouterConfigName:    "agentorca-run-" + run.Name,
+		RedisSecretName:     redisSecretName("agentorca-run-"+run.Name, r.RedisPassword),
 		AgentReadinessProbe: readinessProbe,
 		ProviderVolumes:     providerVolumes,
 		ProviderMounts:      providerMounts,

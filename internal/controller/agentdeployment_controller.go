@@ -61,8 +61,11 @@ type AgentDeploymentReconciler struct {
 	Recorder         record.EventRecorder
 	K8s              kubernetes.Interface
 	ModelRouterImage string
-	StateConfig      state.Config
-	CloudProvider    security.CloudProvider
+	// StateConfig is injected into router configs. The operator strips the Redis
+	// password from it; RedisPassword carries it to a mounted Secret instead.
+	StateConfig   state.Config
+	RedisPassword string
+	CloudProvider security.CloudProvider
 	// TokenReviewerClusterRole is the ClusterRole that grants "create tokenreviews".
 	TokenReviewerClusterRole string
 	// OperatorAPIURL is the base URL of the operator's internal API server.
@@ -177,6 +180,12 @@ func (r *AgentDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 
 	// Ensure per-deployment token Secret.
+	// The Redis password Secret is shared by the deployment's pods and its warm pool.
+	if err := ensureRedisPasswordSecret(ctx, r.Client, r.Scheme, &deployment,
+		redisSecretName("agentorca-deploy-"+deployment.Name, r.RedisPassword), r.RedisPassword); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	tokenSecretName, err := r.ensureDeploymentTokenSecret(ctx, &deployment, saName)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -329,6 +338,7 @@ func (r *AgentDeploymentReconciler) reconcileDeployment(
 		RestartPolicy:      corev1.RestartPolicyAlways,
 		ModelRouterImage:   r.ModelRouterImage,
 		RouterConfigName:   "agentorca-deploy-" + agentDeploy.Name,
+		RedisSecretName:    redisSecretName("agentorca-deploy-"+agentDeploy.Name, r.RedisPassword),
 		ProviderVolumes:    providerVolumes,
 		ProviderMounts:     providerMounts,
 		ToolSecretVolumes:  toolSecretVolumes,
@@ -1626,6 +1636,7 @@ func (r *AgentDeploymentReconciler) buildWarmPod(
 		RestartPolicy:    corev1.RestartPolicyNever,
 		ModelRouterImage: r.ModelRouterImage,
 		RouterConfigName: "agentorca-warm-" + deploy.Name,
+		RedisSecretName:  redisSecretName("agentorca-deploy-"+deploy.Name, r.RedisPassword),
 		RouterExtraPorts: []corev1.ContainerPort{
 			{Name: "warm-mgmt", ContainerPort: 9090, Protocol: corev1.ProtocolTCP},
 		},
