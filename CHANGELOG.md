@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Hindsight API-key authentication** (`hindsight.apiKeySecret` chart value, fixes the
+  application-level half of #58) — the model-router sends
+  `Authorization: Bearer <key>` on hindsight bank/recall/retain calls so hindsight can
+  run with its `ApiKeyTenantExtension` instead of relying on ingress auth. The operator
+  mirrors the key into each run namespace and injects it into the model-router
+  container only (never the agent container, never the router ConfigMap). Rollout and
+  rotation runbook: `docs/hindsight-auth.md`.
 - **Native local filesystem access via the ACP bridge (`fs/*` relay)** — "pod drives
   the workstation": agent pods read and edit the user's real local workspace through
   the same ACP v1 channel editors like Zed already use, with no workspace copies,

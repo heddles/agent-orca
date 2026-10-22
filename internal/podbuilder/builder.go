@@ -164,6 +164,12 @@ type PodConfig struct {
 	// Used to generate ipBlock egress rules in the per-run NetworkPolicies when the cluster has a default-deny egress policy.
 	HindsightURL string
 
+	// HindsightAPIKeySecretRef, when set, injects the hindsight API key into the
+	// model-router container as HINDSIGHT_API_KEY so it can authenticate to a
+	// hindsight API that requires a tenant API key. Never mounted to the agent
+	// container. +optional
+	HindsightAPIKeySecretRef *corev1.SecretKeySelector
+
 	// --- Agent probes ---
 
 	// AgentReadinessProbe is set for http-mode AgentRun pods.
@@ -338,6 +344,12 @@ func Build(cfg PodConfig) *corev1.Pod {
 		modelRouterContainer.Env = append(modelRouterContainer.Env, corev1.EnvVar{
 			Name:  "HINDSIGHT_URL",
 			Value: cfg.HindsightURL,
+		})
+	}
+	if cfg.HindsightAPIKeySecretRef != nil {
+		modelRouterContainer.Env = append(modelRouterContainer.Env, corev1.EnvVar{
+			Name:      "HINDSIGHT_API_KEY",
+			ValueFrom: &corev1.EnvVarSource{SecretKeyRef: cfg.HindsightAPIKeySecretRef},
 		})
 	}
 	if cfg.WarmLocalCacheEnabled {
@@ -574,6 +586,12 @@ func BuildRouterOnly(cfg PodConfig) *corev1.Pod {
 			FailureThreshold:    30,
 		},
 		Resources: routerResources,
+	}
+	if cfg.HindsightAPIKeySecretRef != nil {
+		routerContainer.Env = append(routerContainer.Env, corev1.EnvVar{
+			Name:      "HINDSIGHT_API_KEY",
+			ValueFrom: &corev1.EnvVarSource{SecretKeyRef: cfg.HindsightAPIKeySecretRef},
+		})
 	}
 
 	var volumes []corev1.Volume //nolint:prealloc

@@ -4414,6 +4414,18 @@ func (r *Router) injectRAGTrustBoundaryHint(chatReq ChatCompletionRequest) ChatC
 	return chatReq
 }
 
+// newHindsightClient builds a hindsight API client for the configured URL. When
+// an API key is configured it is sent as a Bearer token on every request, which
+// hindsight's ApiKeyTenantExtension requires for both REST and MCP.
+func newHindsightClient(hc HindsightConfig) *hindsight.APIClient {
+	cfg := hindsight.NewConfiguration()
+	cfg.Servers[0].URL = hc.URL
+	if hc.APIKey != "" {
+		cfg.AddDefaultHeader("Authorization", "Bearer "+hc.APIKey)
+	}
+	return hindsight.NewAPIClient(cfg)
+}
+
 // ensureHindsightBank creates the  bank at agent startup if it does not exist.
 // If the bank already exists, it exits gracefully and continues startup.
 func (r *Router) ensureHindsightBank(ctx context.Context) (string, error) {
@@ -4427,9 +4439,7 @@ func (r *Router) ensureHindsightBank(ctx context.Context) (string, error) {
 		return bankID, err
 	}
 
-	cfg := hindsight.NewConfiguration()
-	cfg.Servers[0].URL = r.cfg.Hindsight.URL
-	client := hindsight.NewAPIClient(cfg)
+	client := newHindsightClient(r.cfg.Hindsight)
 
 	_, _, err := client.BanksAPI.CreateOrUpdateBank(ctx, bankID).CreateBankRequest(hindsight.CreateBankRequest{}).Execute()
 
@@ -4454,10 +4464,7 @@ func (r *Router) hindsightRecall(ctx context.Context, query string) (string, err
 
 	bankID := r.hindsightBankID()
 
-	// Create hindsight client
-	cfg := hindsight.NewConfiguration()
-	cfg.Servers[0].URL = r.cfg.Hindsight.URL
-	client := hindsight.NewAPIClient(cfg)
+	client := newHindsightClient(r.cfg.Hindsight)
 
 	// Build recall request
 	recallReq := hindsight.NewRecallRequest(query)
@@ -4494,10 +4501,7 @@ func (r *Router) hindsightRetain(runName, content string) error {
 
 	bankID := r.hindsightBankID()
 
-	// Create hindsight client
-	cfg := hindsight.NewConfiguration()
-	cfg.Servers[0].URL = r.cfg.Hindsight.URL
-	client := hindsight.NewAPIClient(cfg)
+	client := newHindsightClient(r.cfg.Hindsight)
 
 	// Build retain request
 	async := true
