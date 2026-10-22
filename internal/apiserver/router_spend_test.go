@@ -102,23 +102,25 @@ func TestFoldRouterSpend_ZeroSpendIsFoundWithNoModel(t *testing.T) {
 }
 
 // routerFixture serves spendExposition for every pod and counts requests.
-func routerFixture(t *testing.T, body string) (*httptest.Server, *atomic.Int32) {
+func routerFixture(t *testing.T) (*httptest.Server, *atomic.Int32) {
 	t.Helper()
 	var hits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		hits.Add(1)
-		_, _ = w.Write([]byte(body))
+		_, _ = w.Write([]byte(spendExposition))
 	}))
 	t.Cleanup(srv.Close)
 	return srv, &hits
 }
 
-func podWithIP(name, ns, ip string) *corev1.Pod {
-	return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns}, Status: corev1.PodStatus{PodIP: ip}}
+// podWithIP is a pod in the test namespace "ns".
+func podWithIP(name, ip string) *corev1.Pod {
+	return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "ns"}, Status: corev1.PodStatus{PodIP: ip}}
 }
 
-func runWithPod(name, ns string, phase agentorcav1alpha1.AgentRunPhase, pod string) *agentorcav1alpha1.AgentRun {
-	r := liveRun(name, ns, "agent-1", phase, "", costDay2)
+// runWithPod is a run in the test namespace "ns" whose router runs in pod.
+func runWithPod(name string, phase agentorcav1alpha1.AgentRunPhase, pod string) *agentorcav1alpha1.AgentRun {
+	r := liveRun(name, "ns", "agent-1", phase, "", costDay2)
 	r.Status.PodName = pod
 	return r
 }
@@ -140,20 +142,20 @@ func inFlightServer(t *testing.T, router *httptest.Server, pods []*corev1.Pod, r
 // Regression for #79: a running run's Status.SpendUSD is empty until the
 // controller stamps it, so its live spend never reached the dashboard.
 func TestHandleCosts_InFlightSpendComesFromTheRouter(t *testing.T) {
-	router, _ := routerFixture(t, spendExposition)
-	run := runWithPod("run-a", "ns", agentorcav1alpha1.AgentRunPhaseRunning, "pod-a")
+	router, _ := routerFixture(t)
+	run := runWithPod("run-a", agentorcav1alpha1.AgentRunPhaseRunning, "pod-a")
 	run.Status.RoutingDecisions = nil // none recorded yet: the router's dominant model fills in
-	s := inFlightServer(t, router, []*corev1.Pod{podWithIP("pod-a", "ns", "10.0.0.1")}, run)
+	s := inFlightServer(t, router, []*corev1.Pod{podWithIP("pod-a", "10.0.0.1")}, run)
 
 	got := getCosts(t, s, "?namespace=ns", context.Background())
 
-	if got.InFlightUSD != "0.8000" {
+	if got.InFlightUSD != usd(0.8) {
 		t.Fatalf("inFlightUSD = %s, want 0.8000 from the router's counters", got.InFlightUSD)
 	}
-	if got.TotalUSD != "0.8000" {
+	if got.TotalUSD != usd(0.8) {
 		t.Fatalf("total = %s, want live spend included", got.TotalUSD)
 	}
-	if got.ByModel["claude"] != "0.8000" {
+	if got.ByModel["claude"] != usd(0.8) {
 		t.Fatalf("byModel = %v, want the run attributed to its dominant model", got.ByModel)
 	}
 	if got.InFlightUnscraped != 0 {
@@ -164,17 +166,17 @@ func TestHandleCosts_InFlightSpendComesFromTheRouter(t *testing.T) {
 // A finished run's spend is already in its status and a warm pod still holds
 // its series: reading the router for it would count it twice.
 func TestHandleCosts_FinishedRunsAreNotScraped(t *testing.T) {
-	router, hits := routerFixture(t, spendExposition)
-	done := runWithPod("run-a", "ns", agentorcav1alpha1.AgentRunPhaseSucceeded, "pod-a")
+	router, hits := routerFixture(t)
+	done := runWithPod("run-a", agentorcav1alpha1.AgentRunPhaseSucceeded, "pod-a")
 	done.Status.SpendUSD = "0.8"
-	s := inFlightServer(t, router, []*corev1.Pod{podWithIP("pod-a", "ns", "10.0.0.1")}, done)
+	s := inFlightServer(t, router, []*corev1.Pod{podWithIP("pod-a", "10.0.0.1")}, done)
 
 	got := getCosts(t, s, "?namespace=ns", context.Background())
 
 	if hits.Load() != 0 {
 		t.Fatalf("router scraped %d times for a finished run", hits.Load())
 	}
-	if got.TotalUSD != "0.8000" || got.InFlightUSD != "0.0000" {
+	if got.TotalUSD != usd(0.8) || got.InFlightUSD != usd(0) {
 		t.Fatalf("total=%s inFlight=%s, want 0.8000 / 0.0000", got.TotalUSD, got.InFlightUSD)
 	}
 }
@@ -182,14 +184,14 @@ func TestHandleCosts_FinishedRunsAreNotScraped(t *testing.T) {
 // If the CRD already has a higher stamped value (e.g. after a restart the new
 // pod's counter starts from 0), the larger figure wins.
 func TestHandleCosts_InFlightKeepsHigherStampedSpend(t *testing.T) {
-	router, _ := routerFixture(t, spendExposition)
-	run := runWithPod("run-a", "ns", agentorcav1alpha1.AgentRunPhaseRunning, "pod-a")
+	router, _ := routerFixture(t)
+	run := runWithPod("run-a", agentorcav1alpha1.AgentRunPhaseRunning, "pod-a")
 	run.Status.SpendUSD = "2.0"
-	s := inFlightServer(t, router, []*corev1.Pod{podWithIP("pod-a", "ns", "10.0.0.1")}, run)
+	s := inFlightServer(t, router, []*corev1.Pod{podWithIP("pod-a", "10.0.0.1")}, run)
 
 	got := getCosts(t, s, "?namespace=ns", context.Background())
 
-	if got.InFlightUSD != "2.0000" {
+	if got.InFlightUSD != usd(2) {
 		t.Fatalf("inFlightUSD = %s, want the stamped 2.0000", got.InFlightUSD)
 	}
 }
@@ -201,10 +203,10 @@ func TestHandleCosts_UnreadableRoutersAreCounted(t *testing.T) {
 	}))
 	t.Cleanup(dead.Close)
 	s := inFlightServer(t, dead,
-		[]*corev1.Pod{podWithIP("pod-a", "ns", "10.0.0.1")},
-		runWithPod("run-a", "ns", agentorcav1alpha1.AgentRunPhaseRunning, "pod-a"),
-		runWithPod("run-b", "ns", agentorcav1alpha1.AgentRunPhaseRunning, "missing-pod"),
-		runWithPod("run-c", "ns", agentorcav1alpha1.AgentRunPhasePending, ""),
+		[]*corev1.Pod{podWithIP("pod-a", "10.0.0.1")},
+		runWithPod("run-a", agentorcav1alpha1.AgentRunPhaseRunning, "pod-a"),
+		runWithPod("run-b", agentorcav1alpha1.AgentRunPhaseRunning, "missing-pod"),
+		runWithPod("run-c", agentorcav1alpha1.AgentRunPhasePending, ""),
 	)
 
 	got := getCosts(t, s, "?namespace=ns", context.Background())
@@ -212,32 +214,32 @@ func TestHandleCosts_UnreadableRoutersAreCounted(t *testing.T) {
 	if got.InFlightUnscraped != 3 {
 		t.Fatalf("inFlightUnscraped = %d, want 3 (bad status, missing pod, no pod yet)", got.InFlightUnscraped)
 	}
-	if got.InFlightUSD != "0.0000" {
+	if got.InFlightUSD != usd(0) {
 		t.Fatalf("inFlightUSD = %s", got.InFlightUSD)
 	}
 }
 
 func TestHandleCosts_RouterSplitPodIsPreferred(t *testing.T) {
-	router, _ := routerFixture(t, spendExposition)
-	run := runWithPod("run-a", "ns", agentorcav1alpha1.AgentRunPhaseRunning, "agent-pod-has-no-router-ip")
+	router, _ := routerFixture(t)
+	run := runWithPod("run-a", agentorcav1alpha1.AgentRunPhaseRunning, "agent-pod-has-no-router-ip")
 	run.Status.RouterPodName = "router-pod"
-	s := inFlightServer(t, router, []*corev1.Pod{podWithIP("router-pod", "ns", "10.0.0.9")}, run)
+	s := inFlightServer(t, router, []*corev1.Pod{podWithIP("router-pod", "10.0.0.9")}, run)
 
 	got := getCosts(t, s, "?namespace=ns", context.Background())
 
-	if got.InFlightUSD != "0.8000" {
+	if got.InFlightUSD != usd(0.8) {
 		t.Fatalf("inFlightUSD = %s, want the split-pod router's spend", got.InFlightUSD)
 	}
 }
 
 func TestScrapeInFlightSpend_IsBounded(t *testing.T) {
-	router, hits := routerFixture(t, spendExposition)
-	var runs []*agentorcav1alpha1.AgentRun
-	var pods []*corev1.Pod
-	for i := 0; i < maxInFlightScrapes+7; i++ {
+	router, hits := routerFixture(t)
+	runs := make([]*agentorcav1alpha1.AgentRun, 0, maxInFlightScrapes+7)
+	pods := make([]*corev1.Pod, 0, maxInFlightScrapes+7)
+	for i := range maxInFlightScrapes + 7 {
 		name := "run-" + string(rune('a'+i%26)) + string(rune('a'+i/26))
-		runs = append(runs, runWithPod(name, "ns", agentorcav1alpha1.AgentRunPhaseRunning, "pod-"+name))
-		pods = append(pods, podWithIP("pod-"+name, "ns", "10.0.0.1"))
+		runs = append(runs, runWithPod(name, agentorcav1alpha1.AgentRunPhaseRunning, "pod-"+name))
+		pods = append(pods, podWithIP("pod-"+name, "10.0.0.1"))
 	}
 	s := inFlightServer(t, router, pods)
 
@@ -254,7 +256,7 @@ func TestScrapeInFlightSpend_IsBounded(t *testing.T) {
 func TestScrapeInFlightSpend_NoClusterClientIsANoop(t *testing.T) {
 	s := &UIServer{}
 	got, unscraped := s.scrapeInFlightSpend(context.Background(), []*agentorcav1alpha1.AgentRun{
-		runWithPod("r", "ns", agentorcav1alpha1.AgentRunPhaseRunning, "p"),
+		runWithPod("r", agentorcav1alpha1.AgentRunPhaseRunning, "p"),
 	})
 	if len(got) != 0 || unscraped != 0 {
 		t.Fatalf("got %v / %d, want nothing without a cluster client", got, unscraped)
@@ -270,15 +272,15 @@ func TestRouterMetricsURLDefault(t *testing.T) {
 
 // A recorded routing decision wins over the router's dominant model.
 func TestHandleCosts_InFlightKeepsRecordedModel(t *testing.T) {
-	router, _ := routerFixture(t, spendExposition)
+	router, _ := routerFixture(t)
 	s := inFlightServer(t, router,
-		[]*corev1.Pod{podWithIP("pod-a", "ns", "10.0.0.1")},
-		runWithPod("run-a", "ns", agentorcav1alpha1.AgentRunPhaseRunning, "pod-a"), // liveRun records gpt-4o
+		[]*corev1.Pod{podWithIP("pod-a", "10.0.0.1")},
+		runWithPod("run-a", agentorcav1alpha1.AgentRunPhaseRunning, "pod-a"), // liveRun records gpt-4o
 	)
 
 	got := getCosts(t, s, "?namespace=ns", context.Background())
 
-	if got.ByModel["gpt-4o"] != "0.8000" {
+	if got.ByModel["gpt-4o"] != usd(0.8) {
 		t.Fatalf("byModel = %v, want the recorded gpt-4o", got.ByModel)
 	}
 }
