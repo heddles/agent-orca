@@ -26,6 +26,9 @@ import (
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
 )
 
+// routerContainerName is the model-router sidecar's container name.
+const routerContainerName = "model-router"
+
 func testAgent() *agentorcav1alpha1.Agent {
 	return &agentorcav1alpha1.Agent{
 		Spec: agentorcav1alpha1.AgentSpec{
@@ -145,7 +148,7 @@ func TestBuild_AgentRunPod(t *testing.T) { //nolint:gocyclo
 	// Find the model-router — it may not be first if framework.Inject added an init container.
 	var routerC *corev1.Container
 	for i := range pod.Spec.InitContainers {
-		if pod.Spec.InitContainers[i].Name == "model-router" { //nolint:goconst
+		if pod.Spec.InitContainers[i].Name == routerContainerName {
 
 			routerC = &pod.Spec.InitContainers[i]
 			break
@@ -248,7 +251,7 @@ func TestBuild_DeploymentPod(t *testing.T) {
 	// Model-router should have default resource limits
 	var routerC *corev1.Container
 	for i := range pod.Spec.InitContainers {
-		if pod.Spec.InitContainers[i].Name == "model-router" {
+		if pod.Spec.InitContainers[i].Name == routerContainerName {
 			routerC = &pod.Spec.InitContainers[i]
 			break
 		}
@@ -304,7 +307,7 @@ func TestBuild_WarmPod(t *testing.T) {
 	// Model-router should have 4 ports (3 base + warm-mgmt)
 	var routerC *corev1.Container
 	for i := range pod.Spec.InitContainers {
-		if pod.Spec.InitContainers[i].Name == "model-router" {
+		if pod.Spec.InitContainers[i].Name == routerContainerName {
 			routerC = &pod.Spec.InitContainers[i]
 			break
 		}
@@ -365,7 +368,7 @@ func TestBuild_WarmPodLocalCache(t *testing.T) {
 
 		var routerC *corev1.Container
 		for i := range pod.Spec.InitContainers {
-			if pod.Spec.InitContainers[i].Name == "model-router" {
+			if pod.Spec.InitContainers[i].Name == routerContainerName {
 				routerC = &pod.Spec.InitContainers[i]
 			}
 		}
@@ -533,7 +536,7 @@ func TestBuild_CustomRouterResources(t *testing.T) {
 
 	var routerC *corev1.Container
 	for i := range pod.Spec.InitContainers {
-		if pod.Spec.InitContainers[i].Name == "model-router" {
+		if pod.Spec.InitContainers[i].Name == routerContainerName {
 			routerC = &pod.Spec.InitContainers[i]
 			break
 		}

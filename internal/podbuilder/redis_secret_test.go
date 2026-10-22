@@ -71,7 +71,7 @@ func TestBuild_RedisSecretRouterOnly(t *testing.T) {
 	}
 
 	for _, c := range pod.Spec.InitContainers {
-		if c.Name == "model-router" && !hasRedisMount(c.VolumeMounts) {
+		if c.Name == routerContainerName && !hasRedisMount(c.VolumeMounts) {
 			t.Error("model-router is missing the read-only Redis password mount")
 		}
 	}
