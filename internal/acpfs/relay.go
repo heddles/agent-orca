@@ -41,6 +41,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	neturl "net/url"
 	"sync"
 	"time"
 
@@ -144,6 +145,11 @@ func New(cfg StateConfig) (Relay, error) {
 		}
 		opts, err := redis.ParseURL(url)
 		if err != nil {
+			// A *url.Error embeds the full URL, password included.
+			var ue *neturl.Error
+			if errors.As(err, &ue) {
+				ue.URL = "<redacted>"
+			}
 			return nil, fmt.Errorf("parsing redis URL: %w", err)
 		}
 		client := redis.NewClient(opts)

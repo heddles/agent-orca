@@ -46,6 +46,19 @@ const (
 	// TokenEnvDir is the mount path for the token env secret.
 	TokenEnvDir = "/etc/agentorca-env"
 
+	// RedisSecretSuffix is appended to resource names for the Secret holding the
+	// Redis password the model-router authenticates with.
+	RedisSecretSuffix = "-redis"
+	// RedisSecretKey is the key within the Redis password Secret.
+	RedisSecretKey = "password"
+	// RedisSecretVolume is the volume name for the Redis password Secret.
+	RedisSecretVolume = "agentorca-redis"
+	// RedisSecretDir is the mount path for the Redis password Secret. Must NOT
+	// be under RouterConfigDir for the same reason as ProviderSecretsDir.
+	RedisSecretDir = "/etc/agentorca-redis"
+	// RedisPasswordFile is the path the model-router reads the password from.
+	RedisPasswordFile = RedisSecretDir + "/" + RedisSecretKey
+
 	// ProviderVolPrefix is the volume name prefix for provider API key secrets.
 	ProviderVolPrefix = "provider-"
 	// ProviderSecretsDir is the mount path for provider secret directories.
@@ -128,6 +141,10 @@ type PodConfig struct {
 	ModelRouterImage string
 	// RouterConfigName is the ConfigMap name containing the router config JSON.
 	RouterConfigName string
+	// RedisSecretName is the Secret holding the Redis password, mounted read-only
+	// at RedisPasswordFile in the model-router container only. Empty when Redis
+	// needs no password.
+	RedisSecretName string
 	// RouterExtraPorts are additional ports on the model-router container
 	// (e.g. warm-mgmt:9090 for warm pods).
 	RouterExtraPorts []corev1.ContainerPort
@@ -279,6 +296,9 @@ func Build(cfg PodConfig) *corev1.Pod {
 		MountPath: RouterConfigDir,
 		ReadOnly:  true,
 	})
+	if cfg.RedisSecretName != "" {
+		routerMounts = append(routerMounts, redisSecretMount())
+	}
 
 	// Warm-pod local L1 checkpoint cache: a disk-backed emptyDir mirrored into the
 	// model-router sidecar (and read by it write-through to Redis). The agent container
@@ -343,6 +363,9 @@ func Build(cfg PodConfig) *corev1.Pod {
 	volumes = append(volumes, cfg.ToolSecretVolumes...)
 	volumes = append(volumes, cfg.MCPBinVolumes...)
 	volumes = append(volumes, routerConfigVol)
+	if cfg.RedisSecretName != "" {
+		volumes = append(volumes, redisSecretVolume(cfg.RedisSecretName))
+	}
 	if cfg.WarmLocalCacheEnabled {
 		volumes = append(volumes, corev1.Volume{
 			Name: WarmCacheVolName,
@@ -526,6 +549,9 @@ func BuildRouterOnly(cfg PodConfig) *corev1.Pod {
 		MountPath: RouterConfigDir,
 		ReadOnly:  true,
 	})
+	if cfg.RedisSecretName != "" {
+		routerMounts = append(routerMounts, redisSecretMount())
+	}
 
 	routerContainer := corev1.Container{
 		Name:            "model-router",
@@ -556,6 +582,9 @@ func BuildRouterOnly(cfg PodConfig) *corev1.Pod {
 	volumes = append(volumes, cfg.ToolSecretVolumes...)
 	volumes = append(volumes, cfg.MCPBinVolumes...)
 	volumes = append(volumes, routerConfigVol)
+	if cfg.RedisSecretName != "" {
+		volumes = append(volumes, redisSecretVolume(cfg.RedisSecretName))
+	}
 
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -578,4 +607,31 @@ func BuildRouterOnly(cfg PodConfig) *corev1.Pod {
 	security.EnforcePodSecurity(pod, nil)
 
 	return pod
+}
+
+// redisSecretVolume is the Secret volume carrying the Redis password. Only the
+// password key is projected, read-only for the owner.
+func redisSecretVolume(secretName string) corev1.Volume {
+	mode := int32(0o400)
+	return corev1.Volume{
+		Name: RedisSecretVolume,
+		VolumeSource: corev1.VolumeSource{
+			Secret: &corev1.SecretVolumeSource{
+				SecretName: secretName,
+				Items: []corev1.KeyToPath{
+					{Key: RedisSecretKey, Path: RedisSecretKey},
+				},
+				DefaultMode: &mode,
+			},
+		},
+	}
+}
+
+// redisSecretMount mounts the Redis password Secret into the model-router.
+func redisSecretMount() corev1.VolumeMount {
+	return corev1.VolumeMount{
+		Name:      RedisSecretVolume,
+		MountPath: RedisSecretDir,
+		ReadOnly:  true,
+	}
 }
