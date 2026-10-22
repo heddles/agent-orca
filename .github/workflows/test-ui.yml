@@ -1,14 +1,15 @@
 name: UI Tests
 
+# No path filter: UI Tests is a required check, and a path-filtered required
+# check never reports on PRs outside ui/, leaving them blocked.
 on:
   push:
     branches: [main]
-    paths: ['ui/**']
   pull_request:
-    paths: ['ui/**']
 
 jobs:
   test:
+    name: UI Tests
     runs-on: ubuntu-latest
     defaults:
       run:
