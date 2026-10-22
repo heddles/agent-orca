@@ -101,6 +101,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- ACP sessions showed a truncated or empty final response when an agent ended its turn
+  with `_done(output=...)` (#74): the answer rides only the terminal `done` trace
+  event, which `streamACPRun` left out of `run.completed` and the `aoctl acp` bridge
+  discarded. The bridge now emits it as a suffix-aware message chunk (no duplication on
+  reconnect replay), `run.completed` carries it, and `Status.Output` truncation (10 KiB,
+  kept for etcd) is now rune-safe and marked with `[output truncated]`.
 - `fs_list_dir` symlink escape: the bridge answers directory listings from
   disk itself, and lexical confinement let a workspace symlink (final or
   intermediate component) enumerate host directories outside the roots. Paths

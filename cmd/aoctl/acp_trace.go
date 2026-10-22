@@ -52,9 +52,12 @@ import (
 //	          "before":803741,"after":201214,"trigger":798134,"budget":0,"reason":"..."}
 //	          (context compaction, issues #42 and #47)
 //
-// Terminal trace events (fail/finalOutput) are consumed by the bridge but NOT
-// re-emitted as session updates — the ACP run lifecycle events already end the
-// turn, and a duplicate "fail" message would confuse clients.
+// The terminal `fail` trace event is consumed by the bridge but NOT re-emitted
+// as a session update — the ACP run lifecycle events already end the turn, and
+// a duplicate "fail" message would confuse clients. The terminal `done` /
+// `finalOutput` events carry the agent's final answer, which is not in the
+// token stream when the agent ends via _done(output=...); the bridge emits
+// that text (suffix-aware, see emitFinalOutput).
 
 // acpEventTypeTrace is the SSE event type the ACP API uses for forwarded
 // model-router trace events (internal/apiserver/acp_trace.go: writeTraceEvent).
@@ -65,6 +68,9 @@ type acpTraceEvent struct {
 	Type string `json:"type"`
 	// thought (extended-thinking delta from the model-router).
 	Content string `json:"content,omitempty"`
+	// done / finalOutput: the agent's final answer. An agent that ends its
+	// turn with _done(output=...) delivers it here rather than as tokens.
+	Output string `json:"output,omitempty"`
 	// toolResult / guardrail / providerFallback fields.
 	Name        string `json:"name,omitempty"`
 	Result      string `json:"result,omitempty"`
@@ -112,9 +118,11 @@ func parseACPTraceEvent(data string) (acpTraceEvent, bool) {
 }
 
 // handleTraceEvent translates one trace event into ACP session/update
-// notifications on the given session. Terminal trace events (fail /
-// finalOutput) are consumed silently — the ACP run lifecycle events already
-// end the turn, and a duplicate "fail" message would confuse clients.
+// notifications on the given session. The terminal fail event is consumed
+// silently — the ACP run lifecycle events already end the turn, and a
+// duplicate "fail" message would confuse clients. done / finalOutput are
+// intercepted by the stream consumer (emitFinalOutput) because they need the
+// per-attempt stream state.
 func (b *acpBridge) handleTraceEvent(ev acpTraceEvent, sessionID string) {
 	switch ev.Type {
 	case "toolCall":
@@ -256,6 +264,40 @@ func (b *acpBridge) emitTraceNote(sessionID, title, text string) {
 			Content:       &acpContentBlock{Type: "text", Text: "[" + title + "] " + text},
 		},
 	})
+}
+
+// finalOutputSuffix returns the part of a terminal trace event's output that
+// has not been streamed yet. The model-router's text-turn `done` event repeats
+// the streamed text verbatim (nothing to add); `_done(output=...)` usually has
+// no streamed text (the whole output is new) and occasionally follows
+// unrelated streamed text, in which case it is appended as a new paragraph.
+// internal/apiserver/acp_trace.go applies the same rule when it builds the
+// run.completed output, so both paths converge on the same final text.
+func finalOutputSuffix(streamed, output string) string {
+	switch {
+	case output == "":
+		return ""
+	case strings.HasPrefix(output, streamed):
+		return output[len(streamed):]
+	case strings.HasSuffix(streamed, output):
+		return ""
+	default:
+		return "\n\n" + output
+	}
+}
+
+// emitFinalOutput emits the answer carried by a terminal done / finalOutput
+// trace event as an agent_message_chunk. It is suffix-aware against what was
+// already streamed, so it adds nothing for a plain text turn and never repeats
+// text on a reconnect replay; the emitted text goes through emitMessageChunk
+// and is recorded in st.streamed, which keeps the later run.completed
+// emitTerminalOutput from emitting it a second time.
+func (b *acpBridge) emitFinalOutput(output, msgID, sessionID string, st *openAIStreamState) {
+	streamed := ""
+	if st != nil {
+		streamed = st.streamed.String()
+	}
+	b.emitMessageChunk(sessionID, msgID, finalOutputSuffix(streamed, output), st)
 }
 
 // emitTraceThoughtDelta emits one `thought` trace-event delta — a slice of the
