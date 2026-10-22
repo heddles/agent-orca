@@ -15,8 +15,8 @@
 # the engine) separately — it's required for image builds and e2e tests.
 
 [tools]
-# Go — matches the directive in go.mod; CI uses go-version-file: go.mod
-go = "1.25"
+# Go — at least the directive in go.mod; CI uses go-version-file: go.mod
+go = "1.26"
 # Node — drives the React UI under ui/ ; CI uses Node 20
 node = "20"
 # GNU Make — the Makefile is the front door to everything
