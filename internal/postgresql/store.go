@@ -549,9 +549,10 @@ func fromAgentRun(run *agentorcav1alpha1.AgentRun) RunArchive {
 		Labels:            run.Labels,
 	}
 	if c := meta.FindStatusCondition(run.Status.Conditions, "CostCapture"); c != nil {
-		if c.Status == metav1.ConditionFalse {
+		switch c.Status {
+		case metav1.ConditionFalse:
 			r.CostCapture = "incomplete"
-		} else if c.Status == metav1.ConditionTrue {
+		case metav1.ConditionTrue:
 			r.CostCapture = "complete"
 		}
 	}

@@ -105,16 +105,16 @@ func TestHandleCosts_PopulatesByModelAndByDay(t *testing.T) {
 	)
 	got := getCosts(t, s, "?namespace=ns", context.Background())
 
-	if got.TotalUSD != "0.7500" {
+	if got.TotalUSD != usd(0.75) {
 		t.Fatalf("total = %s, want 0.7500", got.TotalUSD)
 	}
-	if got.ByModel["gpt-4o"] != "0.7500" {
+	if got.ByModel["gpt-4o"] != usd(0.75) {
 		t.Fatalf("byModel = %v, want gpt-4o 0.7500", got.ByModel)
 	}
 	if len(got.ByDay) != 2 || got.ByDay[0].Date != "2026-10-20" || got.ByDay[1].Date != "2026-10-21" {
 		t.Fatalf("byDay = %+v, want two ascending days", got.ByDay)
 	}
-	if got.ByDay[0].USD != "0.5000" || got.ByDay[0].ByOutcome["Succeeded"] != "0.5000" {
+	if got.ByDay[0].USD != usd(0.5) || got.ByDay[0].ByOutcome["Succeeded"] != usd(0.5) {
 		t.Fatalf("day 1 = %+v", got.ByDay[0])
 	}
 }
@@ -128,10 +128,10 @@ func TestHandleCosts_IncludesArchivedRuns(t *testing.T) {
 
 	got := getCosts(t, s, "?namespace=ns", context.Background())
 
-	if got.TotalUSD != "3.0000" {
+	if got.TotalUSD != usd(3) {
 		t.Fatalf("total = %s, want live 1.0 + archived 2.0", got.TotalUSD)
 	}
-	if got.ByAgent["agent-2"] != "2.0000" || got.ByModel["claude"] != "2.0000" {
+	if got.ByAgent["agent-2"] != usd(2) || got.ByModel["claude"] != usd(2) {
 		t.Fatalf("archived run not attributed: agent=%v model=%v", got.ByAgent, got.ByModel)
 	}
 	if arch.got.Namespaces[0] != "ns" {
@@ -148,7 +148,7 @@ func TestHandleCosts_DoesNotDoubleCountLiveAndArchived(t *testing.T) {
 
 	got := getCosts(t, s, "", context.Background())
 
-	if got.TotalUSD != "1.0000" {
+	if got.TotalUSD != usd(1) {
 		t.Fatalf("total = %s, want 1.0000 (live copy wins, archive row ignored)", got.TotalUSD)
 	}
 }
@@ -175,14 +175,14 @@ func TestHandleCosts_UntrackedRuns(t *testing.T) {
 	if len(want) != 0 {
 		t.Fatalf("untrackedSample = %v, missing %v", got.UntrackedSample, want)
 	}
-	if got.AvgRunUSD != "1.0000" {
+	if got.AvgRunUSD != usd(1) {
 		t.Fatalf("avgRunUSD = %s; untracked runs must not drag the mean toward $0", got.AvgRunUSD)
 	}
 }
 
 func TestHandleCosts_UntrackedSampleIsCapped(t *testing.T) {
-	var runs []*agentorcav1alpha1.AgentRun
-	for i := 0; i < untrackedSampleSize+5; i++ {
+	runs := make([]*agentorcav1alpha1.AgentRun, 0, untrackedSampleSize+5)
+	for i := range untrackedSampleSize + 5 {
 		runs = append(runs, incompleteRun(liveRun("r"+string(rune('a'+i)), "ns", "a", agentorcav1alpha1.AgentRunPhaseFailed, "", costDay1)))
 	}
 	got := getCosts(t, costsServer(t, nil, runs...), "", context.Background())
@@ -201,19 +201,19 @@ func TestHandleCosts_OutcomeInFlightAndFailedSpend(t *testing.T) {
 	)
 	got := getCosts(t, s, "", context.Background())
 
-	if got.ByOutcome["Succeeded"] != "1.0000" || got.ByOutcome["Failed"] != "0.5000" || got.ByOutcome["Running"] != "0.2500" {
+	if got.ByOutcome["Succeeded"] != usd(1) || got.ByOutcome["Failed"] != usd(0.5) || got.ByOutcome["Running"] != usd(0.25) {
 		t.Fatalf("byOutcome = %v", got.ByOutcome)
 	}
-	if got.FailedRunUSD != "0.5000" {
+	if got.FailedRunUSD != usd(0.5) {
 		t.Fatalf("failedRunUSD = %s, want 0.5000", got.FailedRunUSD)
 	}
-	if got.InFlightUSD != "0.2500" {
+	if got.InFlightUSD != usd(0.25) {
 		t.Fatalf("inFlightUSD = %s, want 0.2500", got.InFlightUSD)
 	}
-	if got.AvgRunUSD != "0.7500" {
+	if got.AvgRunUSD != usd(0.75) {
 		t.Fatalf("avgRunUSD = %s, want (1.0+0.5)/2 over finished runs", got.AvgRunUSD)
 	}
-	if got.TotalUSD != "1.7500" {
+	if got.TotalUSD != usd(1.75) {
 		t.Fatalf("total = %s, want 1.7500", got.TotalUSD)
 	}
 }
@@ -221,7 +221,7 @@ func TestHandleCosts_OutcomeInFlightAndFailedSpend(t *testing.T) {
 func TestHandleCosts_EmptyIsWellFormed(t *testing.T) {
 	got := getCosts(t, costsServer(t, nil), "", context.Background())
 
-	if got.TotalUSD != "0.0000" || got.AvgRunUSD != "0.0000" || got.UntrackedCount != 0 {
+	if got.TotalUSD != usd(0) || got.AvgRunUSD != usd(0) || got.UntrackedCount != 0 {
 		t.Fatalf("unexpected empty response: %+v", got)
 	}
 	if got.ByDay == nil || got.UntrackedSample == nil || got.ByModel == nil || got.ByAgent == nil || got.ByOutcome == nil {
@@ -235,7 +235,7 @@ func TestHandleCosts_ArchiveFailureDegradesToLiveRuns(t *testing.T) {
 
 	got := getCosts(t, s, "", context.Background())
 
-	if got.TotalUSD != "1.0000" {
+	if got.TotalUSD != usd(1) {
 		t.Fatalf("total = %s, want the live run still counted", got.TotalUSD)
 	}
 	if !got.ArchiveUnavailable {
@@ -265,7 +265,7 @@ func TestHandleCosts_DaysWindowDropsOldLiveRuns(t *testing.T) {
 	)
 	got := getCosts(t, s, "?days=7", context.Background())
 
-	if got.TotalUSD != "1.0000" {
+	if got.TotalUSD != usd(1) {
 		t.Fatalf("total = %s, want only the run inside the window", got.TotalUSD)
 	}
 }
@@ -283,7 +283,7 @@ func TestHandleCosts_TenantScoping(t *testing.T) {
 
 	tenant := &TenantIdentity{TenantName: "t", Namespaces: []string{"mine"}}
 	got := getCosts(t, s, "?namespace=other", context.WithValue(context.Background(), tenantIdentityKey, tenant))
-	if got.TotalUSD != "3.0000" {
+	if got.TotalUSD != usd(3) {
 		t.Fatalf("tenant total = %s, want 3.0000 (own live + archive only)", got.TotalUSD)
 	}
 	if len(arch.got.Namespaces) != 1 || arch.got.Namespaces[0] != "mine" {
@@ -296,7 +296,7 @@ func TestHandleCosts_TenantScoping(t *testing.T) {
 	if arch.n != 0 {
 		t.Fatal("a tenant without namespaces must not query the archive")
 	}
-	if got.TotalUSD != "0.0000" {
+	if got.TotalUSD != usd(0) {
 		t.Fatalf("namespace-less tenant total = %s, want 0", got.TotalUSD)
 	}
 }
@@ -306,10 +306,10 @@ func TestAggregateCosts_UnknownModelAndAverage(t *testing.T) {
 		{key: "a/1", agent: "x", phase: "Succeeded", spend: 1, terminal: true, when: costDay1},
 		{key: "a/2", agent: "x", phase: "Succeeded", spend: 3, terminal: true, when: costDay1, model: "m"},
 	})
-	if got.ByModel[unknownModel] != "1.0000" || got.ByModel["m"] != "3.0000" {
+	if got.ByModel[unknownModel] != usd(1) || got.ByModel["m"] != usd(3) {
 		t.Fatalf("byModel = %v", got.ByModel)
 	}
-	if got.AvgRunUSD != "2.0000" {
+	if got.AvgRunUSD != usd(2) {
 		t.Fatalf("avg = %s, want 2.0000", got.AvgRunUSD)
 	}
 }
