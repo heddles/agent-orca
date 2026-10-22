@@ -32,7 +32,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -797,7 +796,7 @@ func (r *KnowledgeBaseReconciler) buildSourcesIngestJob(
 			// requests against the provider with a fresh rate limiter. The
 			// controller owns retry policy (exponential backoff, quota-aware
 			// circuit breaker) instead.
-			BackoffLimit: ptr.To(int32(0)),
+			BackoffLimit: new(int32(0)),
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
@@ -828,9 +827,9 @@ func (r *KnowledgeBaseReconciler) buildSourcesIngestJob(
 					},
 					Volumes: volumes,
 					SecurityContext: &corev1.PodSecurityContext{
-						RunAsNonRoot: ptr.To(true),
-						RunAsUser:    ptr.To(int64(1000)),
-						FSGroup:      ptr.To(int64(1000)),
+						RunAsNonRoot: new(true),
+						RunAsUser:    new(int64(1000)),
+						FSGroup:      new(int64(1000)),
 					},
 				},
 			},
@@ -1127,7 +1126,7 @@ func (r *KnowledgeBaseReconciler) buildIngestJob(
 			// BackoffLimit 0: the controller owns retry policy (exponential
 			// backoff, quota-aware circuit breaker); silent in-Job pod restarts
 			// would re-burst embedding requests with a fresh rate limiter.
-			BackoffLimit: ptr.To(int32(0)),
+			BackoffLimit: new(int32(0)),
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
@@ -1148,9 +1147,9 @@ func (r *KnowledgeBaseReconciler) buildIngestJob(
 					},
 					Volumes: volumes,
 					SecurityContext: &corev1.PodSecurityContext{
-						RunAsNonRoot: ptr.To(true),
-						RunAsUser:    ptr.To(int64(1000)),
-						FSGroup:      ptr.To(int64(1000)),
+						RunAsNonRoot: new(true),
+						RunAsUser:    new(int64(1000)),
+						FSGroup:      new(int64(1000)),
 					},
 				},
 			},

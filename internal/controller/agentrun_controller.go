@@ -44,7 +44,6 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/record"
-	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -1498,7 +1497,7 @@ func (r *AgentRunReconciler) ensureTokenSecret(ctx context.Context, run *agentor
 	tr := &authv1.TokenRequest{
 		Spec: authv1.TokenRequestSpec{
 			Audiences:         []string{security.ModelRouterTokenAudience},
-			ExpirationSeconds: ptr.To(expirySeconds),
+			ExpirationSeconds: new(expirySeconds),
 		},
 	}
 	result, err := r.K8s.CoreV1().ServiceAccounts(run.Namespace).CreateToken(ctx, saName, tr, metav1.CreateOptions{})

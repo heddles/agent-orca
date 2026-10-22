@@ -438,7 +438,7 @@ func TestStreamingReasoningIsCapturedAsThoughtEvents(t *testing.T) {
 		}),
 		sseFrame(streamingChatCompletionChunk{
 			ID: "c", Object: "chat.completion.chunk",
-			Choices: []streamChoice{{Index: 0, Delta: streamDelta{}, FinishReason: strPtr("stop")}},
+			Choices: []streamChoice{{Index: 0, Delta: streamDelta{}, FinishReason: new("stop")}},
 		}),
 		sseDone(),
 	}, ""))
@@ -479,8 +479,6 @@ func TestStreamingReasoningIsCapturedAsThoughtEvents(t *testing.T) {
 		t.Errorf("expected exactly one provider call, got %d", c)
 	}
 }
-
-func strPtr(s string) *string { return &s }
 
 func TestStreamingMidStreamDoneDoesNotTruncateClient(t *testing.T) {
 	// Malformed/thinking-model proxy: emits a premature `data: [DONE]` right after
