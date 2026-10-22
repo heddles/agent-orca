@@ -38,6 +38,9 @@ func messageText(t *testing.T, buf *bytes.Buffer) string {
 	return sb.String()
 }
 
+// finalAnswer is the _done output every test run ends with.
+const finalAnswer = "the final answer"
+
 func consumeEvents(t *testing.T, bridge *acpBridge, st *openAIStreamState, evs ...Event) {
 	t.Helper()
 	ch := make(chan Event, len(evs))
@@ -60,10 +63,10 @@ func TestACPDoneTraceEventEmitsOutput(t *testing.T) {
 
 			consumeEvents(t, bridge, st, traceEv(`{"type":"`+typ+`","output":"the final answer"}`))
 
-			if got := messageText(t, buf); got != "the final answer" {
+			if got := messageText(t, buf); got != finalAnswer {
 				t.Fatalf("message text = %q, want the done output", got)
 			}
-			if got := st.streamed.String(); got != "the final answer" {
+			if got := st.streamed.String(); got != finalAnswer {
 				t.Fatalf("streamed = %q; the output must be recorded so run.completed does not repeat it", got)
 			}
 		})
@@ -107,7 +110,7 @@ func TestACPDoneTraceEventReplaySwallowed(t *testing.T) {
 	st.replayThoughtSkip = st.streamedThought.Len()
 	consumeEvents(t, bridge, st, done)
 
-	if got := messageText(t, buf); got != "the final answer" {
+	if got := messageText(t, buf); got != finalAnswer {
 		t.Fatalf("message text after replay = %q, want a single copy", got)
 	}
 }
@@ -124,7 +127,7 @@ func TestACPRunCompletedAfterDoneDoesNotRepeatOutput(t *testing.T) {
 			`"output":[{"role":"agents","parts":[{"content_type":"text/plain","content":"the final answer"}]}]}}`},
 	)
 
-	if got := messageText(t, buf); got != "the final answer" {
+	if got := messageText(t, buf); got != finalAnswer {
 		t.Fatalf("message text = %q, want a single copy", got)
 	}
 }
@@ -140,7 +143,7 @@ func TestACPDoneOutputWithoutRunCompletedOutput(t *testing.T) {
 		Event{Type: "run.completed", Data: `{"type":"run.completed","run":{"run_id":"r1","status":"completed"}}`},
 	)
 
-	if got := messageText(t, buf); got != "the final answer" {
+	if got := messageText(t, buf); got != finalAnswer {
 		t.Fatalf("message text = %q, want the done output", got)
 	}
 }
