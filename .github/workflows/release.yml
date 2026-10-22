@@ -185,13 +185,13 @@ jobs:
 
       # Only our own artifacts: build-push-action also uploads *.dockerbuild
       # build records to the run, which download-artifact cannot extract.
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: aoctl-*
           path: dist
           merge-multiple: true
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: charts
           path: dist
