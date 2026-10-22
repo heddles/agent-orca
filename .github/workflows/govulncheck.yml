@@ -16,10 +16,15 @@ jobs:
       - name: Clone the code
         uses: actions/checkout@v7
 
+      # Floating "1.26", like the golang:1.26 image the release Dockerfile
+      # builds with, so the scan sees the same standard library the shipped
+      # binaries were compiled against — including security patches. Pinning
+      # to go-version-file (go 1.26.0) made the first run fail with 44
+      # reachable stdlib findings, mostly x509 fixed in go1.26.1.
       - name: Setup Go
         uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: "1.26"
 
       - name: Run govulncheck
         run: |
