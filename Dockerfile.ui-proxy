@@ -18,7 +18,7 @@ COPY assets/logo.png /assets/logo.png
 RUN npm run build
 
 # ── Stage 2: Go proxy binary ─────────────────────────────────────────────────
-FROM --platform=$BUILDPLATFORM golang:1.25 AS go-builder
+FROM --platform=$BUILDPLATFORM golang:1.26 AS go-builder
 ARG TARGETOS
 ARG TARGETARCH
 WORKDIR /workspace
