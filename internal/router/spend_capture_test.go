@@ -36,20 +36,21 @@ import (
 const (
 	spendInputRate  = 0.001
 	spendOutputRate = 0.002
+	// spendMetric is the exported per-run spend counter's name.
+	spendMetric = "agentorca_modelrouter_spend_usd_total"
 )
 
 // spendTestRouter is a streaming test router with priced tokens and a metrics
 // set attached, plus the registry it exports to.
-func spendTestRouter(t *testing.T, providerURL string, store *testStore) (*Router, *Metrics, *prometheus.Registry) {
+func spendTestRouter(t *testing.T, providerURL string, store *testStore) (*Router, *prometheus.Registry) {
 	t.Helper()
 	r := newStreamingTestRouter(t, providerURL, writeKeyFile(t), store)
 	r.cfg.CheckpointKey = "agentorca/runs/test-run/state"
 	r.cfg.Providers[0].CostPerInputToken = spendInputRate
 	r.cfg.Providers[0].CostPerOutputToken = spendOutputRate
 	reg := prometheus.NewRegistry()
-	m := NewMetrics(reg)
-	r.SetMetrics(m)
-	return r, m, reg
+	r.SetMetrics(NewMetrics(reg))
+	return r, reg
 }
 
 // spendCounter reads the exported value of the test run's spend counter for one
@@ -61,7 +62,7 @@ func spendCounter(t *testing.T, reg *prometheus.Registry, outcome string) float6
 		t.Fatal(err)
 	}
 	for _, mf := range mfs {
-		if mf.GetName() != "agentorca_modelrouter_spend_usd_total" {
+		if mf.GetName() != spendMetric {
 			continue
 		}
 		for _, metric := range mf.GetMetric() {
@@ -86,7 +87,7 @@ func spendSeriesCount(t *testing.T, reg *prometheus.Registry) int {
 		t.Fatal(err)
 	}
 	for _, mf := range mfs {
-		if mf.GetName() == "agentorca_modelrouter_spend_usd_total" {
+		if mf.GetName() == spendMetric {
 			return len(mf.GetMetric())
 		}
 	}
@@ -129,7 +130,7 @@ func TestSpend_SuccessIsCountedAndPersisted(t *testing.T) {
 	body := contentChunk("done.") + usageChunk(100, 50) + sseDone()
 	srv, _ := fakeProvider(t, []byte(body))
 	store := newTestStore(t)
-	r, _, reg := spendTestRouter(t, srv.URL, store)
+	r, reg := spendTestRouter(t, srv.URL, store)
 
 	runStream(t, r)
 
@@ -157,7 +158,7 @@ func TestSpend_StreamInterruptedPersistsPartialSpend(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	store := newTestStore(t)
-	r, _, reg := spendTestRouter(t, srv.URL, store)
+	r, reg := spendTestRouter(t, srv.URL, store)
 
 	runStream(t, r)
 
@@ -187,7 +188,7 @@ func TestSpend_InterruptedWithReportedUsageUsesIt(t *testing.T) {
 		w.(http.Flusher).Flush()
 	}))
 	t.Cleanup(srv.Close)
-	r, _, reg := spendTestRouter(t, srv.URL, newTestStore(t))
+	r, reg := spendTestRouter(t, srv.URL, newTestStore(t))
 
 	runStream(t, r)
 
@@ -214,7 +215,7 @@ func TestSpend_CancelledCallIsRecorded(t *testing.T) {
 	t.Cleanup(srv.Close)
 	store := newTestStore(t)
 	var reg *prometheus.Registry
-	r, _, reg = spendTestRouter(t, srv.URL, store)
+	r, reg = spendTestRouter(t, srv.URL, store)
 
 	runStream(t, r)
 
@@ -234,7 +235,7 @@ func TestSpend_ProviderErrorIsVisibleAndFree(t *testing.T) {
 		http.Error(w, "boom", http.StatusInternalServerError)
 	}))
 	t.Cleanup(srv.Close)
-	r, _, reg := spendTestRouter(t, srv.URL, newTestStore(t))
+	r, reg := spendTestRouter(t, srv.URL, newTestStore(t))
 
 	runStream(t, r)
 
@@ -256,7 +257,7 @@ func hasOutcomeSeries(t *testing.T, reg *prometheus.Registry, outcome string) bo
 		t.Fatal(err)
 	}
 	for _, mf := range mfs {
-		if mf.GetName() != "agentorca_modelrouter_spend_usd_total" {
+		if mf.GetName() != spendMetric {
 			continue
 		}
 		for _, metric := range mf.GetMetric() {
@@ -274,7 +275,7 @@ func hasOutcomeSeries(t *testing.T, reg *prometheus.Registry, outcome string) bo
 // happened; otherwise rate() and alerts have nothing to compare against.
 func TestSpend_AllOutcomeSeriesExportedUpFront(t *testing.T) {
 	srv, _ := fakeProvider(t)
-	_, _, reg := spendTestRouter(t, srv.URL, newTestStore(t))
+	_, reg := spendTestRouter(t, srv.URL, newTestStore(t))
 
 	for _, outcome := range []string{"success", "provider_error", "cancelled", "stream_interrupted"} {
 		if !hasOutcomeSeries(t, reg, outcome) {
@@ -286,7 +287,7 @@ func TestSpend_AllOutcomeSeriesExportedUpFront(t *testing.T) {
 // A warm pod serves many runs: each claim must export its own run's series.
 func TestSpend_ClaimRunInitializesSeriesForNewRun(t *testing.T) {
 	srv, _ := fakeProvider(t)
-	r, _, reg := spendTestRouter(t, srv.URL, newTestStore(t))
+	r, reg := spendTestRouter(t, srv.URL, newTestStore(t))
 	r.cfg.WarmMode = true
 
 	r.ClaimRun(WarmRunInput{RunName: "run-two"})
@@ -306,7 +307,7 @@ func TestSpend_GeminiNonStreamingCallIsCounted(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	store := newTestStore(t)
-	r, _, reg := spendTestRouter(t, srv.URL, store)
+	r, reg := spendTestRouter(t, srv.URL, store)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1beta/models/gemini-2.0-flash:generateContent?key=tok",
 		strings.NewReader(`{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`))
@@ -330,7 +331,7 @@ func TestSpend_GeminiProviderErrorIsCounted(t *testing.T) {
 		http.Error(w, "boom", http.StatusInternalServerError)
 	}))
 	t.Cleanup(srv.Close)
-	r, _, reg := spendTestRouter(t, srv.URL, newTestStore(t))
+	r, reg := spendTestRouter(t, srv.URL, newTestStore(t))
 
 	req := httptest.NewRequest(http.MethodPost, "/v1beta/models/gemini-2.0-flash:generateContent?key=tok",
 		strings.NewReader(`{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`))
@@ -353,7 +354,7 @@ func TestSpend_FailFlushesSpend(t *testing.T) {
 	t.Cleanup(operator.Close)
 	srv, _ := fakeProvider(t)
 	store := newTestStore(t)
-	r, _, _ := spendTestRouter(t, srv.URL, store)
+	r, _ := spendTestRouter(t, srv.URL, store)
 	r.cfg.OperatorAPIURL = operator.URL
 	tokenFile := filepath.Join(t.TempDir(), "token")
 	if err := os.WriteFile(tokenFile, []byte("sa-token"), 0o600); err != nil {
@@ -396,7 +397,7 @@ func TestSpend_CancelBeforeResponseIsNotProviderError(t *testing.T) {
 	block := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) { <-block }))
 	t.Cleanup(func() { close(block); srv.Close() })
-	r, _, reg := spendTestRouter(t, srv.URL, newTestStore(t))
+	r, reg := spendTestRouter(t, srv.URL, newTestStore(t))
 	go func() {
 		time.Sleep(100 * time.Millisecond)
 		r.cancelFunc()
