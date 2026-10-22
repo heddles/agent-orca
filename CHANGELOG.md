@@ -16,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mirrors the key into each run namespace and injects it into the model-router
   container only (never the agent container, never the router ConfigMap). Rollout and
   rotation runbook: `docs/hindsight-auth.md`.
+- **Cost dashboard rewrite** (#78) — KPI row (total, in-flight, average per run, failed-run
+  spend highlighted above 20% of total, untracked-runs chip), daily spend stacked by run
+  outcome using the shared phase colors with an icon + color legend and a screen-reader
+  description, a By Agent / By Model / By Outcome tab bar, and a banner for runs whose
+  cost could not be captured (with "View runs" and per-run links). Built from the design
+  system primitives; no raw hex, emoji or hand-rolled buttons. `getCosts` now coerces
+  partial or null payloads so an older operator cannot crash the page.
 - **Cost API: model, day, outcome and untracked breakdowns** (`GET /api/costs`, #77) —
   `byModel` and `byDay` are now populated (they were always empty), archived runs from
   PostgreSQL are included once their CRDs are garbage-collected (live copy wins, no

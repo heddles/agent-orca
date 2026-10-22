@@ -136,6 +136,7 @@ export const ICON = {
   // UI states
   output: Star,
   cost: DollarSign,
+  chart: BarChart3,
   success: Check,
   check: Check,
   error: X,
