@@ -16,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mirrors the key into each run namespace and injects it into the model-router
   container only (never the agent container, never the router ConfigMap). Rollout and
   rotation runbook: `docs/hindsight-auth.md`.
+- **In-flight spend in `/api/costs`** (#79) — the operator reads the model-router's
+  `agentorca_modelrouter_spend_usd_total` for unfinished runs, so `inFlightUSD` and the
+  totals include spend that is not yet stamped on `status.spendUSD`. Runs whose router
+  cannot be read are counted in `inFlightUnscraped` rather than treated as $0. Per-run
+  NetworkPolicies now admit the operator's pods on `:9091` (scoped by namespace and pod
+  labels, port 9091 only); `hack/verify-router-metrics.sh` checks the path. See
+  `docs/observability.md`.
 - **Cost dashboard rewrite** (#78) — KPI row (total, in-flight, average per run, failed-run
   spend highlighted above 20% of total, untracked-runs chip), daily spend stacked by run
   outcome using the shared phase colors with an icon + color legend and a screen-reader

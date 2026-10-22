@@ -117,6 +117,9 @@ type AgentRunReconciler struct {
 	// requires a tenant API key. Injected from the HINDSIGHT_API_KEY env var; the
 	// operator mirrors it into each run namespace (see ensureHindsightKeySecret).
 	HindsightAPIKey string
+	// OperatorNamespace is the namespace the operator runs in (POD_NAMESPACE). Per-run
+	// NetworkPolicies allow its pods to scrape the model-router's :9091 metrics.
+	OperatorNamespace string
 }
 
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
@@ -1267,7 +1270,7 @@ func (r *AgentRunReconciler) ensureTokenReviewerBinding(ctx context.Context, run
 // ensureNetworkPolicy creates the per-run NetworkPolicy if it doesn't exist.
 func (r *AgentRunReconciler) ensureNetworkPolicy(ctx context.Context, run *agentorcav1alpha1.AgentRun, toolEgressRules []agentorcav1alpha1.EgressRule, hasAgentTools bool, hasKnowledgeBases bool) error { //nolint:unparam
 
-	np := security.BuildNetworkPolicy(run, run.Namespace, toolEgressRules, r.StateConfig.Backend == "redis", r.HindsightURL)
+	np := security.BuildNetworkPolicy(run, run.Namespace, toolEgressRules, r.StateConfig.Backend == "redis", r.HindsightURL, r.OperatorNamespace)
 	if err := ctrl.SetControllerReference(run, np, r.Scheme); err != nil {
 		return fmt.Errorf("setting networkpolicy owner ref: %w", err)
 	}
@@ -1281,7 +1284,7 @@ func (r *AgentRunReconciler) ensureNetworkPolicy(ctx context.Context, run *agent
 //   - Router pod policy: full egress (providers, K8s API, Redis, tools) + ingress from agent pod
 //   - Agent pod policy: egress restricted to router pod ports 8080/8082 + DNS only
 func (r *AgentRunReconciler) ensureSplitPodNetworkPolicies(ctx context.Context, run *agentorcav1alpha1.AgentRun, toolEgressRules []agentorcav1alpha1.EgressRule) error {
-	routerNP := security.BuildRouterPodNetworkPolicy(run, run.Namespace, toolEgressRules, r.StateConfig.Backend == "redis", r.HindsightURL)
+	routerNP := security.BuildRouterPodNetworkPolicy(run, run.Namespace, toolEgressRules, r.StateConfig.Backend == "redis", r.HindsightURL, r.OperatorNamespace)
 	if err := ctrl.SetControllerReference(run, routerNP, r.Scheme); err != nil {
 		return fmt.Errorf("setting router networkpolicy owner ref: %w", err)
 	}

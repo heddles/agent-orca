@@ -10,6 +10,7 @@ package security
 import (
 	"testing"
 
+	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
@@ -26,7 +27,7 @@ func newTestRun(name string) *agentorcav1alpha1.AgentRun {
 
 func TestBuildNetworkPolicy_BasicNoToolsNoRedis(t *testing.T) {
 	run := newTestRun("test-run")
-	np := BuildNetworkPolicy(run, "default", nil, false, "")
+	np := BuildNetworkPolicy(run, "default", nil, false, "", "")
 
 	if np.Name != "agentorca-run-test-run" {
 		t.Errorf("unexpected name: %s", np.Name)
@@ -53,7 +54,7 @@ func TestBuildNetworkPolicy_BasicNoToolsNoRedis(t *testing.T) {
 
 func TestBuildNetworkPolicy_HindsightHTTPPort(t *testing.T) {
 	run := newTestRun("http-run")
-	np := BuildNetworkPolicy(run, "default", nil, false, "http://hindsight.invalid")
+	np := BuildNetworkPolicy(run, "default", nil, false, "http://hindsight.invalid", "")
 
 	// 443, 6443, 8082, 80 (hindsight HTTP), 53 UDP, 53 TCP = 6
 	if len(np.Spec.Egress) != 6 {
@@ -75,7 +76,7 @@ func TestBuildNetworkPolicy_HindsightHTTPPort(t *testing.T) {
 
 func TestBuildNetworkPolicy_HindsightHTTPSPort(t *testing.T) {
 	run := newTestRun("https-run")
-	np := BuildNetworkPolicy(run, "default", nil, false, "https://hindsight.invalid")
+	np := BuildNetworkPolicy(run, "default", nil, false, "https://hindsight.invalid", "")
 
 	// 443, 6443, 8082, 443 (hindsight HTTPS), 53 UDP, 53 TCP = 6
 	if len(np.Spec.Egress) != 6 {
@@ -97,7 +98,7 @@ func TestBuildNetworkPolicy_HindsightHTTPSPort(t *testing.T) {
 
 func TestBuildNetworkPolicy_HindsightExplicitPort(t *testing.T) {
 	run := newTestRun("explicit-port-run")
-	np := BuildNetworkPolicy(run, "default", nil, false, "http://hindsight-api.invalid:8888")
+	np := BuildNetworkPolicy(run, "default", nil, false, "http://hindsight-api.invalid:8888", "")
 
 	// 443, 6443, 8082, 8888 (explicit), 53 UDP, 53 TCP = 6
 	if len(np.Spec.Egress) != 6 {
@@ -118,7 +119,7 @@ func TestBuildNetworkPolicy_HindsightExplicitPort(t *testing.T) {
 
 func TestBuildNetworkPolicy_HindsightDefaultPort(t *testing.T) {
 	run := newTestRun("default-port-run")
-	np := BuildNetworkPolicy(run, "default", nil, false, "hindsight-api")
+	np := BuildNetworkPolicy(run, "default", nil, false, "hindsight-api", "")
 
 	// 443, 6443, 8082, 8888 (default), 53 UDP, 53 TCP = 6
 	if len(np.Spec.Egress) != 6 {
@@ -140,7 +141,7 @@ func TestBuildNetworkPolicy_HindsightDefaultPort(t *testing.T) {
 func TestBuildNetworkPolicy_HindsightPortNeverZero(t *testing.T) {
 	// Regression test: empty URL must not produce port 0 (K8s rejects port 0).
 	run := newTestRun("zero-port-run")
-	np := BuildNetworkPolicy(run, "default", nil, false, "")
+	np := BuildNetworkPolicy(run, "default", nil, false, "", "")
 
 	for i, rule := range np.Spec.Egress {
 		for _, port := range rule.Ports {
@@ -153,7 +154,7 @@ func TestBuildNetworkPolicy_HindsightPortNeverZero(t *testing.T) {
 
 func TestBuildNetworkPolicy_WithRedis(t *testing.T) {
 	run := newTestRun("redis-run")
-	np := BuildNetworkPolicy(run, "default", nil, true, "")
+	np := BuildNetworkPolicy(run, "default", nil, true, "", "")
 
 	// 443, 6443, 6379 (Redis), 8082, 8888 (hindsight default), 53 UDP, 53 TCP = 7
 	if len(np.Spec.Egress) != 7 {
@@ -167,7 +168,7 @@ func TestBuildNetworkPolicy_WithToolEgress(t *testing.T) {
 		{Host: "10.0.0.5", Port: 8080, Protocol: "TCP"},
 	}
 	run := newTestRun("tool-run")
-	np := BuildNetworkPolicy(run, "default", tools, false, "")
+	np := BuildNetworkPolicy(run, "default", tools, false, "", "")
 
 	// 2 (k8s API) + 2 tools + 8082 + 8888 (hindsight default) + 2 DNS = 8
 	if len(np.Spec.Egress) != 8 {
@@ -177,7 +178,7 @@ func TestBuildNetworkPolicy_WithToolEgress(t *testing.T) {
 
 func TestBuildNetworkPolicy_PodSelector(t *testing.T) {
 	run := newTestRun("sel-run")
-	np := BuildNetworkPolicy(run, "ns1", nil, false, "")
+	np := BuildNetworkPolicy(run, "ns1", nil, false, "", "")
 
 	want := SafeLabelValue(run.Name)
 	if np.Spec.PodSelector.MatchLabels[LabelAgentRunName] != want {
@@ -189,7 +190,7 @@ func TestBuildNetworkPolicy_PodSelector(t *testing.T) {
 
 func TestBuildRouterPodNetworkPolicy_Basic(t *testing.T) {
 	run := newTestRun("split-run")
-	np := BuildRouterPodNetworkPolicy(run, "default", nil, false, "")
+	np := BuildRouterPodNetworkPolicy(run, "default", nil, false, "", "")
 
 	if np.Name != "agentorca-router-split-run" {
 		t.Errorf("unexpected name: %s", np.Name)
@@ -222,7 +223,7 @@ func TestBuildRouterPodNetworkPolicy_WithRedisAndTools(t *testing.T) {
 	tools := []agentorcav1alpha1.EgressRule{
 		{Host: "api.github.com", Port: 443, Protocol: "TCP"},
 	}
-	np := BuildRouterPodNetworkPolicy(run, "default", tools, true, "")
+	np := BuildRouterPodNetworkPolicy(run, "default", tools, true, "", "")
 
 	// 443, 6443, tool(443), 6379, 8082, 8888 (hindsight default), 53 UDP, 53 TCP = 8
 	if len(np.Spec.Egress) != 8 {
@@ -261,5 +262,71 @@ func TestBuildAgentPodNetworkPolicy_Basic(t *testing.T) {
 	}
 	if len(toRule.Ports) != 2 {
 		t.Errorf("expected 2 ports (8080, 8082) in router egress rule, got %d", len(toRule.Ports))
+	}
+}
+
+// metricsRule returns the single ingress rule that opens the model-router
+// metrics port, failing if the policy exposes anything else.
+func metricsRule(t *testing.T, np *networkingv1.NetworkPolicy) networkingv1.NetworkPolicyIngressRule {
+	t.Helper()
+	for _, r := range np.Spec.Ingress {
+		for _, p := range r.Ports {
+			if p.Port != nil && p.Port.IntValue() == 9091 {
+				return r
+			}
+		}
+	}
+	t.Fatalf("no ingress rule for port 9091 in %+v", np.Spec.Ingress)
+	return networkingv1.NetworkPolicyIngressRule{}
+}
+
+// Regression for #79: the operator scrapes the model-router's :9091 for in-flight
+// spend, but its namespace is not necessarily labeled `metrics: enabled`, so the
+// scrape was blocked by the run policy.
+func TestMetricsIngressAllowsOperatorPods(t *testing.T) {
+	run := &agentorcav1alpha1.AgentRun{ObjectMeta: metav1.ObjectMeta{Name: "r1", Namespace: "tenant-a"}}
+	for name, np := range map[string]*networkingv1.NetworkPolicy{
+		"combined pod": BuildNetworkPolicy(run, "tenant-a", nil, false, "", "agent-orca-system"),
+		"router pod":   BuildRouterPodNetworkPolicy(run, "tenant-a", nil, false, "", "agent-orca-system"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			rule := metricsRule(t, np)
+			if len(rule.From) != 2 {
+				t.Fatalf("want the metrics-namespace peer plus the operator peer, got %+v", rule.From)
+			}
+			if rule.From[0].NamespaceSelector.MatchLabels["metrics"] != "enabled" {
+				t.Fatalf("the existing metrics: enabled peer must be kept: %+v", rule.From[0])
+			}
+			op := rule.From[1]
+			if op.NamespaceSelector == nil || op.PodSelector == nil {
+				t.Fatalf("the operator peer needs both selectors (ANDed) so other pods in its namespace stay blocked: %+v", op)
+			}
+			if got := op.NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"]; got != "agent-orca-system" {
+				t.Fatalf("operator namespace selector = %q", got)
+			}
+			if op.PodSelector.MatchLabels["app.kubernetes.io/component"] != "operator" {
+				t.Fatalf("operator pod selector = %+v", op.PodSelector.MatchLabels)
+			}
+			if len(rule.Ports) != 1 || rule.Ports[0].Port.IntValue() != 9091 {
+				t.Fatalf("rule must open only 9091: %+v", rule.Ports)
+			}
+		})
+	}
+}
+
+func TestMetricsIngressWithoutOperatorNamespaceKeepsOnlyMetricsPeer(t *testing.T) {
+	run := &agentorcav1alpha1.AgentRun{ObjectMeta: metav1.ObjectMeta{Name: "r1", Namespace: "tenant-a"}}
+	rule := metricsRule(t, BuildNetworkPolicy(run, "tenant-a", nil, false, "", ""))
+	if len(rule.From) != 1 || rule.From[0].NamespaceSelector.MatchLabels["metrics"] != "enabled" {
+		t.Fatalf("without an operator namespace only the metrics peer is allowed: %+v", rule.From)
+	}
+}
+
+// Everything except 9091 stays denied, with or without the operator peer.
+func TestMetricsIngressDoesNotOpenOtherPorts(t *testing.T) {
+	run := &agentorcav1alpha1.AgentRun{ObjectMeta: metav1.ObjectMeta{Name: "r1", Namespace: "tenant-a"}}
+	np := BuildNetworkPolicy(run, "tenant-a", nil, false, "", "agent-orca-system")
+	if len(np.Spec.Ingress) != 1 {
+		t.Fatalf("combined-pod policy must expose exactly one ingress rule, got %d", len(np.Spec.Ingress))
 	}
 }

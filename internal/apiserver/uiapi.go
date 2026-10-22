@@ -85,6 +85,9 @@ type UIServer struct {
 	pgStore *postgresql.Store
 	// costArchive overrides the archive read by /api/costs (tests); nil means pgStore.
 	costArchive costArchive
+	// routerMetricsURLFor builds a model-router metrics URL from a pod IP (tests);
+	// nil means http://<ip>:9091/metrics.
+	routerMetricsURLFor func(podIP string) string
 
 	// externalAuth enables OIDC tenant JWT validation as an alternative to
 	// K8s SA tokens. When nil, only K8s SA tokens are accepted.
