@@ -51,6 +51,7 @@ func (m *memApprovals) RequestApproval(_ context.Context, a postgresql.Approval)
 		a.Status = postgresql.ApprovalPending
 	}
 	m.rows = append(m.rows, a)
+	a.Created = true
 	return a, nil
 }
 
@@ -224,5 +225,34 @@ func TestAutoApprovesMatching(t *testing.T) {
 		if got := autoApproves(rules, tc.ch); got != tc.want {
 			t.Errorf("%s: autoApproves = %v, want %v", name, got, tc.want)
 		}
+	}
+}
+
+type recordingNotifier struct{ sent []postgresql.Approval }
+
+func (n *recordingNotifier) NotifyApproval(_ context.Context, a postgresql.Approval) error {
+	n.sent = append(n.sent, a)
+	return nil
+}
+
+func TestEgressApprovalsNotifyOncePerNewPendingRequest(t *testing.T) {
+	gw := newStubGateway()
+	run, token := gitRun()
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "default"}}
+	r, _ := sandboxReconciler(t, gw, run, token, ns, approvalClass())
+	r.Approvals = &memApprovals{}
+	notifier := &recordingNotifier{}
+	r.ApprovalNotifier = notifier
+	sb := &osv1.Sandbox{Name: "sb-1"}
+	gw.drafts = map[string][]osv1.PolicyChunk{"sb-1": {
+		chunk("c-auto", "objects.githubusercontent.com", "/usr/bin/curl", ""),
+		chunk("c-manual", "example.com", "/usr/bin/curl", ""),
+	}}
+
+	r.reconcileEgressApprovals(context.Background(), run, classedAgent(), sb)
+	r.reconcileEgressApprovals(context.Background(), run, classedAgent(), sb) // the draft is still pending
+
+	if len(notifier.sent) != 1 || !strings.Contains(notifier.sent[0].SourceKey, "c-manual") {
+		t.Errorf("notified %+v, want exactly one message for the manual request", notifier.sent)
 	}
 }
