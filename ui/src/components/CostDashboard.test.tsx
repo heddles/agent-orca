@@ -204,13 +204,13 @@ describe('CostDashboard', () => {
     render(<CostDashboard selection={{ kind: 'run', name: 'run-9' }} />)
 
     await waitFor(() => expect(mockGetCosts).toHaveBeenCalledWith('default', { run: 'run-9' }))
-    expect(screen.getByText('Run: run-9')).toBeInTheDocument()
+    expect(await screen.findByText('Run: run-9')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'This run' })).toHaveAttribute('aria-pressed', 'true')
 
     await user.click(screen.getByRole('button', { name: 'All' }))
     await waitFor(() => expect(mockGetCosts).toHaveBeenLastCalledWith('default', undefined))
+    expect(await screen.findByText('All runs')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'All' })).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByText('All runs')).toBeInTheDocument()
   })
 
   it('scopes to a deployment in its own namespace', async () => {
