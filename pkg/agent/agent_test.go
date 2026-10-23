@@ -18,6 +18,7 @@ package agent
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -271,5 +272,17 @@ func TestRunStream(t *testing.T) {
 	}
 	if got.String() != "Hello" {
 		t.Errorf("streamed %q", got.String())
+	}
+}
+
+func TestInputPrefersExactMultiLineCopy(t *testing.T) {
+	t.Setenv("AGENTORC_INPUT", "line one line two")
+	t.Setenv("AGENTORC_INPUT_B64", base64.StdEncoding.EncodeToString([]byte("line one\nline two")))
+	if got := Input(); got != "line one\nline two" {
+		t.Errorf("Input() = %q", got)
+	}
+	t.Setenv("AGENTORC_INPUT_B64", "")
+	if got := Input(); got != "line one line two" {
+		t.Errorf("Input() without _B64 = %q", got)
 	}
 }

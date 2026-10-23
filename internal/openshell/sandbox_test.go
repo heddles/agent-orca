@@ -18,6 +18,7 @@ package openshell
 
 import (
 	"context"
+	"encoding/base64"
 	"reflect"
 	"regexp"
 	"strings"
@@ -366,5 +367,28 @@ func TestCompilePolicy_Tools(t *testing.T) {
 	}
 	if docs := p.NetworkPolicies["agentorca-tool-docs"]; docs.Endpoints[0].Ports[0] != 8000 {
 		t.Fatalf("docs rule = %+v", docs)
+	}
+}
+
+func TestSandboxEnvEncodesLineBreaks(t *testing.T) {
+	in := map[string]string{
+		"AGENTORC_INPUT": "Do this:\n1. clone\r\n2. push",
+		"OPENAI_API_KEY": "tok",
+	}
+	got := sandboxEnv(in)
+	for k, v := range got {
+		if strings.ContainsAny(v, "\r\n") {
+			t.Errorf("%s still has a line break: %q", k, v)
+		}
+	}
+	if got["OPENAI_API_KEY"] != "tok" || got["OPENAI_API_KEY"+EnvB64Suffix] != "" {
+		t.Errorf("one-line value changed: %v", got)
+	}
+	if got["AGENTORC_INPUT"] != "Do this: 1. clone 2. push" {
+		t.Errorf("one-line fallback = %q", got["AGENTORC_INPUT"])
+	}
+	dec, err := base64.StdEncoding.DecodeString(got["AGENTORC_INPUT"+EnvB64Suffix])
+	if err != nil || string(dec) != in["AGENTORC_INPUT"] {
+		t.Errorf("exact copy = %q, %v", dec, err)
 	}
 }

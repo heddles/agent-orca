@@ -40,6 +40,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -494,4 +495,17 @@ func (a *Agent) RunStream(ctx context.Context, input string) (<-chan string, <-c
 	}()
 
 	return contentChan, errChan
+}
+
+// Input returns the run's input (AGENTORC_INPUT). In a sandbox, a multi-line
+// input arrives base64-encoded in AGENTORC_INPUT_B64, because the sandbox
+// gateway accepts no line breaks in environment values, while AGENTORC_INPUT
+// holds a one-line version; Input prefers the exact one.
+func Input() string {
+	if enc := os.Getenv("AGENTORC_INPUT_B64"); enc != "" {
+		if b, err := base64.StdEncoding.DecodeString(enc); err == nil {
+			return string(b)
+		}
+	}
+	return os.Getenv("AGENTORC_INPUT")
 }

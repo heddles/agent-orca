@@ -223,7 +223,9 @@ workload ──► supervisor ──► router Service :8080/:8082      (always 
    the gateway:
    - the Agent image is the workload, and `command` + `args` is the main process;
    - the environment is the agent pod's: `AGENTORC_*`, `OPENAI_BASE_URL`, `OPENAI_API_KEY`
-     and framework variables;
+     and framework variables. The gateway rejects line breaks in environment values, so a
+     multi-line value (usually the task) is passed exactly as `<NAME>_B64` (base64), and
+     `<NAME>` holds a one-line version. The Go SDK's `agent.Input()` reads the exact one;
    - the policy is compiled from `sandbox` and the Agent's tools (see `internal/openshell`);
    - static tool credentials are registered as providers and attached first (see
      [Authenticated tools](#authenticated-tools)).

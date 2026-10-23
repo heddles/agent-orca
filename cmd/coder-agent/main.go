@@ -22,7 +22,7 @@ limitations under the License.
 // Agent's systemPrompt, tools and governance come from the model-router as for
 // any agent. Environment:
 //
-//	AGENTORC_INPUT     the task (set by the operator)
+//	AGENTORC_INPUT     the task (set by the operator; AGENTORC_INPUT_B64 when multi-line)
 //	CODER_WORKSPACE    directory the tools work in (default /sandbox)
 //	CODER_MAX_TURNS    maximum requests to the router (default 300)
 package main
@@ -65,7 +65,7 @@ const continuePrompt = "Continue working on the task. When it is complete and ve
 	"if it cannot be completed, call _fail with the reason."
 
 func main() {
-	input := os.Getenv("AGENTORC_INPUT")
+	input := agent.Input()
 	if strings.TrimSpace(input) == "" {
 		fmt.Fprintln(os.Stderr, "coder-agent: AGENTORC_INPUT is empty")
 		os.Exit(2)
