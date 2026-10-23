@@ -422,6 +422,12 @@ spec:
                       namespace label `agentorca.io/enable-sandboxes: "true"` and a GuardrailPolicyRef.
                       Nil (the default) keeps today's pod topology unchanged.
                     properties:
+                      classRef:
+                        description: |-
+                          ClassRef names a cluster-scoped SandboxClass whose egress, filesystem,
+                          resource defaults, placement and minimum enforcement apply to this Agent.
+                          The Agent's own settings add to the class but cannot weaken it.
+                        type: string
                       egress:
                         description: |-
                           Egress lists extra endpoints the agent process may reach directly, such as
@@ -467,6 +473,23 @@ spec:
                           required:
                           - host
                           type: object
+                        type: array
+                      egressPresets:
+                        description: |-
+                          EgressPresets add vetted read-only host lists for package registries and
+                          sources, e.g. go (module proxy and checksum database) or npm.
+                        items:
+                          description: SandboxEgressPreset names a vetted set of package-registry
+                            and source hosts.
+                          enum:
+                          - go
+                          - npm
+                          - pypi
+                          - crates
+                          - maven
+                          - github-read
+                          - mise
+                          type: string
                         type: array
                       enforcement:
                         default: audit

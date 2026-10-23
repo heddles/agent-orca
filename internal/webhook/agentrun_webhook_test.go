@@ -272,3 +272,36 @@ func TestAgentValidatorSandbox(t *testing.T) {
 		})
 	}
 }
+
+func TestAgentValidatorSandboxClass(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = agentorcav1alpha1.AddToScheme(scheme)
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "agents", Labels: map[string]string{
+		security.LabelEnableSandboxes: "true", "team": "a",
+	}}}
+	open := &agentorcav1alpha1.SandboxClass{ObjectMeta: metav1.ObjectMeta{Name: "open"}}
+	teamB := &agentorcav1alpha1.SandboxClass{
+		ObjectMeta: metav1.ObjectMeta{Name: "team-b"},
+		Spec: agentorcav1alpha1.SandboxClassSpec{
+			NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"team": "b"}},
+		},
+	}
+	v := &AgentValidator{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(ns, open, teamB).Build()}
+
+	for class, errSubstr := range map[string]string{
+		"open":    "",
+		"team-b":  "not available to namespace",
+		"missing": "not found",
+	} {
+		agent := sandboxAgent("agents")
+		agent.Spec.Runtime.Sandbox.ClassRef = class
+		err := v.validate(context.Background(), &agent)
+		switch {
+		case errSubstr == "" && err != nil:
+			t.Errorf("class %s: validate() = %v, want allowed", class, err)
+		case errSubstr != "" && (err == nil || !strings.Contains(err.Error(), errSubstr)):
+			t.Errorf("class %s: validate() = %v, want %q", class, err, errSubstr)
+		}
+	}
+}
