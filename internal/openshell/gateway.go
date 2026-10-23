@@ -57,6 +57,13 @@ type Gateway interface {
 	EnsureProvider(ctx context.Context, provider *osv1.Provider) error
 	// DeleteProviders deletes every provider carrying all of labels.
 	DeleteProviders(ctx context.Context, labels map[string]string) error
+	// PendingDrafts returns the sandbox's pending policy proposals: rules the
+	// gateway drafted from connections its policy denied.
+	PendingDrafts(ctx context.Context, sandbox string) ([]osv1.PolicyChunk, error)
+	// ApproveDraft adds a proposal to the sandbox's live policy.
+	ApproveDraft(ctx context.Context, sandbox, chunkID, reviewToken string) error
+	// RejectDraft declines a proposal.
+	RejectDraft(ctx context.Context, sandbox, chunkID, reason string) error
 }
 
 // Config holds the operator's connection settings for the OpenShell gateway.
@@ -128,7 +135,7 @@ func Connect(cfg Config, podLogs PodLogFunc) (Gateway, error) {
 	if err != nil {
 		return nil, fmt.Errorf("connecting to OpenShell gateway %s: %w", cfg.Address, err)
 	}
-	return NewGateway(client.Sandboxes(), client.Providers(), cfg.Workspace, cfg.SandboxNamespace, podLogs), nil
+	return NewGateway(client.Sandboxes(), client.Providers(), cfg.Workspace, cfg.SandboxNamespace, podLogs).WithPolicy(client.Policy()), nil
 }
 
 // PodLogFunc reads a container's logs from a pod. The gateway does not relay
@@ -145,6 +152,7 @@ func NewGateway(sandboxes osv1.SandboxInterface, providers osv1.ProviderInterfac
 type SDKGateway struct {
 	sandboxes osv1.SandboxInterface
 	providers osv1.ProviderInterface
+	policy    osv1.PolicyInterface
 	workspace string
 	namespace string
 	podLogs   PodLogFunc
@@ -285,4 +293,48 @@ func (g *SDKGateway) DeleteProviders(ctx context.Context, labels map[string]stri
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// WithPolicy gives the gateway the policy client its draft methods use.
+func (g *SDKGateway) WithPolicy(p osv1.PolicyInterface) *SDKGateway {
+	g.policy = p
+	return g
+}
+
+// errNoPolicyClient is returned by draft methods of a gateway built without
+// a policy client.
+var errNoPolicyClient = errors.New("openshell: gateway has no policy client")
+
+// PendingDrafts implements Gateway.
+func (g *SDKGateway) PendingDrafts(ctx context.Context, sandbox string) ([]osv1.PolicyChunk, error) {
+	if g.policy == nil {
+		return nil, errNoPolicyClient
+	}
+	d, err := g.policy.GetDraft(ctx, g.workspace, sandbox, osv1.WithStatusFilter("pending"))
+	if err != nil {
+		return nil, fmt.Errorf("reading policy drafts of sandbox %s: %w", sandbox, err)
+	}
+	return d.Chunks, nil
+}
+
+// ApproveDraft implements Gateway.
+func (g *SDKGateway) ApproveDraft(ctx context.Context, sandbox, chunkID, reviewToken string) error {
+	if g.policy == nil {
+		return errNoPolicyClient
+	}
+	if _, err := g.policy.ApproveDraftChunk(ctx, g.workspace, sandbox, chunkID, reviewToken); err != nil {
+		return fmt.Errorf("approving policy draft %s of sandbox %s: %w", chunkID, sandbox, err)
+	}
+	return nil
+}
+
+// RejectDraft implements Gateway.
+func (g *SDKGateway) RejectDraft(ctx context.Context, sandbox, chunkID, reason string) error {
+	if g.policy == nil {
+		return errNoPolicyClient
+	}
+	if err := g.policy.RejectDraftChunk(ctx, g.workspace, sandbox, chunkID, reason); err != nil {
+		return fmt.Errorf("rejecting policy draft %s of sandbox %s: %w", chunkID, sandbox, err)
+	}
+	return nil
 }

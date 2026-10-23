@@ -265,6 +265,7 @@ func (r *AgentRunReconciler) checkSandboxProgress(ctx context.Context, run *agen
 		return ctrl.Result{}, err
 	}
 	r.refreshSandboxGit(ctx, run, agent)
+	r.reconcileEgressApprovals(ctx, run, agent, sb)
 
 	outcome, reason := openshell.Observe(sb)
 	switch outcome {

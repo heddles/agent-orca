@@ -442,6 +442,11 @@ func main() {
 	}
 	// The GitHub App gives sandboxed agents short-lived git credentials
 	// (spec.runtime.sandbox.github); without it such runs fail with a clear reason.
+	// Egress approvals need the PostgreSQL store; without it they stay off.
+	var approvals controller.ApprovalStore
+	if pgStore != nil {
+		approvals = pgStore
+	}
 	var gitHubApp controller.GitHubTokenMinter
 	if dir := os.Getenv("GITHUB_APP_DIR"); dir != "" {
 		app, err := githubapp.FromDir(dir, os.Getenv("GITHUB_API_URL"))
@@ -475,6 +480,7 @@ func main() {
 		Sandboxes:                  sandboxes,
 		SandboxPlacement:           sandboxPlacement,
 		GitHubApp:                  gitHubApp,
+		Approvals:                  approvals,
 		ClusterDomain:              os.Getenv("CLUSTER_DOMAIN"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "AgentRun")

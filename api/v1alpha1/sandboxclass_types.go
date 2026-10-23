@@ -79,6 +79,46 @@ type SandboxClassSpec struct {
 	RuntimeClassName string `json:"runtimeClassName,omitempty"`
 	// +optional
 	PriorityClassName string `json:"priorityClassName,omitempty"`
+
+	// Approval governs requests for egress the policy does not allow: a
+	// sandbox that tries to reach an unlisted host gets a proposed rule, which
+	// an auto-approve rule or an approver may allow while the run continues.
+	// Without it such requests stay denied.
+	// +optional
+	Approval *SandboxApproval `json:"approval,omitempty"`
+}
+
+// SandboxApproval configures egress approvals for a SandboxClass.
+type SandboxApproval struct {
+	// ApproverGroups are the identity-provider groups whose members may decide.
+	// Empty lets any user with access to the run's namespace decide.
+	// +optional
+	ApproverGroups []string `json:"approverGroups,omitempty"`
+
+	// Timeout is how long a request waits for a decision before it is rejected.
+	// Default 30m.
+	// +optional
+	Timeout *metav1.Duration `json:"timeout,omitempty"`
+
+	// AutoApprove allows matching requests without a person. A request the
+	// sandbox's policy prover flags with security notes is never auto-approved.
+	// +optional
+	AutoApprove []SandboxAutoApproveRule `json:"autoApprove,omitempty"`
+}
+
+// SandboxAutoApproveRule matches egress requests to approve automatically.
+type SandboxAutoApproveRule struct {
+	// Host is the destination host, or a wildcard such as *.example.com.
+	// +kubebuilder:validation:MinLength=1
+	Host string `json:"host"`
+
+	// Ports the request may name. Default [443].
+	// +optional
+	Ports []int32 `json:"ports,omitempty"`
+
+	// Binaries the requesting process may be (absolute paths). Empty matches any.
+	// +optional
+	Binaries []string `json:"binaries,omitempty"`
 }
 
 // +kubebuilder:object:root=true

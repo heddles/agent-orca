@@ -158,6 +158,54 @@ All presets are read-only (GET, HEAD, OPTIONS) except `github.com`, and any bina
 use them. Unauthenticated, a POST to `github.com` can't change anything. With
 `sandbox.github`, the credential-bound endpoint replaces it.
 
+### Egress approvals
+
+When a sandbox tries to reach a host its policy doesn't list, the connection is denied
+and the OpenShell gateway drafts a rule that would allow it. For a class with
+`spec.approval`, the operator turns each draft into an approval:
+
+```yaml
+spec:
+  approval:
+    approverGroups: [platform-oncall]   # IdP groups that may decide; empty: any user of the namespace
+    timeout: 30m                        # undecided requests are rejected after this (default 30m)
+    autoApprove:                        # allowed without a person
+      - host: "*.githubusercontent.com"
+        binaries: [/usr/bin/curl, /usr/bin/git]
+      - host: registry.internal.example.com
+        ports: [443, 8443]
+```
+
+- **Auto-approve:** a request matching a rule (host or `*.` wildcard, ports defaulting to
+  443, optional binary globs) is approved at once. It's recorded as approved by the
+  class. A request the gateway's policy prover flags with security notes is never
+  auto-approved.
+- **Waiting for a person:** any other request becomes a pending approval, and the run
+  shows the condition `WaitingForApproval=True`. The sandbox keeps running, but the
+  connection stays denied until someone decides.
+- **Decisions** are applied to the live sandbox policy within one poll (about 10 s), with
+  no restart. An approval lets the agent's next attempt through, and a rejection or
+  timeout declines the draft. When the run ends, its pending requests are withdrawn.
+- **Only connections are approvable.** A request denied by method or path on an allowed
+  host (for example a POST to a read-only registry) isn't drafted, so it can't be
+  approved this way.
+
+Approvals are stored in PostgreSQL (the `approvals` table, which needs `postgres.dsn`)
+and are the audit record of who decided what, when and why. Without PostgreSQL they're
+off, and denied requests stay denied.
+
+The UI API serves them:
+
+| Request | |
+|---|---|
+| `GET /api/approvals?status=pending&namespace=&run=` | Lists approvals in the caller's namespaces |
+| `POST /api/approvals/{id}/approve` with body `{"reason": "..."}` | Approves; the deciding user is recorded |
+| `POST /api/approvals/{id}/reject` with body `{"reason": "..."}` | Rejects |
+
+Deciding needs a signed-in user: an OIDC session or user token, not a service account. The
+user must have access to the approval's namespace and, when the approval names approver
+groups, be a member of one. A request already decided by someone else gets 409.
+
 Finally, opt in each namespace that may run sandboxed agents:
 
 ```shell

@@ -129,6 +129,9 @@ type AgentRunReconciler struct {
 	Sandboxes openshell.Gateway
 	// SandboxPlacement chooses the nodes sandbox pods run on.
 	SandboxPlacement openshell.Placement
+	// Approvals stores egress approvals (PostgreSQL). Nil disables them: the
+	// sandbox's denied requests stay denied.
+	Approvals ApprovalStore
 	// GitHubApp mints the installation tokens of sandboxes with
 	// spec.runtime.sandbox.github. Nil when no GitHub App is configured.
 	GitHubApp GitHubTokenMinter
@@ -1731,6 +1734,12 @@ func (r *AgentRunReconciler) ensureCleanup(ctx context.Context, run *agentorcav1
 	// them explicitly.
 	r.deleteRunSandbox(ctx, run)
 	providersPending := r.deleteRunProviders(ctx, run)
+	// Requests the run left undecided can no longer apply.
+	if r.Approvals != nil {
+		if err := r.Approvals.WithdrawRunApprovals(ctx, run.Namespace, run.Name); err != nil {
+			log.FromContext(ctx).Error(err, "withdrawing the run's pending approvals")
+		}
+	}
 	// Cascade cancellation to child runs when this run was cancelled.
 	// Child runs are identified by the label "agentorca.io/parent-run" set by the
 	// executor at child-run creation time.
