@@ -83,6 +83,11 @@ type UIServer struct {
 	// pgStore is the optional PostgreSQL archival store for completed runs.
 	// When nil, run history endpoints return 503.
 	pgStore *postgresql.Store
+	// costArchive overrides the archive read by /api/costs (tests); nil means pgStore.
+	costArchive costArchive
+	// routerMetricsURLFor builds a model-router metrics URL from a pod IP (tests);
+	// nil means http://<ip>:9091/metrics.
+	routerMetricsURLFor func(podIP string) string
 
 	// externalAuth enables OIDC tenant JWT validation as an alternative to
 	// K8s SA tokens. When nil, only K8s SA tokens are accepted.
@@ -1175,50 +1180,6 @@ func (s *UIServer) handleListDeployments(w http.ResponseWriter, r *http.Request)
 			s.LastUpdateTime = d.Status.LastUpdateTime.UTC().Format(time.RFC3339)
 		}
 		out = append(out, s)
-	}
-	jsonResponse(w, out)
-}
-
-func (s *UIServer) handleCosts(w http.ResponseWriter, r *http.Request) {
-	ns := r.URL.Query().Get("namespace")
-	var extra []client.ListOption
-	if dep := r.URL.Query().Get("deployment"); dep != "" {
-		extra = append(extra, client.MatchingLabels{"agentorca.io/deployment": dep})
-	}
-
-	var list agentorcav1alpha1.AgentRunList
-	if err := listCRDsMultiNamespace(r.Context(), s.crdClient, &list, ns, extra...); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	runFilter := r.URL.Query().Get("run")
-
-	byAgent := make(map[string]float64)
-	var total float64
-	for _, run := range list.Items {
-		if runFilter != "" && run.Name != runFilter {
-			continue
-		}
-		v := parseFloatCost(run.Status.SpendUSD)
-		total += v
-		byAgent[run.Spec.AgentRef] += v
-	}
-
-	type costData struct {
-		TotalUSD string            `json:"totalUSD"`
-		ByAgent  map[string]string `json:"byAgent"`
-		ByModel  map[string]string `json:"byModel"`
-		ByDay    []any             `json:"byDay"`
-	}
-	out := costData{
-		TotalUSD: fmt.Sprintf("%.4f", total),
-		ByAgent:  make(map[string]string),
-		ByModel:  make(map[string]string),
-		ByDay:    []any{},
-	}
-	for k, v := range byAgent {
-		out.ByAgent[k] = fmt.Sprintf("%.4f", v)
 	}
 	jsonResponse(w, out)
 }

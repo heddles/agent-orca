@@ -407,8 +407,18 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 	}
 	slog.Debug("scanner finished", "isContinuation", isContinuation, "provider", provider.Name, "lines", lineCount, "sawToolCall", sawToolCall, "toolCalls", len(toolCalls))
 
+	spendOutcome := spendOutcomeSuccess
 	if err := scanner.Err(); err != nil {
 		slog.Warn("error reading SSE stream", "err", err)
+		spendOutcome = spendOutcomeStreamInterrupted
+	}
+	// The provider reports usage in its last chunk, which an interrupted or
+	// cancelled stream never delivers. The tokens were still generated and
+	// billed, so approximate them rather than recording the call as free.
+	partial := Message{Role: "assistant", Content: contentBuilder.String(), ToolCalls: toolCalls}
+	if usage.PromptTokens == 0 && usage.CompletionTokens == 0 &&
+		(spendOutcome == spendOutcomeStreamInterrupted || r.cancelCtx.Err() != nil) {
+		usage = estimateInterruptedUsage(chatReq.Messages, partial)
 	}
 
 	// If the run was cancelled, the OpenAI turn loop never saw a terminal finish
@@ -419,6 +429,11 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 	// a done event (without output).
 	if r.cancelCtx.Err() != nil {
 		slog.Info("run cancelled, emitting terminal fail event", "run", r.cfg.RunName)
+		// This early return skips the normal spend accounting below, which
+		// dropped the cost of every call that was in flight at cancellation.
+		r.mu.Lock()
+		r.recordSpend(usage, provider, spendOutcomeCancelled)
+		r.mu.Unlock()
 		_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
 		flusher.Flush()
 		failEv, _ := json.Marshal(map[string]string{"type": "fail", "reason": "router cancel"})
@@ -475,7 +490,7 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 	}
 	r.messages = append(r.messages, assistantMsg)
 	r.incrementBufferTokens(messageTokens(assistantMsg))
-	r.updateSpend(usage, provider)
+	r.recordSpend(usage, provider, spendOutcome)
 	r.ruleRouter.IncrementTurn()
 	// concludeTurn folds the finished turn and caps the buffer. It is gated to
 	// the final (non-tool) text response; during the tool-call loop the buffer is
@@ -634,6 +649,7 @@ func (r *Router) tryFallbackStream(
 					return resp, p, fitted, nil
 				}
 				slog.Warn("fallback provider failed (streaming)", "provider", name, "err", err)
+				r.recordProviderError(p)
 			}
 		}
 	}

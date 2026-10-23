@@ -53,6 +53,7 @@ import (
 	"github.com/heddles/agent-orca/internal/acpfs"
 	"github.com/heddles/agent-orca/internal/apiserver"
 	"github.com/heddles/agent-orca/internal/controller"
+	"github.com/heddles/agent-orca/internal/podbuilder"
 	"github.com/heddles/agent-orca/internal/postgresql"
 	"github.com/heddles/agent-orca/internal/security"
 	"github.com/heddles/agent-orca/internal/state"
@@ -330,6 +331,15 @@ func main() {
 			"Set STATE_BACKEND=redis and REDIS_URL to enable.")
 	}
 
+	// Router configs are written to plain ConfigMaps, so the Redis password is
+	// moved out of the URL into a per-run/per-deployment Secret that only the
+	// model-router mounts (issue #107).
+	routerStateConfig, redisPassword, err := stateConfig.WithPasswordFile(podbuilder.RedisPasswordFile)
+	if err != nil {
+		setupLog.Error(err, "Invalid REDIS_URL")
+		os.Exit(1)
+	}
+
 	// ── PostgreSQL archival store (optional) ─────────────────────────────────
 	// When POSTGRES_DSN is set, completed AgentRuns are snapshotted to PostgreSQL
 	// so the UI can display historical runs beyond the K8s CRD retention window.
@@ -413,7 +423,8 @@ func main() {
 		K8s:                        k8sClient,
 		Dynamic:                    dynamicClient,
 		ModelRouterImage:           modelRouterImage,
-		StateConfig:                stateConfig,
+		StateConfig:                routerStateConfig,
+		RedisPassword:              redisPassword,
 		StateStore:                 stateStore,
 		CloudProvider:              cloudProvider,
 		PostgresStore:              pgStore,
@@ -424,6 +435,8 @@ func main() {
 		ContextCompactionThreshold: compactionThreshold,
 		ContextCompactionMode:      compactionMode,
 		HindsightURL:               os.Getenv("HINDSIGHT_URL"),
+		HindsightAPIKey:            os.Getenv("HINDSIGHT_API_KEY"),
+		OperatorNamespace:          os.Getenv("POD_NAMESPACE"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "AgentRun")
 		os.Exit(1)
@@ -433,7 +446,8 @@ func main() {
 		Scheme:                     mgr.GetScheme(),
 		K8s:                        k8sClient,
 		ModelRouterImage:           modelRouterImage,
-		StateConfig:                stateConfig,
+		StateConfig:                routerStateConfig,
+		RedisPassword:              redisPassword,
 		CloudProvider:              cloudProvider,
 		TokenReviewerClusterRole:   os.Getenv("TOKEN_REVIEWER_CLUSTER_ROLE"),
 		OperatorAPIURL:             os.Getenv("OPERATOR_API_URL"),
@@ -442,6 +456,7 @@ func main() {
 		ContextCompactionThreshold: compactionThreshold,
 		ContextCompactionMode:      compactionMode,
 		HindsightURL:               os.Getenv("HINDSIGHT_URL"),
+		HindsightAPIKey:            os.Getenv("HINDSIGHT_API_KEY"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "AgentDeployment")
 		os.Exit(1)
@@ -683,7 +698,9 @@ func bootstrapAdminSA(ctx context.Context, k8s kubernetes.Interface) error {
 }
 
 // ptrInt64 returns a pointer to i.
-func ptrInt64(i int64) *int64 { return &i }
+//
+//go:fix inline
+func ptrInt64(i int64) *int64 { return new(i) }
 
 // parseLLMRequestTimeout reads the LLM_REQUEST_TIMEOUT env var (a Go duration such as
 // "1h", "5m", "90s") and returns it. Defaults to 1 hour when unset or invalid, so the

@@ -275,6 +275,16 @@ func (r *Router) SetMetrics(m *Metrics) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.metrics = m
+	r.initSpendSeriesLocked()
+}
+
+// initSpendSeriesLocked exports a zero spend sample for every provider and
+// outcome of the current run. Caller must hold r.mu.
+func (r *Router) initSpendSeriesLocked() {
+	for i := range r.cfg.Providers {
+		p := &r.cfg.Providers[i]
+		r.metrics.InitSpendSeries(r.cfg.RunNamespace, r.cfg.RunName, p.Name, p.LiteLLMModel)
+	}
 }
 
 // Cancel terminates all in-flight LLM requests and marks the router as failed.
@@ -951,6 +961,10 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 	}
 	if err != nil {
 		slog.Warn("primary provider failed (streaming), trying fallback", "provider", primaryName, "err", err)
+		if fitErr == nil {
+			// fitErr means the request never left the router: no provider call failed.
+			r.recordProviderError(provider)
+		}
 		r.emitTraceEventBoth(fmt.Sprintf(`{"type":"providerFallback","from":%q,"to":"","reason":%q}`, primaryName, err.Error()))
 		origReq.StreamOptions = chatReq.StreamOptions
 		resp, provider, fit, err = r.tryFallbackStream(req.Context(), origReq, primaryName)
@@ -1051,8 +1065,19 @@ func (r *Router) HandleGemini(w http.ResponseWriter, req *http.Request) {
 
 	respBody, err := r.forwardToProvider(req.Context(), provider, openAIReq)
 	if err != nil {
+		r.recordProviderError(provider)
 		http.Error(w, "upstream error", http.StatusBadGateway)
 		return
+	}
+	// This path never counted its usage: every non-streaming Gemini-format call
+	// was free as far as run spend and the budget cap were concerned.
+	var usageResp struct {
+		Usage TokenUsage `json:"usage"`
+	}
+	if json.Unmarshal(respBody, &usageResp) == nil {
+		r.mu.Lock()
+		r.updateSpend(usageResp.Usage, provider)
+		r.mu.Unlock()
 	}
 
 	// Translate OpenAI response back to Gemini format.
@@ -1265,9 +1290,16 @@ func (r *Router) SpendUSD() float64 {
 	return r.spendUSD
 }
 
-// updateSpend records token usage, updates the running spend total, and
-// persists the cumulative spend to the state store so it survives pod crashes.
+// updateSpend records the usage of a completed LLM call. See recordSpend.
 func (r *Router) updateSpend(usage TokenUsage, provider *ProviderConfig) {
+	r.recordSpend(usage, provider, spendOutcomeSuccess)
+}
+
+// recordSpend adds the cost of usage to the running spend total, counts it in
+// the spend metric under outcome, and persists the cumulative spend to the
+// state store so it survives pod crashes. Calls that failed part-way still
+// cost money, so error paths record whatever usage is known through here too.
+func (r *Router) recordSpend(usage TokenUsage, provider *ProviderConfig, outcome string) {
 	if provider == nil {
 		return
 	}
@@ -1275,12 +1307,46 @@ func (r *Router) updateSpend(usage TokenUsage, provider *ProviderConfig) {
 		float64(usage.CompletionTokens)*provider.CostPerOutputToken
 	r.spendUSD += spent
 	r.ruleRouter.UpdateSpend(spent)
+	r.metrics.AddSpend(r.cfg.RunNamespace, r.cfg.RunName, provider.Name, provider.LiteLLMModel, outcome, spent)
+	r.flushSpend("failed to persist spend")
+}
 
-	if r.store != nil && r.cfg.CheckpointKey != "" {
-		if err := r.store.SaveSpend(context.Background(), r.cfg.CheckpointKey, r.spendUSD, r.checkpointTTL); err != nil {
-			slog.Warn("failed to persist spend", "err", err)
-		}
+// flushSpend writes the cumulative spend to the state store. Idempotent; a
+// failure is logged with msg and retried by the next flush.
+func (r *Router) flushSpend(msg string) {
+	if r.store == nil || r.cfg.CheckpointKey == "" {
+		return
 	}
+	if err := r.store.SaveSpend(context.Background(), r.cfg.CheckpointKey, r.spendUSD, r.checkpointTTL); err != nil {
+		slog.Warn(msg, "err", err)
+	}
+}
+
+// recordProviderError makes a failed provider call visible in the spend metric.
+// Providers do not bill rejected requests, so no cost is added, but the series
+// exists (and a later partial-usage error still lands under the same label).
+// A call that failed because the run was cancelled is not the provider's fault
+// and is attributed to cancelled instead.
+func (r *Router) recordProviderError(provider *ProviderConfig) {
+	if provider == nil {
+		return
+	}
+	outcome := spendOutcomeProviderError
+	if r.cancelCtx.Err() != nil {
+		outcome = spendOutcomeCancelled
+	}
+	r.metrics.AddSpend(r.cfg.RunNamespace, r.cfg.RunName, provider.Name, provider.LiteLLMModel, outcome, 0)
+}
+
+// estimateInterruptedUsage approximates the usage of a streamed call that ended
+// before the provider reported it: the prompt is the request that was sent and
+// the completion is the assistant output received so far. Providers bill the
+// tokens they generated even when the connection drops, so a zero here would
+// under-report exactly the calls that were cut off.
+func estimateInterruptedUsage(sent []Message, partial Message) TokenUsage {
+	u := TokenUsage{PromptTokens: estimateTokens(sent), CompletionTokens: messageTokens(partial)}
+	u.TotalTokens = u.PromptTokens + u.CompletionTokens
+	return u
 }
 
 // aggregateChildSpend adds a child AgentRun's spend (reported as a string
@@ -1295,12 +1361,7 @@ func (r *Router) aggregateChildSpend(spendStr string) {
 	}
 	r.spendUSD += childSpend
 	r.ruleRouter.UpdateSpend(childSpend)
-
-	if r.store != nil && r.cfg.CheckpointKey != "" {
-		if err := r.store.SaveSpend(context.Background(), r.cfg.CheckpointKey, r.spendUSD, r.checkpointTTL); err != nil {
-			slog.Warn("failed to persist spend after child aggregation", "err", err)
-		}
-	}
+	r.flushSpend("failed to persist spend after child aggregation")
 }
 
 // incrementBufferTokens adds delta to the cached incremental token counter for the
@@ -2643,6 +2704,11 @@ func (r *Router) executeFail(ctx context.Context, args string) string {
 	}
 	saToken := strings.TrimSpace(string(tokenBytes))
 
+	// A failed run is the one most likely to be billed later and least likely to
+	// have a clean shutdown: persist the spend before telling the operator.
+	r.mu.Lock()
+	r.flushSpend("failed to persist spend before _fail")
+	r.mu.Unlock()
 	r.checkpoint(context.Background())
 
 	failURL := fmt.Sprintf("%s/agentrun/%s/%s/fail", r.cfg.OperatorAPIURL, r.cfg.RunNamespace, r.cfg.RunName)
@@ -4210,6 +4276,7 @@ func (r *Router) ClaimRun(input WarmRunInput) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.cfg.RunName = input.RunName
+	r.initSpendSeriesLocked()
 	r.cfg.CheckpointKey = checkpointKeyForRun(input.RunName)
 	// An explicit resume key (restart recovery: the run's own checkpoint) wins
 	// over the chat-turn PriorRunRef chain; older operators only send the latter.
@@ -4414,6 +4481,18 @@ func (r *Router) injectRAGTrustBoundaryHint(chatReq ChatCompletionRequest) ChatC
 	return chatReq
 }
 
+// newHindsightClient builds a hindsight API client for the configured URL. When
+// an API key is configured it is sent as a Bearer token on every request, which
+// hindsight's ApiKeyTenantExtension requires for both REST and MCP.
+func newHindsightClient(hc HindsightConfig) *hindsight.APIClient {
+	cfg := hindsight.NewConfiguration()
+	cfg.Servers[0].URL = hc.URL
+	if hc.APIKey != "" {
+		cfg.AddDefaultHeader("Authorization", "Bearer "+hc.APIKey)
+	}
+	return hindsight.NewAPIClient(cfg)
+}
+
 // ensureHindsightBank creates the  bank at agent startup if it does not exist.
 // If the bank already exists, it exits gracefully and continues startup.
 func (r *Router) ensureHindsightBank(ctx context.Context) (string, error) {
@@ -4427,9 +4506,7 @@ func (r *Router) ensureHindsightBank(ctx context.Context) (string, error) {
 		return bankID, err
 	}
 
-	cfg := hindsight.NewConfiguration()
-	cfg.Servers[0].URL = r.cfg.Hindsight.URL
-	client := hindsight.NewAPIClient(cfg)
+	client := newHindsightClient(r.cfg.Hindsight)
 
 	_, _, err := client.BanksAPI.CreateOrUpdateBank(ctx, bankID).CreateBankRequest(hindsight.CreateBankRequest{}).Execute()
 
@@ -4454,14 +4531,11 @@ func (r *Router) hindsightRecall(ctx context.Context, query string) (string, err
 
 	bankID := r.hindsightBankID()
 
-	// Create hindsight client
-	cfg := hindsight.NewConfiguration()
-	cfg.Servers[0].URL = r.cfg.Hindsight.URL
-	client := hindsight.NewAPIClient(cfg)
+	client := newHindsightClient(r.cfg.Hindsight)
 
 	// Build recall request
 	recallReq := hindsight.NewRecallRequest(query)
-	recallReq.MaxTokens = hindsight.PtrInt32(int32(r.cfg.Hindsight.RecallBudget))
+	recallReq.MaxTokens = new(int32(r.cfg.Hindsight.RecallBudget))
 
 	// Call hindsight recall API
 	resp, _, err := client.MemoryAPI.RecallMemories(ctx, bankID).RecallRequest(*recallReq).Execute()
@@ -4494,16 +4568,13 @@ func (r *Router) hindsightRetain(runName, content string) error {
 
 	bankID := r.hindsightBankID()
 
-	// Create hindsight client
-	cfg := hindsight.NewConfiguration()
-	cfg.Servers[0].URL = r.cfg.Hindsight.URL
-	client := hindsight.NewAPIClient(cfg)
+	client := newHindsightClient(r.cfg.Hindsight)
 
 	// Build retain request
 	async := true
 	retainReq := hindsight.NewRetainRequest([]hindsight.MemoryItem{
 		{
-			Content:    hindsight.Content{String: hindsight.PtrString(content)},
+			Content:    hindsight.Content{String: new(content)},
 			Context:    stringToNullable("agent-run-" + runName),
 			DocumentId: stringToNullable("agent-run-" + runName),
 		},

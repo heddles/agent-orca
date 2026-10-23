@@ -22,8 +22,11 @@ import (
 	"fmt"
 	"log/slog"
 
-	"cloud.google.com/go/pubsub"
+	"cloud.google.com/go/pubsub/v2"
+	"cloud.google.com/go/pubsub/v2/apiv1/pubsubpb"
 	"google.golang.org/api/option"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
@@ -32,7 +35,7 @@ import (
 // pubsubPublisher delivers results to a Google Cloud Pub/Sub topic.
 type pubsubPublisher struct {
 	client *pubsub.Client
-	topic  *pubsub.Topic
+	topic  *pubsub.Publisher
 }
 
 func newPubSubPublisher(ctx context.Context, cfg agentorcav1alpha1.EgressConfig, k8sClient client.Client, namespace string) (*pubsubPublisher, error) {
@@ -49,7 +52,9 @@ func newPubSubPublisher(ctx context.Context, cfg agentorcav1alpha1.EgressConfig,
 		if err != nil {
 			return nil, fmt.Errorf("egress.pubsub: reading credentials: %w", err)
 		}
-		opts = append(opts, option.WithCredentialsJSON(creds))
+		// The Secret is documented to hold a service-account key; accepting only
+		// that type keeps a planted external_account config from being loaded.
+		opts = append(opts, option.WithAuthCredentialsJSON(option.ServiceAccount, creds))
 	}
 
 	psClient, err := pubsub.NewClient(ctx, cfg.ProjectID, opts...)
@@ -57,14 +62,16 @@ func newPubSubPublisher(ctx context.Context, cfg agentorcav1alpha1.EgressConfig,
 		return nil, fmt.Errorf("egress.pubsub: creating client: %w", err)
 	}
 
-	topic := psClient.Topic(cfg.Topic)
-	if exists, err := topic.Exists(ctx); err != nil {
+	topicName := fmt.Sprintf("projects/%s/topics/%s", cfg.ProjectID, cfg.Topic)
+	if _, err := psClient.TopicAdminClient.GetTopic(ctx, &pubsubpb.GetTopicRequest{Topic: topicName}); err != nil {
+		_ = psClient.Close()
+		if status.Code(err) == codes.NotFound {
+			return nil, fmt.Errorf("egress.pubsub: topic %q does not exist in project %q", cfg.Topic, cfg.ProjectID)
+		}
 		return nil, fmt.Errorf("egress.pubsub: checking topic existence: %w", err)
-	} else if !exists {
-		return nil, fmt.Errorf("egress.pubsub: topic %q does not exist in project %q", cfg.Topic, cfg.ProjectID)
 	}
 
-	return &pubsubPublisher{client: psClient, topic: topic}, nil
+	return &pubsubPublisher{client: psClient, topic: psClient.Publisher(topicName)}, nil
 }
 
 func (p *pubsubPublisher) Publish(ctx context.Context, result agentorcav1alpha1.EgressResult) error {
@@ -102,6 +109,10 @@ func (p *pubsubPublisher) Publish(ctx context.Context, result agentorcav1alpha1.
 }
 
 func (p *pubsubPublisher) Close() error {
+	if p.topic != nil {
+		// Flush pending messages and stop the publisher's goroutines.
+		p.topic.Stop()
+	}
 	if p.client != nil {
 		return p.client.Close()
 	}

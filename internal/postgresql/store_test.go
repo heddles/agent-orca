@@ -189,7 +189,7 @@ func TestArchiveRunWritesTraceEvents(t *testing.T) {
 			0, sqlmock.AnyArg(), sqlmock.AnyArg(),
 			0, 0, "",
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
-			sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(), sqlmock.AnyArg(), "",
 		).WillReturnResult(sqlmock.NewResult(1, 1))
 
 	s := &Store{db: db}
@@ -228,7 +228,7 @@ func TestArchiveRunNilTraceEventsPreservesColumn(t *testing.T) {
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
-			sqlmock.AnyArg(), sqlmock.AnyArg()).
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	s := &Store{db: db}

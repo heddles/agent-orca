@@ -29,7 +29,6 @@ package security
 
 import (
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/utils/ptr"
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
 )
@@ -96,10 +95,10 @@ func EnforcePodSecurity(pod *corev1.Pod, agentOverride *agentorcav1alpha1.PodSec
 		pod.Spec.SecurityContext = &corev1.PodSecurityContext{}
 	}
 	sc := pod.Spec.SecurityContext
-	sc.RunAsNonRoot = ptr.To(true)
-	sc.RunAsUser = ptr.To(agentRunUserID)
-	sc.RunAsGroup = ptr.To(agentRunUserID)
-	sc.FSGroup = ptr.To(agentRunUserID)
+	sc.RunAsNonRoot = new(true)
+	sc.RunAsUser = new(agentRunUserID)
+	sc.RunAsGroup = new(agentRunUserID)
+	sc.FSGroup = new(agentRunUserID)
 	sc.SeccompProfile = &corev1.SeccompProfile{
 		Type: corev1.SeccompProfileTypeRuntimeDefault,
 	}
@@ -113,7 +112,7 @@ func EnforcePodSecurity(pod *corev1.Pod, agentOverride *agentorcav1alpha1.PodSec
 					{
 						ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
 							Audience:          ModelRouterTokenAudience,
-							ExpirationSeconds: ptr.To(saTokenExpirySeconds),
+							ExpirationSeconds: new(saTokenExpirySeconds),
 							Path:              "token",
 						},
 					},
@@ -201,11 +200,11 @@ func enforceContainerSecurity(c *corev1.Container, override *agentorcav1alpha1.P
 
 	if override == nil {
 		// Default restricted baseline (PodSecurityStandards "restricted").
-		csc.AllowPrivilegeEscalation = ptr.To(false)
-		csc.ReadOnlyRootFilesystem = ptr.To(true)
-		csc.RunAsNonRoot = ptr.To(true)
-		csc.RunAsUser = ptr.To(agentRunUserID)
-		csc.RunAsGroup = ptr.To(agentRunUserID)
+		csc.AllowPrivilegeEscalation = new(false)
+		csc.ReadOnlyRootFilesystem = new(true)
+		csc.RunAsNonRoot = new(true)
+		csc.RunAsUser = new(agentRunUserID)
+		csc.RunAsGroup = new(agentRunUserID)
 		csc.Capabilities = &corev1.Capabilities{
 			Drop: []corev1.Capability{"ALL"},
 		}
@@ -223,23 +222,23 @@ func enforceContainerSecurity(c *corev1.Container, override *agentorcav1alpha1.P
 
 	if override.Privileged {
 		// Full privileges: seccomp/capability enforcement is bypassed by the runtime.
-		csc.Privileged = ptr.To(true)
-		csc.AllowPrivilegeEscalation = ptr.To(true)
+		csc.Privileged = new(true)
+		csc.AllowPrivilegeEscalation = new(true)
 		// Do not set Capabilities.Drop: [ALL] — it is meaningless under privileged
 		// and could surprise tooling that inspects the pod spec.
 		if override.RunAsUser != nil {
 			csc.RunAsUser = override.RunAsUser
-			csc.RunAsNonRoot = ptr.To(*override.RunAsUser != 0)
+			csc.RunAsNonRoot = new(*override.RunAsUser != 0)
 		} else {
 			// OpenVPN traditionally runs as root; default to 0 (root) when privileged.
-			csc.RunAsUser = ptr.To(int64(0))
-			csc.RunAsNonRoot = ptr.To(false)
+			csc.RunAsUser = new(int64(0))
+			csc.RunAsNonRoot = new(false)
 		}
 		if override.ReadOnlyRootFilesystem != nil {
 			csc.ReadOnlyRootFilesystem = override.ReadOnlyRootFilesystem
 		} else {
 			// Some VPN/security tooling writes helper scripts and logs under /.
-			csc.ReadOnlyRootFilesystem = ptr.To(false)
+			csc.ReadOnlyRootFilesystem = new(false)
 		}
 		// Leave SeccompProfile untouched; privileged mode ignores it.
 		return
@@ -253,21 +252,21 @@ func enforceContainerSecurity(c *corev1.Container, override *agentorcav1alpha1.P
 		caps.Add = append(caps.Add, corev1.Capability(s))
 	}
 	csc.Capabilities = caps
-	csc.AllowPrivilegeEscalation = ptr.To(false)
+	csc.AllowPrivilegeEscalation = new(false)
 	csc.SeccompProfile = &corev1.SeccompProfile{
 		Type: corev1.SeccompProfileTypeRuntimeDefault,
 	}
 	if override.ReadOnlyRootFilesystem != nil {
 		csc.ReadOnlyRootFilesystem = override.ReadOnlyRootFilesystem
 	} else {
-		csc.ReadOnlyRootFilesystem = ptr.To(true)
+		csc.ReadOnlyRootFilesystem = new(true)
 	}
 	if override.RunAsUser != nil {
 		csc.RunAsUser = override.RunAsUser
-		csc.RunAsNonRoot = ptr.To(*override.RunAsUser != 0)
+		csc.RunAsNonRoot = new(*override.RunAsUser != 0)
 	} else {
-		csc.RunAsNonRoot = ptr.To(true)
-		csc.RunAsUser = ptr.To(agentRunUserID)
+		csc.RunAsNonRoot = new(true)
+		csc.RunAsUser = new(agentRunUserID)
 	}
 }
 

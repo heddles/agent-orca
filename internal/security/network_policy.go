@@ -80,6 +80,7 @@ func BuildNetworkPolicy(
 	toolEgressRules []agentorcav1alpha1.EgressRule,
 	stateRedisEnabled bool,
 	hindsightURL string,
+	operatorNamespace string,
 ) *networkingv1.NetworkPolicy {
 	name := networkPolicyName(run.Name)
 
@@ -157,7 +158,7 @@ func BuildNetworkPolicy(
 			// in-cluster Prometheus/Datadog (or the operator itself; see
 			// internal/apiserver/uiapi.go scrapeModelRouterTokenRate) can scrape
 			// token throughput. Every other ingress is denied.
-			Ingress: []networkingv1.NetworkPolicyIngressRule{metricsIngressFromScraper()},
+			Ingress: []networkingv1.NetworkPolicyIngressRule{metricsIngressFromScraper(operatorNamespace)},
 			Egress:  egressRules,
 		},
 	}
@@ -176,6 +177,7 @@ func BuildRouterPodNetworkPolicy(
 	toolEgressRules []agentorcav1alpha1.EgressRule,
 	stateRedisEnabled bool,
 	hindsightURL string,
+	operatorNamespace string,
 ) *networkingv1.NetworkPolicy {
 	name := "agentorca-router-" + run.Name
 	safeRunName := SafeLabelValue(run.Name)
@@ -249,7 +251,7 @@ func BuildRouterPodNetworkPolicy(
 				networkingv1.PolicyTypeIngress,
 				networkingv1.PolicyTypeEgress,
 			},
-			Ingress: []networkingv1.NetworkPolicyIngressRule{ingressFromAgent, metricsIngressFromScraper()},
+			Ingress: []networkingv1.NetworkPolicyIngressRule{ingressFromAgent, metricsIngressFromScraper(operatorNamespace)},
 			Egress:  egressRules,
 		},
 	}
@@ -414,20 +416,39 @@ func corev1Protocol(p string) corev1.Protocol {
 
 // metricsIngressFromScraper returns an ingress rule that opens the model-router metrics
 // port (9091) to namespaces labeled `metrics: enabled` (where Prometheus/Datadog typically
-// run). This mirrors the operator's own metrics NetworkPolicy convention
-// (charts/agent-orca/templates/operator-network-policy.yaml allows the operator's :8080
-// metrics from `metrics: enabled` namespaces).
-func metricsIngressFromScraper() networkingv1.NetworkPolicyIngressRule {
+// run), and, when operatorNamespace is set, to the operator's own pods. The operator
+// scrapes 9091 itself to show in-flight spend and token throughput in the UI
+// (internal/apiserver: scrapeInFlightSpend, scrapeModelRouterTokenRate), and its
+// namespace is not necessarily labeled for monitoring. This mirrors the operator's
+// own metrics NetworkPolicy convention (charts/agent-orca/templates/operator-network-policy.yaml
+// allows the operator's :8080 metrics from `metrics: enabled` namespaces).
+func metricsIngressFromScraper(operatorNamespace string) networkingv1.NetworkPolicyIngressRule {
 	port := intstr.FromInt32(9091)
 	proto := corev1Protocol("TCP")
+	peers := []networkingv1.NetworkPolicyPeer{
+		{NamespaceSelector: &metav1.LabelSelector{
+			MatchLabels: map[string]string{"metrics": "enabled"},
+		}},
+	}
+	if operatorNamespace != "" {
+		// namespaceSelector AND podSelector in one peer: only the operator's pods,
+		// not everything in its namespace.
+		peers = append(peers, networkingv1.NetworkPolicyPeer{
+			NamespaceSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"kubernetes.io/metadata.name": operatorNamespace},
+			},
+			PodSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					"app.kubernetes.io/name":      "agent-orca",
+					"app.kubernetes.io/component": "operator",
+				},
+			},
+		})
+	}
 	return networkingv1.NetworkPolicyIngressRule{
 		Ports: []networkingv1.NetworkPolicyPort{
 			{Port: &port, Protocol: &proto},
 		},
-		From: []networkingv1.NetworkPolicyPeer{
-			{NamespaceSelector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{"metrics": "enabled"},
-			}},
-		},
+		From: peers,
 	}
 }

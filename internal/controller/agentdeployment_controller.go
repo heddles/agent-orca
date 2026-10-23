@@ -38,7 +38,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/record"
-	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -61,8 +60,11 @@ type AgentDeploymentReconciler struct {
 	Recorder         record.EventRecorder
 	K8s              kubernetes.Interface
 	ModelRouterImage string
-	StateConfig      state.Config
-	CloudProvider    security.CloudProvider
+	// StateConfig is injected into router configs. The operator strips the Redis
+	// password from it; RedisPassword carries it to a mounted Secret instead.
+	StateConfig   state.Config
+	RedisPassword string
+	CloudProvider security.CloudProvider
 	// TokenReviewerClusterRole is the ClusterRole that grants "create tokenreviews".
 	TokenReviewerClusterRole string
 	// OperatorAPIURL is the base URL of the operator's internal API server.
@@ -87,6 +89,10 @@ type AgentDeploymentReconciler struct {
 	// Injected from the HINDSIGHT_URL env var. Used to generate ipBlock egress rules
 	// in the per-run NetworkPolicies when the cluster has a default-deny egress policy.
 	HindsightURL string
+	// HindsightAPIKey authenticates the model-router to a hindsight API that
+	// requires a tenant API key. Injected from the HINDSIGHT_API_KEY env var; the
+	// operator mirrors it into each run namespace (see ensureHindsightKeySecret).
+	HindsightAPIKey string
 }
 
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
@@ -177,6 +183,12 @@ func (r *AgentDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 
 	// Ensure per-deployment token Secret.
+	// The Redis password Secret is shared by the deployment's pods and its warm pool.
+	if err := ensureRedisPasswordSecret(ctx, r.Client, r.Scheme, &deployment,
+		redisSecretName("agentorca-deploy-"+deployment.Name, r.RedisPassword), r.RedisPassword); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	tokenSecretName, err := r.ensureDeploymentTokenSecret(ctx, &deployment, saName)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -269,6 +281,9 @@ func (r *AgentDeploymentReconciler) reconcileDeployment(
 ) error {
 	deploymentName := agentDeploy.Name
 	namespace := agentDeploy.Namespace
+	if err := ensureHindsightKeySecret(ctx, r.Client, namespace, r.HindsightAPIKey); err != nil {
+		return err
+	}
 
 	// Get or create the Kubernetes Deployment
 	var k8sDeploy appsv1.Deployment
@@ -317,8 +332,9 @@ func (r *AgentDeploymentReconciler) reconcileDeployment(
 	agentSecretVolumes, agentSecretMounts := podbuilder.ResolveAgentSecretRefs(agent)
 
 	pod := podbuilder.Build(podbuilder.PodConfig{
-		Namespace: namespace,
-		Labels:    labels,
+		HindsightAPIKeySecretRef: hindsightKeyRef(r.HindsightAPIKey),
+		Namespace:                namespace,
+		Labels:                   labels,
 		Annotations: map[string]string{
 			"agentorca.io/router-config-hash": routerConfigHash,
 		},
@@ -329,6 +345,7 @@ func (r *AgentDeploymentReconciler) reconcileDeployment(
 		RestartPolicy:      corev1.RestartPolicyAlways,
 		ModelRouterImage:   r.ModelRouterImage,
 		RouterConfigName:   "agentorca-deploy-" + agentDeploy.Name,
+		RedisSecretName:    redisSecretName("agentorca-deploy-"+agentDeploy.Name, r.RedisPassword),
 		ProviderVolumes:    providerVolumes,
 		ProviderMounts:     providerMounts,
 		ToolSecretVolumes:  toolSecretVolumes,
@@ -1079,7 +1096,7 @@ func (r *AgentDeploymentReconciler) ensureDeploymentTokenSecret(
 	tr := &authv1.TokenRequest{
 		Spec: authv1.TokenRequestSpec{
 			Audiences:         []string{security.ModelRouterTokenAudience},
-			ExpirationSeconds: ptr.To(expirySeconds),
+			ExpirationSeconds: new(expirySeconds),
 		},
 	}
 	result, err := r.K8s.CoreV1().ServiceAccounts(deploy.Namespace).CreateToken(ctx, saName, tr, metav1.CreateOptions{})
@@ -1338,6 +1355,9 @@ func (r *AgentDeploymentReconciler) reconcileWarmPool(
 	mcpBinVolumes []corev1.Volume,
 	mcpBinMounts []corev1.VolumeMount,
 ) error {
+	if err := ensureHindsightKeySecret(ctx, r.Client, deploy.Namespace, r.HindsightAPIKey); err != nil {
+		return err
+	}
 	// Ensure deployment-scoped RBAC for warm pods.
 	if err := r.ensureWarmPoolRBAC(ctx, deploy, saName); err != nil {
 		return fmt.Errorf("ensuring warm pool RBAC: %w", err)
@@ -1605,8 +1625,9 @@ func (r *AgentDeploymentReconciler) buildWarmPod(
 		webhookNotifyRef = deploy.Spec.WebhookNotify.WebhookSecretRef
 	}
 	return podbuilder.Build(podbuilder.PodConfig{
-		GenerateName: "warm-" + deploy.Name + "-",
-		Namespace:    deploy.Namespace,
+		HindsightAPIKeySecretRef: hindsightKeyRef(r.HindsightAPIKey),
+		GenerateName:             "warm-" + deploy.Name + "-",
+		Namespace:                deploy.Namespace,
 		Labels: map[string]string{
 			"app.kubernetes.io/name":       "agent-orca",
 			"app.kubernetes.io/component":  "warm-pod",
@@ -1626,6 +1647,7 @@ func (r *AgentDeploymentReconciler) buildWarmPod(
 		RestartPolicy:    corev1.RestartPolicyNever,
 		ModelRouterImage: r.ModelRouterImage,
 		RouterConfigName: "agentorca-warm-" + deploy.Name,
+		RedisSecretName:  redisSecretName("agentorca-deploy-"+deploy.Name, r.RedisPassword),
 		RouterExtraPorts: []corev1.ContainerPort{
 			{Name: "warm-mgmt", ContainerPort: 9090, Protocol: corev1.ProtocolTCP},
 		},
@@ -1680,7 +1702,7 @@ func (r *AgentDeploymentReconciler) createWarmPodTokenSecret(
 	tr := &authv1.TokenRequest{
 		Spec: authv1.TokenRequestSpec{
 			Audiences:         []string{security.ModelRouterTokenAudience},
-			ExpirationSeconds: ptr.To(expirySeconds),
+			ExpirationSeconds: &expirySeconds,
 		},
 	}
 	result, err := r.K8s.CoreV1().ServiceAccounts(deploy.Namespace).CreateToken(ctx, saName, tr, metav1.CreateOptions{})

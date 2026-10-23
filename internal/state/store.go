@@ -51,6 +51,11 @@ type Config struct {
 	// Example: "redis://redis.infra.svc.cluster.local:6379"
 	RedisURL string `json:"redisUrl,omitempty"`
 
+	// RedisPasswordFile, when set, is a file holding the Redis password. It
+	// overrides any password in RedisURL. The operator mounts it from a Secret
+	// so the password never appears in the model-router ConfigMap.
+	RedisPasswordFile string `json:"redisPasswordFile,omitempty"`
+
 	// TTLSeconds is the Redis key TTL beyond the run timeout.
 	// Keys auto-expire, so no manual cleanup is needed.
 	TTLSeconds int `json:"ttlSeconds,omitempty"`
@@ -274,9 +279,14 @@ func newRedisStore(cfg Config) (*redisStore, error) {
 		url = "redis://localhost:6379"
 	}
 
-	opts, err := redis.ParseURL(url)
+	opts, err := ParseRedisURL(url)
 	if err != nil {
-		return nil, fmt.Errorf("parsing redis URL: %w", err)
+		return nil, err
+	}
+	if cfg.RedisPasswordFile != "" {
+		if opts.Password, err = readPasswordFile(cfg.RedisPasswordFile); err != nil {
+			return nil, err
+		}
 	}
 
 	client := redis.NewClient(opts)
@@ -287,7 +297,7 @@ func newRedisStore(cfg Config) (*redisStore, error) {
 	defer cancel()
 	if err := client.Ping(ctx).Err(); err != nil {
 		_ = client.Close()
-		return nil, fmt.Errorf("connecting to redis at %s: %w", url, err)
+		return nil, fmt.Errorf("connecting to redis at %s: %w", RedactURL(url), err)
 	}
 
 	enc, _ := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedDefault))

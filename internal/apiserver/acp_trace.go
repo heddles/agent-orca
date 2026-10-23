@@ -17,6 +17,7 @@ limitations under the License.
 package apiserver
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -54,6 +55,44 @@ func isTraceToken(token string) bool {
 // same stream key, matching state.IsTerminalTraceEventJSON.
 func isTerminalTracePayload(evJSON string) bool {
 	return state.IsTerminalTraceEventJSON(evJSON)
+}
+
+// terminalTraceOutput returns the final answer carried by a terminal `done` /
+// `finalOutput` trace event ("" for any other payload). An agent that ends its
+// turn with the `_done(output=...)` built-in puts its answer here instead of
+// streaming it as content tokens, so it never reaches the token parts.
+func terminalTraceOutput(evJSON string) string {
+	var ev struct {
+		Type   string `json:"type"`
+		Output string `json:"output"`
+	}
+	if err := json.Unmarshal([]byte(evJSON), &ev); err != nil {
+		return ""
+	}
+	if ev.Type != "done" && ev.Type != "finalOutput" {
+		return ""
+	}
+	return ev.Output
+}
+
+// finalOutputSuffix returns the text of a terminal trace event's output that
+// is not already part of streamed (the concatenated token content). The
+// model-router's text-turn `done` event repeats the streamed text verbatim
+// (nothing to add); `_done(output=...)` usually has no streamed text (the
+// whole output is new) and occasionally follows unrelated streamed text, in
+// which case it is appended as a new paragraph. cmd/aoctl/acp_trace.go
+// applies the same rule so both sides agree on the final text.
+func finalOutputSuffix(streamed, output string) string {
+	switch {
+	case output == "":
+		return ""
+	case strings.HasPrefix(output, streamed):
+		return output[len(streamed):]
+	case strings.HasSuffix(streamed, output):
+		return ""
+	default:
+		return "\n\n" + output
+	}
 }
 
 // writeTraceEvent emits one `event: trace` SSE frame carrying the raw trace

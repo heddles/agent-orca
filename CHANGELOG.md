@@ -9,6 +9,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Hindsight API-key authentication** (`hindsight.apiKeySecret` chart value, fixes the
+  application-level half of #58) — the model-router sends
+  `Authorization: Bearer <key>` on hindsight bank/recall/retain calls so hindsight can
+  run with its `ApiKeyTenantExtension` instead of relying on ingress auth. The operator
+  mirrors the key into each run namespace and injects it into the model-router
+  container only (never the agent container, never the router ConfigMap). Rollout and
+  rotation runbook: `docs/hindsight-auth.md`.
+- **In-flight spend in `/api/costs`** (#79) — the operator reads the model-router's
+  `agentorca_modelrouter_spend_usd_total` for unfinished runs, so `inFlightUSD` and the
+  totals include spend that is not yet stamped on `status.spendUSD`. Runs whose router
+  cannot be read are counted in `inFlightUnscraped` rather than treated as $0. Per-run
+  NetworkPolicies now admit the operator's pods on `:9091` (scoped by namespace and pod
+  labels, port 9091 only); `hack/verify-router-metrics.sh` checks the path. See
+  `docs/observability.md`.
+- **Cost dashboard rewrite** (#78) — KPI row (total, in-flight, average per run, failed-run
+  spend highlighted above 20% of total, untracked-runs chip), daily spend stacked by run
+  outcome using the shared phase colors with an icon + color legend and a screen-reader
+  description, a By Agent / By Model / By Outcome tab bar, and a banner for runs whose
+  cost could not be captured (with "View runs" and per-run links). Built from the design
+  system primitives; no raw hex, emoji or hand-rolled buttons. `getCosts` now coerces
+  partial or null payloads so an older operator cannot crash the page.
+- **Cost API: model, day, outcome and untracked breakdowns** (`GET /api/costs`, #77) —
+  `byModel` and `byDay` are now populated (they were always empty), archived runs from
+  PostgreSQL are included once their CRDs are garbage-collected (live copy wins, no
+  double counting), and the response adds `byOutcome` (spend by run phase, also split per
+  day), `untrackedCount` / `untrackedSample` (finished runs flagged `CostCapture=Incomplete`,
+  reported instead of counted as $0), `inFlightUSD`, `avgRunUSD` and `failedRunUSD`. Optional
+  `days=N` limits the window. `byModel` attributes a run's whole spend to its last routing
+  decision. The archive gains a `cost_capture` column (added by the startup migration).
+- **`CostCapture` condition on AgentRun** (#76) — `Status.SpendUSD: ""` used to mean both
+  "this run cost nothing" and "its spend could not be read". The controller now sets
+  `CostCapture=True` (reason `Complete`) when the spend was read from the state store and
+  `CostCapture=False` (reason `Incomplete`, with the cause) when it could not be, e.g.
+  the store was unreachable or none is configured (dev profile), so cost views can show
+  such runs as untracked instead of $0.
+- **Per-run spend metric with call outcomes** (`agentorca_modelrouter_spend_usd_total{namespace,run,provider,model,outcome}`,
+  #75) — the model-router now exports the USD it spends split by `success`,
+  `provider_error`, `cancelled` and `stream_interrupted` (all four series from the first
+  scrape), so cost that never reaches a success path is visible on `:9091/metrics`.
 - **Native local filesystem access via the ACP bridge (`fs/*` relay)** — "pod drives
   the workstation": agent pods read and edit the user's real local workspace through
   the same ACP v1 channel editors like Zed already use, with no workspace copies,
@@ -101,6 +140,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- ACP sessions showed a truncated or empty final response when an agent ended its turn
+  with `_done(output=...)` (#74): the answer rides only the terminal `done` trace
+  event, which `streamACPRun` left out of `run.completed` and the `aoctl acp` bridge
+  discarded. The bridge now emits it as a suffix-aware message chunk (no duplication on
+  reconnect replay), `run.completed` carries it, and `Status.Output` truncation (10 KiB,
+  kept for etcd) is now rune-safe and marked with `[output truncated]`.
+- AgentRun spend was dropped on several terminal paths (#76): a restart reset the run to
+  `Pending` without writing the partial spend (lost entirely without a state store), runs
+  the router ended through `_fail`/`_done` never had their spend loaded, and any state
+  store error silently became `""`. Spend is now stamped on every retry and on every
+  terminal run (with a bounded retry while the store is unreachable); a failed read keeps
+  the earlier value as a lower bound and flags `CostCapture=Incomplete`.
+- Router spend lost on failure paths (#75): a run cancelled mid-call returned before its
+  spend was recorded, a stream cut off before the provider's usage chunk recorded $0
+  (now approximated from the request and the received output, or taken from usage the
+  provider already sent), and non-streaming Gemini-format calls were never counted
+  toward run spend or the budget cap at all. `_fail` now flushes spend before notifying
+  the operator.
 - `fs_list_dir` symlink escape: the bridge answers directory listings from
   disk itself, and lexical confinement let a workspace symlink (final or
   intermediate component) enumerate host directories outside the roots. Paths

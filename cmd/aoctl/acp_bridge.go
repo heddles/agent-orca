@@ -544,7 +544,13 @@ func (b *acpBridge) consumeAndStreamHTTP(
 						b.emitTraceThoughtDelta(sessionID, tev.Content, st)
 					} else if !st.traceSeen[ev.Data] {
 						st.traceSeen[ev.Data] = true
-						b.handleTraceEvent(tev, sessionID)
+						if tev.Type == "done" || tev.Type == "finalOutput" {
+							// The answer of an agent that ended via _done(output=...)
+							// lives only in this event, not in the token stream.
+							b.emitFinalOutput(tev.Output, msgID, sessionID, st)
+						} else {
+							b.handleTraceEvent(tev, sessionID)
+						}
 					}
 				}
 				continue

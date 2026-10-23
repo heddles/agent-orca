@@ -1,14 +1,15 @@
 name: UI Tests
 
+# No path filter: UI Tests is a required check, and a path-filtered required
+# check never reports on PRs outside ui/, leaving them blocked.
 on:
   push:
     branches: [main]
-    paths: ['ui/**']
   pull_request:
-    paths: ['ui/**']
 
 jobs:
   test:
+    name: UI Tests
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -17,7 +18,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'npm'
           cache-dependency-path: ui/package-lock.json
       - run: npm ci

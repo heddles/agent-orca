@@ -17,6 +17,7 @@ limitations under the License.
 package router
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -24,6 +25,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/heddles/agent-orca/internal/state"
@@ -101,17 +103,7 @@ func RunHTTPInput(ctx context.Context, cfg HTTPInputConfig, store state.Store) e
 		return fmt.Errorf("reading http input response: %w", err)
 	}
 
-	// If the response is a JSON object with an "output" key, unwrap it.
-	// This allows agents to return {"output": "..."} without the envelope
-	// appearing as the run output in the UI.
-	output := string(respBody)
-	var envelope struct {
-		Output string `json:"output"`
-	}
-	if json.Unmarshal(respBody, &envelope) == nil && envelope.Output != "" {
-		output = envelope.Output
-	}
-
+	output := httpRunOutput(resp.Header.Get("Content-Type"), respBody)
 	if err := store.SaveHTTPOutput(ctx, cfg.RunName, output); err != nil {
 		return fmt.Errorf("saving http output: %w", err)
 	}
@@ -129,4 +121,57 @@ func httpInputTimeout(cfg HTTPInputConfig) time.Duration {
 		return time.Duration(cfg.TimeoutSeconds) * time.Second
 	}
 	return 30 * time.Minute
+}
+
+// httpRunOutput turns an http-mode agent's response body into the run output.
+// A JSON {"output": "..."} envelope is unwrapped so it does not appear in the UI.
+// A streamed OpenAI chat completion (text/event-stream) is reassembled from its
+// delta.content chunks; storing the raw frames made status.output a wall of
+// "data: {...}" lines (#112). Anything else is returned as-is.
+func httpRunOutput(contentType string, body []byte) string {
+	var envelope struct {
+		Output string `json:"output"`
+	}
+	if json.Unmarshal(body, &envelope) == nil && envelope.Output != "" {
+		return envelope.Output
+	}
+	if strings.HasPrefix(contentType, "text/event-stream") ||
+		bytes.HasPrefix(bytes.TrimSpace(body), []byte("data:")) {
+		if text, ok := sseContent(body); ok {
+			return text
+		}
+	}
+	return string(body)
+}
+
+// sseContent concatenates the choice-0 delta.content of every chat completion
+// chunk in an SSE body. Reasoning deltas are skipped: they are the model's
+// thinking, not its answer. ok is false when no chunk carried content, so the
+// caller keeps the raw body rather than storing an empty output.
+func sseContent(body []byte) (string, bool) {
+	var sb strings.Builder
+	sc := bufio.NewScanner(bytes.NewReader(body))
+	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	for sc.Scan() {
+		data, found := strings.CutPrefix(sc.Text(), "data:")
+		if !found {
+			continue
+		}
+		data = strings.TrimSpace(data)
+		if data == "[DONE]" {
+			// Not a stop signal: some proxies emit a premature [DONE] after a
+			// reasoning block and then stream the real content.
+			continue
+		}
+		var chunk streamingChatCompletionChunk
+		if json.Unmarshal([]byte(data), &chunk) != nil {
+			continue
+		}
+		for _, c := range chunk.Choices {
+			if c.Index == 0 {
+				sb.WriteString(c.Delta.Content)
+			}
+		}
+	}
+	return sb.String(), sb.Len() > 0
 }

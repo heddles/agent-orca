@@ -29,6 +29,34 @@ type Metrics struct {
 	toolCalls prometheus.Counter
 	// streamDuration observes the latency of a streaming chat response.
 	streamDuration prometheus.Histogram
+	// spendUSD is the USD cost this model-router has incurred, split by how the
+	// LLM call ended (see the spendOutcome* constants). Summing every outcome
+	// gives the run's full cost; the failed-call share is the part a
+	// success-only counter would hide.
+	spendUSD *prometheus.CounterVec
+}
+
+// Outcomes of an LLM call for the spend metric.
+const (
+	// spendOutcomeSuccess is a call that completed and reported its usage.
+	spendOutcomeSuccess = "success"
+	// spendOutcomeProviderError is a call the provider rejected or failed.
+	spendOutcomeProviderError = "provider_error"
+	// spendOutcomeCancelled is a call cut short because the run was cancelled.
+	spendOutcomeCancelled = "cancelled"
+	// spendOutcomeStreamInterrupted is a streamed call whose connection broke
+	// before the provider sent its final usage chunk.
+	spendOutcomeStreamInterrupted = "stream_interrupted"
+)
+
+// spendOutcomes lists every outcome label value, so each is exported from the
+// first scrape (a series that only appears after its first failure breaks
+// rate() and alerting).
+var spendOutcomes = []string{
+	spendOutcomeSuccess,
+	spendOutcomeProviderError,
+	spendOutcomeCancelled,
+	spendOutcomeStreamInterrupted,
 }
 
 // NewMetrics builds a Metrics set and registers it into reg. If reg is nil the
@@ -49,9 +77,13 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 			Help:    "Duration of a model-router streaming chat response.",
 			Buckets: []float64{0.1, 0.3, 0.5, 1, 2, 5, 10, 20, 60},
 		}),
+		spendUSD: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "agentorca_modelrouter_spend_usd_total",
+			Help: "USD spent on LLM calls by this model-router, by run, provider, model and call outcome.",
+		}, []string{"namespace", "run", "provider", "model", "outcome"}),
 	}
 	if reg != nil {
-		reg.MustRegister(m.tokens, m.toolCalls, m.streamDuration)
+		reg.MustRegister(m.tokens, m.toolCalls, m.streamDuration, m.spendUSD)
 	}
 	return m
 }
@@ -78,4 +110,25 @@ func (m *Metrics) ObserveStreamDuration(seconds float64) {
 		return
 	}
 	m.streamDuration.Observe(seconds)
+}
+
+// AddSpend records usd spent on one LLM call that ended with outcome. A zero
+// amount still creates the series, so every outcome is exported even before
+// its first non-zero sample. Nil-safe.
+func (m *Metrics) AddSpend(namespace, run, provider, model, outcome string, usd float64) {
+	if m == nil {
+		return
+	}
+	m.spendUSD.WithLabelValues(namespace, run, provider, model, outcome).Add(usd)
+}
+
+// InitSpendSeries exports a zero sample for every outcome of one provider/model
+// so all four outcome labels are present from the first scrape. Nil-safe.
+func (m *Metrics) InitSpendSeries(namespace, run, provider, model string) {
+	if m == nil {
+		return
+	}
+	for _, outcome := range spendOutcomes {
+		m.spendUSD.WithLabelValues(namespace, run, provider, model, outcome).Add(0)
+	}
 }

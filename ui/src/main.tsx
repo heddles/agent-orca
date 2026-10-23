@@ -388,6 +388,12 @@ function App() {
           {showCosts ? (
             // CostDashboard expects the old SidebarSelection type — adapt.
             <CostDashboard
+              onViewRuns={() => { setTab('history'); setSelection(null); setBreadcrumbs([]); setShowCosts(false) }}
+              onNavigateToRun={(runName, ns) => {
+                setTab('history')
+                setShowCosts(false)
+                setSelection({ kind: 'run', name: runName, namespace: ns })
+              }}
               selection={
                 selection
                   ? selection.kind === 'run'

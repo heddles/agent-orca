@@ -11,6 +11,7 @@ import {
   listDeployments,
   listRuns,
   getCosts,
+  emptyCostData,
   listKnowledgeBases,
   listModelSelectors,
   listWorkflows,
@@ -71,7 +72,7 @@ export function SystemDashboard({ navigateToTab }: Props) {
       try { providerList = await listModelProviders() } catch { providerList = [] }
       try { deployList = await listDeployments() } catch { deployList = [] }
       try { runList = await listRuns() } catch { runList = [] }
-      try { costData = await getCosts() } catch { costData = { totalUSD: '0.00', byAgent: {}, byModel: {}, byDay: [] } }
+      try { costData = await getCosts() } catch { costData = emptyCostData() }
       try { kbList = await listKnowledgeBases() } catch { kbList = [] }
       try { selectorList = await listModelSelectors() } catch { selectorList = [] }
       try { workflowList = await listWorkflows() } catch { workflowList = [] }

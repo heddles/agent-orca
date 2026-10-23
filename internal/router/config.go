@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/heddles/agent-orca/internal/mcp"
@@ -402,6 +403,11 @@ type HindsightConfig struct {
 	RecallBudget int `json:"recallBudget,omitempty"`
 	// RetainOnEveryTurn is true to retain conversation after every LLM turn.
 	RetainOnEveryTurn bool `json:"retainOnEveryTurn,omitempty"`
+	// APIKey authenticates the router to a hindsight API running with the
+	// ApiKeyTenantExtension (sent as "Authorization: Bearer <key>"). It is read
+	// from the HINDSIGHT_API_KEY env var, never from the config file, so the
+	// secret does not land in the router ConfigMap.
+	APIKey string `json:"-"`
 }
 
 // HTTPInputConfig describes how the model-router delivers run input to an HTTP agent.
@@ -579,6 +585,8 @@ func ConfigFromEnv() (*Config, error) {
 	if url, _ := os.LookupEnv("HINDSIGHT_URL"); url != "" {
 		slog.Warn("HINDSIGHT_URL env var exists but the system is set to use a different url; using pre-configured hindsight url", "url", cfg.Hindsight.URL)
 	}
+
+	cfg.Hindsight.APIKey = strings.TrimSpace(os.Getenv("HINDSIGHT_API_KEY"))
 
 	if cfg.Hindsight.RecallBudget <= 0 {
 		cfg.Hindsight.RecallBudget = 5

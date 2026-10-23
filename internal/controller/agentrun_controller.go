@@ -44,7 +44,6 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/record"
-	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -74,9 +73,12 @@ type AgentRunReconciler struct {
 	K8s              kubernetes.Interface
 	Dynamic          dynamic.Interface
 	ModelRouterImage string
-	StateConfig      state.Config
-	StateStore       state.Store
-	CloudProvider    security.CloudProvider
+	// StateConfig is injected into router configs. The operator strips the Redis
+	// password from it; RedisPassword carries it to a mounted Secret instead.
+	StateConfig   state.Config
+	RedisPassword string
+	StateStore    state.Store
+	CloudProvider security.CloudProvider
 	// PostgresStore is the optional PostgreSQL archival store. When non-nil,
 	// terminal-phase AgentRuns are snapshotted here for long-term retention
 	// and historical querying by the UI.
@@ -110,6 +112,13 @@ type AgentRunReconciler struct {
 	// Injected from the HINDSIGHT_URL env var. Used to generate ipBlock egress rules
 	// in the per-run NetworkPolicies when the cluster has a default-deny egress policy.
 	HindsightURL string
+	// HindsightAPIKey authenticates the model-router to a hindsight API that
+	// requires a tenant API key. Injected from the HINDSIGHT_API_KEY env var; the
+	// operator mirrors it into each run namespace (see ensureHindsightKeySecret).
+	HindsightAPIKey string
+	// OperatorNamespace is the namespace the operator runs in (POD_NAMESPACE). Per-run
+	// NetworkPolicies allow its pods to scrape the model-router's :9091 metrics.
+	OperatorNamespace string
 }
 
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
@@ -144,7 +153,17 @@ func (r *AgentRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	// Terminal — ensure cleanup has run then stop reconciling.
 	if isTerminal(run.Status.Phase) {
-		return r.ensureCleanup(ctx, &run)
+		// Stamp spend first: cleanup can recycle the run's pod, and a run the
+		// router ended through the internal API has not been stamped by anyone.
+		retryAfter, err := r.ensureSpendStamped(ctx, &run)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		result, err := r.ensureCleanup(ctx, &run)
+		if retryAfter > 0 && (result.RequeueAfter == 0 || retryAfter < result.RequeueAfter) {
+			result.RequeueAfter = retryAfter
+		}
+		return result, err
 	}
 
 	// Ensure finalizer.
@@ -250,6 +269,12 @@ func (r *AgentRunReconciler) startRun(ctx context.Context, run *agentorcav1alpha
 		return ctrl.Result{}, err
 	}
 
+	// 5b. Create the Redis password Secret the router mounts (issue #107).
+	if err := ensureRedisPasswordSecret(ctx, r.Client, r.Scheme, run,
+		redisSecretName("agentorca-run-"+run.Name, r.RedisPassword), r.RedisPassword); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	// 6. Create per-run SA token Secret (via TokenRequest API).
 	// In split-pod topology, OPENAI_BASE_URL points at the router Service.
 	routerServiceURL := "http://localhost:8080/v1"
@@ -258,6 +283,9 @@ func (r *AgentRunReconciler) startRun(ctx context.Context, run *agentorcav1alpha
 	}
 	tokenSecretName, err := r.ensureTokenSecret(ctx, run, saName, routerServiceURL)
 	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if err := ensureHindsightKeySecret(ctx, r.Client, run.Namespace, r.HindsightAPIKey); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -456,7 +484,10 @@ func (r *AgentRunReconciler) handlePodSuccess(ctx context.Context, run *agentorc
 		// the internal API. The pod exit is expected — skip re-processing.
 		if latest.Status.Phase == agentorcav1alpha1.AgentRunPhaseSucceeded ||
 			latest.Status.Phase == agentorcav1alpha1.AgentRunPhaseFailed {
-			return ctrl.Result{}, nil
+			// The router ended the run itself, so no handler has stamped its
+			// spend yet; without this a _fail run reports SpendUSD: "".
+			after, err := r.ensureSpendStamped(ctx, &latest)
+			return ctrl.Result{RequeueAfter: after}, err
 		}
 		// Safeguard trip: the model-router set LoopDetected via the internal API
 		// just before returning 410 Gone to the agent process. Fail the run.
@@ -490,9 +521,6 @@ func (r *AgentRunReconciler) handlePodSuccess(ctx context.Context, run *agentorc
 	raw := truncate(output, 4096)
 	finalOutput := truncate(output, 10240)
 
-	// Load spend from the state store (persisted by the model-router on each LLM call).
-	spendUSD := r.loadSpendFromStore(ctx, run.Name)
-
 	// Safety net: if the output looks like a question directed at the user (e.g.
 	// "Please specify the data source..."), the LLM failed to call _clarify.
 	// Intercept here and set WaitingForInput instead of Succeeded so the human
@@ -508,7 +536,7 @@ func (r *AgentRunReconciler) handlePodSuccess(ctx context.Context, run *agentorc
 		run.Status.ClarifyQuestion = finalOutput
 		run.Status.ClarifyAnswer = ""
 		run.Status.WaitingSince = &now
-		run.Status.SpendUSD = spendUSD
+		r.stampSpend(ctx, run)
 		run.Status.PodName = ""
 		if err := r.Status().Patch(ctx, run, patch); err != nil {
 			return ctrl.Result{}, fmt.Errorf("patching WaitingForInput status: %w", err)
@@ -520,7 +548,8 @@ func (r *AgentRunReconciler) handlePodSuccess(ctx context.Context, run *agentorc
 	run.Status.Phase = agentorcav1alpha1.AgentRunPhaseSucceeded
 	run.Status.Output = finalOutput
 	run.Status.RawOutput = raw
-	run.Status.SpendUSD = spendUSD
+	// Spend is persisted by the model-router on each LLM call.
+	r.stampSpend(ctx, run)
 	now := metav1.Now()
 	run.Status.CompletionTime = &now
 	if err := r.Status().Patch(ctx, run, patch); err != nil {
@@ -601,6 +630,9 @@ func (r *AgentRunReconciler) handlePodFailure(ctx context.Context, run *agentorc
 			_ = r.K8s.CoreV1().Pods(run.Namespace).Delete(ctx, run.Status.PodName, metav1.DeleteOptions{})
 		}
 		patch := client.MergeFrom(run.DeepCopy())
+		// Stamp the partial spend now: the router checkpoint is the only other
+		// copy and is lost with the pod when no state store is configured.
+		r.stampSpend(ctx, run)
 		run.Status.RestartCount++
 		run.Status.LastRestartReason = reason
 		run.Status.PodName = ""
@@ -1237,7 +1269,7 @@ func (r *AgentRunReconciler) ensureTokenReviewerBinding(ctx context.Context, run
 // ensureNetworkPolicy creates the per-run NetworkPolicy if it doesn't exist.
 func (r *AgentRunReconciler) ensureNetworkPolicy(ctx context.Context, run *agentorcav1alpha1.AgentRun, toolEgressRules []agentorcav1alpha1.EgressRule, hasAgentTools bool, hasKnowledgeBases bool) error { //nolint:unparam
 
-	np := security.BuildNetworkPolicy(run, run.Namespace, toolEgressRules, r.StateConfig.Backend == "redis", r.HindsightURL)
+	np := security.BuildNetworkPolicy(run, run.Namespace, toolEgressRules, r.StateConfig.Backend == "redis", r.HindsightURL, r.OperatorNamespace)
 	if err := ctrl.SetControllerReference(run, np, r.Scheme); err != nil {
 		return fmt.Errorf("setting networkpolicy owner ref: %w", err)
 	}
@@ -1251,7 +1283,7 @@ func (r *AgentRunReconciler) ensureNetworkPolicy(ctx context.Context, run *agent
 //   - Router pod policy: full egress (providers, K8s API, Redis, tools) + ingress from agent pod
 //   - Agent pod policy: egress restricted to router pod ports 8080/8082 + DNS only
 func (r *AgentRunReconciler) ensureSplitPodNetworkPolicies(ctx context.Context, run *agentorcav1alpha1.AgentRun, toolEgressRules []agentorcav1alpha1.EgressRule) error {
-	routerNP := security.BuildRouterPodNetworkPolicy(run, run.Namespace, toolEgressRules, r.StateConfig.Backend == "redis", r.HindsightURL)
+	routerNP := security.BuildRouterPodNetworkPolicy(run, run.Namespace, toolEgressRules, r.StateConfig.Backend == "redis", r.HindsightURL, r.OperatorNamespace)
 	if err := ctrl.SetControllerReference(run, routerNP, r.Scheme); err != nil {
 		return fmt.Errorf("setting router networkpolicy owner ref: %w", err)
 	}
@@ -1316,8 +1348,9 @@ func (r *AgentRunReconciler) buildRouterPod(
 	mcpBinMounts []corev1.VolumeMount,
 ) *corev1.Pod {
 	return podbuilder.BuildRouterOnly(podbuilder.PodConfig{
-		PodName:   "agentorca-router-" + run.Name,
-		Namespace: run.Namespace,
+		HindsightAPIKeySecretRef: hindsightKeyRef(r.HindsightAPIKey),
+		PodName:                  "agentorca-router-" + run.Name,
+		Namespace:                run.Namespace,
 		Labels: map[string]string{
 			security.LabelAgentRunName: security.SafeLabelValue(run.Name),
 			security.LabelManagedBy:    security.ManagedByValue,
@@ -1329,6 +1362,7 @@ func (r *AgentRunReconciler) buildRouterPod(
 		RestartPolicy:     corev1.RestartPolicyNever,
 		ModelRouterImage:  r.ModelRouterImage,
 		RouterConfigName:  "agentorca-run-" + run.Name,
+		RedisSecretName:   redisSecretName("agentorca-run-"+run.Name, r.RedisPassword),
 		ProviderVolumes:   providerVolumes,
 		ProviderMounts:    providerMounts,
 		ToolSecretVolumes: toolSecretVolumes,
@@ -1463,7 +1497,7 @@ func (r *AgentRunReconciler) ensureTokenSecret(ctx context.Context, run *agentor
 	tr := &authv1.TokenRequest{
 		Spec: authv1.TokenRequestSpec{
 			Audiences:         []string{security.ModelRouterTokenAudience},
-			ExpirationSeconds: ptr.To(expirySeconds),
+			ExpirationSeconds: new(expirySeconds),
 		},
 	}
 	result, err := r.K8s.CoreV1().ServiceAccounts(run.Namespace).CreateToken(ctx, saName, tr, metav1.CreateOptions{})
@@ -1555,8 +1589,9 @@ func (r *AgentRunReconciler) buildAgentPod(
 	agentSecretVolumes, agentSecretMounts := podbuilder.ResolveAgentSecretRefs(agent)
 
 	return podbuilder.Build(podbuilder.PodConfig{
-		PodName:   "agentorca-run-" + run.Name,
-		Namespace: run.Namespace,
+		HindsightAPIKeySecretRef: hindsightKeyRef(r.HindsightAPIKey),
+		PodName:                  "agentorca-run-" + run.Name,
+		Namespace:                run.Namespace,
 		Labels: map[string]string{
 			security.LabelAgentRunName: security.SafeLabelValue(run.Name),
 			security.LabelManagedBy:    security.ManagedByValue,
@@ -1569,6 +1604,7 @@ func (r *AgentRunReconciler) buildAgentPod(
 		RestartPolicy:       corev1.RestartPolicyNever,
 		ModelRouterImage:    r.ModelRouterImage,
 		RouterConfigName:    "agentorca-run-" + run.Name,
+		RedisSecretName:     redisSecretName("agentorca-run-"+run.Name, r.RedisPassword),
 		AgentReadinessProbe: readinessProbe,
 		ProviderVolumes:     providerVolumes,
 		ProviderMounts:      providerMounts,
@@ -1778,7 +1814,7 @@ func (r *AgentRunReconciler) failRun(ctx context.Context, run *agentorcav1alpha1
 
 	patch := client.MergeFrom(run.DeepCopy())
 	run.Status.Phase = agentorcav1alpha1.AgentRunPhaseFailed
-	run.Status.SpendUSD = r.loadSpendFromStore(ctx, run.Name)
+	r.stampSpend(ctx, run)
 	now := metav1.Now()
 	run.Status.CompletionTime = &now
 	run.Status.LastRestartReason = reason
@@ -2085,24 +2121,6 @@ func (r *AgentRunReconciler) enrichFailureReason(ctx context.Context, namespace,
 		return reason
 	}
 	return strings.Join(parts, "\n")
-}
-
-// loadSpendFromStore reads the cumulative spend for a run from the state store.
-// Returns "" if the store is unavailable or no spend was recorded.
-func (r *AgentRunReconciler) loadSpendFromStore(ctx context.Context, runName string) string {
-	if r.StateStore == nil {
-		return ""
-	}
-	key := fmt.Sprintf("agentorca/runs/%s/state", runName)
-	usd, err := r.StateStore.LoadSpend(ctx, key)
-	if err != nil {
-		log.FromContext(ctx).Error(err, "failed to load spend from state store", "run", runName, "key", key)
-		return ""
-	}
-	if usd == 0 {
-		return ""
-	}
-	return fmt.Sprintf("%.6f", usd)
 }
 
 // recordRunInDeploymentIndex writes a marker KV entry under the deployment's run
