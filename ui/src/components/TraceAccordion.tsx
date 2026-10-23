@@ -42,6 +42,7 @@ const TRACE_FILTERS = [
   { key: 'rag', label: 'RAG' },
   { key: 'guardrails', label: 'Guardrails' },
   { key: 'fallbacks', label: 'Fallbacks' },
+  { key: 'network', label: 'Network' },
   { key: 'errors', label: 'Errors' },
 ] as const
 type TraceFilter = typeof TRACE_FILTERS[number]['key']
@@ -88,6 +89,7 @@ export function TraceAccordion({ entries, streaming, markdown }: Props) {
       case 'rag': return ((ev.type === STREAM_EVENT_TYPE.toolCall || ev.type === STREAM_EVENT_TYPE.toolResult || ev.type === 'ragResult') && (bt === 'rag' || ev.type === 'ragResult'))
       case 'guardrails': return ev.type === 'guardrail'
       case 'fallbacks': return ev.type === 'providerFallback'
+      case 'network': return ev.type === 'egress'
       case 'errors': return ev.type === STREAM_EVENT_TYPE.error || ev.type === STREAM_EVENT_TYPE.fail
       default: return true
     }
@@ -423,6 +425,22 @@ function TraceRow({ entry, markdown }: { entry: TraceEntry; markdown: boolean })
           <span style={{ ...content, color: exhausted ? '#fca5a5' : '#fcd34d' }}>
             <span style={hi}>fallback</span> {event.from} → {event.to || '(searching)'} — {event.reason}
             {exhausted && <span style={{ color: '#fca5a5', fontWeight: 600 }}> — exhausted</span>}
+          </span>
+        </div>
+      )
+    }
+    case 'egress': {
+      const denied = event.action === 'denied'
+      const target = event.kind === 'http' ? `${event.method ?? ''} ${event.url ?? ''}`.trim() : event.destination
+      return (
+        <div style={denied ? { ...row, background: 'var(--ds-trace-error-bg)', borderRadius: 4, padding: '4px 8px', margin: '2px 0' } : row}>
+          <span style={muted}>{time}</span>
+          <Icon icon={denied ? ICON.stop : ICON.check} size={14} color={denied ? 'var(--ds-error)' : 'var(--ds-success)'} />
+          <span style={{ ...content, ...(denied ? { color: '#fca5a5' } : {}) }}>
+            <span style={hi}>{denied ? 'blocked' : 'allowed'}</span> {target || event.raw}
+            {event.binary ? <> by {event.binary}</> : null}
+            {event.policy ? <> ({event.policy})</> : null}
+            {denied && event.reason ? <> 2014 {event.reason}</> : null}
           </span>
         </div>
       )

@@ -24,6 +24,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	osv1 "github.com/NVIDIA/OpenShell/sdk/go/openshell/v1"
 	"github.com/NVIDIA/OpenShell/sdk/go/openshell/v1/types"
@@ -50,9 +51,11 @@ type stubGateway struct {
 	providers map[string]*osv1.Provider
 	// drafts are the pending policy proposals per sandbox; approved and
 	// rejected record what was decided.
-	drafts   map[string][]osv1.PolicyChunk
-	approved []string
-	rejected []string
+	drafts map[string][]osv1.PolicyChunk
+	// decisions are the supervisor decisions per sandbox.
+	decisions map[string][]openshell.Decision
+	approved  []string
+	rejected  []string
 	// providerConflicts makes the next N DeleteProviders calls fail as the
 	// gateway does while a sandbox being deleted still holds the provider.
 	providerConflicts int
@@ -634,4 +637,14 @@ func (g *stubGateway) removeDraft(sandbox, chunkID string) {
 		}
 	}
 	g.drafts[sandbox] = keep
+}
+
+func (g *stubGateway) Decisions(_ context.Context, sandbox string, since time.Time) ([]openshell.Decision, error) {
+	var out []openshell.Decision
+	for _, d := range g.decisions[sandbox] {
+		if d.Time.After(since) {
+			out = append(out, d)
+		}
+	}
+	return out, nil
 }

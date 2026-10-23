@@ -445,6 +445,10 @@ func (in *AgentRunStatus) DeepCopyInto(out *AgentRunStatus) {
 		in, out := &in.SandboxGitTokenExpiry, &out.SandboxGitTokenExpiry
 		*out = (*in).DeepCopy()
 	}
+	if in.SandboxDecisionsSeen != nil {
+		in, out := &in.SandboxDecisionsSeen, &out.SandboxDecisionsSeen
+		*out = (*in).DeepCopy()
+	}
 	if in.StartTime != nil {
 		in, out := &in.StartTime, &out.StartTime
 		*out = (*in).DeepCopy()

@@ -199,6 +199,11 @@ type AgentRunStatus struct {
 	// +optional
 	SandboxGitTokenExpiry *metav1.Time `json:"sandboxGitTokenExpiry,omitempty"`
 
+	// SandboxDecisionsSeen is the time of the last sandbox network decision
+	// copied into the run's trace; the next read continues after it.
+	// +optional
+	SandboxDecisionsSeen *metav1.MicroTime `json:"sandboxDecisionsSeen,omitempty"`
+
 	// StartTime is when the agent pod started.
 	// +optional
 	StartTime *metav1.Time `json:"startTime,omitempty"`

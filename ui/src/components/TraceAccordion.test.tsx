@@ -77,6 +77,28 @@ describe('TraceAccordion', () => {
     expect(screen.getByText('code')).toBeInTheDocument()
   })
 
+  it('renders sandbox network decisions and filters them under Network', async () => {
+    render(
+      <TraceAccordion
+        entries={[
+          entry(0, { type: 'egress', kind: 'net', action: 'allowed', binary: '/usr/bin/curl', destination: 'pypi.org:443', policy: 'agentorca-egress-0', raw: 'NET:OPEN ...' }),
+          entry(1, { type: 'egress', kind: 'http', action: 'denied', method: 'POST', url: 'https://pypi.org/simple/', reason: 'POST /simple/ not permitted by policy', raw: 'HTTP:POST ...' }),
+          entry(2, { type: STREAM_EVENT_TYPE.modelSelected, model: 'm', reason: 'r', confidence: 0.5 }),
+        ]}
+      />,
+    )
+    await openAccordion()
+    expect(screen.getByText(/pypi.org:443/)).toBeInTheDocument()
+    expect(screen.getByText(/by \/usr\/bin\/curl/)).toBeInTheDocument()
+    expect(screen.getByText('blocked')).toBeInTheDocument()
+    expect(screen.getByText(/POST https:\/\/pypi.org\/simple\//)).toBeInTheDocument()
+    expect(screen.getByText(/not permitted by policy/)).toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Network' }))
+    expect(screen.queryByText(/routed/)).not.toBeInTheDocument()
+    expect(screen.getByText('allowed')).toBeInTheDocument()
+  })
+
   it('renders model_selected with confidence', async () => {
     render(
       <TraceAccordion entries={[entry(0, { type: STREAM_EVENT_TYPE.modelSelected, model: 'm', reason: 'r', confidence: 0.42 })]} />,

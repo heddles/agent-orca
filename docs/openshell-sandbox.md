@@ -158,6 +158,28 @@ All presets are read-only (GET, HEAD, OPTIONS) except `github.com`, and any bina
 use them. Unauthenticated, a POST to `github.com` can't change anything. With
 `sandbox.github`, the credential-bound endpoint replaces it.
 
+### Network decisions in the run trace
+
+The sandbox supervisor logs every network decision as an OCSF event. The operator copies
+them into the run's trace as `egress` events, so the run timeline, live and archived,
+shows what the agent reached and what was blocked. In the UI's trace, the **Network**
+filter isolates them. There are two kinds:
+
+| `kind` | Event | Fields |
+|---|---|---|
+| `net` | A connection | `destination` (host:port), `binary`, and the `policy` and `engine` that decided it |
+| `http` | A request on an allowed connection, checked by method and path | `method`, `url`, `binary`, `policy`, `engine` |
+
+Both carry `action` (`allowed` or `denied`), a `reason` for denials, and `raw`, the
+supervisor's original line. The parser reads OpenShell's shorthand log format, so `raw`
+is kept in case that format changes.
+
+The operator reads new decisions on each poll (about every 10 s) and records the time of
+the last one in `status.sandboxDecisionsSeen`, so nothing is recorded twice across polls
+or operator restarts. Decisions from a run's final seconds are read before its sandbox
+is deleted. The metric `agentorca_sandbox_egress_decisions_total{namespace,kind,action}`
+counts them.
+
 ### Egress approvals
 
 When a sandbox tries to reach a host its policy doesn't list, the connection is denied
