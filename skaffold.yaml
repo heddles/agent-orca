@@ -158,6 +158,10 @@ profiles:
               operator.oidc.cookieSecure: "true"
               operator.oidc.enabled: "true"
               operator.networkPolicy.oidcEgress.enabled: "true"
+              # The remote cluster keeps using its existing external Hindsight until
+              # it is migrated to the bundled subchart.
+              hindsight.enabled: "false"
+              hindsight.url: "http://hindsight-api.hindsight.svc.cluster.local:8888"
             setValueTemplates:
               operator.image.tag: "{{.IMAGE_TAG_ghcr_io_heddles_agent_orca_operator}}"
               mcpIngester.image.tag: "{{.IMAGE_TAG_ghcr_io_heddles_agent_orca_mcp_ingester}}"
@@ -253,6 +257,7 @@ profiles:
               operator.oidc.cookieSecure: "false"
               operator.oidc.enabled: "false"
               operator.networkPolicy.oidcEgress.enabled: "false"
+              hindsight.enabled: "false"
             setValueTemplates:
               operator.image.tag: "{{.IMAGE_TAG_ghcr_io_heddles_agent_orca_operator}}"
               mcpIngester.image.tag: "{{.IMAGE_TAG_ghcr_io_heddles_agent_orca_mcp_ingester}}"

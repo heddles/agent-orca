@@ -153,6 +153,8 @@ jobs:
           # Released charts deploy the images built for this tag, not :latest.
           sed -i -E "s/^(\s+tag: )\"latest\"/\1\"${TAG}\"/" charts/agent-orca/values.yaml
           mkdir -p dist
+          # agent-orca bundles the hindsight chart; fetch it before lint/package.
+          helm dependency build charts/agent-orca
           for c in agent-orca agent-orca-resources model-providers; do
             helm lint "charts/$c"
             helm package "charts/$c" --version "$version" --app-version "$TAG" -d dist

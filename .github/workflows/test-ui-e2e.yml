@@ -82,7 +82,9 @@ jobs:
       - name: Deploy with Helm
         run: |
           make install
+          helm dependency build ./charts/agent-orca
           helm upgrade --install agent-orca ./charts/agent-orca \
+            --set hindsight.enabled=false \
             --set operator.image.repository=agent-orca \
             --set operator.image.tag=e2e \
             --set ui.image.repository=agent-orca-ui \

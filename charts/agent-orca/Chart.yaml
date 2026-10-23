@@ -14,3 +14,12 @@ sources:
   - https://github.com/heddles/agent-orca
 maintainers:
   - name: agent-orca maintainers
+dependencies:
+  # Bundled Hindsight memory server. Deployed by default; set hindsight.enabled=false
+  # to use an external Hindsight (hindsight.url). The dependency is named
+  # "hindsight", so its values live under the same top-level hindsight: key as the
+  # operator's client settings (url, apiKeySecret, bankIdTemplate, ...).
+  - name: hindsight
+    version: "1.1.0"
+    repository: "oci://ghcr.io/vectorize-io/charts"
+    condition: hindsight.enabled

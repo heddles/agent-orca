@@ -117,14 +117,16 @@ spec:
             - name: OIDC_COOKIE_SECURE
               value: {{ .Values.operator.oidc.cookieSecure | quote }}
             {{- end }}
+            {{- with include "agent-orca.hindsight.url" . }}
             - name: HINDSIGHT_URL
-              value: {{ .Values.hindsight.url | quote }}
-            {{- if .Values.hindsight.apiKeySecret.name }}
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with include "agent-orca.hindsight.apiKeySecretName" . }}
             - name: HINDSIGHT_API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.hindsight.apiKeySecret.name | quote }}
-                  key: {{ .Values.hindsight.apiKeySecret.key | default "api-key" | quote }}
+                  name: {{ . | quote }}
+                  key: {{ include "agent-orca.hindsight.apiKeySecretKey" $ | quote }}
             {{- end }}
           args:
             - --leader-elect={{ .Values.operator.leaderElection }}

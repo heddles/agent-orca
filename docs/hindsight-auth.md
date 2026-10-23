@@ -6,6 +6,40 @@ from these banks and act on the results, so an unauthenticated endpoint lets
 anyone read, wipe or poison agent memory. Authentication must be enforced by
 hindsight itself, not only by an ingress in front of it.
 
+## Bundled Hindsight (default)
+
+The chart deploys Hindsight by default (`hindsight.enabled: true`) and wires auth for
+you. The `hindsight:` values block is shared: upstream chart values (`api.*`,
+`worker.*`, `postgresql.*`, ...) and the operator's client settings (`url`,
+`apiKeySecret`, `bankIdTemplate`, ...) live side by side.
+
+- The chart creates Secret `hindsight-auth` (`hindsight.existingSecret`) with a
+  generated `HINDSIGHT_API_TENANT_API_KEY`, the same value as
+  `HINDSIGHT_CP_DATAPLANE_API_KEY`, and a `HINDSIGHT_CP_ACCESS_KEY`. Existing entries
+  are preserved on upgrade and the Secret is kept on uninstall
+  (`helm.sh/resource-policy: keep`), so a rotated key or one you add survives.
+- The API runs with `ApiKeyTenantExtension`, so `/v1` and `/mcp` both reject requests
+  without the key. The operator reads the same key (`hindsight.apiKeySecret` defaults
+  to `hindsight-auth`/`HINDSIGHT_API_TENANT_API_KEY`) and `hindsight.url` defaults to
+  the bundled service, so nothing else needs configuring.
+- Hindsight needs an LLM. Set the provider in `hindsight.api.env`
+  (`HINDSIGHT_API_LLM_BASE_URL`, `HINDSIGHT_API_LLM_MODEL`) and add its key to the
+  Secret out of band, then restart the API:
+  `kubectl -n <ns> patch secret hindsight-auth -p '{"stringData":{"HINDSIGHT_API_LLM_API_KEY":"..."}}'`.
+- Read the generated key (for an MCP client) with
+  `kubectl -n <ns> get secret hindsight-auth -o jsonpath='{.data.HINDSIGHT_API_TENANT_API_KEY}' | base64 -d`.
+- No resource requests or limits are set by default. Size them for your data: the
+  API and worker can exceed 1Gi on a bank with a few hundred facts and will be
+  OOM-killed under a limit that small. Set `hindsight.api.resources` and
+  `hindsight.worker.resources`.
+- Bring your own Secret with `hindsight.auth.manageSecret=false` and
+  `hindsight.existingSecret=<name>`; it must contain `HINDSIGHT_API_TENANT_API_KEY` and
+  `HINDSIGHT_CP_DATAPLANE_API_KEY` (same value).
+- External Hindsight: `hindsight.enabled=false`, `hindsight.url=...` and, if it needs a
+  key, `hindsight.apiKeySecret.{name,key}`.
+
+The sections below describe the external case.
+
 ## How agent-orca authenticates
 
 When `hindsight.apiKeySecret.name` is set in the chart:

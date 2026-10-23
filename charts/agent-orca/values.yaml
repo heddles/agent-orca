@@ -259,29 +259,50 @@ metrics:
       metricRelabelings: []
       additionalLabels: {}
 
-# Hindsight memory system integration (self-hosted POC)
+# Hindsight memory system. One block configures both the bundled Hindsight server
+# (the upstream "hindsight" subchart; every upstream value such as api.env,
+# worker.enabled or postgresql.* goes here) and the operator's client settings.
 hindsight:
+  # enabled deploys Hindsight with this release. Set false to point the operator at
+  # an external Hindsight (set url, and apiKeySecret when it requires a key).
   enabled: true
-  # url is the hindsight API endpoint. When set, the operator resolves the
-  # hostname to IP(s) and injects ipBlock egress rules into the per-run
-  # NetworkPolicies so agent-orca pods can reach hindsight even when the
-  # cluster has a default-deny egress policy.
-  # Example: "http://hindsight.local"
-  url: "http://hindsight-api.hindsight.svc.cluster.local:8888"
-  namespace: agent-orca-system
-  port: 8888
-  # apiKeySecret references an existing Secret holding the hindsight tenant API
-  # key (the value hindsight runs with as HINDSIGHT_API_TENANT_API_KEY when
-  # HINDSIGHT_API_TENANT_EXTENSION=hindsight_api.extensions.builtin.tenant:ApiKeyTenantExtension).
-  # When set, the operator reads the key, mirrors it into each run namespace and
-  # injects it into model-router containers only (never the agent container),
-  # which send it as "Authorization: Bearer <key>". Leave name empty when
-  # hindsight does not require authentication. Keep the key in a Secret, not in
-  # inline Helm values. Rotation: update the Secret, restart the operator, then
-  # recycle warm pods (pods read the key at start).
+  # url is the Hindsight API endpoint the operator and model-routers use. Empty =
+  # the bundled server's in-cluster service when enabled, or memory off when
+  # disabled. The operator resolves the hostname and injects ipBlock egress rules
+  # into the per-run NetworkPolicies so agent pods can reach it under default-deny.
+  # Example: "https://hindsight.example.com"
+  url: ""
+  # fullnameOverride fixes the bundled server's resource names (service is
+  # <fullnameOverride>-api). The derived url depends on it.
+  fullnameOverride: hindsight
+  # existingSecret is the Secret injected as environment variables into the bundled
+  # API, worker and control plane (upstream envFrom). By default this chart creates it
+  # (see auth.manageSecret) with generated HINDSIGHT_API_TENANT_API_KEY,
+  # HINDSIGHT_CP_DATAPLANE_API_KEY and HINDSIGHT_CP_ACCESS_KEY. Add provider keys
+  # such as HINDSIGHT_API_LLM_API_KEY to it out of band, or bring your own.
+  existingSecret: hindsight-auth
+  auth:
+    # manageSecret creates and maintains existingSecret with generated keys. Existing
+    # entries are preserved across upgrades, so a key you add to the Secret or rotate
+    # in it survives helm upgrade. Set false to supply the Secret yourself; it must
+    # contain at least HINDSIGHT_API_TENANT_API_KEY (the key the API requires) and
+    # HINDSIGHT_CP_DATAPLANE_API_KEY (the same value, used by the control plane).
+    manageSecret: true
+  # Require the tenant API key on every request to the bundled API, including /mcp.
+  # The worker inherits api.env, so it loads the same extension.
+  api:
+    env:
+      HINDSIGHT_API_TENANT_EXTENSION: hindsight_api.extensions.builtin.tenant:ApiKeyTenantExtension
+  # apiKeySecret references the Secret holding the tenant API key the operator
+  # mirrors into run namespaces and the model-router sends as
+  # "Authorization: Bearer <key>". Empty name = the bundled server's existingSecret
+  # (key HINDSIGHT_API_TENANT_API_KEY) when enabled, or no key when disabled. Keep the
+  # key in a Secret, not in inline Helm values. Rotation: update the Secret, restart
+  # the Hindsight pods and the operator, then recycle warm pods (pods read the key at
+  # start).
   apiKeySecret:
     name: ""
-    key: api-key
+    key: ""
   # networkPolicy.cidrs is an optional manual override for the egress CIDR
   # allowlist. Use this when the operator cannot resolve the hindsight URL
   # (e.g. DNS is not yet available at policy-creation time). Each entry is
