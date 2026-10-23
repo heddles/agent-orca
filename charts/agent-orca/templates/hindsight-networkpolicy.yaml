@@ -1,0 +1,47 @@
+{{- if and .Values.hindsight.enabled (dig "networkPolicy" "enabled" true (.Values.hindsight | default dict)) }}
+{{- /*
+Limits who can reach the bundled Hindsight API, as a second layer behind the tenant
+API key: this release's operator, agent run pods in any namespace (the model-router
+calls Hindsight for recall/retain), and the Hindsight worker and control plane.
+Anything else, such as an ingress controller, is added through
+hindsight.networkPolicy.extraIngress.
+*/}}
+{{- $port := (((.Values.hindsight.api).service).targetPort | default 8888) | int }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Values.hindsight.fullnameOverride }}-api
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agent-orca.labels" . | nindent 4 }}
+    app.kubernetes.io/component: hindsight
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: hindsight
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: api
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "agent-orca.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: operator
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: hindsight
+              app.kubernetes.io/instance: {{ .Release.Name }}
+        - namespaceSelector: {}
+          podSelector:
+            matchExpressions:
+              - key: agentorca.io/run
+                operator: Exists
+        {{- with ((.Values.hindsight.networkPolicy).extraIngress) }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      ports:
+        - port: {{ $port }}
+          protocol: TCP
+{{- end }}
