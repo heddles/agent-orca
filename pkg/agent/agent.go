@@ -16,23 +16,24 @@ limitations under the License.
 
 // Package agent provides a Go SDK for writing agents that run on agent-orca.
 //
-// The SDK wraps an OpenAI-compatible client pointed at the model-router sidecar
-// (http://localhost:8080 by default) and provides Go-idiomatic helpers for the
-// built-in lifecycle tools (_done, _fail, _clarify, _handoff, _spawn).
+// The SDK talks to the run's model-router (OPENAI_BASE_URL). The router keeps
+// the conversation, injects the Agent's system prompt, and runs the Agent's
+// tools and the built-in lifecycle tools (_done, _fail, _clarify, _handoff,
+// _spawn, ...). Tools registered with [Agent.Tool] run in the agent process
+// instead, e.g. a shell inside the agent's sandbox; they need
+// spec.runtime.localTools on the Agent (docs/agent-run-tools.md).
 //
 // Example::
 //
-//	agent := agent.New(agent.WithSystemPrompt("You are a helpful assistant."))
-//
-//	agent.Tool("search", "Search the web", func(args map[string]any) (string, error) {
+//	a := agent.New()
+//	a.Tool("search", "Search the web", params, func(args map[string]any) (string, error) {
 //	    return "results", nil
 //	})
-//
-//	result, err := agent.Run(context.Background(), "Find the latest news about LLMs")
+//	result, err := a.Run(context.Background(), "Find the latest news about LLMs")
 //	if err != nil {
 //	    log.Fatal(err)
 //	}
-//	fmt.Println(result.Output)
+//	fmt.Println(result.Phase, result.Output)
 package agent
 
 import (
@@ -46,17 +47,24 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"time"
+)
+
+// Run phases, matching the AgentRun phases they lead to.
+const (
+	PhaseSucceeded       = "Succeeded"
+	PhaseFailed          = "Failed"
+	PhaseHandedOff       = "HandedOff"
+	PhaseWaitingForInput = "WaitingForInput"
 )
 
 // RunResult is the final result of an agent run.
 type RunResult struct {
-	Output        string
-	Phase         string
-	SpendUSD      string
+	// Output is the model's last text reply.
+	Output string
+	// Phase is one of the Phase* constants.
+	Phase string
+	// FailureReason explains a Failed phase.
 	FailureReason string
-	CompletedAt   string
-	Raw           map[string]any
 }
 
 // ToolHandler is the function signature for a custom tool handler.
@@ -72,63 +80,63 @@ type ToolSpec struct {
 }
 
 // toOpenAI converts the ToolSpec to an OpenAI-compatible function definition.
-func (t *ToolSpec) toOpenAI() map[string]any { //nolint:unused
-
+func (t *ToolSpec) toOpenAI() map[string]any {
+	params := t.Parameters
+	if params == nil {
+		params = map[string]any{"type": "object", "properties": map[string]any{}}
+	}
 	return map[string]any{
 		"type": "function",
 		"function": map[string]any{
 			"name":        t.Name,
 			"description": t.Description,
-			"parameters":  t.Parameters,
+			"parameters":  params,
 		},
 	}
 }
 
 // Agent is the Go SDK for writing agents that run on agent-orca.
-// It wraps an OpenAI-compatible client pointed at the model-router sidecar
-// and provides built-in lifecycle tool helpers.
 type Agent struct {
-	model         string
-	baseURL       string
-	apiKey        string
-	systemPrompt  string
-	temperature   float64
-	maxTokens     *int
-	httpClient    *http.Client
-	tools         map[string]*ToolSpec
-	doneCalled    bool
-	failCalled    bool
-	clarifyCalled bool
-	handoffCalled bool
-	spawnResult   map[string]any
+	model        string
+	baseURL      string
+	apiKey       string
+	systemPrompt string
+	temperature  *float64
+	maxTokens    *int
+	httpClient   *http.Client
+	tools        map[string]*ToolSpec
+	toolOrder    []string
 }
 
 // Option configures an Agent.
 type Option func(*Agent)
 
-// WithModel sets the default model identifier.
+// WithModel sets the model identifier sent with each request. The router
+// chooses the provider, so this is usually left unset.
 func WithModel(model string) Option {
 	return func(a *Agent) { a.model = model }
 }
 
-// WithBaseURL overrides the model-router endpoint URL.
+// WithBaseURL overrides the model-router endpoint URL (default
+// $OPENAI_BASE_URL, else http://localhost:8080/v1).
 func WithBaseURL(url string) Option {
 	return func(a *Agent) { a.baseURL = url }
 }
 
-// WithAPIKey sets the API key for the OpenAI-compatible endpoint.
+// WithAPIKey sets the bearer token for the router (default $OPENAI_API_KEY).
 func WithAPIKey(key string) Option {
 	return func(a *Agent) { a.apiKey = key }
 }
 
-// WithSystemPrompt sets the system instruction.
+// WithSystemPrompt sets a system instruction sent with the first request, in
+// addition to the Agent's spec.systemPrompt, which the router injects.
 func WithSystemPrompt(prompt string) Option {
 	return func(a *Agent) { a.systemPrompt = prompt }
 }
 
 // WithTemperature sets the sampling temperature.
 func WithTemperature(t float64) Option {
-	return func(a *Agent) { a.temperature = t }
+	return func(a *Agent) { a.temperature = &t }
 }
 
 // WithMaxTokens sets the maximum tokens to generate per turn.
@@ -136,104 +144,44 @@ func WithMaxTokens(n int) Option {
 	return func(a *Agent) { a.maxTokens = &n }
 }
 
-// WithHTTPClient sets a custom HTTP client.
+// WithHTTPClient sets a custom HTTP client. A turn streams for as long as the
+// router's tool loop runs, so avoid a client-wide Timeout; use the context.
 func WithHTTPClient(c *http.Client) Option {
 	return func(a *Agent) { a.httpClient = c }
 }
 
+// defaultBaseURL is the router address when neither an option nor
+// OPENAI_BASE_URL sets one.
+const defaultBaseURL = "http://localhost:8080/v1"
+
 // New creates a new Agent with the given options.
-// Defaults to http://localhost:8080 (the model-router sidecar).
 func New(opts ...Option) *Agent {
 	a := &Agent{
-		baseURL:     "http://localhost:8080",
-		temperature: 0.7,
-		httpClient:  &http.Client{Timeout: 120 * time.Second},
-		tools:       make(map[string]*ToolSpec),
+		httpClient: &http.Client{},
+		tools:      make(map[string]*ToolSpec),
 	}
 	for _, opt := range opts {
 		opt(a)
 	}
-	// Allow env var override.
-	if v := os.Getenv("OPENAI_BASE_URL"); v != "" && a.baseURL == "http://localhost:8080" {
-		a.baseURL = v
+	if a.baseURL == "" {
+		a.baseURL = os.Getenv("OPENAI_BASE_URL")
 	}
-	if v := os.Getenv("OPENAI_API_KEY"); v != "" && a.apiKey == "" {
-		a.apiKey = v
+	if a.baseURL == "" {
+		a.baseURL = defaultBaseURL
 	}
-	a.registerBuiltinTools()
+	a.baseURL = strings.TrimSuffix(a.baseURL, "/")
+	if a.apiKey == "" {
+		a.apiKey = os.Getenv("OPENAI_API_KEY")
+	}
 	return a
 }
 
-// registerBuiltinTools registers the built-in lifecycle tools.
-func (a *Agent) registerBuiltinTools() {
-	a.tools["_done"] = &ToolSpec{
-		Name:        "_done",
-		Description: "Signal that the task is complete. Use this when you have a final answer or output to return.",
-		Parameters: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"output": map[string]any{"type": "string", "description": "The final output/answer."},
-			},
-			"required": []string{"output"},
-		},
-		Handler: a.doneHandler,
-	}
-	a.tools["_fail"] = &ToolSpec{
-		Name:        "_fail",
-		Description: "Signal an unrecoverable failure with an explanation.",
-		Parameters: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"reason":    map[string]any{"type": "string", "description": "Why the task failed."},
-				"retryable": map[string]any{"type": "boolean", "description": "Whether the failure is retryable."},
-			},
-			"required": []string{"reason"},
-		},
-		Handler: a.failHandler,
-	}
-	a.tools["_clarify"] = &ToolSpec{
-		Name:        "_clarify",
-		Description: "Ask the user for clarification on a specific point.",
-		Parameters: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"question": map[string]any{"type": "string", "description": "The question to ask the user."},
-			},
-			"required": []string{"question"},
-		},
-		Handler: a.askHandler,
-	}
-	a.tools["_handoff"] = &ToolSpec{
-		Name:        "_handoff",
-		Description: "Hand off the task to another agent.",
-		Parameters: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"agentRef": map[string]any{"type": "string", "description": "Name of the agent to hand off to."},
-				"input":    map[string]any{"type": "string", "description": "Input to pass to the handed-off agent."},
-			},
-			"required": []string{"agentRef", "input"},
-		},
-		Handler: a.handoffHandler,
-	}
-	a.tools["_spawn"] = &ToolSpec{
-		Name:        "_spawn",
-		Description: "Spawn a child agent to work on a sub-task. The parent waits for completion.",
-		Parameters: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"agentRef":       map[string]any{"type": "string", "description": "Name of the child agent."},
-				"input":          map[string]any{"type": "string", "description": "Input for the child agent."},
-				"timeoutSeconds": map[string]any{"type": "integer", "description": "Timeout in seconds (default 300)."},
-			},
-			"required": []string{"agentRef", "input"},
-		},
-		Handler: a.spawnHandler,
-	}
-}
-
-// Tool registers a custom tool that the LLM can call.
+// Tool registers a tool the agent process runs. Its name must not start with
+// "_" or match a router tool; the router rejects such requests.
 func (a *Agent) Tool(name, description string, params map[string]any, handler ToolHandler) {
+	if _, exists := a.tools[name]; !exists {
+		a.toolOrder = append(a.toolOrder, name)
+	}
 	a.tools[name] = &ToolSpec{
 		Name:        name,
 		Description: description,
@@ -242,245 +190,249 @@ func (a *Agent) Tool(name, description string, params map[string]any, handler To
 	}
 }
 
-// Done signals that the task is complete.
-func (a *Agent) Done(output string) map[string]any {
-	a.doneCalled = true
-	return map[string]any{"status": "done", "output": output}
+// RunOption configures a Run call.
+type RunOption func(*runConfig)
+
+// runConfig holds options for a Run call.
+type runConfig struct {
+	maxTurns       int
+	continuePrompt string
 }
 
-// Fail signals an unrecoverable failure.
-func (a *Agent) Fail(reason string, retryable bool) map[string]any {
-	a.failCalled = true
-	return map[string]any{"status": "failed", "reason": reason, "retryable": retryable}
+// WithMaxTurns sets the maximum number of requests to the router (default 200).
+func WithMaxTurns(n int) RunOption {
+	return func(c *runConfig) { c.maxTurns = n }
 }
 
-// Ask asks the user for clarification.
-func (a *Agent) Ask(question string) map[string]any {
-	a.clarifyCalled = true
-	return map[string]any{"status": "clarifying", "question": question}
+// WithContinuePrompt keeps the run going when the model replies with text
+// instead of a tool call: prompt is sent as the next user message. The run then
+// ends only when the model calls a lifecycle tool (_done, _fail, ...), which
+// the router reports by closing the run. Without it, a text reply ends the run.
+func WithContinuePrompt(prompt string) RunOption {
+	return func(c *runConfig) { c.continuePrompt = prompt }
 }
 
-// Handoff hands off the task to another agent.
-func (a *Agent) Handoff(agentRef, input string) map[string]any {
-	a.handoffCalled = true
-	return map[string]any{"status": "handed_off", "agent": agentRef, "input": input}
-}
+// ErrMaxTurns is returned in RunResult.FailureReason when the turn limit is hit.
+var ErrMaxTurns = errors.New("max turns exceeded")
 
-// Spawn spawns a child agent.
-func (a *Agent) Spawn(agentRef, input string, timeoutSeconds int) map[string]any {
-	a.spawnResult = map[string]any{
-		"agentRef":       agentRef,
-		"input":          input,
-		"timeoutSeconds": timeoutSeconds,
-	}
-	return map[string]any{"status": "spawning", "agent": agentRef}
-}
-
-// --- Internal tool handlers (called by the LLM via tool execution) ---
-
-func (a *Agent) doneHandler(args map[string]any) (string, error) {
-	output, _ := args["output"].(string)
-	a.Done(output)
-	return `{"status": "done"}`, nil
-}
-
-func (a *Agent) failHandler(args map[string]any) (string, error) {
-	reason, _ := args["reason"].(string)
-	retryable, _ := args["retryable"].(bool)
-	a.Fail(reason, retryable)
-	return `{"status": "failed"}`, nil
-}
-
-func (a *Agent) askHandler(args map[string]any) (string, error) {
-	question, _ := args["question"].(string)
-	a.Ask(question)
-	return `{"status": "clarifying"}`, nil
-}
-
-func (a *Agent) handoffHandler(args map[string]any) (string, error) {
-	agentRef, _ := args["agentRef"].(string)
-	input, _ := args["input"].(string)
-	a.Handoff(agentRef, input)
-	return `{"status": "handed_off"}`, nil
-}
-
-func (a *Agent) spawnHandler(args map[string]any) (string, error) {
-	agentRef, _ := args["agentRef"].(string)
-	input, _ := args["input"].(string)
-	timeout, _ := args["timeoutSeconds"].(float64)
-	a.Spawn(agentRef, input, int(timeout))
-	return `{"status": "spawning"}`, nil
-}
-
-// LoadCheckpoint loads conversation history from the checkpoint store.
-// This is a stub — in production, the model-router handles checkpoint
-// loading via PriorRunRef.
-func (a *Agent) LoadCheckpoint(sessionID string) []map[string]string {
-	return nil
-}
-
-// SaveCheckpoint saves conversation history to the checkpoint store.
-// This is a stub — in production, the model-router handles checkpointing
-// automatically every N turns.
-func (a *Agent) SaveCheckpoint(sessionID string, messages []map[string]string) string {
-	return fmt.Sprintf("agentorca/runs/%s/state", sessionID)
-}
-
-// Run executes the agent on the given input until a terminal state.
+// Run executes the agent on the given input until the model ends the turn
+// with text (see WithContinuePrompt) or the router closes the run.
 func (a *Agent) Run(ctx context.Context, input string, opts ...RunOption) (*RunResult, error) {
-	cfg := &runConfig{
-		maxTurns: 50,
-	}
+	cfg := &runConfig{maxTurns: 200}
 	for _, opt := range opts {
 		opt(cfg)
 	}
 
-	conversation := make([]map[string]any, 0)
+	// The router stores the conversation, so each request carries only what is
+	// new: the input first, then tool results or a continue prompt.
+	var pending []message
 	if a.systemPrompt != "" {
-		conversation = append(conversation, map[string]any{"role": "system", "content": a.systemPrompt})
+		pending = append(pending, message{Role: "system", Content: a.systemPrompt})
 	}
-	conversation = append(conversation, map[string]any{"role": "user", "content": input})
+	pending = append(pending, message{Role: "user", Content: input})
 
 	for turn := 0; turn < cfg.maxTurns; turn++ {
-		resp, err := a.chatCompletion(ctx, conversation)
+		reply, closed, err := a.send(ctx, pending)
 		if err != nil {
-			return nil, fmt.Errorf("chat completion (turn %d): %w", turn, err)
+			return nil, fmt.Errorf("turn %d: %w", turn, err)
 		}
-		if resp == nil {
-			break
+		if closed != nil {
+			return closed, nil
 		}
-
-		// Check for tool calls.
-		choices, ok := resp["choices"].([]any)
-		if !ok || len(choices) == 0 {
-			break
-		}
-		msg, ok := choices[0].(map[string]any)["message"].(map[string]any)
-		if !ok {
-			break
-		}
-
-		toolCalls, ok := msg["tool_calls"].([]any)
-		if !ok || len(toolCalls) == 0 {
-			// No tool calls — add the assistant's text response.
-			conversation = append(conversation, msg)
+		if len(reply.toolCalls) == 0 {
+			if cfg.continuePrompt == "" {
+				return &RunResult{Phase: PhaseSucceeded, Output: reply.content}, nil
+			}
+			pending = []message{{Role: "user", Content: cfg.continuePrompt}}
 			continue
 		}
-
-		// Execute tool calls.
-		assistantMsg := map[string]any{
-			"role":       "assistant",
-			"tool_calls": toolCalls,
-		}
-		if content, ok := msg["content"].(string); ok && content != "" {
-			assistantMsg["content"] = content
-		}
-		conversation = append(conversation, assistantMsg)
-
-		for _, tc := range toolCalls {
-			tcMap, ok := tc.(map[string]any)
-			if !ok {
-				continue
-			}
-			fn, ok := tcMap["function"].(map[string]any)
-			if !ok {
-				continue
-			}
-			toolName, _ := fn["name"].(string)
-			argsStr, _ := fn["arguments"].(string)
-
-			var args map[string]any
-			if argsStr != "" {
-				if err := json.Unmarshal([]byte(argsStr), &args); err != nil {
-					args = make(map[string]any)
-				}
-			}
-
-			tool, exists := a.tools[toolName]
-			var toolResult string
-			if exists && tool.Handler != nil {
-				result, err := tool.Handler(args)
-				if err != nil {
-					toolResult = fmt.Sprintf(`{"error": %q}`, err.Error())
-				} else {
-					toolResult = result
-				}
-			} else {
-				toolResult = fmt.Sprintf(`{"error": "unknown tool: %s"}`, toolName)
-			}
-
-			id, _ := tcMap["id"].(string)
-			conversation = append(conversation, map[string]any{
-				"role":         "tool",
-				"tool_call_id": id,
-				"name":         toolName,
-				"content":      toolResult,
-			})
-		}
-
-		// Check terminal states.
-		if a.doneCalled {
-			return &RunResult{Phase: "Succeeded", Output: a.extractDoneOutput(conversation)}, nil
-		}
-		if a.failCalled {
-			return &RunResult{Phase: "Failed", FailureReason: a.extractFailReason(conversation)}, nil
-		}
-		if a.handoffCalled {
-			return &RunResult{Phase: "HandedOff"}, nil
-		}
-		if a.clarifyCalled {
-			return &RunResult{Phase: "WaitingForInput"}, nil
+		pending = pending[:0]
+		for _, tc := range reply.toolCalls {
+			pending = append(pending, message{Role: "tool", ToolCallID: tc.ID, Content: a.runTool(tc)})
 		}
 	}
-
-	return &RunResult{Phase: "Failed", FailureReason: "max turns exceeded"}, nil
+	return &RunResult{Phase: PhaseFailed, FailureReason: ErrMaxTurns.Error()}, nil
 }
 
-// chatCompletion sends a chat completion request to the model-router.
-func (a *Agent) chatCompletion(ctx context.Context, conversation []map[string]any) (map[string]any, error) {
-	payload := map[string]any{
-		"model":       a.model,
-		"messages":    conversation,
-		"temperature": a.temperature,
+// runTool runs one call and returns its result for the model. Errors are
+// results too: the router requires an answer for every call.
+func (a *Agent) runTool(tc toolCall) string {
+	tool, ok := a.tools[tc.Function.Name]
+	if !ok || tool.Handler == nil {
+		return fmt.Sprintf(`{"error": "unknown tool: %s"}`, tc.Function.Name)
+	}
+	args := map[string]any{}
+	if strings.TrimSpace(tc.Function.Arguments) != "" {
+		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+			return fmt.Sprintf(`{"error": %q}`, "invalid JSON arguments: "+err.Error())
+		}
+	}
+	result, err := tool.Handler(args)
+	if err != nil {
+		return fmt.Sprintf(`{"error": %q}`, err.Error())
+	}
+	return result
+}
+
+// message is a chat message sent to the router.
+type message struct {
+	Role       string `json:"role"`
+	Content    string `json:"content"`
+	ToolCallID string `json:"tool_call_id,omitempty"`
+}
+
+// toolCall is a tool call the router handed to the agent.
+type toolCall struct {
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Index    int    `json:"index"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
+}
+
+// reply is one streamed turn: its text and the tool calls for the agent.
+type reply struct {
+	content      string
+	toolCalls    []toolCall
+	finishReason string
+}
+
+// send posts one request and reads the streamed reply. A non-nil RunResult
+// means the router has closed the run (HTTP 410).
+func (a *Agent) send(ctx context.Context, msgs []message) (*reply, *RunResult, error) {
+	payload := map[string]any{"messages": msgs, "stream": true}
+	if a.model != "" {
+		payload["model"] = a.model
+	}
+	if a.temperature != nil {
+		payload["temperature"] = *a.temperature
 	}
 	if a.maxTokens != nil {
 		payload["max_tokens"] = *a.maxTokens
 	}
+	if len(a.toolOrder) > 0 {
+		tools := make([]map[string]any, 0, len(a.toolOrder))
+		for _, name := range a.toolOrder {
+			tools = append(tools, a.tools[name].toOpenAI())
+		}
+		payload["tools"] = tools
+	}
+	resp, err := a.post(ctx, payload)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
 
+	switch resp.StatusCode {
+	case http.StatusOK:
+	case http.StatusGone:
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, closedRun(strings.TrimSpace(string(body))), nil
+	default:
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, nil, fmt.Errorf("model-router returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	r, err := readStream(resp.Body, nil)
+	return r, nil, err
+}
+
+func (a *Agent) post(ctx context.Context, payload map[string]any) (*http.Response, error) {
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
 	}
-
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.baseURL+"/chat/completions", bytes.NewReader(data))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
 	if a.apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+a.apiKey)
 	}
-
-	resp, err := a.httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("chat completion failed: %s", string(body))
-	}
-
-	var result map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, err
-	}
-	return result, nil
+	return a.httpClient.Do(req)
 }
 
-// chatCompletionStream sends a chat completion stream request to the model-router.
-func (a *Agent) chatCompletionStream(ctx context.Context, conversation []map[string]any) (<-chan string, <-chan error) {
+// closedRun maps the router's 410 reasons (HandleChatCompletions) to a result.
+func closedRun(reason string) *RunResult {
+	switch {
+	case strings.Contains(reason, "completed by agent"):
+		return &RunResult{Phase: PhaseSucceeded}
+	case strings.Contains(reason, "handed off"):
+		return &RunResult{Phase: PhaseHandedOff}
+	case strings.Contains(reason, "waiting for human input"):
+		return &RunResult{Phase: PhaseWaitingForInput}
+	default:
+		return &RunResult{Phase: PhaseFailed, FailureReason: reason}
+	}
+}
+
+// readStream assembles an OpenAI SSE stream: text deltas, tool-call deltas
+// merged by index, and the finish reason. onContent, when set, receives each
+// text delta as it arrives.
+func readStream(body io.Reader, onContent func(string)) (*reply, error) {
+	var r reply
+	var content strings.Builder
+	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	for scanner.Scan() {
+		data, ok := strings.CutPrefix(scanner.Text(), "data: ")
+		if !ok || data == "" {
+			continue
+		}
+		if data == "[DONE]" {
+			break
+		}
+		var chunk struct {
+			Choices []struct {
+				Delta struct {
+					Content   string     `json:"content"`
+					ToolCalls []toolCall `json:"tool_calls"`
+				} `json:"delta"`
+				FinishReason *string `json:"finish_reason"`
+			} `json:"choices"`
+		}
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			continue
+		}
+		for _, c := range chunk.Choices {
+			if c.Delta.Content != "" {
+				content.WriteString(c.Delta.Content)
+				if onContent != nil {
+					onContent(c.Delta.Content)
+				}
+			}
+			for _, d := range c.Delta.ToolCalls {
+				for len(r.toolCalls) <= d.Index {
+					r.toolCalls = append(r.toolCalls, toolCall{})
+				}
+				tc := &r.toolCalls[d.Index]
+				if d.ID != "" {
+					tc.ID = d.ID
+				}
+				if d.Type != "" {
+					tc.Type = d.Type
+				}
+				tc.Function.Name += d.Function.Name
+				tc.Function.Arguments += d.Function.Arguments
+			}
+			if c.FinishReason != nil {
+				r.finishReason = *c.FinishReason
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("reading stream: %w", err)
+	}
+	r.content = content.String()
+	return &r, nil
+}
+
+// RunStream sends input as a single turn and streams the reply's text. It does
+// not run tools; use Run for that.
+func (a *Agent) RunStream(ctx context.Context, input string) (<-chan string, <-chan error) {
 	contentChan := make(chan string)
 	errChan := make(chan error, 1)
 
@@ -488,175 +440,34 @@ func (a *Agent) chatCompletionStream(ctx context.Context, conversation []map[str
 		defer close(contentChan)
 		defer close(errChan)
 
-		payload := map[string]any{
-			"model":       a.model,
-			"messages":    conversation,
-			"temperature": a.temperature,
-			"stream":      true,
+		msgs := []message{{Role: "user", Content: input}}
+		if a.systemPrompt != "" {
+			msgs = append([]message{{Role: "system", Content: a.systemPrompt}}, msgs...)
 		}
-		if a.maxTokens != nil {
-			payload["max_tokens"] = *a.maxTokens
+		payload := map[string]any{"messages": msgs, "stream": true}
+		if a.model != "" {
+			payload["model"] = a.model
 		}
-
-		data, err := json.Marshal(payload)
-		if err != nil {
-			errChan <- err
-			return
-		}
-
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.baseURL+"/chat/completions", bytes.NewReader(data))
-		if err != nil {
-			errChan <- err
-			return
-		}
-		req.Header.Set("Content-Type", "application/json")
-		if a.apiKey != "" {
-			req.Header.Set("Authorization", "Bearer "+a.apiKey)
-		}
-
-		resp, err := a.httpClient.Do(req)
+		resp, err := a.post(ctx, payload)
 		if err != nil {
 			errChan <- err
 			return
 		}
 		defer func() { _ = resp.Body.Close() }()
-
 		if resp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
-			errChan <- fmt.Errorf("chat completion stream failed: %s", string(body))
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+			errChan <- fmt.Errorf("model-router returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 			return
 		}
-
-		scanner := bufio.NewScanner(resp.Body)
-		for scanner.Scan() {
-			line := scanner.Text()
-			if !strings.HasPrefix(line, "data: ") {
-				continue
+		if _, err := readStream(resp.Body, func(s string) {
+			select {
+			case contentChan <- s:
+			case <-ctx.Done():
 			}
-
-			dataLine := strings.TrimPrefix(line, "data: ")
-			if dataLine == "" || dataLine == "[DONE]" {
-				continue
-			}
-
-			var event struct {
-				Choices []struct {
-					Delta struct {
-						Content string `json:"content"`
-					} `json:"delta"`
-				} `json:"choices"`
-			}
-			if err := json.Unmarshal([]byte(dataLine), &event); err == nil {
-				if len(event.Choices) > 0 && event.Choices[0].Delta.Content != "" {
-					contentChan <- event.Choices[0].Delta.Content
-				}
-			}
-		}
-
-		if err := scanner.Err(); err != nil {
+		}); err != nil {
 			errChan <- err
 		}
 	}()
 
 	return contentChan, errChan
 }
-
-// RunStream executes the agent and streams the output tokens for a single turn.
-func (a *Agent) RunStream(ctx context.Context, input string, opts ...RunOption) (<-chan string, <-chan error) {
-	conversation := make([]map[string]any, 0)
-	if a.systemPrompt != "" {
-		conversation = append(conversation, map[string]any{"role": "system", "content": a.systemPrompt})
-	}
-	conversation = append(conversation, map[string]any{"role": "user", "content": input})
-
-	return a.chatCompletionStream(ctx, conversation)
-}
-
-// extractDoneOutput finds the most recent _done tool call and returns its output.
-func (a *Agent) extractDoneOutput(conversation []map[string]any) string {
-	for i := len(conversation) - 1; i >= 0; i-- {
-		msg := conversation[i]
-		if msg["role"] != "assistant" {
-			continue
-		}
-		toolCalls, ok := msg["tool_calls"].([]any)
-		if !ok {
-			continue
-		}
-		for _, tc := range toolCalls {
-			tcMap, ok := tc.(map[string]any)
-			if !ok {
-				continue
-			}
-			fn, ok := tcMap["function"].(map[string]any)
-			if !ok {
-				continue
-			}
-			if name, _ := fn["name"].(string); name == "_done" {
-				if argsStr, ok := fn["arguments"].(string); ok && argsStr != "" {
-					var args map[string]any
-					if json.Unmarshal([]byte(argsStr), &args) == nil {
-						if output, ok := args["output"].(string); ok && output != "" {
-							return output
-						}
-						if summary, ok := args["summary"].(string); ok && summary != "" {
-							return summary
-						}
-					}
-				}
-			}
-		}
-	}
-	return ""
-}
-
-// extractFailReason finds the most recent _fail tool call and returns its reason.
-func (a *Agent) extractFailReason(conversation []map[string]any) string {
-	for i := len(conversation) - 1; i >= 0; i-- {
-		msg := conversation[i]
-		if msg["role"] != "assistant" {
-			continue
-		}
-		toolCalls, ok := msg["tool_calls"].([]any)
-		if !ok {
-			continue
-		}
-		for _, tc := range toolCalls {
-			tcMap, ok := tc.(map[string]any)
-			if !ok {
-				continue
-			}
-			fn, ok := tcMap["function"].(map[string]any)
-			if !ok {
-				continue
-			}
-			if name, _ := fn["name"].(string); name == "_fail" {
-				if argsStr, ok := fn["arguments"].(string); ok && argsStr != "" {
-					var args map[string]any
-					if json.Unmarshal([]byte(argsStr), &args) == nil {
-						if reason, ok := args["reason"].(string); ok {
-							return reason
-						}
-					}
-				}
-			}
-		}
-	}
-	return ""
-}
-
-// RunOption configures a Run call.
-type RunOption func(*runConfig)
-
-// runConfig holds options for a Run call.
-type runConfig struct {
-	maxTurns int
-}
-
-// WithMaxTurns sets the maximum number of LLM turns.
-func WithMaxTurns(n int) RunOption {
-	return func(c *runConfig) { c.maxTurns = n }
-}
-
-// ErrNoTool is returned when a tool is not found.
-var ErrNoTool = errors.New("tool not found")

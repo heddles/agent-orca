@@ -19,457 +19,257 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
 )
 
+// fakeRouter answers each request with the next canned response and records
+// the request bodies.
+type fakeRouter struct {
+	mu        sync.Mutex
+	responses []func(w http.ResponseWriter)
+	requests  []map[string]any
+}
+
+func (f *fakeRouter) serve(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			http.NotFound(w, r)
+			return
+		}
+		raw, _ := io.ReadAll(r.Body)
+		var body map[string]any
+		_ = json.Unmarshal(raw, &body)
+		f.mu.Lock()
+		idx := len(f.requests)
+		f.requests = append(f.requests, body)
+		f.mu.Unlock()
+		if idx >= len(f.responses) {
+			http.Error(w, "no more responses", http.StatusInternalServerError)
+			return
+		}
+		f.responses[idx](w)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func (f *fakeRouter) request(i int) map[string]any {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.requests[i]
+}
+
+func sse(chunks ...string) func(w http.ResponseWriter) {
+	return func(w http.ResponseWriter) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, c := range chunks {
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", c)
+		}
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}
+}
+
+func gone(reason string) func(w http.ResponseWriter) {
+	return func(w http.ResponseWriter) { http.Error(w, reason, http.StatusGone) }
+}
+
+func textChunk(s string) string {
+	return fmt.Sprintf(`{"choices":[{"index":0,"delta":{"content":%q}}]}`, s)
+}
+
+func toolChunk(index int, id, name, args string) string {
+	call := fmt.Sprintf(`{"index":%d,"id":%q,"type":"function","function":{"name":%q,"arguments":%q}}`,
+		index, id, name, args)
+	return `{"choices":[{"index":0,"delta":{"tool_calls":[` + call + `]}}]}`
+}
+
+const finishToolCalls = `{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`
+
+func messages(t *testing.T, body map[string]any) []map[string]any {
+	t.Helper()
+	raw, _ := json.Marshal(body["messages"])
+	var msgs []map[string]any
+	if err := json.Unmarshal(raw, &msgs); err != nil {
+		t.Fatal(err)
+	}
+	return msgs
+}
+
 func TestNewDefaults(t *testing.T) {
+	t.Setenv("OPENAI_BASE_URL", "")
+	t.Setenv("OPENAI_API_KEY", "")
+	if a := New(); a.baseURL != defaultBaseURL {
+		t.Errorf("baseURL = %q, want %q", a.baseURL, defaultBaseURL)
+	}
+
+	t.Setenv("OPENAI_BASE_URL", "http://router:8080/v1/")
+	t.Setenv("OPENAI_API_KEY", "tok")
 	a := New()
-	if a.baseURL != "http://localhost:8080" {
-		t.Fatalf("expected default baseURL, got %s", a.baseURL)
+	if a.baseURL != "http://router:8080/v1" || a.apiKey != "tok" {
+		t.Errorf("env not applied: baseURL=%q apiKey=%q", a.baseURL, a.apiKey)
 	}
-	if a.temperature != 0.7 {
-		t.Fatalf("expected default temperature 0.7, got %v", a.temperature)
-	}
-	if len(a.tools) == 0 {
-		t.Fatal("expected builtin tools to be registered")
-	}
-	for _, name := range []string{"_done", "_fail", "_clarify", "_handoff", "_spawn"} {
-		if _, ok := a.tools[name]; !ok {
-			t.Fatalf("expected builtin tool %s to be registered", name)
-		}
+	if a := New(WithBaseURL("http://x/v1"), WithAPIKey("k")); a.baseURL != "http://x/v1" || a.apiKey != "k" {
+		t.Errorf("options do not override env: %q %q", a.baseURL, a.apiKey)
 	}
 }
 
-func TestNewWithOptions(t *testing.T) {
-	a := New(WithModel("gpt-4"), WithSystemPrompt("You are helpful."),
-		WithTemperature(0.1), WithBaseURL("http://router:8080"), WithAPIKey("secret"))
-	if a.model != "gpt-4" {
-		t.Fatalf("expected model gpt-4, got %s", a.model)
-	}
-	if a.systemPrompt != "You are helpful." {
-		t.Fatalf("expected system prompt, got %s", a.systemPrompt)
-	}
-	if a.temperature != 0.1 {
-		t.Fatalf("expected temperature 0.1, got %v", a.temperature)
-	}
-	if a.baseURL != "http://router:8080" {
-		t.Fatalf("expected base URL, got %s", a.baseURL)
-	}
-	if a.apiKey != "secret" {
-		t.Fatalf("expected API key, got %s", a.apiKey)
-	}
-}
+func TestRunExecutesAgentToolCalls(t *testing.T) {
+	f := &fakeRouter{responses: []func(http.ResponseWriter){
+		sse(textChunk("Building."), toolChunk(0, "call_1", "shell", `{"command":"go build ./..."}`), finishToolCalls),
+		sse(textChunk("Build passed.")),
+	}}
+	srv := f.serve(t)
 
-func TestToolRegistration(t *testing.T) {
-	a := New()
-	a.Tool("search", "Search the web", map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"query": map[string]any{"type": "string"},
-		},
-		"required": []string{"query"},
-	}, func(args map[string]any) (string, error) {
-		return "results", nil
+	var gotArgs map[string]any
+	a := New(WithBaseURL(srv.URL + "/v1"))
+	a.Tool("shell", "Run a command", nil, func(args map[string]any) (string, error) {
+		gotArgs = args
+		return "exit code: 0", nil
 	})
-	tool, ok := a.tools["search"]
-	if !ok {
-		t.Fatal("expected search tool to be registered")
+	res, err := a.Run(context.Background(), "build it")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if tool.Name != "search" {
-		t.Fatalf("expected name 'search', got %s", tool.Name)
+	if res.Phase != PhaseSucceeded || res.Output != "Build passed." {
+		t.Errorf("result = %+v", res)
 	}
-	if tool.Description != "Search the web" {
-		t.Fatalf("expected description, got %s", tool.Description)
-	}
-}
-
-func TestDoneFailAskHandoffSpawn(t *testing.T) {
-	a := New()
-
-	a.Done("final answer")
-	if !a.doneCalled {
-		t.Fatal("expected doneCalled to be true")
+	if gotArgs["command"] != "go build ./..." {
+		t.Errorf("handler args = %v", gotArgs)
 	}
 
-	a.Fail("bad input", true)
-	if !a.failCalled {
-		t.Fatal("expected failCalled to be true")
+	first := f.request(0)
+	if first["stream"] != true {
+		t.Error("requests must stream: the router only answers SSE")
 	}
-
-	a.Ask("What do you mean?")
-	if !a.clarifyCalled {
-		t.Fatal("expected clarifyCalled to be true")
+	tools, _ := first["tools"].([]any)
+	if len(tools) != 1 {
+		t.Fatalf("tools sent = %v, want only the agent's shell tool", first["tools"])
 	}
-
-	a.Handoff("other-agent", "take over")
-	if !a.handoffCalled {
-		t.Fatal("expected handoffCalled to be true")
-	}
-
-	a.Spawn("child", "do subtask", 120)
-	if a.spawnResult == nil {
-		t.Fatal("expected spawnResult to be set")
+	// The router keeps the conversation: the second request carries only the result.
+	second := messages(t, f.request(1))
+	if len(second) != 1 || second[0]["role"] != "tool" || second[0]["tool_call_id"] != "call_1" ||
+		second[0]["content"] != "exit code: 0" {
+		t.Errorf("second request messages = %v, want just the tool result", second)
 	}
 }
 
-func TestRunWithDoneTool(t *testing.T) { //nolint:dupl
+func TestRunAnswersEveryCall(t *testing.T) {
+	// Unknown tools, bad arguments and handler errors are still answered: the
+	// router rejects a request that leaves a call unanswered.
+	f := &fakeRouter{responses: []func(http.ResponseWriter){
+		sse(
+			toolChunk(0, "a", "nope", `{}`),
+			toolChunk(1, "b", "fails", `{}`),
+			toolChunk(2, "c", "fails", `{not json`),
+			finishToolCalls),
+		sse(textChunk("ok")),
+	}}
+	srv := f.serve(t)
+	a := New(WithBaseURL(srv.URL + "/v1"))
+	a.Tool("fails", "", nil, func(map[string]any) (string, error) { return "", fmt.Errorf("boom") })
+	if _, err := a.Run(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	results := messages(t, f.request(1))
+	if len(results) != 3 {
+		t.Fatalf("results = %v, want one per call", results)
+	}
+	for i, want := range []string{"unknown tool", "boom", "invalid JSON"} {
+		if c, _ := results[i]["content"].(string); !strings.Contains(c, want) {
+			t.Errorf("result %d = %q, want it to mention %q", i, c, want)
+		}
+	}
+}
 
-	// Set up a mock model-router.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req map[string]any
-		_ = json.NewDecoder(r.Body).Decode(&req)
-		msgs, _ := req["messages"].([]any)
-
-		if len(msgs) == 1 {
-			// First turn: LLM calls _done.
-			resp := map[string]any{
-				"choices": []any{
-					map[string]any{
-						"message": map[string]any{
-							"role": "assistant",
-							"tool_calls": []any{
-								map[string]any{
-									"id":   "call_1",
-									"type": "function",
-									"function": map[string]any{
-										"name":      "_done",
-										"arguments": `{"output": "Final answer"}`,
-									},
-								},
-							},
-						},
-					},
-				},
+func TestRunClosedByRouter(t *testing.T) {
+	for reason, phase := range map[string]string{
+		"run completed by agent":      PhaseSucceeded,
+		"run failed by agent":         PhaseFailed,
+		"run handed off":              PhaseHandedOff,
+		"run waiting for human input": PhaseWaitingForInput,
+		"run halted by safeguard":     PhaseFailed,
+	} {
+		t.Run(reason, func(t *testing.T) {
+			f := &fakeRouter{responses: []func(http.ResponseWriter){gone(reason)}}
+			srv := f.serve(t)
+			res, err := New(WithBaseURL(srv.URL+"/v1")).Run(context.Background(), "go")
+			if err != nil {
+				t.Fatal(err)
 			}
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(resp)
-			return
-		}
-		http.Error(w, "unexpected", http.StatusInternalServerError)
-	}))
-	defer srv.Close()
-
-	a := New(WithBaseURL(srv.URL))
-	result, err := a.Run(context.Background(), "test")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.Phase != "Succeeded" { //nolint:goconst
-
-		t.Fatalf("expected phase Succeeded, got %s", result.Phase)
-	}
-	if result.Output != "Final answer" {
-		t.Fatalf("expected output 'Final answer', got %s", result.Output)
-	}
-}
-
-func TestRunWithFailTool(t *testing.T) { //nolint:dupl
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req map[string]any
-		_ = json.NewDecoder(r.Body).Decode(&req)
-		msgs, _ := req["messages"].([]any)
-
-		if len(msgs) == 1 {
-			resp := map[string]any{
-				"choices": []any{
-					map[string]any{
-						"message": map[string]any{
-							"role": "assistant",
-							"tool_calls": []any{
-								map[string]any{
-									"id":   "call_1",
-									"type": "function",
-									"function": map[string]any{
-										"name":      "_fail",
-										"arguments": `{"reason": "bad input", "retryable": false}`,
-									},
-								},
-							},
-						},
-					},
-				},
+			if res.Phase != phase {
+				t.Errorf("phase = %s, want %s", res.Phase, phase)
 			}
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(resp)
-			return
-		}
-		http.Error(w, "unexpected", http.StatusInternalServerError)
-	}))
-	defer srv.Close()
-
-	a := New(WithBaseURL(srv.URL))
-	result, err := a.Run(context.Background(), "test")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.Phase != "Failed" {
-		t.Fatalf("expected phase Failed, got %s", result.Phase)
-	}
-	if result.FailureReason != "bad input" {
-		t.Fatalf("expected failure reason 'bad input', got %s", result.FailureReason)
+		})
 	}
 }
 
-func TestRunWithClarifyTool(t *testing.T) { //nolint:dupl
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		resp := map[string]any{
-			"choices": []any{
-				map[string]any{
-					"message": map[string]any{
-						"role": "assistant",
-						"tool_calls": []any{
-							map[string]any{
-								"id":   "call_1",
-								"type": "function",
-								"function": map[string]any{
-									"name":      "_clarify",
-									"arguments": `{"question": "What do you mean?"}`,
-								},
-							},
-						},
-					},
-				},
-			},
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
-	}))
-	defer srv.Close()
-
-	a := New(WithBaseURL(srv.URL))
-	result, err := a.Run(context.Background(), "test")
+func TestRunContinuePrompt(t *testing.T) {
+	f := &fakeRouter{responses: []func(http.ResponseWriter){
+		sse(textChunk("I will now run the tests.")),
+		gone("run completed by agent"),
+	}}
+	srv := f.serve(t)
+	a := New(WithBaseURL(srv.URL + "/v1"))
+	res, err := a.Run(context.Background(), "go", WithContinuePrompt("Continue. Call _done when finished."))
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatal(err)
 	}
-	if result.Phase != "WaitingForInput" {
-		t.Fatalf("expected phase WaitingForInput, got %s", result.Phase)
+	if res.Phase != PhaseSucceeded {
+		t.Errorf("phase = %s", res.Phase)
+	}
+	msgs := messages(t, f.request(1))
+	if len(msgs) != 1 || msgs[0]["role"] != "user" || msgs[0]["content"] != "Continue. Call _done when finished." {
+		t.Errorf("continue request = %v", msgs)
 	}
 }
 
-func TestRunWithHandoffTool(t *testing.T) { //nolint:dupl
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		resp := map[string]any{
-			"choices": []any{
-				map[string]any{
-					"message": map[string]any{
-						"role": "assistant",
-						"tool_calls": []any{
-							map[string]any{
-								"id":   "call_1",
-								"type": "function",
-								"function": map[string]any{
-									"name":      "_handoff",
-									"arguments": `{"agentRef": "other-agent", "input": "take over"}`,
-								},
-							},
-						},
-					},
-				},
-			},
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
-	}))
-	defer srv.Close()
-
-	a := New(WithBaseURL(srv.URL))
-	result, err := a.Run(context.Background(), "test")
+func TestRunMaxTurns(t *testing.T) {
+	loop := sse(toolChunk(0, "x", "noop", `{}`), finishToolCalls)
+	f := &fakeRouter{responses: []func(http.ResponseWriter){loop, loop, loop}}
+	srv := f.serve(t)
+	a := New(WithBaseURL(srv.URL + "/v1"))
+	a.Tool("noop", "", nil, func(map[string]any) (string, error) { return "ok", nil })
+	res, err := a.Run(context.Background(), "go", WithMaxTurns(3))
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatal(err)
 	}
-	if result.Phase != "HandedOff" {
-		t.Fatalf("expected phase HandedOff, got %s", result.Phase)
+	if res.Phase != PhaseFailed || res.FailureReason != ErrMaxTurns.Error() {
+		t.Errorf("result = %+v", res)
 	}
 }
 
-func TestRunMaxTurnsExceeded(t *testing.T) {
-	callCount := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		callCount++
-		resp := map[string]any{
-			"choices": []any{
-				map[string]any{
-					"message": map[string]any{
-						"role":    "assistant",
-						"content": "thinking...",
-					},
-				},
-			},
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
-	}))
-	defer srv.Close()
-
-	a := New(WithBaseURL(srv.URL))
-	result, err := a.Run(context.Background(), "test", WithMaxTurns(3))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.Phase != "Failed" {
-		t.Fatalf("expected phase Failed, got %s", result.Phase)
-	}
-	if result.FailureReason != "max turns exceeded" {
-		t.Fatalf("expected 'max turns exceeded', got %s", result.FailureReason)
-	}
-}
-
-func TestRunWithCustomTool(t *testing.T) {
-	callCount := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req map[string]any
-		_ = json.NewDecoder(r.Body).Decode(&req)
-		msgs, _ := req["messages"].([]any)
-
-		callCount++
-		if callCount == 1 {
-			// LLM calls echo tool.
-			resp := map[string]any{
-				"choices": []any{
-					map[string]any{
-						"message": map[string]any{
-							"role": "assistant",
-							"tool_calls": []any{
-								map[string]any{
-									"id":   "call_1",
-									"type": "function",
-									"function": map[string]any{
-										"name":      "echo",
-										"arguments": `{"text": "hello"}`,
-									},
-								},
-							},
-						},
-					},
-				},
-			}
-			_ = msgs
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(resp)
-			return
-		}
-		if callCount == 2 {
-			// LLM sees tool result and calls _done.
-			resp := map[string]any{
-				"choices": []any{
-					map[string]any{
-						"message": map[string]any{
-							"role": "assistant",
-							"tool_calls": []any{
-								map[string]any{
-									"id":   "call_2",
-									"type": "function",
-									"function": map[string]any{
-										"name":      "_done",
-										"arguments": `{"output": "echoed: hello"}`,
-									},
-								},
-							},
-						},
-					},
-				},
-			}
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(resp)
-			return
-		}
-		http.Error(w, "unexpected", http.StatusInternalServerError)
-	}))
-	defer srv.Close()
-
-	a := New(WithBaseURL(srv.URL))
-	a.Tool("echo", "Echo text", map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"text": map[string]any{"type": "string"},
+func TestRunRouterError(t *testing.T) {
+	f := &fakeRouter{responses: []func(http.ResponseWriter){
+		func(w http.ResponseWriter) {
+			http.Error(w, "tool \"done\" is provided by the model-router", http.StatusBadRequest)
 		},
-		"required": []string{"text"},
-	}, func(args map[string]any) (string, error) {
-		return args["text"].(string), nil
-	})
-
-	result, err := a.Run(context.Background(), "echo hello")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.Phase != "Succeeded" {
-		t.Fatalf("expected phase Succeeded, got %s", result.Phase)
-	}
-	if result.Output != "echoed: hello" {
-		t.Fatalf("expected output 'echoed: hello', got %s", result.Output)
+	}}
+	srv := f.serve(t)
+	_, err := New(WithBaseURL(srv.URL+"/v1")).Run(context.Background(), "go")
+	if err == nil || !strings.Contains(err.Error(), "400") {
+		t.Errorf("err = %v, want the router's 400", err)
 	}
 }
 
-func TestRunNoToolCallsContinues(t *testing.T) {
-	callCount := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		callCount++
-		if callCount == 1 {
-			resp := map[string]any{
-				"choices": []any{
-					map[string]any{
-						"message": map[string]any{
-							"role":    "assistant",
-							"content": "Let me think...",
-						},
-					},
-				},
-			}
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(resp)
-			return
-		}
-		// Second call: _done
-		resp := map[string]any{
-			"choices": []any{
-				map[string]any{
-					"message": map[string]any{
-						"role": "assistant",
-						"tool_calls": []any{
-							map[string]any{
-								"id":   "call_1",
-								"type": "function",
-								"function": map[string]any{
-									"name":      "_done",
-									"arguments": `{"output": "done"}`,
-								},
-							},
-						},
-					},
-				},
-			},
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
-	}))
-	defer srv.Close()
-
-	a := New(WithBaseURL(srv.URL))
-	result, err := a.Run(context.Background(), "test")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+func TestRunStream(t *testing.T) {
+	f := &fakeRouter{responses: []func(http.ResponseWriter){sse(textChunk("Hel"), textChunk("lo"))}}
+	srv := f.serve(t)
+	content, errs := New(WithBaseURL(srv.URL+"/v1")).RunStream(context.Background(), "hi")
+	var got strings.Builder
+	for s := range content {
+		got.WriteString(s)
 	}
-	if result.Phase != "Succeeded" {
-		t.Fatalf("expected phase Succeeded, got %s", result.Phase)
+	if err := <-errs; err != nil {
+		t.Fatal(err)
 	}
-	if result.Output != "done" {
-		t.Fatalf("expected output 'done', got %s", result.Output)
-	}
-}
-
-func TestCheckpointHelpers(t *testing.T) {
-	a := New()
-	msgs := a.LoadCheckpoint("test-session")
-	if msgs != nil {
-		t.Fatalf("expected nil, got %v", msgs)
-	}
-	ref := a.SaveCheckpoint("test-session", nil)
-	if ref != "agentorca/runs/test-session/state" {
-		t.Fatalf("unexpected checkpoint ref: %s", ref)
+	if got.String() != "Hello" {
+		t.Errorf("streamed %q", got.String())
 	}
 }
