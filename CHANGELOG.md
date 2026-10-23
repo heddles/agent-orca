@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Hindsight deployed with the chart by default** — the upstream `hindsight` chart is now
+  a dependency of `charts/agent-orca` (`hindsight.enabled`, default `true`) and shares
+  the existing top-level `hindsight:` values block with the operator's client
+  settings. Auth is on by default: a chart-managed Secret (`hindsight-auth`) holds a
+  generated tenant API key (preserved across upgrades), the API runs with
+  `ApiKeyTenantExtension` so `/v1` and `/mcp` both require it, and the operator's
+  `hindsight.url` and `apiKeySecret` default to the bundled server. Set
+  `hindsight.enabled=false` (plus `hindsight.url`/`apiKeySecret`) to keep using an
+  external Hindsight. **Upgrade note:** an existing install that relied on the old
+  default URL must set `hindsight.enabled=false` and `hindsight.url`, or it will
+  switch to a new empty bundled server. No resource requests/limits are set by
+  default; see `docs/hindsight-auth.md`.
 - **Hindsight API-key authentication** (`hindsight.apiKeySecret` chart value, fixes the
   application-level half of #58) — the model-router sends
   `Authorization: Bearer <key>` on hindsight bank/recall/retain calls so hindsight can
