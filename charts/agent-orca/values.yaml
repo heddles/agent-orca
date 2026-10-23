@@ -303,11 +303,24 @@ hindsight:
   apiKeySecret:
     name: ""
     key: ""
+  # networkPolicy.enabled restricts ingress to the bundled Hindsight API to this
+  # release's operator, agent run pods (any namespace) and the Hindsight worker and
+  # control plane. extraIngress adds peers, as NetworkPolicyPeer entries, e.g. an
+  # ingress controller that exposes Hindsight:
+  #   extraIngress:
+  #     - namespaceSelector:
+  #         matchLabels:
+  #           kubernetes.io/metadata.name: kube-system
+  #       podSelector:
+  #         matchLabels:
+  #           app.kubernetes.io/name: traefik
   # networkPolicy.cidrs is an optional manual override for the egress CIDR
   # allowlist. Use this when the operator cannot resolve the hindsight URL
   # (e.g. DNS is not yet available at policy-creation time). Each entry is
   # a CIDR in ipBlock format, e.g. "10.244.1.42/32".
   networkPolicy:
+    enabled: true
+    extraIngress: []
     cidrs: []
   # Bank ID template for tenant isolation
   bankIdTemplate: "{namespace}--{agent-name}"

@@ -31,6 +31,8 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/yaml"
 )
 
@@ -104,6 +106,8 @@ type obj struct {
 		Template struct {
 			Spec corev1.PodSpec `json:"spec"`
 		} `json:"template"`
+		PodSelector metav1.LabelSelector                    `json:"podSelector"`
+		Ingress     []networkingv1.NetworkPolicyIngressRule `json:"ingress"`
 	} `json:"spec"`
 }
 
@@ -328,5 +332,57 @@ func TestReuseValuesWithoutDefaultsFailsClearly(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "--reset-then-reuse-values") {
 		t.Errorf("error should tell the user how to fix it, got:\n%s", out)
+	}
+}
+
+func TestNetworkPolicy_LimitsHindsightAPIIngress(t *testing.T) {
+	np, ok := render(t)["NetworkPolicy/hindsight-api"]
+	if !ok {
+		t.Fatal("NetworkPolicy/hindsight-api not rendered")
+	}
+	sel := np.Spec.PodSelector.MatchLabels
+	if sel["app.kubernetes.io/name"] != "hindsight" || sel["app.kubernetes.io/component"] != "api" || sel["app.kubernetes.io/instance"] != "agent-orca" {
+		t.Errorf("policy must select only the bundled API pods, got %v", sel)
+	}
+	if len(np.Spec.Ingress) != 1 {
+		t.Fatalf("want one ingress rule, got %d", len(np.Spec.Ingress))
+	}
+	rule := np.Spec.Ingress[0]
+	if len(rule.Ports) != 1 || rule.Ports[0].Port.IntValue() != 8888 {
+		t.Errorf("must open only the API port 8888, got %+v", rule.Ports)
+	}
+	var operator, hindsight, runs bool
+	for _, p := range rule.From {
+		switch {
+		case p.PodSelector != nil && p.PodSelector.MatchLabels["app.kubernetes.io/component"] == "operator":
+			operator = true
+		case p.PodSelector != nil && p.PodSelector.MatchLabels["app.kubernetes.io/name"] == "hindsight":
+			hindsight = true
+		case p.NamespaceSelector != nil && p.PodSelector != nil && len(p.PodSelector.MatchExpressions) == 1 &&
+			p.PodSelector.MatchExpressions[0].Key == "agentorca.io/run":
+			runs = true
+		default:
+			t.Errorf("unexpected peer %+v", p)
+		}
+	}
+	if !operator || !hindsight || !runs {
+		t.Errorf("peers must be the operator, hindsight's own pods and run pods in any namespace: operator=%v hindsight=%v runs=%v", operator, hindsight, runs)
+	}
+}
+
+func TestNetworkPolicy_ExtraIngressAndOptOut(t *testing.T) {
+	np := render(t,
+		"hindsight.networkPolicy.extraIngress[0].namespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name=kube-system",
+	)["NetworkPolicy/hindsight-api"]
+	if got := len(np.Spec.Ingress[0].From); got != 4 {
+		t.Errorf("extraIngress peer should be appended to the three defaults, got %d peers", got)
+	}
+
+	objs := render(t, "hindsight.networkPolicy.enabled=false")
+	if _, ok := objs["NetworkPolicy/hindsight-api"]; ok {
+		t.Error("networkPolicy.enabled=false must not render the policy")
+	}
+	if _, ok := render(t, "hindsight.enabled=false")["NetworkPolicy/hindsight-api"]; ok {
+		t.Error("no policy without the bundled server")
 	}
 }

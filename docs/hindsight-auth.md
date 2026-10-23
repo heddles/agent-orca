@@ -32,6 +32,11 @@ you. The `hindsight:` values block is shared: upstream chart values (`api.*`,
   API and worker can exceed 1Gi on a bank with a few hundred facts and will be
   OOM-killed under a limit that small. Set `hindsight.api.resources` and
   `hindsight.worker.resources`.
+- A NetworkPolicy (`hindsight.networkPolicy.enabled`, default `true`) limits ingress to
+  the bundled API port to this release's operator, agent run pods in any namespace and
+  Hindsight's own worker and control plane. To expose Hindsight through an ingress
+  controller, add it under `hindsight.networkPolicy.extraIngress`, or the controller's
+  requests are dropped. It needs a CNI that enforces NetworkPolicy.
 - Bring your own Secret with `hindsight.auth.manageSecret=false` and
   `hindsight.existingSecret=<name>`; it must contain `HINDSIGHT_API_TENANT_API_KEY` and
   `HINDSIGHT_CP_DATAPLANE_API_KEY` (same value).
