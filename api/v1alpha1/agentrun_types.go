@@ -38,7 +38,8 @@ const (
 type AgentRunSafeguards struct {
 	// MaxConsecutiveNoopTurns halts the run if the LLM produces this many consecutive
 	// turns with no tool calls and fewer than MinSubstantiveTokens output tokens.
-	// 0 disables the check.
+	// Not applied to chat (http input) runs. Unset uses the default of 15; a
+	// negative value disables the check.
 	// +optional
 	MaxConsecutiveNoopTurns int `json:"maxConsecutiveNoopTurns,omitempty"`
 
@@ -49,12 +50,14 @@ type AgentRunSafeguards struct {
 	MinSubstantiveTokens int `json:"minSubstantiveTokens,omitempty"`
 
 	// MaxRepeatedToolCalls halts the run if the same tool is called with identical
-	// arguments this many times within the run. 0 disables the check.
+	// arguments this many times within the run. Unset uses the default of 50; a
+	// negative value disables the check.
 	// +optional
 	MaxRepeatedToolCalls int `json:"maxRepeatedToolCalls,omitempty"`
 
 	// ToolFrequencyCap halts the run if any single tool is called more than this many
-	// times in total across the run. 0 disables the check.
+	// times in total across the run. Unset (the default) or a negative value
+	// disables the check.
 	// +optional
 	ToolFrequencyCap int `json:"toolFrequencyCap,omitempty"`
 
@@ -184,6 +187,11 @@ type AgentRunStatus struct {
 	// Empty when using the default combined-pod (sidecar) topology.
 	// +optional
 	RouterPodName string `json:"routerPodName,omitempty"`
+
+	// SandboxName is the sandbox runtime's name for this run's sandbox when
+	// spec.runtime.sandbox is set on the Agent. Empty otherwise.
+	// +optional
+	SandboxName string `json:"sandboxName,omitempty"`
 
 	// StartTime is when the agent pod started.
 	// +optional

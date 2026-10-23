@@ -182,12 +182,14 @@ spec:
                     description: |-
                       MaxConsecutiveNoopTurns halts the run if the LLM produces this many consecutive
                       turns with no tool calls and fewer than MinSubstantiveTokens output tokens.
-                      0 disables the check.
+                      Not applied to chat (http input) runs. Unset uses the default of 15; a
+                      negative value disables the check.
                     type: integer
                   maxRepeatedToolCalls:
                     description: |-
                       MaxRepeatedToolCalls halts the run if the same tool is called with identical
-                      arguments this many times within the run. 0 disables the check.
+                      arguments this many times within the run. Unset uses the default of 50; a
+                      negative value disables the check.
                     type: integer
                   minSubstantiveTokens:
                     default: 20
@@ -206,7 +208,8 @@ spec:
                   toolFrequencyCap:
                     description: |-
                       ToolFrequencyCap halts the run if any single tool is called more than this many
-                      times in total across the run. 0 disables the check.
+                      times in total across the run. Unset (the default) or a negative value
+                      disables the check.
                     type: integer
                 type: object
               timeout:
@@ -431,6 +434,11 @@ spec:
                   - provider
                   type: object
                 type: array
+              sandboxName:
+                description: |-
+                  SandboxName is the sandbox runtime's name for this run's sandbox when
+                  spec.runtime.sandbox is set on the Agent. Empty otherwise.
+                type: string
               spendUSD:
                 description: SpendUSD is the total USD spend for this run so far,
                   updated periodically.

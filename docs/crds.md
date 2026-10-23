@@ -173,6 +173,7 @@ spec:
 | `runtime.ociRef` | OCI image (must be Cosign-signed) |
 | `runtime.framework` | `openai-compatible`, `autogen`, `semantic-kernel`, `langgraph`, `shim` |
 | `runtime.shimTarget` | Hostname to intercept when framework=`shim` |
+| `runtime.sandbox` | Run the agent in an NVIDIA OpenShell sandbox with a shell, exec and policy-controlled egress (see [openshell-sandbox.md](openshell-sandbox.md)) |
 | `memory.checkpointEvery` | LLM turns between checkpoints (default: 1) |
 | `memory.resumeWindowSeconds` | State retention after failure (default: 3600) |
 | `memory.archiveOnCompletion` | Promote checkpoint to object storage on success |
@@ -229,7 +230,7 @@ spec:
 | `restartPolicy.maxRetries` | Retry count on failure (default: 3) |
 | `parentRunRef` | Parent AgentRun when this is spawned as a sub-agent tool |
 | `priorRunRef` | Previous AgentRun in a chat session; loads its conversation checkpoint for continuation |
-| `safeguards` | Loop detection limits (`maxConsecutiveNoopTurns`, `maxRepeatedToolCalls`) |
+| `safeguards` | Loop detection limits. Defaults apply when unset: `maxRepeatedToolCalls` 50 (same tool + identical arguments), `maxConsecutiveNoopTurns` 15 (not for chat runs), `toolFrequencyCap` off. A negative value disables a check. A trip fails the run without retrying it. |
 | `egress` | Result egress sink configuration (optional) |
 
 **Egress configuration (optional):**
@@ -612,6 +613,7 @@ Every AgentRun/AgentDeployment enforces:
 - **Short-lived tokens:** projected ServiceAccount tokens with 15-minute TTL
 - **Image signing:** OCI images verified by Cosign before execution
 - **Optional syscall auditing:** Tetragon TracingPolicy attached per run
+- **Optional sandboxing:** agents with `runtime.sandbox` run in an OpenShell sandbox (Landlock, seccomp, per-host L7 egress) instead of a pod
 - **Cloud identity federation:** GCP Workload Identity, AWS IRSA, Azure Workload Identity via SA annotations
 
 ---

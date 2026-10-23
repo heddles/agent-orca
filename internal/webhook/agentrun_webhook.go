@@ -31,6 +31,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -138,6 +139,82 @@ func (v *AgentValidator) validate(ctx context.Context, agent *agentorcav1alpha1.
 	if agent.Spec.Runtime.SecurityContextOverride != nil {
 		if err := v.validateSecurityContextOverride(ctx, agent); err != nil {
 			return err
+		}
+	}
+	if agent.Spec.Runtime.Sandbox != nil {
+		if err := v.validateSandbox(ctx, agent); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateSandbox enforces the gating + consistency rules for running an Agent
+// in a sandbox. A sandboxed agent has a shell and may exec and install
+// arbitrary binaries, so, like a privileged pod, it needs a namespace opt-in
+// and a GuardrailPolicyRef. The remaining rules reject configurations the
+// sandbox path cannot honour, rather than silently dropping them.
+func (v *AgentValidator) validateSandbox(ctx context.Context, agent *agentorcav1alpha1.Agent) error {
+	rt := agent.Spec.Runtime
+	if agent.Spec.GuardrailPolicyRef == "" {
+		return fmt.Errorf("spec.runtime.sandbox is set but spec.guardrailPolicyRef is empty: " +
+			"a GuardrailPolicyRef is required for sandboxed agents")
+	}
+	var ns corev1.Namespace
+	if err := v.Client.Get(ctx, client.ObjectKey{Name: agent.Namespace}, &ns); err != nil {
+		return fmt.Errorf("looking up namespace %q for sandbox validation: %w", agent.Namespace, err)
+	}
+	if ns.Labels[security.LabelEnableSandboxes] != "true" {
+		return fmt.Errorf("spec.runtime.sandbox is set, but namespace %q is not opted in: "+
+			"add label %s=true to the namespace", agent.Namespace, security.LabelEnableSandboxes)
+	}
+
+	// The model-router must stay in its own pod: the sandbox only runs the agent.
+	if agent.Spec.NetworkIsolation == nil || !agent.Spec.NetworkIsolation.SplitPod {
+		return fmt.Errorf("spec.runtime.sandbox requires spec.networkIsolation.splitPod=true")
+	}
+	if rt.SecurityContextOverride != nil {
+		return fmt.Errorf("spec.runtime.sandbox and spec.runtime.securityContextOverride are mutually exclusive")
+	}
+	if len(rt.SecretRefs) > 0 {
+		return fmt.Errorf("spec.runtime.secretRefs cannot be mounted into a sandbox; " +
+			"attach the credential to a Tool so the model-router holds it")
+	}
+	if rt.InputMode == "http" {
+		return fmt.Errorf("spec.runtime.sandbox supports inputMode=env only: the sandbox admits no inbound connections")
+	}
+	switch rt.Framework {
+	case "autogen", "semantic-kernel":
+		return fmt.Errorf("framework %q configures the agent with an init container, "+
+			"which sandboxes do not run; use openai-compatible or langgraph", rt.Framework)
+	case "shim":
+		return fmt.Errorf("framework \"shim\" rewrites vendor hostnames to the router, " +
+			"which the sandbox network policy does not allow; use openai-compatible")
+	}
+
+	for i, rule := range rt.Sandbox.Egress {
+		for _, b := range rule.Binaries {
+			if !strings.HasPrefix(b, "/") {
+				return fmt.Errorf("spec.runtime.sandbox.egress[%d].binaries: %q is not an absolute path", i, b)
+			}
+		}
+	}
+	// A misspelled exclusion would silently leave the tool reachable.
+	if t := rt.Sandbox.Tools; t != nil {
+		for _, name := range t.ExcludeTools {
+			if !slices.Contains(agent.Spec.Tools, name) {
+				return fmt.Errorf("spec.runtime.sandbox.tools.excludeTools: %q is not in spec.tools", name)
+			}
+		}
+	}
+	if fs := rt.Sandbox.Filesystem; fs != nil {
+		for _, p := range slices.Concat(fs.ReadOnly, fs.ReadWrite) {
+			if !strings.HasPrefix(p, "/") {
+				return fmt.Errorf("spec.runtime.sandbox.filesystem: %q is not an absolute path", p)
+			}
+		}
+		if slices.Contains(fs.ReadWrite, "/") {
+			return fmt.Errorf("spec.runtime.sandbox.filesystem.readWrite must not include /")
 		}
 	}
 	return nil

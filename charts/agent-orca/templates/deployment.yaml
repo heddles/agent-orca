@@ -126,6 +126,32 @@ spec:
                   name: {{ .Values.hindsight.apiKeySecret.name | quote }}
                   key: {{ .Values.hindsight.apiKeySecret.key | default "api-key" | quote }}
             {{- end }}
+            - name: CLUSTER_DOMAIN
+              value: {{ .Values.clusterDomain | default "cluster.local" | quote }}
+            {{- if .Values.openshell.enabled }}
+            - name: OPENSHELL_GATEWAY_ADDRESS
+              value: {{ .Values.openshell.gateway.address | quote }}
+            - name: OPENSHELL_WORKSPACE
+              value: {{ .Values.openshell.workspace | quote }}
+            - name: OPENSHELL_SANDBOX_NAMESPACE
+              value: {{ .Values.openshell.sandboxNamespace | quote }}
+            {{- if .Values.openshell.tls.secretName }}
+            - name: OPENSHELL_TLS_CERT_FILE
+              value: /etc/openshell/tls/tls.crt
+            - name: OPENSHELL_TLS_KEY_FILE
+              value: /etc/openshell/tls/tls.key
+            - name: OPENSHELL_TLS_CA_FILE
+              value: /etc/openshell/tls/ca.crt
+            {{- end }}
+            {{- if .Values.openshell.tls.insecure }}
+            - name: OPENSHELL_TLS_INSECURE
+              value: "true"
+            {{- end }}
+            {{- if .Values.openshell.tokenSecret.name }}
+            - name: OPENSHELL_TOKEN_FILE
+              value: /etc/openshell/token/{{ .Values.openshell.tokenSecret.key }}
+            {{- end }}
+            {{- end }}
           args:
             - --leader-elect={{ .Values.operator.leaderElection }}
             - --health-probe-bind-address=:8081
@@ -194,6 +220,16 @@ spec:
             - name: webhook-tls
               mountPath: /tmp/k8s-webhook-server/serving-certs
               readOnly: true
+            {{- if and .Values.openshell.enabled .Values.openshell.tls.secretName }}
+            - name: openshell-tls
+              mountPath: /etc/openshell/tls
+              readOnly: true
+            {{- end }}
+            {{- if and .Values.openshell.enabled .Values.openshell.tokenSecret.name }}
+            - name: openshell-token
+              mountPath: /etc/openshell/token
+              readOnly: true
+            {{- end }}
       volumes:
         - name: tmp
           emptyDir:
@@ -201,6 +237,16 @@ spec:
         - name: webhook-tls
           secret:
             secretName: {{ .Values.webhook.tlsSecretName | default (printf "%s-webhook-tls" (include "agent-orca.fullname" .)) }}
+        {{- if and .Values.openshell.enabled .Values.openshell.tls.secretName }}
+        - name: openshell-tls
+          secret:
+            secretName: {{ .Values.openshell.tls.secretName }}
+        {{- end }}
+        {{- if and .Values.openshell.enabled .Values.openshell.tokenSecret.name }}
+        - name: openshell-token
+          secret:
+            secretName: {{ .Values.openshell.tokenSecret.name }}
+        {{- end }}
       {{- with .Values.global.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}

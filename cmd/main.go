@@ -53,6 +53,7 @@ import (
 	"github.com/heddles/agent-orca/internal/acpfs"
 	"github.com/heddles/agent-orca/internal/apiserver"
 	"github.com/heddles/agent-orca/internal/controller"
+	"github.com/heddles/agent-orca/internal/openshell"
 	"github.com/heddles/agent-orca/internal/podbuilder"
 	"github.com/heddles/agent-orca/internal/postgresql"
 	"github.com/heddles/agent-orca/internal/security"
@@ -417,6 +418,22 @@ func main() {
 		setupLog.Error(err, "Failed to create controller", "controller", "Agent")
 		os.Exit(1)
 	}
+	// OpenShell sandboxes are optional: without a gateway address, Agents with
+	// spec.runtime.sandbox fail their runs with a clear reason.
+	var sandboxes openshell.Gateway
+	if osCfg, ok := openshell.ConfigFromEnv(); ok {
+		gw, err := openshell.Connect(osCfg, func(ctx context.Context, namespace, pod, container string) (string, error) {
+			raw, err := k8sClient.CoreV1().Pods(namespace).GetLogs(pod, &corev1.PodLogOptions{Container: container}).DoRaw(ctx)
+			return string(raw), err
+		})
+		if err != nil {
+			setupLog.Error(err, "Failed to configure the OpenShell gateway client")
+			os.Exit(1)
+		}
+		sandboxes = gw
+		setupLog.Info("OpenShell sandboxes enabled", "gateway", osCfg.Address,
+			"workspace", osCfg.Workspace, "sandboxNamespace", osCfg.SandboxNamespace)
+	}
 	if err := (&controller.AgentRunReconciler{
 		Client:                     mgr.GetClient(),
 		Scheme:                     mgr.GetScheme(),
@@ -437,6 +454,8 @@ func main() {
 		HindsightURL:               os.Getenv("HINDSIGHT_URL"),
 		HindsightAPIKey:            os.Getenv("HINDSIGHT_API_KEY"),
 		OperatorNamespace:          os.Getenv("POD_NAMESPACE"),
+		Sandboxes:                  sandboxes,
+		ClusterDomain:              os.Getenv("CLUSTER_DOMAIN"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "AgentRun")
 		os.Exit(1)

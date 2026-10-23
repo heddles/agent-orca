@@ -146,6 +146,40 @@ redis:
 tetragon:
   enabled: false
 
+# NVIDIA OpenShell sandboxes (optional). Agents with spec.runtime.sandbox run
+# their agent process in an OpenShell sandbox: a shell the agent can exec and
+# install tools in, confined by Landlock, seccomp and per-host egress policy.
+# Requires the OpenShell gateway Helm chart and the agent-sandbox CRDs and
+# controller installed separately; see docs/openshell-sandbox.md.
+openshell:
+  enabled: false
+  gateway:
+    # gRPC address of the OpenShell gateway Service.
+    address: "openshell.openshell.svc.cluster.local:8080"
+    # Namespace the gateway runs in, for the operator's egress NetworkPolicy.
+    namespace: openshell
+    port: 8080
+  # Gateway workspace sandboxes are created in.
+  workspace: default
+  # Namespace the gateway creates sandbox pods in (the gateway chart's
+  # server.sandboxNamespace, which defaults to its release namespace).
+  sandboxNamespace: openshell
+  tls:
+    # Secret holding the operator's gateway client certificate (tls.crt,
+    # tls.key) and the gateway CA (ca.crt). Empty uses a plaintext connection,
+    # for gateways installed with server.disableTls behind a TLS-terminating proxy.
+    secretName: ""
+    # Skip gateway certificate verification. Development only.
+    insecure: false
+  # Optional bearer token for OIDC-enabled gateways.
+  tokenSecret:
+    name: ""
+    key: token
+
+# Cluster DNS domain. Sandboxed agents reach their router by its fully
+# qualified Service name.
+clusterDomain: cluster.local
+
 # Webhook TLS configuration. cert-manager is recommended for production.
 webhook:
   certManager: false

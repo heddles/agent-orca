@@ -7,6 +7,7 @@ toolchain go1.26.10
 require (
 	cloud.google.com/go/pubsub/v2 v2.6.0
 	github.com/DATA-DOG/go-sqlmock v1.5.2
+	github.com/NVIDIA/OpenShell/sdk/go v0.0.0-20261020123705-bdb956f2cd65
 	github.com/alicebob/miniredis/v2 v2.40.0
 	github.com/coreos/go-oidc/v3 v3.21.0
 	github.com/gabriel-vasile/mimetype v1.4.16

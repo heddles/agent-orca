@@ -46,6 +46,11 @@ const (
 	// PrivilegedPodsAllowedValue is the only value the label may take.
 	PrivilegedPodsAllowedValue = "true"
 
+	// LabelEnableSandboxes is the namespace label that opts a namespace into
+	// running agents with spec.runtime.sandbox, which gives the agent a shell and
+	// lets it exec arbitrary binaries. Its only accepted value is "true".
+	LabelEnableSandboxes = "agentorca.io/enable-sandboxes"
+
 	// saTokenVolumeName is the volume name for the projected SA token.
 	saTokenVolumeName = "agentorca-sa-token"
 
