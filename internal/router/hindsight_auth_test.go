@@ -169,3 +169,33 @@ func TestHindsightAPIKeyNotInConfigJSON(t *testing.T) {
 		t.Fatalf("APIKey = %q; the key must only come from HINDSIGHT_API_KEY", cfg.Hindsight.APIKey)
 	}
 }
+
+func TestHindsightBankID(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  Config
+		want string
+	}{
+		{"default is one bank per agent",
+			Config{RunNamespace: "team-a", AgentName: "coder", RunName: "run-1"}, "team-a--coder"},
+		{"default ignores the deployment",
+			Config{RunNamespace: "team-a", AgentName: "senior-programmer", DeploymentName: "senior-programmer-chat"},
+			"team-a--senior-programmer"},
+		{"template placeholders",
+			Config{RunNamespace: "ns", AgentName: "a", RunName: "r", DeploymentName: "d",
+				Hindsight: HindsightConfig{BankIDTemplate: "{namespace}/{deployment}/{agent-name}/{run-name}"}},
+			"ns/d/a/r"},
+		{"camelCase placeholders",
+			Config{RunNamespace: "ns", AgentName: "a", RunName: "r",
+				Hindsight: HindsightConfig{BankIDTemplate: "{namespace}-{agentName}-{runName}"}},
+			"ns-a-r"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := &Router{cfg: &tt.cfg}
+			if got := r.hindsightBankID(); got != tt.want {
+				t.Errorf("bank = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

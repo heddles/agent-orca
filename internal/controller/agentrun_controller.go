@@ -1191,6 +1191,7 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 		RunName:                    run.Name,
 		RunNamespace:               run.Namespace,
 		AgentSAName:                saName,
+		AgentName:                  agent.Name,
 		DisableClarify:             agent.Spec.DisableClarify,
 		Providers:                  providers,
 		Strategy:                   selector.Spec.Strategy,
@@ -1221,14 +1222,8 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 		Safeguards:                 safeguards,
 		EpisodicMemory:             episodicMemory,
 		LongTermMemory:             longTermMemory,
-		Hindsight: router.HindsightConfig{
-			Enabled:           true,
-			URL:               r.HindsightURL,
-			BankIDTemplate:    "{namespace}--{agent-name}",
-			RecallBudget:      5,
-			RetainOnEveryTurn: true,
-		},
-		Filesystem: fsCfg,
+		Hindsight:                  hindsightConfig(agent, r.HindsightURL),
+		Filesystem:                 fsCfg,
 	}
 	if agent.Spec.Runtime.InputMode == "http" {
 		port := agent.Spec.Runtime.InputPort

@@ -44,6 +44,8 @@ type Config struct {
 	// DeploymentName is set when this run is part of an AgentDeployment.
 	// Used to scope deployment-shared state keys.
 	DeploymentName string
+	// AgentName is the Agent this run or deployment runs (hindsight bank IDs).
+	AgentName string
 
 	// DisableClarify prevents the auto-trigger clarify safety net from activating.
 	// Set from Agent.Spec.DisableClarify for autonomous agents.
@@ -396,8 +398,9 @@ type HindsightConfig struct {
 	Enabled bool `json:"enabled,omitempty"`
 	// URL is the hindsight API endpoint (e.g. http://hindsight.hindsight.svc.cluster.local:8888).
 	URL string `json:"url,omitempty"`
-	// BankIDTemplate is the template for the hindsight bank ID. Can use placeholders like
-	// {namespace}, {runName}, {agentName} which will be replaced at runtime.
+	// BankIDTemplate is the template for the hindsight bank ID. Placeholders:
+	// {namespace}, {agent-name}, {run-name} and {deployment} (camelCase spellings
+	// are accepted too). Default "{namespace}--{agent-name}".
 	BankIDTemplate string `json:"bankIdTemplate,omitempty"`
 	// RecallBudget is the maximum number of memories to retrieve per turn.
 	RecallBudget int `json:"recallBudget,omitempty"`
