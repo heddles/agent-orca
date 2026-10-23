@@ -10,9 +10,6 @@ updates:
       go-packages:
         patterns:
           - "*"
-    # Security and routine bumps merge themselves when CI is green;
-    # majors still open a PR for review.
-    auto-merge: "minor-and-patch"
 
   # UI dependencies (ui/package.json).
   - package-ecosystem: npm
@@ -33,7 +30,6 @@ updates:
           - "react-dom"
           - "@types/react"
           - "@types/react-dom"
-    auto-merge: "minor-and-patch"
 
   # Python SDK dependencies (pkg/python/agentorca/pyproject.toml).
   - package-ecosystem: pip
@@ -41,7 +37,6 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
-    auto-merge: "minor-and-patch"
 
   # GitHub Actions.
   - package-ecosystem: github-actions
@@ -49,7 +44,6 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
-    auto-merge: "minor-and-patch"
 
   # Helm chart dependencies (Chart.yaml dependencies entries).
   - package-ecosystem: helm
@@ -57,4 +51,3 @@ updates:
     schedule:
       interval: monthly
     open-pull-requests-limit: 5
-    auto-merge: "minor-and-patch"
