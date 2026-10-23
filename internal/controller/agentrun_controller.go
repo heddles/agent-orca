@@ -33,6 +33,7 @@ import (
 	"strings"
 	"time"
 
+	osv1 "github.com/NVIDIA/OpenShell/sdk/go/openshell/v1"
 	authv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -54,6 +55,7 @@ import (
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
 	"github.com/heddles/agent-orca/internal/egress"
 	"github.com/heddles/agent-orca/internal/mcp"
+	"github.com/heddles/agent-orca/internal/openshell"
 	"github.com/heddles/agent-orca/internal/podbuilder"
 	"github.com/heddles/agent-orca/internal/postgresql"
 	"github.com/heddles/agent-orca/internal/router"
@@ -119,6 +121,13 @@ type AgentRunReconciler struct {
 	// OperatorNamespace is the namespace the operator runs in (POD_NAMESPACE). Per-run
 	// NetworkPolicies allow its pods to scrape the model-router's :9091 metrics.
 	OperatorNamespace string
+	// Sandboxes is the OpenShell gateway that runs agents with
+	// spec.runtime.sandbox set. Nil when the operator has no gateway configured;
+	// such runs then fail with a clear reason.
+	Sandboxes openshell.Gateway
+	// ClusterDomain is the cluster DNS domain (default "cluster.local"), used to
+	// address the router Service from the sandbox namespace.
+	ClusterDomain string
 }
 
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
@@ -234,6 +243,18 @@ func (r *AgentRunReconciler) startRun(ctx context.Context, run *agentorcav1alpha
 
 	// Determine topology once for use across all steps.
 	splitPod := agent.Spec.NetworkIsolation != nil && agent.Spec.NetworkIsolation.SplitPod
+	// Sandbox mode is split-pod with the agent pod replaced by a sandbox. The
+	// webhook enforces these preconditions; re-check them for Agents admitted
+	// before the webhook knew about sandboxes.
+	sandboxed := agent.Spec.Runtime.Sandbox != nil
+	if sandboxed {
+		if !splitPod {
+			return r.failRun(ctx, run, "spec.runtime.sandbox requires spec.networkIsolation.splitPod=true")
+		}
+		if r.Sandboxes == nil {
+			return r.failRun(ctx, run, "spec.runtime.sandbox is set but the operator has no OpenShell gateway configured")
+		}
+	}
 
 	// 2. Create per-run RBAC.
 	if err := r.ensureRole(ctx, run); err != nil {
@@ -277,10 +298,14 @@ func (r *AgentRunReconciler) startRun(ctx context.Context, run *agentorcav1alpha
 
 	// 6. Create per-run SA token Secret (via TokenRequest API).
 	// In split-pod topology, OPENAI_BASE_URL points at the router Service.
-	routerServiceURL := "http://localhost:8080/v1"
-	if splitPod {
-		routerServiceURL = "http://agentorca-router-" + run.Name + "." + run.Namespace + ":8080/v1"
+	routerBaseURL := "http://localhost:8080"
+	switch {
+	case sandboxed:
+		routerBaseURL = "http://" + r.sandboxRouterHost(run) + ":8080"
+	case splitPod:
+		routerBaseURL = "http://agentorca-router-" + run.Name + "." + run.Namespace + ":8080"
 	}
+	routerServiceURL := routerBaseURL + "/v1"
 	tokenSecretName, err := r.ensureTokenSecret(ctx, run, saName, routerServiceURL)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -311,6 +336,7 @@ func (r *AgentRunReconciler) startRun(ctx context.Context, run *agentorcav1alpha
 	r.recordRunInDeploymentIndex(ctx, run)
 	var podName string
 	var routerPodName string
+	var sandboxName string
 
 	if splitPod {
 		// Split-pod: create router Service first, then router pod, then agent pod.
@@ -320,7 +346,6 @@ func (r *AgentRunReconciler) startRun(ctx context.Context, run *agentorcav1alpha
 		}
 
 		// Router pod: model-router as standalone container with provider/tool mounts.
-		routerBaseURL := "http://agentorca-router-" + run.Name + "." + run.Namespace + ":8080"
 		routerPod := r.buildRouterPod(run, agent, saName, providerVolumes, providerMounts, toolSecretVolumes, toolSecretMounts, mcpBinVolumes, mcpBinMounts)
 		if err := ctrl.SetControllerReference(run, routerPod, r.Scheme); err != nil {
 			return r.failRun(ctx, run, fmt.Sprintf("setting router pod owner ref: %v", err))
@@ -330,15 +355,35 @@ func (r *AgentRunReconciler) startRun(ctx context.Context, run *agentorcav1alpha
 		}
 		routerPodName = routerPod.Name
 
-		// Agent pod: agent container only, pointing OPENAI_BASE_URL at the router Service.
-		agentPod := r.buildAgentOnlyPod(run, agent, saName, tokenSecretName, routerBaseURL)
-		if err := ctrl.SetControllerReference(run, agentPod, r.Scheme); err != nil {
-			return r.failRun(ctx, run, fmt.Sprintf("setting agent pod owner ref: %v", err))
+		if sandboxed {
+			// Sandbox: the agent process runs on the OpenShell gateway instead of
+			// in an agent pod, reaching the router through its supervisor.
+			sb, err := r.ensureSandbox(ctx, run, agent, tokenSecretName, routerBaseURL)
+			if err != nil {
+				if osv1.IsInvalidArgument(err) || osv1.IsPermissionDenied(err) {
+					return r.failRun(ctx, run, fmt.Sprintf("creating sandbox: %v", err))
+				}
+				return ctrl.Result{}, fmt.Errorf("creating sandbox: %w", err)
+			}
+			if err := r.ensureRouterSandboxIngress(ctx, run, sb); err != nil {
+				return ctrl.Result{}, err
+			}
+			sandboxName = sb.Name
+			if r.Recorder != nil {
+				r.Recorder.Eventf(run, corev1.EventTypeNormal, "SandboxCreated",
+					"created OpenShell sandbox %s", sb.Name)
+			}
+		} else {
+			// Agent pod: agent container only, pointing OPENAI_BASE_URL at the router Service.
+			agentPod := r.buildAgentOnlyPod(run, agent, saName, tokenSecretName, routerBaseURL)
+			if err := ctrl.SetControllerReference(run, agentPod, r.Scheme); err != nil {
+				return r.failRun(ctx, run, fmt.Sprintf("setting agent pod owner ref: %v", err))
+			}
+			if err := r.Create(ctx, agentPod); err != nil && !errors.IsAlreadyExists(err) {
+				return ctrl.Result{}, fmt.Errorf("creating agent pod: %w", err)
+			}
+			podName = agentPod.Name
 		}
-		if err := r.Create(ctx, agentPod); err != nil && !errors.IsAlreadyExists(err) {
-			return ctrl.Result{}, fmt.Errorf("creating agent pod: %w", err)
-		}
-		podName = agentPod.Name
 	} else {
 		if claimedPod, claimErr := r.claimWarmPod(ctx, run, agent); claimErr != nil {
 			logger.Error(claimErr, "warm pod claim failed, falling back to new pod")
@@ -374,6 +419,7 @@ func (r *AgentRunReconciler) startRun(ctx context.Context, run *agentorcav1alpha
 	run.Status.Phase = agentorcav1alpha1.AgentRunPhaseRunning
 	run.Status.PodName = podName
 	run.Status.RouterPodName = routerPodName
+	run.Status.SandboxName = sandboxName
 	now := metav1.Now()
 	run.Status.StartTime = &now
 	run.Status.CheckpointRef = fmt.Sprintf("agentorca/runs/%s/state", run.Name)
@@ -410,6 +456,15 @@ func (r *AgentRunReconciler) startRun(ctx context.Context, run *agentorcav1alpha
 func (r *AgentRunReconciler) checkProgress(ctx context.Context, run *agentorcav1alpha1.AgentRun, agent *agentorcav1alpha1.Agent) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
+	// The model-router halted the run on a safeguard trip. Fail it now rather
+	// than wait for the agent process, which may crash on the router's 410 and
+	// would then be retried into the same loop.
+	if ld := run.Status.LoopDetected; ld != nil {
+		return r.failRun(ctx, run, "safeguard: "+ld.Reason)
+	}
+	if run.Status.SandboxName != "" {
+		return r.checkSandboxProgress(ctx, run, agent)
+	}
 	if run.Status.PodName == "" {
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
@@ -472,6 +527,21 @@ func (r *AgentRunReconciler) checkProgress(ctx context.Context, run *agentorcav1
 }
 
 func (r *AgentRunReconciler) handlePodSuccess(ctx context.Context, run *agentorcav1alpha1.AgentRun, pod *corev1.Pod) (ctrl.Result, error) {
+	return r.handleRunSuccess(ctx, run, func(ctx context.Context) string {
+		logs, err := r.K8s.CoreV1().Pods(run.Namespace).GetLogs(pod.Name, &corev1.PodLogOptions{
+			Container: "agent",
+		}).DoRaw(ctx)
+		if err != nil {
+			logs = []byte("(log collection failed)")
+		}
+		return string(logs)
+	})
+}
+
+// handleRunSuccess completes a run whose agent process exited cleanly.
+// agentStdout reads the agent process's stdout; it is only called when there
+// is no captured http output.
+func (r *AgentRunReconciler) handleRunSuccess(ctx context.Context, run *agentorcav1alpha1.AgentRun, agentStdout func(context.Context) string) (ctrl.Result, error) {
 	// Re-fetch the run to handle the race where the model-router set WaitingForInput
 	// via the internal API just before the pod exited. If the phase is already
 	// WaitingForInput, the pod exit is expected — don't transition to Succeeded.
@@ -509,13 +579,7 @@ func (r *AgentRunReconciler) handlePodSuccess(ctx context.Context, run *agentorc
 		}
 	}
 	if output == "" {
-		logs, err := r.K8s.CoreV1().Pods(run.Namespace).GetLogs(pod.Name, &corev1.PodLogOptions{
-			Container: "agent",
-		}).DoRaw(ctx)
-		if err != nil {
-			logs = []byte("(log collection failed)")
-		}
-		output = string(logs)
+		output = agentStdout(ctx)
 	}
 
 	raw := truncate(output, 4096)
@@ -538,6 +602,9 @@ func (r *AgentRunReconciler) handlePodSuccess(ctx context.Context, run *agentorc
 		run.Status.WaitingSince = &now
 		r.stampSpend(ctx, run)
 		run.Status.PodName = ""
+		// The agent process has exited, so its sandbox is done too.
+		r.deleteRunSandbox(ctx, run)
+		run.Status.SandboxName = ""
 		if err := r.Status().Patch(ctx, run, patch); err != nil {
 			return ctrl.Result{}, fmt.Errorf("patching WaitingForInput status: %w", err)
 		}
@@ -629,6 +696,7 @@ func (r *AgentRunReconciler) handlePodFailure(ctx context.Context, run *agentorc
 		if run.Status.PodName != "" {
 			_ = r.K8s.CoreV1().Pods(run.Namespace).Delete(ctx, run.Status.PodName, metav1.DeleteOptions{})
 		}
+		r.deleteRunSandbox(ctx, run)
 		patch := client.MergeFrom(run.DeepCopy())
 		// Stamp the partial spend now: the router checkpoint is the only other
 		// copy and is lost with the pod when no state store is configured.
@@ -636,6 +704,7 @@ func (r *AgentRunReconciler) handlePodFailure(ctx context.Context, run *agentorc
 		run.Status.RestartCount++
 		run.Status.LastRestartReason = reason
 		run.Status.PodName = ""
+		run.Status.SandboxName = ""
 		run.Status.Phase = agentorcav1alpha1.AgentRunPhasePending
 		// Set checkpoint so the model-router sidecar resumes from last state.
 		run.Status.CheckpointRef = fmt.Sprintf("agentorca/runs/%s/state", run.Name)
@@ -711,18 +780,6 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 	var hasAgentTools bool
 	var mcpServers []router.MCPServerConfig
 	seenMCPServers := make(map[string]bool) // dedup MCPServer-managed tools by server name
-	// Builtin tools are injected automatically and don't exist as Tool CRDs
-	builtinTools := map[string]bool{
-		"_spawn": true, "_handoff": true, "_clarify": true, "_done": true,
-		"_fail": true, "_emit_event": true, "_rag_ingest": true, "_rag_search": true,
-		"_write_state": true, "_read_state": true, "_list_state": true, "_delete_state": true,
-		"_memory_store": true, "_mcp_read_resource": true, "_propose_step": true,
-		"_propose_fix": true, "_confirm_fix": true, "_create_workflow": true, "_list_resources": true,
-		"_search_history": true,
-		// fs_* relay tools (issue #34) are injected from Agent.spec.filesystem;
-		// listing them in spec.tools must not require Tool CRs.
-		"fs_read_text_file": true, "fs_write_text_file": true, "fs_list_dir": true,
-	}
 	for _, toolName := range agent.Spec.Tools {
 		// Skip builtin tools - they're injected separately in the router
 		if builtinTools[toolName] {
@@ -1049,18 +1106,9 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 	resumeKey := resumeCheckpointKey(run)
 	fallbackKey := fallbackCheckpointKey(run)
 
-	// Resolve safeguards from AgentRun spec.
+	// Resolve safeguards: the shared loop-guard defaults, overridden by the AgentRun spec.
 	var safeguards router.RouterSafeguards
-	if run.Spec.Safeguards != nil {
-		s := run.Spec.Safeguards
-		safeguards = router.RouterSafeguards{
-			MaxConsecutiveNoopTurns: s.MaxConsecutiveNoopTurns,
-			MinSubstantiveTokens:    s.MinSubstantiveTokens,
-			MaxRepeatedToolCalls:    s.MaxRepeatedToolCalls,
-			ToolFrequencyCap:        s.ToolFrequencyCap,
-			ToolExecutionTimeoutSec: s.ToolExecutionTimeoutSec,
-		}
-	}
+	applySafeguardDefaults(&safeguards, 0, run.Spec.Safeguards)
 
 	// Resolve episodic memory config from Agent spec.
 	var episodicMemory router.EpisodicMemoryConfig
@@ -1382,24 +1430,7 @@ func (r *AgentRunReconciler) buildAgentOnlyPod(
 	tokenSecretName string,
 	routerBaseURL string,
 ) *corev1.Pod {
-	timeout := 5 * time.Minute
-	if run.Spec.Timeout != nil {
-		timeout = run.Spec.Timeout.Duration
-	}
-
-	agentEnv := []corev1.EnvVar{
-		{Name: "AGENTORC_RUN_ID", Value: run.Name},
-		{Name: "AGENTORC_TIMEOUT_SEC", Value: fmt.Sprintf("%d", int(timeout.Seconds()))},
-	}
-	if agent.Spec.Runtime.InputMode != "http" {
-		agentEnv = append(agentEnv, corev1.EnvVar{Name: "AGENTORC_INPUT", Value: run.Spec.Input})
-	}
-	if wf, ok := run.Labels["agentorca.io/workflow"]; ok && wf != "" {
-		agentEnv = append(agentEnv, corev1.EnvVar{Name: "AGENTORC_WORKFLOW_NAME", Value: wf})
-	}
-	if dep, ok := run.Labels["agentorca.io/deployment"]; ok && dep != "" {
-		agentEnv = append(agentEnv, corev1.EnvVar{Name: "AGENTORC_DEPLOYMENT_NAME", Value: dep})
-	}
+	agentEnv := agentRunEnv(run, agent)
 
 	var readinessProbe *corev1.Probe
 	if agent.Spec.Runtime.InputMode == "http" {
@@ -1435,6 +1466,43 @@ func (r *AgentRunReconciler) buildAgentOnlyPod(
 		AgentReadinessProbe: readinessProbe,
 		CloudProvider:       r.CloudProvider,
 	})
+}
+
+// builtinTools are injected automatically by the router and don't exist as Tool CRDs.
+var builtinTools = map[string]bool{
+	"_spawn": true, "_handoff": true, "_clarify": true, "_done": true,
+	"_fail": true, "_emit_event": true, "_rag_ingest": true, "_rag_search": true,
+	"_write_state": true, "_read_state": true, "_list_state": true, "_delete_state": true,
+	"_memory_store": true, "_mcp_read_resource": true, "_propose_step": true,
+	"_propose_fix": true, "_confirm_fix": true, "_create_workflow": true, "_list_resources": true,
+	"_search_history": true,
+	// fs_* relay tools (issue #34) are injected from Agent.spec.filesystem;
+	// listing them in spec.tools must not require Tool CRs.
+	"fs_read_text_file": true, "fs_write_text_file": true, "fs_list_dir": true,
+}
+
+// agentRunEnv returns the per-run environment of the agent process in split-pod
+// topology, shared by the agent pod and the sandbox workload.
+func agentRunEnv(run *agentorcav1alpha1.AgentRun, agent *agentorcav1alpha1.Agent) []corev1.EnvVar {
+	timeout := 5 * time.Minute
+	if run.Spec.Timeout != nil {
+		timeout = run.Spec.Timeout.Duration
+	}
+
+	agentEnv := []corev1.EnvVar{
+		{Name: "AGENTORC_RUN_ID", Value: run.Name},
+		{Name: "AGENTORC_TIMEOUT_SEC", Value: fmt.Sprintf("%d", int(timeout.Seconds()))},
+	}
+	if agent.Spec.Runtime.InputMode != "http" {
+		agentEnv = append(agentEnv, corev1.EnvVar{Name: "AGENTORC_INPUT", Value: run.Spec.Input})
+	}
+	if wf, ok := run.Labels["agentorca.io/workflow"]; ok && wf != "" {
+		agentEnv = append(agentEnv, corev1.EnvVar{Name: "AGENTORC_WORKFLOW_NAME", Value: wf})
+	}
+	if dep, ok := run.Labels["agentorca.io/deployment"]; ok && dep != "" {
+		agentEnv = append(agentEnv, corev1.EnvVar{Name: "AGENTORC_DEPLOYMENT_NAME", Value: dep})
+	}
+	return agentEnv
 }
 
 // ensureTracingPolicy creates the Tetragon TracingPolicy if Tetragon is installed.
@@ -1650,6 +1718,11 @@ func (r *AgentRunReconciler) ensureCleanup(ctx context.Context, run *agentorcav1
 		routerPod.Namespace = run.Namespace
 		_ = r.Delete(ctx, routerPod)
 	}
+	// The sandbox and its credential providers live on the OpenShell gateway,
+	// outside ownerRef GC. The gateway retains completed sandboxes, so delete
+	// them explicitly.
+	r.deleteRunSandbox(ctx, run)
+	providersPending := r.deleteRunProviders(ctx, run)
 	// Cascade cancellation to child runs when this run was cancelled.
 	// Child runs are identified by the label "agentorca.io/parent-run" set by the
 	// executor at child-run creation time.
@@ -1704,6 +1777,10 @@ func (r *AgentRunReconciler) ensureCleanup(ctx context.Context, run *agentorcav1
 		}
 	}
 
+	if providersPending {
+		// The gateway is still deleting the sandbox the providers are attached to.
+		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+	}
 	return ctrl.Result{}, nil
 }
 
@@ -1800,8 +1877,13 @@ func warmPodOverCap(pod *corev1.Pod, maxRequests int) bool {
 
 // handleRunDeletion cleans up before removing the finalizer.
 func (r *AgentRunReconciler) handleRunDeletion(ctx context.Context, run *agentorcav1alpha1.AgentRun) (ctrl.Result, error) {
-	if _, err := r.ensureCleanup(ctx, run); err != nil {
+	res, err := r.ensureCleanup(ctx, run)
+	if err != nil {
 		return ctrl.Result{}, err
+	}
+	if res.RequeueAfter > 0 {
+		// Keep the finalizer until gateway-side cleanup completes.
+		return res, nil
 	}
 	controllerutil.RemoveFinalizer(run, agentRunFinalizer)
 	return ctrl.Result{}, r.Update(ctx, run)

@@ -238,6 +238,144 @@ type AgentRuntime struct {
 	// ``/etc/htb``. Mounted read-only.
 	// +optional
 	SecretRefs []SecretMount `json:"secretRefs,omitempty"`
+
+	// Sandbox runs the agent process inside an isolated sandbox runtime instead of
+	// a plain agent pod. The agent gets a real shell and may exec subprocesses and
+	// install tools, while the sandbox confines its filesystem (Landlock), syscalls
+	// (seccomp) and network egress (per-host L7 policy enforced by a supervisor).
+	//
+	// Requires spec.networkIsolation.splitPod=true: the model-router keeps running in
+	// its own pod and stays the only LLM egress path. Admission is gated by the
+	// namespace label `agentorca.io/enable-sandboxes: "true"` and a GuardrailPolicyRef.
+	// Nil (the default) keeps today's pod topology unchanged.
+	// +optional
+	Sandbox *SandboxSpec `json:"sandbox,omitempty"`
+}
+
+// SandboxProvider names a sandbox runtime implementation.
+// +kubebuilder:validation:Enum=openshell
+type SandboxProvider string
+
+const (
+	// SandboxProviderOpenShell runs the agent in an NVIDIA OpenShell sandbox.
+	SandboxProviderOpenShell SandboxProvider = "openshell"
+)
+
+// SandboxEnforcement controls whether the sandbox's network policy blocks
+// violations or only records them.
+// +kubebuilder:validation:Enum=audit;enforce
+type SandboxEnforcement string
+
+const (
+	// SandboxEnforcementAudit logs L7 policy violations without blocking them.
+	SandboxEnforcementAudit SandboxEnforcement = "audit"
+	// SandboxEnforcementEnforce blocks L7 policy violations.
+	SandboxEnforcementEnforce SandboxEnforcement = "enforce"
+)
+
+// SandboxAccess selects the set of protocol operations an egress endpoint permits.
+// +kubebuilder:validation:Enum=read-only;read-write;full
+type SandboxAccess string
+
+const (
+	// SandboxAccessReadOnly permits read operations (e.g. HTTP GET/HEAD).
+	SandboxAccessReadOnly SandboxAccess = "read-only"
+	// SandboxAccessReadWrite permits read and write operations.
+	SandboxAccessReadWrite SandboxAccess = "read-write"
+	// SandboxAccessFull permits every operation the protocol supports.
+	SandboxAccessFull SandboxAccess = "full"
+)
+
+// SandboxSpec configures the sandbox runtime for an Agent.
+type SandboxSpec struct {
+	// Provider selects the sandbox runtime.
+	// +kubebuilder:default=openshell
+	Provider SandboxProvider `json:"provider"`
+
+	// Enforcement is the network policy mode. Start with audit, then promote to
+	// enforce once the run's egress has been observed.
+	// +kubebuilder:default=audit
+	// +optional
+	Enforcement SandboxEnforcement `json:"enforcement,omitempty"`
+
+	// Egress lists extra endpoints the agent process may reach directly, such as
+	// package registries for installing tools. The model-router is always
+	// reachable, and the Agent's tools are added per spec.runtime.sandbox.tools;
+	// everything else is denied.
+	// +optional
+	Egress []SandboxEgressRule `json:"egress,omitempty"`
+
+	// Tools controls whether the agent process may reach its tools' endpoints
+	// directly from the sandbox. By default it can: each Tool's networkEgress
+	// hosts and the URL of each remote (http/sse) MCP tool are added to the
+	// sandbox egress. Tool calls made through the model-router are unaffected.
+	// +optional
+	Tools *SandboxTools `json:"tools,omitempty"`
+
+	// Filesystem adds paths to the sandbox's default filesystem policy
+	// (read-write: /sandbox, /tmp; read-only: system paths).
+	// +optional
+	Filesystem *SandboxFilesystem `json:"filesystem,omitempty"`
+}
+
+// SandboxTools selects which of the Agent's tool endpoints the sandbox may reach.
+type SandboxTools struct {
+	// Inherit adds the Agent's tool endpoints to the sandbox egress. Set it to
+	// false to keep tools reachable only through the model-router.
+	// +kubebuilder:default=true
+	// +optional
+	Inherit *bool `json:"inherit,omitempty"`
+
+	// ExcludeTools lists Tool names (from spec.tools) whose endpoints are not added.
+	// +optional
+	ExcludeTools []string `json:"excludeTools,omitempty"`
+
+	// ExcludeHosts lists hosts that are not added even when a tool declares them.
+	// Matched exactly against the tool's host. It does not filter spec.runtime.sandbox.egress.
+	// +optional
+	ExcludeHosts []string `json:"excludeHosts,omitempty"`
+}
+
+// InheritsToolEgress reports whether the sandbox gets the Agent's tool
+// endpoints. It defaults to true, including when Tools is unset.
+func (s *SandboxSpec) InheritsToolEgress() bool {
+	return s.Tools == nil || s.Tools.Inherit == nil || *s.Tools.Inherit
+}
+
+// SandboxEgressRule allows the agent to reach one host.
+type SandboxEgressRule struct {
+	// Host is the destination hostname. Wildcards like "*.pythonhosted.org" are supported.
+	// +kubebuilder:validation:MinLength=1
+	Host string `json:"host"`
+
+	// Ports lists the destination ports. Defaults to [443].
+	// +kubebuilder:validation:items:Minimum=1
+	// +kubebuilder:validation:items:Maximum=65535
+	// +optional
+	Ports []int32 `json:"ports,omitempty"`
+
+	// Access selects the permitted HTTP operations. read-only (the default) allows
+	// GET/HEAD/OPTIONS, enough for package downloads; git clone over HTTPS POSTs,
+	// so it needs read-write.
+	// +kubebuilder:default=read-only
+	// +optional
+	Access SandboxAccess `json:"access,omitempty"`
+
+	// Binaries restricts the rule to these executables (absolute paths, e.g.
+	// /usr/bin/git). Empty means any binary in the sandbox.
+	// +optional
+	Binaries []string `json:"binaries,omitempty"`
+}
+
+// SandboxFilesystem adds paths to the sandbox filesystem policy.
+type SandboxFilesystem struct {
+	// ReadOnly lists extra directories the agent may read.
+	// +optional
+	ReadOnly []string `json:"readOnly,omitempty"`
+
+	// ReadWrite lists extra directories the agent may read and write.
+	// +optional
+	ReadWrite []string `json:"readWrite,omitempty"`
 }
 
 // PodSecurityOverride describes a scoped relaxation of the restricted pod-security

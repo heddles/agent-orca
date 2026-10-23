@@ -99,4 +99,14 @@ spec:
           protocol: TCP
         - port: 53
           protocol: UDP
+    {{- if .Values.openshell.enabled }}
+    # OpenShell gateway gRPC API, for sandboxed agents.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.openshell.gateway.namespace }}
+      ports:
+        - port: {{ .Values.openshell.gateway.port }}
+          protocol: TCP
+    {{- end }}
     {{- end }}

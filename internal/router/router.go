@@ -120,6 +120,7 @@ type Router struct {
 	// cancelled and a structured timeout error is returned to the LLM.
 	toolTimeout  time.Duration
 	loopDetected bool // set when a safeguard trips; blocks further LLM calls
+	guard        loopGuard
 
 	// cancelCtx is a run-scoped context used as the parent for LLM requests.
 	// It is detached from HTTP request contexts (so agent disconnects don't cancel
@@ -4305,6 +4306,7 @@ func (r *Router) ClaimRun(input WarmRunInput) {
 	r.cfg.RestartResume = input.Restart
 	r.restartResume = input.Restart
 	r.loopDetected = false
+	r.guard = loopGuard{}
 	r.liveBufferTokens = 0
 	r.lastCompactedTokens = 0
 

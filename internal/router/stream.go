@@ -548,6 +548,19 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 		doneEv, _ := json.Marshal(map[string]string{"type": traceEventTypeDone, "output": fullText})
 		r.emitTraceEventBoth(string(doneEv))
 	}
+	if len(toolCalls) == 0 {
+		tokens := usage.CompletionTokens
+		if tokens == 0 {
+			tokens = estimateTokens([]Message{{Role: "assistant", Content: contentBuilder.String()}})
+		}
+		r.mu.Lock()
+		trip := r.recordTextTurnLocked(tokens)
+		r.mu.Unlock()
+		if trip != nil {
+			// The reply has already streamed; the trip makes the next request 410.
+			r.tripSafeguard(*trip)
+		}
+	}
 	// Handle tool calls if the LLM requested them.
 	// NOTE: r.messages already holds this turn's input + assistantMsg (added above),
 	// so we only need to dispatch, append results, and recurse — not re-append the history.
@@ -569,6 +582,14 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 
 		toolResults := make([]Message, len(toolCalls))
 		for i, tc := range toolCalls {
+			r.mu.Lock()
+			trip := r.recordToolCallLocked(tc)
+			r.mu.Unlock()
+			if trip != nil {
+				r.tripSafeguard(*trip)
+				writeSafeguardHalt(w, flusher, *trip)
+				return
+			}
 			result := r.dispatchToolCall(req.Context(), tc)
 
 			// Stream tool call delta to client

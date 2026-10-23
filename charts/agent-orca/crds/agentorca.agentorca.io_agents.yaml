@@ -389,6 +389,127 @@ spec:
                       Must be signed with Cosign unless imageVerification.skip is set.
                     minLength: 1
                     type: string
+                  sandbox:
+                    description: |-
+                      Sandbox runs the agent process inside an isolated sandbox runtime instead of
+                      a plain agent pod. The agent gets a real shell and may exec subprocesses and
+                      install tools, while the sandbox confines its filesystem (Landlock), syscalls
+                      (seccomp) and network egress (per-host L7 policy enforced by a supervisor).
+
+                      Requires spec.networkIsolation.splitPod=true: the model-router keeps running in
+                      its own pod and stays the only LLM egress path. Admission is gated by the
+                      namespace label `agentorca.io/enable-sandboxes: "true"` and a GuardrailPolicyRef.
+                      Nil (the default) keeps today's pod topology unchanged.
+                    properties:
+                      egress:
+                        description: |-
+                          Egress lists extra endpoints the agent process may reach directly, such as
+                          package registries for installing tools. The model-router is always
+                          reachable, and the Agent's tools are added per spec.runtime.sandbox.tools;
+                          everything else is denied.
+                        items:
+                          description: SandboxEgressRule allows the agent to reach
+                            one host.
+                          properties:
+                            access:
+                              default: read-only
+                              description: |-
+                                Access selects the permitted HTTP operations. read-only (the default) allows
+                                GET/HEAD/OPTIONS, enough for package downloads; git clone over HTTPS POSTs,
+                                so it needs read-write.
+                              enum:
+                              - read-only
+                              - read-write
+                              - full
+                              type: string
+                            binaries:
+                              description: |-
+                                Binaries restricts the rule to these executables (absolute paths, e.g.
+                                /usr/bin/git). Empty means any binary in the sandbox.
+                              items:
+                                type: string
+                              type: array
+                            host:
+                              description: Host is the destination hostname. Wildcards
+                                like "*.pythonhosted.org" are supported.
+                              minLength: 1
+                              type: string
+                            ports:
+                              description: Ports lists the destination ports. Defaults
+                                to [443].
+                              items:
+                                format: int32
+                                maximum: 65535
+                                minimum: 1
+                                type: integer
+                              type: array
+                          required:
+                          - host
+                          type: object
+                        type: array
+                      enforcement:
+                        default: audit
+                        description: |-
+                          Enforcement is the network policy mode. Start with audit, then promote to
+                          enforce once the run's egress has been observed.
+                        enum:
+                        - audit
+                        - enforce
+                        type: string
+                      filesystem:
+                        description: |-
+                          Filesystem adds paths to the sandbox's default filesystem policy
+                          (read-write: /sandbox, /tmp; read-only: system paths).
+                        properties:
+                          readOnly:
+                            description: ReadOnly lists extra directories the agent
+                              may read.
+                            items:
+                              type: string
+                            type: array
+                          readWrite:
+                            description: ReadWrite lists extra directories the agent
+                              may read and write.
+                            items:
+                              type: string
+                            type: array
+                        type: object
+                      provider:
+                        default: openshell
+                        description: Provider selects the sandbox runtime.
+                        enum:
+                        - openshell
+                        type: string
+                      tools:
+                        description: |-
+                          Tools controls whether the agent process may reach its tools' endpoints
+                          directly from the sandbox. By default it can: each Tool's networkEgress
+                          hosts and the URL of each remote (http/sse) MCP tool are added to the
+                          sandbox egress. Tool calls made through the model-router are unaffected.
+                        properties:
+                          excludeHosts:
+                            description: |-
+                              ExcludeHosts lists hosts that are not added even when a tool declares them.
+                              Matched exactly against the tool's host. It does not filter spec.runtime.sandbox.egress.
+                            items:
+                              type: string
+                            type: array
+                          excludeTools:
+                            description: ExcludeTools lists Tool names (from spec.tools)
+                              whose endpoints are not added.
+                            items:
+                              type: string
+                            type: array
+                          inherit:
+                            default: true
+                            description: |-
+                              Inherit adds the Agent's tool endpoints to the sandbox egress. Set it to
+                              false to keep tools reachable only through the model-router.
+                            type: boolean
+                        type: object
+                    required:
+                    - provider
+                    type: object
                   secretRefs:
                     description: |-
                       SecretRefs lists Kubernetes Secrets to mount into the agent container as volumes
