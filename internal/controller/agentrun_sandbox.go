@@ -95,6 +95,7 @@ func (r *AgentRunReconciler) ensureSandbox(
 		Env:        env,
 		Tools:      tools,
 		Providers:  providers,
+		Placement:  r.SandboxPlacement,
 	})
 	name := openshell.SandboxName(run.Namespace, run.Name, run.Status.RestartCount)
 	return r.Sandboxes.Create(ctx, name, spec, sandboxRunLabels(run))

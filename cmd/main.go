@@ -421,6 +421,11 @@ func main() {
 	// OpenShell sandboxes are optional: without a gateway address, Agents with
 	// spec.runtime.sandbox fail their runs with a clear reason.
 	var sandboxes openshell.Gateway
+	sandboxPlacement, err := openshell.PlacementFromEnv()
+	if err != nil {
+		setupLog.Error(err, "Invalid OpenShell sandbox placement")
+		os.Exit(1)
+	}
 	if osCfg, ok := openshell.ConfigFromEnv(); ok {
 		gw, err := openshell.Connect(osCfg, func(ctx context.Context, namespace, pod, container string) (string, error) {
 			raw, err := k8sClient.CoreV1().Pods(namespace).GetLogs(pod, &corev1.PodLogOptions{Container: container}).DoRaw(ctx)
@@ -455,6 +460,7 @@ func main() {
 		HindsightAPIKey:            os.Getenv("HINDSIGHT_API_KEY"),
 		OperatorNamespace:          os.Getenv("POD_NAMESPACE"),
 		Sandboxes:                  sandboxes,
+		SandboxPlacement:           sandboxPlacement,
 		ClusterDomain:              os.Getenv("CLUSTER_DOMAIN"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "AgentRun")

@@ -81,6 +81,8 @@ type SpecInput struct {
 	Tools []ToolEndpoint
 	// Providers are the provider instances to attach to the sandbox.
 	Providers []string
+	// Placement chooses the sandbox pod's nodes (operator-wide).
+	Placement Placement
 }
 
 // ToolEndpoint is one network destination of one of the Agent's tools.
@@ -94,12 +96,16 @@ type ToolEndpoint struct {
 }
 
 // BuildSpec returns the sandbox spec for a run: the agent image as the
-// workload, the agent command as the sandbox's main process, and the compiled
-// policy.
+// workload with the Agent's resources and the operator's placement, the agent
+// command as the sandbox's main process, and the compiled policy.
 func BuildSpec(in SpecInput) *osv1.SandboxSpec {
 	rt := in.Agent.Spec.Runtime
 	return &osv1.SandboxSpec{
-		Template:      &osv1.SandboxTemplate{Image: rt.OCIRef},
+		Template: &osv1.SandboxTemplate{
+			Image:        rt.OCIRef,
+			Resources:    templateResources(in.Agent.Spec.Resources),
+			DriverConfig: in.Placement.driverConfig(),
+		},
 		Environment:   sandboxEnv(in.Env),
 		Command:       slices.Concat(rt.Command, rt.Args),
 		RestartPolicy: osv1.SandboxRestartNever,

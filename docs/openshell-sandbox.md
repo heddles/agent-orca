@@ -28,8 +28,16 @@ as before. Provider API keys never enter the sandbox.
    ```shell
    helm upgrade --install openshell oci://ghcr.io/nvidia/openshell/helm-chart \
      --version 0.1.5 --namespace openshell --create-namespace \
-     --set server.telemetryEnabled=false
+     --set server.telemetryEnabled=false \
+     --set server.drivers.kubernetes.allowDriverConfig=true
    ```
+
+   `allowDriverConfig` lets gateway clients set Kubernetes pod settings on a sandbox
+   (node selector, tolerations, runtime class). agent-orca uses it only for the
+   operator-wide [placement](#placement), which only cluster admins set; Agents can't.
+   Enable it when you configure placement. The operator should be the gateway's only
+   client, because any client holding a gateway certificate gets the same power.
+   Persistent-volume attachments still need the gateway's resource-admission labels.
 
 3. **Kernel**: Landlock ABI v3+ (Linux 6.2+) on the nodes that run sandboxes. agent-orca
    sets `landlock.compatibility: hard_requirement`, so a sandbox on an older kernel fails
@@ -65,6 +73,35 @@ openshell:
 
 For an OIDC gateway, set `openshell.tokenSecret.name` to a Secret holding a bearer token
 instead of (or in addition to) the client certificate.
+
+### Placement
+
+By default, sandbox pods schedule wherever the cluster puts them. Builds and tests are
+heavy, so give sandboxes their own node pool. Make sure they can't land on the
+control plane: an untainted control-plane node is a valid target. Then point the
+operator at the pool:
+
+```yaml
+openshell:
+  placement:
+    nodeSelector:
+      agentorca.io/sandbox: "true"
+    tolerations:
+      - {key: agentorca.io/sandbox, operator: Exists, effect: NoSchedule}
+    runtimeClassName: ""     # e.g. a gVisor or Kata RuntimeClass
+    priorityClassName: ""
+```
+
+Placement applies to every sandboxed agent and requires the gateway's
+`allowDriverConfig` (see Prerequisites). A gateway without it rejects every sandbox
+while placement is set. Placement is operator configuration rather than an Agent field
+because a toleration can admit a pod to any tainted node.
+
+### Resources
+
+An Agent's `spec.resources` becomes the sandbox workload's container resources, as for
+an agent pod. CPU and memory requests default to their limits when unset, and other
+resources such as `ephemeral-storage` are passed through.
 
 Finally, opt in each namespace that may run sandboxed agents:
 
