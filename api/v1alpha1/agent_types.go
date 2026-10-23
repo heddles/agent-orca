@@ -474,10 +474,15 @@ type HindsightMemoryConfig struct {
 	// "{namespace}--{agent-name}". A per-run bank is never read again.
 	// +optional
 	BankIDTemplate string `json:"bankIdTemplate,omitempty"`
-	// RecallBudget is the maximum number of memories to retrieve per turn.
+	// RecallBudget is the maximum number of memories recalled per turn.
 	// +kubebuilder:default=5
 	// +optional
 	RecallBudget int `json:"recallBudget,omitempty"`
+	// RecallMaxTokens caps the size of the recalled memories, in tokens
+	// (hindsight's max_tokens). Default 1024.
+	// +kubebuilder:validation:Minimum=64
+	// +optional
+	RecallMaxTokens int `json:"recallMaxTokens,omitempty"`
 	// RetainOnEveryTurn is true to retain conversation after every LLM turn.
 	// +kubebuilder:default=true
 	// +optional

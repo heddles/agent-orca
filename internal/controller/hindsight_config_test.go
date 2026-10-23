@@ -40,11 +40,11 @@ func TestHindsightConfig(t *testing.T) {
 		{"explicitly disabled is off", withMemory(&agentorcav1alpha1.HindsightMemoryConfig{Enabled: false}),
 			router.HindsightConfig{}},
 		{"enabled gets the defaults", withMemory(&agentorcav1alpha1.HindsightMemoryConfig{Enabled: true}),
-			router.HindsightConfig{Enabled: true, URL: defaultURL, BankIDTemplate: "{namespace}--{agent-name}", RecallBudget: 5}},
+			router.HindsightConfig{Enabled: true, URL: defaultURL, BankIDTemplate: "{namespace}--{agent-name}", RecallBudget: 5, RecallMaxTokens: 1024}},
 		{"agent settings win", withMemory(&agentorcav1alpha1.HindsightMemoryConfig{
-			Enabled: true, URL: "http://h:1", BankIDTemplate: "{namespace}--{deployment}", RecallBudget: 9, RetainOnEveryTurn: true,
+			Enabled: true, URL: "http://h:1", BankIDTemplate: "{namespace}--{deployment}", RecallBudget: 9, RecallMaxTokens: 512, RetainOnEveryTurn: true,
 		}), router.HindsightConfig{
-			Enabled: true, URL: "http://h:1", BankIDTemplate: "{namespace}--{deployment}", RecallBudget: 9, RetainOnEveryTurn: true,
+			Enabled: true, URL: "http://h:1", BankIDTemplate: "{namespace}--{deployment}", RecallBudget: 9, RecallMaxTokens: 512, RetainOnEveryTurn: true,
 		}},
 	}
 	for _, tt := range tests {

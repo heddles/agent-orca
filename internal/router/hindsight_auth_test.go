@@ -199,3 +199,36 @@ func TestHindsightBankID(t *testing.T) {
 		})
 	}
 }
+
+// Regression: the recall budget is a number of memories, but it was sent to
+// hindsight as max_tokens, so the default of 5 truncated every recall to one
+// memory. The token cap and the memory count are now separate.
+func TestHindsightRecallBudgetAndMaxTokens(t *testing.T) {
+	var maxTokens float64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		maxTokens, _ = body["max_tokens"].(float64)
+		w.Header().Set("Content-Type", "application/json")
+		results := make([]string, 0, 8)
+		for i := range 8 {
+			results = append(results, `{"id":"`+string(rune('a'+i))+`","text":"fact `+string(rune('a'+i))+`"}`)
+		}
+		_, _ = w.Write([]byte(`{"results":[` + strings.Join(results, ",") + `]}`))
+	}))
+	t.Cleanup(srv.Close)
+	r := hindsightTestRouter(t, srv.URL, "")
+	r.cfg.Hindsight.RecallBudget = 5
+	r.cfg.Hindsight.RecallMaxTokens = 1024
+
+	got, err := r.hindsightRecall(context.Background(), "what did we decide?")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if maxTokens != 1024 {
+		t.Errorf("max_tokens sent = %v, want 1024 (RecallMaxTokens, not the memory count)", maxTokens)
+	}
+	if n := strings.Count(got, "fact "); n != 5 {
+		t.Errorf("recalled %d memories, want the budget of 5: %q", n, got)
+	}
+}

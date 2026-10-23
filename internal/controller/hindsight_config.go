@@ -41,6 +41,7 @@ func hindsightConfig(agent *agentorcav1alpha1.Agent, defaultURL string) router.H
 		URL:               h.URL,
 		BankIDTemplate:    h.BankIDTemplate,
 		RecallBudget:      h.RecallBudget,
+		RecallMaxTokens:   h.RecallMaxTokens,
 		RetainOnEveryTurn: h.RetainOnEveryTurn,
 	}
 	if cfg.URL == "" {
@@ -51,6 +52,9 @@ func hindsightConfig(agent *agentorcav1alpha1.Agent, defaultURL string) router.H
 	}
 	if cfg.RecallBudget <= 0 {
 		cfg.RecallBudget = 5
+	}
+	if cfg.RecallMaxTokens <= 0 {
+		cfg.RecallMaxTokens = 1024
 	}
 	return cfg
 }

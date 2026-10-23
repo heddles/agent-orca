@@ -221,7 +221,13 @@ spec:
                       recallBudget:
                         default: 5
                         description: RecallBudget is the maximum number of memories
-                          to retrieve per turn.
+                          recalled per turn.
+                        type: integer
+                      recallMaxTokens:
+                        description: |-
+                          RecallMaxTokens caps the size of the recalled memories, in tokens
+                          (hindsight's max_tokens). Default 1024.
+                        minimum: 64
                         type: integer
                       retainOnEveryTurn:
                         default: true

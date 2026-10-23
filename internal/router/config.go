@@ -402,8 +402,12 @@ type HindsightConfig struct {
 	// {namespace}, {agent-name}, {run-name} and {deployment} (camelCase spellings
 	// are accepted too). Default "{namespace}--{agent-name}".
 	BankIDTemplate string `json:"bankIdTemplate,omitempty"`
-	// RecallBudget is the maximum number of memories to retrieve per turn.
+	// RecallBudget is the maximum number of memories recalled per turn.
 	RecallBudget int `json:"recallBudget,omitempty"`
+	// RecallMaxTokens caps the size of the recalled memories (hindsight's
+	// max_tokens). It was once set from RecallBudget, which truncated every
+	// recall to a single memory.
+	RecallMaxTokens int `json:"recallMaxTokens,omitempty"`
 	// RetainOnEveryTurn is true to retain conversation after every LLM turn.
 	RetainOnEveryTurn bool `json:"retainOnEveryTurn,omitempty"`
 	// APIKey authenticates the router to a hindsight API running with the
@@ -593,6 +597,9 @@ func ConfigFromEnv() (*Config, error) {
 
 	if cfg.Hindsight.RecallBudget <= 0 {
 		cfg.Hindsight.RecallBudget = 5
+	}
+	if cfg.Hindsight.RecallMaxTokens <= 0 {
+		cfg.Hindsight.RecallMaxTokens = 1024
 	}
 	if !cfg.Hindsight.RetainOnEveryTurn {
 		cfg.Hindsight.RetainOnEveryTurn = true
