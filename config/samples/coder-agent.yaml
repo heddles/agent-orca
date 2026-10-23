@@ -1,0 +1,83 @@
+# A coding agent that clones a repository, changes it, and builds and tests the
+# change inside an OpenShell sandbox (docs/coder-agent.md).
+#
+# Prerequisites: OpenShell sandboxes enabled (docs/openshell-sandbox.md), the
+# namespace labeled agentorca.io/enable-sandboxes=true, and a node pool sized
+# for builds (see "Sizing" in docs/coder-agent.md). Then:
+#
+#   kubectl apply -f config/samples/coder-agent.yaml
+#   kubectl get agentrun coder-agent-demo -n agent-orca-system -w
+---
+apiVersion: agentorca.agentorca.io/v1alpha1
+kind: GuardrailPolicy
+metadata:
+  name: coder-agent
+  namespace: agent-orca-system
+spec:
+  outputFilters:
+    - name: redact-bearer-tokens
+      type: regex
+      action: redact
+      patterns:
+        - {name: bearer, pattern: "Bearer [A-Za-z0-9._~+/-]{16,}", replacement: "Bearer [REDACTED]"}
+---
+apiVersion: agentorca.agentorca.io/v1alpha1
+kind: Agent
+metadata:
+  name: coder-agent
+  namespace: agent-orca-system
+spec:
+  modelSelectorRef: default
+  guardrailPolicyRef: coder-agent
+  disableClarify: true
+  systemPrompt: |
+    You work on Go and TypeScript projects. Follow the repository's own conventions
+    (AGENTS.md, CONTRIBUTING.md, Makefile targets) and keep changes small and tested.
+  networkIsolation:
+    splitPod: true
+  resources:
+    requests: {cpu: "2", memory: 4Gi, ephemeral-storage: 20Gi}
+    limits: {cpu: "4", memory: 8Gi, ephemeral-storage: 20Gi}
+  runtime:
+    ociRef: ghcr.io/heddles/agent-orca/dev-sandbox:latest
+    framework: openai-compatible
+    inputMode: env
+    localTools: true
+    sandbox:
+      provider: openshell
+      enforcement: enforce
+      egress:
+        # Source: git clone/fetch use POST (git-upload-pack), so read-write.
+        # Pushing needs a credential, which this sample does not give.
+        - {host: github.com, access: read-write}
+        - host: "*.githubusercontent.com"
+        # Go modules, checksums and toolchains.
+        - host: proxy.golang.org
+        - host: sum.golang.org
+        - host: storage.googleapis.com
+        # npm and PyPI.
+        - host: registry.npmjs.org
+        - host: pypi.org
+        - host: files.pythonhosted.org
+---
+apiVersion: agentorca.agentorca.io/v1alpha1
+kind: AgentRun
+metadata:
+  name: coder-agent-demo
+  namespace: agent-orca-system
+spec:
+  agentRef: coder-agent
+  timeout: 60m
+  restartPolicy:
+    maxRetries: 0
+  safeguards:
+    # A coding agent reruns the same build or test command after each edit, so
+    # allow some repetition; ten identical calls is a loop.
+    maxRepeatedToolCalls: 10
+    toolExecutionTimeoutSec: 900
+  input: >-
+    Clone https://github.com/heddles/agent-orca into /sandbox/work. Find an exported
+    function in internal/openshell that has no unit test, and add a table-driven test
+    for it in the package's existing style. Run `go test ./internal/openshell/...`
+    until it passes. Finish with a summary that names the function, shows the test
+    you added, and includes the `go test` output.

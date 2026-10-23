@@ -47,6 +47,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 )
 
 // Run phases, matching the AgentRun phases they lead to.
@@ -106,6 +107,21 @@ type Agent struct {
 	httpClient   *http.Client
 	tools        map[string]*ToolSpec
 	toolOrder    []string
+	onToolCall   func(ToolEvent)
+}
+
+// ToolEvent describes one tool call the agent ran.
+type ToolEvent struct {
+	Name      string
+	Arguments string
+	Result    string
+	Duration  time.Duration
+}
+
+// WithToolObserver calls fn after each tool call the agent runs, e.g. to log
+// progress.
+func WithToolObserver(fn func(ToolEvent)) Option {
+	return func(a *Agent) { a.onToolCall = fn }
 }
 
 // Option configures an Agent.
@@ -248,7 +264,15 @@ func (a *Agent) Run(ctx context.Context, input string, opts ...RunOption) (*RunR
 		}
 		pending = pending[:0]
 		for _, tc := range reply.toolCalls {
-			pending = append(pending, message{Role: "tool", ToolCallID: tc.ID, Content: a.runTool(tc)})
+			start := time.Now()
+			result := a.runTool(tc)
+			if a.onToolCall != nil {
+				a.onToolCall(ToolEvent{
+					Name: tc.Function.Name, Arguments: tc.Function.Arguments,
+					Result: result, Duration: time.Since(start),
+				})
+			}
+			pending = append(pending, message{Role: "tool", ToolCallID: tc.ID, Content: result})
 		}
 	}
 	return &RunResult{Phase: PhaseFailed, FailureReason: ErrMaxTurns.Error()}, nil
