@@ -174,6 +174,7 @@ spec:
 | `runtime.framework` | `openai-compatible`, `autogen`, `semantic-kernel`, `langgraph`, `shim` |
 | `runtime.shimTarget` | Hostname to intercept when framework=`shim` |
 | `runtime.sandbox` | Run the agent in an NVIDIA OpenShell sandbox with a shell, exec and policy-controlled egress (see [openshell-sandbox.md](openshell-sandbox.md)) |
+| `runtime.localTools` | Let the agent process run the tools it declares (e.g. a shell in its sandbox): the router returns their calls with `finish_reason: tool_calls` and takes the results on the next request (see [agent-run-tools.md](agent-run-tools.md)) |
 | `memory.checkpointEvery` | LLM turns between checkpoints (default: 1) |
 | `memory.resumeWindowSeconds` | State retention after failure (default: 3600) |
 | `memory.archiveOnCompletion` | Promote checkpoint to object storage on success |

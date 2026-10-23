@@ -886,6 +886,7 @@ func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig( //nolint:gocycl
 		AgentSAName:                saName,
 		DeploymentName:             deploy.Name,
 		DisableClarify:             agent.Spec.DisableClarify,
+		LocalTools:                 agent.Spec.Runtime.LocalTools,
 		Providers:                  providers,
 		Strategy:                   selector.Spec.Strategy,
 		CapabilityRouting:          selector.Spec.CapabilityRouting,

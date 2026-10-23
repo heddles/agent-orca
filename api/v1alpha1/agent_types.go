@@ -250,6 +250,16 @@ type AgentRuntime struct {
 	// Nil (the default) keeps today's pod topology unchanged.
 	// +optional
 	Sandbox *SandboxSpec `json:"sandbox,omitempty"`
+
+	// LocalTools lets the agent process run tools itself. A function tool the
+	// agent declares in its chat request that the model-router does not provide
+	// (e.g. a shell inside the sandbox) is returned to the agent with
+	// finish_reason "tool_calls"; the agent runs it and sends the result as a
+	// "tool" message on its next request. The router still runs its own tools,
+	// and applies safeguards, guardrails and tracing to both kinds. Agent tools
+	// may not reuse a router tool or built-in name.
+	// +optional
+	LocalTools bool `json:"localTools,omitempty"`
 }
 
 // SandboxProvider names a sandbox runtime implementation.

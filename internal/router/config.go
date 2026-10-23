@@ -49,6 +49,10 @@ type Config struct {
 	// Set from Agent.Spec.DisableClarify for autonomous agents.
 	DisableClarify bool
 
+	// LocalTools lets the agent run the tools it declares itself
+	// (Agent.Spec.Runtime.LocalTools); see local_tools.go.
+	LocalTools bool
+
 	// Providers is the ordered list of LLM providers resolved from the ModelSelector.
 	Providers []ProviderConfig
 	// Strategy is the routing strategy: "rule-based", "llm-meta", or "hybrid".
