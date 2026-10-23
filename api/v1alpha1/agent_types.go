@@ -326,6 +326,30 @@ type SandboxSpec struct {
 	// (read-write: /sandbox, /tmp; read-only: system paths).
 	// +optional
 	Filesystem *SandboxFilesystem `json:"filesystem,omitempty"`
+
+	// GitHub gives the agent git access (clone, fetch and optionally push) to
+	// GitHub repositories over HTTPS, using an installation token of the
+	// operator's GitHub App. The token is minted per run, narrowed to these
+	// repositories, refreshed before it expires, and never visible to the
+	// agent: the workload holds a placeholder that the sandbox supervisor
+	// replaces on requests from git to github.com only. Which branches a push
+	// may update is governed by the repositories' rulesets on GitHub.
+	// +optional
+	GitHub *SandboxGitHub `json:"github,omitempty"`
+}
+
+// SandboxGitHub configures git access to GitHub from a sandbox.
+type SandboxGitHub struct {
+	// Repositories are the "owner/name" repositories the token is scoped to.
+	// They must belong to the account the operator's GitHub App is installed on.
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=50
+	Repositories []string `json:"repositories"`
+
+	// Push allows git push (contents: write). Without it the token can only
+	// clone and fetch.
+	// +optional
+	Push bool `json:"push,omitempty"`
 }
 
 // SandboxTools selects which of the Agent's tool endpoints the sandbox may reach.

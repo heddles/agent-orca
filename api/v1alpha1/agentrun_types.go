@@ -193,6 +193,12 @@ type AgentRunStatus struct {
 	// +optional
 	SandboxName string `json:"sandboxName,omitempty"`
 
+	// SandboxGitTokenExpiry is when the run's current GitHub installation token
+	// expires (spec.runtime.sandbox.github). The operator mints a new one before
+	// then.
+	// +optional
+	SandboxGitTokenExpiry *metav1.Time `json:"sandboxGitTokenExpiry,omitempty"`
+
 	// StartTime is when the agent pod started.
 	// +optional
 	StartTime *metav1.Time `json:"startTime,omitempty"`

@@ -53,6 +53,7 @@ import (
 	"github.com/heddles/agent-orca/internal/acpfs"
 	"github.com/heddles/agent-orca/internal/apiserver"
 	"github.com/heddles/agent-orca/internal/controller"
+	"github.com/heddles/agent-orca/internal/githubapp"
 	"github.com/heddles/agent-orca/internal/openshell"
 	"github.com/heddles/agent-orca/internal/podbuilder"
 	"github.com/heddles/agent-orca/internal/postgresql"
@@ -439,6 +440,18 @@ func main() {
 		setupLog.Info("OpenShell sandboxes enabled", "gateway", osCfg.Address,
 			"workspace", osCfg.Workspace, "sandboxNamespace", osCfg.SandboxNamespace)
 	}
+	// The GitHub App gives sandboxed agents short-lived git credentials
+	// (spec.runtime.sandbox.github); without it such runs fail with a clear reason.
+	var gitHubApp controller.GitHubTokenMinter
+	if dir := os.Getenv("GITHUB_APP_DIR"); dir != "" {
+		app, err := githubapp.FromDir(dir, os.Getenv("GITHUB_API_URL"))
+		if err != nil {
+			setupLog.Error(err, "Failed to load the GitHub App")
+			os.Exit(1)
+		}
+		gitHubApp = app
+		setupLog.Info("GitHub App enabled for sandbox git access", "appID", app.AppID, "installationID", app.InstallationID)
+	}
 	if err := (&controller.AgentRunReconciler{
 		Client:                     mgr.GetClient(),
 		Scheme:                     mgr.GetScheme(),
@@ -461,6 +474,7 @@ func main() {
 		OperatorNamespace:          os.Getenv("POD_NAMESPACE"),
 		Sandboxes:                  sandboxes,
 		SandboxPlacement:           sandboxPlacement,
+		GitHubApp:                  gitHubApp,
 		ClusterDomain:              os.Getenv("CLUSTER_DOMAIN"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "AgentRun")

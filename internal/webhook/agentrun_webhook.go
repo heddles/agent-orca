@@ -31,6 +31,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -196,6 +197,12 @@ func (v *AgentValidator) validateSandbox(ctx context.Context, agent *agentorcav1
 	case "shim":
 		return fmt.Errorf("framework \"shim\" rewrites vendor hostnames to the router, " +
 			"which the sandbox network policy does not allow; use openai-compatible")
+	}
+
+	if gh := rt.Sandbox.GitHub; gh != nil {
+		if err := validateSandboxGitHub(gh); err != nil {
+			return err
+		}
 	}
 
 	for i, rule := range rt.Sandbox.Egress {
@@ -370,3 +377,26 @@ func SetupToolWebhook(mgr ctrl.Manager, allowedRegistries []string) error {
 
 // Ensure the runtime import is referenced to satisfy the Go import checker.
 var _ runtime.Object
+
+// githubRepoPattern is an "owner/name" GitHub repository slug.
+var githubRepoPattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/[A-Za-z0-9._-]{1,100}$`)
+
+// validateSandboxGitHub checks spec.runtime.sandbox.github: the operator's
+// GitHub App token is scoped to one installation, so every repository must be
+// a slug under one owner.
+func validateSandboxGitHub(gh *agentorcav1alpha1.SandboxGitHub) error {
+	owner := ""
+	for i, repo := range gh.Repositories {
+		if !githubRepoPattern.MatchString(repo) || strings.HasSuffix(repo, ".git") {
+			return fmt.Errorf("spec.runtime.sandbox.github.repositories[%d] %q is not an owner/name repository", i, repo)
+		}
+		o, _, _ := strings.Cut(repo, "/")
+		if owner == "" {
+			owner = o
+		} else if !strings.EqualFold(o, owner) {
+			return fmt.Errorf("spec.runtime.sandbox.github.repositories must share one owner (the GitHub App installation's account): "+
+				"%q and %q differ", owner, o)
+		}
+	}
+	return nil
+}

@@ -495,6 +495,33 @@ spec:
                               type: string
                             type: array
                         type: object
+                      github:
+                        description: |-
+                          GitHub gives the agent git access (clone, fetch and optionally push) to
+                          GitHub repositories over HTTPS, using an installation token of the
+                          operator's GitHub App. The token is minted per run, narrowed to these
+                          repositories, refreshed before it expires, and never visible to the
+                          agent: the workload holds a placeholder that the sandbox supervisor
+                          replaces on requests from git to github.com only. Which branches a push
+                          may update is governed by the repositories' rulesets on GitHub.
+                        properties:
+                          push:
+                            description: |-
+                              Push allows git push (contents: write). Without it the token can only
+                              clone and fetch.
+                            type: boolean
+                          repositories:
+                            description: |-
+                              Repositories are the "owner/name" repositories the token is scoped to.
+                              They must belong to the account the operator's GitHub App is installed on.
+                            items:
+                              type: string
+                            maxItems: 50
+                            minItems: 1
+                            type: array
+                        required:
+                        - repositories
+                        type: object
                       provider:
                         default: openshell
                         description: Provider selects the sandbox runtime.

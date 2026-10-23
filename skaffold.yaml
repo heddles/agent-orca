@@ -180,6 +180,10 @@ profiles:
               # OpenShell sandboxes (gateway installed in the openshell namespace).
               openshell.enabled: "true"
               openshell.tls.secretName: openshell-client-tls
+              # GitHub App for sandbox git access (agent-orca-factory). Secret
+              # agentorca-github-app (app-id, installation-id, private-key) is created
+              # out of band.
+              github.app.secretName: agentorca-github-app
               # Sandboxes tolerate the autoscaled coder-agent pool (pnw-dev-agents-autoscaled,
               # tainted openshell=coder-agent:NoExecute). The pool has no label to select on,
               # so a sandbox lands there when it does not fit the regular workers.
