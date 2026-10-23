@@ -197,6 +197,8 @@ The Agent webhook rejects a sandboxed Agent unless:
 - it sets neither `runtime.securityContextOverride` nor `runtime.secretRefs` (a sandbox
   cannot mount Secrets; give credentials to a Tool so the router holds them);
 - `runtime.inputMode` is `env` (the sandbox accepts no inbound connections);
+- `runtime.command` is set: OpenShell runs it as the sandbox's main process and ignores
+  the image's `ENTRYPOINT` (an empty command creates an idle sandbox);
 - `runtime.framework` is `openai-compatible` or `langgraph`. `autogen` and
   `semantic-kernel` need init containers and `shim` needs hostname rewrites; sandboxes
   support neither;

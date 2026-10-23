@@ -40,6 +40,8 @@ spec:
     limits: {cpu: "4", memory: 8Gi, ephemeral-storage: 20Gi}
   runtime:
     ociRef: ghcr.io/heddles/agent-orca/dev-sandbox:latest
+    # OpenShell runs this command, not the image ENTRYPOINT.
+    command: ["/usr/local/bin/coder-agent"]
     framework: openai-compatible
     inputMode: env
     localTools: true

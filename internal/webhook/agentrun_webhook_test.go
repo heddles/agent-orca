@@ -164,6 +164,7 @@ func newLabelledValidator(nsName string, labels map[string]string) *AgentValidat
 func sandboxAgent(ns string) agentorcav1alpha1.Agent {
 	a := baseAgent(ns, true)
 	a.Spec.NetworkIsolation = &agentorcav1alpha1.NetworkIsolationSpec{SplitPod: true}
+	a.Spec.Runtime.Command = []string{"/usr/local/bin/agent"}
 	a.Spec.Runtime.Sandbox = &agentorcav1alpha1.SandboxSpec{
 		Provider: agentorcav1alpha1.SandboxProviderOpenShell,
 		Egress: []agentorcav1alpha1.SandboxEgressRule{
@@ -205,6 +206,8 @@ func TestAgentValidatorSandbox(t *testing.T) {
 			}, errSubstr: "secretRefs"},
 		{name: "http input mode is denied",
 			mutate: func(a *agentorcav1alpha1.Agent) { a.Spec.Runtime.InputMode = "http" }, errSubstr: "inputMode=env"},
+		{name: "missing command is denied: OpenShell ignores the image ENTRYPOINT",
+			mutate: func(a *agentorcav1alpha1.Agent) { a.Spec.Runtime.Command = nil }, errSubstr: "requires spec.runtime.command"},
 		{name: "init-container framework is denied",
 			mutate: func(a *agentorcav1alpha1.Agent) { a.Spec.Runtime.Framework = "autogen" }, errSubstr: "init container"},
 		{name: "shim framework is denied",

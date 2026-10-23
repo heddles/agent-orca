@@ -47,6 +47,8 @@ Releases publish it with the other images.
 
 ## Agent settings
 
+- `runtime.command: ["/usr/local/bin/coder-agent"]`. OpenShell runs the command, not the
+  image's `ENTRYPOINT`.
 - `runtime.localTools: true`, so the shell and file tools run in the sandbox.
 - `runtime.sandbox.egress`: the hosts the agent may reach. Anything not listed is denied.
   The sample allows GitHub (clone over HTTPS), the Go module proxy and checksum database,

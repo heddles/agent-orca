@@ -183,6 +183,12 @@ func (v *AgentValidator) validateSandbox(ctx context.Context, agent *agentorcav1
 	if rt.InputMode == "http" {
 		return fmt.Errorf("spec.runtime.sandbox supports inputMode=env only: the sandbox admits no inbound connections")
 	}
+	// OpenShell does not run the image's ENTRYPOINT: an empty command creates
+	// an idle scratch sandbox, and the run would wait for its timeout.
+	if len(rt.Command) == 0 {
+		return fmt.Errorf("spec.runtime.sandbox requires spec.runtime.command: " +
+			"OpenShell runs the given command, not the image's ENTRYPOINT")
+	}
 	switch rt.Framework {
 	case "autogen", "semantic-kernel":
 		return fmt.Errorf("framework %q configures the agent with an init container, "+
