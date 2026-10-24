@@ -434,6 +434,12 @@ spec:
                   - provider
                   type: object
                 type: array
+              sandboxDecisionsSeen:
+                description: |-
+                  SandboxDecisionsSeen is the time of the last sandbox network decision
+                  copied into the run's trace; the next read continues after it.
+                format: date-time
+                type: string
               sandboxGitTokenExpiry:
                 description: |-
                   SandboxGitTokenExpiry is when the run's current GitHub installation token

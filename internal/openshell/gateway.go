@@ -30,6 +30,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -64,6 +65,9 @@ type Gateway interface {
 	ApproveDraft(ctx context.Context, sandbox, chunkID, reviewToken string) error
 	// RejectDraft declines a proposal.
 	RejectDraft(ctx context.Context, sandbox, chunkID, reason string) error
+	// Decisions returns the network decisions the sandbox's supervisor logged
+	// after since, oldest first.
+	Decisions(ctx context.Context, sandbox string, since time.Time) ([]Decision, error)
 }
 
 // Config holds the operator's connection settings for the OpenShell gateway.
@@ -337,4 +341,32 @@ func (g *SDKGateway) RejectDraft(ctx context.Context, sandbox, chunkID, reason s
 		return fmt.Errorf("rejecting policy draft %s of sandbox %s: %w", chunkID, sandbox, err)
 	}
 	return nil
+}
+
+// decisionPage caps how many log lines one Decisions call reads; the next
+// poll continues after the last one.
+const decisionPage = 500
+
+// Decisions implements Gateway.
+func (g *SDKGateway) Decisions(ctx context.Context, sandbox string, since time.Time) ([]Decision, error) {
+	opts := []osv1.LogOption{osv1.WithLogLines(decisionPage)}
+	if !since.IsZero() {
+		opts = append(opts, osv1.WithLogSince(since))
+	}
+	res, err := g.sandboxes.GetLogs(ctx, g.workspace, sandbox, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("reading the decision log of sandbox %s: %w", sandbox, err)
+	}
+	var out []Decision
+	for _, l := range res.Lines {
+		if l.Level != OCSFLogLevel || !l.Timestamp.After(since) {
+			continue
+		}
+		if d, ok := ParseDecision(l.Message); ok {
+			d.Time = l.Timestamp
+			out = append(out, d)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Time.Before(out[j].Time) })
+	return out, nil
 }

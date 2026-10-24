@@ -31,6 +31,21 @@ export type TraceEvent =
   | { type: 'providerFallback'; from: string; to: string; reason: string; exhausted?: boolean }
   | { type: 'routing'; model: string; provider?: string; strategy?: string; reason?: string; confidence?: number }
   | { type: 'hindsight'; op: 'bank' | 'recall' | 'retain' | string; bankID?: string; failed?: boolean; reason?: string }
+  // A network decision by the sandbox supervisor (G4): a connection (net) or a request on an
+  // allowed connection (http), allowed or denied by the sandbox policy.
+  | {
+      type: 'egress'
+      kind: 'net' | 'http' | string
+      action: 'allowed' | 'denied' | string
+      binary?: string
+      destination?: string
+      method?: string
+      url?: string
+      policy?: string
+      engine?: string
+      reason?: string
+      raw: string
+    }
   | {
       type: 'truncation'
       provider?: string
