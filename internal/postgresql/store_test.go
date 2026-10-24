@@ -284,6 +284,7 @@ func TestGetRunScansTraceEvents(t *testing.T) {
 // enables lz4 TOAST compression on the trace_events and other large JSONB/TEXT
 // columns, keeping archived trace data compact.
 func TestMigrationSQLIncludesCompression(t *testing.T) {
+	MigrationSQL := migration0001(t)
 	mustContain := []string{
 		"ALTER TABLE archived_runs ALTER COLUMN trace_events SET COMPRESSION lz4",
 		"ALTER TABLE archived_runs ALTER COLUMN routing_decisions SET COMPRESSION lz4",
@@ -302,6 +303,7 @@ func TestMigrationSQLIncludesCompression(t *testing.T) {
 // TestMigrationSQLTraceEventsColumn verifies the trace_events column is declared
 // in both the CREATE TABLE and the back-fill ALTER TABLE.
 func TestMigrationSQLTraceEventsColumn(t *testing.T) {
+	MigrationSQL := migration0001(t)
 	if !strings.Contains(MigrationSQL, "trace_events JSONB") {
 		t.Error("MigrationSQL missing trace_events JSONB in CREATE TABLE")
 	}
