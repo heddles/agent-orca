@@ -88,6 +88,13 @@ func (r *AgentRunReconciler) ensureSandbox(
 	if err != nil {
 		return nil, err
 	}
+	git, err := r.ensureSandboxGit(ctx, run, agent, env)
+	if err != nil {
+		return nil, err
+	}
+	if git != nil {
+		providers = append(providers, git.Provider)
+	}
 
 	spec := openshell.BuildSpec(openshell.SpecInput{
 		Agent:      agent,
@@ -96,6 +103,7 @@ func (r *AgentRunReconciler) ensureSandbox(
 		Tools:      tools,
 		Providers:  providers,
 		Placement:  r.SandboxPlacement,
+		Git:        git,
 	})
 	name := openshell.SandboxName(run.Namespace, run.Name, run.Status.RestartCount)
 	return r.Sandboxes.Create(ctx, name, spec, sandboxRunLabels(run))
@@ -246,6 +254,7 @@ func (r *AgentRunReconciler) checkSandboxProgress(ctx context.Context, run *agen
 	if err := r.ensureRouterSandboxIngress(ctx, run, sb); err != nil {
 		return ctrl.Result{}, err
 	}
+	r.refreshSandboxGit(ctx, run, agent)
 
 	outcome, reason := openshell.Observe(sb)
 	switch outcome {

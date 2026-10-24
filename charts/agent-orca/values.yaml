@@ -187,6 +187,18 @@ openshell:
     runtimeClassName: ""
     priorityClassName: ""
 
+# GitHub App the operator uses to give sandboxed agents short-lived git
+# credentials (spec.runtime.sandbox.github, docs/openshell-sandbox.md). The
+# Secret holds app-id, installation-id and private-key (PEM); it is mounted into
+# the operator only. Restrict which branches the App may push with a repository
+# ruleset.
+github:
+  app:
+    secretName: ""
+    # REST API base URL; empty is GitHub.com. GitHub Enterprise Server:
+    # https://<host>/api/v3
+    apiURL: ""
+
 # Cluster DNS domain. Sandboxed agents reach their router by its fully
 # qualified Service name.
 clusterDomain: cluster.local

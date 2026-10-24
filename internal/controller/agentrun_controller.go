@@ -23,6 +23,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	stderrors "errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -54,6 +55,7 @@ import (
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
 	"github.com/heddles/agent-orca/internal/egress"
+	"github.com/heddles/agent-orca/internal/githubapp"
 	"github.com/heddles/agent-orca/internal/mcp"
 	"github.com/heddles/agent-orca/internal/openshell"
 	"github.com/heddles/agent-orca/internal/podbuilder"
@@ -127,6 +129,9 @@ type AgentRunReconciler struct {
 	Sandboxes openshell.Gateway
 	// SandboxPlacement chooses the nodes sandbox pods run on.
 	SandboxPlacement openshell.Placement
+	// GitHubApp mints the installation tokens of sandboxes with
+	// spec.runtime.sandbox.github. Nil when no GitHub App is configured.
+	GitHubApp GitHubTokenMinter
 	// ClusterDomain is the cluster DNS domain (default "cluster.local"), used to
 	// address the router Service from the sandbox namespace.
 	ClusterDomain string
@@ -362,6 +367,10 @@ func (r *AgentRunReconciler) startRun(ctx context.Context, run *agentorcav1alpha
 			// in an agent pod, reaching the router through its supervisor.
 			sb, err := r.ensureSandbox(ctx, run, agent, tokenSecretName, routerBaseURL)
 			if err != nil {
+				var ghErr *githubapp.APIError
+				if stderrors.Is(err, errNoGitHubApp) || (stderrors.As(err, &ghErr) && ghErr.Permanent()) {
+					return r.failRun(ctx, run, fmt.Sprintf("granting GitHub access: %v", err))
+				}
 				if osv1.IsInvalidArgument(err) || osv1.IsPermissionDenied(err) {
 					return r.failRun(ctx, run, fmt.Sprintf("creating sandbox: %v", err))
 				}

@@ -230,6 +230,18 @@ func TestAgentValidatorSandbox(t *testing.T) {
 				a.Spec.Tools = []string{"github"}
 				a.Spec.Runtime.Sandbox.Tools = &agentorcav1alpha1.SandboxTools{ExcludeTools: []string{"gihtub"}}
 			}, errSubstr: "not in spec.tools"},
+		{name: "github access to one owner is allowed",
+			mutate: func(a *agentorcav1alpha1.Agent) {
+				a.Spec.Runtime.Sandbox.GitHub = &agentorcav1alpha1.SandboxGitHub{Repositories: []string{"heddles/agent-orca", "heddles/docs"}, Push: true}
+			}},
+		{name: "github repositories of two owners are denied",
+			mutate: func(a *agentorcav1alpha1.Agent) {
+				a.Spec.Runtime.Sandbox.GitHub = &agentorcav1alpha1.SandboxGitHub{Repositories: []string{"heddles/agent-orca", "other/repo"}}
+			}, errSubstr: "share one owner"},
+		{name: "github repository without owner is denied",
+			mutate: func(a *agentorcav1alpha1.Agent) {
+				a.Spec.Runtime.Sandbox.GitHub = &agentorcav1alpha1.SandboxGitHub{Repositories: []string{"agent-orca"}}
+			}, errSubstr: "not an owner/name"},
 		{name: "read-write root is denied",
 			mutate:    func(a *agentorcav1alpha1.Agent) { a.Spec.Runtime.Sandbox.Filesystem.ReadWrite = []string{"/"} },
 			errSubstr: "must not include /"},

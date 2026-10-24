@@ -83,6 +83,9 @@ type SpecInput struct {
 	Providers []string
 	// Placement chooses the sandbox pod's nodes (operator-wide).
 	Placement Placement
+	// Git, when set, grants git access to GitHub through a credential-bound
+	// endpoint (see ApplyGitAccess).
+	Git *GitAccess
 }
 
 // ToolEndpoint is one network destination of one of the Agent's tools.
@@ -100,6 +103,8 @@ type ToolEndpoint struct {
 // command as the sandbox's main process, and the compiled policy.
 func BuildSpec(in SpecInput) *osv1.SandboxSpec {
 	rt := in.Agent.Spec.Runtime
+	policy := CompilePolicy(in.RouterHost, rt.Sandbox, in.Tools)
+	ApplyGitAccess(policy, in.Git)
 	return &osv1.SandboxSpec{
 		Template: &osv1.SandboxTemplate{
 			Image:        rt.OCIRef,
@@ -110,7 +115,7 @@ func BuildSpec(in SpecInput) *osv1.SandboxSpec {
 		Command:       slices.Concat(rt.Command, rt.Args),
 		RestartPolicy: osv1.SandboxRestartNever,
 		Providers:     in.Providers,
-		Policy:        CompilePolicy(in.RouterHost, rt.Sandbox, in.Tools),
+		Policy:        policy,
 	}
 }
 

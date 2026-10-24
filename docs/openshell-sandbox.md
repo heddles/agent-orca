@@ -224,6 +224,55 @@ Use `tools.inherit: false`, `tools.excludeTools` or `tools.excludeHosts` to narr
 They only affect what the sandbox can reach; the router still offers the tool to the
 LLM.
 
+### Git access to GitHub
+
+`sandbox.github` lets the agent clone, fetch and (with `push: true`) push GitHub
+repositories over HTTPS, using the operator's GitHub App:
+
+```yaml
+    sandbox:
+      github:
+        repositories: [heddles/agent-orca]
+        push: true
+```
+
+- **Token:** when the sandbox starts, the operator mints an installation token for the
+  App. It is narrowed to these repositories and to `contents: read`, or `write` with
+  `push`, and lasts one hour. The operator replaces it 15 minutes before it expires;
+  `status.sandboxGitTokenExpiry` shows the current expiry. A refreshed token reaches the
+  running sandbox from the next git command on.
+- **Placeholder:** the token goes into a per-run OpenShell provider. The workload's git is
+  configured, through `GIT_CONFIG_*` environment variables, to answer github.com
+  credential prompts with `x-access-token` and the placeholder in
+  `AGENTORCA_GIT_TOKEN`. The supervisor decodes the Basic `Authorization` header and
+  substitutes the real token.
+- **Where the token works:** only on `github.com:443`, only for `/usr/bin/git` (and its
+  helpers), and only for the listed repositories' `info/refs`, `git-upload-pack` and
+  `git-receive-pack` (the last one only with `push`). Anything else in `sandbox.egress`
+  for `github.com:443` is replaced by this endpoint.
+- **Cleanup:** when the run ends, the provider is deleted with the run's other providers.
+  The token itself expires within the hour.
+- **Branches:** limit which branches the App may push with a repository ruleset. For
+  example, block creating, updating and deleting branches outside `factory/**` for
+  everyone except repository roles, which the App does not have.
+
+To set it up:
+
+1. **Create the App:**
+   - repository permissions Contents: write and Metadata: read, with no events or
+     webhooks;
+   - install it on the repositories agents may use.
+2. **Store the App's credentials:** create a Secret in the operator namespace with
+   `app-id`, `installation-id` and `private-key` (the PEM), and set the chart value
+   `github.app.secretName` to its name. The key is mounted into the operator only.
+3. **Operator egress:** with operator egress isolation
+   (`operator.networkPolicy.oidcEgress`), the allowed CIDRs must include
+   `api.github.com`.
+
+A run whose Agent sets `sandbox.github` fails with a clear reason when the operator has
+no App configured, or when GitHub refuses the token, e.g. because the App isn't
+installed on a listed repository.
+
 ### Admission rules
 
 The Agent webhook rejects a sandboxed Agent unless:
@@ -239,6 +288,8 @@ The Agent webhook rejects a sandboxed Agent unless:
 - `runtime.framework` is `openai-compatible` or `langgraph`. `autogen` and
   `semantic-kernel` need init containers and `shim` needs hostname rewrites; sandboxes
   support neither;
+- `sandbox.github.repositories` are `owner/name` slugs under one owner (the App
+  installation's account);
 - `egress[].binaries` and `filesystem` paths are absolute, and `filesystem.readWrite`
   does not include `/`.
 

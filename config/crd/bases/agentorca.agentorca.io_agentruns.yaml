@@ -434,6 +434,13 @@ spec:
                   - provider
                   type: object
                 type: array
+              sandboxGitTokenExpiry:
+                description: |-
+                  SandboxGitTokenExpiry is when the run's current GitHub installation token
+                  expires (spec.runtime.sandbox.github). The operator mints a new one before
+                  then.
+                format: date-time
+                type: string
               sandboxName:
                 description: |-
                   SandboxName is the sandbox runtime's name for this run's sandbox when
