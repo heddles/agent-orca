@@ -128,15 +128,35 @@ See [examples/agent-sdk-template/agent.py](../examples/agent-sdk-template/agent.
 ### Go SDK
 
 ```go
-import "github.com/heddles/agent-orca/pkg/agent"
+import (
+    "github.com/heddles/agent-orca/pkg/agent"
+    "github.com/heddles/agent-orca/pkg/agent/devtools"
+)
 
 func main() {
-    agent := agent.New()
-    agent.Tool("search", "Search the web", searchHandler)
-    result := agent.Run("Find the latest news about LLMs")
-    fmt.Println(result.Status, result.Output)
+    a := agent.New() // talks to the run's model-router (OPENAI_BASE_URL)
+
+    // Tools the agent process runs itself, e.g. a shell and file editing in its
+    // sandbox. They need spec.runtime.localTools on the Agent (agent-run-tools.md).
+    tools, err := devtools.New("/sandbox/work", devtools.Options{})
+    if err != nil {
+        log.Fatal(err)
+    }
+    tools.Register(a)
+
+    result, err := a.Run(context.Background(), os.Getenv("AGENTORC_INPUT"),
+        agent.WithContinuePrompt("Continue. Call _done when the task is complete."))
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Println(result.Phase, result.Output)
 }
 ```
+
+The router keeps the conversation and runs the Agent's own tools and the
+lifecycle built-ins (`_done`, `_fail`, `_clarify`, ...). `Run` streams each turn,
+runs the tool calls the router hands back, and ends when the model replies with
+text, or, with `WithContinuePrompt`, when the router closes the run.
 
 ## 5. Discover agents & self-service run
 
