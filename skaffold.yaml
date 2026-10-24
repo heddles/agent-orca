@@ -180,6 +180,13 @@ profiles:
               # OpenShell sandboxes (gateway installed in the openshell namespace).
               openshell.enabled: "true"
               openshell.tls.secretName: openshell-client-tls
+              # Sandboxes tolerate the autoscaled coder-agent pool (pnw-dev-agents-autoscaled,
+              # tainted openshell=coder-agent:NoExecute). The pool has no label to select on,
+              # so a sandbox lands there when it does not fit the regular workers.
+              openshell.placement.tolerations[0].key: openshell
+              openshell.placement.tolerations[0].operator: Equal
+              openshell.placement.tolerations[0].value: coder-agent
+              openshell.placement.tolerations[0].effect: NoExecute
               # Authenticate model-routers to hindsight; without it every recall and
               # retain gets 401. Secret hindsight-api-key (key api-key) holds the
               # HINDSIGHT_API_TENANT_API_KEY hindsight runs with and is created out of

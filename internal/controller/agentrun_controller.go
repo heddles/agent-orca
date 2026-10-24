@@ -125,6 +125,8 @@ type AgentRunReconciler struct {
 	// spec.runtime.sandbox set. Nil when the operator has no gateway configured;
 	// such runs then fail with a clear reason.
 	Sandboxes openshell.Gateway
+	// SandboxPlacement chooses the nodes sandbox pods run on.
+	SandboxPlacement openshell.Placement
 	// ClusterDomain is the cluster DNS domain (default "cluster.local"), used to
 	// address the router Service from the sandbox namespace.
 	ClusterDomain string

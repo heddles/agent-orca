@@ -135,6 +135,15 @@ spec:
               value: {{ .Values.openshell.workspace | quote }}
             - name: OPENSHELL_SANDBOX_NAMESPACE
               value: {{ .Values.openshell.sandboxNamespace | quote }}
+            {{- with .Values.openshell.placement }}
+            {{- if or .nodeSelector .tolerations .runtimeClassName .priorityClassName }}
+            {{- /* Label values are strings; --set turns "true" into a bool. */}}
+            {{- $selector := dict }}
+            {{- range $k, $v := .nodeSelector }}{{ $_ := set $selector $k (toString $v) }}{{ end }}
+            - name: OPENSHELL_SANDBOX_PLACEMENT
+              value: {{ toJson (dict "nodeSelector" $selector "tolerations" .tolerations "runtimeClassName" .runtimeClassName "priorityClassName" .priorityClassName) | quote }}
+            {{- end }}
+            {{- end }}
             {{- if .Values.openshell.tls.secretName }}
             - name: OPENSHELL_TLS_CERT_FILE
               value: /etc/openshell/tls/tls.crt

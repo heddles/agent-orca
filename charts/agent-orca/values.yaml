@@ -175,6 +175,17 @@ openshell:
   tokenSecret:
     name: ""
     key: token
+  # Nodes sandbox pods run on, for every sandboxed agent. Requires the gateway
+  # chart's server.drivers.kubernetes.allowDriverConfig=true; a gateway without
+  # it rejects every sandbox while this is set. Example:
+  #   nodeSelector: {agentorca.io/sandbox: "true"}
+  #   tolerations:
+  #     - {key: agentorca.io/sandbox, operator: Exists, effect: NoSchedule}
+  placement:
+    nodeSelector: {}
+    tolerations: []
+    runtimeClassName: ""
+    priorityClassName: ""
 
 # Cluster DNS domain. Sandboxed agents reach their router by its fully
 # qualified Service name.
