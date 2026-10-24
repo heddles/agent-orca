@@ -18,7 +18,6 @@ package router
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
 )
 
@@ -97,6 +96,7 @@ func TestAnnounceHindsightBankOnce(t *testing.T) {
 func TestEmitHindsightTraceEventShape(t *testing.T) {
 	store := newTestStore(t)
 	r := newTracingTestRouter(t, store)
+	r.cfg.AgentName = "test-agent"
 
 	r.emitHindsightTraceEvent("recall", false, "")
 	r.emitHindsightTraceEvent("retain", true, "connect: refused")
@@ -121,8 +121,8 @@ func TestEmitHindsightTraceEventShape(t *testing.T) {
 	if events[0].Op != "recall" || events[0].Failed {
 		t.Errorf("event 0 = %+v, want recall success", events[0])
 	}
-	if !strings.Contains(events[0].BankID, "test-deployment") {
-		t.Errorf("bankID = %q, want derived from deployment name", events[0].BankID)
+	if events[0].BankID != r.cfg.RunNamespace+"--test-agent" {
+		t.Errorf("bankID = %q, want the agent-level bank %q", events[0].BankID, r.cfg.RunNamespace+"--test-agent")
 	}
 	if events[1].Op != "retain" || !events[1].Failed || events[1].Reason != "connect: refused" {
 		t.Errorf("event 1 = %+v, want retain failure with reason", events[1])

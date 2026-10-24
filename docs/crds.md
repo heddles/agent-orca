@@ -180,6 +180,7 @@ spec:
 | `memory.episodicSummaryEvery` | Summarize conversation every N turns to compress context (0 disables) |
 | `memory.summaryModelSelectorRef` | ModelSelector for summarization calls (defaults to agent's own) |
 | `memory.longTermMemoryRef` | KnowledgeBase name for persistent cross-session memory |
+| `memory.hindsight` | Opt-in [hindsight](hindsight-auth.md) memory: recall before each LLM call and retain each turn, in one bank per Agent (`bankIdTemplate`, default `{namespace}--{agent-name}`), up to `recallBudget` memories (default 5) within `recallMaxTokens` (default 1024). Off unless set; `enabled` defaults to true once the block is present |
 | `knowledgeBases` | KnowledgeBase names; injects `_rag_search` / `_rag_ingest` tools |
 | `guardrailPolicyRef` | GuardrailPolicy name for input/output content filtering |
 | `cloudAuth` | Cloud identity for the agent's SA (GCP/AWS/Azure) |

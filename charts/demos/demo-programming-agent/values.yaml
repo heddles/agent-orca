@@ -188,6 +188,10 @@ agent-orca-resources:
       memory:
         checkpointEvery: 5
         resumeWindowSeconds: 3600
+        # Hindsight memory is opt-in per Agent; this one keeps a bank across
+        # chats (agent-orca-system--senior-programmer).
+        hindsight:
+          enabled: true
       resources:
         requests:
           cpu: 100m
