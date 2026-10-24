@@ -199,6 +199,16 @@ github:
     # https://<host>/api/v3
     apiURL: ""
 
+# Egress approvals (SandboxClass spec.approval; needs PostgreSQL).
+approvals:
+  # Secret holding an incoming-webhook URL (e.g. Slack) that gets a message for
+  # each request waiting for a person. Empty: no notifications.
+  notifyWebhookSecret:
+    name: ""
+    key: url
+  # Public base URL of the UI, for links to the approvals inbox in messages.
+  uiURL: ""
+
 # Cluster DNS domain. Sandboxed agents reach their router by its fully
 # qualified Service name.
 clusterDomain: cluster.local

@@ -698,3 +698,59 @@ export async function getResource(kind: ResourceKind, namespace: string, name: s
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json()
 }
+
+// ── Approvals (G2) ───────────────────────────────────────────────────────────
+
+/** What a sandbox asked for, as stored in an egress approval's details. */
+export interface EgressRequestDetails {
+  sandbox?: string
+  chunkID?: string
+  rule?: string
+  hosts?: string[]
+  binaries?: string[]
+  rationale?: string
+  securityNotes?: string
+  validation?: string
+  hits?: number
+  lastSeen?: string
+}
+
+/** A request for a decision, e.g. egress a sandbox's policy does not allow. */
+export interface Approval {
+  id: string
+  namespace: string
+  runName: string
+  kind: string
+  summary: string
+  details?: EgressRequestDetails
+  approverGroups: string[]
+  status: 'pending' | 'approved' | 'rejected' | 'expired' | 'withdrawn'
+  requestedAt: string
+  expiresAt: string
+  decidedBy?: string
+  decidedAt?: string
+  reason?: string
+  appliedAt?: string
+}
+
+/** Lists approvals in the caller's namespaces. status '' lists every status. */
+export async function listApprovals(status = 'pending'): Promise<Approval[]> {
+  const res = await apiFetch(`/api/approvals?status=${encodeURIComponent(status)}`)
+  if (!res.ok) throw new Error(res.status === 503 ? 'not configured' : `HTTP ${res.status}`)
+  const body = await res.json()
+  return body.approvals ?? []
+}
+
+/** Approves or rejects a pending approval as the signed-in user. */
+export async function decideApproval(id: string, action: 'approve' | 'reject', reason: string): Promise<Approval> {
+  const res = await apiFetch(`/api/approvals/${encodeURIComponent(id)}/${action}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason }),
+  })
+  if (!res.ok) {
+    const text = (await res.text()).trim()
+    throw new Error(text || `HTTP ${res.status}`)
+  }
+  return res.json()
+}

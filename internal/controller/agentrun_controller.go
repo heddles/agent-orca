@@ -132,6 +132,8 @@ type AgentRunReconciler struct {
 	// Approvals stores egress approvals (PostgreSQL). Nil disables them: the
 	// sandbox's denied requests stay denied.
 	Approvals ApprovalStore
+	// ApprovalNotifier tells approvers about new pending approvals. Optional.
+	ApprovalNotifier ApprovalNotifier
 	// GitHubApp mints the installation tokens of sandboxes with
 	// spec.runtime.sandbox.github. Nil when no GitHub App is configured.
 	GitHubApp GitHubTokenMinter

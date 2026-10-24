@@ -194,6 +194,23 @@ Approvals are stored in PostgreSQL (the `approvals` table, which needs `postgres
 and are the audit record of who decided what, when and why. Without PostgreSQL they're
 off, and denied requests stay denied.
 
+**In the UI**, the **Approvals** tab is the inbox. Its badge counts pending requests,
+and each request shows:
+- the destination and the process asking;
+- the gateway's rationale and policy-prover result, plus any security notes;
+- the attempt count;
+- who may decide, and when the request expires.
+
+Approve or Reject with a reason. **Recent** lists decided requests with who decided and
+why. `?tab=approvals` links straight to the inbox.
+
+**Notifications:** set the chart's `approvals.notifyWebhookSecret` to a Secret holding a
+Slack incoming-webhook URL (key `url`) to get one message per request that needs a
+person. Auto-approved requests and repeats don't send one. The message names the
+namespace, run, request, approver groups and deadline. With `approvals.uiURL` set, it
+links to the inbox. Any webhook receiver works: the body is `{"text": ..., "approval":
+{...}}`.
+
 The UI API serves them:
 
 | Request | |

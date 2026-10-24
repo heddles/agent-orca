@@ -53,6 +53,9 @@ func TestApprovalsAgainstPostgres(t *testing.T) {
 		ApproverGroups: []string{"platform"}, ExpiresAt: time.Now().Add(30 * time.Minute),
 	}
 	a, err := s.RequestApproval(ctx, req)
+	if !a.Created {
+		t.Error("first request not reported as created")
+	}
 	if err != nil || a.Status != ApprovalPending || a.ID == "" || a.ApproverGroups[0] != "platform" {
 		t.Fatalf("request = %+v, %v", a, err)
 	}
@@ -62,6 +65,9 @@ func TestApprovalsAgainstPostgres(t *testing.T) {
 	again, err := s.RequestApproval(ctx, req)
 	if err != nil || again.ID != a.ID || string(again.Details) != `{"hits": 5}` {
 		t.Fatalf("repeat = %+v (details %s), %v; want the same row with new details", again, again.Details, err)
+	}
+	if again.Created {
+		t.Error("a repeat was reported as created")
 	}
 
 	if list, err := s.ListApprovals(ctx, ApprovalQuery{Namespaces: []string{"team-b"}}); err != nil || len(list) != 0 {

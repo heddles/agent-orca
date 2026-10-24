@@ -63,6 +63,9 @@ type Approval struct {
 	DecidedAt      *time.Time      `json:"decidedAt,omitempty"`
 	Reason         string          `json:"reason,omitempty"`
 	AppliedAt      *time.Time      `json:"appliedAt,omitempty"`
+	// Created is set by RequestApproval when the request is new rather than a
+	// repeat of an existing one.
+	Created bool `json:"-"`
 }
 
 const approvalColumns = `id, COALESCE(tenant, ''), namespace, run_name, kind, source_key, summary, details,
@@ -117,10 +120,23 @@ INSERT INTO approvals (id, tenant, namespace, run_name, kind, source_key, summar
 	approver_groups, status, expires_at, decided_by, decided_at, reason)
 VALUES ($1, NULLIF($2, ''), $3, $4, $5, $6, $7, $8, $9, $10, $11, NULLIF($12, ''), $13, NULLIF($14, ''))
 ON CONFLICT (kind, source_key) DO UPDATE SET details = EXCLUDED.details
-RETURNING `+approvalColumns,
+RETURNING `+approvalColumns+`, (xmax = 0)`,
 		a.ID, a.Tenant, a.Namespace, a.RunName, a.Kind, a.SourceKey, a.Summary, []byte(a.Details),
 		groups, a.Status, a.ExpiresAt, a.DecidedBy, decidedAt, a.Reason)
-	return scanApproval(row)
+	var created bool
+	stored, err := scanApproval(rowWithExtra{row, &created})
+	stored.Created = created
+	return stored, err
+}
+
+// rowWithExtra scans an approval row followed by extra columns.
+type rowWithExtra struct {
+	row   *sql.Row
+	extra *bool
+}
+
+func (r rowWithExtra) Scan(dest ...any) error {
+	return r.row.Scan(append(dest, r.extra)...)
 }
 
 // ApprovalQuery filters ListApprovals. Empty fields match everything.

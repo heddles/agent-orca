@@ -190,86 +190,94 @@ func (r *AgentRunReconciler) reconcileEgressApprovals(ctx context.Context, run *
 	if r.Approvals == nil || sb == nil || sb.Name == "" {
 		return
 	}
-	logger := log.FromContext(ctx)
 	class, err := r.sandboxClass(ctx, run, agent)
 	if err != nil || class == nil || class.Spec.Approval == nil {
 		return
 	}
-	cfg := class.Spec.Approval
-	timeout := defaultApprovalTimeout
-	if cfg.Timeout != nil && cfg.Timeout.Duration > 0 {
-		timeout = cfg.Timeout.Duration
-	}
-
 	chunks, err := r.Sandboxes.PendingDrafts(ctx, sb.Name)
 	if err != nil {
-		logger.Error(err, "reading sandbox policy drafts", "sandbox", sb.Name)
+		log.FromContext(ctx).Error(err, "reading sandbox policy drafts", "sandbox", sb.Name)
 		return
 	}
 	pending := map[string]osv1.PolicyChunk{}
 	for _, ch := range chunks {
 		pending[ch.ID] = ch
-		req := describeChunk(sb.Name, ch)
-		details, _ := json.Marshal(req)
-		a := postgresql.Approval{
-			Tenant:         run.Labels["agentorca.io/tenant"],
-			Namespace:      run.Namespace,
-			RunName:        run.Name,
-			Kind:           postgresql.ApprovalKindEgress,
-			SourceKey:      sb.Name + "/" + ch.ID,
-			Summary:        req.summary(),
-			Details:        details,
-			ApproverGroups: cfg.ApproverGroups,
-			ExpiresAt:      time.Now().Add(timeout),
-		}
-		if autoApproves(cfg.AutoApprove, ch) {
-			now := time.Now()
-			a.Status, a.DecidedBy, a.DecidedAt = postgresql.ApprovalApproved, "auto-approve (SandboxClass "+class.Name+")", &now
-			a.Reason = "matched an auto-approve rule"
-		}
-		if _, err := r.Approvals.RequestApproval(ctx, a); err != nil {
-			logger.Error(err, "recording egress approval", "sandbox", sb.Name, "chunk", ch.ID)
-		}
+		r.recordEgressDraft(ctx, run, class, sb.Name, ch)
 	}
-
-	approvals, err := r.Approvals.ListApprovals(ctx, postgresql.ApprovalQuery{Namespace: run.Namespace, RunName: run.Name})
+	waiting, err := r.applyEgressDecisions(ctx, run, sb.Name, pending)
 	if err != nil {
-		logger.Error(err, "listing the run's approvals")
+		log.FromContext(ctx).Error(err, "listing the run's approvals")
 		return
 	}
+	r.setWaitingForApproval(ctx, run, waiting)
+}
+
+// recordEgressDraft stores a draft as an approval: approved at once when an
+// auto-approve rule matches, else pending, notifying approvers the first time.
+func (r *AgentRunReconciler) recordEgressDraft(ctx context.Context, run *agentorcav1alpha1.AgentRun, class *agentorcav1alpha1.SandboxClass, sandbox string, ch osv1.PolicyChunk) {
+	cfg := class.Spec.Approval
+	timeout := defaultApprovalTimeout
+	if cfg.Timeout != nil && cfg.Timeout.Duration > 0 {
+		timeout = cfg.Timeout.Duration
+	}
+	req := describeChunk(sandbox, ch)
+	details, _ := json.Marshal(req)
+	a := postgresql.Approval{
+		Tenant:         run.Labels["agentorca.io/tenant"],
+		Namespace:      run.Namespace,
+		RunName:        run.Name,
+		Kind:           postgresql.ApprovalKindEgress,
+		SourceKey:      sandbox + "/" + ch.ID,
+		Summary:        req.summary(),
+		Details:        details,
+		ApproverGroups: cfg.ApproverGroups,
+		ExpiresAt:      time.Now().Add(timeout),
+	}
+	if autoApproves(cfg.AutoApprove, ch) {
+		now := time.Now()
+		a.Status, a.DecidedBy, a.DecidedAt = postgresql.ApprovalApproved, "auto-approve (SandboxClass "+class.Name+")", &now
+		a.Reason = "matched an auto-approve rule"
+	}
+	logger := log.FromContext(ctx)
+	stored, err := r.Approvals.RequestApproval(ctx, a)
+	if err != nil {
+		logger.Error(err, "recording egress approval", "sandbox", sandbox, "chunk", ch.ID)
+		return
+	}
+	if stored.Created && stored.Status == postgresql.ApprovalPending && r.ApprovalNotifier != nil {
+		if err := r.ApprovalNotifier.NotifyApproval(ctx, stored); err != nil {
+			logger.Error(err, "notifying approvers", "approval", stored.ID)
+		}
+	}
+}
+
+// applyEgressDecisions applies the run's decided, unapplied approvals to the
+// sandbox's drafts, expiring overdue ones, and returns how many still wait.
+func (r *AgentRunReconciler) applyEgressDecisions(ctx context.Context, run *agentorcav1alpha1.AgentRun, sandbox string, pending map[string]osv1.PolicyChunk) (int, error) {
+	approvals, err := r.Approvals.ListApprovals(ctx, postgresql.ApprovalQuery{Namespace: run.Namespace, RunName: run.Name})
+	if err != nil {
+		return 0, err
+	}
+	logger := log.FromContext(ctx)
 	waiting := 0
 	for _, a := range approvals {
-		if a.Kind != postgresql.ApprovalKindEgress || a.AppliedAt != nil || !strings.HasPrefix(a.SourceKey, sb.Name+"/") {
+		if a.Kind != postgresql.ApprovalKindEgress || a.AppliedAt != nil || !strings.HasPrefix(a.SourceKey, sandbox+"/") {
 			continue
 		}
-		chunkID := strings.TrimPrefix(a.SourceKey, sb.Name+"/")
-		ch, open := pending[chunkID]
 		if a.Status == postgresql.ApprovalPending && time.Now().After(a.ExpiresAt) {
 			if decided, err := r.Approvals.DecideApproval(ctx, a.ID, postgresql.ApprovalExpired, "", "no decision within the approval timeout"); err == nil {
 				a = decided
 			}
 		}
-		var applyErr error
-		switch a.Status {
-		case postgresql.ApprovalPending:
+		if a.Status == postgresql.ApprovalPending {
 			waiting++
 			continue
-		case postgresql.ApprovalApproved:
-			if open {
-				applyErr = r.Sandboxes.ApproveDraft(ctx, sb.Name, ch.ID, ch.ReviewToken)
-			}
-		default: // rejected, expired, withdrawn
-			if open {
-				reason := a.Reason
-				if reason == "" {
-					reason = a.Status
-				}
-				applyErr = r.Sandboxes.RejectDraft(ctx, sb.Name, ch.ID, reason)
-			}
 		}
-		if applyErr != nil {
-			logger.Error(applyErr, "applying an egress decision", "approval", a.ID)
-			continue
+		if ch, open := pending[strings.TrimPrefix(a.SourceKey, sandbox+"/")]; open {
+			if err := r.applyEgressDecision(ctx, sandbox, ch, a); err != nil {
+				logger.Error(err, "applying an egress decision", "approval", a.ID)
+				continue
+			}
 		}
 		if err := r.Approvals.MarkApprovalApplied(ctx, a.ID); err != nil {
 			logger.Error(err, "marking an egress decision applied", "approval", a.ID)
@@ -278,7 +286,19 @@ func (r *AgentRunReconciler) reconcileEgressApprovals(ctx context.Context, run *
 			r.Recorder.Eventf(run, corev1.EventTypeNormal, "EgressApproval", "%s: %s (%s)", a.Status, a.Summary, a.DecidedBy)
 		}
 	}
-	r.setWaitingForApproval(ctx, run, waiting)
+	return waiting, nil
+}
+
+// applyEgressDecision approves or declines one draft at the gateway.
+func (r *AgentRunReconciler) applyEgressDecision(ctx context.Context, sandbox string, ch osv1.PolicyChunk, a postgresql.Approval) error {
+	if a.Status == postgresql.ApprovalApproved {
+		return r.Sandboxes.ApproveDraft(ctx, sandbox, ch.ID, ch.ReviewToken)
+	}
+	reason := a.Reason
+	if reason == "" {
+		reason = a.Status
+	}
+	return r.Sandboxes.RejectDraft(ctx, sandbox, ch.ID, reason)
 }
 
 // setWaitingForApproval keeps the run's WaitingForApproval condition current.

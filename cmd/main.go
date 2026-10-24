@@ -447,6 +447,10 @@ func main() {
 	if pgStore != nil {
 		approvals = pgStore
 	}
+	var approvalNotifier controller.ApprovalNotifier
+	if u := os.Getenv("APPROVALS_NOTIFY_WEBHOOK_URL"); u != "" {
+		approvalNotifier = &controller.WebhookApprovalNotifier{URL: u, UIURL: os.Getenv("APPROVALS_UI_URL")}
+	}
 	var gitHubApp controller.GitHubTokenMinter
 	if dir := os.Getenv("GITHUB_APP_DIR"); dir != "" {
 		app, err := githubapp.FromDir(dir, os.Getenv("GITHUB_API_URL"))
@@ -481,6 +485,7 @@ func main() {
 		SandboxPlacement:           sandboxPlacement,
 		GitHubApp:                  gitHubApp,
 		Approvals:                  approvals,
+		ApprovalNotifier:           approvalNotifier,
 		ClusterDomain:              os.Getenv("CLUSTER_DOMAIN"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "AgentRun")

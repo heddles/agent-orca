@@ -128,6 +128,19 @@ spec:
             {{- end }}
             - name: CLUSTER_DOMAIN
               value: {{ .Values.clusterDomain | default "cluster.local" | quote }}
+            {{- with .Values.approvals }}
+            {{- if .notifyWebhookSecret.name }}
+            - name: APPROVALS_NOTIFY_WEBHOOK_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .notifyWebhookSecret.name | quote }}
+                  key: {{ .notifyWebhookSecret.key | default "url" | quote }}
+            {{- end }}
+            {{- with .uiURL }}
+            - name: APPROVALS_UI_URL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- end }}
             {{- if .Values.github.app.secretName }}
             - name: GITHUB_APP_DIR
               value: /etc/github-app
