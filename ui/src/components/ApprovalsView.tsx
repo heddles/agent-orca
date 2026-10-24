@@ -141,6 +141,12 @@ function PendingCard({ approval: a, onDecided, onNavigateToRun }: {
       </div>
 
       <dl style={s.facts}>
+        {a.kind === 'budget' && d.spentUSD && <Fact label="Spent" value={`$${d.spentUSD}`} mono />}
+        {a.kind === 'budget' && d.capUSD && <Fact label="Current cap" value={`$${d.capUSD}`} mono />}
+        {a.kind === 'budget' && d.newCapUSD && (
+          <Fact label="If approved" value={`cap rises by $${d.raiseByUSD} to $${d.newCapUSD}; the run resumes`} />
+        )}
+        {a.kind === 'budget' && <Fact label="If rejected" value="the run fails" />}
         {d.hosts && d.hosts.length > 0 && <Fact label="Destination" value={d.hosts.join(', ')} mono />}
         {d.binaries && d.binaries.length > 0 && <Fact label="Process" value={d.binaries.join(', ')} mono />}
         {d.rationale && <Fact label="Why" value={d.rationale} />}

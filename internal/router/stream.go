@@ -304,7 +304,8 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 		return
 	}
 
-	if !isContinuation {
+	// A budget pause may already have begun the response to hold it open.
+	if !isContinuation && !r.sseStarted.Swap(false) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")

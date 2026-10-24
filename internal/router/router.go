@@ -81,6 +81,11 @@ type Router struct {
 	turnLocalTools    map[string]bool // agent-run tools the current turn's request declared (local_tools.go)
 	mu                sync.Mutex
 	spendUSD          float64
+	budgetCap         float64       // current spend cap; 0 until the operator reports one (see budget.go)
+	budgetWarned      bool          // the warning for the current cap was sent
+	budgetSynced      bool          // the cap was read from the operator once
+	budgetPoll        time.Duration // how often a paused run asks the operator for the cap (tests shorten it)
+	sseStarted        atomic.Bool   // a budget pause already began the SSE response of the current request
 	checkpointTTL     time.Duration
 	handedOff         bool // set to true when _handoff tool completes; short-circuits further LLM calls
 	waitingForInput   bool // set to true when _clarify tool completes; short-circuits further LLM calls
@@ -825,6 +830,7 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 	if !isContinuation {
 		r.streamingActive.Store(true)
 		defer r.streamingActive.Store(false)
+		r.sseStarted.Store(false)
 	}
 
 	// Conversation state (#47): r.priorMessages is the history before this turn
@@ -930,6 +936,11 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 	// copy so redacted content is what gets stored.
 	if len(turnInput) > 0 {
 		turnInput = slices.Clone(chatReq.Messages[len(chatReq.Messages)-len(turnInput):])
+	}
+
+	// A run at its budget is halted or held here, before another LLM call is paid for.
+	if !r.checkBudget(w, req, isContinuation) {
+		return
 	}
 
 	// Select the best provider.
@@ -1336,6 +1347,7 @@ func (r *Router) recordSpend(usage TokenUsage, provider *ProviderConfig, outcome
 	spent := float64(usage.PromptTokens)*provider.CostPerInputToken +
 		float64(usage.CompletionTokens)*provider.CostPerOutputToken
 	r.spendUSD += spent
+	r.noteBudgetSpendLocked()
 	r.ruleRouter.UpdateSpend(spent)
 	r.metrics.AddSpend(r.cfg.RunNamespace, r.cfg.RunName, provider.Name, provider.LiteLLMModel, outcome, spent)
 	r.flushSpend("failed to persist spend")

@@ -479,6 +479,12 @@ func (r *AgentRunReconciler) checkProgress(ctx context.Context, run *agentorcav1
 	if ld := run.Status.LoopDetected; ld != nil {
 		return r.failRun(ctx, run, "safeguard: "+ld.Reason)
 	}
+	if res, err := r.reconcileBudget(ctx, run); res != nil || err != nil {
+		if res == nil {
+			return ctrl.Result{}, err
+		}
+		return *res, err
+	}
 	if run.Status.SandboxName != "" {
 		return r.checkSandboxProgress(ctx, run, agent)
 	}
@@ -1218,6 +1224,7 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 		MetaRouterProviderName:     metaRouterProvider,
 		MetaRouterThreshold:        threshold,
 		BudgetPerRunUSD:            budget,
+		Budget:                     routerBudget(run, r.Approvals != nil),
 		ToolDefinitions:            toolDefs,
 		MCPServers:                 mcpServers,
 		CheckpointEvery:            checkpointEvery,

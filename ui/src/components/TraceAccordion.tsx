@@ -43,6 +43,7 @@ const TRACE_FILTERS = [
   { key: 'guardrails', label: 'Guardrails' },
   { key: 'fallbacks', label: 'Fallbacks' },
   { key: 'network', label: 'Network' },
+  { key: 'budget', label: 'Budget' },
   { key: 'errors', label: 'Errors' },
 ] as const
 type TraceFilter = typeof TRACE_FILTERS[number]['key']
@@ -90,6 +91,7 @@ export function TraceAccordion({ entries, streaming, markdown }: Props) {
       case 'guardrails': return ev.type === 'guardrail'
       case 'fallbacks': return ev.type === 'providerFallback'
       case 'network': return ev.type === 'egress'
+      case 'budget': return ev.type === 'budget'
       case 'errors': return ev.type === STREAM_EVENT_TYPE.error || ev.type === STREAM_EVENT_TYPE.fail
       default: return true
     }
@@ -440,7 +442,29 @@ function TraceRow({ entry, markdown }: { entry: TraceEntry; markdown: boolean })
             <span style={hi}>{denied ? 'blocked' : 'allowed'}</span> {target || event.raw}
             {event.binary ? <> by {event.binary}</> : null}
             {event.policy ? <> ({event.policy})</> : null}
-            {denied && event.reason ? <> 2014 {event.reason}</> : null}
+            {denied && event.reason ? <> — {event.reason}</> : null}
+          </span>
+        </div>
+      )
+    }
+    case 'budget': {
+      const copy: Record<string, string> = {
+        warning: 'budget warning',
+        exceeded: 'budget reached, paused for approval',
+        resumed: 'budget raised, resuming',
+        rejected: 'budget raise declined, run ending',
+      }
+      const bad = event.state === 'exceeded' || event.state === 'rejected'
+      return (
+        <div style={row}>
+          <span style={muted}>{time}</span>
+          <Icon
+            icon={event.state === 'resumed' ? ICON.check : event.state === 'rejected' ? ICON.stop : ICON.warning}
+            size={14}
+            color={bad ? 'var(--ds-error)' : event.state === 'resumed' ? 'var(--ds-success)' : 'var(--ds-warning)'}
+          />
+          <span style={content}>
+            <span style={hi}>{copy[event.state] ?? event.state}</span> — ${event.spentUSD} spent of ${event.capUSD}
           </span>
         </div>
       )

@@ -129,6 +129,95 @@ type AgentRunSpec struct {
 	// Independent of webhook callbacks — both can be configured simultaneously.
 	// +optional
 	Egress *EgressConfig `json:"egress,omitempty"`
+
+	// Budget caps the run's model spend. When the cap is reached the run fails or
+	// pauses for approval, per budget.onExceeded. Without it the run is not capped
+	// (the ModelSelector's budgetCap only steers routing).
+	// +optional
+	Budget *RunBudget `json:"budget,omitempty"`
+}
+
+// RunBudgetAction is what happens when a run reaches its budget.
+// +kubebuilder:validation:Enum=fail;pause
+type RunBudgetAction string
+
+const (
+	// RunBudgetFail halts the run, like a safeguard trip.
+	RunBudgetFail RunBudgetAction = "fail"
+	// RunBudgetPause holds the run (its agent keeps waiting, with sandbox and
+	// workspace intact) and asks approvers to raise the cap or close it.
+	RunBudgetPause RunBudgetAction = "pause"
+)
+
+// RunBudget caps an AgentRun's model spend.
+type RunBudget struct {
+	// MaxUSD is the spend, in USD, at which the run fails or pauses. Example: "2.50".
+	// +kubebuilder:validation:Pattern=`^[0-9]+(\.[0-9]+)?$`
+	MaxUSD string `json:"maxUSD"`
+
+	// WarnAtPercent is the share of the cap at which a warning is emitted (a
+	// trace event and a Kubernetes event). Default 80.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=99
+	// +kubebuilder:default=80
+	// +optional
+	WarnAtPercent int `json:"warnAtPercent,omitempty"`
+
+	// OnExceeded is what happens at the cap: "fail" (default) halts the run;
+	// "pause" holds it until an approver raises the cap or the pause times out.
+	// Pausing needs PostgreSQL (approvals are stored there); without it a run that
+	// reaches its cap fails.
+	// +kubebuilder:default=fail
+	// +optional
+	OnExceeded RunBudgetAction `json:"onExceeded,omitempty"`
+
+	// RaiseByUSD is how much one approval adds to the cap. Defaults to MaxUSD.
+	// +kubebuilder:validation:Pattern=`^[0-9]+(\.[0-9]+)?$`
+	// +optional
+	RaiseByUSD string `json:"raiseByUSD,omitempty"`
+
+	// PauseTimeout is how long a paused run waits for a decision before it fails.
+	// Default 24h.
+	// +optional
+	PauseTimeout *metav1.Duration `json:"pauseTimeout,omitempty"`
+
+	// ApproverGroups are the identity-provider groups whose members may decide a
+	// raise. Empty lets any user with access to the run's namespace decide.
+	// +optional
+	ApproverGroups []string `json:"approverGroups,omitempty"`
+}
+
+// RunBudgetState is where a run stands against its budget.
+// +kubebuilder:validation:Enum=ok;warning;exceeded
+type RunBudgetState string
+
+// Run budget states.
+const (
+	RunBudgetOK       RunBudgetState = "ok"
+	RunBudgetWarning  RunBudgetState = "warning"
+	RunBudgetExceeded RunBudgetState = "exceeded"
+)
+
+// RunBudgetStatus is the observed state of a run's budget.
+type RunBudgetStatus struct {
+	// State is ok, warning (past warnAtPercent) or exceeded (paused or failing).
+	State RunBudgetState `json:"state"`
+
+	// CapUSD is the current cap: spec.budget.maxUSD plus the approved raises. Only
+	// the operator sets it, never the model-router.
+	CapUSD string `json:"capUSD"`
+
+	// SpentUSD is the spend the model-router last reported.
+	// +optional
+	SpentUSD string `json:"spentUSD,omitempty"`
+
+	// Raises counts the approved raises.
+	// +optional
+	Raises int `json:"raises,omitempty"`
+
+	// UpdatedAt is when the router last reported.
+	// +optional
+	UpdatedAt *metav1.Time `json:"updatedAt,omitempty"`
 }
 
 // CallbackConfig defines webhooks triggered on AgentRun completion.
@@ -265,6 +354,10 @@ type AgentRunStatus struct {
 	// WaitingForInput (for audit) and the continuation carries the work forward.
 	// +optional
 	ContinuationRunRef string `json:"continuationRunRef,omitempty"`
+
+	// Budget is the run's standing against spec.budget.
+	// +optional
+	Budget *RunBudgetStatus `json:"budget,omitempty"`
 
 	// LoopDetected is set when the run was halted by a safeguard trip.
 	// The run phase will be Failed when this is set.

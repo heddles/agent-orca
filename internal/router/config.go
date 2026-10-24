@@ -69,8 +69,13 @@ type Config struct {
 	// MetaRouterThreshold is the minimum rule-router confidence below which meta-router is invoked.
 	MetaRouterThreshold float64
 
-	// BudgetPerRunUSD is the maximum USD spend for this run (0 = unlimited).
+	// BudgetPerRunUSD is the maximum USD spend for this run (0 = unlimited). It
+	// only steers routing toward cheaper models; Budget enforces a cap.
 	BudgetPerRunUSD float64
+
+	// Budget enforces a spend cap on the run (AgentRun.spec.budget); nil means
+	// the run is not capped.
+	Budget *BudgetConfig `json:"budget,omitempty"`
 
 	// ToolDefinitions are the OpenAI function definitions to inject into every chat completion.
 	// Built by the operator from Tool CRDs, MCP tool lists, and agent-as-tool schemas.

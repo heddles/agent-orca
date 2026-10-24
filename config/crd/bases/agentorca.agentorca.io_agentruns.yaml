@@ -63,6 +63,56 @@ spec:
                 description: AgentRef names the Agent to run.
                 minLength: 1
                 type: string
+              budget:
+                description: |-
+                  Budget caps the run's model spend. When the cap is reached the run fails or
+                  pauses for approval, per budget.onExceeded. Without it the run is not capped
+                  (the ModelSelector's budgetCap only steers routing).
+                properties:
+                  approverGroups:
+                    description: |-
+                      ApproverGroups are the identity-provider groups whose members may decide a
+                      raise. Empty lets any user with access to the run's namespace decide.
+                    items:
+                      type: string
+                    type: array
+                  maxUSD:
+                    description: 'MaxUSD is the spend, in USD, at which the run fails
+                      or pauses. Example: "2.50".'
+                    pattern: ^[0-9]+(\.[0-9]+)?$
+                    type: string
+                  onExceeded:
+                    default: fail
+                    description: |-
+                      OnExceeded is what happens at the cap: "fail" (default) halts the run;
+                      "pause" holds it until an approver raises the cap or the pause times out.
+                      Pausing needs PostgreSQL (approvals are stored there); without it a run that
+                      reaches its cap fails.
+                    enum:
+                    - fail
+                    - pause
+                    type: string
+                  pauseTimeout:
+                    description: |-
+                      PauseTimeout is how long a paused run waits for a decision before it fails.
+                      Default 24h.
+                    type: string
+                  raiseByUSD:
+                    description: RaiseByUSD is how much one approval adds to the cap.
+                      Defaults to MaxUSD.
+                    pattern: ^[0-9]+(\.[0-9]+)?$
+                    type: string
+                  warnAtPercent:
+                    default: 80
+                    description: |-
+                      WarnAtPercent is the share of the cap at which a warning is emitted (a
+                      trace event and a Kubernetes event). Default 80.
+                    maximum: 99
+                    minimum: 1
+                    type: integer
+                required:
+                - maxUSD
+                type: object
               callbacks:
                 description: Callbacks configures webhooks invoked on run completion.
                 properties:
@@ -223,6 +273,36 @@ spec:
           status:
             description: AgentRunStatus defines the observed state of an AgentRun.
             properties:
+              budget:
+                description: Budget is the run's standing against spec.budget.
+                properties:
+                  capUSD:
+                    description: |-
+                      CapUSD is the current cap: spec.budget.maxUSD plus the approved raises. Only
+                      the operator sets it, never the model-router.
+                    type: string
+                  raises:
+                    description: Raises counts the approved raises.
+                    type: integer
+                  spentUSD:
+                    description: SpentUSD is the spend the model-router last reported.
+                    type: string
+                  state:
+                    description: State is ok, warning (past warnAtPercent) or exceeded
+                      (paused or failing).
+                    enum:
+                    - ok
+                    - warning
+                    - exceeded
+                    type: string
+                  updatedAt:
+                    description: UpdatedAt is when the router last reported.
+                    format: date-time
+                    type: string
+                required:
+                - capUSD
+                - state
+                type: object
               checkpointRef:
                 description: |-
                   CheckpointRef is the storage key of the latest conversation checkpoint.
