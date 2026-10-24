@@ -1193,6 +1193,7 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 		AgentSAName:                saName,
 		AgentName:                  agent.Name,
 		DisableClarify:             agent.Spec.DisableClarify,
+		LocalTools:                 agent.Spec.Runtime.LocalTools,
 		Providers:                  providers,
 		Strategy:                   selector.Spec.Strategy,
 		CapabilityRouting:          selector.Spec.CapabilityRouting,

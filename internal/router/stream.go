@@ -36,6 +36,9 @@ const maxRateLimitRetries = 3
 // finishReasonStop is the canonical OpenAI finish reason for a completed turn.
 const finishReasonStop = "stop"
 
+// finishReasonToolCalls is the OpenAI finish reason for a turn that ends in tool calls.
+const finishReasonToolCalls = "tool_calls"
+
 // traceEventTypeDone is the schema-aligned completion signal trace event.
 const traceEventTypeDone = "done"
 
@@ -327,6 +330,12 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 	// is a faithful, merge-independent terminal detector.
 	var sawToolCall bool
 
+	// Agent tools declared for this turn (local_tools.go); nil when the agent
+	// runs none.
+	r.mu.Lock()
+	localTools := r.turnLocalTools
+	r.mu.Unlock()
+
 	scanner := bufio.NewScanner(resp.Body)
 	// Allow large SSE lines (up to 1MB).
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -397,6 +406,16 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 				if chunk.Usage != nil {
 					usage = *chunk.Usage
 				}
+				// An agent that runs its own tools gets only its calls, sent
+				// once the turn's tool calls are known (returnToolCallsToAgent).
+				if localTools != nil {
+					if stripped, changed := stripToolCallDeltas(chunk); changed {
+						if stripped == nil {
+							continue
+						}
+						line = "data: " + string(stripped)
+					}
+				}
 			}
 		}
 
@@ -447,6 +466,10 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 	// event — and the run phase moves to WaitingForInput, so TailTokens closes via
 	// that event (and/or the CRD terminal-state poller). No empty-token sentinel is
 	// written here either.
+
+	if localTools != nil {
+		ensureToolCallIDs(toolCalls)
+	}
 
 	// Build the complete message for conversation history.
 	assistantMsg := Message{
@@ -580,8 +603,9 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 	// change alters index handling.
 	if len(toolCalls) > 0 {
 
-		toolResults := make([]Message, len(toolCalls))
-		for i, tc := range toolCalls {
+		toolResults := make([]Message, 0, len(toolCalls))
+		var agentCalls []ToolCall
+		for _, tc := range toolCalls {
 			r.mu.Lock()
 			trip := r.recordToolCallLocked(tc)
 			r.mu.Unlock()
@@ -590,30 +614,43 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 				writeSafeguardHalt(w, flusher, *trip)
 				return
 			}
+			if localTools[tc.Function.Name] {
+				agentCalls = append(agentCalls, tc)
+				continue
+			}
 			result := r.dispatchToolCall(req.Context(), tc)
 
-			// Stream tool call delta to client
-			toolChunk := streamingChatCompletionChunk{
-				ID:     "tool-call-" + tc.ID,
-				Object: "chat.completion.chunk",
-				Choices: []streamChoice{{
-					Index: 0,
-					Delta: streamDelta{ToolCalls: []ToolCall{tc}},
-				}},
+			// Stream tool call delta to client, unless it runs its own tools:
+			// it would take the router's call for one of its own.
+			if localTools == nil {
+				toolChunk := streamingChatCompletionChunk{
+					ID:     "tool-call-" + tc.ID,
+					Object: "chat.completion.chunk",
+					Choices: []streamChoice{{
+						Index: 0,
+						Delta: streamDelta{ToolCalls: []ToolCall{tc}},
+					}},
+				}
+				data, _ := json.Marshal(toolChunk)
+				_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
+				flusher.Flush()
 			}
-			data, _ := json.Marshal(toolChunk)
-			_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
-			flusher.Flush()
 
-			toolResults[i] = Message{
+			toolResults = append(toolResults, Message{
 				Role:       "tool",
 				ToolCallID: tc.ID,
 				Content:    result,
-			}
+			})
 		}
 		r.mu.Lock()
 		r.messages = append(r.messages, toolResults...)
 		r.incrementBufferTokens(estimateTokens(toolResults))
+		if len(agentCalls) > 0 {
+			// The agent's results arrive on its next request (local_tools.go).
+			r.mu.Unlock()
+			r.returnToolCallsToAgent(w, flusher, agentCalls)
+			return
+		}
 		// The continuation compacts the conversation if it has grown past the
 		// threshold (compactStoredConversation), like any other request.
 		continueReq := ChatCompletionRequest{

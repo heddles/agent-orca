@@ -394,6 +394,16 @@ spec:
                       InputPort is the TCP port the agent's HTTP server listens on (http mode only).
                       Defaults to 8000.
                     type: integer
+                  localTools:
+                    description: |-
+                      LocalTools lets the agent process run tools itself. A function tool the
+                      agent declares in its chat request that the model-router does not provide
+                      (e.g. a shell inside the sandbox) is returned to the agent with
+                      finish_reason "tool_calls"; the agent runs it and sends the result as a
+                      "tool" message on its next request. The router still runs its own tools,
+                      and applies safeguards, guardrails and tracing to both kinds. Agent tools
+                      may not reuse a router tool or built-in name.
+                    type: boolean
                   ociRef:
                     description: |-
                       OCIRef is the OCI image reference for the agent process.
