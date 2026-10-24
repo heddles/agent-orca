@@ -56,6 +56,8 @@ jobs:
             dockerfile: Dockerfile.ui-proxy
           - name: openai-reference
             dockerfile: Dockerfile.go.openai-reference
+          - name: dev-sandbox
+            dockerfile: Dockerfile.dev-sandbox
     steps:
       - uses: actions/checkout@v7
         with:
@@ -214,7 +216,7 @@ jobs:
             echo "helm install agent-orca ${CHART_REPO}/agent-orca --version ${TAG#v} -n agent-orca-system --create-namespace"
             echo '```'
             echo
-            echo "Images: \`${IMAGE_REPO}/{operator,model-router,mcp-ingester,ui-proxy,openai-reference}:${TAG}\`"
+            echo "Images: \`${IMAGE_REPO}/{operator,model-router,mcp-ingester,ui-proxy,openai-reference,dev-sandbox}:${TAG}\`"
           } > notes.md
 
           if gh release view "$TAG" >/dev/null 2>&1; then

@@ -18,6 +18,7 @@ package openshell
 
 import (
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"net"
@@ -99,7 +100,7 @@ func BuildSpec(in SpecInput) *osv1.SandboxSpec {
 	rt := in.Agent.Spec.Runtime
 	return &osv1.SandboxSpec{
 		Template:      &osv1.SandboxTemplate{Image: rt.OCIRef},
-		Environment:   in.Env,
+		Environment:   sandboxEnv(in.Env),
 		Command:       slices.Concat(rt.Command, rt.Args),
 		RestartPolicy: osv1.SandboxRestartNever,
 		Providers:     in.Providers,
@@ -368,4 +369,26 @@ func isLoopback(host string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// EnvB64Suffix marks the base64 copy of an environment value that had line
+// breaks (see sandboxEnv).
+const EnvB64Suffix = "_B64"
+
+// sandboxEnv makes env acceptable to the gateway, which rejects values with
+// line breaks. Such a value (typically a multi-line AGENTORC_INPUT) is passed
+// exactly, base64-encoded, as <NAME>_B64, and <NAME> keeps a one-line version
+// with each line break replaced by a space for agents that do not know the
+// encoding.
+func sandboxEnv(env map[string]string) map[string]string {
+	out := make(map[string]string, len(env))
+	for k, v := range env {
+		if !strings.ContainsAny(v, "\r\n") {
+			out[k] = v
+			continue
+		}
+		out[k+EnvB64Suffix] = base64.StdEncoding.EncodeToString([]byte(v))
+		out[k] = strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ").Replace(v)
+	}
+	return out
 }

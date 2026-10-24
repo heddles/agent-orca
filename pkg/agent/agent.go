@@ -40,6 +40,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -47,6 +48,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 )
 
 // Run phases, matching the AgentRun phases they lead to.
@@ -106,6 +108,21 @@ type Agent struct {
 	httpClient   *http.Client
 	tools        map[string]*ToolSpec
 	toolOrder    []string
+	onToolCall   func(ToolEvent)
+}
+
+// ToolEvent describes one tool call the agent ran.
+type ToolEvent struct {
+	Name      string
+	Arguments string
+	Result    string
+	Duration  time.Duration
+}
+
+// WithToolObserver calls fn after each tool call the agent runs, e.g. to log
+// progress.
+func WithToolObserver(fn func(ToolEvent)) Option {
+	return func(a *Agent) { a.onToolCall = fn }
 }
 
 // Option configures an Agent.
@@ -248,7 +265,15 @@ func (a *Agent) Run(ctx context.Context, input string, opts ...RunOption) (*RunR
 		}
 		pending = pending[:0]
 		for _, tc := range reply.toolCalls {
-			pending = append(pending, message{Role: "tool", ToolCallID: tc.ID, Content: a.runTool(tc)})
+			start := time.Now()
+			result := a.runTool(tc)
+			if a.onToolCall != nil {
+				a.onToolCall(ToolEvent{
+					Name: tc.Function.Name, Arguments: tc.Function.Arguments,
+					Result: result, Duration: time.Since(start),
+				})
+			}
+			pending = append(pending, message{Role: "tool", ToolCallID: tc.ID, Content: result})
 		}
 	}
 	return &RunResult{Phase: PhaseFailed, FailureReason: ErrMaxTurns.Error()}, nil
@@ -470,4 +495,17 @@ func (a *Agent) RunStream(ctx context.Context, input string) (<-chan string, <-c
 	}()
 
 	return contentChan, errChan
+}
+
+// Input returns the run's input (AGENTORC_INPUT). In a sandbox, a multi-line
+// input arrives base64-encoded in AGENTORC_INPUT_B64, because the sandbox
+// gateway accepts no line breaks in environment values, while AGENTORC_INPUT
+// holds a one-line version; Input prefers the exact one.
+func Input() string {
+	if enc := os.Getenv("AGENTORC_INPUT_B64"); enc != "" {
+		if b, err := base64.StdEncoding.DecodeString(enc); err == nil {
+			return string(b)
+		}
+	}
+	return os.Getenv("AGENTORC_INPUT")
 }

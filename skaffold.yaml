@@ -102,6 +102,19 @@ portForward:
     port: 8083
     localPort: 8083
 profiles:
+  # Builds and pushes only the coding-agent sandbox image (docs/coder-agent.md):
+  #   skaffold build -p dev-sandbox --platform linux/amd64
+  # then set the coder Agent's runtime.ociRef to the printed tag. It is not a
+  # top-level artifact: the image is large and not needed by the dev loop.
+  - name: dev-sandbox
+    build:
+      local:
+        push: true
+      artifacts:
+        - image: ghcr.io/heddles/agent-orca/dev-sandbox
+          context: .
+          docker:
+            dockerfile: Dockerfile.dev-sandbox
   - name: remote
     build:
       local:

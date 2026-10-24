@@ -197,6 +197,8 @@ The Agent webhook rejects a sandboxed Agent unless:
 - it sets neither `runtime.securityContextOverride` nor `runtime.secretRefs` (a sandbox
   cannot mount Secrets; give credentials to a Tool so the router holds them);
 - `runtime.inputMode` is `env` (the sandbox accepts no inbound connections);
+- `runtime.command` is set: OpenShell runs it as the sandbox's main process and ignores
+  the image's `ENTRYPOINT` (an empty command creates an idle sandbox);
 - `runtime.framework` is `openai-compatible` or `langgraph`. `autogen` and
   `semantic-kernel` need init containers and `shim` needs hostname rewrites; sandboxes
   support neither;
@@ -221,7 +223,9 @@ workload ──► supervisor ──► router Service :8080/:8082      (always 
    the gateway:
    - the Agent image is the workload, and `command` + `args` is the main process;
    - the environment is the agent pod's: `AGENTORC_*`, `OPENAI_BASE_URL`, `OPENAI_API_KEY`
-     and framework variables;
+     and framework variables. The gateway rejects line breaks in environment values, so a
+     multi-line value (usually the task) is passed exactly as `<NAME>_B64` (base64), and
+     `<NAME>` holds a one-line version. The Go SDK's `agent.Input()` reads the exact one;
    - the policy is compiled from `sandbox` and the Agent's tools (see `internal/openshell`);
    - static tool credentials are registered as providers and attached first (see
      [Authenticated tools](#authenticated-tools)).
