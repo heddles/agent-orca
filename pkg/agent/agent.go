@@ -368,17 +368,40 @@ func (a *Agent) post(ctx context.Context, payload map[string]any) (*http.Respons
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.baseURL+"/chat/completions", bytes.NewReader(data))
-	if err != nil {
-		return nil, err
+	// The router answers 409 while it is still finishing the previous turn,
+	// which a client sending its next request on [DONE] can beat it to. Retry
+	// briefly: that is what the router's 409 asks the client to do.
+	delay := conflictRetryDelay
+	for attempt := 0; ; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.baseURL+"/chat/completions", bytes.NewReader(data))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "text/event-stream")
+		if a.apiKey != "" {
+			req.Header.Set("Authorization", "Bearer "+a.apiKey)
+		}
+		resp, err := a.httpClient.Do(req)
+		if err != nil || resp.StatusCode != http.StatusConflict || attempt == conflictRetries {
+			return resp, err
+		}
+		_ = resp.Body.Close()
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		delay = min(delay*2, time.Second)
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "text/event-stream")
-	if a.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+a.apiKey)
-	}
-	return a.httpClient.Do(req)
 }
+
+// conflictRetries and conflictRetryDelay bound how long post waits for the
+// router to finish the previous turn (about 2.5 s in all).
+var (
+	conflictRetries    = 8
+	conflictRetryDelay = 25 * time.Millisecond
+)
 
 // closedRun maps the router's 410 reasons (HandleChatCompletions) to a result.
 func closedRun(reason string) *RunResult {
