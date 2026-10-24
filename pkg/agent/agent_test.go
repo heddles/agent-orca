@@ -27,6 +27,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // fakeRouter answers each request with the next canned response and records
@@ -284,5 +285,55 @@ func TestInputPrefersExactMultiLineCopy(t *testing.T) {
 	t.Setenv("AGENTORC_INPUT_B64", "")
 	if got := Input(); got != "line one line two" {
 		t.Errorf("Input() without _B64 = %q", got)
+	}
+}
+
+func conflict(w http.ResponseWriter) { http.Error(w, "request in progress", http.StatusConflict) }
+
+// The router answers 409 while it finishes the previous turn; the SDK retries,
+// sending the same request again.
+func TestRunRetriesWhileTheRouterIsBusy(t *testing.T) {
+	f := &fakeRouter{responses: []func(http.ResponseWriter){conflict, conflict, sse(textChunk("done"))}}
+	srv := f.serve(t)
+	a := New(WithBaseURL(srv.URL + "/v1"))
+	res, err := a.Run(context.Background(), "go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Output != "done" || len(f.requests) != 3 {
+		t.Fatalf("output %q after %d requests, want done after 3", res.Output, len(f.requests))
+	}
+	for i, req := range f.requests {
+		if m := messages(t, req); len(m) != 1 || m[0]["content"] != "go" {
+			t.Errorf("request %d body = %v, want the same input every time", i, req)
+		}
+	}
+}
+
+func TestRunGivesUpOnAPermanent409(t *testing.T) {
+	old := conflictRetries
+	conflictRetries = 2
+	t.Cleanup(func() { conflictRetries = old })
+	f := &fakeRouter{responses: []func(http.ResponseWriter){conflict, conflict, conflict, sse(textChunk("never"))}}
+	srv := f.serve(t)
+	_, err := New(WithBaseURL(srv.URL+"/v1")).Run(context.Background(), "go")
+	if err == nil || !strings.Contains(err.Error(), "409") {
+		t.Fatalf("err = %v, want the router's 409", err)
+	}
+	if len(f.requests) != 3 {
+		t.Errorf("%d requests, want the first plus 2 retries", len(f.requests))
+	}
+}
+
+func TestRetryStopsWhenTheContextEnds(t *testing.T) {
+	old := conflictRetryDelay
+	conflictRetryDelay = time.Hour
+	t.Cleanup(func() { conflictRetryDelay = old })
+	f := &fakeRouter{responses: []func(http.ResponseWriter){conflict, sse(textChunk("never"))}}
+	srv := f.serve(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, err := New(WithBaseURL(srv.URL+"/v1")).Run(ctx, "go"); err == nil {
+		t.Fatal("Run returned no error although its context ended while waiting to retry")
 	}
 }
