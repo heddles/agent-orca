@@ -48,6 +48,11 @@ type stubGateway struct {
 	logs      string
 	profiles  map[string]*osv1.ProviderProfile
 	providers map[string]*osv1.Provider
+	// drafts are the pending policy proposals per sandbox; approved and
+	// rejected record what was decided.
+	drafts   map[string][]osv1.PolicyChunk
+	approved []string
+	rejected []string
 	// providerConflicts makes the next N DeleteProviders calls fail as the
 	// gateway does while a sandbox being deleted still holds the provider.
 	providerConflicts int
@@ -603,4 +608,30 @@ func TestCheckProgress_SafeguardTripFailsRun(t *testing.T) {
 		!strings.Contains(got.Status.LastRestartReason, "safeguard: tool") {
 		t.Fatalf("run = %s restarts=%d reason=%q, want Failed without a retry", got.Status.Phase, got.Status.RestartCount, got.Status.LastRestartReason)
 	}
+}
+
+func (g *stubGateway) PendingDrafts(_ context.Context, sandbox string) ([]osv1.PolicyChunk, error) {
+	return g.drafts[sandbox], nil
+}
+
+func (g *stubGateway) ApproveDraft(_ context.Context, sandbox, chunkID, reviewToken string) error {
+	g.approved = append(g.approved, chunkID+"@"+reviewToken)
+	g.removeDraft(sandbox, chunkID)
+	return nil
+}
+
+func (g *stubGateway) RejectDraft(_ context.Context, sandbox, chunkID, _ string) error {
+	g.rejected = append(g.rejected, chunkID)
+	g.removeDraft(sandbox, chunkID)
+	return nil
+}
+
+func (g *stubGateway) removeDraft(sandbox, chunkID string) {
+	var keep []osv1.PolicyChunk
+	for _, ch := range g.drafts[sandbox] {
+		if ch.ID != chunkID {
+			keep = append(keep, ch)
+		}
+	}
+	g.drafts[sandbox] = keep
 }

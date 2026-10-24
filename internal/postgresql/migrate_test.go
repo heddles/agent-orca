@@ -118,6 +118,7 @@ func TestMigrateSkipsAppliedMigrations(t *testing.T) {
 // AGENTORCA_TEST_POSTGRES_DSN names one (e.g. a throwaway container): from
 // scratch, again (a no-op), and onto a database that predates versioned
 // migrations (the old schema exists but schema_migrations does not).
+// The test database is throwaway: each test drops its whole schema.
 func TestMigrateAgainstPostgres(t *testing.T) {
 	dsn := os.Getenv("AGENTORCA_TEST_POSTGRES_DSN")
 	if dsn == "" {
@@ -130,7 +131,7 @@ func TestMigrateAgainstPostgres(t *testing.T) {
 	defer func() { _ = db.Close() }()
 	ctx := context.Background()
 	reset := func() {
-		if _, err := db.ExecContext(ctx, `DROP TABLE IF EXISTS schema_migrations, archived_runs`); err != nil {
+		if _, err := db.ExecContext(ctx, `DROP SCHEMA public CASCADE; CREATE SCHEMA public`); err != nil {
 			t.Fatal(err)
 		}
 	}

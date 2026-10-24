@@ -53,6 +53,55 @@ spec:
             description: SandboxClassSpec is a reusable sandbox profile set by cluster
               admins.
             properties:
+              approval:
+                description: |-
+                  Approval governs requests for egress the policy does not allow: a
+                  sandbox that tries to reach an unlisted host gets a proposed rule, which
+                  an auto-approve rule or an approver may allow while the run continues.
+                  Without it such requests stay denied.
+                properties:
+                  approverGroups:
+                    description: |-
+                      ApproverGroups are the identity-provider groups whose members may decide.
+                      Empty lets any user with access to the run's namespace decide.
+                    items:
+                      type: string
+                    type: array
+                  autoApprove:
+                    description: |-
+                      AutoApprove allows matching requests without a person. A request the
+                      sandbox's policy prover flags with security notes is never auto-approved.
+                    items:
+                      description: SandboxAutoApproveRule matches egress requests
+                        to approve automatically.
+                      properties:
+                        binaries:
+                          description: Binaries the requesting process may be (absolute
+                            paths). Empty matches any.
+                          items:
+                            type: string
+                          type: array
+                        host:
+                          description: Host is the destination host, or a wildcard
+                            such as *.example.com.
+                          minLength: 1
+                          type: string
+                        ports:
+                          description: Ports the request may name. Default [443].
+                          items:
+                            format: int32
+                            type: integer
+                          type: array
+                      required:
+                      - host
+                      type: object
+                    type: array
+                  timeout:
+                    description: |-
+                      Timeout is how long a request waits for a decision before it is rejected.
+                      Default 30m.
+                    type: string
+                type: object
               egress:
                 description: |-
                   Egress adds endpoints every Agent of the class may reach, on top of the
