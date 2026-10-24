@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -28,6 +29,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -65,6 +68,13 @@ func (r *AgentRunReconciler) ensureSandbox(
 	tokenSecretName string,
 	routerBaseURL string,
 ) (*osv1.Sandbox, error) {
+	class, err := r.sandboxClass(ctx, run, agent)
+	if err != nil {
+		return nil, err
+	}
+	// From here on the Agent includes its class and egress presets.
+	agent, placement := openshell.ApplyClass(agent, class, r.SandboxPlacement)
+
 	// The token Secret holds OPENAI_BASE_URL and the per-run router credential.
 	// A pod would read it through envFrom; the sandbox gets it as plain env.
 	var tokenSecret corev1.Secret
@@ -102,7 +112,7 @@ func (r *AgentRunReconciler) ensureSandbox(
 		Env:        env,
 		Tools:      tools,
 		Providers:  providers,
-		Placement:  r.SandboxPlacement,
+		Placement:  placement,
 		Git:        git,
 	})
 	name := openshell.SandboxName(run.Namespace, run.Name, run.Status.RestartCount)
@@ -331,4 +341,37 @@ func lastLines(s string, n int) string {
 		lines = lines[len(lines)-n:]
 	}
 	return strings.Join(lines, "\n")
+}
+
+// errSandboxClassUnusable fails runs whose SandboxClass is missing or not
+// available to the run's namespace.
+var errSandboxClassUnusable = errors.New("sandbox class unusable")
+
+// sandboxClass returns the Agent's SandboxClass, or nil when it names none.
+func (r *AgentRunReconciler) sandboxClass(ctx context.Context, run *agentorcav1alpha1.AgentRun, agent *agentorcav1alpha1.Agent) (*agentorcav1alpha1.SandboxClass, error) {
+	name := agent.Spec.Runtime.Sandbox.ClassRef
+	if name == "" {
+		return nil, nil
+	}
+	var class agentorcav1alpha1.SandboxClass
+	if err := r.Get(ctx, types.NamespacedName{Name: name}, &class); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, fmt.Errorf("%w: SandboxClass %q not found", errSandboxClassUnusable, name)
+		}
+		return nil, fmt.Errorf("reading SandboxClass %q: %w", name, err)
+	}
+	if sel := class.Spec.NamespaceSelector; sel != nil {
+		var ns corev1.Namespace
+		if err := r.Get(ctx, types.NamespacedName{Name: run.Namespace}, &ns); err != nil {
+			return nil, fmt.Errorf("reading namespace %q: %w", run.Namespace, err)
+		}
+		selector, err := metav1.LabelSelectorAsSelector(sel)
+		if err != nil {
+			return nil, fmt.Errorf("%w: SandboxClass %q has an invalid namespaceSelector: %v", errSandboxClassUnusable, name, err)
+		}
+		if !selector.Matches(labels.Set(ns.Labels)) {
+			return nil, fmt.Errorf("%w: SandboxClass %q is not available to namespace %q", errSandboxClassUnusable, name, run.Namespace)
+		}
+	}
+	return &class, nil
 }

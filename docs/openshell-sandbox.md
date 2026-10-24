@@ -103,6 +103,61 @@ An Agent's `spec.resources` becomes the sandbox workload's container resources, 
 an agent pod. CPU and memory requests default to their limits when unset, and other
 resources such as `ephemeral-storage` are passed through.
 
+### Sandbox classes
+
+A `SandboxClass` is a cluster-scoped sandbox profile written by cluster admins. Agents
+use one with `runtime.sandbox.classRef`:
+
+```yaml
+apiVersion: agentorca.agentorca.io/v1alpha1
+kind: SandboxClass
+metadata:
+  name: coder
+spec:
+  namespaceSelector:                 # which namespaces' Agents may use it (empty: all)
+    matchLabels: {agentorca.io/enable-sandboxes: "true"}
+  enforcement: enforce               # Agents of this class cannot weaken it to audit
+  egressPresets: [go, npm, pypi, github-read]
+  egress:
+    - host: artifacts.internal.example.com
+  resources:                         # defaults for Agents without spec.resources
+    requests: {cpu: "2", memory: 4Gi, ephemeral-storage: 20Gi}
+    limits: {cpu: "4", memory: 8Gi, ephemeral-storage: 20Gi}
+  nodeSelector: {pool: sandbox}      # replaces the operator-wide placement
+  tolerations:
+    - {key: openshell, operator: Equal, value: coder-agent, effect: NoExecute}
+```
+
+The Agent's own sandbox settings are added to the class's, never narrowing it:
+
+| Setting | Effect |
+|---|---|
+| `egress`, `egressPresets` | Class and Agent rules are combined. Rules for the same host and ports merge into one that allows what either allowed. |
+| `filesystem` | Paths are combined. |
+| `enforcement` | The stricter of the two. |
+| `spec.resources` | The Agent's own, or the class's when it sets none. |
+| Placement | The class's when it sets any, else the operator's `openshell.placement`. Agents can't set placement. |
+
+A run fails with a clear reason if its class doesn't exist or doesn't select the run's
+namespace. Admission checks the same.
+
+**Egress presets** are vetted host lists, usable on a class or directly on an Agent
+(`runtime.sandbox.egressPresets`):
+
+| Preset | Hosts |
+|---|---|
+| `go` | `proxy.golang.org`, `sum.golang.org`, `storage.googleapis.com` |
+| `npm` | `registry.npmjs.org` |
+| `pypi` | `pypi.org`, `files.pythonhosted.org` |
+| `crates` | `crates.io`, `index.crates.io`, `static.crates.io` |
+| `maven` | `repo.maven.apache.org`, `repo1.maven.org` |
+| `github-read` | `github.com` (read-write: clone and fetch POST to `git-upload-pack`), `codeload.github.com`, `api.github.com`, `*.githubusercontent.com` |
+| `mise` | `mise.jdx.dev`, `mise-versions.jdx.dev`, `api.github.com`, `*.githubusercontent.com` |
+
+All presets are read-only (GET, HEAD, OPTIONS) except `github.com`, and any binary may
+use them. Unauthenticated, a POST to `github.com` can't change anything. With
+`sandbox.github`, the credential-bound endpoint replaces it.
+
 Finally, opt in each namespace that may run sandboxed agents:
 
 ```shell

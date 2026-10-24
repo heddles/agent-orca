@@ -298,6 +298,12 @@ const (
 
 // SandboxSpec configures the sandbox runtime for an Agent.
 type SandboxSpec struct {
+	// ClassRef names a cluster-scoped SandboxClass whose egress, filesystem,
+	// resource defaults, placement and minimum enforcement apply to this Agent.
+	// The Agent's own settings add to the class but cannot weaken it.
+	// +optional
+	ClassRef string `json:"classRef,omitempty"`
+
 	// Provider selects the sandbox runtime.
 	// +kubebuilder:default=openshell
 	Provider SandboxProvider `json:"provider"`
@@ -314,6 +320,11 @@ type SandboxSpec struct {
 	// everything else is denied.
 	// +optional
 	Egress []SandboxEgressRule `json:"egress,omitempty"`
+
+	// EgressPresets add vetted read-only host lists for package registries and
+	// sources, e.g. go (module proxy and checksum database) or npm.
+	// +optional
+	EgressPresets []SandboxEgressPreset `json:"egressPresets,omitempty"`
 
 	// Tools controls whether the agent process may reach its tools' endpoints
 	// directly from the sandbox. By default it can: each Tool's networkEgress

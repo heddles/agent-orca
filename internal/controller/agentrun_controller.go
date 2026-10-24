@@ -139,6 +139,7 @@ type AgentRunReconciler struct {
 
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=agentorca.agentorca.io,resources=agentruns,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=agentorca.agentorca.io,resources=sandboxclasses,verbs=get;list;watch
 // +kubebuilder:rbac:groups=agentorca.agentorca.io,resources=agentruns/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=agentorca.agentorca.io,resources=agentruns/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;create;delete
@@ -368,8 +369,8 @@ func (r *AgentRunReconciler) startRun(ctx context.Context, run *agentorcav1alpha
 			sb, err := r.ensureSandbox(ctx, run, agent, tokenSecretName, routerBaseURL)
 			if err != nil {
 				var ghErr *githubapp.APIError
-				if stderrors.Is(err, errNoGitHubApp) || (stderrors.As(err, &ghErr) && ghErr.Permanent()) {
-					return r.failRun(ctx, run, fmt.Sprintf("granting GitHub access: %v", err))
+				if stderrors.Is(err, errNoGitHubApp) || stderrors.Is(err, errSandboxClassUnusable) || (stderrors.As(err, &ghErr) && ghErr.Permanent()) {
+					return r.failRun(ctx, run, fmt.Sprintf("creating sandbox: %v", err))
 				}
 				if osv1.IsInvalidArgument(err) || osv1.IsPermissionDenied(err) {
 					return r.failRun(ctx, run, fmt.Sprintf("creating sandbox: %v", err))

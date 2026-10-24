@@ -36,6 +36,9 @@ import (
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -199,6 +202,11 @@ func (v *AgentValidator) validateSandbox(ctx context.Context, agent *agentorcav1
 			"which the sandbox network policy does not allow; use openai-compatible")
 	}
 
+	if name := rt.Sandbox.ClassRef; name != "" {
+		if err := v.validateSandboxClass(ctx, name, &ns); err != nil {
+			return err
+		}
+	}
 	if gh := rt.Sandbox.GitHub; gh != nil {
 		if err := validateSandboxGitHub(gh); err != nil {
 			return err
@@ -397,6 +405,29 @@ func validateSandboxGitHub(gh *agentorcav1alpha1.SandboxGitHub) error {
 			return fmt.Errorf("spec.runtime.sandbox.github.repositories must share one owner (the GitHub App installation's account): "+
 				"%q and %q differ", owner, o)
 		}
+	}
+	return nil
+}
+
+// validateSandboxClass checks that the SandboxClass exists and is available
+// to the Agent's namespace.
+func (v *AgentValidator) validateSandboxClass(ctx context.Context, name string, ns *corev1.Namespace) error {
+	var class agentorcav1alpha1.SandboxClass
+	if err := v.Client.Get(ctx, client.ObjectKey{Name: name}, &class); err != nil {
+		if apierrors.IsNotFound(err) {
+			return fmt.Errorf("spec.runtime.sandbox.classRef: SandboxClass %q not found", name)
+		}
+		return fmt.Errorf("looking up SandboxClass %q: %w", name, err)
+	}
+	if class.Spec.NamespaceSelector == nil {
+		return nil
+	}
+	selector, err := metav1.LabelSelectorAsSelector(class.Spec.NamespaceSelector)
+	if err != nil {
+		return fmt.Errorf("SandboxClass %q has an invalid namespaceSelector: %w", name, err)
+	}
+	if !selector.Matches(labels.Set(ns.Labels)) {
+		return fmt.Errorf("spec.runtime.sandbox.classRef: SandboxClass %q is not available to namespace %q", name, ns.Name)
 	}
 	return nil
 }
