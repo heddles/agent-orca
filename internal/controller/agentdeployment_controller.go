@@ -885,6 +885,7 @@ func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig( //nolint:gocycl
 		RunNamespace:               deploy.Namespace,
 		AgentSAName:                saName,
 		DeploymentName:             deploy.Name,
+		AgentName:                  agent.Name,
 		DisableClarify:             agent.Spec.DisableClarify,
 		LocalTools:                 agent.Spec.Runtime.LocalTools,
 		Providers:                  providers,
@@ -909,14 +910,8 @@ func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig( //nolint:gocycl
 		SystemPrompt:               agent.Spec.SystemPrompt,
 		KnowledgeBases:             kbConfigs,
 		LongTermMemory:             longTermMemory,
-		Hindsight: router.HindsightConfig{
-			Enabled:           true,
-			URL:               r.HindsightURL,
-			BankIDTemplate:    "{namespace}--{agent-name}",
-			RecallBudget:      5,
-			RetainOnEveryTurn: true,
-		},
-		Filesystem: fsCfg,
+		Hindsight:                  hindsightConfig(agent, r.HindsightURL),
+		Filesystem:                 fsCfg,
 	}
 
 	// Per-tool-result token cap and loop guards. We deliberately seed sane defaults

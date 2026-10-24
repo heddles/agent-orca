@@ -460,30 +460,39 @@ type AgentMemoryConfig struct {
 	// +optional
 	LongTermMemoryRef string `json:"longTermMemoryRef,omitempty"`
 
-	// Hindsight configures the hindsight memory system integration.
-	// When enabled, the model-router will recall relevant memories before each
-	// LLM call and retain the conversation after each turn.
+	// Hindsight configures the hindsight memory system integration. It is
+	// opt-in: without this block the agent has no hindsight memory. When
+	// enabled, the model-router recalls relevant memories before each LLM call
+	// and retains the conversation after each turn, in one bank per Agent by
+	// default, shared by its runs and deployments.
 	// +optional
 	Hindsight *HindsightMemoryConfig `json:"hindsight,omitempty"`
 }
 
 // HindsightMemoryConfig configures the hindsight memory system integration.
 type HindsightMemoryConfig struct {
-	// Enabled is true when hindsight is active.
+	// Enabled turns hindsight on. It defaults to true once the hindsight block
+	// is set.
 	// +kubebuilder:default=true
 	// +optional
 	Enabled bool `json:"enabled,omitempty"`
 	// URL is the hindsight API endpoint (e.g. http://hindsight.hindsight.svc.cluster.local:8888).
 	// +optional
 	URL string `json:"url,omitempty"`
-	// BankIDTemplate is the template for the hindsight bank ID.
-	// Can use placeholders like {namespace}, {runName}, {agentName} which will be replaced at runtime.
+	// BankIDTemplate is the template for the hindsight bank ID. Placeholders:
+	// {namespace}, {agent-name}, {run-name} and {deployment}. Default
+	// "{namespace}--{agent-name}". A per-run bank is never read again.
 	// +optional
 	BankIDTemplate string `json:"bankIdTemplate,omitempty"`
-	// RecallBudget is the maximum number of memories to retrieve per turn.
+	// RecallBudget is the maximum number of memories recalled per turn.
 	// +kubebuilder:default=5
 	// +optional
 	RecallBudget int `json:"recallBudget,omitempty"`
+	// RecallMaxTokens caps the size of the recalled memories, in tokens
+	// (hindsight's max_tokens). Default 1024.
+	// +kubebuilder:validation:Minimum=64
+	// +optional
+	RecallMaxTokens int `json:"recallMaxTokens,omitempty"`
 	// RetainOnEveryTurn is true to retain conversation after every LLM turn.
 	// +kubebuilder:default=true
 	// +optional

@@ -167,6 +167,11 @@ profiles:
               # OpenShell sandboxes (gateway installed in the openshell namespace).
               openshell.enabled: "true"
               openshell.tls.secretName: openshell-client-tls
+              # Authenticate model-routers to hindsight; without it every recall and
+              # retain gets 401. Secret hindsight-api-key (key api-key) holds the
+              # HINDSIGHT_API_TENANT_API_KEY hindsight runs with and is created out of
+              # band, e.g. copied from Secret hindsight/hindsight-secret.
+              hindsight.apiKeySecret.name: hindsight-api-key
             setValueTemplates:
               operator.image.tag: "{{.IMAGE_TAG_ghcr_io_heddles_agent_orca_operator}}"
               mcpIngester.image.tag: "{{.IMAGE_TAG_ghcr_io_heddles_agent_orca_mcp_ingester}}"

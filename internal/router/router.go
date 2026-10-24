@@ -4548,10 +4548,19 @@ func (r *Router) ensureHindsightBank(ctx context.Context) (string, error) {
 	return bankID, nil
 }
 
-// hindsightBankID derives the hindsight bank ID from the tenant namespace and agent name.
-// Format: <namespace>/<agent-name> ensures tenant isolation.
+// hindsightBankID expands the configured bank template (default
+// "{namespace}--{agent-name}": one bank per Agent, scoped by tenant namespace).
 func (r *Router) hindsightBankID() string {
-	return r.cfg.RunNamespace + "--" + r.cfg.DeploymentName
+	tmpl := r.cfg.Hindsight.BankIDTemplate
+	if tmpl == "" {
+		tmpl = "{namespace}--{agent-name}"
+	}
+	return strings.NewReplacer(
+		"{namespace}", r.cfg.RunNamespace,
+		"{agent-name}", r.cfg.AgentName, "{agentName}", r.cfg.AgentName,
+		"{run-name}", r.cfg.RunName, "{runName}", r.cfg.RunName,
+		"{deployment}", r.cfg.DeploymentName,
+	).Replace(tmpl)
 }
 
 // hindsightRecall queries hindsight for relevant memories before an LLM call.
@@ -4566,7 +4575,7 @@ func (r *Router) hindsightRecall(ctx context.Context, query string) (string, err
 
 	// Build recall request
 	recallReq := hindsight.NewRecallRequest(query)
-	recallReq.MaxTokens = new(int32(r.cfg.Hindsight.RecallBudget))
+	recallReq.MaxTokens = new(int32(r.cfg.Hindsight.RecallMaxTokens))
 
 	// Call hindsight recall API
 	resp, _, err := client.MemoryAPI.RecallMemories(ctx, bankID).RecallRequest(*recallReq).Execute()
@@ -4577,6 +4586,9 @@ func (r *Router) hindsightRecall(ctx context.Context, query string) (string, err
 	// Concatenate fact texts from results
 	var results []string
 	for _, result := range resp.Results {
+		if r.cfg.Hindsight.RecallBudget > 0 && len(results) == r.cfg.Hindsight.RecallBudget {
+			break
+		}
 		if result.Text != "" {
 			results = append(results, result.Text)
 		}
