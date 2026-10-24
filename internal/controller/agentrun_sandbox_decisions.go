@@ -66,6 +66,7 @@ func (r *AgentRunReconciler) recordSandboxDecisions(ctx context.Context, run *ag
 	} else if run.Status.StartTime != nil {
 		since = run.Status.StartTime.Time
 	}
+	since = since.Truncate(time.Microsecond)
 	decisions, err := r.Sandboxes.Decisions(ctx, sb.Name, since)
 	if err != nil {
 		logger.V(1).Info("reading sandbox decisions", "sandbox", sb.Name, "err", err.Error())
@@ -77,6 +78,13 @@ func (r *AgentRunReconciler) recordSandboxDecisions(ctx context.Context, run *ag
 	key := "tokens:" + run.Namespace + ":" + run.Name
 	last := since
 	for _, d := range decisions {
+		// The watermark keeps microseconds, so compare at that precision: a
+		// finer timestamp would sort after its own truncated watermark and be
+		// recorded again on the next poll.
+		at := d.Time.Truncate(time.Microsecond)
+		if !at.After(since) {
+			continue
+		}
 		ev, err := json.Marshal(struct {
 			Type string `json:"type"`
 			openshellDecision
@@ -89,7 +97,7 @@ func (r *AgentRunReconciler) recordSandboxDecisions(ctx context.Context, run *ag
 			break
 		}
 		sandboxDecisions.WithLabelValues(run.Namespace, d.Kind, d.Action).Inc()
-		last = d.Time
+		last = at
 	}
 	if !last.After(since) {
 		return

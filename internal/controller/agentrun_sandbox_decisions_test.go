@@ -50,7 +50,8 @@ func TestRecordSandboxDecisions(t *testing.T) {
 	store := &traceRecorder{Store: nop, events: map[string][]string{}}
 	r.StateStore = store
 
-	t1, t2 := start.Add(10*time.Second), start.Add(20*time.Second)
+	// Nanosecond timestamps, as on Linux: the watermark keeps only microseconds.
+	t1, t2 := start.Add(10*time.Second+123), start.Add(20*time.Second+456789)
 	gw.decisions = map[string][]openshell.Decision{"sb-1": {
 		{Time: t1, Kind: "net", Action: "allowed", Binary: "/usr/bin/curl", Destination: "pypi.org:443", Raw: "NET:OPEN ..."},
 		{Time: t2, Kind: "http", Action: "denied", Method: "POST", URL: "https://pypi.org/simple/", Reason: "not permitted", Raw: "HTTP:POST ..."},
@@ -69,7 +70,7 @@ func TestRecordSandboxDecisions(t *testing.T) {
 		t.Errorf("egress event = %v", second)
 	}
 	got := fetchSandboxRun(t, cl, run)
-	if got.Status.SandboxDecisionsSeen == nil || !got.Status.SandboxDecisionsSeen.Time.Equal(t2) {
+	if got.Status.SandboxDecisionsSeen == nil || !got.Status.SandboxDecisionsSeen.Time.Equal(t2.Truncate(time.Microsecond)) {
 		t.Fatalf("watermark = %v, want the last decision's time", got.Status.SandboxDecisionsSeen)
 	}
 
