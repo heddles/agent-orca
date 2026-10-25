@@ -194,6 +194,9 @@ func TestPresetEgress(t *testing.T) {
 		rules := PresetEgress(agentorcav1alpha1.SandboxEgressPresetGo)
 		rules[0].Host = "mutated.example.com"
 		rules = append(rules, agentorcav1alpha1.SandboxEgressRule{Host: "extra.example.com"})
+		if len(rules) != len(want)+1 {
+			t.Fatalf("appending to the returned slice did not add a rule: %d rules, want %d", len(rules), len(want)+1)
+		}
 		got := hosts(PresetEgress(agentorcav1alpha1.SandboxEgressPresetGo))
 		for h := range want {
 			if _, ok := got[h]; !ok {
