@@ -33,6 +33,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgofake "k8s.io/client-go/kubernetes/fake"
+	clientgotesting "k8s.io/client-go/testing"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -169,6 +170,20 @@ func sandboxedRun(t *testing.T, gw *stubGateway) *agentorcav1alpha1.AgentRun {
 	return run
 }
 
+// newFakeClientsetWithLogs avoids client-go's default no-reaction error for pod
+// logs. Besides returning the response these tests expect, it avoids the
+// generated PodLogOptions.String recursion in the Go 1.26 error-formatting path.
+func newFakeClientsetWithLogs() *clientgofake.Clientset {
+	k8s := clientgofake.NewClientset()
+	k8s.PrependReactor("get", "pods", func(action clientgotesting.Action) (bool, runtime.Object, error) {
+		if action.GetSubresource() == "log" {
+			return true, &runtime.Unknown{Raw: []byte("fake logs")}, nil
+		}
+		return false, nil, nil
+	})
+	return k8s
+}
+
 func sandboxReconciler(t *testing.T, gw openshell.Gateway, objs ...client.Object) (*AgentRunReconciler, client.Client) {
 	t.Helper()
 	cl := fake.NewClientBuilder().
@@ -176,7 +191,7 @@ func sandboxReconciler(t *testing.T, gw openshell.Gateway, objs ...client.Object
 		WithStatusSubresource(&agentorcav1alpha1.AgentRun{}).
 		WithObjects(objs...).
 		Build()
-	return &AgentRunReconciler{Client: cl, Scheme: cl.Scheme(), K8s: clientgofake.NewClientset(), Sandboxes: gw}, cl
+	return &AgentRunReconciler{Client: cl, Scheme: cl.Scheme(), K8s: newFakeClientsetWithLogs(), Sandboxes: gw}, cl
 }
 
 func fetchSandboxRun(t *testing.T, cl client.Client, run *agentorcav1alpha1.AgentRun) *agentorcav1alpha1.AgentRun {

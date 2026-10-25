@@ -26,7 +26,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	clientgofake "k8s.io/client-go/kubernetes/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -180,7 +179,7 @@ func TestCheckProgress_HTTPPeekReturnsWarmPodToIdle(t *testing.T) {
 		StateStore: testStore{httpOutput: httpOut},
 		// GetLogs is stubbed behind the kubernetes fake clientset; any error is swallowed
 		// by handlePodSuccess (httpOut takes precedence over container logs).
-		K8s: clientgofake.NewClientset(),
+		K8s: newFakeClientsetWithLogs(),
 	}
 
 	if _, err := r.checkProgress(context.Background(), run, &agentorcav1alpha1.Agent{}); err != nil {

@@ -255,6 +255,24 @@ func TestParseJobPollRejectsGarbage(t *testing.T) {
 	}
 }
 
+func TestCommandJobPreservesArguments(t *testing.T) {
+	useTempJobRoot(t)
+	ex := &localExec{}
+	env := map[string]string{"VALUE": "not evaluated"}
+	if err := StartCommandJob(context.Background(), ex, "sb", "argv-1",
+		[]string{"sh", "-c", `printf '%s\n' "$1" "$2"`, "sh"},
+		[]string{"$(touch /tmp/should-not-exist)", "two words; echo no"}, env, ""); err != nil {
+		t.Fatal(err)
+	}
+	st := waitDone(t, ex, "argv-1")
+	if st.ExitCode != 0 || !strings.Contains(st.Output, "$(touch /tmp/should-not-exist)\ntwo words; echo no") {
+		t.Errorf("argv job changed its arguments: %+v", st)
+	}
+	if err := StartCommandJob(context.Background(), ex, "sb", "empty-1", nil, nil, nil, ""); err == nil {
+		t.Error("an empty command was accepted")
+	}
+}
+
 func TestShellQuote(t *testing.T) {
 	for in, want := range map[string]string{"": `''`, "plain": `'plain'`, "it's": `'it'\''s'`, "a b": `'a b'`} {
 		if got := shellQuote(in); got != want {

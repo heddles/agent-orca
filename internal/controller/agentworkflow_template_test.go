@@ -240,6 +240,33 @@ func TestInstantiateTemplate(t *testing.T) {
 	}
 }
 
+func TestTemplateCarriesOrOverridesWorkflowSandbox(t *testing.T) {
+	tmpl := factoryTemplate()
+	tmpl.Spec.Sandbox = &agentorcav1alpha1.WorkflowSandboxSpec{Image: "ghcr.io/acme/dev:1", Repo: "acme/widgets", Ref: "main", Branch: "factory/work"}
+	spec, err := instantiateTemplate(tmpl, instance(map[string]string{"repo": "acme/widgets", "title": "t"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.Sandbox == nil || spec.Sandbox.Repo != "acme/widgets" || spec.Sandbox.Branch != "factory/work" {
+		t.Errorf("sandbox was not inherited: %+v", spec.Sandbox)
+	}
+
+	inst := instance(map[string]string{"repo": "acme/widgets", "title": "t"})
+	inst.Spec.Sandbox = &agentorcav1alpha1.WorkflowSandboxSpec{Image: "ghcr.io/acme/other:2", Repo: "acme/other"}
+	spec, err = instantiateTemplate(tmpl, inst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.Sandbox.Image != "ghcr.io/acme/other:2" || spec.Sandbox.Repo != "acme/other" || tmpl.Spec.Sandbox.Image != "ghcr.io/acme/dev:1" {
+		t.Errorf("instance override or template immutability failed: %+v", spec.Sandbox)
+	}
+
+	tmpl.Spec.Sandbox.Repo = "{{params.repo}}"
+	if problems := validateTemplate(&tmpl.Spec); !hasProblem(problems, "spec.sandbox.repo may not use {{params") {
+		t.Errorf("a template parameter was accepted in sandbox.repo: %v", problems)
+	}
+}
+
 func TestInstantiateRefusesWhatIsNotAValidTemplate(t *testing.T) {
 	notTemplate := factoryTemplate()
 	notTemplate.Spec.Mode = ""

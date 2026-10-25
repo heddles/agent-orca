@@ -49,10 +49,16 @@ type AgentWorkflowSpec struct {
 
 	// FromTemplate creates this workflow from a template in the same namespace:
 	// on its first reconcile the controller fills in the steps (and any of
-	// description, timeout, budgetCap, onStepFailure and adaptivePolicy not set here)
+	// description, sandbox, timeout, budgetCap, onStepFailure and adaptivePolicy not set here)
 	// from the template, with the parameters substituted into the step inputs.
 	// +optional
 	FromTemplate *WorkflowFromTemplate `json:"fromTemplate,omitempty"`
+
+	// Sandbox runs the workflow's agent and container steps in one governed
+	// OpenShell sandbox, with the repository checked out before any step starts.
+	// Steps with sandbox: fresh get a separate sandbox built from the same commit.
+	// +optional
+	Sandbox *WorkflowSandboxSpec `json:"sandbox,omitempty"`
 
 	// Steps defines the DAG of agent executions. Each step names its dependencies via
 	// DependsOn; steps with no dependencies run immediately when the workflow starts.
@@ -179,6 +185,65 @@ type AdaptivePolicy struct {
 	RequireApprovalForUnlisted bool `json:"requireApprovalForUnlisted,omitempty"`
 }
 
+// WorkflowSandboxSpec describes the repository sandbox shared by a workflow.
+type WorkflowSandboxSpec struct {
+	// Image is the sandbox image. Shared container steps must name the same image
+	// in container.image, so moving a workflow between pod and sandbox execution
+	// cannot silently change what runs.
+	// +kubebuilder:validation:MinLength=1
+	Image string `json:"image"`
+
+	// ClassRef names a cluster-scoped SandboxClass. Its egress, filesystem,
+	// resource defaults, placement and minimum enforcement apply to the workflow.
+	// +optional
+	ClassRef string `json:"classRef,omitempty"`
+
+	// Repo is the GitHub repository to check out, in owner/name form.
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`
+	Repo string `json:"repo"`
+
+	// Ref is the branch, tag or commit to check out. Empty uses the remote's
+	// default branch. The resolved commit is recorded in status.sandbox.checkoutSHA.
+	// +optional
+	Ref string `json:"ref,omitempty"`
+
+	// Branch is the local work branch to create at Ref. Empty checks out a
+	// detached HEAD. Steps share this checkout; the branch is the recovery record.
+	// +optional
+	Branch string `json:"branch,omitempty"`
+}
+
+// WorkflowSandboxPhase is the lifecycle of a workflow-owned sandbox.
+// +kubebuilder:validation:Enum=Provisioning;Ready;Failed
+type WorkflowSandboxPhase string
+
+// Workflow sandbox phases.
+const (
+	WorkflowSandboxPhaseProvisioning WorkflowSandboxPhase = "Provisioning"
+	WorkflowSandboxPhaseReady        WorkflowSandboxPhase = "Ready"
+	WorkflowSandboxPhaseFailed       WorkflowSandboxPhase = "Failed"
+)
+
+// WorkflowSandboxStatus records a sandbox and its immutable checkout.
+type WorkflowSandboxStatus struct {
+	// Name is the gateway's sandbox name.
+	// +optional
+	Name string `json:"name,omitempty"`
+	// ID is the gateway's stable sandbox ID, used to identify its supervisor.
+	// +optional
+	ID string `json:"id,omitempty"`
+	// Phase is Provisioning until the sandbox is ready and its checkout has
+	// completed, then Ready. Failed means the sandbox or checkout was lost.
+	// +optional
+	Phase WorkflowSandboxPhase `json:"phase,omitempty"`
+	// CheckoutSHA is the exact commit checked out in the sandbox.
+	// +optional
+	CheckoutSHA string `json:"checkoutSHA,omitempty"`
+	// GitTokenExpiry is when the workflow's GitHub installation token expires.
+	// +optional
+	GitTokenExpiry *metav1.Time `json:"gitTokenExpiry,omitempty"`
+}
+
 // WorkflowStepType says what a step does.
 // +kubebuilder:validation:Enum=agent;container;approval
 type WorkflowStepType string
@@ -187,10 +252,21 @@ type WorkflowStepType string
 const (
 	// WorkflowStepTypeAgent runs an Agent (the default).
 	WorkflowStepTypeAgent WorkflowStepType = "agent"
-	// WorkflowStepTypeContainer runs a deterministic job in a pod.
+	// WorkflowStepTypeContainer runs a deterministic job in a pod or workflow sandbox.
 	WorkflowStepTypeContainer WorkflowStepType = "container"
 	// WorkflowStepTypeApproval waits for a person's decision.
 	WorkflowStepTypeApproval WorkflowStepType = "approval"
+)
+
+// WorkflowStepSandbox selects where an agent or container step runs when the
+// workflow has spec.sandbox. Empty means shared.
+// +kubebuilder:validation:Enum=shared;fresh
+type WorkflowStepSandbox string
+
+// Workflow step sandbox placements.
+const (
+	WorkflowStepSandboxShared WorkflowStepSandbox = "shared"
+	WorkflowStepSandboxFresh  WorkflowStepSandbox = "fresh"
 )
 
 // WorkflowStep defines a single node in the workflow DAG.
@@ -200,6 +276,7 @@ const (
 // +kubebuilder:validation:XValidation:rule="!has(self.container) || (has(self.type) && self.type == 'container')",message="the container block is only for container steps"
 // +kubebuilder:validation:XValidation:rule="!has(self.type) || self.type != 'approval' || has(self.approval)",message="an approval step needs an approval block"
 // +kubebuilder:validation:XValidation:rule="!has(self.approval) || (has(self.type) && self.type == 'approval')",message="the approval block is only for approval steps"
+// +kubebuilder:validation:XValidation:rule="!has(self.sandbox) || !has(self.type) || self.type != 'approval'",message="sandbox is only for agent and container steps"
 type WorkflowStep struct {
 	// Name is a unique identifier for this step within the workflow.
 	// Used in DependsOn references and template variables.
@@ -207,10 +284,16 @@ type WorkflowStep struct {
 	Name string `json:"name"`
 
 	// Type is agent (default): run an Agent; container: run a deterministic job in a
-	// pod; approval: wait for a person to approve or reject.
+	// pod or workflow sandbox; approval: wait for a person to approve or reject.
 	// +kubebuilder:default=agent
 	// +optional
 	Type WorkflowStepType `json:"type,omitempty"`
+
+	// Sandbox selects shared (default) or fresh execution when the workflow has
+	// spec.sandbox. A fresh sandbox is built from the workflow's checked-out commit.
+	// It has no effect on approval steps and is invalid without spec.sandbox.
+	// +optional
+	Sandbox WorkflowStepSandbox `json:"sandbox,omitempty"`
 
 	// AgentRef is the name of the Agent CRD to run for this step. Agent steps only.
 	// +optional
@@ -252,9 +335,9 @@ type WorkflowStep struct {
 	Callbacks *CallbackConfig `json:"callbacks,omitempty"`
 }
 
-// ContainerStep is a deterministic job: one container in its own pod, run to
-// completion. Exit code 0 is success and the tail of its output becomes the
-// step's output. The pod has no service account token, a read-only root
+// ContainerStep is a deterministic job run to completion in its own pod or in a
+// workflow-owned sandbox. Exit code 0 is success and the tail of its output
+// becomes the step's output. A pod has no service account token, a read-only root
 // filesystem, runs as a non-root user and is denied all network traffic once
 // the cluster's NetworkPolicy controller has programmed the rules (a second or
 // two after the pod starts); /tmp and /work are writable scratch.
@@ -370,6 +453,14 @@ type WorkflowStepStatus struct {
 	// +optional
 	ApprovalID string `json:"approvalID,omitempty"`
 
+	// JobID is the detached job of a step running in an OpenShell sandbox.
+	// +optional
+	JobID string `json:"jobID,omitempty"`
+
+	// Sandbox is the fresh sandbox of a step with sandbox: fresh.
+	// +optional
+	Sandbox *WorkflowSandboxStatus `json:"sandbox,omitempty"`
+
 	// StartTime is when the step's AgentRun was created.
 	// +optional
 	StartTime *metav1.Time `json:"startTime,omitempty"`
@@ -427,6 +518,10 @@ type AgentWorkflowStatus struct {
 	// Phase is the overall workflow lifecycle state.
 	// +optional
 	Phase AgentWorkflowPhase `json:"phase,omitempty"`
+
+	// Sandbox is the workflow-owned repository sandbox.
+	// +optional
+	Sandbox *WorkflowSandboxStatus `json:"sandbox,omitempty"`
 
 	// Steps holds per-step execution state, one entry per spec.steps entry.
 	// +optional

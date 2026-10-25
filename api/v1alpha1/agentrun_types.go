@@ -83,6 +83,26 @@ type LoopDetectedInfo struct {
 	ToolName string `json:"toolName,omitempty"`
 }
 
+// WorkflowSandboxRef selects the existing workflow-owned sandbox in which the
+// AgentRun's agent process runs as a detached job. The workflow controller sets
+// it; ordinary AgentRuns leave it nil and create their own workload sandbox.
+type WorkflowSandboxRef struct {
+	// Name is the gateway sandbox name.
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+	// ID is the gateway sandbox ID, used for router ingress.
+	// +optional
+	ID string `json:"id,omitempty"`
+	// Fresh is true for the step's dedicated sandbox. It is deleted when the last
+	// run in a clarification chain ends; a shared sandbox is workflow-owned.
+	// +optional
+	Fresh bool `json:"fresh,omitempty"`
+	// ProviderOwner is the original step AgentRun name used for tool credential
+	// providers. Continuations retain it so their policy and providers still match.
+	// +optional
+	ProviderOwner string `json:"providerOwner,omitempty"`
+}
+
 // AgentRunSpec defines the desired state of an AgentRun.
 type AgentRunSpec struct {
 	// AgentRef names the Agent to run.
@@ -135,6 +155,12 @@ type AgentRunSpec struct {
 	// (the ModelSelector's budgetCap only steers routing).
 	// +optional
 	Budget *RunBudget `json:"budget,omitempty"`
+
+	// WorkflowSandbox runs the agent in an existing workflow sandbox instead of
+	// creating a sandbox whose main process is the agent. Set only by the
+	// AgentWorkflow controller and inherited by clarification continuations.
+	// +optional
+	WorkflowSandbox *WorkflowSandboxRef `json:"workflowSandbox,omitempty"`
 }
 
 // ConditionToolApprovalPending is True on an AgentRun while a tool call waits

@@ -266,6 +266,32 @@ spec:
                 description: Timeout is the maximum duration for this run. Defaults
                   to 5 minutes.
                 type: string
+              workflowSandbox:
+                description: |-
+                  WorkflowSandbox runs the agent in an existing workflow sandbox instead of
+                  creating a sandbox whose main process is the agent. Set only by the
+                  AgentWorkflow controller and inherited by clarification continuations.
+                properties:
+                  fresh:
+                    description: |-
+                      Fresh is true for the step's dedicated sandbox. It is deleted when the last
+                      run in a clarification chain ends; a shared sandbox is workflow-owned.
+                    type: boolean
+                  id:
+                    description: ID is the gateway sandbox ID, used for router ingress.
+                    type: string
+                  name:
+                    description: Name is the gateway sandbox name.
+                    minLength: 1
+                    type: string
+                  providerOwner:
+                    description: |-
+                      ProviderOwner is the original step AgentRun name used for tool credential
+                      providers. Continuations retain it so their policy and providers still match.
+                    type: string
+                required:
+                - name
+                type: object
             required:
             - agentRef
             - input

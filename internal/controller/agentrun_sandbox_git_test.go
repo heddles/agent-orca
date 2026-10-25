@@ -33,6 +33,8 @@ import (
 	"github.com/heddles/agent-orca/internal/openshell"
 )
 
+const testGitToken = "ghs_token1"
+
 // stubMinter returns numbered tokens and records each request.
 type stubMinter struct {
 	reqs []githubapp.TokenRequest
@@ -95,7 +97,7 @@ func TestEnsureSandbox_GitHubToken(t *testing.T) {
 	// The value lives only in the run's provider; the workload gets the
 	// placeholder env var through git's credential helper config.
 	provider := gw.providers[openshell.GitProviderName("default", "run-1")]
-	if provider == nil || provider.Spec.Credentials[openshell.GitTokenEnvVar] != "ghs_token1" {
+	if provider == nil || provider.Spec.Credentials[openshell.GitTokenEnvVar] != testGitToken {
 		t.Fatalf("git provider = %+v", provider)
 	}
 	if gw.profiles[openshell.GitProfileID("default")] == nil {
@@ -158,7 +160,7 @@ func TestRefreshSandboxGit(t *testing.T) {
 	if len(minter.reqs) != 1 {
 		t.Fatalf("token near expiry not refreshed")
 	}
-	if p := gw.providers[openshell.GitProviderName("default", "run-1")]; p == nil || p.Spec.Credentials[openshell.GitTokenEnvVar] != "ghs_token1" {
+	if p := gw.providers[openshell.GitProviderName("default", "run-1")]; p == nil || p.Spec.Credentials[openshell.GitTokenEnvVar] != testGitToken {
 		t.Errorf("provider not updated: %+v", p)
 	}
 	if time.Until(run.Status.SandboxGitTokenExpiry.Time) < 30*time.Minute {

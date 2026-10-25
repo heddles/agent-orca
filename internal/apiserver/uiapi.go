@@ -710,10 +710,12 @@ func (s *UIServer) handleAnswerRun(w http.ResponseWriter, r *http.Request, ns, r
 			Labels:       run.Labels,
 		},
 		Spec: agentorcav1alpha1.AgentRunSpec{
-			AgentRef:    run.Spec.AgentRef,
-			Input:       continuationInput,
-			Timeout:     run.Spec.Timeout,
-			PriorRunRef: runName,
+			AgentRef:        run.Spec.AgentRef,
+			Input:           continuationInput,
+			Timeout:         run.Spec.Timeout,
+			RestartPolicy:   run.Spec.RestartPolicy,
+			PriorRunRef:     runName,
+			WorkflowSandbox: run.Spec.WorkflowSandbox,
 		},
 	}
 	if err := s.crdClient.Create(r.Context(), continuation); err != nil {

@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -34,6 +35,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
+	"github.com/heddles/agent-orca/internal/openshell"
 )
 
 const workflowPollInterval = 10 * time.Second
@@ -53,6 +55,15 @@ type AgentWorkflowReconciler struct {
 	// AllowedRegistries restricts container steps' images, like the webhook does
 	// for agents and tools. Empty allows any.
 	AllowedRegistries []string
+	// Sandboxes runs workflow-owned OpenShell sandboxes. Nil makes spec.sandbox
+	// fail with a clear reason; workflows without one keep their existing behavior.
+	Sandboxes openshell.Gateway
+	// SandboxPlacement chooses the nodes workflow sandbox pods run on.
+	SandboxPlacement openshell.Placement
+	// GitHubApp mints optional credential-bound tokens for repository checkouts.
+	GitHubApp GitHubTokenMinter
+	// ClusterDomain is the cluster DNS domain used by sandboxed agent routers.
+	ClusterDomain string
 }
 
 // +kubebuilder:rbac:groups=agentorca.agentorca.io,resources=agentworkflows,verbs=get;list;watch;create;update;patch;delete
@@ -62,6 +73,8 @@ type AgentWorkflowReconciler struct {
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;create;delete
 // +kubebuilder:rbac:groups="",resources=pods/log,verbs=get
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create
+// +kubebuilder:rbac:groups=agentorca.agentorca.io,resources=sandboxclasses,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get
 
 func (r *AgentWorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) { //nolint:gocyclo
 
@@ -77,11 +90,21 @@ func (r *AgentWorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return r.reconcileTemplate(ctx, &wf)
 	}
 
-	// Terminal workflows need no further reconciliation, beyond withdrawing any
-	// approval a person is still being asked for.
+	// Gateway sandboxes and credential providers have no Kubernetes ownerRef, so
+	// they need a finalizer even when the workflow already reached a terminal phase.
+	if !wf.DeletionTimestamp.IsZero() {
+		return r.handleWorkflowDeletion(ctx, &wf)
+	}
+	if wf.Spec.Sandbox != nil && !controllerutil.ContainsFinalizer(&wf, workflowSandboxFinalizer) {
+		controllerutil.AddFinalizer(&wf, workflowSandboxFinalizer)
+		return ctrl.Result{Requeue: true}, r.Update(ctx, &wf)
+	}
+
+	// Terminal workflows need no further execution, but their approvals and
+	// gateway-side sandboxes still need cleanup.
 	if isWorkflowTerminal(wf.Status.Phase) {
 		r.withdrawWorkflowApprovals(ctx, &wf)
-		return ctrl.Result{}, nil
+		return r.cleanupWorkflowSandbox(ctx, &wf)
 	}
 
 	// A workflow created from a template gets its steps before it can start.
@@ -104,6 +127,16 @@ func (r *AgentWorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			r.failWorkflow(ctx, &wf, "workflow timeout exceeded")
 			return ctrl.Result{}, r.Status().Update(ctx, &wf)
 		}
+	}
+
+	// The shared checkout must be ready before any agent or container step starts.
+	// Provisioning and checkout state are persisted by the same status update.
+	ready, result, err := r.ensureWorkflowSandbox(ctx, &wf)
+	if err != nil {
+		return result, err
+	}
+	if !ready {
+		return result, r.Status().Update(ctx, &wf)
 	}
 
 	// Build a fast lookup: step name → current status entry.
@@ -266,11 +299,28 @@ func (r *AgentWorkflowReconciler) startStep(
 ) error {
 	switch stepType(step) {
 	case agentorcav1alpha1.WorkflowStepTypeContainer:
+		if wf.Spec.Sandbox != nil {
+			return r.startSandboxContainerStep(ctx, wf, step, ss)
+		}
 		return r.startContainerStep(ctx, wf, step, ss)
 	case agentorcav1alpha1.WorkflowStepTypeApproval:
 		return r.startApprovalStep(ctx, wf, step, ss)
 	}
+	if wf.Spec.Sandbox != nil && step.Sandbox == agentorcav1alpha1.WorkflowStepSandboxFresh {
+		return r.startFreshSandboxAgentStep(ctx, wf, step, ss)
+	}
+	return r.startAgentStep(ctx, wf, step, ss)
+}
 
+// startAgentStep creates an AgentRun. With a workflow sandbox, the run uses the
+// selected existing checkout and the AgentRun controller launches the agent as
+// a job; without one, its behavior is unchanged.
+func (r *AgentWorkflowReconciler) startAgentStep(
+	ctx context.Context,
+	wf *agentorcav1alpha1.AgentWorkflow,
+	step *agentorcav1alpha1.WorkflowStep,
+	ss *agentorcav1alpha1.WorkflowStepStatus,
+) error {
 	// Resolve template variables in the input (from both static and dynamic step outputs).
 	allStatuses := append(wf.Status.Steps, wf.Status.DynamicStepStatuses...)
 	input := resolveTemplates(step.Input, allStatuses)
@@ -290,7 +340,7 @@ func (r *AgentWorkflowReconciler) startStep(
 		}
 	}
 
-	runName := fmt.Sprintf("%s-%s", wf.Name, step.Name)
+	runName := workflowAgentRunName(wf, step)
 	run := &agentorcav1alpha1.AgentRun{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      runName,
@@ -305,6 +355,30 @@ func (r *AgentWorkflowReconciler) startStep(
 			Input:    input,
 			Timeout:  timeout,
 		},
+	}
+	if wf.Spec.Sandbox != nil {
+		if _, err := r.workflowAgent(ctx, wf, step, step.AgentRef); err != nil {
+			if errors.Is(err, errWorkflowAgentUnusable) {
+				finishStep(wf, ss, false, "", err.Error())
+				return nil
+			}
+			return err
+		}
+
+		if step.Sandbox != agentorcav1alpha1.WorkflowStepSandboxFresh && !workflowAgentPolicyIncluded(wf, step) {
+			finishStep(wf, ss, false, "", fmt.Sprintf("Agent %q was not included in the shared policy; add it to adaptivePolicy.allowedAgentRefs", step.AgentRef))
+			return nil
+		}
+		sandbox := wf.Status.Sandbox
+		fresh := step.Sandbox == agentorcav1alpha1.WorkflowStepSandboxFresh
+		if fresh {
+			sandbox = ss.Sandbox
+		}
+		run.Spec.WorkflowSandbox = &agentorcav1alpha1.WorkflowSandboxRef{Name: sandbox.Name, ID: sandbox.ID, Fresh: fresh, ProviderOwner: runName}
+		// Workflow step reruns are W5. An AgentRun must not independently rerun
+		// a job in a shared worktree after a failure.
+		run.Spec.RestartPolicy = &agentorcav1alpha1.AgentRunRestartPolicy{MaxRetries: 0}
+		ss.JobID = workflowStepJobID(wf, step)
 	}
 
 	// Set the workflow as owner so kubectl delete agentworkflow cascades.
@@ -339,9 +413,15 @@ func (r *AgentWorkflowReconciler) checkStep(
 ) (ctrl.Result, error) {
 	switch stepType(step) {
 	case agentorcav1alpha1.WorkflowStepTypeContainer:
+		if wf.Spec.Sandbox != nil {
+			return r.checkSandboxContainerStep(ctx, wf, step, ss)
+		}
 		return r.checkContainerStep(ctx, wf, ss)
 	case agentorcav1alpha1.WorkflowStepTypeApproval:
 		return r.checkApprovalStep(ctx, wf, step, ss)
+	}
+	if wf.Spec.Sandbox != nil {
+		return r.checkSandboxAgentStep(ctx, wf, step, ss)
 	}
 	return r.checkStepRun(ctx, wf, step, ss)
 }
@@ -402,6 +482,9 @@ func (r *AgentWorkflowReconciler) checkStepRun(
 		// If the human answered and a continuation run was created, follow it.
 		if run.Status.ContinuationRunRef != "" {
 			ss.AgentRunRef = run.Status.ContinuationRunRef
+			if wf.Spec.Sandbox != nil {
+				ss.JobID = openshell.WorkflowJobName(wf.Namespace, ss.AgentRunRef)
+			}
 			ss.Phase = agentorcav1alpha1.WorkflowStepPhaseRunning
 			return ctrl.Result{Requeue: true}, nil
 		}

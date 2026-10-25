@@ -45,11 +45,22 @@ spec:
   # fromTemplate: create this workflow from a template; the controller fills in steps.
   #   fromTemplate: {name: <template>, parameters: {<name>: "<value>"}}
 
+  # sandbox is optional. When set, agent and container steps share this governed
+  # OpenShell checkout unless a step selects sandbox: fresh. See "Workflow-owned
+  # sandboxes" below. Without it, agents and containers run as before.
+  sandbox:
+    image: ghcr.io/heddles/agent-orca/dev-sandbox:latest
+    classRef: factory-writer         # optional cluster-scoped SandboxClass
+    repo: heddles/agent-orca         # GitHub owner/name
+    ref: main                        # optional branch, tag or commit; empty = remote HEAD
+    branch: factory/ticket-42        # optional local work branch; empty = detached HEAD
+
   # steps defines the DAG. Steps with no dependsOn start immediately.
   # Required unless fromTemplate is set.
   steps:
     - name: string                    # unique within this workflow, lowercase alphanumeric + hyphens
       type: agent                     # agent (default) | container | approval; see "Step types"
+      sandbox: shared                 # shared (default) | fresh; agent/container steps only
       agentRef: string                # agent steps: name of the Agent CRD to run
       input: string                   # agent steps: task string; supports {{steps.<name>.output}}
       dependsOn: []string             # step names that must complete first
@@ -160,7 +171,7 @@ make a workflow deterministic where it needs to be.
 | Type | Does | Output | Fails when |
 |---|---|---|---|
 | `agent` (default) | Runs an Agent | The agent's answer | The run fails |
-| `container` | Runs one container to completion in its own pod | The last 10 KB of its output | It exits non-zero, times out, or cannot start |
+| `container` | Runs one container to completion in a pod or workflow sandbox | The last 10 KB of its output | It exits non-zero, times out, or cannot start |
 | `approval` | Waits for a person to approve or reject | `approved by <who>: <reason>` | Rejected, or not decided in time |
 
 All three take `dependsOn`, `condition` and `timeout`, and respect `onStepFailure`.
@@ -207,6 +218,81 @@ captured.
 
 `{{steps.x.output}}` is available in `env` values only. Command and args are fixed, so a step's
 output (which may be model text) cannot become shell code.
+
+### Workflow-owned sandboxes
+
+Set `spec.sandbox` when the steps belong to one work item and need a shared, governed checkout.
+Agent and container steps use that sandbox by default; `sandbox: fresh` gives a step a dedicated
+sandbox from exactly the same commit. Approval steps do not need a sandbox.
+
+```yaml
+spec:
+  sandbox:
+    image: ghcr.io/heddles/agent-orca/dev-sandbox:latest
+    classRef: factory-writer
+    repo: heddles/agent-orca
+    ref: main
+    branch: factory/ticket-42
+  steps:
+    - name: implement
+      agentRef: coder
+      input: Fix the failing tests on the current branch.
+
+    - name: test
+      type: container
+      dependsOn: [implement]
+      container:
+        # A shared container must name the same image as spec.sandbox.
+        image: ghcr.io/heddles/agent-orca/dev-sandbox:latest
+        command: [make, test]
+
+    - name: verify
+      agentRef: verifier
+      sandbox: fresh
+      dependsOn: [test]
+      input: Independently verify the change and its evidence.
+```
+
+The controller creates an idle sandbox, applies the workflow `SandboxClass`, and checks out
+`repo` at `ref` into `/sandbox/repo`. It records the gateway name and ID, phase, and resolved
+commit in `status.sandbox` (`name`, `id`, `phase`, `checkoutSHA`). A fresh step records the same
+fields under its step status. The exact shared `checkoutSHA` is the input to every fresh checkout.
+
+Execution is restart-safe: the checkout and every step are **detached jobs inside the sandbox**, with
+their scripts, PIDs, output, and exit codes in sandbox files. The operator starts and polls them with
+short `Exec` calls. It does not hold an hour-long stream open, so a gateway or operator restart does
+not lose the job. A gateway outage is retried; a deleted sandbox or lost job fails rather than
+silently rerunning non-idempotent work. Workflow deletion and terminal cleanup remove sandboxes and
+credential providers through a finalizer.
+
+Each agent step still has its own `AgentRun`, router URL, router credential, budget, safeguards,
+and trace. The shared policy includes every declared agent's router and the union of its class,
+inline egress, filesystem, and tools; roles therefore share the merged egress for the sandbox's
+lifetime. A workflow-prefixed router rule also covers clarification continuations, while each
+router's Kubernetes `NetworkPolicy` admits only the workflow sandbox's supervisor.
+
+Constraints and defaults:
+
+- Every shared Agent must use `spec.sandbox.image` and have a sandbox-compatible split-pod
+  configuration and explicit `runtime.command`. A fresh Agent uses its own image and classes.
+- A shared container's `container.image` must equal `spec.sandbox.image`; a fresh container may use
+  another image. Sandbox jobs need an explicit `container.command` because `Exec` does not invoke
+  the image entrypoint. `container.resources` and `runAsUser` remain pod-only; use a `SandboxClass`
+  for sandbox resources and placement.
+- Dynamic shared agents must be named in `adaptivePolicy.allowedAgentRefs`, so their policies can
+  be merged before sandbox creation. An undeclared dynamic agent fails before it starts.
+- `repo` is a GitHub `owner/name` repository. With the operator's GitHub App, checkout uses a
+  short-lived, repository-scoped, credential-bound provider refreshed before expiry. Without it,
+  public clone still works and prompts are disabled. `ref` defaults to the remote HEAD; `branch`
+  is optional and creates a local work branch.
+- A fresh sandbox is deleted after its step's output is captured. A clarification chain keeps it
+  until the final continuation completes, preserving uncommitted work. The shared sandbox lives
+  until workflow cleanup.
+- Templates carry `sandbox` to instances unless the instance overrides the whole block. Template
+  parameters are not substituted into sandbox fields.
+
+Workflows without `spec.sandbox` keep the behavior described above: agent steps create their normal
+AgentRuns, and container steps use hardened pods.
 
 ### Approval steps
 

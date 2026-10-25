@@ -206,7 +206,7 @@ func ancestors(steps []agentorcav1alpha1.WorkflowStep) map[string]map[string]boo
 
 // validateTemplate reports every problem that makes a template unusable.
 func validateTemplate(spec *agentorcav1alpha1.AgentWorkflowSpec) []string {
-	problems := validateWorkflowStructure(spec.Steps)
+	problems := append(validateWorkflowStructure(spec.Steps), validateWorkflowSandbox(spec)...)
 
 	declared := make(map[string]*agentorcav1alpha1.WorkflowParameter, len(spec.Parameters))
 	for i := range spec.Parameters {
@@ -240,6 +240,15 @@ func validateTemplate(spec *agentorcav1alpha1.AgentWorkflowSpec) []string {
 		}
 	}
 	checkParamRefs("spec.description", spec.Description)
+	if sb := spec.Sandbox; sb != nil {
+		// Source and image selection are configuration, not untrusted text. An
+		// instance can override the whole sandbox block when it is created.
+		noParams("spec.sandbox.image", sb.Image)
+		noParams("spec.sandbox.classRef", sb.ClassRef)
+		noParams("spec.sandbox.repo", sb.Repo)
+		noParams("spec.sandbox.ref", sb.Ref)
+		noParams("spec.sandbox.branch", sb.Branch)
+	}
 	for _, s := range spec.Steps {
 		noParams(fmt.Sprintf("step %q agentRef", s.Name), s.AgentRef)
 		noParams(fmt.Sprintf("step %q condition", s.Name), s.Condition)
@@ -467,6 +476,9 @@ func instantiateTemplate(tmpl, inst *agentorcav1alpha1.AgentWorkflow) (agentorca
 	}
 	if out.AdaptivePolicy == nil && tmpl.Spec.AdaptivePolicy != nil {
 		out.AdaptivePolicy = tmpl.Spec.AdaptivePolicy.DeepCopy()
+	}
+	if out.Sandbox == nil && tmpl.Spec.Sandbox != nil {
+		out.Sandbox = tmpl.Spec.Sandbox.DeepCopy()
 	}
 	return out, nil
 }

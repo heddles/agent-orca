@@ -28,7 +28,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	clientgofake "k8s.io/client-go/kubernetes/fake"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -64,8 +63,9 @@ func stepsReconciler(t *testing.T, objs ...client.Object) (*AgentWorkflowReconci
 	}
 	cl := fake.NewClientBuilder().WithScheme(scheme).
 		WithStatusSubresource(&agentorcav1alpha1.AgentWorkflow{}, &corev1.Pod{}).WithObjects(objs...).Build()
+	k8s := newFakeClientsetWithLogs()
 	store := &memApprovals{}
-	return &AgentWorkflowReconciler{Client: cl, Scheme: scheme, K8s: clientgofake.NewClientset(), Approvals: store}, cl, store
+	return &AgentWorkflowReconciler{Client: cl, Scheme: scheme, K8s: k8s, Approvals: store}, cl, store
 }
 
 func stepWorkflow(steps ...agentorcav1alpha1.WorkflowStep) *agentorcav1alpha1.AgentWorkflow {

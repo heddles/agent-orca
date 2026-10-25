@@ -36,8 +36,10 @@ import (
 // Labels set on every sandbox the operator creates, so a sandbox found on the
 // gateway can be traced back to its AgentRun.
 const (
-	LabelRunName      = "agentorca.io/run"
-	LabelRunNamespace = "agentorca.io/run-namespace"
+	LabelRunName           = "agentorca.io/run"
+	LabelRunNamespace      = "agentorca.io/run-namespace"
+	LabelWorkflowName      = "agentorca.io/workflow"
+	LabelWorkflowNamespace = "agentorca.io/workflow-namespace"
 )
 
 // Supervisor pod labels set by the OpenShell Kubernetes driver. The supervisor
@@ -66,6 +68,26 @@ const anyBinary = "/**"
 func SandboxName(namespace, runName string, attempt int) string {
 	sum := sha256.Sum256(fmt.Appendf(nil, "%s/%s/%d", namespace, runName, attempt))
 	return "ao-" + hex.EncodeToString(sum[:])[:16]
+}
+
+// WorkflowSandboxName returns the stable gateway name of a workflow's shared
+// sandbox. Its finalizer removes the sandbox before the workflow can be
+// recreated with the same namespace and name.
+func WorkflowSandboxName(namespace, workflowName string) string {
+	return SandboxName(namespace, "workflow-"+workflowName, 0)
+}
+
+// WorkflowStepSandboxName returns the gateway name of a step's fresh sandbox.
+// It differs from both the shared sandbox and every other step's sandbox.
+func WorkflowStepSandboxName(namespace, workflowName, stepName string) string {
+	return SandboxName(namespace, "workflow-"+workflowName+"-step-"+stepName, 0)
+}
+
+// WorkflowJobName returns a detached job ID for an AgentRun. Continuations have
+// different run names and therefore different jobs in the same fresh sandbox.
+func WorkflowJobName(namespace, runName string) string {
+	sum := sha256.Sum256(fmt.Appendf(nil, "%s/%s", namespace, runName))
+	return "job-" + hex.EncodeToString(sum[:])[:16]
 }
 
 // SpecInput is everything BuildSpec needs to describe a run's sandbox.

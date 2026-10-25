@@ -145,6 +145,23 @@ func StartJob(ctx context.Context, ex Executor, sandbox, id, script string, env 
 	return nil
 }
 
+// StartCommandJob starts an argv command as a detached job. Arguments are
+// shell-quoted individually: unlike a script, model- or ticket-derived data in
+// an argument cannot become shell syntax. command must name the executable.
+func StartCommandJob(ctx context.Context, ex Executor, sandbox, id string, command, args []string, env map[string]string, workDir string) error {
+	if len(command) == 0 {
+		return fmt.Errorf("sandbox job %s has no command", id)
+	}
+	argv := append(append([]string{}, command...), args...)
+	var script strings.Builder
+	script.WriteString("exec")
+	for _, arg := range argv {
+		script.WriteByte(' ')
+		script.WriteString(shellQuote(arg))
+	}
+	return StartJob(ctx, ex, sandbox, id, script.String(), env, workDir)
+}
+
 // jobPrologue exports env and enters workDir ahead of the script. Values are
 // single-quoted, so they may hold anything, newlines and quotes included.
 func jobPrologue(env map[string]string, workDir string) string {

@@ -548,6 +548,10 @@ func main() {
 		Approvals:         approvals,
 		ApprovalNotifier:  approvalNotifier,
 		AllowedRegistries: allowedRegistries,
+		Sandboxes:         sandboxes,
+		SandboxPlacement:  sandboxPlacement,
+		GitHubApp:         gitHubApp,
+		ClusterDomain:     os.Getenv("CLUSTER_DOMAIN"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "AgentWorkflow")
 		os.Exit(1)

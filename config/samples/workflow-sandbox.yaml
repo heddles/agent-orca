@@ -1,0 +1,33 @@
+# One work item, one governed checkout. The implementer and deterministic tests
+# share the writer sandbox; the verifier gets a fresh sandbox from the same
+# commit. Create the referenced Agents and SandboxClass first.
+apiVersion: agentorca.agentorca.io/v1alpha1
+kind: AgentWorkflow
+metadata:
+  name: ticket-42
+  namespace: agent-orca-system
+spec:
+  timeout: 6h
+  sandbox:
+    image: ghcr.io/heddles/agent-orca/dev-sandbox:latest
+    classRef: factory-writer
+    repo: heddles/agent-orca
+    ref: main
+    branch: factory/ticket-42
+  steps:
+    - name: implement
+      agentRef: coder
+      input: Fix the failing tests and leave the change on the current branch.
+
+    - name: test
+      type: container
+      dependsOn: [implement]
+      container:
+        image: ghcr.io/heddles/agent-orca/dev-sandbox:latest
+        command: [make, test]
+
+    - name: verify
+      agentRef: verifier
+      sandbox: fresh
+      dependsOn: [test]
+      input: Independently verify the diff and test evidence at this commit.
