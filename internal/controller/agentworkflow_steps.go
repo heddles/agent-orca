@@ -53,6 +53,9 @@ import (
 	agentwebhook "github.com/heddles/agent-orca/internal/webhook"
 )
 
+// onStepFailureContinue is the onStepFailure value that keeps a workflow going past a failed step.
+const onStepFailureContinue = "continue"
+
 const (
 	// maxStepOutputBytes caps a step's output (the tail of a container's logs).
 	maxStepOutputBytes = 10 * 1024
@@ -99,7 +102,7 @@ func finishStep(wf *agentorcav1alpha1.AgentWorkflow, ss *agentorcav1alpha1.Workf
 	switch {
 	case succeeded:
 		ss.Phase = agentorcav1alpha1.WorkflowStepPhaseSucceeded
-	case wf.Spec.OnStepFailure == "continue":
+	case wf.Spec.OnStepFailure == onStepFailureContinue:
 		ss.Phase, ss.FailureReason = agentorcav1alpha1.WorkflowStepPhaseSkipped, reason
 	default:
 		ss.Phase, ss.FailureReason = agentorcav1alpha1.WorkflowStepPhaseFailed, reason

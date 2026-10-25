@@ -194,7 +194,7 @@ const (
 )
 
 // WorkflowStep defines a single node in the workflow DAG.
-// +kubebuilder:validation:XValidation:rule="(has(self.type) && self.type != 'agent') || (has(self.agentRef) && self.agentRef != ” && has(self.input))",message="an agent step needs agentRef and input"
+// +kubebuilder:validation:XValidation:rule="(has(self.type) && self.type != 'agent') || (has(self.agentRef) && size(self.agentRef) > 0 && has(self.input))",message="an agent step needs agentRef and input"
 // +kubebuilder:validation:XValidation:rule="!has(self.type) || self.type == 'agent' || (!has(self.agentRef) && !has(self.input))",message="agentRef and input are only for agent steps"
 // +kubebuilder:validation:XValidation:rule="!has(self.type) || self.type != 'container' || has(self.container)",message="a container step needs a container block"
 // +kubebuilder:validation:XValidation:rule="!has(self.container) || (has(self.type) && self.type == 'container')",message="the container block is only for container steps"

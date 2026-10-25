@@ -34,7 +34,6 @@ import (
 
 const (
 	undeclaredParam = "{{params.nope}}"
-	failureContinue = "continue"
 )
 
 func step(name, input string, deps ...string) agentorcav1alpha1.WorkflowStep {
@@ -223,13 +222,13 @@ func TestInstantiateTemplate(t *testing.T) {
 	inst := instance(map[string]string{"repo": "a/b", "title": "t"})
 	inst.Spec.Timeout = &metav1.Duration{Duration: 10 * time.Minute}
 	inst.Spec.BudgetCap = &agentorcav1alpha1.WorkflowBudgetCap{Total: "0.50"}
-	inst.Spec.OnStepFailure = failureContinue
+	inst.Spec.OnStepFailure = onStepFailureContinue
 	inst.Spec.Description = "mine"
 	spec, err = instantiateTemplate(factoryTemplate(), inst)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if spec.Timeout.Duration != 10*time.Minute || spec.BudgetCap.Total != "0.50" || spec.OnStepFailure != failureContinue || spec.Description != "mine" {
+	if spec.Timeout.Duration != 10*time.Minute || spec.BudgetCap.Total != "0.50" || spec.OnStepFailure != onStepFailureContinue || spec.Description != "mine" {
 		t.Errorf("instance overrides lost: %v %v %q %q", spec.Timeout, spec.BudgetCap, spec.OnStepFailure, spec.Description)
 	}
 

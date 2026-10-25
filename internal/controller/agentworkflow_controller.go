@@ -165,8 +165,7 @@ func (r *AgentWorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 		case agentorcav1alpha1.WorkflowStepPhaseFailed:
 			anyFailed = true
-			if wf.Spec.OnStepFailure != "continue" { //nolint:goconst
-
+			if wf.Spec.OnStepFailure != onStepFailureContinue {
 				r.failWorkflow(ctx, &wf, fmt.Sprintf("step %q failed: %s", step.Name, ss.FailureReason))
 				return ctrl.Result{}, r.Status().Update(ctx, &wf)
 			}
@@ -196,7 +195,7 @@ func (r *AgentWorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 				}
 			case agentorcav1alpha1.WorkflowStepPhaseFailed:
 				anyFailed = true
-				if wf.Spec.OnStepFailure != "continue" {
+				if wf.Spec.OnStepFailure != onStepFailureContinue {
 					r.failWorkflow(ctx, &wf, fmt.Sprintf("step %q failed", step.Name))
 					return ctrl.Result{}, r.Status().Update(ctx, &wf)
 				}
@@ -389,7 +388,7 @@ func (r *AgentWorkflowReconciler) checkStepRun(
 			failureReason = fmt.Sprintf("AgentRun %s failed", ss.AgentRunRef)
 		}
 		ss.CompletionTime = &now
-		if wf.Spec.OnStepFailure == "continue" {
+		if wf.Spec.OnStepFailure == onStepFailureContinue {
 			// Mark as Skipped so dependents can still be evaluated.
 			ss.Phase = agentorcav1alpha1.WorkflowStepPhaseSkipped
 			ss.FailureReason = failureReason
@@ -428,7 +427,7 @@ func (r *AgentWorkflowReconciler) depsReady(
 		if s.Phase == agentorcav1alpha1.WorkflowStepPhaseSucceeded {
 			continue
 		}
-		if s.Phase == agentorcav1alpha1.WorkflowStepPhaseSkipped && onFailure == "continue" {
+		if s.Phase == agentorcav1alpha1.WorkflowStepPhaseSkipped && onFailure == onStepFailureContinue {
 			continue
 		}
 		return false
