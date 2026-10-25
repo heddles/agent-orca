@@ -141,6 +141,9 @@ function PendingCard({ approval: a, onDecided, onNavigateToRun }: {
       </div>
 
       <dl style={s.facts}>
+        {a.kind === 'tool' && d.tool && <Fact label="Tool" value={`${d.tool}${d.sideEffect ? ` (${d.sideEffect})` : ''}`} mono />}
+        {a.kind === 'tool' && d.arguments && <Fact label="Arguments" value={d.arguments} mono />}
+        {a.kind === 'tool' && <Fact label="If rejected" value="the tool does not run; the agent is told and the run goes on" />}
         {a.kind === 'budget' && d.spentUSD && <Fact label="Spent" value={`$${d.spentUSD}`} mono />}
         {a.kind === 'budget' && d.capUSD && <Fact label="Current cap" value={`$${d.capUSD}`} mono />}
         {a.kind === 'budget' && d.newCapUSD && (

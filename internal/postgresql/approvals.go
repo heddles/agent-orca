@@ -41,6 +41,10 @@ const (
 // policy draft chunk).
 const ApprovalKindEgress = "egress"
 
+// ApprovalKindTool is a request to run a tool whose side-effect class needs an
+// approver (GuardrailPolicy.spec.toolApproval).
+const ApprovalKindTool = "tool"
+
 // ApprovalKindBudget is a request to raise a paused run's spend cap.
 const ApprovalKindBudget = "budget"
 

@@ -44,6 +44,22 @@ describe('ApprovalsView', () => {
     mockDecide.mockReset()
   })
 
+  it('shows a gated tool call with its arguments and what rejecting does', async () => {
+    mockList.mockResolvedValue([
+      pending({
+        kind: 'tool',
+        summary: 'coder-run wants to run the actuate tool "deploy"',
+        details: { tool: 'deploy', sideEffect: 'actuate', arguments: '{"env":"prod"}', agent: 'coder' },
+      }),
+    ])
+    render(<ApprovalsView />)
+    expect(await screen.findByText('coder-run wants to run the actuate tool "deploy"')).toBeInTheDocument()
+    expect(screen.getByText('deploy (actuate)')).toBeInTheDocument()
+    expect(screen.getByText('{"env":"prod"}')).toBeInTheDocument()
+    expect(screen.getByText(/the tool does not run; the agent is told and the run goes on/)).toBeInTheDocument()
+    expect(screen.queryByText('Destination')).toBeNull()
+  })
+
   it('shows a run that reached its budget, with what approving and rejecting do', async () => {
     mockList.mockResolvedValue([
       pending({

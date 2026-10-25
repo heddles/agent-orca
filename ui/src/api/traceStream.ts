@@ -54,6 +54,18 @@ export type TraceEvent =
       spentUSD: string
       capUSD: string
     }
+  // A tool call held for an approver (Tool.spec.sideEffect + GuardrailPolicy
+  // toolApproval): requested, then approved, rejected, expired, denied by the
+  // policy, or unavailable when the approval service could not be reached.
+  | {
+      type: 'toolApproval'
+      state: 'requested' | 'approved' | 'rejected' | 'expired' | 'denied' | 'withdrawn' | 'unavailable' | string
+      tool: string
+      sideEffect?: string
+      by?: string
+      approvalId?: string
+      reason?: string
+    }
   | {
       type: 'truncation'
       provider?: string

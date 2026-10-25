@@ -725,15 +725,24 @@ export interface BudgetRequestDetails {
   description?: string
 }
 
+/** What a gated tool call asks for, as stored in a tool approval's details. */
+export interface ToolRequestDetails {
+  tool?: string
+  sideEffect?: string
+  arguments?: string
+  agent?: string
+}
+
 /** A request for a decision: egress a sandbox's policy does not allow (kind
- *  "egress"), or a higher spend cap for a run that reached its budget ("budget"). */
+ *  "egress"), or a higher spend cap for a run that reached its budget ("budget"), or a tool call
+ *  whose side-effect class needs an approver ("tool"). */
 export interface Approval {
   id: string
   namespace: string
   runName: string
   kind: string
   summary: string
-  details?: EgressRequestDetails & BudgetRequestDetails
+  details?: EgressRequestDetails & BudgetRequestDetails & ToolRequestDetails
   approverGroups: string[]
   status: 'pending' | 'approved' | 'rejected' | 'expired' | 'withdrawn'
   requestedAt: string

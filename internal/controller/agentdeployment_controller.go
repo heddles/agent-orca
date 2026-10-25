@@ -651,6 +651,7 @@ func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig( //nolint:gocycl
 			BackendRef:  backendRef,
 			Command:     tool.Spec.Command,
 			Args:        tool.Spec.Args,
+			SideEffect:  string(tool.Spec.SideEffect),
 		})
 	}
 

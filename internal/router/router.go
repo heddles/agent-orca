@@ -85,6 +85,7 @@ type Router struct {
 	budgetWarned      bool          // the warning for the current cap was sent
 	budgetSynced      bool          // the cap was read from the operator once
 	budgetPoll        time.Duration // how often a paused run asks the operator for the cap (tests shorten it)
+	toolApprovalPoll  time.Duration // how often a call waiting for approval asks for the decision (tests shorten it)
 	sseStarted        atomic.Bool   // a budget pause already began the SSE response of the current request
 	checkpointTTL     time.Duration
 	handedOff         bool // set to true when _handoff tool completes; short-circuits further LLM calls
@@ -2083,6 +2084,11 @@ func (r *Router) dispatchToolCall(ctx context.Context, tc ToolCall) string { //n
 		r.emitTraceEvent(string(callJSON))
 	}
 
+	// Side-effect gate (tool_approval.go): a call that needs an approver waits
+	// here, before the per-tool timeout starts, so the wait does not count
+	// against it.
+	gated := r.gateToolCall(ctx, tc)
+
 	// Wrap tool execution in a per-tool timeout context so that a hanging
 	// tool (e.g. blocking HTTP handler, deadlock, infinite loop) does not
 	// block the entire run indefinitely. The timeout error is surfaced as
@@ -2157,6 +2163,10 @@ func (r *Router) dispatchToolCall(ctx context.Context, tc ToolCall) string { //n
 		for _, td := range r.cfg.ToolDefinitions {
 			if td.Name == tc.Function.Name {
 				found = true
+				if gated != "" {
+					result = gated
+					break
+				}
 				switch td.BackendType {
 				case backendTypeMCP:
 					result, appUrl = r.callMCPTool(toolCtx, td, tc.Function.Arguments)
