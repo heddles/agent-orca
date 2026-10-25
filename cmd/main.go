@@ -569,6 +569,15 @@ func main() {
 
 	// Start the internal API server (port 8082) for agent-to-agent communication.
 	internalAPI := apiserver.New(k8sClient, mgr.GetClient())
+	// Tool-call approvals (Tool.spec.sideEffect) need the PostgreSQL store; without
+	// it routers asking for one get 503 and the gated tool call is refused.
+	if pgStore != nil {
+		var notifier apiserver.ApprovalNotifier
+		if approvalNotifier != nil {
+			notifier = approvalNotifier
+		}
+		internalAPI.WithApprovals(pgStore, notifier)
+	}
 	// Filesystem relay (issue #34): carries ACP fs/* requests from agent pods to
 	// the workstation-side bridge. Requires the redis-backed shared state; with
 	// no relay both the internal and ACP fs endpoints fail fast with 501.

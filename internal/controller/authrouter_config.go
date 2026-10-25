@@ -26,6 +26,12 @@ func mergeGuardrailPolicyIntoRouterConfig(ctx context.Context, c client.Client, 
 		return
 	}
 	spec := gp.Spec
+	if ta := spec.ToolApproval; ta != nil {
+		cfg.ToolApproval = &router.ToolApprovalConfig{
+			Read: string(ta.Read), Write: string(ta.Write),
+			Actuate: string(ta.Actuate), Unclassified: string(ta.Unclassified),
+		}
+	}
 	if len(spec.InputFilters) == 0 && len(spec.OutputFilters) == 0 {
 		return
 	}

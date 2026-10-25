@@ -77,6 +77,10 @@ type Config struct {
 	// the run is not capped.
 	Budget *BudgetConfig `json:"budget,omitempty"`
 
+	// ToolApproval sets what each tool side-effect class needs before a call
+	// runs (GuardrailPolicy.spec.toolApproval); nil applies the defaults.
+	ToolApproval *ToolApprovalConfig `json:"toolApproval,omitempty"`
+
 	// ToolDefinitions are the OpenAI function definitions to inject into every chat completion.
 	// Built by the operator from Tool CRDs, MCP tool lists, and agent-as-tool schemas.
 	ToolDefinitions []ToolDefinition
@@ -332,6 +336,9 @@ type ToolDefinition struct {
 	Command []string `json:"command,omitempty"`
 	// Args overrides the container command arguments for pod-type tools.
 	Args []string `json:"args,omitempty"`
+	// SideEffect is the tool's class (Tool.spec.sideEffect): read, write,
+	// actuate, or empty when unclassified.
+	SideEffect string `json:"sideEffect,omitempty"`
 	// AppResourceURI is the ui:// resource URI from _meta.ui.resourceUri, if present.
 	// Only set when AllowApps is true on the owning MCPServer.
 	AppResourceURI string `json:"appResourceUri,omitempty"`

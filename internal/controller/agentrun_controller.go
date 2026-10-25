@@ -479,6 +479,7 @@ func (r *AgentRunReconciler) checkProgress(ctx context.Context, run *agentorcav1
 	if ld := run.Status.LoopDetected; ld != nil {
 		return r.failRun(ctx, run, "safeguard: "+ld.Reason)
 	}
+	r.reconcileToolApprovals(ctx, run)
 	if res, err := r.reconcileBudget(ctx, run); res != nil || err != nil {
 		if res == nil {
 			return ctrl.Result{}, err
@@ -946,6 +947,7 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 			SecretRefs:  secretRefs,
 			Command:     tool.Spec.Command,
 			Args:        tool.Spec.Args,
+			SideEffect:  string(tool.Spec.SideEffect),
 		})
 		egressRules = append(egressRules, tool.Spec.NetworkEgress...)
 	}

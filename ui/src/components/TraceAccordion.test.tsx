@@ -77,6 +77,24 @@ describe('TraceAccordion', () => {
     expect(screen.getByText('code')).toBeInTheDocument()
   })
 
+  it('renders tool approval events under the Tools filter', async () => {
+    render(
+      <TraceAccordion
+        entries={[
+          entry(0, { type: 'toolApproval', state: 'requested', tool: 'deploy', sideEffect: 'actuate', approvalId: 'a1' }),
+          entry(1, { type: 'toolApproval', state: 'rejected', tool: 'deploy', sideEffect: 'actuate', by: 'bob', reason: 'not on a Friday' }),
+          entry(2, { type: STREAM_EVENT_TYPE.modelSelected, model: 'm', reason: 'r', confidence: 0.5 }),
+        ]}
+      />,
+    )
+    await openAccordion()
+    expect(screen.getByText(/waiting for an approver/)).toBeInTheDocument()
+    expect(screen.getByText(/rejected by bob — not on a Friday/)).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Tools' }))
+    expect(screen.queryByText(/routed/)).toBeNull()
+    expect(screen.getByText(/waiting for an approver/)).toBeInTheDocument()
+  })
+
   it('renders budget events and filters them under Budget', async () => {
     render(
       <TraceAccordion

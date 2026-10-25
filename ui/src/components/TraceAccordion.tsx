@@ -85,7 +85,7 @@ export function TraceAccordion({ entries, streaming, markdown }: Props) {
     const ev = entry.event
     const bt = (ev as { backendType?: string }).backendType
     switch (filter) {
-      case 'tools': return ev.type === STREAM_EVENT_TYPE.toolCall || ev.type === STREAM_EVENT_TYPE.toolResult
+      case 'tools': return ev.type === STREAM_EVENT_TYPE.toolCall || ev.type === STREAM_EVENT_TYPE.toolResult || ev.type === 'toolApproval'
       case 'mcp': return ((ev.type === STREAM_EVENT_TYPE.toolCall || ev.type === STREAM_EVENT_TYPE.toolResult || ev.type === 'mcpDiscovery') && (bt === 'mcp' || ev.type === 'mcpDiscovery'))
       case 'rag': return ((ev.type === STREAM_EVENT_TYPE.toolCall || ev.type === STREAM_EVENT_TYPE.toolResult || ev.type === 'ragResult') && (bt === 'rag' || ev.type === 'ragResult'))
       case 'guardrails': return ev.type === 'guardrail'
@@ -443,6 +443,35 @@ function TraceRow({ entry, markdown }: { entry: TraceEntry; markdown: boolean })
             {event.binary ? <> by {event.binary}</> : null}
             {event.policy ? <> ({event.policy})</> : null}
             {denied && event.reason ? <> — {event.reason}</> : null}
+          </span>
+        </div>
+      )
+    }
+    case 'toolApproval': {
+      const copy: Record<string, string> = {
+        requested: 'waiting for an approver',
+        approved: 'approved',
+        rejected: 'rejected',
+        expired: 'not decided in time',
+        denied: 'refused by policy',
+        withdrawn: 'withdrawn',
+        unavailable: 'refused: approval service unavailable',
+      }
+      const ok = event.state === 'approved'
+      const waiting = event.state === 'requested'
+      return (
+        <div style={row}>
+          <span style={muted}>{time}</span>
+          <Icon
+            icon={ok ? ICON.check : waiting ? ICON.approval : ICON.stop}
+            size={14}
+            color={ok ? 'var(--ds-success)' : waiting ? 'var(--ds-warning)' : 'var(--ds-error)'}
+          />
+          <span style={content}>
+            <span style={hi}>{event.tool}</span>
+            {event.sideEffect ? <> ({event.sideEffect})</> : null} — {copy[event.state] ?? event.state}
+            {event.by ? <> by {event.by}</> : null}
+            {event.reason ? <> — {event.reason}</> : null}
           </span>
         </div>
       )

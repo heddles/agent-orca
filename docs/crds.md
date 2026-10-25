@@ -135,6 +135,7 @@ spec:
 |---|---|
 | `schema` | JSON Schema `description`, `input`, `output` shown to the LLM |
 | `networkEgress` | Allowlisted outbound hosts/ports |
+| `sideEffect` | `read`, `write` or `actuate`: what a call changes, so a GuardrailPolicy can require approval before it runs. See [Tool side effects](tool-side-effects.md) |
 | `cloudAuth` | Tool-specific cloud identity (GCP/AWS/Azure) |
 
 ```yaml
@@ -453,6 +454,7 @@ See [docs/rag.md](rag.md) for the full RAG guide including local development set
 |---|---|
 | `inputFilters` | Filters applied to every user message before it is sent to the LLM |
 | `outputFilters` | Filters applied to every LLM response before it is returned to the agent/caller |
+| `toolApproval` | What each tool side-effect class needs before a call runs: `none`, `approve` or `deny`, with approver groups and a timeout. `actuate` tools need approval by default. See [Tool side effects](tool-side-effects.md) |
 
 Each filter has:
 

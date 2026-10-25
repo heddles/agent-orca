@@ -137,6 +137,10 @@ type AgentRunSpec struct {
 	Budget *RunBudget `json:"budget,omitempty"`
 }
 
+// ConditionToolApprovalPending is True on an AgentRun while a tool call waits
+// for an approver (Tool.spec.sideEffect with GuardrailPolicy.spec.toolApproval).
+const ConditionToolApprovalPending = "ToolApprovalPending"
+
 // RunBudgetAction is what happens when a run reaches its budget.
 // +kubebuilder:validation:Enum=fail;pause
 type RunBudgetAction string
