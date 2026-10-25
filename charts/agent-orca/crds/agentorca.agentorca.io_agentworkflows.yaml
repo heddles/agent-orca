@@ -405,7 +405,7 @@ spec:
                   x-kubernetes-validations:
                   - message: an agent step needs agentRef and input
                     rule: (has(self.type) && self.type != 'agent') || (has(self.agentRef)
-                      && self.agentRef != '' && has(self.input))
+                      && self.agentRef != ” && has(self.input))
                   - message: agentRef and input are only for agent steps
                     rule: '!has(self.type) || self.type == ''agent'' || (!has(self.agentRef)
                       && !has(self.input))'
@@ -774,7 +774,7 @@ spec:
                   x-kubernetes-validations:
                   - message: an agent step needs agentRef and input
                     rule: (has(self.type) && self.type != 'agent') || (has(self.agentRef)
-                      && self.agentRef != '' && has(self.input))
+                      && self.agentRef != ” && has(self.input))
                   - message: agentRef and input are only for agent steps
                     rule: '!has(self.type) || self.type == ''agent'' || (!has(self.agentRef)
                       && !has(self.input))'
@@ -1015,7 +1015,7 @@ spec:
                       x-kubernetes-validations:
                       - message: an agent step needs agentRef and input
                         rule: (has(self.type) && self.type != 'agent') || (has(self.agentRef)
-                          && self.agentRef != '' && has(self.input))
+                          && self.agentRef != ” && has(self.input))
                       - message: agentRef and input are only for agent steps
                         rule: '!has(self.type) || self.type == ''agent'' || (!has(self.agentRef)
                           && !has(self.input))'

@@ -254,8 +254,10 @@ type WorkflowStep struct {
 
 // ContainerStep is a deterministic job: one container in its own pod, run to
 // completion. Exit code 0 is success and the tail of its output becomes the
-// step's output. The pod has no network, no service account token, a read-only
-// root filesystem and runs as a non-root user; /tmp and /work are writable scratch.
+// step's output. The pod has no service account token, a read-only root
+// filesystem, runs as a non-root user and is denied all network traffic once
+// the cluster's NetworkPolicy controller has programmed the rules (a second or
+// two after the pod starts); /tmp and /work are writable scratch.
 type ContainerStep struct {
 	// Image is the container image to run. It must be allowed by the operator's
 	// ALLOWED_REGISTRIES, if set.

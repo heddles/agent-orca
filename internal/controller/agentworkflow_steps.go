@@ -20,9 +20,11 @@ package controller
 //
 //   - container: a deterministic job, one container in its own pod, run to
 //     completion. Exit 0 is success and the tail of the output is the step's
-//     output. The pod gets no network (a deny-all NetworkPolicy), no service
-//     account token, a read-only root filesystem and a non-root user. Governed
-//     network access for builds belongs to the workflow-owned sandbox.
+//     output. The pod gets no service account token, a read-only root
+//     filesystem, a non-root user and a deny-all NetworkPolicy. The CNI programs
+//     that policy a moment after the pod starts (measured at about two seconds
+//     on k3s/flannel), so images must be trusted; governed network access and
+//     untrusted code belong to the workflow-owned sandbox.
 //   - approval: the workflow waits for a person to decide, through the approval
 //     engine (inbox, notification, audit row). Rejected or undecided fails the step.
 //

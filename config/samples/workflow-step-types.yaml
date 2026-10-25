@@ -14,8 +14,9 @@ spec:
       agentRef: planner
       input: "Write a short rollout plan for upgrading the cache layer."
 
-    # A job whose result must not depend on a model. No network, non-root, read-only
-    # root filesystem; /tmp and /work are scratch. Pass data in env, not in args.
+    # A job whose result must not depend on a model. Non-root, read-only root filesystem,
+    # no network once the cluster's policy is programmed (a second or two after start);
+    # /tmp and /work are scratch. Pass data in env, not in args.
     - name: lint
       type: container
       dependsOn: [plan]

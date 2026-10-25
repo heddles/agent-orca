@@ -184,9 +184,12 @@ a signature.
 
 The pod is deliberately boxed in:
 
-- **No network at all**, enforced by a deny-all NetworkPolicy for the workflow's step pods (this
-  needs a CNI that enforces NetworkPolicy; k3s does). A job that must download packages belongs in
-  a governed sandbox, not here.
+- **No network**, enforced by a deny-all NetworkPolicy for the workflow's step pods. This needs a
+  CNI that enforces NetworkPolicy (k3s does), and the CNI programs the rules a moment *after* a
+  pod starts: on k3s with flannel the first connection attempt at the instant of start succeeded
+  and every attempt from about two seconds on was blocked. So treat it as "no network after the
+  first couple of seconds", and run only images you trust (see `ALLOWED_REGISTRIES` below). A job
+  that must download packages, or run code you do not trust, belongs in a governed sandbox.
 - No service account token, so it cannot call the Kubernetes API; service links off.
 - Runs as a non-root user (65532 unless `runAsUser` is set; root is rejected), read-only root
   filesystem, all capabilities dropped, no privilege escalation, the runtime-default seccomp profile.
