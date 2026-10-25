@@ -41,6 +41,9 @@ const (
 // policy draft chunk).
 const ApprovalKindEgress = "egress"
 
+// ApprovalKindBudget is a request to raise a paused run's spend cap.
+const ApprovalKindBudget = "budget"
+
 // ErrApprovalNotPending is returned when deciding an approval that has
 // already been decided, expired or withdrawn.
 var ErrApprovalNotPending = errors.New("approval is no longer pending")
