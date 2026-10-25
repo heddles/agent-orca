@@ -153,6 +153,61 @@ func TestPresetsAreValidEgress(t *testing.T) {
 	}
 }
 
+func TestPresetEgress(t *testing.T) {
+	tests := []struct {
+		name     string
+		preset   agentorcav1alpha1.SandboxEgressPreset
+		wantHost string
+	}{
+		{name: "go", preset: agentorcav1alpha1.SandboxEgressPresetGo, wantHost: "proxy.golang.org"},
+		{name: "npm", preset: agentorcav1alpha1.SandboxEgressPresetNPM},
+		{name: "pypi", preset: agentorcav1alpha1.SandboxEgressPresetPyPI},
+		{name: "github-read", preset: agentorcav1alpha1.SandboxEgressPresetGitHubRead},
+		// A literal, not a constant: registering a real preset of this name
+		// must revisit this test.
+		{name: "unknown", preset: agentorcav1alpha1.SandboxEgressPreset("no-such-preset")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rules := PresetEgress(tt.preset)
+			if tt.name == "unknown" {
+				if len(rules) != 0 {
+					t.Errorf("PresetEgress(%q) = %+v, want no rules for an unknown preset", tt.preset, rules)
+				}
+				return
+			}
+			if len(rules) == 0 {
+				t.Fatalf("PresetEgress(%q) returned no rules", tt.preset)
+			}
+			if tt.wantHost != "" {
+				if _, ok := hosts(rules)[tt.wantHost]; !ok {
+					t.Errorf("PresetEgress(%q) lacks %s: %+v", tt.preset, tt.wantHost, rules)
+				}
+			}
+		})
+	}
+
+	// PresetEgress must return a copy: mutating one result cannot leak into
+	// the presets map, so a later call still sees the original rules.
+	t.Run("copy", func(t *testing.T) {
+		want := hosts(PresetEgress(agentorcav1alpha1.SandboxEgressPresetGo))
+		rules := PresetEgress(agentorcav1alpha1.SandboxEgressPresetGo)
+		rules[0].Host = "mutated.example.com"
+		rules = append(rules, agentorcav1alpha1.SandboxEgressRule{Host: "extra.example.com"})
+		got := hosts(PresetEgress(agentorcav1alpha1.SandboxEgressPresetGo))
+		for h := range want {
+			if _, ok := got[h]; !ok {
+				t.Errorf("preset go lost %s after an earlier result was mutated: %v", h, got)
+			}
+		}
+		for _, bad := range []string{"mutated.example.com", "extra.example.com"} {
+			if _, ok := got[bad]; ok {
+				t.Errorf("preset go kept a mutation: %s in %+v", bad, got)
+			}
+		}
+	})
+}
+
 func countHost(rules []agentorcav1alpha1.SandboxEgressRule, host string) int {
 	n := 0
 	for _, r := range rules {
