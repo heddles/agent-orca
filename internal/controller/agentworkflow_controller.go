@@ -23,9 +23,11 @@ import (
 	"strings"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -40,12 +42,26 @@ const workflowPollInterval = 10 * time.Second
 type AgentWorkflowReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+
+	// K8s reads the logs of container steps' pods. nil leaves their output empty.
+	K8s kubernetes.Interface
+	// Approvals stores the decisions of approval steps (the PostgreSQL store);
+	// nil makes approval steps fail with a clear reason.
+	Approvals ApprovalStore
+	// ApprovalNotifier tells approvers about a new approval step. Optional.
+	ApprovalNotifier ApprovalNotifier
+	// AllowedRegistries restricts container steps' images, like the webhook does
+	// for agents and tools. Empty allows any.
+	AllowedRegistries []string
 }
 
 // +kubebuilder:rbac:groups=agentorca.agentorca.io,resources=agentworkflows,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=agentorca.agentorca.io,resources=agentworkflows/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=agentorca.agentorca.io,resources=agentworkflows/finalizers,verbs=update
 // +kubebuilder:rbac:groups=agentorca.agentorca.io,resources=agentruns,verbs=get;list;watch;create;delete
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;create;delete
+// +kubebuilder:rbac:groups="",resources=pods/log,verbs=get
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create
 
 func (r *AgentWorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) { //nolint:gocyclo
 
@@ -61,8 +77,10 @@ func (r *AgentWorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return r.reconcileTemplate(ctx, &wf)
 	}
 
-	// Terminal workflows need no further reconciliation.
+	// Terminal workflows need no further reconciliation, beyond withdrawing any
+	// approval a person is still being asked for.
 	if isWorkflowTerminal(wf.Status.Phase) {
+		r.withdrawWorkflowApprovals(ctx, &wf)
 		return ctrl.Result{}, nil
 	}
 
@@ -153,16 +171,21 @@ func (r *AgentWorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 				return ctrl.Result{}, r.Status().Update(ctx, &wf)
 			}
 
-		case agentorcav1alpha1.WorkflowStepPhaseRunning, agentorcav1alpha1.WorkflowStepPhaseWaitingForInput:
-			// Check the underlying AgentRun. All mutations stay in-memory; no Status().Update
-			// is called here so that the wf.Status.Steps slice is never replaced mid-loop.
-			result, err := r.checkStepRun(ctx, &wf, &allSteps[i], ss)
+		case agentorcav1alpha1.WorkflowStepPhaseRunning, agentorcav1alpha1.WorkflowStepPhaseWaitingForInput,
+			agentorcav1alpha1.WorkflowStepPhaseWaitingForApproval:
+			// Check the step's AgentRun, pod or approval. All mutations stay in-memory; no
+			// Status().Update is called here so that the wf.Status.Steps slice is never
+			// replaced mid-loop.
+			result, err := r.checkStep(ctx, &wf, &allSteps[i], ss)
 			if err != nil {
 				return result, err
 			}
 			if result.RequeueAfter > 0 {
-				// Step is still running or waiting for input; persist any earlier state changes and requeue.
-				return result, r.Status().Update(ctx, &wf)
+				// Step is still running or waiting. Carry on: the steps after it must still be
+				// checked and started in this pass, or one slow step (an approval gate can wait
+				// for hours) would stall every parallel branch behind it.
+				anyRunning = true
+				continue
 			}
 			// Step has transitioned — handle the new phase.
 			switch ss.Phase {
@@ -177,7 +200,8 @@ func (r *AgentWorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 					r.failWorkflow(ctx, &wf, fmt.Sprintf("step %q failed", step.Name))
 					return ctrl.Result{}, r.Status().Update(ctx, &wf)
 				}
-			case agentorcav1alpha1.WorkflowStepPhaseRunning, agentorcav1alpha1.WorkflowStepPhaseWaitingForInput:
+			case agentorcav1alpha1.WorkflowStepPhaseRunning, agentorcav1alpha1.WorkflowStepPhaseWaitingForInput,
+				agentorcav1alpha1.WorkflowStepPhaseWaitingForApproval:
 				anyRunning = true
 			}
 
@@ -212,7 +236,8 @@ func (r *AgentWorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	for _, ss := range allStatuses {
 		if ss.Phase == agentorcav1alpha1.WorkflowStepPhasePending ||
 			ss.Phase == agentorcav1alpha1.WorkflowStepPhaseRunning ||
-			ss.Phase == agentorcav1alpha1.WorkflowStepPhaseWaitingForInput {
+			ss.Phase == agentorcav1alpha1.WorkflowStepPhaseWaitingForInput ||
+			ss.Phase == agentorcav1alpha1.WorkflowStepPhaseWaitingForApproval {
 			allDone = false
 			break
 		}
@@ -240,6 +265,13 @@ func (r *AgentWorkflowReconciler) startStep(
 	step *agentorcav1alpha1.WorkflowStep,
 	ss *agentorcav1alpha1.WorkflowStepStatus,
 ) error {
+	switch stepType(step) {
+	case agentorcav1alpha1.WorkflowStepTypeContainer:
+		return r.startContainerStep(ctx, wf, step, ss)
+	case agentorcav1alpha1.WorkflowStepTypeApproval:
+		return r.startApprovalStep(ctx, wf, step, ss)
+	}
+
 	// Resolve template variables in the input (from both static and dynamic step outputs).
 	allStatuses := append(wf.Status.Steps, wf.Status.DynamicStepStatuses...)
 	input := resolveTemplates(step.Input, allStatuses)
@@ -297,6 +329,22 @@ func (r *AgentWorkflowReconciler) startStep(
 	}
 
 	return nil
+}
+
+// checkStep advances a running or waiting step according to its type.
+func (r *AgentWorkflowReconciler) checkStep(
+	ctx context.Context,
+	wf *agentorcav1alpha1.AgentWorkflow,
+	step *agentorcav1alpha1.WorkflowStep,
+	ss *agentorcav1alpha1.WorkflowStepStatus,
+) (ctrl.Result, error) {
+	switch stepType(step) {
+	case agentorcav1alpha1.WorkflowStepTypeContainer:
+		return r.checkContainerStep(ctx, wf, ss)
+	case agentorcav1alpha1.WorkflowStepTypeApproval:
+		return r.checkApprovalStep(ctx, wf, step, ss)
+	}
+	return r.checkStepRun(ctx, wf, step, ss)
 }
 
 // checkStepRun polls the underlying AgentRun and advances step state in-memory on terminal.
@@ -487,6 +535,7 @@ func (r *AgentWorkflowReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&agentorcav1alpha1.AgentWorkflow{}).
 		Owns(&agentorcav1alpha1.AgentRun{}).
+		Owns(&corev1.Pod{}).
 		Named("agentworkflow").
 		Complete(r)
 }

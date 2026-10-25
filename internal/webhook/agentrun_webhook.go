@@ -325,6 +325,13 @@ func (v *ToolValidator) checkRegistry(ociRef string) error {
 	return checkRegistryAllowlist(ociRef, v.AllowedRegistries)
 }
 
+// CheckRegistryAllowlist verifies an OCI image reference against an allowlist of
+// registry prefixes; an empty allowlist allows everything. The workflow
+// controller uses it for container steps, which no admission webhook sees.
+func CheckRegistryAllowlist(ociRef string, allowedRegistries []string) error {
+	return checkRegistryAllowlist(ociRef, allowedRegistries)
+}
+
 func checkRegistryAllowlist(ociRef string, allowedRegistries []string) error {
 	if len(allowedRegistries) == 0 {
 		return nil // no restriction

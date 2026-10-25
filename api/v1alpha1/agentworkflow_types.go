@@ -179,20 +179,56 @@ type AdaptivePolicy struct {
 	RequireApprovalForUnlisted bool `json:"requireApprovalForUnlisted,omitempty"`
 }
 
+// WorkflowStepType says what a step does.
+// +kubebuilder:validation:Enum=agent;container;approval
+type WorkflowStepType string
+
+// Workflow step types.
+const (
+	// WorkflowStepTypeAgent runs an Agent (the default).
+	WorkflowStepTypeAgent WorkflowStepType = "agent"
+	// WorkflowStepTypeContainer runs a deterministic job in a pod.
+	WorkflowStepTypeContainer WorkflowStepType = "container"
+	// WorkflowStepTypeApproval waits for a person's decision.
+	WorkflowStepTypeApproval WorkflowStepType = "approval"
+)
+
 // WorkflowStep defines a single node in the workflow DAG.
+// +kubebuilder:validation:XValidation:rule="(has(self.type) && self.type != 'agent') || (has(self.agentRef) && self.agentRef != ” && has(self.input))",message="an agent step needs agentRef and input"
+// +kubebuilder:validation:XValidation:rule="!has(self.type) || self.type == 'agent' || (!has(self.agentRef) && !has(self.input))",message="agentRef and input are only for agent steps"
+// +kubebuilder:validation:XValidation:rule="!has(self.type) || self.type != 'container' || has(self.container)",message="a container step needs a container block"
+// +kubebuilder:validation:XValidation:rule="!has(self.container) || (has(self.type) && self.type == 'container')",message="the container block is only for container steps"
+// +kubebuilder:validation:XValidation:rule="!has(self.type) || self.type != 'approval' || has(self.approval)",message="an approval step needs an approval block"
+// +kubebuilder:validation:XValidation:rule="!has(self.approval) || (has(self.type) && self.type == 'approval')",message="the approval block is only for approval steps"
 type WorkflowStep struct {
 	// Name is a unique identifier for this step within the workflow.
 	// Used in DependsOn references and template variables.
 	// +kubebuilder:validation:Pattern=`^[a-z0-9][a-z0-9\-]*$`
 	Name string `json:"name"`
 
-	// AgentRef is the name of the Agent CRD to run for this step.
-	AgentRef string `json:"agentRef"`
+	// Type is agent (default): run an Agent; container: run a deterministic job in a
+	// pod; approval: wait for a person to approve or reject.
+	// +kubebuilder:default=agent
+	// +optional
+	Type WorkflowStepType `json:"type,omitempty"`
 
-	// Input is the task string passed to the agent as AGENTORC_INPUT.
+	// AgentRef is the name of the Agent CRD to run for this step. Agent steps only.
+	// +optional
+	AgentRef string `json:"agentRef,omitempty"`
+
+	// Input is the task string passed to the agent as AGENTORC_INPUT. Agent steps only.
 	// Supports template variables:
 	//   {{steps.<name>.output}}  — the Output of a named predecessor step
-	Input string `json:"input"`
+	// +optional
+	Input string `json:"input,omitempty"`
+
+	// Container describes the job of a container step.
+	// +optional
+	Container *ContainerStep `json:"container,omitempty"`
+
+	// Approval describes the decision an approval step waits for.
+	// +optional
+	Approval *ApprovalStep `json:"approval,omitempty"`
 
 	// DependsOn lists step names that must reach a terminal phase (Succeeded or Skipped)
 	// before this step is eligible to start.
@@ -214,6 +250,65 @@ type WorkflowStep struct {
 	// Callbacks fires webhooks when this step completes or fails.
 	// +optional
 	Callbacks *CallbackConfig `json:"callbacks,omitempty"`
+}
+
+// ContainerStep is a deterministic job: one container in its own pod, run to
+// completion. Exit code 0 is success and the tail of its output becomes the
+// step's output. The pod has no network, no service account token, a read-only
+// root filesystem and runs as a non-root user; /tmp and /work are writable scratch.
+type ContainerStep struct {
+	// Image is the container image to run. It must be allowed by the operator's
+	// ALLOWED_REGISTRIES, if set.
+	// +kubebuilder:validation:MinLength=1
+	Image string `json:"image"`
+
+	// Command overrides the image's entrypoint.
+	// +optional
+	Command []string `json:"command,omitempty"`
+
+	// Args overrides the image's arguments.
+	// +optional
+	Args []string `json:"args,omitempty"`
+
+	// Env sets environment variables. Values can use {{steps.<name>.output}}; pass
+	// data to the job here rather than splicing it into Command or Args.
+	// +optional
+	Env []StepEnvVar `json:"env,omitempty"`
+
+	// Resources sets CPU and memory. Defaults to a small request and a 1 CPU / 512Mi limit.
+	// +optional
+	Resources *ResourceRequirements `json:"resources,omitempty"`
+
+	// RunAsUser is the numeric user the container runs as. Defaults to 65532. Root (0) is not allowed.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	RunAsUser *int64 `json:"runAsUser,omitempty"`
+}
+
+// StepEnvVar is one environment variable of a container step.
+type StepEnvVar struct {
+	// Name of the variable.
+	// +kubebuilder:validation:Pattern=`^[A-Za-z_][A-Za-z0-9_]*$`
+	Name string `json:"name"`
+	// Value of the variable; may use {{steps.<name>.output}}.
+	Value string `json:"value"`
+}
+
+// ApprovalStep is a human gate: the workflow waits here for a decision.
+type ApprovalStep struct {
+	// Message is what the approver is asked, shown in the Approvals inbox. It can use
+	// {{steps.<name>.output}} to show earlier results (a diff, a test report).
+	// +kubebuilder:validation:MinLength=1
+	Message string `json:"message"`
+
+	// ApproverGroups are the identity-provider groups whose members may decide.
+	// Empty lets any user with access to the workflow's namespace decide.
+	// +optional
+	ApproverGroups []string `json:"approverGroups,omitempty"`
+
+	// Timeout is how long to wait before the step fails as undecided. Defaults to 24h.
+	// +optional
+	Timeout *metav1.Duration `json:"timeout,omitempty"`
 }
 
 // WorkflowBudgetCap limits total spend across all steps.
@@ -239,7 +334,7 @@ const (
 )
 
 // WorkflowStepPhase describes the state of a single step.
-// +kubebuilder:validation:Enum=Pending;Running;Succeeded;Failed;Skipped;WaitingForInput
+// +kubebuilder:validation:Enum=Pending;Running;Succeeded;Failed;Skipped;WaitingForInput;WaitingForApproval
 type WorkflowStepPhase string
 
 const (
@@ -249,6 +344,8 @@ const (
 	WorkflowStepPhaseFailed          WorkflowStepPhase = "Failed"
 	WorkflowStepPhaseSkipped         WorkflowStepPhase = "Skipped"
 	WorkflowStepPhaseWaitingForInput WorkflowStepPhase = "WaitingForInput"
+	// WorkflowStepPhaseWaitingForApproval is an approval step waiting for a decision.
+	WorkflowStepPhaseWaitingForApproval WorkflowStepPhase = "WaitingForApproval"
 )
 
 // WorkflowStepStatus holds runtime state for a single step.
@@ -262,6 +359,14 @@ type WorkflowStepStatus struct {
 	// AgentRunRef is the name of the AgentRun created for this step.
 	// +optional
 	AgentRunRef string `json:"agentRunRef,omitempty"`
+
+	// PodRef is the name of the pod of a container step.
+	// +optional
+	PodRef string `json:"podRef,omitempty"`
+
+	// ApprovalID is the id of the approval an approval step waits on.
+	// +optional
+	ApprovalID string `json:"approvalID,omitempty"`
 
 	// StartTime is when the step's AgentRun was created.
 	// +optional

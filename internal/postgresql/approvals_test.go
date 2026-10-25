@@ -107,4 +107,56 @@ func TestApprovalsAgainstPostgres(t *testing.T) {
 	if left, _ := s.ListApprovals(ctx, ApprovalQuery{Namespace: "team-a", Status: ApprovalPending}); len(left) != 0 {
 		t.Errorf("%d approvals still pending after the run ended", len(left))
 	}
+
+	checkWithdrawBySourcePrefix(t, s)
+}
+
+// checkWithdrawBySourcePrefix covers withdrawing a workflow's approval steps.
+func checkWithdrawBySourcePrefix(t *testing.T, s *Store) {
+	t.Helper()
+	ctx := context.Background()
+	// A workflow's approval steps are withdrawn by source key prefix, and only
+	// that workflow's, only of that kind, and only while pending.
+	mkAppr := func(kind, key string) Approval {
+		a, err := s.RequestApproval(ctx, Approval{Namespace: "team-a", Kind: kind, SourceKey: key, Summary: key, ExpiresAt: time.Now().Add(time.Hour)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return a
+	}
+	wfFirst := mkAppr(ApprovalKindWorkflow, "uid-1/gate")
+	wfSecond := mkAppr(ApprovalKindWorkflow, "uid-1/second-gate")
+	wfOther := mkAppr(ApprovalKindWorkflow, "uid-10/gate") // same prefix text "uid-1", different workflow
+	toolAppr := mkAppr(ApprovalKindTool, "uid-1/call")
+	wfDecided := mkAppr(ApprovalKindWorkflow, "uid-1/done")
+	if _, err := s.DecideApproval(ctx, wfDecided.ID, ApprovalApproved, "alice", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.WithdrawBySourcePrefix(ctx, ApprovalKindWorkflow, "uid-1/", "the workflow ended"); err != nil {
+		t.Fatal(err)
+	}
+	statusOf := func(a Approval) string {
+		got, err := s.GetApproval(ctx, a.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got.Status
+	}
+	for name, tc := range map[string]struct {
+		a    Approval
+		want string
+	}{
+		"its pending approval":         {wfFirst, ApprovalWithdrawn},
+		"its other pending approval":   {wfSecond, ApprovalWithdrawn},
+		"another workflow (uid-10)":    {wfOther, ApprovalPending},
+		"a tool approval, same prefix": {toolAppr, ApprovalPending},
+		"one already decided":          {wfDecided, ApprovalApproved},
+	} {
+		if got := statusOf(tc.a); got != tc.want {
+			t.Errorf("%s: status %s, want %s", name, got, tc.want)
+		}
+	}
+	if got, _ := s.GetApproval(ctx, wfFirst.ID); got.Reason != "the workflow ended" {
+		t.Errorf("reason = %q", got.Reason)
+	}
 }

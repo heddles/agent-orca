@@ -61,6 +61,7 @@ func validateWorkflowStructure(steps []agentorcav1alpha1.WorkflowStep) []string 
 			problems = append(problems, fmt.Sprintf("step %q is defined more than once", s.Name))
 		}
 		names[s.Name] = true
+		problems = append(problems, validateStepShape(&s)...)
 	}
 	for _, s := range steps {
 		for _, d := range s.DependsOn {
@@ -78,6 +79,63 @@ func validateWorkflowStructure(steps []agentorcav1alpha1.WorkflowStep) []string 
 		}
 	}
 	return problems
+}
+
+// validateStepShape checks that a step has what its type needs and nothing of
+// another type. The CRD's rules enforce this at admission; this covers steps
+// that reach the controller another way (dynamic steps, objects created
+// before the rules existed).
+func validateStepShape(s *agentorcav1alpha1.WorkflowStep) []string {
+	var problems []string
+	add := func(format string, args ...any) { problems = append(problems, fmt.Sprintf(format, args...)) }
+	switch stepType(s) {
+	case agentorcav1alpha1.WorkflowStepTypeAgent:
+		if s.AgentRef == "" {
+			add("step %q is an agent step and needs agentRef", s.Name)
+		}
+		if s.Container != nil || s.Approval != nil {
+			add("step %q is an agent step but has a container or approval block", s.Name)
+		}
+	case agentorcav1alpha1.WorkflowStepTypeContainer:
+		if s.Container == nil || s.Container.Image == "" {
+			add("step %q is a container step and needs container.image", s.Name)
+		}
+		if s.AgentRef != "" || s.Input != "" || s.Approval != nil {
+			add("step %q is a container step but has agentRef, input or an approval block", s.Name)
+		}
+	case agentorcav1alpha1.WorkflowStepTypeApproval:
+		if s.Approval == nil || s.Approval.Message == "" {
+			add("step %q is an approval step and needs approval.message", s.Name)
+		}
+		if s.AgentRef != "" || s.Input != "" || s.Container != nil {
+			add("step %q is an approval step but has agentRef, input or a container block", s.Name)
+		}
+	default:
+		add("step %q has an unknown type %q", s.Name, s.Type)
+	}
+	return problems
+}
+
+// stepTexts lists the text fields of a step that may use {{params.x}} and
+// {{steps.x.output}}: the agent input, the environment of a container, the
+// message of an approval.
+func stepTexts(s *agentorcav1alpha1.WorkflowStep) []struct{ where, text string } {
+	var out []struct{ where, text string }
+	add := func(where, text string) {
+		out = append(out, struct{ where, text string }{fmt.Sprintf("step %q %s", s.Name, where), text})
+	}
+	if s.Input != "" || stepType(s) == agentorcav1alpha1.WorkflowStepTypeAgent {
+		add("input", s.Input)
+	}
+	if s.Container != nil {
+		for _, e := range s.Container.Env {
+			add("env "+e.Name, e.Value)
+		}
+	}
+	if s.Approval != nil {
+		add("approval message", s.Approval.Message)
+	}
+	return out
 }
 
 // findCycle returns a description of a dependency cycle ("a -> b -> a"), or "".
@@ -178,25 +236,41 @@ func validateTemplate(spec *agentorcav1alpha1.AgentWorkflowSpec) []string {
 	}
 	noParams := func(where, text string) {
 		if anyParamPrefix.MatchString(text) {
-			problems = append(problems, fmt.Sprintf("%s may not use {{params.…}}: parameters go only in step inputs", where))
+			problems = append(problems, fmt.Sprintf("%s may not use {{params.…}}: parameters go only in step inputs, container environments and approval messages", where))
 		}
 	}
 	checkParamRefs("spec.description", spec.Description)
 	for _, s := range spec.Steps {
-		where := fmt.Sprintf("step %q input", s.Name)
-		checkParamRefs(where, s.Input)
 		noParams(fmt.Sprintf("step %q agentRef", s.Name), s.AgentRef)
 		noParams(fmt.Sprintf("step %q condition", s.Name), s.Condition)
 		noParams(fmt.Sprintf("step %q name", s.Name), s.Name)
 		for _, d := range s.DependsOn {
 			noParams(fmt.Sprintf("step %q dependsOn", s.Name), d)
 		}
-		for _, m := range stepRefPattern.FindAllStringSubmatch(s.Input, -1) {
-			switch {
-			case !stepNames[m[1]]:
-				problems = append(problems, fmt.Sprintf("%s uses {{steps.%s.output}}, but there is no step %q", where, m[1], m[1]))
-			case !anc[s.Name][m[1]]:
-				problems = append(problems, fmt.Sprintf("%s uses {{steps.%s.output}}, but %q is not one of the step's dependencies, so it would be empty", where, m[1], m[1]))
+		if c := s.Container; c != nil {
+			// What a job runs is never decided by a parameter.
+			noParams(fmt.Sprintf("step %q container.image", s.Name), c.Image)
+			for _, v := range append(append([]string{}, c.Command...), c.Args...) {
+				noParams(fmt.Sprintf("step %q container command or args", s.Name), v)
+			}
+			for _, e := range c.Env {
+				noParams(fmt.Sprintf("step %q env name %q", s.Name, e.Name), e.Name)
+			}
+		}
+		if a := s.Approval; a != nil {
+			for _, g := range a.ApproverGroups {
+				noParams(fmt.Sprintf("step %q approverGroups", s.Name), g)
+			}
+		}
+		for _, t := range stepTexts(&s) {
+			checkParamRefs(t.where, t.text)
+			for _, m := range stepRefPattern.FindAllStringSubmatch(t.text, -1) {
+				switch {
+				case !stepNames[m[1]]:
+					problems = append(problems, fmt.Sprintf("%s uses {{steps.%s.output}}, but there is no step %q", t.where, m[1], m[1]))
+				case !anc[s.Name][m[1]]:
+					problems = append(problems, fmt.Sprintf("%s uses {{steps.%s.output}}, but %q is not one of the step's dependencies, so it would be empty", t.where, m[1], m[1]))
+				}
 			}
 		}
 		if s.Condition != "" {
@@ -229,7 +303,7 @@ func validateParameterDeclaration(p *agentorcav1alpha1.WorkflowParameter) []stri
 				problems = append(problems, fmt.Sprintf("parameter %q: enum value %q is not an integer", p.Name, e))
 			}
 		}
-		if typ == "boolean" && e != "true" && e != "false" {
+		if typ == "boolean" && e != strconv.FormatBool(true) && e != strconv.FormatBool(false) {
 			problems = append(problems, fmt.Sprintf("parameter %q: enum value %q is not true or false", p.Name, e))
 		}
 	}
@@ -369,6 +443,14 @@ func instantiateTemplate(tmpl, inst *agentorcav1alpha1.AgentWorkflow) (agentorca
 	for i, s := range tmpl.Spec.Steps {
 		s = *s.DeepCopy()
 		s.Input = substituteParameters(s.Input, values)
+		if s.Container != nil {
+			for j := range s.Container.Env {
+				s.Container.Env[j].Value = substituteParameters(s.Container.Env[j].Value, values)
+			}
+		}
+		if s.Approval != nil {
+			s.Approval.Message = substituteParameters(s.Approval.Message, values)
+		}
 		out.Steps[i] = s
 	}
 	if out.Description == "" {

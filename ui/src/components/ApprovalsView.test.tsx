@@ -44,6 +44,26 @@ describe('ApprovalsView', () => {
     mockDecide.mockReset()
   })
 
+  it('shows a workflow gate with its message and no run link', async () => {
+    mockList.mockResolvedValue([
+      pending({
+        kind: 'workflow',
+        runName: '',
+        summary: 'wf / gate: Test report',
+        details: { workflow: 'wf', step: 'gate', message: 'Test report:\n42 passed\nShip it?' },
+      }),
+    ])
+    render(<ApprovalsView />)
+    expect(await screen.findByText('wf / gate: Test report')).toBeInTheDocument()
+    expect(screen.getByText('wf / gate')).toBeInTheDocument()
+    expect(screen.getByText(/42 passed/)).toBeInTheDocument()
+    expect(screen.getByText(/the step fails and the workflow stops/)).toBeInTheDocument()
+    // No run, so no "team-a/" link to a run that does not exist.
+    expect(screen.queryByText('team-a/')).toBeNull()
+    expect(screen.queryByRole('button', { name: /team-a\// })).toBeNull()
+    expect(screen.getByText('team-a')).toBeInTheDocument()
+  })
+
   it('shows a gated tool call with its arguments and what rejecting does', async () => {
     mockList.mockResolvedValue([
       pending({

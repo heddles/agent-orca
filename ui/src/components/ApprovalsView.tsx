@@ -141,6 +141,9 @@ function PendingCard({ approval: a, onDecided, onNavigateToRun }: {
       </div>
 
       <dl style={s.facts}>
+        {a.kind === 'workflow' && d.workflow && <Fact label="Workflow" value={`${d.workflow} / ${d.step ?? ''}`} mono />}
+        {a.kind === 'workflow' && d.message && <Fact label="Asks" value={d.message} wrap />}
+        {a.kind === 'workflow' && <Fact label="If rejected" value="the step fails and the workflow stops, unless it is set to continue" />}
         {a.kind === 'tool' && d.tool && <Fact label="Tool" value={`${d.tool}${d.sideEffect ? ` (${d.sideEffect})` : ''}`} mono />}
         {a.kind === 'tool' && d.arguments && <Fact label="Arguments" value={d.arguments} mono />}
         {a.kind === 'tool' && <Fact label="If rejected" value="the tool does not run; the agent is told and the run goes on" />}
@@ -212,6 +215,8 @@ function RunLink({ approval: a, onNavigateToRun }: {
   approval: Approval
   onNavigateToRun?: (runName: string, namespace: string) => void
 }) {
+  // A workflow's approval step belongs to no run: show where it is, without a link.
+  if (!a.runName) return <div style={s.run}>{a.namespace}</div>
   const label = `${a.namespace}/${a.runName}`
   if (!onNavigateToRun) return <div style={s.run}>{label}</div>
   return (
@@ -221,11 +226,11 @@ function RunLink({ approval: a, onNavigateToRun }: {
   )
 }
 
-function Fact({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
+function Fact({ label, value, mono = false, wrap = false }: { label: string; value: string; mono?: boolean; wrap?: boolean }) {
   return (
     <>
       <dt style={s.factLabel}>{label}</dt>
-      <dd style={{ ...s.factValue, ...(mono ? s.mono : {}) }}>{value}</dd>
+      <dd style={{ ...s.factValue, ...(mono ? s.mono : {}), ...(wrap ? { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' } : {}) }}>{value}</dd>
     </>
   )
 }

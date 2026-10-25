@@ -210,8 +210,32 @@ spec:
                   properties:
                     agentRef:
                       description: AgentRef is the name of the Agent CRD to run for
-                        this step.
+                        this step. Agent steps only.
                       type: string
+                    approval:
+                      description: Approval describes the decision an approval step
+                        waits for.
+                      properties:
+                        approverGroups:
+                          description: |-
+                            ApproverGroups are the identity-provider groups whose members may decide.
+                            Empty lets any user with access to the workflow's namespace decide.
+                          items:
+                            type: string
+                          type: array
+                        message:
+                          description: |-
+                            Message is what the approver is asked, shown in the Approvals inbox. It can use
+                            {{steps.<name>.output}} to show earlier results (a diff, a test report).
+                          minLength: 1
+                          type: string
+                        timeout:
+                          description: Timeout is how long to wait before the step
+                            fails as undecided. Defaults to 24h.
+                          type: string
+                      required:
+                      - message
+                      type: object
                     callbacks:
                       description: Callbacks fires webhooks when this step completes
                         or fails.
@@ -233,6 +257,115 @@ spec:
                         the step is marked Skipped rather than started.
                         Example: 'steps["gather"].phase == "Succeeded"'
                       type: string
+                    container:
+                      description: Container describes the job of a container step.
+                      properties:
+                        args:
+                          description: Args overrides the image's arguments.
+                          items:
+                            type: string
+                          type: array
+                        command:
+                          description: Command overrides the image's entrypoint.
+                          items:
+                            type: string
+                          type: array
+                        env:
+                          description: |-
+                            Env sets environment variables. Values can use {{steps.<name>.output}}; pass
+                            data to the job here rather than splicing it into Command or Args.
+                          items:
+                            description: StepEnvVar is one environment variable of
+                              a container step.
+                            properties:
+                              name:
+                                description: Name of the variable.
+                                pattern: ^[A-Za-z_][A-Za-z0-9_]*$
+                                type: string
+                              value:
+                                description: Value of the variable; may use {{steps.<name>.output}}.
+                                type: string
+                            required:
+                            - name
+                            - value
+                            type: object
+                          type: array
+                        image:
+                          description: |-
+                            Image is the container image to run. It must be allowed by the operator's
+                            ALLOWED_REGISTRIES, if set.
+                          minLength: 1
+                          type: string
+                        resources:
+                          description: Resources sets CPU and memory. Defaults to
+                            a small request and a 1 CPU / 512Mi limit.
+                          properties:
+                            claims:
+                              description: |-
+                                Claims lists the names of resources, defined in spec.resourceClaims,
+                                that are used by this container.
+
+                                This field depends on the
+                                DynamicResourceAllocation feature gate.
+
+                                This field is immutable. It can only be set for containers.
+                              items:
+                                description: ResourceClaim references one entry in
+                                  PodSpec.ResourceClaims.
+                                properties:
+                                  name:
+                                    description: |-
+                                      Name must match the name of one entry in pod.spec.resourceClaims of
+                                      the Pod where this field is used. It makes that resource available
+                                      inside a container.
+                                    type: string
+                                  request:
+                                    description: |-
+                                      Request is the name chosen for a request in the referenced claim.
+                                      If empty, everything from the claim is made available, otherwise
+                                      only the result of this request.
+                                    type: string
+                                required:
+                                - name
+                                type: object
+                              type: array
+                              x-kubernetes-list-map-keys:
+                              - name
+                              x-kubernetes-list-type: map
+                            limits:
+                              additionalProperties:
+                                anyOf:
+                                - type: integer
+                                - type: string
+                                pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                x-kubernetes-int-or-string: true
+                              description: |-
+                                Limits describes the maximum amount of compute resources allowed.
+                                More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                              type: object
+                            requests:
+                              additionalProperties:
+                                anyOf:
+                                - type: integer
+                                - type: string
+                                pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                x-kubernetes-int-or-string: true
+                              description: |-
+                                Requests describes the minimum amount of compute resources required.
+                                If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                                otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                                More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                              type: object
+                          type: object
+                        runAsUser:
+                          description: RunAsUser is the numeric user the container
+                            runs as. Defaults to 65532. Root (0) is not allowed.
+                          format: int64
+                          minimum: 1
+                          type: integer
+                      required:
+                      - image
+                      type: object
                     dependsOn:
                       description: |-
                         DependsOn lists step names that must reach a terminal phase (Succeeded or Skipped)
@@ -242,7 +375,7 @@ spec:
                       type: array
                     input:
                       description: |-
-                        Input is the task string passed to the agent as AGENTORC_INPUT.
+                        Input is the task string passed to the agent as AGENTORC_INPUT. Agent steps only.
                         Supports template variables:
                           {{steps.<name>.output}}  — the Output of a named predecessor step
                       type: string
@@ -256,11 +389,36 @@ spec:
                       description: Timeout overrides the workflow-level timeout for
                         this specific step.
                       type: string
+                    type:
+                      default: agent
+                      description: |-
+                        Type is agent (default): run an Agent; container: run a deterministic job in a
+                        pod; approval: wait for a person to approve or reject.
+                      enum:
+                      - agent
+                      - container
+                      - approval
+                      type: string
                   required:
-                  - agentRef
-                  - input
                   - name
                   type: object
+                  x-kubernetes-validations:
+                  - message: an agent step needs agentRef and input
+                    rule: (has(self.type) && self.type != 'agent') || (has(self.agentRef)
+                      && self.agentRef != '' && has(self.input))
+                  - message: agentRef and input are only for agent steps
+                    rule: '!has(self.type) || self.type == ''agent'' || (!has(self.agentRef)
+                      && !has(self.input))'
+                  - message: a container step needs a container block
+                    rule: '!has(self.type) || self.type != ''container'' || has(self.container)'
+                  - message: the container block is only for container steps
+                    rule: '!has(self.container) || (has(self.type) && self.type ==
+                      ''container'')'
+                  - message: an approval step needs an approval block
+                    rule: '!has(self.type) || self.type != ''approval'' || has(self.approval)'
+                  - message: the approval block is only for approval steps
+                    rule: '!has(self.approval) || (has(self.type) && self.type ==
+                      ''approval'')'
                 type: array
               timeout:
                 description: |-
@@ -355,6 +513,10 @@ spec:
                       description: AgentRunRef is the name of the AgentRun created
                         for this step.
                       type: string
+                    approvalID:
+                      description: ApprovalID is the id of the approval an approval
+                        step waits on.
+                      type: string
                     completionTime:
                       description: CompletionTime is when the step reached a terminal
                         phase.
@@ -381,6 +543,10 @@ spec:
                       - Failed
                       - Skipped
                       - WaitingForInput
+                      - WaitingForApproval
+                      type: string
+                    podRef:
+                      description: PodRef is the name of the pod of a container step.
                       type: string
                     source:
                       description: |-
@@ -413,8 +579,32 @@ spec:
                   properties:
                     agentRef:
                       description: AgentRef is the name of the Agent CRD to run for
-                        this step.
+                        this step. Agent steps only.
                       type: string
+                    approval:
+                      description: Approval describes the decision an approval step
+                        waits for.
+                      properties:
+                        approverGroups:
+                          description: |-
+                            ApproverGroups are the identity-provider groups whose members may decide.
+                            Empty lets any user with access to the workflow's namespace decide.
+                          items:
+                            type: string
+                          type: array
+                        message:
+                          description: |-
+                            Message is what the approver is asked, shown in the Approvals inbox. It can use
+                            {{steps.<name>.output}} to show earlier results (a diff, a test report).
+                          minLength: 1
+                          type: string
+                        timeout:
+                          description: Timeout is how long to wait before the step
+                            fails as undecided. Defaults to 24h.
+                          type: string
+                      required:
+                      - message
+                      type: object
                     callbacks:
                       description: Callbacks fires webhooks when this step completes
                         or fails.
@@ -436,6 +626,115 @@ spec:
                         the step is marked Skipped rather than started.
                         Example: 'steps["gather"].phase == "Succeeded"'
                       type: string
+                    container:
+                      description: Container describes the job of a container step.
+                      properties:
+                        args:
+                          description: Args overrides the image's arguments.
+                          items:
+                            type: string
+                          type: array
+                        command:
+                          description: Command overrides the image's entrypoint.
+                          items:
+                            type: string
+                          type: array
+                        env:
+                          description: |-
+                            Env sets environment variables. Values can use {{steps.<name>.output}}; pass
+                            data to the job here rather than splicing it into Command or Args.
+                          items:
+                            description: StepEnvVar is one environment variable of
+                              a container step.
+                            properties:
+                              name:
+                                description: Name of the variable.
+                                pattern: ^[A-Za-z_][A-Za-z0-9_]*$
+                                type: string
+                              value:
+                                description: Value of the variable; may use {{steps.<name>.output}}.
+                                type: string
+                            required:
+                            - name
+                            - value
+                            type: object
+                          type: array
+                        image:
+                          description: |-
+                            Image is the container image to run. It must be allowed by the operator's
+                            ALLOWED_REGISTRIES, if set.
+                          minLength: 1
+                          type: string
+                        resources:
+                          description: Resources sets CPU and memory. Defaults to
+                            a small request and a 1 CPU / 512Mi limit.
+                          properties:
+                            claims:
+                              description: |-
+                                Claims lists the names of resources, defined in spec.resourceClaims,
+                                that are used by this container.
+
+                                This field depends on the
+                                DynamicResourceAllocation feature gate.
+
+                                This field is immutable. It can only be set for containers.
+                              items:
+                                description: ResourceClaim references one entry in
+                                  PodSpec.ResourceClaims.
+                                properties:
+                                  name:
+                                    description: |-
+                                      Name must match the name of one entry in pod.spec.resourceClaims of
+                                      the Pod where this field is used. It makes that resource available
+                                      inside a container.
+                                    type: string
+                                  request:
+                                    description: |-
+                                      Request is the name chosen for a request in the referenced claim.
+                                      If empty, everything from the claim is made available, otherwise
+                                      only the result of this request.
+                                    type: string
+                                required:
+                                - name
+                                type: object
+                              type: array
+                              x-kubernetes-list-map-keys:
+                              - name
+                              x-kubernetes-list-type: map
+                            limits:
+                              additionalProperties:
+                                anyOf:
+                                - type: integer
+                                - type: string
+                                pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                x-kubernetes-int-or-string: true
+                              description: |-
+                                Limits describes the maximum amount of compute resources allowed.
+                                More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                              type: object
+                            requests:
+                              additionalProperties:
+                                anyOf:
+                                - type: integer
+                                - type: string
+                                pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                x-kubernetes-int-or-string: true
+                              description: |-
+                                Requests describes the minimum amount of compute resources required.
+                                If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                                otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                                More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                              type: object
+                          type: object
+                        runAsUser:
+                          description: RunAsUser is the numeric user the container
+                            runs as. Defaults to 65532. Root (0) is not allowed.
+                          format: int64
+                          minimum: 1
+                          type: integer
+                      required:
+                      - image
+                      type: object
                     dependsOn:
                       description: |-
                         DependsOn lists step names that must reach a terminal phase (Succeeded or Skipped)
@@ -445,7 +744,7 @@ spec:
                       type: array
                     input:
                       description: |-
-                        Input is the task string passed to the agent as AGENTORC_INPUT.
+                        Input is the task string passed to the agent as AGENTORC_INPUT. Agent steps only.
                         Supports template variables:
                           {{steps.<name>.output}}  — the Output of a named predecessor step
                       type: string
@@ -459,11 +758,36 @@ spec:
                       description: Timeout overrides the workflow-level timeout for
                         this specific step.
                       type: string
+                    type:
+                      default: agent
+                      description: |-
+                        Type is agent (default): run an Agent; container: run a deterministic job in a
+                        pod; approval: wait for a person to approve or reject.
+                      enum:
+                      - agent
+                      - container
+                      - approval
+                      type: string
                   required:
-                  - agentRef
-                  - input
                   - name
                   type: object
+                  x-kubernetes-validations:
+                  - message: an agent step needs agentRef and input
+                    rule: (has(self.type) && self.type != 'agent') || (has(self.agentRef)
+                      && self.agentRef != '' && has(self.input))
+                  - message: agentRef and input are only for agent steps
+                    rule: '!has(self.type) || self.type == ''agent'' || (!has(self.agentRef)
+                      && !has(self.input))'
+                  - message: a container step needs a container block
+                    rule: '!has(self.type) || self.type != ''container'' || has(self.container)'
+                  - message: the container block is only for container steps
+                    rule: '!has(self.container) || (has(self.type) && self.type ==
+                      ''container'')'
+                  - message: an approval step needs an approval block
+                    rule: '!has(self.type) || self.type != ''approval'' || has(self.approval)'
+                  - message: the approval block is only for approval steps
+                    rule: '!has(self.approval) || (has(self.type) && self.type ==
+                      ''approval'')'
                 type: array
               phase:
                 description: Phase is the overall workflow lifecycle state.
@@ -495,8 +819,32 @@ spec:
                       properties:
                         agentRef:
                           description: AgentRef is the name of the Agent CRD to run
-                            for this step.
+                            for this step. Agent steps only.
                           type: string
+                        approval:
+                          description: Approval describes the decision an approval
+                            step waits for.
+                          properties:
+                            approverGroups:
+                              description: |-
+                                ApproverGroups are the identity-provider groups whose members may decide.
+                                Empty lets any user with access to the workflow's namespace decide.
+                              items:
+                                type: string
+                              type: array
+                            message:
+                              description: |-
+                                Message is what the approver is asked, shown in the Approvals inbox. It can use
+                                {{steps.<name>.output}} to show earlier results (a diff, a test report).
+                              minLength: 1
+                              type: string
+                            timeout:
+                              description: Timeout is how long to wait before the
+                                step fails as undecided. Defaults to 24h.
+                              type: string
+                          required:
+                          - message
+                          type: object
                         callbacks:
                           description: Callbacks fires webhooks when this step completes
                             or fails.
@@ -518,6 +866,116 @@ spec:
                             the step is marked Skipped rather than started.
                             Example: 'steps["gather"].phase == "Succeeded"'
                           type: string
+                        container:
+                          description: Container describes the job of a container
+                            step.
+                          properties:
+                            args:
+                              description: Args overrides the image's arguments.
+                              items:
+                                type: string
+                              type: array
+                            command:
+                              description: Command overrides the image's entrypoint.
+                              items:
+                                type: string
+                              type: array
+                            env:
+                              description: |-
+                                Env sets environment variables. Values can use {{steps.<name>.output}}; pass
+                                data to the job here rather than splicing it into Command or Args.
+                              items:
+                                description: StepEnvVar is one environment variable
+                                  of a container step.
+                                properties:
+                                  name:
+                                    description: Name of the variable.
+                                    pattern: ^[A-Za-z_][A-Za-z0-9_]*$
+                                    type: string
+                                  value:
+                                    description: Value of the variable; may use {{steps.<name>.output}}.
+                                    type: string
+                                required:
+                                - name
+                                - value
+                                type: object
+                              type: array
+                            image:
+                              description: |-
+                                Image is the container image to run. It must be allowed by the operator's
+                                ALLOWED_REGISTRIES, if set.
+                              minLength: 1
+                              type: string
+                            resources:
+                              description: Resources sets CPU and memory. Defaults
+                                to a small request and a 1 CPU / 512Mi limit.
+                              properties:
+                                claims:
+                                  description: |-
+                                    Claims lists the names of resources, defined in spec.resourceClaims,
+                                    that are used by this container.
+
+                                    This field depends on the
+                                    DynamicResourceAllocation feature gate.
+
+                                    This field is immutable. It can only be set for containers.
+                                  items:
+                                    description: ResourceClaim references one entry
+                                      in PodSpec.ResourceClaims.
+                                    properties:
+                                      name:
+                                        description: |-
+                                          Name must match the name of one entry in pod.spec.resourceClaims of
+                                          the Pod where this field is used. It makes that resource available
+                                          inside a container.
+                                        type: string
+                                      request:
+                                        description: |-
+                                          Request is the name chosen for a request in the referenced claim.
+                                          If empty, everything from the claim is made available, otherwise
+                                          only the result of this request.
+                                        type: string
+                                    required:
+                                    - name
+                                    type: object
+                                  type: array
+                                  x-kubernetes-list-map-keys:
+                                  - name
+                                  x-kubernetes-list-type: map
+                                limits:
+                                  additionalProperties:
+                                    anyOf:
+                                    - type: integer
+                                    - type: string
+                                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                    x-kubernetes-int-or-string: true
+                                  description: |-
+                                    Limits describes the maximum amount of compute resources allowed.
+                                    More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                                  type: object
+                                requests:
+                                  additionalProperties:
+                                    anyOf:
+                                    - type: integer
+                                    - type: string
+                                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                    x-kubernetes-int-or-string: true
+                                  description: |-
+                                    Requests describes the minimum amount of compute resources required.
+                                    If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                                    otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                                    More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                                  type: object
+                              type: object
+                            runAsUser:
+                              description: RunAsUser is the numeric user the container
+                                runs as. Defaults to 65532. Root (0) is not allowed.
+                              format: int64
+                              minimum: 1
+                              type: integer
+                          required:
+                          - image
+                          type: object
                         dependsOn:
                           description: |-
                             DependsOn lists step names that must reach a terminal phase (Succeeded or Skipped)
@@ -527,7 +985,7 @@ spec:
                           type: array
                         input:
                           description: |-
-                            Input is the task string passed to the agent as AGENTORC_INPUT.
+                            Input is the task string passed to the agent as AGENTORC_INPUT. Agent steps only.
                             Supports template variables:
                               {{steps.<name>.output}}  — the Output of a named predecessor step
                           type: string
@@ -541,11 +999,36 @@ spec:
                           description: Timeout overrides the workflow-level timeout
                             for this specific step.
                           type: string
+                        type:
+                          default: agent
+                          description: |-
+                            Type is agent (default): run an Agent; container: run a deterministic job in a
+                            pod; approval: wait for a person to approve or reject.
+                          enum:
+                          - agent
+                          - container
+                          - approval
+                          type: string
                       required:
-                      - agentRef
-                      - input
                       - name
                       type: object
+                      x-kubernetes-validations:
+                      - message: an agent step needs agentRef and input
+                        rule: (has(self.type) && self.type != 'agent') || (has(self.agentRef)
+                          && self.agentRef != '' && has(self.input))
+                      - message: agentRef and input are only for agent steps
+                        rule: '!has(self.type) || self.type == ''agent'' || (!has(self.agentRef)
+                          && !has(self.input))'
+                      - message: a container step needs a container block
+                        rule: '!has(self.type) || self.type != ''container'' || has(self.container)'
+                      - message: the container block is only for container steps
+                        rule: '!has(self.container) || (has(self.type) && self.type
+                          == ''container'')'
+                      - message: an approval step needs an approval block
+                        rule: '!has(self.type) || self.type != ''approval'' || has(self.approval)'
+                      - message: the approval block is only for approval steps
+                        rule: '!has(self.approval) || (has(self.type) && self.type
+                          == ''approval'')'
                     proposingStep:
                       description: ProposingStep is the name of the workflow step
                         whose agent made the proposal.
@@ -580,6 +1063,10 @@ spec:
                       description: AgentRunRef is the name of the AgentRun created
                         for this step.
                       type: string
+                    approvalID:
+                      description: ApprovalID is the id of the approval an approval
+                        step waits on.
+                      type: string
                     completionTime:
                       description: CompletionTime is when the step reached a terminal
                         phase.
@@ -606,6 +1093,10 @@ spec:
                       - Failed
                       - Skipped
                       - WaitingForInput
+                      - WaitingForApproval
+                      type: string
+                    podRef:
+                      description: PodRef is the name of the pod of a container step.
                       type: string
                     source:
                       description: |-

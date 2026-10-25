@@ -49,8 +49,9 @@ spec:
   # Required unless fromTemplate is set.
   steps:
     - name: string                    # unique within this workflow, lowercase alphanumeric + hyphens
-      agentRef: string                # name of the Agent CRD to run
-      input: string                   # task string; supports {{steps.<name>.output}}
+      type: agent                     # agent (default) | container | approval; see "Step types"
+      agentRef: string                # agent steps: name of the Agent CRD to run
+      input: string                   # agent steps: task string; supports {{steps.<name>.output}}
       dependsOn: []string             # step names that must complete first
       condition: string               # CEL expression; step is Skipped if false
       timeout: duration               # overrides workflow timeout for this step
@@ -151,6 +152,91 @@ The controller polls step AgentRuns every 10 seconds (no watch — polling keeps
 
 ---
 
+## Step types
+
+A step is one of three types. Agent steps are what the rest of this page describes; the other two
+make a workflow deterministic where it needs to be.
+
+| Type | Does | Output | Fails when |
+|---|---|---|---|
+| `agent` (default) | Runs an Agent | The agent's answer | The run fails |
+| `container` | Runs one container to completion in its own pod | The last 10 KB of its output | It exits non-zero, times out, or cannot start |
+| `approval` | Waits for a person to approve or reject | `approved by <who>: <reason>` | Rejected, or not decided in time |
+
+All three take `dependsOn`, `condition` and `timeout`, and respect `onStepFailure`.
+
+### Container steps
+
+For work whose result must not depend on a model: run the tests, build the artifact, lint, check
+a signature.
+
+```yaml
+- name: test
+  type: container
+  dependsOn: [build]
+  container:
+    image: ghcr.io/heddles/agent-orca/dev-sandbox:latest
+    command: [/usr/local/bin/run-tests]
+    env:
+      - {name: PLAN, value: "{{steps.build.output}}"}   # data goes in env, not in command or args
+    resources: {limits: {cpu: "2", memory: 2Gi}}
+```
+
+The pod is deliberately boxed in:
+
+- **No network at all**, enforced by a deny-all NetworkPolicy for the workflow's step pods (this
+  needs a CNI that enforces NetworkPolicy; k3s does). A job that must download packages belongs in
+  a governed sandbox, not here.
+- No service account token, so it cannot call the Kubernetes API; service links off.
+- Runs as a non-root user (65532 unless `runAsUser` is set; root is rejected), read-only root
+  filesystem, all capabilities dropped, no privilege escalation, the runtime-default seccomp profile.
+  `/tmp` and `/work` (the working directory) are writable scratch space and are discarded with the pod.
+- CPU and memory limits (1 CPU and 512Mi unless `resources` says otherwise) and a time limit: the
+  step's `timeout`, else what is left of the workflow's, else 30 minutes.
+- The image must be allowed by the operator's `ALLOWED_REGISTRIES`, if set; otherwise the step fails
+  without starting a pod.
+
+The step succeeds on exit code 0. Its output is the tail of what the container printed, capped at
+10 KB. When it fails, the reason carries the exit code (and `OOMKilled`, or "timed out") and a
+snippet of the output. A pod that cannot start its image for two minutes (a bad tag, no pull access)
+fails with the registry's reason rather than waiting forever. The pod is deleted once its output is
+captured.
+
+`{{steps.x.output}}` is available in `env` values only. Command and args are fixed, so a step's
+output (which may be model text) cannot become shell code.
+
+### Approval steps
+
+A human gate in the middle of a pipeline: before the deploy, before the merge, before the next
+expensive stage.
+
+```yaml
+- name: gate
+  type: approval
+  dependsOn: [test]
+  approval:
+    message: |
+      Tests finished:
+      {{steps.test.output}}
+      Deploy to production?
+    approverGroups: [release-managers]   # empty: anyone with access to the namespace
+    timeout: 4h                          # default 24h
+```
+
+The request appears in the **Approvals** tab with the message (so the approver sees the evidence,
+not just a question), triggers the webhook notification if one is configured, and the step shows
+`WaitingForApproval`. Approve and the workflow continues; reject, or let the timeout pass, and the
+step fails (so the workflow stops, unless `onStepFailure: continue`). The decision and who made it
+are recorded in PostgreSQL. If the workflow ends for another reason while the gate is open, the
+request is withdrawn so no one is asked about something that no longer matters.
+
+Approval steps need the PostgreSQL store; without it they fail at once with that reason rather than
+waiting for a decision that can never be made. Deleting a workflow does not withdraw its pending
+request; it expires at its timeout.
+
+A step that is waiting does not hold up the others: parallel branches keep running, and steps whose
+dependencies are met start, while a gate waits.
+
 ## Templates and instances
 
 A workflow with `spec.mode: template` is a **definition**: the controller validates it and never
@@ -209,11 +295,13 @@ parameter defaults that satisfy their own type, enum and pattern, and conditions
 evaluate. A workflow that is not a template gets the structural checks (names, dependencies,
 cycles) before it starts, so a cycle fails with a message instead of waiting forever.
 
-**Parameters are text from outside, so they go only in step inputs.** They cannot be used in
-`agentRef`, a step name, `dependsOn` or a `condition`: a ticket title must not be able to choose
-which agent runs or inject into an expression, and the template is rejected if it tries. A value
-that contains `{{` has the braces separated by an invisible character, so it cannot pull another
-step's output into an input.
+**Parameters are text from outside, so they go only where text belongs.** They can fill an agent
+step's input, a container step's `env` values and an approval message. They cannot be used in
+`agentRef`, a step name, `dependsOn`, a `condition`, a container's `image`, `command` or `args`, or
+`approverGroups`: a ticket title must not be able to choose which agent or image runs, what a job
+executes, who approves, or inject into an expression, and the template is rejected if it tries. A
+value that contains `{{` has the braces separated by an invisible character, so it cannot pull
+another step's output into an input.
 
 ---
 
