@@ -24,8 +24,10 @@ jobs:
           # - test/description
           # - perf/description
           # - dependabot/<ecosystem>/... (bot-generated dependency bumps)
+          # - factory/issue-N (the software factory's work branches; the repository
+          #   ruleset only lets it create branches under factory/)
           
-          if [[ ! "$BRANCH_NAME" =~ ^(feat|fix|docs|chore|refactor|test|perf|ci|build|dependabot)\/.+$ ]]; then
+          if [[ ! "$BRANCH_NAME" =~ ^(feat|fix|docs|chore|refactor|test|perf|ci|build|dependabot|factory)\/.+$ ]]; then
             echo "❌ Invalid branch name: $BRANCH_NAME"
             echo ""
             echo "Branch names must follow the convention: type/description"
