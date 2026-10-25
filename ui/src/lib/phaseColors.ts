@@ -11,6 +11,7 @@ export const PHASE_COLOR: Record<string, string> = {
   HandedOff:       '#8b5cf6',
   Skipped:         '#a78bfa',
   Paused:          '#64748b',
+  Template:        '#64748b',
   WaitingForInput: '#f59e0b',
 }
 
@@ -23,6 +24,7 @@ export const PHASE_STYLE: Record<string, React.CSSProperties> = {
   Cancelled:       { background: 'rgba(239,68,68,.12)',   color: '#ef4444' },
   Pending:         { background: 'rgba(148,163,184,.1)',  color: '#94a3b8' },
   Paused:          { background: 'rgba(148,163,184,.1)',  color: '#94a3b8' },
+  Template:        { background: 'rgba(148,163,184,.1)',  color: '#94a3b8' },
   Skipped:         { background: 'rgba(167,139,250,.12)', color: '#a78bfa' },
   HandedOff:       { background: 'rgba(167,139,250,.12)', color: '#a78bfa' },
   WaitingForInput: { background: 'rgba(245,158,11,.12)',  color: '#f59e0b' },

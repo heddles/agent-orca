@@ -56,9 +56,27 @@ func (r *AgentWorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
+	// A template is a definition: validated, never run (agentworkflow_template.go).
+	if wf.Spec.Mode == agentorcav1alpha1.WorkflowModeTemplate {
+		return r.reconcileTemplate(ctx, &wf)
+	}
+
 	// Terminal workflows need no further reconciliation.
 	if isWorkflowTerminal(wf.Status.Phase) {
 		return ctrl.Result{}, nil
+	}
+
+	// A workflow created from a template gets its steps before it can start.
+	if wf.Spec.FromTemplate != nil && len(wf.Spec.Steps) == 0 {
+		return r.expandFromTemplate(ctx, &wf)
+	}
+
+	// A workflow that cannot run (duplicate steps, a missing dependency, a cycle)
+	// fails now with the reason instead of waiting forever.
+	if wf.Status.StartTime == nil {
+		if failed, err := r.checkStructure(ctx, &wf); failed || err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	// Enforce workflow-level timeout.

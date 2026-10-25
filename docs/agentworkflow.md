@@ -38,7 +38,15 @@ kind: AgentWorkflow
 metadata:
   name: my-workflow
 spec:
+  # mode: workflow (default) runs. mode: template is a definition that is validated
+  # and never run; see "Templates and instances" below.
+  mode: workflow
+  # parameters (templates only): typed inputs, used as {{params.<name>}} in step inputs.
+  # fromTemplate: create this workflow from a template; the controller fills in steps.
+  #   fromTemplate: {name: <template>, parameters: {<name>: "<value>"}}
+
   # steps defines the DAG. Steps with no dependsOn start immediately.
+  # Required unless fromTemplate is set.
   steps:
     - name: string                    # unique within this workflow, lowercase alphanumeric + hyphens
       agentRef: string                # name of the Agent CRD to run
@@ -123,6 +131,9 @@ stateDiagram-v2
     Running --> Cancelled: resource deleted (via owner ref cascade)
 ```
 
+A workflow with `spec.mode: template` is a definition and never runs: its phase is `Template`
+(see [Templates](#templates-and-instances)).
+
 ---
 
 ## What the controller creates
@@ -137,6 +148,72 @@ For each step, the controller creates one `AgentRun` with:
   ```
 
 The controller polls step AgentRuns every 10 seconds (no watch — polling keeps the controller simple).
+
+---
+
+## Templates and instances
+
+A workflow with `spec.mode: template` is a **definition**: the controller validates it and never
+runs it. Other workflows are created from it by name, with typed parameters, so a pipeline is
+written once and started many times (once per ticket, per device, per patient study).
+
+```yaml
+apiVersion: agentorca.agentorca.io/v1alpha1
+kind: AgentWorkflow
+metadata: {name: ticket-to-pr, namespace: team-a}
+spec:
+  mode: template
+  parameters:
+    - {name: repo, required: true, pattern: "[a-z0-9-]+/[a-z0-9-]+"}
+    - {name: title, required: true, maxLength: 200}
+    - {name: priority, type: integer, default: "3"}
+    - {name: env, enum: [staging, prod], default: staging}
+  timeout: 2h
+  budgetCap: {total: "5.00"}
+  steps:
+    - name: plan
+      agentRef: planner
+      input: "Plan this change to {{params.repo}} (priority {{params.priority}}): {{params.title}}"
+    - name: build
+      agentRef: implementer
+      dependsOn: [plan]
+      input: "Implement this plan: {{steps.plan.output}}"
+---
+apiVersion: agentorca.agentorca.io/v1alpha1
+kind: AgentWorkflow
+metadata: {name: ticket-42, namespace: team-a}
+spec:
+  fromTemplate:
+    name: ticket-to-pr
+    parameters: {repo: heddles/agent-orca, title: "Add a --version flag"}
+  budgetCap: {total: "1.00"}   # optional: overrides the template's
+```
+
+A full example is `config/samples/workflow-template.yaml`.
+
+**Parameters** are `string` (the default), `integer` or `boolean`, and can be `required`, have a
+`default` and an `enum`, and (strings) a `pattern` that must match the whole value and a
+`maxLength` (default 8192 bytes). They are given as strings (`"42"`, `"true"`).
+
+**Creating an instance.** On its first reconcile the controller reads the template, checks the
+parameters, and fills in the instance's `steps` with `{{params.x}}` substituted. Anything the
+instance sets itself (`description`, `timeout`, `budgetCap`, `onStepFailure`, `adaptivePolicy`)
+wins over the template's. `status.template` records which template and generation it was built
+from, and the `TemplateResolved` condition reports the result. An instance created before its
+template exists waits for it; wrong or missing parameters fail it with the reason.
+
+**What a template is checked for** (the `Valid` condition on the template lists every problem):
+unique step names, dependencies that exist and form no cycle, `{{steps.x.output}}` only from
+steps the step depends on (otherwise it would always be empty), every `{{params.x}}` declared,
+parameter defaults that satisfy their own type, enum and pattern, and conditions the controller can
+evaluate. A workflow that is not a template gets the structural checks (names, dependencies,
+cycles) before it starts, so a cycle fails with a message instead of waiting forever.
+
+**Parameters are text from outside, so they go only in step inputs.** They cannot be used in
+`agentRef`, a step name, `dependsOn` or a `condition`: a ticket title must not be able to choose
+which agent runs or inject into an expression, and the template is rejected if it tries. A value
+that contains `{{` has the braces separated by an invisible character, so it cannot pull another
+step's output into an input.
 
 ---
 

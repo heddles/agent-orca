@@ -106,6 +106,37 @@ spec:
                 description: Description is an optional human-readable summary of
                   the workflow's purpose.
                 type: string
+              fromTemplate:
+                description: |-
+                  FromTemplate creates this workflow from a template in the same namespace:
+                  on its first reconcile the controller fills in the steps (and any of
+                  description, timeout, budgetCap, onStepFailure and adaptivePolicy not set here)
+                  from the template, with the parameters substituted into the step inputs.
+                properties:
+                  name:
+                    description: Name of the AgentWorkflow template, in the same namespace.
+                    minLength: 1
+                    type: string
+                  parameters:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      Parameters sets the template's parameters by name. Values are strings;
+                      integer and boolean parameters take "42" and "true".
+                    type: object
+                required:
+                - name
+                type: object
+              mode:
+                default: workflow
+                description: |-
+                  Mode is "workflow" (default): the workflow runs. In "template" mode the
+                  workflow is a definition that is validated but never run; workflows are
+                  created from it with spec.fromTemplate.
+                enum:
+                - workflow
+                - template
+                type: string
               onStepFailure:
                 description: |-
                   OnStepFailure controls what happens when a step fails.
@@ -115,10 +146,64 @@ spec:
                 - stop
                 - continue
                 type: string
+              parameters:
+                description: |-
+                  Parameters declares the typed inputs of a template. Steps refer to them as
+                  {{params.<name>}} in their input. Only for mode: template.
+                items:
+                  description: WorkflowParameter is a typed input of a workflow template.
+                  properties:
+                    default:
+                      description: Default is used when the instance does not set
+                        the parameter.
+                      type: string
+                    description:
+                      description: Description tells a person or a connector what
+                        the parameter is for.
+                      type: string
+                    enum:
+                      description: Enum restricts the value to one of these.
+                      items:
+                        type: string
+                      type: array
+                    maxLength:
+                      description: MaxLength caps the value's length in bytes. Defaults
+                        to 8192.
+                      minimum: 1
+                      type: integer
+                    name:
+                      description: 'Name is how steps refer to the parameter: {{params.<name>}}.'
+                      pattern: ^[a-zA-Z][a-zA-Z0-9_]*$
+                      type: string
+                    pattern:
+                      description: Pattern is a regular expression a string value
+                        must match in full.
+                      type: string
+                    required:
+                      description: Required makes the parameter mandatory unless it
+                        has a default.
+                      type: boolean
+                    type:
+                      default: string
+                      description: Type is string (default), integer or boolean.
+                      enum:
+                      - string
+                      - integer
+                      - boolean
+                      type: string
+                  required:
+                  - name
+                  type: object
+                maxItems: 50
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               steps:
                 description: |-
                   Steps defines the DAG of agent executions. Each step names its dependencies via
                   DependsOn; steps with no dependencies run immediately when the workflow starts.
+                  Required unless fromTemplate is set.
                 items:
                   description: WorkflowStep defines a single node in the workflow
                     DAG.
@@ -176,16 +261,21 @@ spec:
                   - input
                   - name
                   type: object
-                minItems: 1
                 type: array
               timeout:
                 description: |-
                   Timeout is the wall-clock limit for the entire workflow.
                   Steps still running when this expires are failed.
                 type: string
-            required:
-            - steps
             type: object
+            x-kubernetes-validations:
+            - message: spec.steps is required unless spec.fromTemplate is set
+              rule: has(self.fromTemplate) || (has(self.steps) && size(self.steps)
+                > 0)
+            - message: a template cannot be created from another template
+              rule: '!has(self.fromTemplate) || !has(self.mode) || self.mode != ''template'''
+            - message: 'spec.parameters is only for mode: template'
+              rule: '!has(self.parameters) || (has(self.mode) && self.mode == ''template'')'
           status:
             description: AgentWorkflowStatus holds observed state for an AgentWorkflow.
             properties:
@@ -383,6 +473,7 @@ spec:
                 - Succeeded
                 - Failed
                 - Cancelled
+                - Template
                 type: string
               proposalLog:
                 description: ProposalLog records all proposals (approved and rejected)
@@ -537,6 +628,22 @@ spec:
                   - phase
                   type: object
                 type: array
+              template:
+                description: Template records the template this workflow was built
+                  from (fromTemplate).
+                properties:
+                  generation:
+                    description: Generation of the template when the instance was
+                      built from it.
+                    format: int64
+                    type: integer
+                  name:
+                    description: Name of the template.
+                    type: string
+                required:
+                - generation
+                - name
+                type: object
               totalSpendUSD:
                 description: TotalSpendUSD is the sum of SpendUSD across all step
                   AgentRuns.
