@@ -1,0 +1,39 @@
+# A workflow template and an instance of it (docs/agentworkflow.md#templates-and-instances).
+# The template is validated and never runs; the instance runs. The agents named
+# here (planner, implementer) are examples: create them first, or the steps fail.
+apiVersion: agentorca.agentorca.io/v1alpha1
+kind: AgentWorkflow
+metadata:
+  name: ticket-to-pr
+  namespace: agent-orca-system
+spec:
+  mode: template
+  description: "Turn a ticket for {{params.repo}} into a change"
+  parameters:
+    - {name: repo, required: true, pattern: "[a-z0-9-]+/[a-z0-9-]+", description: "owner/name of the repository"}
+    - {name: title, required: true, maxLength: 200, description: "the ticket title"}
+    - {name: priority, type: integer, default: "3"}
+  timeout: 2h
+  budgetCap: {total: "5.00"}
+  onStepFailure: stop
+  steps:
+    - name: plan
+      agentRef: planner
+      input: "Plan this change to {{params.repo}} (priority {{params.priority}}): {{params.title}}"
+    - name: build
+      agentRef: implementer
+      dependsOn: [plan]
+      input: "Implement this plan in {{params.repo}}: {{steps.plan.output}}"
+---
+apiVersion: agentorca.agentorca.io/v1alpha1
+kind: AgentWorkflow
+metadata:
+  name: ticket-42
+  namespace: agent-orca-system
+spec:
+  fromTemplate:
+    name: ticket-to-pr
+    parameters:
+      repo: heddles/agent-orca
+      title: Add a --version flag to the CLI
+  budgetCap: {total: "1.00"}

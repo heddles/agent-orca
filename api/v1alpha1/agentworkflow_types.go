@@ -24,15 +24,41 @@ import (
 // The controller — not the LLM — determines step ordering, threads outputs between steps,
 // and enforces workflow-level budget caps. This is the deterministic complement to the
 // dynamic agent-as-tool pattern.
+// +kubebuilder:validation:XValidation:rule="has(self.fromTemplate) || (has(self.steps) && size(self.steps) > 0)",message="spec.steps is required unless spec.fromTemplate is set"
+// +kubebuilder:validation:XValidation:rule="!has(self.fromTemplate) || !has(self.mode) || self.mode != 'template'",message="a template cannot be created from another template"
+// +kubebuilder:validation:XValidation:rule="!has(self.parameters) || (has(self.mode) && self.mode == 'template')",message="spec.parameters is only for mode: template"
 type AgentWorkflowSpec struct {
 	// Description is an optional human-readable summary of the workflow's purpose.
 	// +optional
 	Description string `json:"description,omitempty"`
 
+	// Mode is "workflow" (default): the workflow runs. In "template" mode the
+	// workflow is a definition that is validated but never run; workflows are
+	// created from it with spec.fromTemplate.
+	// +kubebuilder:default=workflow
+	// +optional
+	Mode WorkflowMode `json:"mode,omitempty"`
+
+	// Parameters declares the typed inputs of a template. Steps refer to them as
+	// {{params.<name>}} in their input. Only for mode: template.
+	// +listType=map
+	// +listMapKey=name
+	// +kubebuilder:validation:MaxItems=50
+	// +optional
+	Parameters []WorkflowParameter `json:"parameters,omitempty"`
+
+	// FromTemplate creates this workflow from a template in the same namespace:
+	// on its first reconcile the controller fills in the steps (and any of
+	// description, timeout, budgetCap, onStepFailure and adaptivePolicy not set here)
+	// from the template, with the parameters substituted into the step inputs.
+	// +optional
+	FromTemplate *WorkflowFromTemplate `json:"fromTemplate,omitempty"`
+
 	// Steps defines the DAG of agent executions. Each step names its dependencies via
 	// DependsOn; steps with no dependencies run immediately when the workflow starts.
-	// +kubebuilder:validation:MinItems=1
-	Steps []WorkflowStep `json:"steps"`
+	// Required unless fromTemplate is set.
+	// +optional
+	Steps []WorkflowStep `json:"steps,omitempty"`
 
 	// BudgetCap limits total USD spend across all steps combined.
 	// +optional
@@ -54,6 +80,76 @@ type AgentWorkflowSpec struct {
 	// If nil, all _propose_step calls are rejected.
 	// +optional
 	AdaptivePolicy *AdaptivePolicy `json:"adaptivePolicy,omitempty"`
+}
+
+// WorkflowMode says whether an AgentWorkflow runs or is a template.
+// +kubebuilder:validation:Enum=workflow;template
+type WorkflowMode string
+
+// Workflow modes.
+const (
+	// WorkflowModeWorkflow is a workflow that runs.
+	WorkflowModeWorkflow WorkflowMode = "workflow"
+	// WorkflowModeTemplate is a definition that is validated but never run.
+	WorkflowModeTemplate WorkflowMode = "template"
+)
+
+// WorkflowParameter is a typed input of a workflow template.
+type WorkflowParameter struct {
+	// Name is how steps refer to the parameter: {{params.<name>}}.
+	// +kubebuilder:validation:Pattern=`^[a-zA-Z][a-zA-Z0-9_]*$`
+	Name string `json:"name"`
+
+	// Description tells a person or a connector what the parameter is for.
+	// +optional
+	Description string `json:"description,omitempty"`
+
+	// Type is string (default), integer or boolean.
+	// +kubebuilder:validation:Enum=string;integer;boolean
+	// +kubebuilder:default=string
+	// +optional
+	Type string `json:"type,omitempty"`
+
+	// Required makes the parameter mandatory unless it has a default.
+	// +optional
+	Required bool `json:"required,omitempty"`
+
+	// Default is used when the instance does not set the parameter.
+	// +optional
+	Default *string `json:"default,omitempty"`
+
+	// Enum restricts the value to one of these.
+	// +optional
+	Enum []string `json:"enum,omitempty"`
+
+	// Pattern is a regular expression a string value must match in full.
+	// +optional
+	Pattern string `json:"pattern,omitempty"`
+
+	// MaxLength caps the value's length in bytes. Defaults to 8192.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	MaxLength int `json:"maxLength,omitempty"`
+}
+
+// WorkflowFromTemplate names a template and gives its parameters.
+type WorkflowFromTemplate struct {
+	// Name of the AgentWorkflow template, in the same namespace.
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+
+	// Parameters sets the template's parameters by name. Values are strings;
+	// integer and boolean parameters take "42" and "true".
+	// +optional
+	Parameters map[string]string `json:"parameters,omitempty"`
+}
+
+// WorkflowTemplateRevision records which template version an instance was built from.
+type WorkflowTemplateRevision struct {
+	// Name of the template.
+	Name string `json:"name"`
+	// Generation of the template when the instance was built from it.
+	Generation int64 `json:"generation"`
 }
 
 // AdaptivePolicy controls dynamic step proposals from agents within the workflow.
@@ -128,10 +224,13 @@ type WorkflowBudgetCap struct {
 }
 
 // AgentWorkflowPhase describes the lifecycle phase of an AgentWorkflow.
-// +kubebuilder:validation:Enum=Pending;Running;Succeeded;Failed;Cancelled
+// +kubebuilder:validation:Enum=Pending;Running;Succeeded;Failed;Cancelled;Template
 type AgentWorkflowPhase string
 
 const (
+	// AgentWorkflowPhaseTemplate is the phase of a template (mode: template): a
+	// definition that is validated but never run.
+	AgentWorkflowPhaseTemplate  AgentWorkflowPhase = "Template"
 	AgentWorkflowPhasePending   AgentWorkflowPhase = "Pending"
 	AgentWorkflowPhaseRunning   AgentWorkflowPhase = "Running"
 	AgentWorkflowPhaseSucceeded AgentWorkflowPhase = "Succeeded"
@@ -238,6 +337,10 @@ type AgentWorkflowStatus struct {
 	// ProposalLog records all proposals (approved and rejected) for auditability.
 	// +optional
 	ProposalLog []StepProposal `json:"proposalLog,omitempty"`
+
+	// Template records the template this workflow was built from (fromTemplate).
+	// +optional
+	Template *WorkflowTemplateRevision `json:"template,omitempty"`
 
 	// TotalSpendUSD is the sum of SpendUSD across all step AgentRuns.
 	// +optional
