@@ -44,6 +44,24 @@ describe('ApprovalsView', () => {
     mockDecide.mockReset()
   })
 
+  it('shows a run that reached its budget, with what approving and rejecting do', async () => {
+    mockList.mockResolvedValue([
+      pending({
+        kind: 'budget',
+        summary: 'coder-run reached its $2.00 budget: raise it by $1.50?',
+        details: { raise: 1, spentUSD: '2.0300', capUSD: '2.00', raiseByUSD: '1.5000', newCapUSD: '3.5000' },
+      }),
+    ])
+    render(<ApprovalsView />)
+    expect(await screen.findByText('coder-run reached its $2.00 budget: raise it by $1.50?')).toBeInTheDocument()
+    expect(screen.getByText('$2.0300')).toBeInTheDocument()
+    expect(screen.getByText('$2.00')).toBeInTheDocument()
+    expect(screen.getByText(/cap rises by \$1.5000 to \$3.5000; the run resumes/)).toBeInTheDocument()
+    expect(screen.getByText('the run fails')).toBeInTheDocument()
+    // The egress-only facts stay out of a budget request.
+    expect(screen.queryByText('Destination')).toBeNull()
+  })
+
   it('shows what a pending request asks for', async () => {
     mockList.mockResolvedValue([pending()])
     render(<ApprovalsView />)

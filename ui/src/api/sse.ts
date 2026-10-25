@@ -715,14 +715,25 @@ export interface EgressRequestDetails {
   lastSeen?: string
 }
 
-/** A request for a decision, e.g. egress a sandbox's policy does not allow. */
+/** What a paused run asks for, as stored in a budget approval's details. */
+export interface BudgetRequestDetails {
+  raise?: number
+  spentUSD?: string
+  capUSD?: string
+  raiseByUSD?: string
+  newCapUSD?: string
+  description?: string
+}
+
+/** A request for a decision: egress a sandbox's policy does not allow (kind
+ *  "egress"), or a higher spend cap for a run that reached its budget ("budget"). */
 export interface Approval {
   id: string
   namespace: string
   runName: string
   kind: string
   summary: string
-  details?: EgressRequestDetails
+  details?: EgressRequestDetails & BudgetRequestDetails
   approverGroups: string[]
   status: 'pending' | 'approved' | 'rejected' | 'expired' | 'withdrawn'
   requestedAt: string

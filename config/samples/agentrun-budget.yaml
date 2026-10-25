@@ -1,0 +1,20 @@
+# A run with an enforced spend cap. At 80% of $2.00 the run emits a warning;
+# at the cap it pauses and asks the "finance" group (in the UI's Approvals tab)
+# to raise the cap by $1.50. A rejection, or no decision within an hour, fails
+# the run. Pausing needs the PostgreSQL store; without it the run fails at the cap.
+apiVersion: agentorca.agentorca.io/v1alpha1
+kind: AgentRun
+metadata:
+  name: budget-demo
+  namespace: agent-orca-system
+spec:
+  agentRef: coder-agent
+  input: Add a --version flag to the CLI and a test for it.
+  timeout: 4h # the run's own timeout keeps counting while it is paused
+  budget:
+    maxUSD: "2.00"
+    warnAtPercent: 80
+    onExceeded: pause
+    raiseByUSD: "1.50"
+    pauseTimeout: 1h
+    approverGroups: [finance]

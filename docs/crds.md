@@ -234,6 +234,7 @@ spec:
 | `parentRunRef` | Parent AgentRun when this is spawned as a sub-agent tool |
 | `priorRunRef` | Previous AgentRun in a chat session; loads its conversation checkpoint for continuation |
 | `safeguards` | Loop detection limits. Defaults apply when unset: `maxRepeatedToolCalls` 50 (same tool + identical arguments), `maxConsecutiveNoopTurns` 15 (not for chat runs), `toolFrequencyCap` off. A negative value disables a check. A trip fails the run without retrying it. |
+| `budget` | A cap on the run's model spend in USD (`maxUSD`). A warning at `warnAtPercent` (default 80); at the cap the run fails (`onExceeded: fail`, the default) or pauses until an approver raises the cap (`onExceeded: pause`). See [Run budgets](run-budgets.md). Unlike the ModelSelector's `budgetCap`, which only steers routing toward cheaper models, this one is enforced. |
 | `egress` | Result egress sink configuration (optional) |
 
 **Egress configuration (optional):**

@@ -83,6 +83,10 @@ func (v *AgentRunValidator) validate(ctx context.Context, run *agentorcav1alpha1
 		return fmt.Errorf("%s", "spec.input is required")
 	}
 
+	if err := validateRunBudget(run.Spec.Budget); err != nil {
+		return err
+	}
+
 	// Verify the referenced Agent exists.
 	var agent agentorcav1alpha1.Agent
 	if err := v.Client.Get(ctx, client.ObjectKey{

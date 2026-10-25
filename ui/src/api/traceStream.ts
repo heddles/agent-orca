@@ -46,6 +46,14 @@ export type TraceEvent =
       reason?: string
       raw: string
     }
+  // The run's spend against its budget (AgentRun.spec.budget): a warning near
+  // the cap, a pause at the cap, and how the pause ended.
+  | {
+      type: 'budget'
+      state: 'warning' | 'exceeded' | 'resumed' | 'rejected' | string
+      spentUSD: string
+      capUSD: string
+    }
   | {
       type: 'truncation'
       provider?: string
