@@ -59,6 +59,8 @@ type stubGateway struct {
 	// providerConflicts makes the next N DeleteProviders calls fail as the
 	// gateway does while a sandbox being deleted still holds the provider.
 	providerConflicts int
+	// execFn is what Exec does; nil makes it fail.
+	execFn func(ctx context.Context, sandbox string, command []string, opts openshell.ExecOptions) (*openshell.ExecResult, error)
 }
 
 func newStubGateway() *stubGateway {
@@ -637,6 +639,15 @@ func (g *stubGateway) removeDraft(sandbox, chunkID string) {
 		}
 	}
 	g.drafts[sandbox] = keep
+}
+
+// Exec implements openshell.Gateway by delegating to the test's execFn, which
+// defaults to failing: tests that run commands say what they return.
+func (g *stubGateway) Exec(ctx context.Context, sandbox string, command []string, opts openshell.ExecOptions) (*openshell.ExecResult, error) {
+	if g.execFn == nil {
+		return nil, fmt.Errorf("stub gateway: no exec behavior set")
+	}
+	return g.execFn(ctx, sandbox, command, opts)
 }
 
 func (g *stubGateway) Decisions(_ context.Context, sandbox string, since time.Time) ([]openshell.Decision, error) {

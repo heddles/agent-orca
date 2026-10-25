@@ -136,20 +136,23 @@ func CompilePolicy(routerHost string, sb *agentorcav1alpha1.SandboxSpec, tools [
 		Filesystem: &osv1.FilesystemPolicy{IncludeWorkdir: true},
 		// The kernel must support Landlock: a silent best_effort fallback would
 		// drop the filesystem rules without telling anyone.
-		Landlock: &osv1.LandlockPolicy{Compatibility: "hard_requirement"},
-		NetworkPolicies: map[string]osv1.NetworkPolicyRule{
-			"agentorca-router": {
-				Name: "agentorca-router",
-				Endpoints: []osv1.PolicyNetworkEndpoint{{
-					Host:        routerHost,
-					Ports:       slices.Clone(RouterPorts),
-					Protocol:    "rest",
-					Enforcement: enforcement,
-					Access:      osv1.NetworkAccessPresetFull,
-				}},
-				Binaries: []osv1.PolicyNetworkBinary{{Path: anyBinary}},
-			},
-		},
+		Landlock:        &osv1.LandlockPolicy{Compatibility: "hard_requirement"},
+		NetworkPolicies: map[string]osv1.NetworkPolicyRule{},
+	}
+	// A sandbox with no router (a workflow's idle sandbox, before an agent step
+	// brings one) has no router rule.
+	if routerHost != "" {
+		policy.NetworkPolicies["agentorca-router"] = osv1.NetworkPolicyRule{
+			Name: "agentorca-router",
+			Endpoints: []osv1.PolicyNetworkEndpoint{{
+				Host:        routerHost,
+				Ports:       slices.Clone(RouterPorts),
+				Protocol:    "rest",
+				Enforcement: enforcement,
+				Access:      osv1.NetworkAccessPresetFull,
+			}},
+			Binaries: []osv1.PolicyNetworkBinary{{Path: anyBinary}},
+		}
 	}
 	// OpenShell rejects a policy in which endpoints matching the same request
 	// disagree on credential settings, so a host:port that carries a credential
