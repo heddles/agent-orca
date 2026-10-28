@@ -206,7 +206,10 @@ spec:
 
 		res := postChatCompletion(localPort, token)
 		Expect(res.Status).To(Equal(200))
-		Expect(res.Body).To(ContainSubstring("ok from strong"))
+		// The fake streams its reply in small chunks ("ok from stro", "ng"), so the
+		// raw body never holds it whole: check the stream ran to a clean end.
+		Expect(res.Body).To(ContainSubstring(`"finish_reason":"stop"`))
+		Expect(res.Body).To(ContainSubstring("[DONE]"))
 
 		// The router batches events and flushes every couple of seconds.
 		query := fmt.Sprintf("select count(*) from routing_events where run_name='%s' and provider='e2e-fake-strong' and path='rule:weighted' and prompt_tokens>0 and cost_usd>0 and ttft_ms is not null", runName)
