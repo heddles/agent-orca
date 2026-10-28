@@ -23,6 +23,7 @@ const PHASE_LABEL: Record<string, string> = {
   Cancelled: 'Cancelled',
   HandedOff: 'Handed Off',
   WaitingForInput: 'Waiting for Input',
+  WaitingForApproval: 'Waiting for Approval',
 }
 
 export function StatusBadge({ phase, pulse }: Props) {

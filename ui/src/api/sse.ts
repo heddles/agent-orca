@@ -725,6 +725,13 @@ export interface BudgetRequestDetails {
   description?: string
 }
 
+/** What a workflow's approval step asks, as stored in its approval's details. */
+export interface WorkflowGateDetails {
+  workflow?: string
+  step?: string
+  message?: string
+}
+
 /** What a gated tool call asks for, as stored in a tool approval's details. */
 export interface ToolRequestDetails {
   tool?: string
@@ -742,7 +749,7 @@ export interface Approval {
   runName: string
   kind: string
   summary: string
-  details?: EgressRequestDetails & BudgetRequestDetails & ToolRequestDetails
+  details?: EgressRequestDetails & BudgetRequestDetails & ToolRequestDetails & WorkflowGateDetails
   approverGroups: string[]
   status: 'pending' | 'approved' | 'rejected' | 'expired' | 'withdrawn'
   requestedAt: string

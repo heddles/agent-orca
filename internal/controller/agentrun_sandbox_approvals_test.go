@@ -91,6 +91,15 @@ func (m *memApprovals) MarkApprovalApplied(_ context.Context, id string) error {
 
 func (m *memApprovals) WithdrawRunApprovals(context.Context, string, string) error { return nil }
 
+func (m *memApprovals) WithdrawBySourcePrefix(_ context.Context, kind, prefix, reason string) error {
+	for i := range m.rows {
+		if m.rows[i].Kind == kind && strings.HasPrefix(m.rows[i].SourceKey, prefix) && m.rows[i].Status == postgresql.ApprovalPending {
+			m.rows[i].Status, m.rows[i].Reason = postgresql.ApprovalWithdrawn, reason
+		}
+	}
+	return nil
+}
+
 func chunk(id, host, binary, notes string) osv1.PolicyChunk {
 	return osv1.PolicyChunk{
 		ID: id, Status: "pending", RuleName: "allow_" + host, Binary: binary, SecurityNotes: notes,

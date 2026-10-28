@@ -542,8 +542,12 @@ func main() {
 	}
 
 	if err := (&controller.AgentWorkflowReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:            mgr.GetClient(),
+		Scheme:            mgr.GetScheme(),
+		K8s:               k8sClient,
+		Approvals:         approvals,
+		ApprovalNotifier:  approvalNotifier,
+		AllowedRegistries: allowedRegistries,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "AgentWorkflow")
 		os.Exit(1)

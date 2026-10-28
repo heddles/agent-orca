@@ -57,6 +57,7 @@ type ApprovalStore interface {
 	DecideApproval(ctx context.Context, id, status, by, reason string) (postgresql.Approval, error)
 	MarkApprovalApplied(ctx context.Context, id string) error
 	WithdrawRunApprovals(ctx context.Context, namespace, runName string) error
+	WithdrawBySourcePrefix(ctx context.Context, kind, prefix, reason string) error
 }
 
 // egressRequest is the approval's details: what the sandbox asked for.

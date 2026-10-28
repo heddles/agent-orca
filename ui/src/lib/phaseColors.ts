@@ -13,6 +13,7 @@ export const PHASE_COLOR: Record<string, string> = {
   Paused:          '#64748b',
   Template:        '#64748b',
   WaitingForInput: '#f59e0b',
+  WaitingForApproval: '#f59e0b',
 }
 
 /** Full badge style (background tint + text color) per phase. */
@@ -28,4 +29,5 @@ export const PHASE_STYLE: Record<string, React.CSSProperties> = {
   Skipped:         { background: 'rgba(167,139,250,.12)', color: '#a78bfa' },
   HandedOff:       { background: 'rgba(167,139,250,.12)', color: '#a78bfa' },
   WaitingForInput: { background: 'rgba(245,158,11,.12)',  color: '#f59e0b' },
+  WaitingForApproval: { background: 'rgba(245,158,11,.12)',  color: '#f59e0b' },
 }

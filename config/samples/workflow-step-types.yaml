@@ -1,0 +1,48 @@
+# A pipeline that mixes the three step types (docs/agentworkflow.md#step-types):
+# an agent writes a change plan, a container step runs a deterministic check on it,
+# and a person approves before the last step. The agent and images are examples:
+# create the agent first and substitute images you have.
+apiVersion: agentorca.agentorca.io/v1alpha1
+kind: AgentWorkflow
+metadata:
+  name: plan-check-approve
+  namespace: agent-orca-system
+spec:
+  timeout: 6h
+  steps:
+    - name: plan
+      agentRef: planner
+      input: "Write a short rollout plan for upgrading the cache layer."
+
+    # A job whose result must not depend on a model. Non-root, read-only root filesystem,
+    # no network once the cluster's policy is programmed (a second or two after start);
+    # /tmp and /work are scratch. Pass data in env, not in args.
+    - name: lint
+      type: container
+      dependsOn: [plan]
+      container:
+        image: busybox:1.36
+        command: [sh, -c, 'test -n "$PLAN" && echo "plan has ${#PLAN} characters"']
+        env:
+          - {name: PLAN, value: "{{steps.plan.output}}"}
+
+    # A human gate. The approver sees the message in the Approvals tab.
+    - name: gate
+      type: approval
+      dependsOn: [lint]
+      approval:
+        message: |
+          The plan passed its check ({{steps.lint.output}}):
+
+          {{steps.plan.output}}
+
+          Go ahead?
+        approverGroups: [release-managers]
+        timeout: 4h
+
+    - name: announce
+      type: container
+      dependsOn: [gate]
+      container:
+        image: busybox:1.36
+        command: [echo, "approved, rolling out"]

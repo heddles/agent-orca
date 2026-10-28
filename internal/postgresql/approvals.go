@@ -45,6 +45,9 @@ const ApprovalKindEgress = "egress"
 // approver (GuardrailPolicy.spec.toolApproval).
 const ApprovalKindTool = "tool"
 
+// ApprovalKindWorkflow is an approval step of an AgentWorkflow waiting for a decision.
+const ApprovalKindWorkflow = "workflow"
+
 // ApprovalKindBudget is a request to raise a paused run's spend cap.
 const ApprovalKindBudget = "budget"
 
@@ -240,6 +243,15 @@ func (s *Store) WithdrawRunApprovals(ctx context.Context, namespace, runName str
 	_, err := s.db.ExecContext(ctx, `
 UPDATE approvals SET status = 'withdrawn', decided_at = NOW(), reason = 'the run ended'
 WHERE namespace = $1 AND run_name = $2 AND status = 'pending'`, namespace, runName)
+	return err
+}
+
+// WithdrawBySourcePrefix withdraws the pending approvals of one kind whose source
+// key starts with prefix (a workflow's approval steps, when it ends).
+func (s *Store) WithdrawBySourcePrefix(ctx context.Context, kind, prefix, reason string) error {
+	_, err := s.db.ExecContext(ctx, `
+UPDATE approvals SET status = 'withdrawn', decided_at = NOW(), reason = $3
+WHERE kind = $1 AND starts_with(source_key, $2) AND status = 'pending'`, kind, prefix, reason)
 	return err
 }
 
