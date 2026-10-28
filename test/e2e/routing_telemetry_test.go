@@ -130,7 +130,11 @@ spec:
 
 		By("creating the model wiring and a run")
 		deleteResource("agentrun", runName, ns)
-		Expect(applyYAML(fmt.Sprintf(`
+		// The operator was just rolled to pick up POSTGRES_DSN. The rollout reports
+		// ready slightly before its admission webhook answers, so the first apply
+		// can time out in the webhook; applying is idempotent, so retry until it
+		// goes through.
+		resources := fmt.Sprintf(`
 apiVersion: v1
 kind: Secret
 metadata: {name: e2e-routing-key, namespace: %[1]s}
@@ -176,7 +180,9 @@ metadata:
 spec:
   agentRef: e2e-routing-agent
   input: "routing telemetry e2e"
-`, ns, runName))).To(Succeed())
+`, ns, runName)
+		Eventually(func() error { return applyYAML(resources) }, 3*time.Minute, 5*time.Second).
+			Should(Succeed(), "the run's resources were never admitted")
 	})
 
 	AfterAll(func() {
