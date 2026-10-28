@@ -28,7 +28,7 @@ wasm_rel="bindings/go/internal/wasm/switchyard.wasm"
 
 # Scratch directory for downloads and the guest build; removed on exit.
 tmp=""
-trap 'rm -rf "${tmp:-}"' EXIT
+trap 'rm -rf "${tmp:-}" 2>/dev/null || true' EXIT
 
 die() { echo "switchyard-update: $*" >&2; exit 1; }
 
@@ -59,10 +59,13 @@ build_guest() {
   # Exact toolchain, upstream script otherwise unchanged.
   sed -i.bak "s/^channel = .*/channel = \"$rust_toolchain\"/" "$src/rust-toolchain.toml"
   rm -f "$src/rust-toolchain.toml.bak"
+  # The container builds as root; on Linux that leaves root-owned files the host
+  # cannot delete, so ownership goes back to the caller before it exits.
   docker run --rm --platform linux/amd64 \
     -v "$src":/switchyard -w /switchyard \
     -e CARGO_HOME=/usr/local/cargo \
-    "$rust_image" bash scripts/build-go-wasm.sh
+    -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
+    "$rust_image" bash -c 'status=0; bash scripts/build-go-wasm.sh || status=$?; chown -R "$HOST_UID:$HOST_GID" /switchyard; exit $status'
   [[ -s "$src/$wasm_rel" ]] || die "the build produced no $wasm_rel"
 }
 
