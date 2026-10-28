@@ -104,7 +104,7 @@ spec:
     - to:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: {{ .Values.openshell.gateway.namespace }}
+              kubernetes.io/metadata.name: {{ include "agent-orca.openshell.gatewayNamespace" . }}
       ports:
         - port: {{ .Values.openshell.gateway.port }}
           protocol: TCP

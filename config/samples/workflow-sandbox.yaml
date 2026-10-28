@@ -10,13 +10,13 @@ spec:
   timeout: 6h
   sandbox:
     image: ghcr.io/heddles/agent-orca/dev-sandbox:latest
-    classRef: factory-writer
+    # classRef: factory-writer
     repo: heddles/agent-orca
     ref: main
     branch: factory/ticket-42
   steps:
     - name: implement
-      agentRef: coder
+      agentRef: senior-programmer
       input: Fix the failing tests and leave the change on the current branch.
 
     - name: test
@@ -27,7 +27,7 @@ spec:
         command: [make, test]
 
     - name: verify
-      agentRef: verifier
+      agentRef: senior-programmer
       sandbox: fresh
       dependsOn: [test]
       input: Independently verify the diff and test evidence at this commit.

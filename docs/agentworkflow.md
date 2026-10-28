@@ -268,8 +268,10 @@ credential providers through a finalizer.
 Each agent step still has its own `AgentRun`, router URL, router credential, budget, safeguards,
 and trace. The shared policy includes every declared agent's router and the union of its class,
 inline egress, filesystem, and tools; roles therefore share the merged egress for the sandbox's
-lifetime. A workflow-prefixed router rule also covers clarification continuations, while each
-router's Kubernetes `NetworkPolicy` admits only the workflow sandbox's supervisor.
+lifetime. The shared policy lists one literal router hostname per agent step (OpenShell resolves policy hosts
+ahead of time, so a wildcard cannot work). Dynamic steps and clarification continuations get generated
+run names that cannot be listed, so shared agents in a workflow should set `disableClarify: true`.
+Each router's Kubernetes `NetworkPolicy` admits only the workflow sandbox's supervisor.
 
 Constraints and defaults:
 
@@ -288,11 +290,92 @@ Constraints and defaults:
 - A fresh sandbox is deleted after its step's output is captured. A clarification chain keeps it
   until the final continuation completes, preserving uncommitted work. The shared sandbox lives
   until workflow cleanup.
+- `push: true` gives the shared sandbox a write-scoped token so a step can push the work branch.
+  Fresh sandboxes are always read-only (clone and fetch only), so a reviewer can fetch what the
+  writer pushed but not change it. Rulesets on GitHub still limit which branches may be updated.
 - Templates carry `sandbox` to instances unless the instance overrides the whole block. Template
   parameters are not substituted into sandbox fields.
 
 Workflows without `spec.sandbox` keep the behavior described above: agent steps create their normal
 AgentRuns, and container steps use hardened pods.
+
+### Loops
+
+A step with a `loop` block is a loop gate. When it succeeds, the controller evaluates
+`loop.until`. If it is true, the workflow carries on. If not, the gate and every step
+from `loop.from` down to it (the loop body) go back to Pending and run again, up to
+`loop.maxIterations` passes in total (default 3, at most 10, the first pass counts).
+When the passes run out and `until` is still false, the gate fails.
+
+```yaml
+- name: implement
+  agentRef: programmer
+  input: |
+    Implement the ticket. Fix every problem the last pass found (empty on the first):
+    {{steps.test.output}} {{steps.review.output}}
+- name: test
+  type: container
+  dependsOn: [implement]
+  container: {image: my-sandbox, command: [sh, -c, "go test ./... && echo TESTS: PASS || echo TESTS: FAIL"]}
+- name: review
+  agentRef: reviewer
+  sandbox: fresh
+  dependsOn: [test]
+  loop:
+    from: implement
+    maxIterations: 4
+    until: >-
+      steps["test"].output.contains("TESTS: PASS") &&
+      steps["review"].output.startsWith("VERDICT: APPROVE")
+```
+
+- **Condition language.** Terms are `steps["x"].output.contains("t")`,
+  `.output.startsWith("t")`, `.output == "t"`, `.phase == "Succeeded"` and `!=`, each
+  optionally negated with `!`, joined with `&&`. There is no `||` or parentheses.
+- **Feedback.** A reset step keeps its previous output until the next pass replaces it,
+  so a body step can read `{{steps.<name>.output}}` of a step later in the body: the
+  verdict of the last pass. On the first pass those are empty.
+- **A failing step is not a loop.** A step that fails still fails the workflow. To loop on
+  a red test, have the step succeed and report the result in its output (as the example
+  does), then test that text in `until`.
+- **Early exit.** `loop.break` is a list of conditions in the same language as `until`.
+  When the gate succeeds, `until` is false and any `break` entry is true, the gate fails
+  at once instead of using up the remaining passes. Use it for a blocker another pass
+  cannot fix, which a step reports in its output, for example
+  `break: [steps["review"].output.startsWith("VERDICT: BLOCKED")]`.
+- **Names.** Attempt N (N ≥ 1) runs under `<step>-iN`: AgentRun `wf-implement-i1`, pod,
+  sandbox job and fresh sandbox. Earlier attempts' AgentRuns stay as history.
+  `status.steps[].iteration` shows the pass, `generation` counts every attempt (loop
+  passes and retries) and is what the names follow, and `priorSpendUSD` carries earlier
+  attempts' spend, so every attempt counts against `budgetCap`.
+
+### Retrying a step
+
+A failed step can be run again without restarting the workflow. Click **Retry step** in
+the UI (on a loop gate the button reads **Retry loop**), or annotate the workflow:
+
+```sh
+kubectl annotate agentworkflow <name> agentorca.io/retry-step=<step>   # comma-separate several
+```
+
+The step goes back to Pending under a new generation, so it does not reuse the names of
+the failed attempt, and the steps that depend on it carry on once it succeeds. Steps that
+already succeeded keep their results. A workflow that had already failed returns to
+Running, its timeout counts from the retry, and it sends its completion notice again when
+it ends. A shared sandbox, which is deleted when a workflow ends, is created again from
+`spec.sandbox`: work that was pushed to the branch is checked out again, work that was
+not is lost.
+
+A loop gate that its own loop failed (out of passes, or stopped by `break`) restarts the
+whole loop body with a full set of passes. A step that is not a loop failure reruns alone,
+in the pass it failed in. A workflow whose shared sandbox failed to start or was lost has no failed step; retry the step named `sandbox` (the UI shows **Retry sandbox**). Only a step in phase Failed can be retried; with
+`onStepFailure: continue` a failed step is Skipped and cannot.
+- **Rules.** `from` must be the gate or one of its dependencies. The body cannot contain
+  an approval step or another loop's gate (loops sit one after the other, not nested). A
+  malformed loop fails the workflow at start with the reason.
+- **Sandbox.** All passes use the same shared sandbox and checkout, so each pass builds on
+  the last one's work. A `sandbox: fresh` step gets a new sandbox each pass. A shared
+  sandbox's network policy lists every pass's router host up front, one per possible pass.
 
 ### Approval steps
 
@@ -325,6 +408,13 @@ request; it expires at its timeout.
 
 A step that is waiting does not hold up the others: parallel branches keep running, and steps whose
 dependencies are met start, while a gate waits.
+
+### Completion notice
+
+Annotate a workflow with `agentorca.io/notify-on-completion: "true"` to get one message when it
+ends: the outcome, the spend, the first failed step's reason, or the last step's output on success.
+It goes to the same incoming webhook as approval requests (the chart's `approvals.notifyWebhookSecret`)
+and is sent once; the operator records `agentorca.io/completion-notified` when it has gone out.
 
 ## Templates and instances
 

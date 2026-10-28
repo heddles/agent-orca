@@ -211,6 +211,14 @@ type WorkflowSandboxSpec struct {
 	// detached HEAD. Steps share this checkout; the branch is the recovery record.
 	// +optional
 	Branch string `json:"branch,omitempty"`
+
+	// Push lets steps in the shared sandbox push to Repo (the installation token
+	// gets contents: write). Fresh sandboxes stay read-only: their git policy
+	// admits clone and fetch only, so a verifier or reviewer can fetch what the
+	// writer pushed but cannot change it. Which branches a push may update is
+	// still governed by the repository's rulesets on GitHub.
+	// +optional
+	Push bool `json:"push,omitempty"`
 }
 
 // WorkflowSandboxPhase is the lifecycle of a workflow-owned sandbox.
@@ -333,6 +341,51 @@ type WorkflowStep struct {
 	// Callbacks fires webhooks when this step completes or fails.
 	// +optional
 	Callbacks *CallbackConfig `json:"callbacks,omitempty"`
+
+	// Loop makes this step the gate of a loop: when it succeeds and loop.until is
+	// false, the steps from loop.from through this one run again. Agent and container
+	// steps only; approval steps cannot be inside a loop body.
+	// +optional
+	Loop *WorkflowLoop `json:"loop,omitempty"`
+}
+
+// WorkflowLoop re-runs a group of steps until a condition on the gate step holds.
+// The body is loop.from, the gate (the step carrying the loop), and every step
+// between them in the dependency graph. When the gate succeeds with until false,
+// every body step goes back to Pending and runs again. Their previous outputs stay
+// readable as {{steps.<name>.output}} until they are replaced, so a body step can
+// be told what the last pass found wrong. Each pass runs under its own AgentRun,
+// pod, job and sandbox names; earlier passes remain as history.
+// +kubebuilder:validation:XValidation:rule="size(self.until) > 0 && size(self.from) > 0",message="a loop needs from and until"
+type WorkflowLoop struct {
+	// From is the first step of the loop body: the gate, or one of its ancestors.
+	// +kubebuilder:validation:Pattern=`^[a-z0-9][a-z0-9\-]*$`
+	From string `json:"from"`
+
+	// Until is evaluated each time the gate succeeds; the loop ends when it is
+	// true. Forms: steps["x"].output.contains("text"), steps["x"].output.startsWith("text"),
+	// steps["x"].output == "text" and steps["x"].phase == "Succeeded", each optionally
+	// negated with a leading !, and combined with && (no parentheses or ||).
+	// +kubebuilder:validation:MinLength=1
+	Until string `json:"until"`
+
+	// MaxIterations is the most times the body may run in total (the first pass counts).
+	// When the gate is still not satisfied after that, the gate fails and so does the
+	// workflow, unless onStepFailure is continue.
+	// +kubebuilder:validation:Minimum=2
+	// +kubebuilder:validation:Maximum=10
+	// +kubebuilder:default=3
+	// +optional
+	MaxIterations int32 `json:"maxIterations,omitempty"`
+
+	// Break ends the loop early with a failed gate. Each entry is a condition in the
+	// same form as until; the first one that is true, checked when the gate has
+	// succeeded and until is not yet true, stops the loop instead of sending the
+	// body back. Use it for a blocker another pass cannot fix, such as a step that
+	// reports it needs a human.
+	// +kubebuilder:validation:MaxItems=5
+	// +optional
+	Break []string `json:"break,omitempty"`
 }
 
 // ContainerStep is a deterministic job run to completion in its own pod or in a
@@ -474,9 +527,25 @@ type WorkflowStepStatus struct {
 	// +optional
 	Output string `json:"output,omitempty"`
 
-	// SpendUSD is the USD spend recorded on the step's AgentRun.
+	// SpendUSD is the USD spend recorded on the step's current AgentRun.
 	// +optional
 	SpendUSD string `json:"spendUSD,omitempty"`
+
+	// Iteration is how many times the step's loop has sent it back: 0 on the first
+	// pass. Names of the step's runs, pods, jobs and sandboxes carry it from pass 1.
+	// +optional
+	Iteration int32 `json:"iteration,omitempty"`
+
+	// Generation numbers the attempts at this step, counting loop passes and
+	// retries. Names of the step's runs, pods, jobs and sandboxes carry it, so an
+	// attempt never reuses what an earlier one left behind. It is at least Iteration.
+	// +optional
+	Generation int32 `json:"generation,omitempty"`
+
+	// PriorSpendUSD is the spend of the passes before the current one, so a loop
+	// still counts against the workflow budget.
+	// +optional
+	PriorSpendUSD string `json:"priorSpendUSD,omitempty"`
 
 	// FailureReason is a human-readable explanation when Phase is Failed.
 	// +optional

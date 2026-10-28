@@ -37,20 +37,36 @@ import (
 
 var errWorkflowAgentUnusable = errors.New("workflow agent unusable")
 
-func workflowAgentRunName(wf *agentorcav1alpha1.AgentWorkflow, step *agentorcav1alpha1.WorkflowStep) string {
-	return fmt.Sprintf("%s-%s", wf.Name, step.Name)
+func workflowAgentRunName(wf *agentorcav1alpha1.AgentWorkflow, step *agentorcav1alpha1.WorkflowStep, iteration int32) string {
+	return fmt.Sprintf("%s-%s", wf.Name, iterStepName(step.Name, iteration))
 }
 
-// workflowRouterWildcard covers every AgentRun router of this workflow,
-// including the generated names of clarification continuations. OpenShell
-// 0.1.5 accepts a single wildcard in the first DNS label; no other router or
-// cluster service matches this workflow-prefixed name.
-func (r *AgentWorkflowReconciler) workflowRouterWildcard(wf *agentorcav1alpha1.AgentWorkflow) string {
+// workflowRouterHost is the router Service hostname of one step's AgentRun, as
+// seen from the sandbox. It is a literal name: OpenShell resolves policy hosts
+// ahead of time, and a wildcard host has no mapping, so the supervisor refuses
+// to resolve any name it matches (policy_dns_no_valid_address).
+func (r *AgentWorkflowReconciler) workflowRouterHost(wf *agentorcav1alpha1.AgentWorkflow, step *agentorcav1alpha1.WorkflowStep, iteration int32) string {
 	domain := r.ClusterDomain
 	if domain == "" {
 		domain = "cluster.local"
 	}
-	return fmt.Sprintf("agentorca-router-%s-*.%s.svc.%s", wf.Name, wf.Namespace, domain)
+	return fmt.Sprintf("agentorca-router-%s.%s.svc.%s", workflowAgentRunName(wf, step, iteration), wf.Namespace, domain)
+}
+
+// workflowSharedRouterHosts lists the router hostnames of every agent step that
+// runs in the shared sandbox. Dynamic (adaptive) steps and clarification
+// continuations get generated run names and cannot be listed ahead of time.
+func (r *AgentWorkflowReconciler) workflowSharedRouterHosts(wf *agentorcav1alpha1.AgentWorkflow) []string {
+	var hosts []string
+	for i := range wf.Spec.Steps {
+		step := &wf.Spec.Steps[i]
+		if stepType(step) == agentorcav1alpha1.WorkflowStepTypeAgent && step.Sandbox != agentorcav1alpha1.WorkflowStepSandboxFresh {
+			for pass := int32(0); pass < workflowStepPasses(wf, step); pass++ {
+				hosts = append(hosts, r.workflowRouterHost(wf, step, pass))
+			}
+		}
+	}
+	return hosts
 }
 
 func workflowAgentStep(wf *agentorcav1alpha1.AgentWorkflow, step *agentorcav1alpha1.WorkflowStep) *agentorcav1alpha1.AgentRun {
@@ -58,7 +74,7 @@ func workflowAgentStep(wf *agentorcav1alpha1.AgentWorkflow, step *agentorcav1alp
 	name := ""
 	labels := map[string]string{labelWorkflow: wf.Name}
 	if step != nil {
-		name = workflowAgentRunName(wf, step)
+		name = workflowAgentRunName(wf, step, 0)
 		labels[labelWorkflowStep] = step.Name
 	}
 	return &agentorcav1alpha1.AgentRun{
@@ -175,7 +191,7 @@ func (r *AgentWorkflowReconciler) mergeWorkflowAgentPolicies(
 // freshAgentSandboxSpec builds a dedicated Agent image with the union of the
 // workflow and Agent classes. Resources default from the workflow class and
 // may be overridden by the Agent; the Agent class has the final placement.
-func (r *AgentWorkflowReconciler) freshAgentSandboxSpec(ctx context.Context, wf *agentorcav1alpha1.AgentWorkflow, step *agentorcav1alpha1.WorkflowStep) (*osv1.SandboxSpec, error) {
+func (r *AgentWorkflowReconciler) freshAgentSandboxSpec(ctx context.Context, wf *agentorcav1alpha1.AgentWorkflow, step *agentorcav1alpha1.WorkflowStep, iteration int32) (*osv1.SandboxSpec, error) {
 	agent, err := r.workflowAgent(ctx, wf, step, step.AgentRef)
 	if err != nil {
 		return nil, err
@@ -207,7 +223,7 @@ func (r *AgentWorkflowReconciler) freshAgentSandboxSpec(ctx context.Context, wf 
 	agent.Spec.Runtime.Command = []string{"sh", "-c", `while :; do sleep 3600; done`}
 	agent.Spec.Runtime.Args = nil
 	return openshell.BuildSpec(openshell.SpecInput{
-		Agent: agent, RouterHost: r.workflowRouterWildcard(wf), Env: env,
+		Agent: agent, RouterHost: r.workflowRouterHost(wf, step, iteration), Env: env,
 		Tools: tools, Providers: providers, Placement: placement, Git: git,
 	}), nil
 }
@@ -225,7 +241,7 @@ func (r *AgentWorkflowReconciler) startFreshSandboxAgentStep(ctx context.Context
 		finishStep(wf, ss, false, "", fmt.Sprintf("image rejected: %v", err))
 		return nil
 	}
-	spec, err := r.freshAgentSandboxSpec(ctx, wf, step)
+	spec, err := r.freshAgentSandboxSpec(ctx, wf, step, ss.NameGeneration())
 	if err != nil {
 		if errors.Is(err, errSandboxClassUnusable) || errors.Is(err, errWorkflowAgentUnusable) {
 			finishStep(wf, ss, false, "", err.Error())
@@ -233,7 +249,7 @@ func (r *AgentWorkflowReconciler) startFreshSandboxAgentStep(ctx context.Context
 		}
 		return err
 	}
-	name := openshell.WorkflowStepSandboxName(wf.Namespace, wf.Name, step.Name)
+	name := openshell.WorkflowStepSandboxName(wf.Namespace, wf.Name, iterStepName(step.Name, ss.NameGeneration()))
 	labels := workflowSandboxLabels(wf)
 	labels[labelWorkflowStep] = step.Name
 	sb, err := r.Sandboxes.Create(ctx, name, spec, labels)
@@ -246,7 +262,7 @@ func (r *AgentWorkflowReconciler) startFreshSandboxAgentStep(ctx context.Context
 	}
 	now := metav1.Now()
 	ss.Phase = agentorcav1alpha1.WorkflowStepPhaseRunning
-	ss.JobID = workflowStepJobID(wf, step)
+	ss.JobID = workflowStepJobID(wf, step, ss.NameGeneration())
 	ss.StartTime = &now
 	ss.Sandbox = &agentorcav1alpha1.WorkflowSandboxStatus{Name: name, ID: sb.ID, Phase: agentorcav1alpha1.WorkflowSandboxPhaseProvisioning}
 	markWorkflowStarted(wf, now)

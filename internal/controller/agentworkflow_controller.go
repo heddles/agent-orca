@@ -52,6 +52,9 @@ type AgentWorkflowReconciler struct {
 	Approvals ApprovalStore
 	// ApprovalNotifier tells approvers about a new approval step. Optional.
 	ApprovalNotifier ApprovalNotifier
+	// CompletionNotifier announces workflows that opted in with the
+	// notify-on-completion annotation when they finish. Optional.
+	CompletionNotifier TextNotifier
 	// AllowedRegistries restricts container steps' images, like the webhook does
 	// for agents and tools. Empty allows any.
 	AllowedRegistries []string
@@ -100,10 +103,29 @@ func (r *AgentWorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{Requeue: true}, r.Update(ctx, &wf)
 	}
 
+	// A request to retry failed steps comes first: it can revive a workflow that
+	// already ended (agentworkflow_retry.go).
+	if wf.Annotations[agentorcav1alpha1.RetryStepAnnotation] != "" {
+		if r.applyStepRetries(ctx, &wf) {
+			if err := r.Status().Update(ctx, &wf); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+		return ctrl.Result{Requeue: true}, r.clearRetryRequest(ctx, &wf)
+	}
+
+	// Step spend is read from the runs again, because a run's final cost can land
+	// after the step copied it. For a workflow that has ended, that is the last
+	// chance to show its real cost.
+	if isWorkflowTerminal(wf.Status.Phase) && r.refreshWorkflowSpend(ctx, &wf) {
+		return ctrl.Result{}, r.Status().Update(ctx, &wf)
+	}
+
 	// Terminal workflows need no further execution, but their approvals and
 	// gateway-side sandboxes still need cleanup.
 	if isWorkflowTerminal(wf.Status.Phase) {
 		r.withdrawWorkflowApprovals(ctx, &wf)
+		r.notifyWorkflowCompletion(ctx, &wf)
 		return r.cleanupWorkflowSandbox(ctx, &wf)
 	}
 
@@ -185,6 +207,7 @@ func (r *AgentWorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	allSteps = append(allSteps, wf.Spec.Steps...)
 	allSteps = append(allSteps, wf.Status.DynamicSteps...)
 
+	r.refreshWorkflowSpend(ctx, &wf)
 	anyRunning := false
 	anyFailed := false
 
@@ -218,6 +241,14 @@ func (r *AgentWorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 				// for hours) would stall every parallel branch behind it.
 				anyRunning = true
 				continue
+			}
+			// A loop gate that just succeeded either ends its loop or sends the body
+			// back for another pass (agentworkflow_loop.go).
+			if ss.Phase == agentorcav1alpha1.WorkflowStepPhaseSucceeded && step.Loop != nil {
+				if advanceLoop(&wf, &allSteps[i], statusIndex) {
+					anyRunning = true
+					continue
+				}
 			}
 			// Step has transitioned — handle the new phase.
 			switch ss.Phase {
@@ -340,7 +371,7 @@ func (r *AgentWorkflowReconciler) startAgentStep(
 		}
 	}
 
-	runName := workflowAgentRunName(wf, step)
+	runName := workflowAgentRunName(wf, step, ss.NameGeneration())
 	run := &agentorcav1alpha1.AgentRun{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      runName,
@@ -378,7 +409,7 @@ func (r *AgentWorkflowReconciler) startAgentStep(
 		// Workflow step reruns are W5. An AgentRun must not independently rerun
 		// a job in a shared worktree after a failure.
 		run.Spec.RestartPolicy = &agentorcav1alpha1.AgentRunRestartPolicy{MaxRetries: 0}
-		ss.JobID = workflowStepJobID(wf, step)
+		ss.JobID = workflowStepJobID(wf, step, ss.NameGeneration())
 	}
 
 	// Set the workflow as owner so kubectl delete agentworkflow cascades.
@@ -539,7 +570,7 @@ func (r *AgentWorkflowReconciler) budgetExceeded(wf *agentorcav1alpha1.AgentWork
 	}
 	spent := 0.0
 	for _, ss := range wf.Status.Steps {
-		spent += parseFloatSafe(ss.SpendUSD)
+		spent += parseFloatSafe(ss.SpendUSD) + parseFloatSafe(ss.PriorSpendUSD)
 	}
 	if spent >= cap {
 		return fmt.Sprintf("workflow budget cap %.4f USD exceeded (spent %.4f USD)", cap, spent)
@@ -551,7 +582,7 @@ func (r *AgentWorkflowReconciler) budgetExceeded(wf *agentorcav1alpha1.AgentWork
 func (r *AgentWorkflowReconciler) sumSpend(steps []agentorcav1alpha1.WorkflowStepStatus) string {
 	total := 0.0
 	for _, ss := range steps {
-		total += parseFloatSafe(ss.SpendUSD)
+		total += parseFloatSafe(ss.SpendUSD) + parseFloatSafe(ss.PriorSpendUSD)
 	}
 	if total == 0 {
 		return ""
@@ -596,6 +627,72 @@ func evalCondition(condition string, index map[string]*agentorcav1alpha1.Workflo
 		}
 	}
 	return true, fmt.Errorf("unsupported condition expression: %q (only steps[\"name\"].phase == \"value\" is supported)", condition)
+}
+
+const (
+	// notifyOnCompletionAnnotation opts a workflow in to a message when it ends.
+	notifyOnCompletionAnnotation = "agentorca.io/notify-on-completion"
+	// completionNotifiedAnnotation records that the message went out.
+	completionNotifiedAnnotation = "agentorca.io/completion-notified"
+	annotationTrue               = "true"
+)
+
+// notifyWorkflowCompletion sends one message for a finished workflow that asked
+// for it. A failed send is retried on the next reconcile; the annotation is
+// written only after delivery.
+func (r *AgentWorkflowReconciler) notifyWorkflowCompletion(ctx context.Context, wf *agentorcav1alpha1.AgentWorkflow) {
+	if r.CompletionNotifier == nil || wf.Annotations[notifyOnCompletionAnnotation] != annotationTrue || wf.Annotations[completionNotifiedAnnotation] != "" {
+		return
+	}
+	logger := log.FromContext(ctx)
+	if err := r.CompletionNotifier.NotifyText(ctx, workflowCompletionMessage(wf)); err != nil {
+		logger.Error(err, "notifying workflow completion")
+		return
+	}
+	patch := client.MergeFrom(wf.DeepCopy())
+	if wf.Annotations == nil {
+		wf.Annotations = map[string]string{}
+	}
+	wf.Annotations[completionNotifiedAnnotation] = time.Now().UTC().Format(time.RFC3339)
+	if err := r.Patch(ctx, wf, patch); err != nil {
+		logger.Error(err, "recording workflow completion notice")
+	}
+}
+
+// workflowCompletionMessage names the outcome and, for a success, the last
+// step's output (the factory's last step reports the pull request).
+func workflowCompletionMessage(wf *agentorcav1alpha1.AgentWorkflow) string {
+	var b strings.Builder
+	if wf.Status.Phase == agentorcav1alpha1.AgentWorkflowPhaseSucceeded {
+		fmt.Fprintf(&b, ":white_check_mark: Workflow %s/%s finished", wf.Namespace, wf.Name)
+	} else {
+		fmt.Fprintf(&b, ":x: Workflow %s/%s %s", wf.Namespace, wf.Name, strings.ToLower(string(wf.Status.Phase)))
+	}
+	if wf.Status.TotalSpendUSD != "" {
+		fmt.Fprintf(&b, " (spend $%s)", wf.Status.TotalSpendUSD)
+	}
+	b.WriteString(".")
+	for _, ss := range wf.Status.Steps {
+		if ss.Phase == agentorcav1alpha1.WorkflowStepPhaseFailed {
+			fmt.Fprintf(&b, " Step %s failed: %s", ss.Name, truncateRunes(ss.FailureReason, 300))
+			return b.String()
+		}
+	}
+	if n := len(wf.Spec.Steps); n > 0 {
+		for _, ss := range wf.Status.Steps {
+			if ss.Name == wf.Spec.Steps[n-1].Name && ss.Output != "" {
+				fmt.Fprintf(&b, "\n%s", truncateRunes(ss.Output, 600))
+			}
+		}
+	}
+	return b.String()
+}
+
+func truncateRunes(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n]) + "…"
+	}
+	return s
 }
 
 func isWorkflowTerminal(phase agentorcav1alpha1.AgentWorkflowPhase) bool {

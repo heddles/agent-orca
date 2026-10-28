@@ -357,7 +357,7 @@ func TestWorkflowSharedAgentMergesPolicyAndCreatesSandboxRun(t *testing.T) {
 
 	name := sharedSandboxName(wf)
 	router := gw.specs[name].Policy.NetworkPolicies["agentorca-router"]
-	if len(router.Endpoints) != 1 || router.Endpoints[0].Host != "agentorca-router-wf-*.default.svc.cluster.local" {
+	if len(router.Endpoints) != 1 || router.Endpoints[0].Host != "agentorca-router-wf-implement.default.svc.cluster.local" {
 		t.Errorf("router endpoints = %+v", router.Endpoints)
 	}
 	foundAgentEgress := false
@@ -512,6 +512,18 @@ func TestWorkflowSandboxClassAndGitCredentials(t *testing.T) {
 	}
 }
 
+func TestWorkflowSandboxPushMintsWriteToken(t *testing.T) {
+	wf := workflowWithSandbox(sandboxContainerStep("test", "ghcr.io/heddles/dev-sandbox:1"))
+	wf.Spec.Sandbox.Push = true
+	r, _, _, _ := sandboxWorkflowReconciler(t, wf)
+	minter := &stubMinter{ttl: time.Hour}
+	r.GitHubApp = minter
+	reconcileWorkflow(t, r, "wf")
+	if len(minter.reqs) != 1 || minter.reqs[0].Permissions["contents"] != "write" {
+		t.Errorf("token requests = %+v, want contents: write", minter.reqs)
+	}
+}
+
 func equalTokenRequest(a, b githubapp.TokenRequest) bool {
 	if strings.Join(a.Repositories, ",") != strings.Join(b.Repositories, ",") || len(a.Permissions) != len(b.Permissions) {
 		return false
@@ -573,5 +585,39 @@ func TestWorkflowSandboxValidation(t *testing.T) {
 				t.Errorf("problems = %v, want one containing %q", problems, tc.want)
 			}
 		})
+	}
+}
+
+type recordingTextNotifier struct{ texts []string }
+
+func (n *recordingTextNotifier) NotifyText(_ context.Context, text string) error {
+	n.texts = append(n.texts, text)
+	return nil
+}
+
+func TestWorkflowCompletionNotifiesOnceWhenOptedIn(t *testing.T) {
+	optedIn := workflowWithSandbox(sandboxContainerStep("test", "ghcr.io/heddles/dev-sandbox:1"))
+	optedIn.Annotations = map[string]string{notifyOnCompletionAnnotation: "true"}
+	optedIn.Status.Phase = agentorcav1alpha1.AgentWorkflowPhaseFailed
+	optedIn.Status.Steps = []agentorcav1alpha1.WorkflowStepStatus{
+		{Name: "test", Phase: agentorcav1alpha1.WorkflowStepPhaseFailed, FailureReason: "exit 2"},
+	}
+	r, _, _, _ := sandboxWorkflowReconciler(t, optedIn)
+	notifier := &recordingTextNotifier{}
+	r.CompletionNotifier = notifier
+	reconcileWorkflow(t, r, "wf")
+	reconcileWorkflow(t, r, "wf")
+	if len(notifier.texts) != 1 || !strings.Contains(notifier.texts[0], "Step test failed: exit 2") {
+		t.Errorf("notifications = %q, want one naming the failed step", notifier.texts)
+	}
+
+	quiet := workflowWithSandbox(sandboxContainerStep("test", "ghcr.io/heddles/dev-sandbox:1"))
+	quiet.Status.Phase = agentorcav1alpha1.AgentWorkflowPhaseSucceeded
+	r, _, _, _ = sandboxWorkflowReconciler(t, quiet)
+	notifier = &recordingTextNotifier{}
+	r.CompletionNotifier = notifier
+	reconcileWorkflow(t, r, "wf")
+	if len(notifier.texts) != 0 {
+		t.Errorf("a workflow without the annotation was announced: %q", notifier.texts)
 	}
 }

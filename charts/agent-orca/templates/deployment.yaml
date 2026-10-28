@@ -151,11 +151,11 @@ spec:
             {{- end }}
             {{- if .Values.openshell.enabled }}
             - name: OPENSHELL_GATEWAY_ADDRESS
-              value: {{ .Values.openshell.gateway.address | quote }}
+              value: {{ include "agent-orca.openshell.gatewayAddress" . | quote }}
             - name: OPENSHELL_WORKSPACE
               value: {{ .Values.openshell.workspace | quote }}
             - name: OPENSHELL_SANDBOX_NAMESPACE
-              value: {{ .Values.openshell.sandboxNamespace | quote }}
+              value: {{ .Values.openshell.sandboxNamespace | default .Release.Namespace | quote }}
             {{- with .Values.openshell.placement }}
             {{- if or .nodeSelector .tolerations .runtimeClassName .priorityClassName }}
             {{- /* Label values are strings; --set turns "true" into a bool. */}}

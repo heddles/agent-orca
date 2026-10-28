@@ -95,6 +95,11 @@ type SpecInput struct {
 	Agent *agentorcav1alpha1.Agent
 	// RouterHost is the router Service hostname the workload's base URL names.
 	RouterHost string
+	// ExtraRouterHosts are further router Service hostnames the sandbox may
+	// reach: a workflow's shared sandbox serves one router per agent step. Each
+	// must be a literal name, since OpenShell resolves policy hosts ahead of time
+	// and refuses names it has no mapping for.
+	ExtraRouterHosts []string
 	// Env is the agent process environment, including the router base URL and
 	// the per-run router credential.
 	Env map[string]string
@@ -126,6 +131,7 @@ type ToolEndpoint struct {
 func BuildSpec(in SpecInput) *osv1.SandboxSpec {
 	rt := in.Agent.Spec.Runtime
 	policy := CompilePolicy(in.RouterHost, rt.Sandbox, in.Tools)
+	addRouterHosts(policy, rt.Sandbox, in.ExtraRouterHosts)
 	ApplyGitAccess(policy, in.Git)
 	return &osv1.SandboxSpec{
 		Template: &osv1.SandboxTemplate{
@@ -139,6 +145,31 @@ func BuildSpec(in SpecInput) *osv1.SandboxSpec {
 		Providers:     in.Providers,
 		Policy:        policy,
 	}
+}
+
+// addRouterHosts adds an endpoint to the router rule for each further host.
+func addRouterHosts(policy *osv1.SandboxPolicy, sb *agentorcav1alpha1.SandboxSpec, hosts []string) {
+	rule, ok := policy.NetworkPolicies["agentorca-router"]
+	if len(hosts) == 0 {
+		return
+	}
+	enforcement := osv1.NetworkEnforcementModeAudit
+	if sb != nil && sb.Enforcement == agentorcav1alpha1.SandboxEnforcementEnforce {
+		enforcement = osv1.NetworkEnforcementModeEnforce
+	}
+	if !ok {
+		rule = osv1.NetworkPolicyRule{Name: "agentorca-router", Binaries: []osv1.PolicyNetworkBinary{{Path: anyBinary}}}
+	}
+	for _, host := range hosts {
+		rule.Endpoints = append(rule.Endpoints, osv1.PolicyNetworkEndpoint{
+			Host:        host,
+			Ports:       slices.Clone(RouterPorts),
+			Protocol:    "rest",
+			Enforcement: enforcement,
+			Access:      osv1.NetworkAccessPresetFull,
+		})
+	}
+	policy.NetworkPolicies["agentorca-router"] = rule
 }
 
 // CompilePolicy builds the sandbox policy for an agent. The model-router is

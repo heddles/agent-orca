@@ -392,3 +392,15 @@ func TestSandboxEnvEncodesLineBreaks(t *testing.T) {
 		t.Errorf("exact copy = %q, %v", dec, err)
 	}
 }
+
+func TestBuildSpecExtraRouterHostsAreLiteralEndpoints(t *testing.T) {
+	agent := &agentorcav1alpha1.Agent{Spec: agentorcav1alpha1.AgentSpec{Runtime: agentorcav1alpha1.AgentRuntime{
+		OCIRef:  "ghcr.io/acme/coder:1.0",
+		Sandbox: &agentorcav1alpha1.SandboxSpec{},
+	}}}
+	spec := BuildSpec(SpecInput{Agent: agent, ExtraRouterHosts: []string{"agentorca-router-a.ns.svc.cluster.local", "agentorca-router-b.ns.svc.cluster.local"}})
+	rule := spec.Policy.NetworkPolicies["agentorca-router"]
+	if len(rule.Endpoints) != 2 || rule.Endpoints[0].Host != "agentorca-router-a.ns.svc.cluster.local" || rule.Endpoints[1].Host != "agentorca-router-b.ns.svc.cluster.local" {
+		t.Errorf("router endpoints = %+v", rule.Endpoints)
+	}
+}

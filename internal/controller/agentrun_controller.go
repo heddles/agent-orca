@@ -375,6 +375,16 @@ func (r *AgentRunReconciler) startRun(ctx context.Context, run *agentorcav1alpha
 			var sb *osv1.Sandbox
 			var err error
 			if run.Spec.WorkflowSandbox != nil {
+				// The sandbox already exists, so unlike ensureSandbox there is no
+				// creation time for the router to come up in: starting now would
+				// resolve a Service with no address and fail every restart at once.
+				ready, readyErr := r.routerPodReady(ctx, run.Namespace, routerPodName)
+				if readyErr != nil {
+					return ctrl.Result{}, readyErr
+				}
+				if !ready {
+					return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+				}
 				sb, err = r.ensureWorkflowAgentJob(ctx, run, agent, tokenSecretName, routerBaseURL)
 			} else {
 				sb, err = r.ensureSandbox(ctx, run, agent, tokenSecretName, routerBaseURL)
@@ -386,6 +396,12 @@ func (r *AgentRunReconciler) startRun(ctx context.Context, run *agentorcav1alpha
 				}
 				if osv1.IsInvalidArgument(err) || osv1.IsPermissionDenied(err) {
 					return r.failRun(ctx, run, fmt.Sprintf("creating sandbox: %v", err))
+				}
+				// A workflow sandbox belongs to the workflow, so a restart cannot
+				// recreate it. Retrying would error forever and the step would never
+				// finish; failing lets the workflow see the step end.
+				if run.Spec.WorkflowSandbox != nil && osv1.IsNotFound(err) {
+					return r.failRun(ctx, run, fmt.Sprintf("the workflow sandbox no longer exists: %v", err))
 				}
 				return ctrl.Result{}, fmt.Errorf("creating sandbox: %w", err)
 			}
@@ -714,6 +730,21 @@ func looksLikeClarifyQuestion(text string) bool {
 	}
 
 	return false
+}
+
+// routerPodReady reports whether the run's router pod is Ready, so its Service
+// has an address behind it.
+func (r *AgentRunReconciler) routerPodReady(ctx context.Context, namespace, name string) (bool, error) {
+	var pod corev1.Pod
+	if err := r.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &pod); err != nil {
+		return false, client.IgnoreNotFound(err)
+	}
+	for _, c := range pod.Status.Conditions {
+		if c.Type == corev1.PodReady {
+			return c.Status == corev1.ConditionTrue, nil
+		}
+	}
+	return false, nil
 }
 
 func (r *AgentRunReconciler) handlePodFailure(ctx context.Context, run *agentorcav1alpha1.AgentRun, agent *agentorcav1alpha1.Agent, reason string) (ctrl.Result, error) { //nolint:unparam

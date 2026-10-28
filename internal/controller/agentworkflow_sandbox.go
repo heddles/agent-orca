@@ -55,7 +55,11 @@ fi
 git clone --quiet --no-checkout "$REPO_URL" "$CHECKOUT_DIR"
 ref=${CHECKOUT_REF:-HEAD}
 git -C "$CHECKOUT_DIR" fetch --quiet origin "$ref"
-if [ -n "$CHECKOUT_BRANCH" ]; then
+if [ -n "$CHECKOUT_BRANCH" ] && [ "${CHECKOUT_RESUME:-}" = 1 ] &&
+   git -C "$CHECKOUT_DIR" ls-remote --exit-code --heads origin "$CHECKOUT_BRANCH" >/dev/null 2>&1; then
+  git -C "$CHECKOUT_DIR" fetch --quiet origin "$CHECKOUT_BRANCH"
+  git -C "$CHECKOUT_DIR" checkout --quiet -B "$CHECKOUT_BRANCH" FETCH_HEAD
+elif [ -n "$CHECKOUT_BRANCH" ]; then
   git -C "$CHECKOUT_DIR" checkout --quiet -B "$CHECKOUT_BRANCH" FETCH_HEAD
 else
   git -C "$CHECKOUT_DIR" checkout --quiet --detach FETCH_HEAD
@@ -161,12 +165,12 @@ func (r *AgentWorkflowReconciler) ensureWorkflowGit(ctx context.Context, wf *age
 	}
 	status := wf.Status.Sandbox
 	if status != nil && status.GitTokenExpiry != nil && time.Until(status.GitTokenExpiry.Time) > gitTokenRefreshBefore {
-		return &openshell.GitAccess{Repositories: []string{wf.Spec.Sandbox.Repo}, Provider: workflowGitProviderName(wf)}, nil
+		return &openshell.GitAccess{Repositories: []string{wf.Spec.Sandbox.Repo}, Push: wf.Spec.Sandbox.Push, Provider: workflowGitProviderName(wf)}, nil
 	}
 	if err := r.Sandboxes.EnsureProfile(ctx, openshell.GitProfile(wf.Namespace)); err != nil {
 		return nil, err
 	}
-	gh := &agentorcav1alpha1.SandboxGitHub{Repositories: []string{wf.Spec.Sandbox.Repo}}
+	gh := &agentorcav1alpha1.SandboxGitHub{Repositories: []string{wf.Spec.Sandbox.Repo}, Push: wf.Spec.Sandbox.Push}
 	tok, err := r.GitHubApp.InstallationToken(ctx, gitTokenRequest(gh))
 	if err != nil {
 		return nil, fmt.Errorf("minting the workflow's GitHub token: %w", err)
@@ -181,7 +185,7 @@ func (r *AgentWorkflowReconciler) ensureWorkflowGit(ctx context.Context, wf *age
 	}
 	expiry := metav1.NewTime(tok.ExpiresAt)
 	wf.Status.Sandbox.GitTokenExpiry = &expiry
-	return &openshell.GitAccess{Repositories: []string{wf.Spec.Sandbox.Repo}, Provider: workflowGitProviderName(wf)}, nil
+	return &openshell.GitAccess{Repositories: []string{wf.Spec.Sandbox.Repo}, Push: wf.Spec.Sandbox.Push, Provider: workflowGitProviderName(wf)}, nil
 }
 
 // ensureWorkflowSandbox creates and checks out the shared sandbox. Its status
@@ -231,12 +235,12 @@ func (r *AgentWorkflowReconciler) ensureWorkflowSandbox(ctx context.Context, wf 
 		maps.Copy(env, openshell.GitEnv())
 		providers = append(providers, git.Provider)
 	}
-	routerHost := ""
+	var routerHosts []string
 	if len(workflowPolicyAgents(wf)) > 0 {
-		routerHost = r.workflowRouterWildcard(wf)
+		routerHosts = r.workflowSharedRouterHosts(wf)
 	}
 	spec := openshell.BuildSpec(openshell.SpecInput{
-		Agent: agent, RouterHost: routerHost, Env: env,
+		Agent: agent, ExtraRouterHosts: routerHosts, Env: env,
 		Tools: tools, Providers: providers, Placement: placement, Git: git,
 	})
 	name := openshell.WorkflowSandboxName(wf.Namespace, wf.Name)
@@ -295,8 +299,20 @@ func (r *AgentWorkflowReconciler) ensureWorkflowSandbox(ctx context.Context, wf 
 	return r.ensureWorkflowCheckout(ctx, wf)
 }
 
+// workflowResumed reports whether a step has run more than once, which can only
+// have happened if the workflow's sandbox was provisioned again after a retry
+// (agentworkflow_retry.go). That sandbox continues from the pushed branch.
+func workflowResumed(wf *agentorcav1alpha1.AgentWorkflow) bool {
+	for i := range wf.Status.Steps {
+		if wf.Status.Steps[i].NameGeneration() > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *AgentWorkflowReconciler) ensureWorkflowCheckout(ctx context.Context, wf *agentorcav1alpha1.AgentWorkflow) (bool, ctrl.Result, error) {
-	ready, result, failure, err := r.ensureCheckout(ctx, wf.Status.Sandbox, wf.Spec.Sandbox.Repo, wf.Spec.Sandbox.Ref, wf.Spec.Sandbox.Branch)
+	ready, result, failure, err := r.ensureCheckout(ctx, wf.Status.Sandbox, wf.Spec.Sandbox.Repo, wf.Spec.Sandbox.Ref, wf.Spec.Sandbox.Branch, workflowResumed(wf))
 	if failure != "" {
 		r.failWorkflowSandbox(ctx, wf, failure)
 	}
@@ -310,6 +326,7 @@ func (r *AgentWorkflowReconciler) ensureCheckout(
 	ctx context.Context,
 	status *agentorcav1alpha1.WorkflowSandboxStatus,
 	repo, ref, branch string,
+	resume bool,
 ) (bool, ctrl.Result, string, error) {
 	st, err := openshell.PollJob(ctx, r.Sandboxes, status.Name, workflowCheckoutJobID)
 	if err != nil {
@@ -323,6 +340,10 @@ func (r *AgentWorkflowReconciler) ensureCheckout(
 			"CHECKOUT_REF":    ref,
 			"CHECKOUT_BRANCH": branch,
 			"CHECKOUT_DIR":    workflowCheckoutDir,
+		}
+		if resume {
+			// Continue from the branch's pushed work rather than the base ref.
+			env["CHECKOUT_RESUME"] = "1"
 		}
 		if err := openshell.StartJob(ctx, r.Sandboxes, status.Name, workflowCheckoutJobID, workflowCheckoutScript, env, ""); err != nil {
 			log.FromContext(ctx).Error(err, "starting a workflow checkout", "sandbox", status.Name)
@@ -361,26 +382,26 @@ func (r *AgentWorkflowReconciler) failWorkflowSandbox(ctx context.Context, wf *a
 	r.failWorkflow(ctx, wf, reason)
 }
 
-func workflowStepJobID(wf *agentorcav1alpha1.AgentWorkflow, step *agentorcav1alpha1.WorkflowStep) string {
-	return openshell.WorkflowJobName(wf.Namespace, fmt.Sprintf("%s-%s", wf.Name, step.Name))
+func workflowStepJobID(wf *agentorcav1alpha1.AgentWorkflow, step *agentorcav1alpha1.WorkflowStep, iteration int32) string {
+	return openshell.WorkflowJobName(wf.Namespace, fmt.Sprintf("%s-%s", wf.Name, iterStepName(step.Name, iteration)))
 }
 
 func (r *AgentWorkflowReconciler) startSandboxContainerStep(ctx context.Context, wf *agentorcav1alpha1.AgentWorkflow, step *agentorcav1alpha1.WorkflowStep, ss *agentorcav1alpha1.WorkflowStepStatus) error {
 	if step.Sandbox == agentorcav1alpha1.WorkflowStepSandboxFresh {
 		return r.startFreshSandboxContainerStep(ctx, wf, step, ss)
 	}
-	if err := r.startSandboxContainerJob(ctx, wf, step, wf.Status.Sandbox.Name); err != nil {
+	if err := r.startSandboxContainerJob(ctx, wf, step, ss.NameGeneration(), wf.Status.Sandbox.Name); err != nil {
 		return err
 	}
 	now := metav1.Now()
 	ss.Phase = agentorcav1alpha1.WorkflowStepPhaseRunning
-	ss.JobID = workflowStepJobID(wf, step)
+	ss.JobID = workflowStepJobID(wf, step, ss.NameGeneration())
 	ss.StartTime = &now
 	markWorkflowStarted(wf, now)
 	return nil
 }
 
-func (r *AgentWorkflowReconciler) startSandboxContainerJob(ctx context.Context, wf *agentorcav1alpha1.AgentWorkflow, step *agentorcav1alpha1.WorkflowStep, sandboxName string) error {
+func (r *AgentWorkflowReconciler) startSandboxContainerJob(ctx context.Context, wf *agentorcav1alpha1.AgentWorkflow, step *agentorcav1alpha1.WorkflowStep, iteration int32, sandboxName string) error {
 	c := step.Container
 	allStatuses := append(wf.Status.Steps, wf.Status.DynamicStepStatuses...)
 	env := map[string]string{
@@ -391,7 +412,7 @@ func (r *AgentWorkflowReconciler) startSandboxContainerJob(ctx context.Context, 
 	for _, e := range c.Env {
 		env[e.Name] = resolveTemplates(e.Value, allStatuses)
 	}
-	if err := openshell.StartCommandJob(ctx, r.Sandboxes, sandboxName, workflowStepJobID(wf, step), c.Command, c.Args, env, workflowCheckoutDir); err != nil {
+	if err := openshell.StartCommandJob(ctx, r.Sandboxes, sandboxName, workflowStepJobID(wf, step, iteration), c.Command, c.Args, env, workflowCheckoutDir); err != nil {
 		return fmt.Errorf("starting sandbox job for step %q: %w", step.Name, err)
 	}
 	return nil
@@ -427,7 +448,7 @@ func (r *AgentWorkflowReconciler) startFreshSandboxContainerStep(ctx context.Con
 		}
 		return err
 	}
-	name := openshell.WorkflowStepSandboxName(wf.Namespace, wf.Name, step.Name)
+	name := openshell.WorkflowStepSandboxName(wf.Namespace, wf.Name, iterStepName(step.Name, ss.NameGeneration()))
 	labels := workflowSandboxLabels(wf)
 	labels[labelWorkflowStep] = step.Name
 	sb, err := r.Sandboxes.Create(ctx, name, spec, labels)
@@ -440,7 +461,7 @@ func (r *AgentWorkflowReconciler) startFreshSandboxContainerStep(ctx context.Con
 	}
 	now := metav1.Now()
 	ss.Phase = agentorcav1alpha1.WorkflowStepPhaseRunning
-	ss.JobID = workflowStepJobID(wf, step)
+	ss.JobID = workflowStepJobID(wf, step, ss.NameGeneration())
 	ss.StartTime = &now
 	ss.Sandbox = &agentorcav1alpha1.WorkflowSandboxStatus{
 		Name: name, ID: sb.ID, Phase: agentorcav1alpha1.WorkflowSandboxPhaseProvisioning,
@@ -484,7 +505,7 @@ func (r *AgentWorkflowReconciler) ensureFreshStepSandbox(ctx context.Context, wf
 			}
 			return false, ctrl.Result{RequeueAfter: workflowPollInterval}, "", nil
 		}
-		ready, result, failure, err := r.ensureCheckout(ctx, status, wf.Spec.Sandbox.Repo, wf.Status.Sandbox.CheckoutSHA, wf.Spec.Sandbox.Branch)
+		ready, result, failure, err := r.ensureCheckout(ctx, status, wf.Spec.Sandbox.Repo, wf.Status.Sandbox.CheckoutSHA, wf.Spec.Sandbox.Branch, false)
 		if err != nil || failure != "" || !ready {
 			return ready, result, failure, err
 		}
@@ -515,7 +536,7 @@ func (r *AgentWorkflowReconciler) checkFreshSandboxContainerStep(ctx context.Con
 	if !ready {
 		return result, nil
 	}
-	if err := r.startSandboxContainerJob(ctx, wf, step, ss.Sandbox.Name); err != nil {
+	if err := r.startSandboxContainerJob(ctx, wf, step, ss.NameGeneration(), ss.Sandbox.Name); err != nil {
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: workflowPollInterval}, nil

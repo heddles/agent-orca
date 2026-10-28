@@ -76,6 +76,8 @@ func validateWorkflowStructure(steps []agentorcav1alpha1.WorkflowStep) []string 
 	if len(problems) == 0 {
 		if cycle := findCycle(steps); cycle != "" {
 			problems = append(problems, "the dependencies form a cycle: "+cycle)
+		} else {
+			problems = append(problems, validateWorkflowLoops(steps)...)
 		}
 	}
 	return problems

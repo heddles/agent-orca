@@ -448,8 +448,10 @@ func main() {
 		approvals = pgStore
 	}
 	var approvalNotifier controller.ApprovalNotifier
+	var completionNotifier controller.TextNotifier
 	if u := os.Getenv("APPROVALS_NOTIFY_WEBHOOK_URL"); u != "" {
-		approvalNotifier = &controller.WebhookApprovalNotifier{URL: u, UIURL: os.Getenv("APPROVALS_UI_URL")}
+		webhookNotifier := &controller.WebhookApprovalNotifier{URL: u, UIURL: os.Getenv("APPROVALS_UI_URL")}
+		approvalNotifier, completionNotifier = webhookNotifier, webhookNotifier
 	}
 	var gitHubApp controller.GitHubTokenMinter
 	if dir := os.Getenv("GITHUB_APP_DIR"); dir != "" {
@@ -542,16 +544,17 @@ func main() {
 	}
 
 	if err := (&controller.AgentWorkflowReconciler{
-		Client:            mgr.GetClient(),
-		Scheme:            mgr.GetScheme(),
-		K8s:               k8sClient,
-		Approvals:         approvals,
-		ApprovalNotifier:  approvalNotifier,
-		AllowedRegistries: allowedRegistries,
-		Sandboxes:         sandboxes,
-		SandboxPlacement:  sandboxPlacement,
-		GitHubApp:         gitHubApp,
-		ClusterDomain:     os.Getenv("CLUSTER_DOMAIN"),
+		Client:             mgr.GetClient(),
+		Scheme:             mgr.GetScheme(),
+		K8s:                k8sClient,
+		Approvals:          approvals,
+		ApprovalNotifier:   approvalNotifier,
+		CompletionNotifier: completionNotifier,
+		AllowedRegistries:  allowedRegistries,
+		Sandboxes:          sandboxes,
+		SandboxPlacement:   sandboxPlacement,
+		GitHubApp:          gitHubApp,
+		ClusterDomain:      os.Getenv("CLUSTER_DOMAIN"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "AgentWorkflow")
 		os.Exit(1)

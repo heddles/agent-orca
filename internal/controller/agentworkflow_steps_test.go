@@ -112,7 +112,7 @@ func podExists(cl client.Client, name string) bool {
 func lockedDownPod() *corev1.Pod {
 	wf := stepWorkflow(containerStep("build", "registry.example.com/tools/builder:1"))
 	wf.Spec.Steps[0].Container.Env = []agentorcav1alpha1.StepEnvVar{{Name: "TARGET", Value: "linux"}}
-	return buildStepPod(wf, &wf.Spec.Steps[0], wf.Spec.Steps[0].Container.Env, 90*time.Second)
+	return buildStepPod(wf, &wf.Spec.Steps[0], 0, wf.Spec.Steps[0].Container.Env, 90*time.Second)
 }
 
 func TestContainerStepPodHasNoAmbientAuthority(t *testing.T) {
@@ -179,7 +179,7 @@ func TestContainerStepOverrides(t *testing.T) {
 	user := int64(1500)
 	wf.Spec.Steps[0].Container.RunAsUser = &user
 	wf.Spec.Steps[0].Container.Resources = &corev1.ResourceRequirements{Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("2Gi")}}
-	pod := buildStepPod(wf, &wf.Spec.Steps[0], nil, 0)
+	pod := buildStepPod(wf, &wf.Spec.Steps[0], 0, nil, 0)
 	if *pod.Spec.SecurityContext.RunAsUser != 1500 || !*pod.Spec.SecurityContext.RunAsNonRoot {
 		t.Errorf("security context = %+v", pod.Spec.SecurityContext)
 	}

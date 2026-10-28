@@ -33,6 +33,11 @@ type ApprovalNotifier interface {
 	NotifyApproval(ctx context.Context, a postgresql.Approval) error
 }
 
+// TextNotifier posts a plain message to the same channel as approvals.
+type TextNotifier interface {
+	NotifyText(ctx context.Context, text string) error
+}
+
 // WebhookApprovalNotifier posts each new pending approval to an incoming
 // webhook. The body is Slack's incoming-webhook format ({"text": ...}) plus the
 // approval itself under "approval", so other receivers can use the fields.
@@ -45,7 +50,16 @@ type WebhookApprovalNotifier struct {
 
 // NotifyApproval implements ApprovalNotifier.
 func (n *WebhookApprovalNotifier) NotifyApproval(ctx context.Context, a postgresql.Approval) error {
-	body, err := json.Marshal(map[string]any{"text": approvalMessage(a, n.UIURL), "approval": a})
+	return n.post(ctx, map[string]any{"text": approvalMessage(a, n.UIURL), "approval": a})
+}
+
+// NotifyText implements TextNotifier.
+func (n *WebhookApprovalNotifier) NotifyText(ctx context.Context, text string) error {
+	return n.post(ctx, map[string]any{"text": text})
+}
+
+func (n *WebhookApprovalNotifier) post(ctx context.Context, payload map[string]any) error {
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
@@ -60,11 +74,11 @@ func (n *WebhookApprovalNotifier) NotifyApproval(ctx context.Context, a postgres
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("posting approval notification: %w", err)
+		return fmt.Errorf("posting notification: %w", err)
 	}
 	_ = resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		return fmt.Errorf("posting approval notification: %s", resp.Status)
+		return fmt.Errorf("posting notification: %s", resp.Status)
 	}
 	return nil
 }

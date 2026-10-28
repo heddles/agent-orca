@@ -360,8 +360,30 @@ export interface AgentWorkflowSummary {
   completionTime?: string
 }
 
+/** One run of a step. A step inside a loop has one per pass. */
+export interface WorkflowStepPass {
+  pass: number
+  agentRunRef: string
+  phase: string
+  output?: string
+  spendUSD?: string
+}
+
+/** A loop: the steps that repeat, what ends it, and how far along it is. */
+export interface WorkflowLoopSummary {
+  id: string
+  gate: string
+  steps: string[]
+  until: string
+  maxIterations: number
+  /** 1-based pass the loop is on. */
+  pass: number
+  state: 'pending' | 'running' | 'repeating' | 'satisfied' | 'exhausted'
+}
+
 export interface WorkflowStepSummary {
   name: string
+  type?: string
   agentRef: string
   input?: string
   phase: string
@@ -371,10 +393,22 @@ export interface WorkflowStepSummary {
   failureReason?: string
   startTime?: string
   completionTime?: string
+  /** 0 on the first pass; set once a loop has sent the step back. */
+  iteration?: number
+  /** Id of the loop this step repeats in, if any. */
+  loop?: string
+  /** The output is from the previous pass: the step is queued to run again. */
+  staleOutput?: boolean
+  passes?: WorkflowStepPass[]
 }
 
 export interface AgentWorkflowDetail extends AgentWorkflowSummary {
   steps: WorkflowStepSummary[]
+  loops?: WorkflowLoopSummary[]
+  /** The shared sandbox never came up or was lost; retry "sandbox" to provision it again. */
+  sandboxFailed?: boolean
+  /** Phase of the workflow's shared sandbox: Provisioning until its checkout is done. */
+  sandboxPhase?: string
 }
 
 /** Fetch all AgentWorkflows across all namespaces. */
@@ -558,6 +592,16 @@ export async function listKnowledgeBases(namespace = ''): Promise<KnowledgeBaseS
 export async function cancelRun(runId: string, namespace: string): Promise<void> {
   const res = await apiFetch(`/api/runs/${encodeURIComponent(namespace)}/${runId}/stop`, { method: 'POST' })
   if (!res.ok) throw new Error(await res.text())
+}
+
+/** Runs a failed workflow step again. A workflow that already ended is revived;
+ *  a failed loop gate restarts its loop. */
+export async function retryWorkflowStep(namespace: string, name: string, step: string): Promise<void> {
+  const res = await apiFetch(
+    `/api/workflows/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/steps/${encodeURIComponent(step)}/retry`,
+    { method: 'POST' },
+  )
+  if (!res.ok) throw new Error((await res.text()).trim() || `HTTP ${res.status}`)
 }
 
 /** Submit a human answer to a clarifying question for a WaitingForInput run.

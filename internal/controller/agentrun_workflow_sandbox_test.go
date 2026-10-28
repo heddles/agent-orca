@@ -186,3 +186,19 @@ func TestFreshWorkflowSandboxSurvivesUntilLastContinuation(t *testing.T) {
 		t.Error("the final continuation did not delete its fresh sandbox")
 	}
 }
+
+func TestRouterPodReady(t *testing.T) {
+	pod := func(name string, ready corev1.ConditionStatus) *corev1.Pod {
+		return &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+			Status:     corev1.PodStatus{Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: ready}}},
+		}
+	}
+	r, _ := sandboxReconciler(t, newStubGateway(), pod("up", corev1.ConditionTrue), pod("starting", corev1.ConditionFalse))
+	for name, want := range map[string]bool{"up": true, "starting": false, "missing": false} {
+		got, err := r.routerPodReady(context.Background(), "default", name)
+		if err != nil || got != want {
+			t.Errorf("routerPodReady(%q) = %v, %v; want %v", name, got, err, want)
+		}
+	}
+}

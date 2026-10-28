@@ -21,6 +21,8 @@ limitations under the License.
 package podbuilder
 
 import (
+	"strings"
+
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -320,7 +322,7 @@ func Build(cfg PodConfig) *corev1.Pod {
 	modelRouterContainer := corev1.Container{
 		Name:            "model-router",
 		Image:           cfg.ModelRouterImage,
-		ImagePullPolicy: corev1.PullIfNotPresent,
+		ImagePullPolicy: routerPullPolicy(cfg.ModelRouterImage),
 		RestartPolicy:   &alwaysRestart,
 		Env: []corev1.EnvVar{
 			{Name: "AGENTORC_ROUTER_CONFIG", Value: RouterConfigDir + "/" + RouterConfigKey},
@@ -568,7 +570,7 @@ func BuildRouterOnly(cfg PodConfig) *corev1.Pod {
 	routerContainer := corev1.Container{
 		Name:            "model-router",
 		Image:           cfg.ModelRouterImage,
-		ImagePullPolicy: corev1.PullIfNotPresent,
+		ImagePullPolicy: routerPullPolicy(cfg.ModelRouterImage),
 		Env: []corev1.EnvVar{
 			{Name: "AGENTORC_ROUTER_CONFIG", Value: RouterConfigDir + "/" + RouterConfigKey},
 		},
@@ -652,4 +654,15 @@ func redisSecretMount() corev1.VolumeMount {
 		MountPath: RedisSecretDir,
 		ReadOnly:  true,
 	}
+}
+
+// routerPullPolicy is Always for a development build of the router and
+// IfNotPresent otherwise. A development deploy pushes a new image under the same
+// "-dirty" tag every time, so a node that kept the first one would run stale
+// router code. A release tag or a digest never changes, so it is pulled once.
+func routerPullPolicy(image string) corev1.PullPolicy {
+	if strings.Contains(image, "@sha256:") || !strings.HasSuffix(image, "-dirty") {
+		return corev1.PullIfNotPresent
+	}
+	return corev1.PullAlways
 }
