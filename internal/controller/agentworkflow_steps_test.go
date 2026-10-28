@@ -380,11 +380,11 @@ func TestContainerStepWhosePodIsGone(t *testing.T) {
 
 func TestTruncateTailKeepsTheEnd(t *testing.T) {
 	long := strings.Repeat("a", 20000) + "THE END"
-	got := truncateTail(long, maxStepOutputBytes)
+	got := truncateTail(long)
 	if !strings.HasSuffix(got, "THE END") || !strings.HasPrefix(got, "[output truncated]") || len(got) > maxStepOutputBytes+40 {
 		t.Errorf("truncated to %d bytes, prefix %q, suffix %q", len(got), got[:20], got[len(got)-7:])
 	}
-	if truncateTail("short", maxStepOutputBytes) != "short" {
+	if truncateTail("short") != "short" {
 		t.Error("a short output was changed")
 	}
 }

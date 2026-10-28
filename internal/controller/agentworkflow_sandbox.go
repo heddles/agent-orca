@@ -568,7 +568,7 @@ func (r *AgentWorkflowReconciler) checkSandboxContainerStep(ctx context.Context,
 		log.FromContext(ctx).Error(err, "polling a sandbox step", "step", step.Name, "job", ss.JobID)
 		return ctrl.Result{RequeueAfter: workflowSandboxRetry}, nil
 	}
-	out := truncateTail(strings.TrimRight(st.Output, "\n"), maxStepOutputBytes)
+	out := truncateTail(strings.TrimRight(st.Output, "\n"))
 	switch st.Phase {
 	case openshell.JobRunning:
 		if r.sandboxStepTimedOut(wf, step, ss) {

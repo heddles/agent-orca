@@ -123,11 +123,11 @@ func stepTimeout(wf *agentorcav1alpha1.AgentWorkflow, step *agentorcav1alpha1.Wo
 	return def
 }
 
-func truncateTail(s string, max int) string {
-	if len(s) <= max {
+func truncateTail(s string) string {
+	if len(s) <= maxStepOutputBytes {
 		return s
 	}
-	return "[output truncated]\n" + s[len(s)-max:]
+	return "[output truncated]\n" + s[len(s)-maxStepOutputBytes:]
 }
 
 func (r *AgentWorkflowReconciler) startContainerStep(ctx context.Context, wf *agentorcav1alpha1.AgentWorkflow, step *agentorcav1alpha1.WorkflowStep, ss *agentorcav1alpha1.WorkflowStepStatus) error {
@@ -328,7 +328,7 @@ func (r *AgentWorkflowReconciler) stepLogs(ctx context.Context, pod *corev1.Pod)
 		log.FromContext(ctx).Info("reading a step pod's logs", "pod", pod.Name, "err", err.Error())
 		return ""
 	}
-	return truncateTail(strings.TrimRight(string(raw), "\n"), maxStepOutputBytes)
+	return truncateTail(strings.TrimRight(string(raw), "\n"))
 }
 
 func (r *AgentWorkflowReconciler) deleteStepPod(ctx context.Context, pod *corev1.Pod) {
