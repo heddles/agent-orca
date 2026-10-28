@@ -68,7 +68,17 @@ type Gateway interface {
 	// Decisions returns the network decisions the sandbox's supervisor logged
 	// after since, oldest first.
 	Decisions(ctx context.Context, sandbox string, since time.Time) ([]Decision, error)
+	// Exec runs a command in the sandbox and returns once it exits. Long-running
+	// work should be started with StartJob rather than held on an Exec call.
+	Exec(ctx context.Context, sandbox string, command []string, opts ExecOptions) (*ExecResult, error)
 }
+
+// ExecOptions and ExecResult are the SDK's: environment and working directory
+// in, exit code and output out.
+type (
+	ExecOptions = osv1.ExecOptions
+	ExecResult  = osv1.ExecResult
+)
 
 // Config holds the operator's connection settings for the OpenShell gateway.
 type Config struct {
@@ -139,7 +149,8 @@ func Connect(cfg Config, podLogs PodLogFunc) (Gateway, error) {
 	if err != nil {
 		return nil, fmt.Errorf("connecting to OpenShell gateway %s: %w", cfg.Address, err)
 	}
-	return NewGateway(client.Sandboxes(), client.Providers(), cfg.Workspace, cfg.SandboxNamespace, podLogs).WithPolicy(client.Policy()), nil
+	return NewGateway(client.Sandboxes(), client.Providers(), cfg.Workspace, cfg.SandboxNamespace, podLogs).
+		WithPolicy(client.Policy()).WithExec(client.Exec()), nil
 }
 
 // PodLogFunc reads a container's logs from a pod. The gateway does not relay
@@ -157,6 +168,7 @@ type SDKGateway struct {
 	sandboxes osv1.SandboxInterface
 	providers osv1.ProviderInterface
 	policy    osv1.PolicyInterface
+	exec      osv1.ExecInterface
 	workspace string
 	namespace string
 	podLogs   PodLogFunc
@@ -303,6 +315,27 @@ func (g *SDKGateway) DeleteProviders(ctx context.Context, labels map[string]stri
 func (g *SDKGateway) WithPolicy(p osv1.PolicyInterface) *SDKGateway {
 	g.policy = p
 	return g
+}
+
+// WithExec gives the gateway the exec client Exec uses.
+func (g *SDKGateway) WithExec(e osv1.ExecInterface) *SDKGateway {
+	g.exec = e
+	return g
+}
+
+// errNoExecClient is returned by Exec on a gateway built without an exec client.
+var errNoExecClient = errors.New("openshell: gateway has no exec client")
+
+// Exec implements Gateway.
+func (g *SDKGateway) Exec(ctx context.Context, sandbox string, command []string, opts ExecOptions) (*ExecResult, error) {
+	if g.exec == nil {
+		return nil, errNoExecClient
+	}
+	res, err := g.exec.Run(ctx, g.workspace, sandbox, command, opts)
+	if err != nil {
+		return nil, fmt.Errorf("running a command in sandbox %s: %w", sandbox, err)
+	}
+	return res, nil
 }
 
 // errNoPolicyClient is returned by draft methods of a gateway built without

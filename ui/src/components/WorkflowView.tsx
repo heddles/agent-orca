@@ -4,7 +4,7 @@
  */
 import React, { useEffect, useRef, useState } from 'react'
 import { STREAM_EVENT_TYPE } from '../contracts/events'
-import { answerClarification, getRun, getWorkflow, subscribeToRunStream, type AgentWorkflowDetail, type TraceEntry, type TraceEvent, type WorkflowStepSummary } from '../api/sse'
+import { answerClarification, getRun, getWorkflow, retryWorkflowStep, subscribeToRunStream, type AgentWorkflowDetail, type TraceEntry, type TraceEvent, type WorkflowLoopSummary, type WorkflowStepPass, type WorkflowStepSummary } from '../api/sse'
 import { StatusBadge } from './StatusBadge'
 import { TraceAccordion } from './TraceAccordion'
 import { DESIGN } from '../lib/designSystem'
@@ -18,20 +18,27 @@ interface Props {
 export function WorkflowView({ name, namespace }: Props) {
   const [detail, setDetail] = useState<AgentWorkflowDetail | null>(null)
   const [selectedStep, setSelectedStep] = useState<WorkflowStepSummary | null>(null)
+  // A past pass picked in the pass selector; null follows the step's current state.
+  const [viewedPass, setViewedPass] = useState<number | null>(null)
   const [inputOpen, setInputOpen] = useState(true)
   const [outputOpen, setOutputOpen] = useState(true)
   const [clarifyQuestion, setClarifyQuestion] = useState<string | null>(null)
   const [clarifyRunName, setClarifyRunName] = useState<string | null>(null)
   const [clarifyInput, setClarifyInput] = useState('')
   const [clarifySubmitting, setClarifySubmitting] = useState(false)
+  const [retrying, setRetrying] = useState(false)
+  const [retryError, setRetryError] = useState<string | null>(null)
   const [stepTraceEntries, setStepTraceEntries] = useState<TraceEntry[]>([])
   const stepTraceUnsubRef = useRef<(() => void) | null>(null)
   const stepChildUnsubsRef = useRef<Array<() => void>>([])
   const stepTraceCounter = useRef(0)
+  const viewedPassRun: WorkflowStepPass | undefined =
+    viewedPass === null ? undefined : selectedStep?.passes?.find((p) => p.pass === viewedPass)
 
   useEffect(() => {
     setDetail(null)
     setSelectedStep(null)
+    setViewedPass(null)
 
     const load = () => {
       getWorkflow(namespace, name)
@@ -87,7 +94,7 @@ export function WorkflowView({ name, namespace }: Props) {
     setStepTraceEntries([])
     stepTraceCounter.current = 0
 
-    const runRef = selectedStep?.agentRunRef
+    const runRef = viewedPassRun?.agentRunRef ?? selectedStep?.agentRunRef
     if (!runRef) return
 
     const makeHandler = (childRunName?: string) => (event: TraceEvent) => {
@@ -114,6 +121,19 @@ export function WorkflowView({ name, namespace }: Props) {
       // keep one row.
       if (event.type === 'routing') return
 
+      // A model's reasoning arrives a few characters at a time. Fold each stretch of
+      // consecutive `thought` events into one entry, so a thinking block is one row.
+      if (event.type === 'thought') {
+        setStepTraceEntries((prev) => {
+          const last = prev[prev.length - 1]
+          if (last && last.event.type === 'thought' && last.childRunName === childRunName) {
+            return [...prev.slice(0, -1), { ...last, event: { ...last.event, content: last.event.content + event.content } }]
+          }
+          return [...prev, { id: stepTraceCounter.current++, event, ts: new Date().toISOString(), childRunName }]
+        })
+        return
+      }
+
       // For all other events, add to trace
       setStepTraceEntries((prev) => [...prev, { id: stepTraceCounter.current++, event, ts: new Date().toISOString(), childRunName }])
     }
@@ -132,7 +152,7 @@ export function WorkflowView({ name, namespace }: Props) {
       stepChildUnsubsRef.current.forEach((fn) => fn())
       stepChildUnsubsRef.current = []
     }
-  }, [selectedStep?.agentRunRef, namespace])
+  }, [selectedStep?.agentRunRef, viewedPassRun?.agentRunRef, namespace])
 
   // Keep polling while running or waiting for input.
   useEffect(() => {
@@ -150,6 +170,21 @@ export function WorkflowView({ name, namespace }: Props) {
     }, 2000)
     return () => clearInterval(timer)
   }, [detail?.phase, name, namespace])
+
+  const retryStep = (step: string) => {
+    setRetrying(true)
+    setRetryError(null)
+    retryWorkflowStep(namespace, name, step)
+      .then(() => new Promise((resolve) => setTimeout(resolve, 1500)))
+      .then(() => getWorkflow(namespace, name))
+      .then((d) => {
+        setDetail(d)
+        setSelectedStep((prev) => d.steps.find((st) => st.name === prev?.name) ?? prev)
+        setViewedPass(null)
+      })
+      .catch((err: unknown) => setRetryError(err instanceof Error ? err.message : String(err)))
+      .finally(() => setRetrying(false))
+  }
 
   if (!detail) {
     return <div style={s.loading}>Loading workflow…</div>
@@ -213,6 +248,23 @@ export function WorkflowView({ name, namespace }: Props) {
         </div>
       </div>
 
+      {/* Loops */}
+      {detail.sandboxPhase === 'Provisioning' && detail.phase === 'Running' && (
+        <div style={s.stepLoop}>
+          <Icon icon={ICON.retry} size={12} ariaHidden={true} /> Starting the workflow's sandbox and checking out the repository…
+        </div>
+      )}
+      {detail.sandboxFailed && (
+        <div style={s.retryRow}>
+          <span style={{ color: 'var(--ds-error)', fontSize: 12 }}>The workflow sandbox failed to start or was lost.</span>
+          <button type="button" style={{ ...s.clarifyBtn, opacity: retrying ? 0.4 : 1 }} disabled={retrying} onClick={() => retryStep('sandbox')}>
+            {retrying ? 'Retrying…' : 'Retry sandbox'}
+          </button>
+          {retryError && <span style={{ color: 'var(--ds-error)', fontSize: 12 }}>{retryError}</span>}
+        </div>
+      )}
+      {(detail.loops ?? []).map((loop) => <LoopBanner key={loop.id} loop={loop} />)}
+
       {/* Horizontal step pipeline */}
       <div style={s.pipeline}>
         {detail.steps.map((step, i) => (
@@ -221,7 +273,8 @@ export function WorkflowView({ name, namespace }: Props) {
             <StepCard
               step={step}
               active={selectedStep?.name === step.name}
-              onClick={() => setSelectedStep(step)}
+              loop={(detail.loops ?? []).find((l) => l.id === step.loop)}
+              onClick={() => { setSelectedStep(step); setViewedPass(null) }}
             />
           </div>
         ))}
@@ -230,8 +283,18 @@ export function WorkflowView({ name, namespace }: Props) {
       {/* Selected step detail */}
       {selectedStep && (
         <>
+          {/* Passes of a step that sits in a loop */}
+          {(selectedStep.passes?.length ?? 0) > 0 && (
+            <PassSelector
+              passes={selectedStep.passes!}
+              current={selectedStep.iteration ?? 0}
+              viewed={viewedPass}
+              onPick={setViewedPass}
+            />
+          )}
+
           {/* Input */}
-          {selectedStep.input && (
+          {selectedStep.input && !viewedPassRun && (
             <div style={s.stepOutput}>
               <button type="button" style={{ ...s.stepOutputHeader, cursor: 'pointer', userSelect: 'none', background: 'transparent', border: 'none', color: 'inherit', font: 'inherit', textAlign: 'left' }} onClick={() => setInputOpen((prev: boolean) => !prev)} aria-expanded={inputOpen} aria-controls="input-body">
                 <div style={{ ...s.stepOutputLabel, display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -283,6 +346,21 @@ export function WorkflowView({ name, namespace }: Props) {
             </div>
           )}
 
+          {selectedStep.phase === 'Failed' && (
+            <div style={s.retryRow}>
+              <button
+                type="button"
+                style={{ ...s.clarifyBtn, opacity: retrying ? 0.4 : 1 }}
+                disabled={retrying}
+                onClick={() => retryStep(selectedStep.name)}
+                title={selectedStep.loop ? 'Runs the loop again with a full set of passes' : 'Runs this step again'}
+              >
+                {retrying ? 'Retrying…' : selectedStep.loop ? 'Retry loop' : 'Retry step'}
+              </button>
+              {retryError && <span style={{ color: 'var(--ds-error)', fontSize: 12 }}>{retryError}</span>}
+            </div>
+          )}
+
           {/* Output */}
           <div style={s.stepOutput}>
             <button type="button" style={{ ...s.stepOutputHeader, cursor: 'pointer', userSelect: 'none', background: 'transparent', border: 'none', color: 'inherit', font: 'inherit', textAlign: 'left' }} onClick={() => setOutputOpen((prev: boolean) => !prev)} aria-expanded={outputOpen} aria-controls="output-step-body">
@@ -290,11 +368,11 @@ export function WorkflowView({ name, namespace }: Props) {
                 <Icon icon={ICON.chevronRight} size={11} style={{ ...s.chevron, transform: outputOpen ? 'rotate(90deg)' : undefined }} ariaHidden={true} />
                 Output: <span style={{ color: 'var(--ds-text-primary)' }}>{selectedStep.name}</span>
               </div>
-              {selectedStep.output && (
+              {(viewedPassRun?.output ?? selectedStep.output) && (
                 <button
                   type="button"
                   style={s.iconBtn}
-                  onClick={(e: React.MouseEvent) => { e.stopPropagation(); navigator.clipboard.writeText(selectedStep.output!) }}
+                  onClick={(e: React.MouseEvent) => { e.stopPropagation(); navigator.clipboard.writeText((viewedPassRun?.output ?? selectedStep.output)!) }}
                   title="Copy output"
                   aria-label="Copy output"
                 >
@@ -304,7 +382,14 @@ export function WorkflowView({ name, namespace }: Props) {
             </button>
             {outputOpen && (
               <div id="output-step-body" style={s.stepOutputBody}>
-                {selectedStep.output
+                {viewedPassRun
+                  ? (viewedPassRun.output || <span style={{ color: 'var(--ds-text-muted)', fontStyle: 'italic' }}>{viewedPassRun.phase === 'Running' ? 'Running…' : 'No output'}</span>)
+                  : selectedStep.staleOutput
+                  ? <>
+                      <div style={s.staleNote}><Icon icon={ICON.retry} size={12} ariaHidden={true} /> From pass {selectedStep.iteration} — queued to run again as pass {(selectedStep.iteration ?? 0) + 1}</div>
+                      {selectedStep.output}
+                    </>
+                  : selectedStep.output
                   ? selectedStep.output
                   : selectedStep.phase === 'WaitingForInput'
                   ? <span style={{ color: 'var(--ds-warning)', fontStyle: 'italic' }}>Waiting for human input…</span>
@@ -323,8 +408,70 @@ export function WorkflowView({ name, namespace }: Props) {
       {/* Step trace */}
       <TraceAccordion
         entries={stepTraceEntries}
-        streaming={selectedStep?.phase === 'Running' || selectedStep?.phase === 'Pending'}
+        streaming={!viewedPassRun && (selectedStep?.phase === 'Running' || selectedStep?.phase === 'Pending')}
       />
+    </div>
+  )
+}
+
+const LOOP_STATE_LABEL: Record<WorkflowLoopSummary['state'], string> = {
+  pending: 'not started',
+  running: 'running',
+  repeating: 'repeating',
+  satisfied: 'done: condition met',
+  exhausted: 'failed: ran out of passes',
+}
+
+function LoopBanner({ loop }: { loop: WorkflowLoopSummary }) {
+  const lastPass = loop.pass >= loop.maxIterations && loop.state !== 'satisfied' && loop.state !== 'exhausted'
+  const color =
+    loop.state === 'satisfied' ? 'var(--ds-success)'
+    : loop.state === 'exhausted' ? 'var(--ds-error)'
+    : lastPass ? 'var(--ds-warning)'
+    : 'var(--ds-accent)'
+  return (
+    <div style={{ ...s.loopBanner, border: `1px solid ${color}` }}>
+      <div style={{ ...s.loopTitle, color }}>
+        <Icon icon={ICON.retry} size={13} ariaHidden={true} />
+        Loop: {loop.steps.join(' → ')}
+        <span style={s.loopMeta}>
+          {loop.state === 'pending' ? `up to ${loop.maxIterations} passes` : `pass ${Math.min(loop.pass, loop.maxIterations)} of ${loop.maxIterations}`} · {LOOP_STATE_LABEL[loop.state]}
+          {lastPass && ' · last pass'}
+        </span>
+      </div>
+      <div style={s.loopUntil}>repeats until <code>{loop.until}</code></div>
+    </div>
+  )
+}
+
+function PassSelector({
+  passes,
+  current,
+  viewed,
+  onPick,
+}: {
+  passes: WorkflowStepPass[]
+  current: number
+  viewed: number | null
+  onPick: (pass: number | null) => void
+}) {
+  return (
+    <div style={s.passRow} role="group" aria-label="Passes of this step">
+      <span style={s.passLabel}>Passes</span>
+      <button type="button" style={{ ...s.passChip, ...(viewed === null ? s.passChipActive : {}) }} onClick={() => onPick(null)}>
+        Current
+      </button>
+      {passes.map((p) => (
+        <button
+          key={p.pass}
+          type="button"
+          style={{ ...s.passChip, ...(viewed === p.pass ? s.passChipActive : {}) }}
+          onClick={() => onPick(p.pass)}
+          title={`${p.agentRunRef}${p.spendUSD ? ` · $${p.spendUSD}` : ''}`}
+        >
+          {p.pass + 1} · {p.phase}{p.pass === current && viewed !== p.pass ? ' ●' : ''}
+        </button>
+      ))}
     </div>
   )
 }
@@ -332,10 +479,12 @@ export function WorkflowView({ name, namespace }: Props) {
 function StepCard({
   step,
   active,
+  loop,
   onClick,
 }: {
   step: WorkflowStepSummary
   active: boolean
+  loop?: WorkflowLoopSummary
   onClick: () => void
 }) {
   return (
@@ -351,7 +500,14 @@ function StepCard({
       <StatusBadge phase={step.phase} />
       <div style={s.stepName}>{step.name}</div>
       {step.agentRef && <div style={s.stepAgent}>{step.agentRef}</div>}
-      {step.output && (
+      {loop && (
+        <div style={s.stepLoop}>
+          <Icon icon={ICON.retry} size={11} ariaHidden={true} /> pass {(step.iteration ?? 0) + 1}/{loop.maxIterations}
+        </div>
+      )}
+      {step.staleOutput ? (
+        <div style={{ ...s.stepPreview, opacity: 0.6 }}>queued for pass {(step.iteration ?? 0) + 1}. Last pass: "{(step.output ?? '').slice(0, 70)}{(step.output ?? '').length > 70 ? '…' : ''}"</div>
+      ) : step.output && (
         <div style={s.stepPreview}>"{step.output.slice(0, 100)}{step.output.length > 100 ? '…' : ''}"</div>
       )}
     </button>
@@ -467,6 +623,30 @@ const s: Record<string, React.CSSProperties> = {
     fontSize: 10,
     color: 'var(--ds-text-muted)',
   },
+  loopBanner: {
+    background: 'var(--ds-surface)',
+    border: '1px solid var(--ds-accent)',
+    borderRadius: 8,
+    padding: '10px 14px',
+  },
+  loopTitle: { display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, fontWeight: 600, flexWrap: 'wrap' },
+  loopMeta: { color: 'var(--ds-text-secondary)', fontWeight: 400 },
+  loopUntil: { fontSize: 11, color: 'var(--ds-text-muted)', marginTop: 4, wordBreak: 'break-word' },
+  stepLoop: { display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--ds-accent)', fontVariantNumeric: 'tabular-nums' },
+  retryRow: { display: 'flex', alignItems: 'center', gap: 10 },
+  staleNote: { display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--ds-warning)', marginBottom: 8 },
+  passRow: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
+  passLabel: { fontSize: 11, color: 'var(--ds-text-muted)', marginRight: 2 },
+  passChip: {
+    padding: '3px 10px',
+    borderRadius: 999,
+    border: '1px solid var(--ds-border)',
+    background: 'var(--ds-surface)',
+    color: 'var(--ds-text-secondary)',
+    fontSize: 11,
+    cursor: 'pointer',
+  },
+  passChipActive: { border: '1px solid var(--ds-accent)', color: 'var(--ds-text-primary)', background: 'rgba(59,130,246,.08)' },
   stepName: { fontSize: 12, fontWeight: 700, color: 'var(--ds-text-primary)', marginTop: 6 },
   stepAgent: { fontSize: 11, color: 'var(--ds-text-muted)' },
   stepPreview: {

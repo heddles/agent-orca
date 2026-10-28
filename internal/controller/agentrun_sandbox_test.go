@@ -33,6 +33,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgofake "k8s.io/client-go/kubernetes/fake"
+	clientgotesting "k8s.io/client-go/testing"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -59,6 +60,8 @@ type stubGateway struct {
 	// providerConflicts makes the next N DeleteProviders calls fail as the
 	// gateway does while a sandbox being deleted still holds the provider.
 	providerConflicts int
+	// execFn is what Exec does; nil makes it fail.
+	execFn func(ctx context.Context, sandbox string, command []string, opts openshell.ExecOptions) (*openshell.ExecResult, error)
 }
 
 func newStubGateway() *stubGateway {
@@ -167,6 +170,20 @@ func sandboxedRun(t *testing.T, gw *stubGateway) *agentorcav1alpha1.AgentRun {
 	return run
 }
 
+// newFakeClientsetWithLogs avoids client-go's default no-reaction error for pod
+// logs. Besides returning the response these tests expect, it avoids the
+// generated PodLogOptions.String recursion in the Go 1.26 error-formatting path.
+func newFakeClientsetWithLogs() *clientgofake.Clientset {
+	k8s := clientgofake.NewClientset()
+	k8s.PrependReactor("get", "pods", func(action clientgotesting.Action) (bool, runtime.Object, error) {
+		if action.GetSubresource() == "log" {
+			return true, &runtime.Unknown{Raw: []byte("fake logs")}, nil
+		}
+		return false, nil, nil
+	})
+	return k8s
+}
+
 func sandboxReconciler(t *testing.T, gw openshell.Gateway, objs ...client.Object) (*AgentRunReconciler, client.Client) {
 	t.Helper()
 	cl := fake.NewClientBuilder().
@@ -174,7 +191,7 @@ func sandboxReconciler(t *testing.T, gw openshell.Gateway, objs ...client.Object
 		WithStatusSubresource(&agentorcav1alpha1.AgentRun{}).
 		WithObjects(objs...).
 		Build()
-	return &AgentRunReconciler{Client: cl, Scheme: cl.Scheme(), K8s: clientgofake.NewClientset(), Sandboxes: gw}, cl
+	return &AgentRunReconciler{Client: cl, Scheme: cl.Scheme(), K8s: newFakeClientsetWithLogs(), Sandboxes: gw}, cl
 }
 
 func fetchSandboxRun(t *testing.T, cl client.Client, run *agentorcav1alpha1.AgentRun) *agentorcav1alpha1.AgentRun {
@@ -637,6 +654,15 @@ func (g *stubGateway) removeDraft(sandbox, chunkID string) {
 		}
 	}
 	g.drafts[sandbox] = keep
+}
+
+// Exec implements openshell.Gateway by delegating to the test's execFn, which
+// defaults to failing: tests that run commands say what they return.
+func (g *stubGateway) Exec(ctx context.Context, sandbox string, command []string, opts openshell.ExecOptions) (*openshell.ExecResult, error) {
+	if g.execFn == nil {
+		return nil, fmt.Errorf("stub gateway: no exec behavior set")
+	}
+	return g.execFn(ctx, sandbox, command, opts)
 }
 
 func (g *stubGateway) Decisions(_ context.Context, sandbox string, since time.Time) ([]openshell.Decision, error) {

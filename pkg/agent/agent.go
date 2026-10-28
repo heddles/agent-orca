@@ -45,9 +45,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -240,6 +242,8 @@ func (a *Agent) Run(ctx context.Context, input string, opts ...RunOption) (*RunR
 		opt(cfg)
 	}
 
+	a.waitForRouter(ctx)
+
 	// The router stores the conversation, so each request carries only what is
 	// new: the input first, then tool results or a continue prompt.
 	var pending []message
@@ -372,6 +376,8 @@ func (a *Agent) post(ctx context.Context, payload map[string]any) (*http.Respons
 	// which a client sending its next request on [DONE] can beat it to. Retry
 	// briefly: that is what the router's 409 asks the client to do.
 	delay := conflictRetryDelay
+	connectDelay := connectRetryDelay
+	started := time.Now()
 	for attempt := 0; ; attempt++ {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.baseURL+"/chat/completions", bytes.NewReader(data))
 		if err != nil {
@@ -383,6 +389,19 @@ func (a *Agent) post(ctx context.Context, payload map[string]any) (*http.Respons
 			req.Header.Set("Authorization", "Bearer "+a.apiKey)
 		}
 		resp, err := a.httpClient.Do(req)
+		if err != nil && connectRetryable(err) && time.Since(started) < connectRetryWindow {
+			// The router is not reachable yet. A sandboxed agent can start before
+			// the network policy that admits its router is programmed, and its
+			// first request then fails at once; the policy lands a few seconds on.
+			select {
+			case <-time.After(connectDelay):
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+			connectDelay = min(connectDelay*2, 4*time.Second)
+			attempt--
+			continue
+		}
 		if err != nil || resp.StatusCode != http.StatusConflict || attempt == conflictRetries {
 			return resp, err
 		}
@@ -395,6 +414,58 @@ func (a *Agent) post(ctx context.Context, payload map[string]any) (*http.Respons
 		delay = min(delay*2, time.Second)
 	}
 }
+
+// waitForRouter probes the router until it answers. A sandboxed agent can start
+// before the network path to its router is open, and its supervisor may then
+// hold the first request without ever answering it, which a client with no
+// timeout waits on forever. A short per-attempt timeout turns that into a retry.
+// Giving up is not an error: the first real request reports what is wrong.
+func (a *Agent) waitForRouter(ctx context.Context) {
+	started := time.Now()
+	delay := connectRetryDelay
+	for time.Since(started) < connectRetryWindow && ctx.Err() == nil {
+		probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
+		req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, a.baseURL+"/models", nil)
+		if err != nil {
+			cancel()
+			return
+		}
+		if a.apiKey != "" {
+			req.Header.Set("Authorization", "Bearer "+a.apiKey)
+		}
+		resp, err := a.httpClient.Do(req)
+		cancel()
+		if err == nil {
+			_ = resp.Body.Close()
+			return
+		}
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			return
+		}
+		delay = min(delay*2, 4*time.Second)
+	}
+}
+
+// connectRetryable reports whether err means the request never reached the
+// router: the name did not resolve, the connection was refused or reset, or it
+// closed before any response.
+func connectRetryable(err error) bool {
+	var dns *net.DNSError
+	var op *net.OpError
+	return errors.As(err, &dns) || errors.As(err, &op) ||
+		errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNREFUSED)
+}
+
+// connectRetryWindow and connectRetryDelay bound how long post waits for an
+// unreachable router before giving up.
+var (
+	connectRetryWindow = 90 * time.Second
+	probeTimeout       = 5 * time.Second
+	connectRetryDelay  = 500 * time.Millisecond
+)
 
 // conflictRetries and conflictRetryDelay bound how long post waits for the
 // router to finish the previous turn (about 2.5 s in all).

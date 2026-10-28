@@ -32,6 +32,24 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end }}
 
 {{/*
+Namespace the OpenShell gateway runs in: openshell.gateway.namespace, or the
+release namespace when empty (where the bundled gateway subchart installs).
+*/}}
+{{- define "agent-orca.openshell.gatewayNamespace" -}}
+{{- .Values.openshell.gateway.namespace | default .Release.Namespace -}}
+{{- end }}
+
+{{/*
+gRPC address of the OpenShell gateway Service: openshell.gateway.address, or
+derived from the gateway Service name ("openshell", the subchart's
+nameOverride), namespace and port when empty.
+*/}}
+{{- define "agent-orca.openshell.gatewayAddress" -}}
+{{- $ns := include "agent-orca.openshell.gatewayNamespace" . -}}
+{{- printf "openshell.%s.svc.cluster.local:%s" $ns (.Values.openshell.gateway.port | toString) -}}
+{{- end }}
+
+{{/*
 Selector labels
 */}}
 {{- define "agent-orca.selectorLabels" -}}

@@ -18,7 +18,6 @@ package controller
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -29,10 +28,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -121,6 +119,12 @@ func (r *AgentRunReconciler) ensureSandbox(
 
 // sandboxRunLabels identify a run's sandboxes and providers on the gateway.
 func sandboxRunLabels(run *agentorcav1alpha1.AgentRun) map[string]string {
+	if workflow := run.Labels[labelWorkflow]; workflow != "" && run.Spec.WorkflowSandbox != nil {
+		return map[string]string{
+			openshell.LabelWorkflowName:      workflow,
+			openshell.LabelWorkflowNamespace: run.Namespace,
+		}
+	}
 	return map[string]string{
 		openshell.LabelRunName:      security.SafeLabelValue(run.Name),
 		openshell.LabelRunNamespace: run.Namespace,
@@ -135,6 +139,21 @@ func sandboxRunLabels(run *agentorcav1alpha1.AgentRun) map[string]string {
 // descriptor to env and returns the endpoints and provider names.
 func (r *AgentRunReconciler) ensureSandboxTools(
 	ctx context.Context,
+	run *agentorcav1alpha1.AgentRun,
+	agent *agentorcav1alpha1.Agent,
+	env map[string]string,
+) ([]openshell.ToolEndpoint, []string, error) {
+	return ensureSandboxTools(ctx, r.Client, r.Sandboxes, run, agent, env)
+}
+
+// ensureSandboxTools is shared by the AgentRun and workflow controllers. A
+// shared workflow uses one provider owner across its AgentRuns, so tools and
+// dynamic steps can be merged before the sandbox is created. A fresh step uses
+// its AgentRun name, matching its dedicated policy and cleanup.
+func ensureSandboxTools(
+	ctx context.Context,
+	cl client.Client,
+	gw openshell.Gateway,
 	run *agentorcav1alpha1.AgentRun,
 	agent *agentorcav1alpha1.Agent,
 	env map[string]string,
@@ -156,7 +175,7 @@ func (r *AgentRunReconciler) ensureSandboxTools(
 			continue
 		}
 		var tool agentorcav1alpha1.Tool
-		if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: run.Namespace}, &tool); err != nil {
+		if err := cl.Get(ctx, types.NamespacedName{Name: name, Namespace: run.Namespace}, &tool); err != nil {
 			return nil, nil, fmt.Errorf("reading tool %q for sandbox egress: %w", name, err)
 		}
 		source := name
@@ -164,7 +183,7 @@ func (r *AgentRunReconciler) ensureSandboxTools(
 		if serverName := tool.Labels[LabelMCPServer]; serverName != "" {
 			source = serverName
 			var server agentorcav1alpha1.MCPServer
-			if err := r.Get(ctx, types.NamespacedName{Name: serverName, Namespace: run.Namespace}, &server); err == nil {
+			if err := cl.Get(ctx, types.NamespacedName{Name: serverName, Namespace: run.Namespace}, &server); err == nil {
 				serverEgress = server.Spec.NetworkEgress
 			} else if !apierrors.IsNotFound(err) {
 				return nil, nil, fmt.Errorf("reading MCPServer %q for sandbox egress: %w", serverName, err)
@@ -180,8 +199,16 @@ func (r *AgentRunReconciler) ensureSandboxTools(
 	}
 	eps = openshell.FilterToolEndpoints(sb, eps)
 
+	ownerName := run.Name
+	if ref := run.Spec.WorkflowSandbox; ref != nil {
+		if !ref.Fresh {
+			ownerName = "workflow-" + run.Labels[labelWorkflow]
+		} else if ref.ProviderOwner != "" {
+			ownerName = ref.ProviderOwner
+		}
+	}
 	providerName := func(c *openshell.ToolCredential) string {
-		return openshell.ProviderName(run.Namespace, run.Name, c.Source)
+		return openshell.ProviderName(run.Namespace, ownerName, c.Source)
 	}
 	eps, used, err := openshell.BindCredentials(eps, creds, providerName)
 	if err != nil {
@@ -193,7 +220,7 @@ func (r *AgentRunReconciler) ensureSandboxTools(
 		values := map[string]string{}
 		for _, k := range cred.Keys {
 			var secret corev1.Secret
-			if err := r.Get(ctx, types.NamespacedName{Name: k.SecretName, Namespace: run.Namespace}, &secret); err != nil {
+			if err := cl.Get(ctx, types.NamespacedName{Name: k.SecretName, Namespace: run.Namespace}, &secret); err != nil {
 				return nil, nil, fmt.Errorf("reading secret %q for tool %q: %w", k.SecretName, cred.Tool, err)
 			}
 			v, ok := secret.Data[k.SecretKey]
@@ -203,10 +230,10 @@ func (r *AgentRunReconciler) ensureSandboxTools(
 			// Match the router, which trims the mounted secret file.
 			values[k.EnvVar] = strings.TrimSpace(string(v))
 		}
-		if err := r.Sandboxes.EnsureProfile(ctx, openshell.Profile(run.Namespace, cred)); err != nil {
+		if err := gw.EnsureProfile(ctx, openshell.Profile(run.Namespace, cred)); err != nil {
 			return nil, nil, err
 		}
-		if err := r.Sandboxes.EnsureProvider(ctx, openshell.Provider(run.Namespace, run.Name, cred, values, sandboxRunLabels(run))); err != nil {
+		if err := gw.EnsureProvider(ctx, openshell.Provider(run.Namespace, ownerName, cred, values, sandboxRunLabels(run))); err != nil {
 			return nil, nil, err
 		}
 		providers = append(providers, providerName(cred))
@@ -301,6 +328,9 @@ func (r *AgentRunReconciler) checkSandboxProgress(ctx context.Context, run *agen
 // instead of leaking the credential. Other failures are logged and recorded as
 // an event: a gateway outage must not block a run's finalizer.
 func (r *AgentRunReconciler) deleteRunProviders(ctx context.Context, run *agentorcav1alpha1.AgentRun) (retry bool) {
+	if run.Spec.WorkflowSandbox != nil {
+		return false // workflow credential providers live until the workflow ends
+	}
 	if r.Sandboxes == nil || run.Status.RouterPodName == "" {
 		return false // not a split-pod run, so it never had a sandbox
 	}
@@ -324,6 +354,11 @@ func (r *AgentRunReconciler) deleteRunProviders(ctx context.Context, run *agento
 // as an event rather than returned: a gateway outage must not block a run's
 // finalizer, and the sandbox carries labels naming its run for manual cleanup.
 func (r *AgentRunReconciler) deleteRunSandbox(ctx context.Context, run *agentorcav1alpha1.AgentRun) {
+	if ref := run.Spec.WorkflowSandbox; ref != nil {
+		if !ref.Fresh || run.Status.ContinuationRunRef != "" {
+			return // shared sandboxes and fresh clarification chains stay alive
+		}
+	}
 	if run.Status.SandboxName == "" || r.Sandboxes == nil {
 		return
 	}
@@ -345,35 +380,7 @@ func lastLines(s string, n int) string {
 	return strings.Join(lines, "\n")
 }
 
-// errSandboxClassUnusable fails runs whose SandboxClass is missing or not
-// available to the run's namespace.
-var errSandboxClassUnusable = errors.New("sandbox class unusable")
-
 // sandboxClass returns the Agent's SandboxClass, or nil when it names none.
 func (r *AgentRunReconciler) sandboxClass(ctx context.Context, run *agentorcav1alpha1.AgentRun, agent *agentorcav1alpha1.Agent) (*agentorcav1alpha1.SandboxClass, error) {
-	name := agent.Spec.Runtime.Sandbox.ClassRef
-	if name == "" {
-		return nil, nil
-	}
-	var class agentorcav1alpha1.SandboxClass
-	if err := r.Get(ctx, types.NamespacedName{Name: name}, &class); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil, fmt.Errorf("%w: SandboxClass %q not found", errSandboxClassUnusable, name)
-		}
-		return nil, fmt.Errorf("reading SandboxClass %q: %w", name, err)
-	}
-	if sel := class.Spec.NamespaceSelector; sel != nil {
-		var ns corev1.Namespace
-		if err := r.Get(ctx, types.NamespacedName{Name: run.Namespace}, &ns); err != nil {
-			return nil, fmt.Errorf("reading namespace %q: %w", run.Namespace, err)
-		}
-		selector, err := metav1.LabelSelectorAsSelector(sel)
-		if err != nil {
-			return nil, fmt.Errorf("%w: SandboxClass %q has an invalid namespaceSelector: %v", errSandboxClassUnusable, name, err)
-		}
-		if !selector.Matches(labels.Set(ns.Labels)) {
-			return nil, fmt.Errorf("%w: SandboxClass %q is not available to namespace %q", errSandboxClassUnusable, name, run.Namespace)
-		}
-	}
-	return &class, nil
+	return loadSandboxClass(ctx, r.Client, run.Namespace, agent.Spec.Runtime.Sandbox.ClassRef)
 }

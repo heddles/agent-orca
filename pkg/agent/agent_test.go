@@ -104,6 +104,8 @@ func messages(t *testing.T, body map[string]any) []map[string]any {
 	return msgs
 }
 
+const replyDone = "done"
+
 func TestNewDefaults(t *testing.T) {
 	t.Setenv("OPENAI_BASE_URL", "")
 	t.Setenv("OPENAI_API_KEY", "")
@@ -293,14 +295,14 @@ func conflict(w http.ResponseWriter) { http.Error(w, "request in progress", http
 // The router answers 409 while it finishes the previous turn; the SDK retries,
 // sending the same request again.
 func TestRunRetriesWhileTheRouterIsBusy(t *testing.T) {
-	f := &fakeRouter{responses: []func(http.ResponseWriter){conflict, conflict, sse(textChunk("done"))}}
+	f := &fakeRouter{responses: []func(http.ResponseWriter){conflict, conflict, sse(textChunk(replyDone))}}
 	srv := f.serve(t)
 	a := New(WithBaseURL(srv.URL + "/v1"))
 	res, err := a.Run(context.Background(), "go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Output != "done" || len(f.requests) != 3 {
+	if res.Output != replyDone || len(f.requests) != 3 {
 		t.Fatalf("output %q after %d requests, want done after 3", res.Output, len(f.requests))
 	}
 	for i, req := range f.requests {
@@ -335,5 +337,55 @@ func TestRetryStopsWhenTheContextEnds(t *testing.T) {
 	defer cancel()
 	if _, err := New(WithBaseURL(srv.URL+"/v1")).Run(ctx, "go"); err == nil {
 		t.Fatal("Run returned no error although its context ended while waiting to retry")
+	}
+}
+
+func TestRunRetriesWhileTheRouterIsUnreachable(t *testing.T) {
+	old := connectRetryDelay
+	connectRetryDelay = time.Millisecond
+	t.Cleanup(func() { connectRetryDelay = old })
+	f := &fakeRouter{responses: []func(http.ResponseWriter){sse(textChunk(replyDone))}}
+	inner := f.serve(t)
+	var drops int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if drops < 2 {
+			drops++
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err == nil {
+				_ = conn.Close()
+			}
+			return
+		}
+		inner.Config.Handler.ServeHTTP(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	res, err := New(WithBaseURL(srv.URL+"/v1")).Run(context.Background(), "go")
+	if err != nil || res.Output != replyDone || drops != 2 {
+		t.Fatalf("output %q, err %v after %d dropped connections, want done after 2", res.Output, err, drops)
+	}
+}
+
+func TestRunProbesPastAHungRouterPath(t *testing.T) {
+	oldDelay, oldProbe := connectRetryDelay, probeTimeout
+	connectRetryDelay, probeTimeout = time.Millisecond, 50*time.Millisecond
+	t.Cleanup(func() { connectRetryDelay, probeTimeout = oldDelay, oldProbe })
+	f := &fakeRouter{responses: []func(http.ResponseWriter){sse(textChunk(replyDone))}}
+	inner := f.serve(t)
+	var hung int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && hung < 2 {
+			hung++
+			<-r.Context().Done() // the supervisor holding a request it never answers
+			return
+		}
+		if r.Method == http.MethodGet {
+			return
+		}
+		inner.Config.Handler.ServeHTTP(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	res, err := New(WithBaseURL(srv.URL+"/v1")).Run(context.Background(), "go")
+	if err != nil || res.Output != replyDone || hung != 2 {
+		t.Fatalf("output %q, err %v after %d hung probes, want done after 2", res.Output, err, hung)
 	}
 }

@@ -259,7 +259,7 @@ func (r *AgentRunReconciler) startRun(ctx context.Context, run *agentorcav1alpha
 	// Sandbox mode is split-pod with the agent pod replaced by a sandbox. The
 	// webhook enforces these preconditions; re-check them for Agents admitted
 	// before the webhook knew about sandboxes.
-	sandboxed := agent.Spec.Runtime.Sandbox != nil
+	sandboxed := agent.Spec.Runtime.Sandbox != nil || run.Spec.WorkflowSandbox != nil
 	if sandboxed {
 		if !splitPod {
 			return r.failRun(ctx, run, "spec.runtime.sandbox requires spec.networkIsolation.splitPod=true")
@@ -370,8 +370,25 @@ func (r *AgentRunReconciler) startRun(ctx context.Context, run *agentorcav1alpha
 
 		if sandboxed {
 			// Sandbox: the agent process runs on the OpenShell gateway instead of
-			// in an agent pod, reaching the router through its supervisor.
-			sb, err := r.ensureSandbox(ctx, run, agent, tokenSecretName, routerBaseURL)
+			// in an agent pod, reaching the router through its supervisor. A
+			// workflow supplies an existing checkout; other runs create their own.
+			var sb *osv1.Sandbox
+			var err error
+			if run.Spec.WorkflowSandbox != nil {
+				// The sandbox already exists, so unlike ensureSandbox there is no
+				// creation time for the router to come up in: starting now would
+				// resolve a Service with no address and fail every restart at once.
+				ready, readyErr := r.routerPodReady(ctx, run.Namespace, routerPodName)
+				if readyErr != nil {
+					return ctrl.Result{}, readyErr
+				}
+				if !ready {
+					return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+				}
+				sb, err = r.ensureWorkflowAgentJob(ctx, run, agent, tokenSecretName, routerBaseURL)
+			} else {
+				sb, err = r.ensureSandbox(ctx, run, agent, tokenSecretName, routerBaseURL)
+			}
 			if err != nil {
 				var ghErr *githubapp.APIError
 				if stderrors.Is(err, errNoGitHubApp) || stderrors.Is(err, errSandboxClassUnusable) || (stderrors.As(err, &ghErr) && ghErr.Permanent()) {
@@ -379,6 +396,12 @@ func (r *AgentRunReconciler) startRun(ctx context.Context, run *agentorcav1alpha
 				}
 				if osv1.IsInvalidArgument(err) || osv1.IsPermissionDenied(err) {
 					return r.failRun(ctx, run, fmt.Sprintf("creating sandbox: %v", err))
+				}
+				// A workflow sandbox belongs to the workflow, so a restart cannot
+				// recreate it. Retrying would error forever and the step would never
+				// finish; failing lets the workflow see the step end.
+				if run.Spec.WorkflowSandbox != nil && osv1.IsNotFound(err) {
+					return r.failRun(ctx, run, fmt.Sprintf("the workflow sandbox no longer exists: %v", err))
 				}
 				return ctrl.Result{}, fmt.Errorf("creating sandbox: %w", err)
 			}
@@ -487,6 +510,9 @@ func (r *AgentRunReconciler) checkProgress(ctx context.Context, run *agentorcav1
 		return *res, err
 	}
 	if run.Status.SandboxName != "" {
+		if run.Spec.WorkflowSandbox != nil {
+			return r.checkWorkflowAgentProgress(ctx, run, agent)
+		}
 		return r.checkSandboxProgress(ctx, run, agent)
 	}
 	if run.Status.PodName == "" {
@@ -626,9 +652,12 @@ func (r *AgentRunReconciler) handleRunSuccess(ctx context.Context, run *agentorc
 		run.Status.WaitingSince = &now
 		r.stampSpend(ctx, run)
 		run.Status.PodName = ""
-		// The agent process has exited, so its sandbox is done too.
-		r.deleteRunSandbox(ctx, run)
-		run.Status.SandboxName = ""
+		// A dedicated run sandbox exits with its agent. Workflow sandboxes
+		// stay alive for the other steps and for a clarification continuation.
+		if run.Spec.WorkflowSandbox == nil {
+			r.deleteRunSandbox(ctx, run)
+			run.Status.SandboxName = ""
+		}
 		if err := r.Status().Patch(ctx, run, patch); err != nil {
 			return ctrl.Result{}, fmt.Errorf("patching WaitingForInput status: %w", err)
 		}
@@ -701,6 +730,21 @@ func looksLikeClarifyQuestion(text string) bool {
 	}
 
 	return false
+}
+
+// routerPodReady reports whether the run's router pod is Ready, so its Service
+// has an address behind it.
+func (r *AgentRunReconciler) routerPodReady(ctx context.Context, namespace, name string) (bool, error) {
+	var pod corev1.Pod
+	if err := r.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &pod); err != nil {
+		return false, client.IgnoreNotFound(err)
+	}
+	for _, c := range pod.Status.Conditions {
+		if c.Type == corev1.PodReady {
+			return c.Status == corev1.ConditionTrue, nil
+		}
+	}
+	return false, nil
 }
 
 func (r *AgentRunReconciler) handlePodFailure(ctx context.Context, run *agentorcav1alpha1.AgentRun, agent *agentorcav1alpha1.Agent, reason string) (ctrl.Result, error) { //nolint:unparam

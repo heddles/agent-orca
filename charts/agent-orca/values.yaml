@@ -149,25 +149,63 @@ tetragon:
 # NVIDIA OpenShell sandboxes (optional). Agents with spec.runtime.sandbox run
 # their agent process in an OpenShell sandbox: a shell the agent can exec and
 # install tools in, confined by Landlock, seccomp and per-host egress policy.
-# Requires the OpenShell gateway Helm chart and the agent-sandbox CRDs and
-# controller installed separately; see docs/openshell-sandbox.md.
+#
+# Setting openshell.enabled=true installs, as part of this release:
+#   - the NVIDIA OpenShell gateway Helm chart (dependency alias
+#     "openshell-gateway" in Chart.yaml, configured under the openshell-gateway
+#     key below), and
+#   - the Kubernetes SIG agent-sandbox CRDs and controller its Kubernetes
+#     compute driver needs (templates/openshell-agent-sandbox.yaml, pinned to
+#     agent-sandbox v1.0.8; disable with openshell.agentSandbox.install=false
+#     if the cluster already runs them).
+#
+# The bundled gateway installs into THIS release's namespace, so the operator
+# defaults below (gateway.address/namespace, sandboxNamespace) derive from
+# .Release.Namespace. To run against an externally managed gateway instead
+# (e.g. installed per the OpenShell docs into the "openshell" namespace), set
+# openshell.gateway.address and openshell.sandboxNamespace explicitly.
 openshell:
   enabled: false
+  fullnameOverride: openshell
+  server:
+    telemetryEnabled: false
+    drivers:
+      kubernetes:
+        # Required for openshell.placement (nodeSelector/tolerations) to work:
+        # a gateway without it rejects every sandbox that sets driver config.
+        allowDriverConfig: true
+  # The agent-sandbox CRDs are applied by this chart in the same release, so
+  # the gateway's live-cluster API preflight would race them on a fresh
+  # install (it renders before anything is applied). Re-enable only when
+  # openshell.agentSandbox.install=false and the cluster already has them.
+  agentSandbox:
+    install: true
+    preflight:
+      enabled: false
   gateway:
-    # gRPC address of the OpenShell gateway Service.
-    address: "openshell.openshell.svc.cluster.local:8080"
+    # gRPC address of the OpenShell gateway Service. Empty derives
+    # "openshell.<namespace>.svc.cluster.local:<port>" where <namespace> is
+    # gateway.namespace (default: this release's namespace, where the bundled
+    # gateway chart installs). Set explicitly for an external gateway, e.g.
+    # "openshell.openshell.svc.cluster.local:8080".
+    address: ""
     # Namespace the gateway runs in, for the operator's egress NetworkPolicy.
-    namespace: openshell
+    # Empty = this release's namespace (where the bundled gateway installs).
+    namespace: ""
     port: 8080
   # Gateway workspace sandboxes are created in.
   workspace: default
   # Namespace the gateway creates sandbox pods in (the gateway chart's
   # server.sandboxNamespace, which defaults to its release namespace).
-  sandboxNamespace: openshell
+  # Empty = this release's namespace.
+  sandboxNamespace: ""
   tls:
     # Secret holding the operator's gateway client certificate (tls.crt,
     # tls.key) and the gateway CA (ca.crt). Empty uses a plaintext connection,
-    # for gateways installed with server.disableTls behind a TLS-terminating proxy.
+    # for gateways installed with server.disableTls behind a TLS-terminating
+    # proxy. The bundled gateway enables mTLS by default and generates the
+    # client bundle as the "openshell-client-tls" Secret in its namespace —
+    # set this to "openshell-client-tls" when using it.
     secretName: ""
     # Skip gateway certificate verification. Development only.
     insecure: false

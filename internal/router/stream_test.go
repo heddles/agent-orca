@@ -414,6 +414,33 @@ func TestStreamingTextResponseWritesDoneEvent(t *testing.T) {
 	}
 }
 
+func TestStreamingReasoningWithEmptyFinishReasonIsOneThoughtEvent(t *testing.T) {
+	// Some providers send "finish_reason": "" on every chunk. That is not the end of
+	// the thinking block, so the fragments still make one event.
+	empty := new("")
+	chunk := func(d streamDelta, fin *string) string {
+		return sseFrame(streamingChatCompletionChunk{ID: "c", Object: "chat.completion.chunk",
+			Choices: []streamChoice{{Index: 0, Delta: d, FinishReason: fin}}})
+	}
+	end := []byte(strings.Join([]string{
+		chunk(streamDelta{Role: "assistant"}, empty),
+		chunk(streamDelta{Reasoning: "The user "}, empty),
+		chunk(streamDelta{Reasoning: "wants a "}, empty),
+		chunk(streamDelta{Reasoning: "summary."}, empty),
+		chunk(streamDelta{Content: "Done."}, empty),
+		chunk(streamDelta{}, new("stop")),
+		sseDone(),
+	}, ""))
+	srv, _ := fakeProvider(t, end)
+	r := newStreamingTestRouter(t, srv.URL, writeKeyFile(t), newTestStore(t))
+	body, _ := json.Marshal(map[string]any{"model": "default", "stream": true,
+		"messages": []map[string]any{{"role": "user", "content": "hi"}}})
+	_, _, _, thoughts := consumeClientBody(t, r, body)
+	if thoughts != 1 {
+		t.Fatalf("thought events = %d, want 1 for one thinking block", thoughts)
+	}
+}
+
 func TestStreamingReasoningIsCapturedAsThoughtEvents(t *testing.T) {
 	// A thinking/reasoning model streams delta.reasoning chunks. The model-router must
 	// capture them as `thought` trace events (so the UI can render an expandable
@@ -457,9 +484,10 @@ func TestStreamingReasoningIsCapturedAsThoughtEvents(t *testing.T) {
 	if toolCalls != 0 {
 		t.Errorf("expected no tool calls, got %d", toolCalls)
 	}
-	// Both reasoning deltas must be surfaced as thought trace events.
-	if thoughts != 2 {
-		t.Errorf("expected 2 thought trace events (one per reasoning delta), got %d", thoughts)
+	// Both reasoning deltas belong to one thinking block, so they surface as one
+	// thought trace event rather than one per delta.
+	if thoughts != 1 {
+		t.Errorf("expected 1 thought trace event for the whole thinking block, got %d", thoughts)
 	}
 	if doneEvents != 1 {
 		t.Errorf("expected exactly one done trace event on the terminal text turn (stream consumers finalize on it), got %d", doneEvents)

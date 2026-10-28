@@ -127,10 +127,19 @@ func ApplyGitAccess(policy *osv1.SandboxPolicy, git *GitAccess) {
 	if policy == nil || git == nil || len(git.Repositories) == 0 {
 		return
 	}
-	// The router rule always exists and carries the sandbox's enforcement mode.
+	// Every rule CompilePolicy creates carries the sandbox's enforcement mode.
+	// Prefer the router rule for compatibility; an idle workflow sandbox has no
+	// router yet, so fall back to any other compiled endpoint.
 	enforcement := osv1.NetworkEnforcementModeAudit
 	if r, ok := policy.NetworkPolicies["agentorca-router"]; ok && len(r.Endpoints) > 0 {
 		enforcement = r.Endpoints[0].Enforcement
+	} else {
+		for _, rule := range policy.NetworkPolicies {
+			if len(rule.Endpoints) > 0 {
+				enforcement = rule.Endpoints[0].Enforcement
+				break
+			}
+		}
 	}
 	for name, rule := range policy.NetworkPolicies {
 		if !strings.HasPrefix(name, "agentorca-egress-") {

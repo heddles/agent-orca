@@ -4,6 +4,19 @@ description: Kubernetes-native AI agent orchestrator
 type: application
 version: 0.1.0
 appVersion: "0.1.0"
+# The openshell-gateway dependency is fetched from an OCI registry: run
+# "helm dependency build charts/agent-orca" before "helm install/template" on
+# a fresh checkout (Helm does not auto-download remote dependencies).
+dependencies:
+  # NVIDIA OpenShell gateway, installed into this release's namespace when
+  # openshell.enabled=true (see values.yaml). The upstream chart is published
+  # under the OCI artifact name "helm-chart"; the alias keeps its values
+  # separate from agent-orca's own openshell.* configuration.
+  - name: helm-chart
+    alias: openshell
+    version: 0.1.5
+    repository: oci://ghcr.io/nvidia/openshell
+    condition: openshell.enabled
 keywords:
   - ai
   - agents

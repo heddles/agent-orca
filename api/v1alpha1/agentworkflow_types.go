@@ -49,10 +49,16 @@ type AgentWorkflowSpec struct {
 
 	// FromTemplate creates this workflow from a template in the same namespace:
 	// on its first reconcile the controller fills in the steps (and any of
-	// description, timeout, budgetCap, onStepFailure and adaptivePolicy not set here)
+	// description, sandbox, timeout, budgetCap, onStepFailure and adaptivePolicy not set here)
 	// from the template, with the parameters substituted into the step inputs.
 	// +optional
 	FromTemplate *WorkflowFromTemplate `json:"fromTemplate,omitempty"`
+
+	// Sandbox runs the workflow's agent and container steps in one governed
+	// OpenShell sandbox, with the repository checked out before any step starts.
+	// Steps with sandbox: fresh get a separate sandbox built from the same commit.
+	// +optional
+	Sandbox *WorkflowSandboxSpec `json:"sandbox,omitempty"`
 
 	// Steps defines the DAG of agent executions. Each step names its dependencies via
 	// DependsOn; steps with no dependencies run immediately when the workflow starts.
@@ -179,6 +185,73 @@ type AdaptivePolicy struct {
 	RequireApprovalForUnlisted bool `json:"requireApprovalForUnlisted,omitempty"`
 }
 
+// WorkflowSandboxSpec describes the repository sandbox shared by a workflow.
+type WorkflowSandboxSpec struct {
+	// Image is the sandbox image. Shared container steps must name the same image
+	// in container.image, so moving a workflow between pod and sandbox execution
+	// cannot silently change what runs.
+	// +kubebuilder:validation:MinLength=1
+	Image string `json:"image"`
+
+	// ClassRef names a cluster-scoped SandboxClass. Its egress, filesystem,
+	// resource defaults, placement and minimum enforcement apply to the workflow.
+	// +optional
+	ClassRef string `json:"classRef,omitempty"`
+
+	// Repo is the GitHub repository to check out, in owner/name form.
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`
+	Repo string `json:"repo"`
+
+	// Ref is the branch, tag or commit to check out. Empty uses the remote's
+	// default branch. The resolved commit is recorded in status.sandbox.checkoutSHA.
+	// +optional
+	Ref string `json:"ref,omitempty"`
+
+	// Branch is the local work branch to create at Ref. Empty checks out a
+	// detached HEAD. Steps share this checkout; the branch is the recovery record.
+	// +optional
+	Branch string `json:"branch,omitempty"`
+
+	// Push lets steps in the shared sandbox push to Repo (the installation token
+	// gets contents: write). Fresh sandboxes stay read-only: their git policy
+	// admits clone and fetch only, so a verifier or reviewer can fetch what the
+	// writer pushed but cannot change it. Which branches a push may update is
+	// still governed by the repository's rulesets on GitHub.
+	// +optional
+	Push bool `json:"push,omitempty"`
+}
+
+// WorkflowSandboxPhase is the lifecycle of a workflow-owned sandbox.
+// +kubebuilder:validation:Enum=Provisioning;Ready;Failed
+type WorkflowSandboxPhase string
+
+// Workflow sandbox phases.
+const (
+	WorkflowSandboxPhaseProvisioning WorkflowSandboxPhase = "Provisioning"
+	WorkflowSandboxPhaseReady        WorkflowSandboxPhase = "Ready"
+	WorkflowSandboxPhaseFailed       WorkflowSandboxPhase = "Failed"
+)
+
+// WorkflowSandboxStatus records a sandbox and its immutable checkout.
+type WorkflowSandboxStatus struct {
+	// Name is the gateway's sandbox name.
+	// +optional
+	Name string `json:"name,omitempty"`
+	// ID is the gateway's stable sandbox ID, used to identify its supervisor.
+	// +optional
+	ID string `json:"id,omitempty"`
+	// Phase is Provisioning until the sandbox is ready and its checkout has
+	// completed, then Ready. Failed means the sandbox or checkout was lost.
+	// +optional
+	Phase WorkflowSandboxPhase `json:"phase,omitempty"`
+	// CheckoutSHA is the exact commit checked out in the sandbox.
+	// +optional
+	CheckoutSHA string `json:"checkoutSHA,omitempty"`
+	// GitTokenExpiry is when the workflow's GitHub installation token expires.
+	// +optional
+	GitTokenExpiry *metav1.Time `json:"gitTokenExpiry,omitempty"`
+}
+
 // WorkflowStepType says what a step does.
 // +kubebuilder:validation:Enum=agent;container;approval
 type WorkflowStepType string
@@ -187,10 +260,21 @@ type WorkflowStepType string
 const (
 	// WorkflowStepTypeAgent runs an Agent (the default).
 	WorkflowStepTypeAgent WorkflowStepType = "agent"
-	// WorkflowStepTypeContainer runs a deterministic job in a pod.
+	// WorkflowStepTypeContainer runs a deterministic job in a pod or workflow sandbox.
 	WorkflowStepTypeContainer WorkflowStepType = "container"
 	// WorkflowStepTypeApproval waits for a person's decision.
 	WorkflowStepTypeApproval WorkflowStepType = "approval"
+)
+
+// WorkflowStepSandbox selects where an agent or container step runs when the
+// workflow has spec.sandbox. Empty means shared.
+// +kubebuilder:validation:Enum=shared;fresh
+type WorkflowStepSandbox string
+
+// Workflow step sandbox placements.
+const (
+	WorkflowStepSandboxShared WorkflowStepSandbox = "shared"
+	WorkflowStepSandboxFresh  WorkflowStepSandbox = "fresh"
 )
 
 // WorkflowStep defines a single node in the workflow DAG.
@@ -200,6 +284,7 @@ const (
 // +kubebuilder:validation:XValidation:rule="!has(self.container) || (has(self.type) && self.type == 'container')",message="the container block is only for container steps"
 // +kubebuilder:validation:XValidation:rule="!has(self.type) || self.type != 'approval' || has(self.approval)",message="an approval step needs an approval block"
 // +kubebuilder:validation:XValidation:rule="!has(self.approval) || (has(self.type) && self.type == 'approval')",message="the approval block is only for approval steps"
+// +kubebuilder:validation:XValidation:rule="!has(self.sandbox) || !has(self.type) || self.type != 'approval'",message="sandbox is only for agent and container steps"
 type WorkflowStep struct {
 	// Name is a unique identifier for this step within the workflow.
 	// Used in DependsOn references and template variables.
@@ -207,10 +292,16 @@ type WorkflowStep struct {
 	Name string `json:"name"`
 
 	// Type is agent (default): run an Agent; container: run a deterministic job in a
-	// pod; approval: wait for a person to approve or reject.
+	// pod or workflow sandbox; approval: wait for a person to approve or reject.
 	// +kubebuilder:default=agent
 	// +optional
 	Type WorkflowStepType `json:"type,omitempty"`
+
+	// Sandbox selects shared (default) or fresh execution when the workflow has
+	// spec.sandbox. A fresh sandbox is built from the workflow's checked-out commit.
+	// It has no effect on approval steps and is invalid without spec.sandbox.
+	// +optional
+	Sandbox WorkflowStepSandbox `json:"sandbox,omitempty"`
 
 	// AgentRef is the name of the Agent CRD to run for this step. Agent steps only.
 	// +optional
@@ -250,11 +341,56 @@ type WorkflowStep struct {
 	// Callbacks fires webhooks when this step completes or fails.
 	// +optional
 	Callbacks *CallbackConfig `json:"callbacks,omitempty"`
+
+	// Loop makes this step the gate of a loop: when it succeeds and loop.until is
+	// false, the steps from loop.from through this one run again. Agent and container
+	// steps only; approval steps cannot be inside a loop body.
+	// +optional
+	Loop *WorkflowLoop `json:"loop,omitempty"`
 }
 
-// ContainerStep is a deterministic job: one container in its own pod, run to
-// completion. Exit code 0 is success and the tail of its output becomes the
-// step's output. The pod has no service account token, a read-only root
+// WorkflowLoop re-runs a group of steps until a condition on the gate step holds.
+// The body is loop.from, the gate (the step carrying the loop), and every step
+// between them in the dependency graph. When the gate succeeds with until false,
+// every body step goes back to Pending and runs again. Their previous outputs stay
+// readable as {{steps.<name>.output}} until they are replaced, so a body step can
+// be told what the last pass found wrong. Each pass runs under its own AgentRun,
+// pod, job and sandbox names; earlier passes remain as history.
+// +kubebuilder:validation:XValidation:rule="size(self.until) > 0 && size(self.from) > 0",message="a loop needs from and until"
+type WorkflowLoop struct {
+	// From is the first step of the loop body: the gate, or one of its ancestors.
+	// +kubebuilder:validation:Pattern=`^[a-z0-9][a-z0-9\-]*$`
+	From string `json:"from"`
+
+	// Until is evaluated each time the gate succeeds; the loop ends when it is
+	// true. Forms: steps["x"].output.contains("text"), steps["x"].output.startsWith("text"),
+	// steps["x"].output == "text" and steps["x"].phase == "Succeeded", each optionally
+	// negated with a leading !, and combined with && (no parentheses or ||).
+	// +kubebuilder:validation:MinLength=1
+	Until string `json:"until"`
+
+	// MaxIterations is the most times the body may run in total (the first pass counts).
+	// When the gate is still not satisfied after that, the gate fails and so does the
+	// workflow, unless onStepFailure is continue.
+	// +kubebuilder:validation:Minimum=2
+	// +kubebuilder:validation:Maximum=10
+	// +kubebuilder:default=3
+	// +optional
+	MaxIterations int32 `json:"maxIterations,omitempty"`
+
+	// Break ends the loop early with a failed gate. Each entry is a condition in the
+	// same form as until; the first one that is true, checked when the gate has
+	// succeeded and until is not yet true, stops the loop instead of sending the
+	// body back. Use it for a blocker another pass cannot fix, such as a step that
+	// reports it needs a human.
+	// +kubebuilder:validation:MaxItems=5
+	// +optional
+	Break []string `json:"break,omitempty"`
+}
+
+// ContainerStep is a deterministic job run to completion in its own pod or in a
+// workflow-owned sandbox. Exit code 0 is success and the tail of its output
+// becomes the step's output. A pod has no service account token, a read-only root
 // filesystem, runs as a non-root user and is denied all network traffic once
 // the cluster's NetworkPolicy controller has programmed the rules (a second or
 // two after the pod starts); /tmp and /work are writable scratch.
@@ -370,6 +506,14 @@ type WorkflowStepStatus struct {
 	// +optional
 	ApprovalID string `json:"approvalID,omitempty"`
 
+	// JobID is the detached job of a step running in an OpenShell sandbox.
+	// +optional
+	JobID string `json:"jobID,omitempty"`
+
+	// Sandbox is the fresh sandbox of a step with sandbox: fresh.
+	// +optional
+	Sandbox *WorkflowSandboxStatus `json:"sandbox,omitempty"`
+
 	// StartTime is when the step's AgentRun was created.
 	// +optional
 	StartTime *metav1.Time `json:"startTime,omitempty"`
@@ -383,9 +527,25 @@ type WorkflowStepStatus struct {
 	// +optional
 	Output string `json:"output,omitempty"`
 
-	// SpendUSD is the USD spend recorded on the step's AgentRun.
+	// SpendUSD is the USD spend recorded on the step's current AgentRun.
 	// +optional
 	SpendUSD string `json:"spendUSD,omitempty"`
+
+	// Iteration is how many times the step's loop has sent it back: 0 on the first
+	// pass. Names of the step's runs, pods, jobs and sandboxes carry it from pass 1.
+	// +optional
+	Iteration int32 `json:"iteration,omitempty"`
+
+	// Generation numbers the attempts at this step, counting loop passes and
+	// retries. Names of the step's runs, pods, jobs and sandboxes carry it, so an
+	// attempt never reuses what an earlier one left behind. It is at least Iteration.
+	// +optional
+	Generation int32 `json:"generation,omitempty"`
+
+	// PriorSpendUSD is the spend of the passes before the current one, so a loop
+	// still counts against the workflow budget.
+	// +optional
+	PriorSpendUSD string `json:"priorSpendUSD,omitempty"`
 
 	// FailureReason is a human-readable explanation when Phase is Failed.
 	// +optional
@@ -427,6 +587,10 @@ type AgentWorkflowStatus struct {
 	// Phase is the overall workflow lifecycle state.
 	// +optional
 	Phase AgentWorkflowPhase `json:"phase,omitempty"`
+
+	// Sandbox is the workflow-owned repository sandbox.
+	// +optional
+	Sandbox *WorkflowSandboxStatus `json:"sandbox,omitempty"`
 
 	// Steps holds per-step execution state, one entry per spec.steps entry.
 	// +optional

@@ -129,12 +129,8 @@ profiles:
             - host:
                 command: ["bash", "-c", "kubectl apply -f charts/agent-orca/crds/"]
                 os: [darwin, linux]
-            # Mirror the OpenShell gateway's client certificate into the operator's
-            # namespace for sandboxed agents (docs/openshell-sandbox.md). No-op when
-            # the gateway is not installed.
-            - host:
-                command: ["bash", "-c", "kubectl get secret openshell-client-tls -n openshell -o json 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); d[\"metadata\"]={\"name\":d[\"metadata\"][\"name\"]}; print(json.dumps(d))' | kubectl apply -n agent-orca-system -f - || true"]
-                os: [darwin, linux]
+            # The OpenShell gateway is installed by the agent-orca release
+            # (openshell.enabled) and generates its own client certificate Secret.
         releases:
           # CloudNativePG operator — installs CRDs + operator Deployment (first).
           - name: cloudnative-pg-operator
@@ -184,6 +180,9 @@ profiles:
               # agentorca-github-app (app-id, installation-id, private-key) is created
               # out of band.
               github.app.secretName: agentorca-github-app
+              # Slack incoming webhook (Secret webhook-notify, key url) for approval
+              # requests and workflow completion notices.
+              approvals.notifyWebhookSecret.name: webhook-notify
               # Sandboxes tolerate the autoscaled coder-agent pool (pnw-dev-agents-autoscaled,
               # tainted openshell=coder-agent:NoExecute). The pool has no label to select on,
               # so a sandbox lands there when it does not fit the regular workers.
@@ -199,7 +198,9 @@ profiles:
             setValueTemplates:
               operator.image.tag: "{{.IMAGE_TAG_ghcr_io_heddles_agent_orca_operator}}"
               mcpIngester.image.tag: "{{.IMAGE_TAG_ghcr_io_heddles_agent_orca_mcp_ingester}}"
-              modelRouter.image.tag: "{{.IMAGE_TAG_ghcr_io_heddles_agent_orca_model_router}}"
+              # Pinned by digest: the operator passes this to router pods in an env var,
+              # which skaffold does not rewrite, and a development deploy reuses the tag.
+              modelRouter.image.tag: "{{.IMAGE_TAG_ghcr_io_heddles_agent_orca_model_router}}@{{.IMAGE_DIGEST_ghcr_io_heddles_agent_orca_model_router}}"
               ui.image.tag: "{{.IMAGE_TAG_ghcr_io_heddles_agent_orca_ui_proxy}}"
               ingress.enabled: "false"
           - name: model-providers
@@ -291,10 +292,13 @@ profiles:
               operator.oidc.cookieSecure: "false"
               operator.oidc.enabled: "false"
               operator.networkPolicy.oidcEgress.enabled: "false"
+              openshell.enabled: true
             setValueTemplates:
               operator.image.tag: "{{.IMAGE_TAG_ghcr_io_heddles_agent_orca_operator}}"
               mcpIngester.image.tag: "{{.IMAGE_TAG_ghcr_io_heddles_agent_orca_mcp_ingester}}"
-              modelRouter.image.tag: "{{.IMAGE_TAG_ghcr_io_heddles_agent_orca_model_router}}"
+              # Pinned by digest: the operator passes this to router pods in an env var,
+              # which skaffold does not rewrite, and a development deploy reuses the tag.
+              modelRouter.image.tag: "{{.IMAGE_TAG_ghcr_io_heddles_agent_orca_model_router}}@{{.IMAGE_DIGEST_ghcr_io_heddles_agent_orca_model_router}}"
               ui.image.tag: "{{.IMAGE_TAG_ghcr_io_heddles_agent_orca_ui_proxy}}"
               ingress.enabled: "true"
               ingress.ingressClassName: "nginx"

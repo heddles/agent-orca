@@ -28,7 +28,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	clientgofake "k8s.io/client-go/kubernetes/fake"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -64,8 +63,9 @@ func stepsReconciler(t *testing.T, objs ...client.Object) (*AgentWorkflowReconci
 	}
 	cl := fake.NewClientBuilder().WithScheme(scheme).
 		WithStatusSubresource(&agentorcav1alpha1.AgentWorkflow{}, &corev1.Pod{}).WithObjects(objs...).Build()
+	k8s := newFakeClientsetWithLogs()
 	store := &memApprovals{}
-	return &AgentWorkflowReconciler{Client: cl, Scheme: scheme, K8s: clientgofake.NewClientset(), Approvals: store}, cl, store
+	return &AgentWorkflowReconciler{Client: cl, Scheme: scheme, K8s: k8s, Approvals: store}, cl, store
 }
 
 func stepWorkflow(steps ...agentorcav1alpha1.WorkflowStep) *agentorcav1alpha1.AgentWorkflow {
@@ -112,7 +112,7 @@ func podExists(cl client.Client, name string) bool {
 func lockedDownPod() *corev1.Pod {
 	wf := stepWorkflow(containerStep("build", "registry.example.com/tools/builder:1"))
 	wf.Spec.Steps[0].Container.Env = []agentorcav1alpha1.StepEnvVar{{Name: "TARGET", Value: "linux"}}
-	return buildStepPod(wf, &wf.Spec.Steps[0], wf.Spec.Steps[0].Container.Env, 90*time.Second)
+	return buildStepPod(wf, &wf.Spec.Steps[0], 0, wf.Spec.Steps[0].Container.Env, 90*time.Second)
 }
 
 func TestContainerStepPodHasNoAmbientAuthority(t *testing.T) {
@@ -179,7 +179,7 @@ func TestContainerStepOverrides(t *testing.T) {
 	user := int64(1500)
 	wf.Spec.Steps[0].Container.RunAsUser = &user
 	wf.Spec.Steps[0].Container.Resources = &corev1.ResourceRequirements{Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("2Gi")}}
-	pod := buildStepPod(wf, &wf.Spec.Steps[0], nil, 0)
+	pod := buildStepPod(wf, &wf.Spec.Steps[0], 0, nil, 0)
 	if *pod.Spec.SecurityContext.RunAsUser != 1500 || !*pod.Spec.SecurityContext.RunAsNonRoot {
 		t.Errorf("security context = %+v", pod.Spec.SecurityContext)
 	}
@@ -380,11 +380,11 @@ func TestContainerStepWhosePodIsGone(t *testing.T) {
 
 func TestTruncateTailKeepsTheEnd(t *testing.T) {
 	long := strings.Repeat("a", 20000) + "THE END"
-	got := truncateTail(long, maxStepOutputBytes)
+	got := truncateTail(long)
 	if !strings.HasSuffix(got, "THE END") || !strings.HasPrefix(got, "[output truncated]") || len(got) > maxStepOutputBytes+40 {
 		t.Errorf("truncated to %d bytes, prefix %q, suffix %q", len(got), got[:20], got[len(got)-7:])
 	}
-	if truncateTail("short", maxStepOutputBytes) != "short" {
+	if truncateTail("short") != "short" {
 		t.Error("a short output was changed")
 	}
 }

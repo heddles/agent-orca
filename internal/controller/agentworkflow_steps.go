@@ -123,11 +123,11 @@ func stepTimeout(wf *agentorcav1alpha1.AgentWorkflow, step *agentorcav1alpha1.Wo
 	return def
 }
 
-func truncateTail(s string, max int) string {
-	if len(s) <= max {
+func truncateTail(s string) string {
+	if len(s) <= maxStepOutputBytes {
 		return s
 	}
-	return "[output truncated]\n" + s[len(s)-max:]
+	return "[output truncated]\n" + s[len(s)-maxStepOutputBytes:]
 }
 
 func (r *AgentWorkflowReconciler) startContainerStep(ctx context.Context, wf *agentorcav1alpha1.AgentWorkflow, step *agentorcav1alpha1.WorkflowStep, ss *agentorcav1alpha1.WorkflowStepStatus) error {
@@ -145,7 +145,7 @@ func (r *AgentWorkflowReconciler) startContainerStep(ctx context.Context, wf *ag
 	for i, e := range c.Env {
 		env[i] = agentorcav1alpha1.StepEnvVar{Name: e.Name, Value: resolveTemplates(e.Value, allStatuses)}
 	}
-	pod := buildStepPod(wf, step, env, stepTimeout(wf, step, defaultContainerStepTimeout))
+	pod := buildStepPod(wf, step, ss.NameGeneration(), env, stepTimeout(wf, step, defaultContainerStepTimeout))
 	if err := controllerutil.SetControllerReference(wf, pod, r.Scheme); err != nil {
 		return fmt.Errorf("setting owner reference on step pod: %w", err)
 	}
@@ -162,7 +162,7 @@ func (r *AgentWorkflowReconciler) startContainerStep(ctx context.Context, wf *ag
 
 // buildStepPod builds the pod of a container step. It is pure so the security
 // posture can be tested without a cluster.
-func buildStepPod(wf *agentorcav1alpha1.AgentWorkflow, step *agentorcav1alpha1.WorkflowStep, env []agentorcav1alpha1.StepEnvVar, timeout time.Duration) *corev1.Pod {
+func buildStepPod(wf *agentorcav1alpha1.AgentWorkflow, step *agentorcav1alpha1.WorkflowStep, iteration int32, env []agentorcav1alpha1.StepEnvVar, timeout time.Duration) *corev1.Pod {
 	c := step.Container
 	user := stepPodUser
 	if c.RunAsUser != nil {
@@ -186,7 +186,7 @@ func buildStepPod(wf *agentorcav1alpha1.AgentWorkflow, step *agentorcav1alpha1.W
 	no, yes := false, true
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      fmt.Sprintf("%s-%s", wf.Name, step.Name),
+			Name:      fmt.Sprintf("%s-%s", wf.Name, iterStepName(step.Name, iteration)),
 			Namespace: wf.Namespace,
 			Labels:    map[string]string{labelWorkflow: wf.Name, labelWorkflowStep: step.Name, labelStepPod: "true"},
 		},
@@ -328,7 +328,7 @@ func (r *AgentWorkflowReconciler) stepLogs(ctx context.Context, pod *corev1.Pod)
 		log.FromContext(ctx).Info("reading a step pod's logs", "pod", pod.Name, "err", err.Error())
 		return ""
 	}
-	return truncateTail(strings.TrimRight(string(raw), "\n"), maxStepOutputBytes)
+	return truncateTail(strings.TrimRight(string(raw), "\n"))
 }
 
 func (r *AgentWorkflowReconciler) deleteStepPod(ctx context.Context, pod *corev1.Pod) {

@@ -710,10 +710,12 @@ func (s *UIServer) handleAnswerRun(w http.ResponseWriter, r *http.Request, ns, r
 			Labels:       run.Labels,
 		},
 		Spec: agentorcav1alpha1.AgentRunSpec{
-			AgentRef:    run.Spec.AgentRef,
-			Input:       continuationInput,
-			Timeout:     run.Spec.Timeout,
-			PriorRunRef: runName,
+			AgentRef:        run.Spec.AgentRef,
+			Input:           continuationInput,
+			Timeout:         run.Spec.Timeout,
+			RestartPolicy:   run.Spec.RestartPolicy,
+			PriorRunRef:     runName,
+			WorkflowSandbox: run.Spec.WorkflowSandbox,
 		},
 	}
 	if err := s.crdClient.Create(r.Context(), continuation); err != nil {
@@ -1999,6 +2001,10 @@ func (s *UIServer) handleListWorkflows(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *UIServer) handleGetWorkflow(w http.ResponseWriter, r *http.Request) {
+	if ns, name, step, ok := parseWorkflowRetryPath(r.URL.Path); ok {
+		s.handleRetryWorkflowStep(w, r, ns, name, step)
+		return
+	}
 	path := strings.TrimPrefix(r.URL.Path, "/api/workflows/")
 	parts := strings.SplitN(path, "/", 2)
 	if len(parts) < 2 {
@@ -2014,27 +2020,39 @@ func (s *UIServer) handleGetWorkflow(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type stepStatus struct {
-		Name           string `json:"name"`
-		AgentRef       string `json:"agentRef"`
-		Input          string `json:"input,omitempty"`
-		Phase          string `json:"phase"`
-		AgentRunRef    string `json:"agentRunRef,omitempty"`
-		Output         string `json:"output,omitempty"`
-		SpendUSD       string `json:"spendUSD,omitempty"`
-		FailureReason  string `json:"failureReason,omitempty"`
-		StartTime      string `json:"startTime,omitempty"`
-		CompletionTime string `json:"completionTime,omitempty"`
+		Name           string             `json:"name"`
+		Type           string             `json:"type,omitempty"`
+		AgentRef       string             `json:"agentRef"`
+		Input          string             `json:"input,omitempty"`
+		Phase          string             `json:"phase"`
+		AgentRunRef    string             `json:"agentRunRef,omitempty"`
+		Output         string             `json:"output,omitempty"`
+		SpendUSD       string             `json:"spendUSD,omitempty"`
+		FailureReason  string             `json:"failureReason,omitempty"`
+		StartTime      string             `json:"startTime,omitempty"`
+		CompletionTime string             `json:"completionTime,omitempty"`
+		Iteration      int32              `json:"iteration,omitempty"`
+		Loop           string             `json:"loop,omitempty"`
+		StaleOutput    bool               `json:"staleOutput,omitempty"`
+		Passes         []workflowPassView `json:"passes,omitempty"`
 	}
 	type detail struct {
-		Name           string       `json:"name"`
-		Namespace      string       `json:"namespace"`
-		Description    string       `json:"description,omitempty"`
-		Phase          string       `json:"phase"`
-		StepCount      int          `json:"stepCount"`
-		TotalSpendUSD  string       `json:"totalSpendUSD"`
-		Steps          []stepStatus `json:"steps"`
-		StartTime      string       `json:"startTime,omitempty"`
-		CompletionTime string       `json:"completionTime,omitempty"`
+		Name          string             `json:"name"`
+		Namespace     string             `json:"namespace"`
+		Description   string             `json:"description,omitempty"`
+		Phase         string             `json:"phase"`
+		StepCount     int                `json:"stepCount"`
+		TotalSpendUSD string             `json:"totalSpendUSD"`
+		Steps         []stepStatus       `json:"steps"`
+		Loops         []workflowLoopView `json:"loops,omitempty"`
+		// SandboxFailed is set when the workflow's shared sandbox never came up or was
+		// lost; retrying the "sandbox" provisions it again.
+		SandboxFailed bool `json:"sandboxFailed,omitempty"`
+		// SandboxPhase is the shared sandbox's phase while the workflow has one:
+		// Provisioning until its checkout is done.
+		SandboxPhase   string `json:"sandboxPhase,omitempty"`
+		StartTime      string `json:"startTime,omitempty"`
+		CompletionTime string `json:"completionTime,omitempty"`
 	}
 
 	d := detail{
@@ -2055,9 +2073,11 @@ func (s *UIServer) handleGetWorkflow(w http.ResponseWriter, r *http.Request) {
 
 	agentRefByStep := make(map[string]string, len(wf.Spec.Steps))
 	inputByStep := make(map[string]string, len(wf.Spec.Steps))
+	typeByStep := make(map[string]string, len(wf.Spec.Steps))
 	for _, step := range wf.Spec.Steps {
 		agentRefByStep[step.Name] = step.AgentRef
 		inputByStep[step.Name] = step.Input
+		typeByStep[step.Name] = string(step.Type)
 	}
 
 	outputByStep := make(map[string]string, len(wf.Status.Steps))
@@ -2065,7 +2085,29 @@ func (s *UIServer) handleGetWorkflow(w http.ResponseWriter, r *http.Request) {
 		outputByStep[ss.Name] = ss.Output
 	}
 
-	for _, ss := range wf.Status.Steps {
+	loops, loopOfStep := workflowLoopViews(&wf)
+	d.Loops = loops
+	d.SandboxFailed = wf.Spec.Sandbox != nil && wf.Status.Sandbox != nil &&
+		wf.Status.Sandbox.Phase == agentorcav1alpha1.WorkflowSandboxPhaseFailed
+	passesByStep := s.workflowPassHistory(r.Context(), &wf, loopOfStep)
+	if wf.Status.Sandbox != nil {
+		d.SandboxPhase = string(wf.Status.Sandbox.Phase)
+	}
+
+	// Steps get a status only once the workflow reaches them, which waits for its
+	// sandbox. Show the whole pipeline from the start, with the rest pending.
+	statuses := append([]agentorcav1alpha1.WorkflowStepStatus{}, wf.Status.Steps...)
+	seen := make(map[string]bool, len(statuses))
+	for _, ss := range statuses {
+		seen[ss.Name] = true
+	}
+	for _, step := range wf.Spec.Steps {
+		if !seen[step.Name] {
+			statuses = append(statuses, agentorcav1alpha1.WorkflowStepStatus{Name: step.Name, Phase: agentorcav1alpha1.WorkflowStepPhasePending})
+		}
+	}
+
+	for _, ss := range statuses {
 		resolvedInput := inputByStep[ss.Name]
 		for name, output := range outputByStep {
 			resolvedInput = strings.ReplaceAll(resolvedInput,
@@ -2073,6 +2115,7 @@ func (s *UIServer) handleGetWorkflow(w http.ResponseWriter, r *http.Request) {
 		}
 		st := stepStatus{
 			Name:          ss.Name,
+			Type:          typeByStep[ss.Name],
 			AgentRef:      agentRefByStep[ss.Name],
 			Input:         resolvedInput,
 			Phase:         string(ss.Phase),
@@ -2080,6 +2123,12 @@ func (s *UIServer) handleGetWorkflow(w http.ResponseWriter, r *http.Request) {
 			Output:        ss.Output,
 			SpendUSD:      ss.SpendUSD,
 			FailureReason: ss.FailureReason,
+			Iteration:     ss.Iteration,
+			Loop:          loopOfStep[ss.Name],
+			Passes:        passesByStep[ss.Name],
+			// A step sent back for another pass keeps its last output so the next pass can
+			// read it; it is not this pass's result.
+			StaleOutput: ss.Phase == agentorcav1alpha1.WorkflowStepPhasePending && ss.NameGeneration() > 0,
 		}
 		if ss.StartTime != nil {
 			st.StartTime = ss.StartTime.UTC().Format(time.RFC3339)

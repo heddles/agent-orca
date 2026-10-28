@@ -27,7 +27,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	clientgofake "k8s.io/client-go/kubernetes/fake"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -83,7 +82,7 @@ func costReconciler(t *testing.T, store *spendStore, run *agentorcav1alpha1.Agen
 		WithStatusSubresource(&agentorcav1alpha1.AgentRun{}).
 		WithObjects(run).
 		Build()
-	r := &AgentRunReconciler{Client: cl, Scheme: cl.Scheme(), K8s: clientgofake.NewClientset()}
+	r := &AgentRunReconciler{Client: cl, Scheme: cl.Scheme(), K8s: newFakeClientsetWithLogs()}
 	if store != nil {
 		r.StateStore = *store
 	}

@@ -183,3 +183,47 @@ var _ = Describe("AgentWorkflow step type admission", func() {
 		Expect(k8sClient.Status().Update(ctx, wf)).To(Succeed())
 	})
 })
+
+var _ = Describe("AgentWorkflow sandbox admission", func() {
+	ctx := context.Background()
+	container := agentorcav1alpha1.WorkflowStepTypeContainer
+
+	create := func(name string, spec agentorcav1alpha1.AgentWorkflowSpec) error {
+		wf := &agentorcav1alpha1.AgentWorkflow{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"}, Spec: spec}
+		err := k8sClient.Create(ctx, wf)
+		if err == nil {
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, wf) })
+		}
+		return err
+	}
+	spec := func() agentorcav1alpha1.AgentWorkflowSpec {
+		return agentorcav1alpha1.AgentWorkflowSpec{
+			Sandbox: &agentorcav1alpha1.WorkflowSandboxSpec{Image: "ghcr.io/acme/dev:1", Repo: "acme/widgets", Ref: "main", Branch: "factory/ticket-1"},
+			Steps: []agentorcav1alpha1.WorkflowStep{{Name: "test", Type: container, Sandbox: agentorcav1alpha1.WorkflowStepSandboxFresh,
+				Container: &agentorcav1alpha1.ContainerStep{Image: "ghcr.io/acme/dev:1", Command: []string{"make", "test"}}}},
+		}
+	}
+
+	It("accepts a workflow sandbox and records its status", func() {
+		s := spec()
+		Expect(create("sandbox-valid", s)).To(Succeed())
+		wf := &agentorcav1alpha1.AgentWorkflow{}
+		Expect(k8sClient.Get(ctx, client.ObjectKey{Namespace: "default", Name: "sandbox-valid"}, wf)).To(Succeed())
+		wf.Status.Sandbox = &agentorcav1alpha1.WorkflowSandboxStatus{Name: "ao-1", ID: "sandbox-1", Phase: agentorcav1alpha1.WorkflowSandboxPhaseReady, CheckoutSHA: "0123456789abcdef0123456789abcdef01234567"}
+		wf.Status.Steps = []agentorcav1alpha1.WorkflowStepStatus{{Name: "test", Phase: agentorcav1alpha1.WorkflowStepPhaseRunning, JobID: "job-1"}}
+		Expect(k8sClient.Status().Update(ctx, wf)).To(Succeed())
+	})
+
+	It("rejects a malformed repository and a sandbox on an approval step", func() {
+		s := spec()
+		s.Sandbox.Repo = "https://github.com/acme/widgets"
+		Expect(create("sandbox-bad-repo", s)).NotTo(Succeed())
+
+		s = spec()
+		s.Steps = []agentorcav1alpha1.WorkflowStep{{Name: "gate", Type: agentorcav1alpha1.WorkflowStepTypeApproval,
+			Sandbox: agentorcav1alpha1.WorkflowStepSandboxShared, Approval: &agentorcav1alpha1.ApprovalStep{Message: "ship?"}}}
+		err := create("sandbox-approval", s)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("sandbox is only for agent and container steps"))
+	})
+})

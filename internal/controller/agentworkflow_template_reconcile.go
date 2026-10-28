@@ -119,7 +119,7 @@ func (r *AgentWorkflowReconciler) setResolved(ctx context.Context, wf *agentorca
 // duplicate step name, a dependency that does not exist, or a cycle. Without the
 // check such a workflow would sit Pending forever.
 func (r *AgentWorkflowReconciler) checkStructure(ctx context.Context, wf *agentorcav1alpha1.AgentWorkflow) (failed bool, err error) {
-	problems := validateWorkflowStructure(wf.Spec.Steps)
+	problems := append(validateWorkflowStructure(wf.Spec.Steps), validateWorkflowSandbox(&wf.Spec)...)
 	if len(problems) == 0 {
 		return false, nil
 	}

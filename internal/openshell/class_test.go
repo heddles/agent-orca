@@ -140,6 +140,26 @@ func TestMergeEgressBroadensAccess(t *testing.T) {
 	}
 }
 
+func TestMergeSandboxSpecsUnionsPolicyOnly(t *testing.T) {
+	base := &agentorcav1alpha1.SandboxSpec{
+		Provider: agentorcav1alpha1.SandboxProviderOpenShell,
+		ClassRef: "workflow", Egress: []agentorcav1alpha1.SandboxEgressRule{{Host: "github.com"}},
+		Filesystem: &agentorcav1alpha1.SandboxFilesystem{ReadWrite: []string{"/sandbox"}},
+	}
+	addition := &agentorcav1alpha1.SandboxSpec{
+		ClassRef: "agent", Enforcement: agentorcav1alpha1.SandboxEnforcementEnforce,
+		Egress:     []agentorcav1alpha1.SandboxEgressRule{{Host: "packages.example.com"}},
+		Filesystem: &agentorcav1alpha1.SandboxFilesystem{ReadOnly: []string{"/opt/tools"}},
+	}
+	got := MergeSandboxSpecs(base, addition)
+	if got.ClassRef != "workflow" || got.Enforcement != agentorcav1alpha1.SandboxEnforcementEnforce || len(got.Egress) != 2 {
+		t.Errorf("merged = %+v", got)
+	}
+	if len(got.Filesystem.ReadOnly) != 1 || len(got.Filesystem.ReadWrite) != 1 || base.Enforcement == agentorcav1alpha1.SandboxEnforcementEnforce {
+		t.Errorf("filesystem or input mutation: got=%+v base=%+v", got.Filesystem, base)
+	}
+}
+
 func TestPresetsAreValidEgress(t *testing.T) {
 	for name, rules := range presets {
 		if len(rules) == 0 {

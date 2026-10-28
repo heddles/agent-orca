@@ -110,7 +110,7 @@ spec:
                 description: |-
                   FromTemplate creates this workflow from a template in the same namespace:
                   on its first reconcile the controller fills in the steps (and any of
-                  description, timeout, budgetCap, onStepFailure and adaptivePolicy not set here)
+                  description, sandbox, timeout, budgetCap, onStepFailure and adaptivePolicy not set here)
                   from the template, with the parameters substituted into the step inputs.
                 properties:
                   name:
@@ -199,6 +199,51 @@ spec:
                 x-kubernetes-list-map-keys:
                 - name
                 x-kubernetes-list-type: map
+              sandbox:
+                description: |-
+                  Sandbox runs the workflow's agent and container steps in one governed
+                  OpenShell sandbox, with the repository checked out before any step starts.
+                  Steps with sandbox: fresh get a separate sandbox built from the same commit.
+                properties:
+                  branch:
+                    description: |-
+                      Branch is the local work branch to create at Ref. Empty checks out a
+                      detached HEAD. Steps share this checkout; the branch is the recovery record.
+                    type: string
+                  classRef:
+                    description: |-
+                      ClassRef names a cluster-scoped SandboxClass. Its egress, filesystem,
+                      resource defaults, placement and minimum enforcement apply to the workflow.
+                    type: string
+                  image:
+                    description: |-
+                      Image is the sandbox image. Shared container steps must name the same image
+                      in container.image, so moving a workflow between pod and sandbox execution
+                      cannot silently change what runs.
+                    minLength: 1
+                    type: string
+                  push:
+                    description: |-
+                      Push lets steps in the shared sandbox push to Repo (the installation token
+                      gets contents: write). Fresh sandboxes stay read-only: their git policy
+                      admits clone and fetch only, so a verifier or reviewer can fetch what the
+                      writer pushed but cannot change it. Which branches a push may update is
+                      still governed by the repository's rulesets on GitHub.
+                    type: boolean
+                  ref:
+                    description: |-
+                      Ref is the branch, tag or commit to check out. Empty uses the remote's
+                      default branch. The resolved commit is recorded in status.sandbox.checkoutSHA.
+                    type: string
+                  repo:
+                    description: Repo is the GitHub repository to check out, in owner/name
+                      form.
+                    pattern: ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$
+                    type: string
+                required:
+                - image
+                - repo
+                type: object
               steps:
                 description: |-
                   Steps defines the DAG of agent executions. Each step names its dependencies via
@@ -379,11 +424,67 @@ spec:
                         Supports template variables:
                           {{steps.<name>.output}}  — the Output of a named predecessor step
                       type: string
+                    loop:
+                      description: |-
+                        Loop makes this step the gate of a loop: when it succeeds and loop.until is
+                        false, the steps from loop.from through this one run again. Agent and container
+                        steps only; approval steps cannot be inside a loop body.
+                      properties:
+                        break:
+                          description: |-
+                            Break ends the loop early with a failed gate. Each entry is a condition in the
+                            same form as until; the first one that is true, checked when the gate has
+                            succeeded and until is not yet true, stops the loop instead of sending the
+                            body back. Use it for a blocker another pass cannot fix, such as a step that
+                            reports it needs a human.
+                          items:
+                            type: string
+                          maxItems: 5
+                          type: array
+                        from:
+                          description: 'From is the first step of the loop body: the
+                            gate, or one of its ancestors.'
+                          pattern: ^[a-z0-9][a-z0-9\-]*$
+                          type: string
+                        maxIterations:
+                          default: 3
+                          description: |-
+                            MaxIterations is the most times the body may run in total (the first pass counts).
+                            When the gate is still not satisfied after that, the gate fails and so does the
+                            workflow, unless onStepFailure is continue.
+                          format: int32
+                          maximum: 10
+                          minimum: 2
+                          type: integer
+                        until:
+                          description: |-
+                            Until is evaluated each time the gate succeeds; the loop ends when it is
+                            true. Forms: steps["x"].output.contains("text"), steps["x"].output.startsWith("text"),
+                            steps["x"].output == "text" and steps["x"].phase == "Succeeded", each optionally
+                            negated with a leading !, and combined with && (no parentheses or ||).
+                          minLength: 1
+                          type: string
+                      required:
+                      - from
+                      - until
+                      type: object
+                      x-kubernetes-validations:
+                      - message: a loop needs from and until
+                        rule: size(self.until) > 0 && size(self.from) > 0
                     name:
                       description: |-
                         Name is a unique identifier for this step within the workflow.
                         Used in DependsOn references and template variables.
                       pattern: ^[a-z0-9][a-z0-9\-]*$
+                      type: string
+                    sandbox:
+                      description: |-
+                        Sandbox selects shared (default) or fresh execution when the workflow has
+                        spec.sandbox. A fresh sandbox is built from the workflow's checked-out commit.
+                        It has no effect on approval steps and is invalid without spec.sandbox.
+                      enum:
+                      - shared
+                      - fresh
                       type: string
                     timeout:
                       description: Timeout overrides the workflow-level timeout for
@@ -393,7 +494,7 @@ spec:
                       default: agent
                       description: |-
                         Type is agent (default): run an Agent; container: run a deterministic job in a
-                        pod; approval: wait for a person to approve or reject.
+                        pod or workflow sandbox; approval: wait for a person to approve or reject.
                       enum:
                       - agent
                       - container
@@ -419,6 +520,8 @@ spec:
                   - message: the approval block is only for approval steps
                     rule: '!has(self.approval) || (has(self.type) && self.type ==
                       ''approval'')'
+                  - message: sandbox is only for agent and container steps
+                    rule: '!has(self.sandbox) || !has(self.type) || self.type != ''approval'''
                 type: array
               timeout:
                 description: |-
@@ -526,6 +629,23 @@ spec:
                       description: FailureReason is a human-readable explanation when
                         Phase is Failed.
                       type: string
+                    generation:
+                      description: |-
+                        Generation numbers the attempts at this step, counting loop passes and
+                        retries. Names of the step's runs, pods, jobs and sandboxes carry it, so an
+                        attempt never reuses what an earlier one left behind. It is at least Iteration.
+                      format: int32
+                      type: integer
+                    iteration:
+                      description: |-
+                        Iteration is how many times the step's loop has sent it back: 0 on the first
+                        pass. Names of the step's runs, pods, jobs and sandboxes carry it from pass 1.
+                      format: int32
+                      type: integer
+                    jobID:
+                      description: JobID is the detached job of a step running in
+                        an OpenShell sandbox.
+                      type: string
                     name:
                       description: Name matches a step name in spec.steps.
                       type: string
@@ -548,6 +668,41 @@ spec:
                     podRef:
                       description: PodRef is the name of the pod of a container step.
                       type: string
+                    priorSpendUSD:
+                      description: |-
+                        PriorSpendUSD is the spend of the passes before the current one, so a loop
+                        still counts against the workflow budget.
+                      type: string
+                    sandbox:
+                      description: 'Sandbox is the fresh sandbox of a step with sandbox:
+                        fresh.'
+                      properties:
+                        checkoutSHA:
+                          description: CheckoutSHA is the exact commit checked out
+                            in the sandbox.
+                          type: string
+                        gitTokenExpiry:
+                          description: GitTokenExpiry is when the workflow's GitHub
+                            installation token expires.
+                          format: date-time
+                          type: string
+                        id:
+                          description: ID is the gateway's stable sandbox ID, used
+                            to identify its supervisor.
+                          type: string
+                        name:
+                          description: Name is the gateway's sandbox name.
+                          type: string
+                        phase:
+                          description: |-
+                            Phase is Provisioning until the sandbox is ready and its checkout has
+                            completed, then Ready. Failed means the sandbox or checkout was lost.
+                          enum:
+                          - Provisioning
+                          - Ready
+                          - Failed
+                          type: string
+                      type: object
                     source:
                       description: |-
                         Source indicates whether this step was defined statically in spec.steps
@@ -558,7 +713,7 @@ spec:
                       type: string
                     spendUSD:
                       description: SpendUSD is the USD spend recorded on the step's
-                        AgentRun.
+                        current AgentRun.
                       type: string
                     startTime:
                       description: StartTime is when the step's AgentRun was created.
@@ -748,11 +903,67 @@ spec:
                         Supports template variables:
                           {{steps.<name>.output}}  — the Output of a named predecessor step
                       type: string
+                    loop:
+                      description: |-
+                        Loop makes this step the gate of a loop: when it succeeds and loop.until is
+                        false, the steps from loop.from through this one run again. Agent and container
+                        steps only; approval steps cannot be inside a loop body.
+                      properties:
+                        break:
+                          description: |-
+                            Break ends the loop early with a failed gate. Each entry is a condition in the
+                            same form as until; the first one that is true, checked when the gate has
+                            succeeded and until is not yet true, stops the loop instead of sending the
+                            body back. Use it for a blocker another pass cannot fix, such as a step that
+                            reports it needs a human.
+                          items:
+                            type: string
+                          maxItems: 5
+                          type: array
+                        from:
+                          description: 'From is the first step of the loop body: the
+                            gate, or one of its ancestors.'
+                          pattern: ^[a-z0-9][a-z0-9\-]*$
+                          type: string
+                        maxIterations:
+                          default: 3
+                          description: |-
+                            MaxIterations is the most times the body may run in total (the first pass counts).
+                            When the gate is still not satisfied after that, the gate fails and so does the
+                            workflow, unless onStepFailure is continue.
+                          format: int32
+                          maximum: 10
+                          minimum: 2
+                          type: integer
+                        until:
+                          description: |-
+                            Until is evaluated each time the gate succeeds; the loop ends when it is
+                            true. Forms: steps["x"].output.contains("text"), steps["x"].output.startsWith("text"),
+                            steps["x"].output == "text" and steps["x"].phase == "Succeeded", each optionally
+                            negated with a leading !, and combined with && (no parentheses or ||).
+                          minLength: 1
+                          type: string
+                      required:
+                      - from
+                      - until
+                      type: object
+                      x-kubernetes-validations:
+                      - message: a loop needs from and until
+                        rule: size(self.until) > 0 && size(self.from) > 0
                     name:
                       description: |-
                         Name is a unique identifier for this step within the workflow.
                         Used in DependsOn references and template variables.
                       pattern: ^[a-z0-9][a-z0-9\-]*$
+                      type: string
+                    sandbox:
+                      description: |-
+                        Sandbox selects shared (default) or fresh execution when the workflow has
+                        spec.sandbox. A fresh sandbox is built from the workflow's checked-out commit.
+                        It has no effect on approval steps and is invalid without spec.sandbox.
+                      enum:
+                      - shared
+                      - fresh
                       type: string
                     timeout:
                       description: Timeout overrides the workflow-level timeout for
@@ -762,7 +973,7 @@ spec:
                       default: agent
                       description: |-
                         Type is agent (default): run an Agent; container: run a deterministic job in a
-                        pod; approval: wait for a person to approve or reject.
+                        pod or workflow sandbox; approval: wait for a person to approve or reject.
                       enum:
                       - agent
                       - container
@@ -788,6 +999,8 @@ spec:
                   - message: the approval block is only for approval steps
                     rule: '!has(self.approval) || (has(self.type) && self.type ==
                       ''approval'')'
+                  - message: sandbox is only for agent and container steps
+                    rule: '!has(self.sandbox) || !has(self.type) || self.type != ''approval'''
                 type: array
               phase:
                 description: Phase is the overall workflow lifecycle state.
@@ -989,11 +1202,67 @@ spec:
                             Supports template variables:
                               {{steps.<name>.output}}  — the Output of a named predecessor step
                           type: string
+                        loop:
+                          description: |-
+                            Loop makes this step the gate of a loop: when it succeeds and loop.until is
+                            false, the steps from loop.from through this one run again. Agent and container
+                            steps only; approval steps cannot be inside a loop body.
+                          properties:
+                            break:
+                              description: |-
+                                Break ends the loop early with a failed gate. Each entry is a condition in the
+                                same form as until; the first one that is true, checked when the gate has
+                                succeeded and until is not yet true, stops the loop instead of sending the
+                                body back. Use it for a blocker another pass cannot fix, such as a step that
+                                reports it needs a human.
+                              items:
+                                type: string
+                              maxItems: 5
+                              type: array
+                            from:
+                              description: 'From is the first step of the loop body:
+                                the gate, or one of its ancestors.'
+                              pattern: ^[a-z0-9][a-z0-9\-]*$
+                              type: string
+                            maxIterations:
+                              default: 3
+                              description: |-
+                                MaxIterations is the most times the body may run in total (the first pass counts).
+                                When the gate is still not satisfied after that, the gate fails and so does the
+                                workflow, unless onStepFailure is continue.
+                              format: int32
+                              maximum: 10
+                              minimum: 2
+                              type: integer
+                            until:
+                              description: |-
+                                Until is evaluated each time the gate succeeds; the loop ends when it is
+                                true. Forms: steps["x"].output.contains("text"), steps["x"].output.startsWith("text"),
+                                steps["x"].output == "text" and steps["x"].phase == "Succeeded", each optionally
+                                negated with a leading !, and combined with && (no parentheses or ||).
+                              minLength: 1
+                              type: string
+                          required:
+                          - from
+                          - until
+                          type: object
+                          x-kubernetes-validations:
+                          - message: a loop needs from and until
+                            rule: size(self.until) > 0 && size(self.from) > 0
                         name:
                           description: |-
                             Name is a unique identifier for this step within the workflow.
                             Used in DependsOn references and template variables.
                           pattern: ^[a-z0-9][a-z0-9\-]*$
+                          type: string
+                        sandbox:
+                          description: |-
+                            Sandbox selects shared (default) or fresh execution when the workflow has
+                            spec.sandbox. A fresh sandbox is built from the workflow's checked-out commit.
+                            It has no effect on approval steps and is invalid without spec.sandbox.
+                          enum:
+                          - shared
+                          - fresh
                           type: string
                         timeout:
                           description: Timeout overrides the workflow-level timeout
@@ -1003,7 +1272,7 @@ spec:
                           default: agent
                           description: |-
                             Type is agent (default): run an Agent; container: run a deterministic job in a
-                            pod; approval: wait for a person to approve or reject.
+                            pod or workflow sandbox; approval: wait for a person to approve or reject.
                           enum:
                           - agent
                           - container
@@ -1029,6 +1298,9 @@ spec:
                       - message: the approval block is only for approval steps
                         rule: '!has(self.approval) || (has(self.type) && self.type
                           == ''approval'')'
+                      - message: sandbox is only for agent and container steps
+                        rule: '!has(self.sandbox) || !has(self.type) || self.type
+                          != ''approval'''
                     proposingStep:
                       description: ProposingStep is the name of the workflow step
                         whose agent made the proposal.
@@ -1048,6 +1320,35 @@ spec:
                   - timestamp
                   type: object
                 type: array
+              sandbox:
+                description: Sandbox is the workflow-owned repository sandbox.
+                properties:
+                  checkoutSHA:
+                    description: CheckoutSHA is the exact commit checked out in the
+                      sandbox.
+                    type: string
+                  gitTokenExpiry:
+                    description: GitTokenExpiry is when the workflow's GitHub installation
+                      token expires.
+                    format: date-time
+                    type: string
+                  id:
+                    description: ID is the gateway's stable sandbox ID, used to identify
+                      its supervisor.
+                    type: string
+                  name:
+                    description: Name is the gateway's sandbox name.
+                    type: string
+                  phase:
+                    description: |-
+                      Phase is Provisioning until the sandbox is ready and its checkout has
+                      completed, then Ready. Failed means the sandbox or checkout was lost.
+                    enum:
+                    - Provisioning
+                    - Ready
+                    - Failed
+                    type: string
+                type: object
               startTime:
                 description: StartTime is when the first step was launched.
                 format: date-time
@@ -1076,6 +1377,23 @@ spec:
                       description: FailureReason is a human-readable explanation when
                         Phase is Failed.
                       type: string
+                    generation:
+                      description: |-
+                        Generation numbers the attempts at this step, counting loop passes and
+                        retries. Names of the step's runs, pods, jobs and sandboxes carry it, so an
+                        attempt never reuses what an earlier one left behind. It is at least Iteration.
+                      format: int32
+                      type: integer
+                    iteration:
+                      description: |-
+                        Iteration is how many times the step's loop has sent it back: 0 on the first
+                        pass. Names of the step's runs, pods, jobs and sandboxes carry it from pass 1.
+                      format: int32
+                      type: integer
+                    jobID:
+                      description: JobID is the detached job of a step running in
+                        an OpenShell sandbox.
+                      type: string
                     name:
                       description: Name matches a step name in spec.steps.
                       type: string
@@ -1098,6 +1416,41 @@ spec:
                     podRef:
                       description: PodRef is the name of the pod of a container step.
                       type: string
+                    priorSpendUSD:
+                      description: |-
+                        PriorSpendUSD is the spend of the passes before the current one, so a loop
+                        still counts against the workflow budget.
+                      type: string
+                    sandbox:
+                      description: 'Sandbox is the fresh sandbox of a step with sandbox:
+                        fresh.'
+                      properties:
+                        checkoutSHA:
+                          description: CheckoutSHA is the exact commit checked out
+                            in the sandbox.
+                          type: string
+                        gitTokenExpiry:
+                          description: GitTokenExpiry is when the workflow's GitHub
+                            installation token expires.
+                          format: date-time
+                          type: string
+                        id:
+                          description: ID is the gateway's stable sandbox ID, used
+                            to identify its supervisor.
+                          type: string
+                        name:
+                          description: Name is the gateway's sandbox name.
+                          type: string
+                        phase:
+                          description: |-
+                            Phase is Provisioning until the sandbox is ready and its checkout has
+                            completed, then Ready. Failed means the sandbox or checkout was lost.
+                          enum:
+                          - Provisioning
+                          - Ready
+                          - Failed
+                          type: string
+                      type: object
                     source:
                       description: |-
                         Source indicates whether this step was defined statically in spec.steps
@@ -1108,7 +1461,7 @@ spec:
                       type: string
                     spendUSD:
                       description: SpendUSD is the USD spend recorded on the step's
-                        AgentRun.
+                        current AgentRun.
                       type: string
                     startTime:
                       description: StartTime is when the step's AgentRun was created.

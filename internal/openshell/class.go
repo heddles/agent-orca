@@ -108,6 +108,31 @@ func ApplyClass(agent *agentorcav1alpha1.Agent, class *agentorcav1alpha1.Sandbox
 	return out, placement
 }
 
+// MergeSandboxSpecs unions the parts of sandbox configuration that a shared
+// workflow sandbox can honor: egress, filesystem and the stricter enforcement.
+// Runtime identity, resources, placement, tool selection and git credentials
+// stay with the base. The inputs are not modified.
+func MergeSandboxSpecs(base *agentorcav1alpha1.SandboxSpec, additions ...*agentorcav1alpha1.SandboxSpec) *agentorcav1alpha1.SandboxSpec {
+	var out *agentorcav1alpha1.SandboxSpec
+	if base != nil {
+		out = base.DeepCopy()
+	} else {
+		out = &agentorcav1alpha1.SandboxSpec{Provider: agentorcav1alpha1.SandboxProviderOpenShell}
+	}
+	for _, addition := range additions {
+		if addition == nil {
+			continue
+		}
+		if addition.Enforcement == agentorcav1alpha1.SandboxEnforcementEnforce {
+			out.Enforcement = agentorcav1alpha1.SandboxEnforcementEnforce
+		}
+		out.EgressPresets = append(out.EgressPresets, addition.EgressPresets...)
+		out.Egress = mergeEgress(slices.Concat(out.Egress, addition.Egress))
+		out.Filesystem = mergeFilesystem(out.Filesystem, addition.Filesystem)
+	}
+	return out
+}
+
 // mergeEgress folds rules for the same host and ports into one: the policy
 // may hold one endpoint per destination. The merged rule allows what either
 // allowed (the broader access, and any binary if either allowed any).

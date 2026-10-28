@@ -354,6 +354,19 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 	// emits its own [DONE] at the true end of the loop), so the per-turn
 	// suppression logic that used to live here is no longer needed.
 	lineCount := 0
+	// Reasoning arrives a few characters at a time. It is gathered here and
+	// emitted as one `thought` event when the thinking block ends (content, a
+	// tool call, the finish reason or the end of the stream), so a trace holds one
+	// entry per block rather than one per delta.
+	var thought strings.Builder
+	flushThought := func() {
+		if thought.Len() == 0 {
+			return
+		}
+		ev, _ := json.Marshal(map[string]string{"type": "thought", "content": thought.String()})
+		thought.Reset()
+		r.emitTraceEventBoth(string(ev))
+	}
 	for scanner.Scan() {
 		lineCount++
 		line := scanner.Text()
@@ -370,6 +383,13 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 			var chunk streamingChatCompletionChunk
 			if err := json.Unmarshal([]byte(data), &chunk); err == nil {
 				for _, choice := range chunk.Choices {
+					// Reasoning in this chunk precedes its content and tool calls.
+					thought.WriteString(choice.Delta.Reasoning)
+					// Some providers send an empty finish_reason on every chunk; only a
+					// real one ends the thinking block.
+					if choice.Delta.Content != "" || len(choice.Delta.ToolCalls) > 0 || (choice.FinishReason != nil && *choice.FinishReason != "") {
+						flushThought()
+					}
 					if choice.Delta.Content != "" {
 						contentBuilder.WriteString(choice.Delta.Content)
 						// Broadcast to external subscribers (operator SSE stream).
@@ -386,19 +406,6 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 					if len(choice.Delta.ToolCalls) > 0 {
 						sawToolCall = true
 						toolCalls = mergeToolCallDeltas(toolCalls, choice.Delta.ToolCalls)
-					}
-					// Surface extended-thinking (model "reasoning") progressively as
-					// `thought` trace events so it is captured in the UI (rendered as an
-					// expandable thinking panel) and replayable on refresh, rather than
-					// being silently dropped. This keeps the agentic chat flow faithful
-					// to the provider's full output instead of terminating on a
-					// content-less thinking block.
-					if choice.Delta.Reasoning != "" {
-						ev, _ := json.Marshal(map[string]string{
-							"type":    "thought",
-							"content": choice.Delta.Reasoning,
-						})
-						r.emitTraceEventBoth(string(ev))
 					}
 					if choice.FinishReason != nil {
 						finishReason = *choice.FinishReason
@@ -425,6 +432,7 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 		_, _ = fmt.Fprintf(w, "%s\n", line)
 		flusher.Flush()
 	}
+	flushThought()
 	slog.Debug("scanner finished", "isContinuation", isContinuation, "provider", provider.Name, "lines", lineCount, "sawToolCall", sawToolCall, "toolCalls", len(toolCalls))
 
 	spendOutcome := spendOutcomeSuccess
