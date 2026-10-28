@@ -53,6 +53,26 @@ var _ = Describe("Routing telemetry", Label("routing-e2e"), Ordered, func() {
 		return strings.TrimSpace(out)
 	}
 
+	// When a spec fails, say what the pipeline looked like: the failure is in
+	// the router, the operator or the database, and a bare timeout names none.
+	AfterEach(func() {
+		if !CurrentSpecReport().Failed() || !routingE2E() {
+			return
+		}
+		dump := func(title string, cmd *exec.Cmd) {
+			out, err := utils.Run(cmd)
+			_, _ = fmt.Fprintf(GinkgoWriter, "\n--- %s (err=%v) ---\n%s\n", title, err, out)
+		}
+		dump("routing_events", exec.Command("kubectl", "exec", "deploy/e2e-postgres", "-n", ns, "--", "psql", "-U", "postgres",
+			"-d", "agentorca", "-c", "select decision_id, run_name, provider, path, prompt_tokens, cost_usd, ttft_ms from routing_events"))
+		dump("migrations", exec.Command("kubectl", "exec", "deploy/e2e-postgres", "-n", ns, "--", "psql", "-U", "postgres",
+			"-d", "agentorca", "-c", "select version, name from schema_migrations"))
+		dump("operator log (routing, postgres)", exec.Command("sh", "-c", fmt.Sprintf(
+			"kubectl logs deploy/agent-orca-controller-manager -n %s --tail=400 | grep -iE 'routing|postgres|migrat|events' | tail -40", namespace)))
+		dump("router log", exec.Command("sh", "-c", fmt.Sprintf(
+			"kubectl logs agentorca-run-%s -n %s -c model-router --tail=200 | grep -iE 'routing|telemetry|events|operator|WARN|ERROR' | tail -40", runName, ns)))
+	})
+
 	BeforeAll(func() {
 		if !routingE2E() {
 			Skip("requires ROUTING_E2E=true (fake LLM and PostgreSQL are deployed by this spec)")
