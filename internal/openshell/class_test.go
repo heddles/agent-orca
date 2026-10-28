@@ -162,3 +162,47 @@ func countHost(rules []agentorcav1alpha1.SandboxEgressRule, host string) int {
 	}
 	return n
 }
+
+func TestPresetEgress(t *testing.T) {
+	tests := []struct {
+		name    string
+		preset  agentorcav1alpha1.SandboxEgressPreset
+		noRules bool   // an unknown preset must expand to nothing
+		host    string // a host the rules must include, when they exist
+	}{
+		{"go preset", agentorcav1alpha1.SandboxEgressPresetGo, false, "proxy.golang.org"},
+		{"npm preset", agentorcav1alpha1.SandboxEgressPresetNPM, false, ""},
+		{"pypi preset", agentorcav1alpha1.SandboxEgressPresetPyPI, false, ""},
+		{"github-read preset", agentorcav1alpha1.SandboxEgressPresetGitHubRead, false, ""},
+		{"unknown preset", agentorcav1alpha1.SandboxEgressPreset("no-such-preset"), true, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := PresetEgress(tt.preset)
+			if tt.noRules {
+				if len(got) != 0 {
+					t.Errorf("PresetEgress(%q) = %v, want no rules for an unknown preset", tt.preset, got)
+				}
+				return
+			}
+			if len(got) == 0 {
+				t.Fatalf("PresetEgress(%q) returned no rules", tt.preset)
+			}
+			if tt.host != "" {
+				if _, ok := hosts(got)[tt.host]; !ok {
+					t.Errorf("PresetEgress(%q) lacks %s: %v", tt.preset, tt.host, got)
+				}
+			}
+		})
+	}
+
+	// The preset map must not leak through: editing a returned rule cannot
+	// change what the next caller gets.
+	t.Run("returns a copy", func(t *testing.T) {
+		got := PresetEgress(agentorcav1alpha1.SandboxEgressPresetNPM)
+		got[0].Host = "tampered.example.com"
+		if again := PresetEgress(agentorcav1alpha1.SandboxEgressPresetNPM); again[0].Host != "registry.npmjs.org" {
+			t.Errorf("after editing a returned rule, host = %s: PresetEgress handed out the map's own slice", again[0].Host)
+		}
+	})
+}
