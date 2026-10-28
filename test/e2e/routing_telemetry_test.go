@@ -37,12 +37,14 @@ import (
 // (test/fakellm), so the assertions are exact.
 var _ = Describe("Routing telemetry", Label("routing-e2e"), Ordered, func() {
 	const (
-		ns         = "default"
-		fakeImage  = "example.com/fakellm:v0.0.1"
-		pgDSN      = "postgres://postgres:e2e@e2e-postgres.default.svc:5432/agentorca?sslmode=disable"
-		runName    = "e2e-routing-telemetry"
-		localPort  = 19090
-		routerPort = 8080
+		ns        = "default"
+		fakeImage = "example.com/fakellm:v0.0.1"
+		// internalAPIService fronts the operator's internal API (port 8082) for routers.
+		internalAPIService = "agent-orca-internal-api"
+		pgDSN              = "postgres://postgres:e2e@e2e-postgres.default.svc:5432/agentorca?sslmode=disable"
+		runName            = "e2e-routing-telemetry"
+		localPort          = 19090
+		routerPort         = 8080
 	)
 
 	psql := func(query string) string {
@@ -140,9 +142,23 @@ spec:
 			Expect(err).NotTo(HaveOccurred(), "deployment %s did not become ready", d)
 		}
 
-		By("pointing the operator at PostgreSQL")
+		// The Helm chart gives routers the operator's internal API through a Service and
+		// OPERATOR_API_URL; the kustomize deployment this suite runs on has neither. A
+		// router without the URL posts to http://localhost:8082, which in its own pod is
+		// its Gemini listener, so every post would 404.
+		By("giving routers the operator's internal API and pointing the operator at PostgreSQL")
+		Expect(applyYAML(fmt.Sprintf(`
+apiVersion: v1
+kind: Service
+metadata: {name: %[2]s, namespace: %[1]s}
+spec:
+  selector: {control-plane: controller-manager}
+  ports: [{name: internal-api, port: 8082, targetPort: 8082}]
+`, namespace, internalAPIService))).To(Succeed())
 		_, err = utils.Run(exec.Command("kubectl", "set", "env", "deployment/agent-orca-controller-manager",
-			"POSTGRES_DSN="+pgDSN, "-n", namespace))
+			"POSTGRES_DSN="+pgDSN,
+			fmt.Sprintf("OPERATOR_API_URL=http://%s.%s.svc.cluster.local:8082", internalAPIService, namespace),
+			"-n", namespace))
 		Expect(err).NotTo(HaveOccurred())
 		_, err = utils.Run(exec.Command("kubectl", "rollout", "status", "deployment/agent-orca-controller-manager",
 			"-n", namespace, "--timeout=180s"))
@@ -215,6 +231,7 @@ spec:
 		deleteResource("modelprovider", "e2e-fake-strong", ns)
 		deleteResource("deployment", "fakellm", ns)
 		deleteResource("deployment", "e2e-postgres", ns)
+		deleteResource("service", internalAPIService, namespace)
 	})
 
 	It("records one routing event per LLM call with its cost and path", func() {
