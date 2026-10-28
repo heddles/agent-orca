@@ -64,6 +64,7 @@ var targets = []target{
 	{"Dockerfile.mcp-ingester", "./cmd/mcp-ingester"},
 	{"Dockerfile.ui-proxy", "./cmd/ui-proxy"},
 	{"Dockerfile.dev-sandbox", "./cmd/coder-agent"},
+	{"Dockerfile.go.openai-reference", "./pkg/go/openai-reference"},
 }
 
 func main() {
