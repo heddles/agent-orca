@@ -29,6 +29,9 @@ import (
 	sy "github.com/NVIDIA-NeMo/Switchyard/bindings/go"
 )
 
+// algStageRouter is the type and the reported name of the stage router.
+const algStageRouter = "stage_router"
+
 const (
 	strong = "strong"
 	weak   = "weak"
@@ -135,7 +138,7 @@ func TestStageRouter_ResultCarriesTheAlgorithmsEvidence(t *testing.T) {
 	if err := json.Unmarshal(got.Metadata, &meta); err != nil {
 		t.Fatalf("metadata %s: %v", got.Metadata, err)
 	}
-	if meta.Algorithm != "stage_router" || meta.Evidence.Source != "dimensions" || meta.Evidence.Confidence <= 0.5 {
+	if meta.Algorithm != algStageRouter || meta.Evidence.Source != "dimensions" || meta.Evidence.Confidence <= 0.5 {
 		t.Errorf("metadata = %s", got.Metadata)
 	}
 }

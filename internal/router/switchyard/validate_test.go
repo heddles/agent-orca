@@ -27,7 +27,7 @@ import (
 func TestValidateAlgorithm_AcceptsTheSupportedAlgorithms(t *testing.T) {
 	readGuest(t)
 	for name, spec := range map[string]string{
-		"stage_router": stageSpec,
+		algStageRouter: stageSpec,
 		"composite":    compositeSpec,
 		"random":       `{"type":"random","targets":["strong","weak"]}`,
 		"passthrough":  `{"type":"passthrough","target":"strong"}`,
