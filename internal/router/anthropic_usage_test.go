@@ -31,7 +31,7 @@ func usageOf(t *testing.T, sse string) TokenUsage {
 	var got *TokenUsage
 	for line := range strings.SplitSeq(out.String(), "\n") {
 		data, ok := strings.CutPrefix(line, "data: ")
-		if !ok || data == "[DONE]" {
+		if !ok || data == sseDoneData {
 			continue
 		}
 		var chunk streamingChatCompletionChunk
