@@ -68,6 +68,8 @@ type Server struct {
 	// routingEvents stores routing telemetry (routing_events_api.go). nil drops
 	// posted events.
 	routingEvents RoutingEventStore
+	// shadow stores shadow benchmarking results and budget leases (shadow_api.go).
+	shadow ShadowStore
 }
 
 // New creates a new API server.
