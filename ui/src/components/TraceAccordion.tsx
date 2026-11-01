@@ -1,5 +1,5 @@
 /** Collapsible execution trace accordion. */
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import Markdown from 'react-markdown'
 import { STREAM_EVENT_TYPE } from '../contracts/events'
 import { isSSEClientParseEventType } from '../api/traceStream'
@@ -174,6 +174,8 @@ function backendTypeIcon(backendType?: string): IconComponent {
   }
 }
 
+type RoutedEvent = Extract<TraceEvent, { type: 'routing' } | { type: typeof STREAM_EVENT_TYPE.modelSelected }>
+
 function TraceRow({ entry, markdown }: { entry: TraceEntry; markdown: boolean }) {
   const { event, ts } = entry
   const time = ts.slice(11, 23)
@@ -200,6 +202,48 @@ function TraceRow({ entry, markdown }: { entry: TraceEntry; markdown: boolean })
   const hi: React.CSSProperties = { color: 'var(--ds-text-primary)' }
   const content: React.CSSProperties = { color: 'var(--ds-text-secondary)', flex: 1, lineHeight: 1.5, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }
   const mdWrap: React.CSSProperties = { color: 'var(--ds-text-secondary)', fontFamily: 'system-ui,sans-serif', fontSize: 12, lineHeight: 1.5, flex: 1 }
+
+  // The "routed" row: the reason is already one plain sentence, and the fields
+  // that back it sit behind a disclosure so a reader can see why this model.
+  const routedRow = (ev: RoutedEvent, iconColor: string) => {
+    const pct = ev.confidence != null ? Math.round(ev.confidence * 100) : null
+    const facts: Array<[string, string | undefined]> = [
+      ['Provider', ev.provider],
+      ['Model', ev.model],
+      ['Strategy', ev.strategy],
+      ['Algorithm', ev.algorithm],
+      ['Label', ev.label],
+      ['Stage', ev.stage],
+      ['Path', ev.path],
+      ['Candidates', ev.candidates?.join(' → ')],
+      ['Decision', ev.decisionId],
+    ]
+    const shown = facts.filter(([, v]) => v)
+    return (
+      <div style={row}>
+        <span style={muted}>{time}</span>
+        <Icon icon={ICON.routed} size={14} color={iconColor} />
+        <span style={content}>
+          <span style={hi}>routed</span> {ev.model}
+          {ev.reason ? <> — {ev.reason}</> : null}
+          {pct != null ? <> (confidence: {pct}%)</> : null}
+          {shown.length > 0 && (
+            <details data-testid="routing-details" style={{ marginTop: 2 }}>
+              <summary style={{ ...muted, cursor: 'pointer' }}>why this model</summary>
+              <dl style={{ margin: '4px 0 0', display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '2px 12px' }}>
+                {shown.map(([k, v]) => (
+                  <Fragment key={k}>
+                    <dt style={muted}>{k}</dt>
+                    <dd style={{ margin: 0, wordBreak: 'break-all' }}>{v}</dd>
+                  </Fragment>
+                ))}
+              </dl>
+            </details>
+          )}
+        </span>
+      </div>
+    )
+  }
 
   switch (event.type) {
     case 'token':
@@ -287,13 +331,7 @@ function TraceRow({ entry, markdown }: { entry: TraceEntry; markdown: boolean })
         </div>
       )
     case STREAM_EVENT_TYPE.modelSelected:
-      return (
-        <div style={row}>
-          <span style={muted}>{time}</span>
-          <Icon icon={ICON.routed} size={14} color="var(--ds-purple)" />
-          <span style={content}><span style={hi}>routed</span> {event.model} — {event.reason} (confidence: {(event.confidence * 100).toFixed(0)}%)</span>
-        </div>
-      )
+      return routedRow(event, 'var(--ds-purple)')
     case STREAM_EVENT_TYPE.finalOutput:
       return (
         <div style={{ ...row, background: 'var(--ds-trace-success-bg)', borderRadius: 4, padding: '4px 8px', margin: '2px 0' }}>
@@ -498,21 +536,8 @@ function TraceRow({ entry, markdown }: { entry: TraceEntry; markdown: boolean })
         </div>
       )
     }
-    case 'routing': {
-      const pct = event.confidence != null ? Math.round(event.confidence * 100) : null
-      return (
-        <div style={row}>
-          <span style={muted}>{time}</span>
-          <Icon icon={ICON.routed} size={14} color="var(--ds-accent)" />
-          <span style={content}>
-            <span style={hi}>routed</span> {event.model}
-            {event.strategy || event.provider ? <> — [{event.strategy}] {event.provider}</> : null}
-            {event.reason ? <> — {event.reason}</> : null}
-            {pct != null ? <> (confidence: {pct}%)</> : null}
-          </span>
-        </div>
-      )
-    }
+    case 'routing':
+      return routedRow(event, 'var(--ds-accent)')
     case 'hindsight': {
       const opLabel =
         event.op === 'recall'
