@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Rating how models were chosen** — thumbs up or down on a run or on one routing decision, with an
+  optional comment. In the run view the thumbs sit on each "routed" row and under the output; through
+  the task API it is `POST /v1/tasks/{id}/feedback`, and through the UI API
+  `POST /api/runs/{ns}/{name}/feedback` (`GET` returns the caller's own ratings). Rating the same
+  target again replaces the earlier rating. Ratings are stored in `routing_feedback` (migration
+  `0004`), which needs PostgreSQL: without it the endpoints answer 503 rather than drop the rating.
 - **A plain reason for every routing decision** — the reason on a decision is now one sentence that
   says what was chosen and why, for example "Escalated to sonnet-5-5: tool calls have been failing
   repeatedly (stage tool-exec; stage_router override)". It covers every Switchyard label, every rule,

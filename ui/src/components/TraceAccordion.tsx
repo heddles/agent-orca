@@ -5,6 +5,7 @@ import { STREAM_EVENT_TYPE } from '../contracts/events'
 import { isSSEClientParseEventType } from '../api/traceStream'
 import type { TraceEntry, TraceEvent } from '../api/sse'
 import { MCPAppFrame } from './MCPAppFrame'
+import { FeedbackThumbs, useRunFeedback, type FeedbackTarget, type RunFeedback } from './FeedbackThumbs'
 import { Icon, ICON } from '../lib/icons'
 import type { IconComponent } from '../lib/icons'
 
@@ -12,6 +13,8 @@ interface Props {
   entries: TraceEntry[]
   streaming?: boolean
   markdown?: boolean
+  /** The run these entries belong to; with it, each routed row can be rated. */
+  feedbackRun?: FeedbackTarget
 }
 
 /** Fun loading quips shown while trace events are being retrieved.
@@ -48,7 +51,8 @@ const TRACE_FILTERS = [
 ] as const
 type TraceFilter = typeof TRACE_FILTERS[number]['key']
 
-export function TraceAccordion({ entries, streaming, markdown }: Props) {
+export function TraceAccordion({ entries, streaming, markdown, feedbackRun }: Props) {
+  const feedback = useRunFeedback(feedbackRun)
   const [open, setOpen] = useState(false)
   const [filter, setFilter] = useState<TraceFilter>('all')
   // Pick a random quip; cycles while in the empty/loading state.
@@ -154,7 +158,7 @@ export function TraceAccordion({ entries, streaming, markdown }: Props) {
             <div style={s.empty}>No events match the "{TRACE_FILTERS.find(f => f.key === filter)?.label}" filter.</div>
           )}
           {filteredEntries.map((entry) => (
-            <TraceRow key={entry.id} entry={entry} markdown={markdown ?? false} />
+            <TraceRow key={entry.id} entry={entry} markdown={markdown ?? false} feedback={feedback} />
           ))}
         </div>
       )}
@@ -176,7 +180,7 @@ function backendTypeIcon(backendType?: string): IconComponent {
 
 type RoutedEvent = Extract<TraceEvent, { type: 'routing' } | { type: typeof STREAM_EVENT_TYPE.modelSelected }>
 
-function TraceRow({ entry, markdown }: { entry: TraceEntry; markdown: boolean }) {
+function TraceRow({ entry, markdown, feedback }: { entry: TraceEntry; markdown: boolean; feedback: RunFeedback | null }) {
   const { event, ts } = entry
   const time = ts.slice(11, 23)
   const childLabel = entry.childRunName
@@ -227,6 +231,7 @@ function TraceRow({ entry, markdown }: { entry: TraceEntry; markdown: boolean })
           <span style={hi}>routed</span> {ev.model}
           {ev.reason ? <> — {ev.reason}</> : null}
           {pct != null ? <> (confidence: {pct}%)</> : null}
+          {feedback && ev.decisionId && <FeedbackThumbs feedback={feedback} decisionId={ev.decisionId} label={`routing to ${ev.model}`} />}
           {shown.length > 0 && (
             <details data-testid="routing-details" style={{ marginTop: 2 }}>
               <summary style={{ ...muted, cursor: 'pointer' }}>why this model</summary>
