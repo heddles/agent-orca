@@ -16,7 +16,9 @@ limitations under the License.
 package apiserver
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -28,6 +30,7 @@ import (
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
 	"github.com/heddles/agent-orca/internal/postgresql"
+	"github.com/heddles/agent-orca/internal/router"
 )
 
 type fakeShadowStore struct {
@@ -246,5 +249,46 @@ func TestTakeShadowLease_Rejections(t *testing.T) {
 	}
 	if w := shadowPost(s.takeShadowLease, shadowCaller, `{"benchmark":"nope","amountUsd":0.1}`); w.Code != http.StatusNotFound {
 		t.Errorf("unknown benchmark = %d, want 404", w.Code)
+	}
+}
+
+// The router and the operator define the result separately (the router image
+// must not link the database package). This pins them to one wire format.
+func TestShadowResultWireFormatMatchesRouter(t *testing.T) {
+	sent := router.ShadowResultEnvelope{LeaseID: 4, Result: router.ShadowResult{
+		DecisionID: "d", Benchmark: "b", Stage: "chat", SYLabel: "override", Agent: "coder", WorkflowStep: "step",
+		ServedProvider: "a", ShadowProvider: "b", Winner: "tie", Inconsistent: true, JudgeConfidence: 0.5,
+		JudgeProvider: "j", Dimensions: json.RawMessage(`{"correctness":"A"}`), JudgeReason: "r",
+		ShadowPromptTokens: 1, ShadowCompletionTokens: 2, ShadowCostUSD: 0.1, JudgeCostUSD: 0.2,
+		ShadowLatencyMS: 3, ShadowToolCalls: 4, ShadowError: "e", Transcript: json.RawMessage(`{"t":1}`),
+	}}
+	raw, err := json.Marshal(sent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got shadowResultRequest
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&got); err != nil {
+		t.Fatalf("the operator does not accept what the router sends: %v\n%s", err, raw)
+	}
+	back, _ := json.Marshal(got)
+	var a, b map[string]map[string]any
+	_ = json.Unmarshal(raw, &a)
+	_ = json.Unmarshal(back, &b)
+	delete(a["result"], "createdAt")
+	delete(b["result"], "createdAt")
+	// The operator fills these from the URL and the run, never from the body.
+	for _, k := range []string{"namespace", "sourceKind", "sourceName", "selector", "selectorGeneration", "tenant"} {
+		delete(b["result"], k)
+	}
+	// agent is also sent by the router but the operator overwrites it.
+	if len(a["result"]) != len(b["result"]) {
+		t.Fatalf("router sent %d fields, operator kept %d:\nrouter:   %s\noperator: %s", len(a["result"]), len(b["result"]), raw, back)
+	}
+	for k, v := range a["result"] {
+		if jsonOfValue(b["result"][k]) != jsonOfValue(v) {
+			t.Errorf("field %q: router %s, operator %s", k, jsonOfValue(v), jsonOfValue(b["result"][k]))
+		}
 	}
 }

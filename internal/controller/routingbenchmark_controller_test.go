@@ -31,6 +31,7 @@ import (
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
 	"github.com/heddles/agent-orca/internal/postgresql"
+	"github.com/heddles/agent-orca/internal/router"
 )
 
 const benchJudge = "judge"
@@ -255,5 +256,114 @@ func TestReconcileBenchmark_WithoutPostgresReportsIt(t *testing.T) {
 	}
 	if got.Status.LastEvaluated != nil {
 		t.Error("evaluated results without a store")
+	}
+}
+
+// --- delivery to the router ---------------------------------------------------
+
+// runSource is an AgentRun labelled team=a.
+var runSource = shadowSource{RunLabels: map[string]string{"team": "a"}}
+
+func shadowFixture(t *testing.T, mutate func(*agentorcav1alpha1.RoutingBenchmark)) (shadowRouting, error) {
+	t.Helper()
+	return shadowFixtureFor(t, runSource, mutate)
+}
+
+func shadowFixtureFor(t *testing.T, src shadowSource, mutate func(*agentorcav1alpha1.RoutingBenchmark)) (shadowRouting, error) {
+	t.Helper()
+	b, sel := benchmarkFixture()
+	b.Spec.Shadow = &agentorcav1alpha1.ShadowSpec{Enabled: true, SampleRate: "0.25", MaxPerRun: 2}
+	if mutate != nil {
+		mutate(b)
+	}
+	scheme := runtime.NewScheme()
+	if err := agentorcav1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	agent := agentFixture(benchAgent, map[string]string{"app": "x"})
+	objs := []client.Object{b, sel, agent, &agentorcav1alpha1.ModelProvider{ObjectMeta: metav1.ObjectMeta{Name: benchJudge, Namespace: "ns"}}}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
+	routing := selectorRouting{Providers: []router.ProviderConfig{{Name: "strong"}, {Name: "weak"}}}
+	return resolveShadow(context.Background(), c, agent, src, routing)
+}
+
+func TestResolveShadow_BuildsConfigAndAuxJudge(t *testing.T) {
+	got, err := shadowFixture(t, nil)
+	if err != nil || got.Config == nil {
+		t.Fatalf("shadow = %+v, %v", got, err)
+	}
+	c := got.Config
+	if c.Benchmark != "bench" || c.SampleRate != 0.25 || c.MaxPerRun != 2 || c.Judge != benchJudge || c.Arms != "counterfactual" {
+		t.Errorf("config = %+v", c)
+	}
+	if !c.PositionSwap || !c.IncludeToolTurns || c.JudgeMaxTokens != 512 {
+		t.Errorf("defaults not applied: %+v", c)
+	}
+	if len(got.Aux) != 1 || got.Aux[0].Name != benchJudge || got.Aux[0].Weight != 0 || !strings.HasSuffix(got.Aux[0].APIKeyFile, "/judge/api-key") {
+		t.Errorf("aux = %+v", got.Aux)
+	}
+	if names := got.secretNames(); len(names) != 1 || names[0] != benchJudge {
+		t.Errorf("secret names = %v", names)
+	}
+}
+
+func TestResolveShadow_NotBenchmarked(t *testing.T) {
+	for name, mutate := range map[string]func(*agentorcav1alpha1.RoutingBenchmark){
+		"disabled":    func(b *agentorcav1alpha1.RoutingBenchmark) { b.Spec.Shadow.Enabled = false },
+		"other agent": func(b *agentorcav1alpha1.RoutingBenchmark) { b.Spec.AgentRefs = []string{"unrelated"} },
+		"selector does not match": func(b *agentorcav1alpha1.RoutingBenchmark) {
+			b.Spec.AgentRefs = nil
+			b.Spec.AgentSelector = &metav1.LabelSelector{MatchLabels: map[string]string{"app": "y"}}
+		},
+		"no agents named": func(b *agentorcav1alpha1.RoutingBenchmark) { b.Spec.AgentRefs = nil },
+		"run label excluded": func(b *agentorcav1alpha1.RoutingBenchmark) {
+			b.Spec.Shadow.ExcludeRunSelector = &metav1.LabelSelector{MatchLabels: map[string]string{"team": "a"}}
+		},
+		"judge not found": func(b *agentorcav1alpha1.RoutingBenchmark) { b.Spec.Judge.ProviderRef = "ghost" },
+		"no shadow block": func(b *agentorcav1alpha1.RoutingBenchmark) { b.Spec.Shadow = nil },
+	} {
+		got, err := shadowFixture(t, mutate)
+		if err != nil || got.Config != nil || len(got.Aux) != 0 {
+			t.Errorf("%s: shadow = %+v, %v; want none", name, got, err)
+		}
+	}
+}
+
+// The benchmark follows the Agent, however its work is done.
+func TestResolveShadow_CoversAnAgentByLabelOrByAnEmptySelector(t *testing.T) {
+	for name, sel := range map[string]*metav1.LabelSelector{
+		"label":    {MatchLabels: map[string]string{"app": "x"}},
+		"every":    {},
+		"set-expr": {MatchExpressions: []metav1.LabelSelectorRequirement{{Key: "app", Operator: metav1.LabelSelectorOpIn, Values: []string{"x", "z"}}}},
+	} {
+		got, err := shadowFixture(t, func(b *agentorcav1alpha1.RoutingBenchmark) {
+			b.Spec.AgentRefs, b.Spec.AgentSelector = nil, sel
+		})
+		if err != nil || got.Config == nil {
+			t.Errorf("%s: shadow = %+v, %v; want the Agent covered", name, got, err)
+		}
+	}
+}
+
+func TestResolveShadow_DeploymentHasNoRunCapAndIgnoresRunLabels(t *testing.T) {
+	got, err := shadowFixtureFor(t, shadowSource{Deployment: true}, func(b *agentorcav1alpha1.RoutingBenchmark) {
+		b.Spec.Shadow.ExcludeRunSelector = &metav1.LabelSelector{MatchLabels: map[string]string{"team": "a"}}
+	})
+	if err != nil || got.Config == nil {
+		t.Fatalf("shadow = %+v, %v; a deployment is not an AgentRun and run labels do not exclude it", got, err)
+	}
+	if got.Config.MaxPerRun != 0 {
+		t.Errorf("MaxPerRun = %d, want 0 (no local cap; the operator limits samples per hour)", got.Config.MaxPerRun)
+	}
+	run, _ := shadowFixture(t, nil)
+	if run.Config.MaxPerRun != 2 {
+		t.Errorf("a run keeps its cap, got %d", run.Config.MaxPerRun)
+	}
+}
+
+func TestResolveShadow_JudgeThatIsAnArmNeedsNoExtraMount(t *testing.T) {
+	got, err := shadowFixture(t, func(b *agentorcav1alpha1.RoutingBenchmark) { b.Spec.Judge.ProviderRef = "strong" })
+	if err != nil || got.Config == nil || len(got.Aux) != 0 {
+		t.Errorf("shadow = %+v, %v; a judge the selector already routes to is already mounted", got, err)
 	}
 }
