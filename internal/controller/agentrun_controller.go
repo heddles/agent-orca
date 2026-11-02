@@ -1077,6 +1077,11 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 	fsCfg, fsDefs := filesystemToolCfg(agent.Spec.Filesystem)
 	toolDefs = append(toolDefs, fsDefs...)
 
+	// sandbox_exec: shell commands in a sandbox the operator keeps for the run,
+	// gated by Agent.spec.shell.
+	shellCfg, shellDefs := shellToolCfg(agent.Spec.Shell)
+	toolDefs = append(toolDefs, shellDefs...)
+
 	// Resolve KnowledgeBases from Agent spec.
 	var kbConfigs []router.KnowledgeBaseConfig
 	for _, kbName := range agent.Spec.KnowledgeBases {
@@ -1295,6 +1300,7 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 		LongTermMemory:             longTermMemory,
 		Hindsight:                  hindsightConfig(agent, r.HindsightURL),
 		Filesystem:                 fsCfg,
+		Shell:                      shellCfg,
 	}
 	if agent.Spec.Runtime.InputMode == "http" {
 		port := agent.Spec.Runtime.InputPort

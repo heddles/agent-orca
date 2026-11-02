@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Sandbox shell for agents** (`Agent.spec.shell`) — a built-in `sandbox_exec` tool runs
+  shell commands in an OpenShell sandbox the operator creates for the run on the first call
+  and deletes when the run ends. The agent stays in its normal pod; the SandboxClass it names
+  is the only policy on the sandbox. See `docs/sandbox-shell.md`.
 - **Hindsight API-key authentication** (`hindsight.apiKeySecret` chart value, fixes the
   application-level half of #58) — the model-router sends
   `Authorization: Bearer <key>` on hindsight bank/recall/retain calls so hindsight can
