@@ -415,7 +415,6 @@ func main() {
 	}
 	evaluation := &controller.RoutingEvaluationReconciler{
 		Client: mgr.GetClient(), Scheme: mgr.GetScheme(), Disabled: !routingRecommendations,
-		Recorder: mgr.GetEventRecorderFor("routingevaluation"),
 	}
 	if pgStore != nil {
 		evaluation.Source = pgStore
@@ -483,7 +482,7 @@ func main() {
 	// A recommendation is applied only after an approver agrees, so applying needs
 	// the same PostgreSQL-backed approvals as the other approval flows.
 	if err := (&controller.RoutingRecommendationReconciler{
-		Client: mgr.GetClient(), Scheme: mgr.GetScheme(), Recorder: mgr.GetEventRecorderFor("routingrecommendation"),
+		Client: mgr.GetClient(), Scheme: mgr.GetScheme(),
 		Approvals: approvals, ApprovalNotifier: approvalNotifier,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "RoutingRecommendation")

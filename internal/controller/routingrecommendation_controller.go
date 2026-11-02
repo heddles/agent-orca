@@ -517,6 +517,9 @@ func (r *RoutingRecommendationReconciler) rollBack(ctx context.Context, rec *age
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *RoutingRecommendationReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if r.Recorder == nil {
+		r.Recorder = mgr.GetEventRecorderFor("routingrecommendation") //nolint:staticcheck
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&agentorcav1alpha1.RoutingRecommendation{}).
 		Named("routingrecommendation").

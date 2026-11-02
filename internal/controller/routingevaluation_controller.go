@@ -537,6 +537,9 @@ func (r *RoutingEvaluationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// the opt-out annotation starts an evaluation; its own status does not.
 	selectorChanged := predicate.Or(predicate.GenerationChangedPredicate{}, predicate.AnnotationChangedPredicate{})
 	agentChanged := predicate.Or(predicate.GenerationChangedPredicate{}, predicate.LabelChangedPredicate{})
+	if r.Recorder == nil {
+		r.Recorder = mgr.GetEventRecorderFor("routingevaluation") //nolint:staticcheck
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&agentorcav1alpha1.ModelSelector{}, builder.WithPredicates(selectorChanged)).
 		Watches(&agentorcav1alpha1.Agent{}, handler.EnqueueRequestsFromMapFunc(r.selectorsOfAgent), builder.WithPredicates(agentChanged)).
