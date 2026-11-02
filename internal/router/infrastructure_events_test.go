@@ -31,7 +31,15 @@ func TestEmitRoutingTraceEvent(t *testing.T) {
 	r.emitRoutingTraceEvent(&ProviderConfig{
 		Name:         "openrouter-free",
 		LiteLLMModel: "z-ai/glm-5.3-flash",
-	}, RouteResult{Reason: "weighted random", Confidence: 0.5})
+	}, Selection{
+		DecisionID: "d-1",
+		Path:       pathWeighted,
+		Reason:     reasonWeightedRandom,
+		Confidence: 0.5,
+		Category:   Category{Stage: stageChat, SYLabel: "fall_open"},
+		Algorithm:  algorithmStageRouter,
+		Candidates: []string{"openrouter-free", "other"},
+	})
 
 	var routing map[string]any
 	found := false
@@ -55,14 +63,26 @@ func TestEmitRoutingTraceEvent(t *testing.T) {
 	if routing["provider"] != "openrouter-free" {
 		t.Errorf("provider = %v", routing["provider"])
 	}
-	if routing["strategy"] != "rule-based" {
+	if routing["strategy"] != strategyRuleBased {
 		t.Errorf("strategy = %v", routing["strategy"])
 	}
-	if routing["reason"] != "weighted random" {
+	if routing["reason"] != reasonWeightedRandom {
 		t.Errorf("reason = %v", routing["reason"])
 	}
 	if conf, ok := routing["confidence"].(float64); !ok || conf != 0.5 {
 		t.Errorf("confidence = %v, want 0.5", routing["confidence"])
+	}
+	if routing["algorithm"] != algorithmStageRouter || routing["label"] != "fall_open" {
+		t.Errorf("algorithm %v label %v: the structured fields must travel with the reason", routing["algorithm"], routing["label"])
+	}
+	if routing["decisionId"] != "d-1" {
+		t.Errorf("decisionId = %v, want d-1", routing["decisionId"])
+	}
+	if routing["path"] != pathWeighted {
+		t.Errorf("path = %v, want %s", routing["path"], pathWeighted)
+	}
+	if routing["stage"] != stageChat {
+		t.Errorf("stage = %v, want %s", routing["stage"], stageChat)
 	}
 }
 
@@ -142,7 +162,7 @@ func newTracingTestRouter(t *testing.T, store *testStore) *Router {
 			Name:         "openai",
 			LiteLLMModel: "openai/gpt-4o",
 		}},
-		Strategy: "rule-based",
+		Strategy: strategyRuleBased,
 	}
 	r, err := New(cfg, store, nil, nil)
 	if err != nil {

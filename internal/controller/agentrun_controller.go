@@ -328,7 +328,11 @@ func (r *AgentRunReconciler) startRun(ctx context.Context, run *agentorcav1alpha
 	}
 
 	// 7. Resolve provider secrets for volume mounts.
-	providerVolumes, providerMounts, err := podbuilder.ResolveProviderVolumes(ctx, r.Client, run.Namespace, agent)
+	shadow, err := shadowFor(ctx, r.Client, agent, shadowSource{RunLabels: run.Labels})
+	if err != nil {
+		return r.failRun(ctx, run, fmt.Sprintf("resolving routing benchmark: %v", err))
+	}
+	providerVolumes, providerMounts, err := podbuilder.ResolveProviderVolumes(ctx, r.Client, run.Namespace, agent, shadow.secretNames()...)
 	if err != nil {
 		return r.failRun(ctx, run, fmt.Sprintf("resolving provider volumes: %v", err))
 	}
@@ -359,7 +363,7 @@ func (r *AgentRunReconciler) startRun(ctx context.Context, run *agentorcav1alpha
 		}
 
 		// Router pod: model-router as standalone container with provider/tool mounts.
-		routerPod := r.buildRouterPod(run, agent, saName, providerVolumes, providerMounts, toolSecretVolumes, toolSecretMounts, mcpBinVolumes, mcpBinMounts)
+		routerPod := r.buildRouterPod(run, agent, saName, routerCfg.Strategy, providerVolumes, providerMounts, toolSecretVolumes, toolSecretMounts, mcpBinVolumes, mcpBinMounts)
 		if err := ctrl.SetControllerReference(run, routerPod, r.Scheme); err != nil {
 			return r.failRun(ctx, run, fmt.Sprintf("setting router pod owner ref: %v", err))
 		}
@@ -443,7 +447,7 @@ func (r *AgentRunReconciler) startRun(ctx context.Context, run *agentorcav1alpha
 			}
 		}
 		if podName == "" {
-			pod := r.buildAgentPod(run, agent, saName, tokenSecretName, providerVolumes, providerMounts, toolSecretVolumes, toolSecretMounts, mcpBinVolumes, mcpBinMounts)
+			pod := r.buildAgentPod(run, agent, saName, tokenSecretName, routerCfg.Strategy, providerVolumes, providerMounts, toolSecretVolumes, toolSecretMounts, mcpBinVolumes, mcpBinMounts)
 			if err := ctrl.SetControllerReference(run, pod, r.Scheme); err != nil {
 				return r.failRun(ctx, run, fmt.Sprintf("setting pod owner ref: %v", err))
 			}
@@ -800,47 +804,28 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 		return nil, nil, false, fmt.Errorf("getting ModelSelector %q: %w", agent.Spec.ModelSelectorRef, err)
 	}
 
-	var providers []router.ProviderConfig
-	seenProviders := make(map[string]bool)
-	for _, pw := range selector.Spec.Providers {
-		var mp agentorcav1alpha1.ModelProvider
-		if err := r.Get(ctx, client.ObjectKey{Name: pw.Name, Namespace: run.Namespace}, &mp); err != nil {
-			return nil, nil, false, fmt.Errorf("getting ModelProvider %q: %w", pw.Name, err)
-		}
-		seenProviders[pw.Name] = true
-		apiKeyFile := fmt.Sprintf("%s/%s/api-key", podbuilder.ProviderSecretsDir, pw.Name)
-		providers = append(providers, providerConfigFromSpec(pw.Name, &mp, pw.Weight, pw.RoutingHint, apiKeyFile))
+	routing, err := resolveSelectorRouting(ctx, r.Client, run.Namespace, &selector)
+	if err != nil {
+		return nil, nil, false, err
 	}
-	// Load fallback chain providers with Weight=0 so tryFallback can find them
-	// but they are excluded from weighted primary selection.
-	for _, name := range selector.Spec.FallbackChain {
-		if seenProviders[name] {
-			continue
+	for _, name := range routing.SkippedFallbacks {
+		if r.Recorder != nil {
+			r.Recorder.Eventf(run, corev1.EventTypeWarning, "FallbackProviderSkipped",
+				"fallback provider %q not deployed; skipped from chain", name)
 		}
-		seenProviders[name] = true
-		var mp agentorcav1alpha1.ModelProvider
-		if err := r.Get(ctx, client.ObjectKey{Name: name, Namespace: run.Namespace}, &mp); err != nil {
-			if errors.IsNotFound(err) {
-				// Provider is listed in the fallback chain but not deployed (e.g. disabled
-				// in the model-providers chart). Skip it rather than blocking the run.
-				if r.Recorder != nil {
-					r.Recorder.Eventf(run, corev1.EventTypeWarning, "FallbackProviderSkipped",
-						"fallback provider %q not deployed; skipped from chain", name)
-				}
-				continue
-			}
-			return nil, nil, false, fmt.Errorf("getting fallback ModelProvider %q: %w", name, err)
-		}
-		apiKeyFile := fmt.Sprintf("%s/%s/api-key", podbuilder.ProviderSecretsDir, name)
-		providers = append(providers, providerConfigFromSpec(name, &mp, 0, "", apiKeyFile))
+	}
+	providers := routing.Providers
+	shadow, err := resolveShadow(ctx, r.Client, agent, shadowSource{RunLabels: run.Labels}, routing)
+	if err != nil {
+		return nil, nil, false, err
 	}
 
 	// Resolve Tools.
 	var toolDefs []router.ToolDefinition
 	var egressRules []agentorcav1alpha1.EgressRule
 
-	// Add egress rules for model provider endpoints.
-	for _, p := range providers {
+	// Add egress rules for model provider endpoints, including the benchmark's judge.
+	for _, p := range append(slices.Clone(providers), shadow.Aux...) {
 		if port := providerPort(p.BaseURL, p.LiteLLMModel); port != 443 {
 			egressRules = append(egressRules, agentorcav1alpha1.EgressRule{Port: int32(port), Protocol: "TCP"})
 		}
@@ -1157,22 +1142,6 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 		})
 	}
 
-	// Budget cap.
-	var budget float64
-	if selector.Spec.BudgetCap != nil {
-		budget = parseFloat(selector.Spec.BudgetCap.PerRun)
-	}
-
-	// Meta-router threshold.
-	threshold := 0.6
-	if selector.Spec.MetaRouter != nil && selector.Spec.MetaRouter.Threshold != "" {
-		threshold = parseFloat(selector.Spec.MetaRouter.Threshold)
-	}
-	metaRouterProvider := ""
-	if selector.Spec.MetaRouter != nil {
-		metaRouterProvider = selector.Spec.MetaRouter.ProviderRef
-	}
-
 	checkpointEvery := 1
 	if agent.Spec.Memory != nil {
 		checkpointEvery = agent.Spec.Memory.CheckpointEvery
@@ -1269,12 +1238,15 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 		DisableClarify:             agent.Spec.DisableClarify,
 		LocalTools:                 agent.Spec.Runtime.LocalTools,
 		Providers:                  providers,
-		Strategy:                   selector.Spec.Strategy,
-		CapabilityRouting:          selector.Spec.CapabilityRouting,
-		FallbackChain:              selector.Spec.FallbackChain,
-		MetaRouterProviderName:     metaRouterProvider,
-		MetaRouterThreshold:        threshold,
-		BudgetPerRunUSD:            budget,
+		Strategy:                   routing.Strategy,
+		Switchyard:                 routing.Switchyard,
+		Shadow:                     shadow.Config,
+		AuxProviders:               shadow.Aux,
+		CapabilityRouting:          routing.CapabilityRouting,
+		FallbackChain:              routing.FallbackChain,
+		MetaRouterProviderName:     routing.MetaRouterProviderName,
+		MetaRouterThreshold:        routing.MetaRouterThreshold,
+		BudgetPerRunUSD:            routing.BudgetPerRunUSD,
 		Budget:                     routerBudget(run, r.Approvals != nil),
 		ToolDefinitions:            toolDefs,
 		MCPServers:                 mcpServers,
@@ -1302,6 +1274,7 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 		Filesystem:                 fsCfg,
 		Shell:                      shellCfg,
 	}
+	applyRunRoutingIdentity(cfg, run, selector.Name, time.Now())
 	if agent.Spec.Runtime.InputMode == "http" {
 		port := agent.Spec.Runtime.InputPort
 		if port == 0 {
@@ -1460,6 +1433,7 @@ func (r *AgentRunReconciler) buildRouterPod(
 	run *agentorcav1alpha1.AgentRun,
 	agent *agentorcav1alpha1.Agent,
 	saName string,
+	routerStrategy string,
 	providerVolumes []corev1.Volume,
 	providerMounts []corev1.VolumeMount,
 	toolSecretVolumes []corev1.Volume,
@@ -1468,6 +1442,7 @@ func (r *AgentRunReconciler) buildRouterPod(
 	mcpBinMounts []corev1.VolumeMount,
 ) *corev1.Pod {
 	return podbuilder.BuildRouterOnly(podbuilder.PodConfig{
+		RouterStrategy:           routerStrategy,
 		HindsightAPIKeySecretRef: hindsightKeyRef(r.HindsightAPIKey),
 		PodName:                  "agentorca-router-" + run.Name,
 		Namespace:                run.Namespace,
@@ -1678,6 +1653,7 @@ func (r *AgentRunReconciler) buildAgentPod(
 	agent *agentorcav1alpha1.Agent,
 	saName string,
 	tokenSecretName string,
+	routerStrategy string,
 	providerVolumes []corev1.Volume,
 	providerMounts []corev1.VolumeMount,
 	toolSecretVolumes []corev1.Volume,
@@ -1729,6 +1705,7 @@ func (r *AgentRunReconciler) buildAgentPod(
 	agentSecretVolumes, agentSecretMounts := podbuilder.ResolveAgentSecretRefs(agent)
 
 	return podbuilder.Build(podbuilder.PodConfig{
+		RouterStrategy:           routerStrategy,
 		HindsightAPIKeySecretRef: hindsightKeyRef(r.HindsightAPIKey),
 		PodName:                  "agentorca-run-" + run.Name,
 		Namespace:                run.Namespace,
@@ -2059,14 +2036,7 @@ func (r *AgentRunReconciler) loadTraceEventsForArchive(ctx context.Context, run 
 		if strings.HasPrefix(rd.Reason, "configured provider") {
 			continue
 		}
-		conf := 0.0
-		_, _ = fmt.Sscanf(rd.Confidence, "%f", &conf)
-		eventJSON, _ := json.Marshal(map[string]any{
-			"type":       "modelSelected",
-			"model":      rd.Model,
-			"reason":     fmt.Sprintf("[%s] %s — %s", rd.Strategy, rd.Provider, rd.Reason),
-			"confidence": conf,
-		})
+		eventJSON, _ := json.Marshal(rd.TraceEvent())
 		ts := ""
 		if rd.Timestamp != nil {
 			ts = rd.Timestamp.UTC().Format(time.RFC3339)
@@ -2375,6 +2345,9 @@ func warmRunInput(run *agentorcav1alpha1.AgentRun) router.WarmRunInput {
 		PriorRunRef:         run.Spec.PriorRunRef,
 		ResumeCheckpointKey: resumeCheckpointKey(run),
 		Restart:             isRestartRecovery(run),
+		SessionID:           runSessionID(run),
+		ParentRunName:       run.Spec.ParentRunRef,
+		WorkflowStep:        run.Labels[labelWorkflowStep],
 	}
 }
 

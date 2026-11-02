@@ -161,6 +161,10 @@ func (r *Router) forwardToProviderStream(ctx context.Context, provider *Provider
 	chatReq.Messages = adaptToolCallsForProvider(provider, chatReq.Messages)
 	chatReq.Stream = true
 
+	if _, ok := r.responsesOnly.Load(provider.Name); ok {
+		return r.forwardToResponsesStream(llmCtx, cancel, provider, chatReq)
+	}
+
 	reqBody, err := json.Marshal(chatReq)
 	if err != nil {
 		cancel()
@@ -190,10 +194,14 @@ func (r *Router) forwardToProviderStream(ctx context.Context, provider *Provider
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
+		if resp.StatusCode == http.StatusBadRequest && needsResponsesAPI(body) && responsesEndpoint(provider) != "" {
+			slog.Info("provider needs the Responses API for tool calls, switching", "provider", provider.Name)
+			r.responsesOnly.Store(provider.Name, true)
+			return r.forwardToResponsesStream(llmCtx, cancel, provider, chatReq)
+		}
 		cancel()
 		return nil, fmt.Errorf("provider %s returned %d: %s", provider.Name, resp.StatusCode, body)
 	}
-	go r.postRoutingDecision(llmCtx, provider, r.ruleRouter.Route(r.messages, 0, 0))
 	// Caller owns resp.Body; cancel the context when the body is closed.
 	resp.Body = &cancelOnClose{ReadCloser: resp.Body, cancel: cancel}
 	return resp, nil
@@ -282,6 +290,11 @@ func (r *Router) forwardToAnthropicStream(ctx context.Context, provider *Provide
 // handleStreamingResponse proxies SSE chunks from the provider to the client,
 // accumulating the full message for conversation history tracking.
 func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Request, provider *ProviderConfig, resp *http.Response, chatReq ChatCompletionRequest) { //nolint:gocyclo
+
+	// The call's telemetry event is recorded when this returns, whichever way it
+	// ends; the tool-call recursion below finishes its own event first.
+	ct := callTelemetryFrom(req.Context())
+	defer ct.finish()
 
 	tokenStreamKey := "tokens:" + r.cfg.RunNamespace + ":" + r.cfg.RunName
 	slog.Info("streaming response started", "provider", provider.Name, "tokenStreamKey", tokenStreamKey, "storeType", fmt.Sprintf("%T", r.store))
@@ -385,6 +398,9 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 				for _, choice := range chunk.Choices {
 					// Reasoning in this chunk precedes its content and tool calls.
 					thought.WriteString(choice.Delta.Reasoning)
+					if choice.Delta.Reasoning != "" || choice.Delta.Content != "" || len(choice.Delta.ToolCalls) > 0 {
+						ct.noteFirstToken()
+					}
 					// Some providers send an empty finish_reason on every chunk; only a
 					// real one ends the thinking block.
 					if choice.Delta.Content != "" || len(choice.Delta.ToolCalls) > 0 || (choice.FinishReason != nil && *choice.FinishReason != "") {
@@ -448,6 +464,13 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 		(spendOutcome == spendOutcomeStreamInterrupted || r.cancelCtx.Err() != nil) {
 		usage = estimateInterruptedUsage(chatReq.Messages, partial)
 	}
+	ct.noteStreamEnd(usage, finishReason)
+	switch {
+	case r.cancelCtx.Err() != nil:
+		ct.setError(errClassCancelled)
+	case spendOutcome == spendOutcomeStreamInterrupted:
+		ct.setError(errClassStreamBroken)
+	}
 
 	// If the run was cancelled, the OpenAI turn loop never saw a terminal finish
 	// reason. Emit a `fail` trace event so TailTokens closes promptly (the poller
@@ -485,6 +508,12 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 		Role:      "assistant",
 		Content:   contentBuilder.String(),
 		ToolCalls: toolCalls,
+	}
+
+	// A RoutingBenchmark may replay this call on another model after the fact;
+	// it runs in the background, runs no tool and is not charged to this run.
+	if ct != nil && spendOutcome == spendOutcomeSuccess {
+		r.shadow.consider(servedCall{ev: ct.ev, served: ct.provider, req: chatReq, answer: assistantMsg, usage: usage})
 	}
 
 	if r.cfg.Hindsight.Enabled {
@@ -619,6 +648,7 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 			trip := r.recordToolCallLocked(tc)
 			r.mu.Unlock()
 			if trip != nil {
+				ct.setSafeguardTrip(trip.Reason)
 				r.tripSafeguard(*trip)
 				writeSafeguardHalt(w, flusher, *trip)
 				return
@@ -628,6 +658,8 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 				continue
 			}
 			result := r.dispatchToolCall(req.Context(), tc)
+			ct.noteToolResult(result)
+			r.metrics.IncToolCall()
 
 			// Stream tool call delta to client, unless it runs its own tools:
 			// it would take the router's call for one of its own.
@@ -687,16 +719,20 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 	go r.notifyOperatorContext()
 }
 
-// tryFallbackStream attempts streaming fallback to providers in the fallback chain.
+// tryFallbackStream attempts streaming fallback to the providers in order, the
+// selection's candidates, or in the configured fallback chain when order is empty.
 func (r *Router) tryFallbackStream(
-	ctx context.Context, origReq ChatCompletionRequest, failedProvider string,
+	ctx context.Context, origReq ChatCompletionRequest, failedProvider string, order []string,
 ) (*http.Response, *ProviderConfig, fittedRequest, error) {
+	if len(order) == 0 {
+		order = r.cfg.FallbackChain
+	}
 	// Each fallback is fitted to its OWN context window from the original
 	// (un-truncated) request: replaying the primary's request verbatim sent
 	// over-window payloads to smaller-window fallbacks, which all answered 400
 	// (#42). A provider the request cannot fit is skipped without a call.
 	skippedForWindow, tried := 0, 0
-	for _, name := range r.cfg.FallbackChain {
+	for _, name := range order {
 		if name == failedProvider {
 			continue
 		}
@@ -789,6 +825,9 @@ func translateAnthropicSSE(r io.Reader, w io.Writer) {
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
 	var msgID string
+	// promptTokens is the whole request as Anthropic counts it. message_start
+	// carries it; message_delta repeats it on newer API versions.
+	var promptTokens int
 	// Track the current content block index → tool call index mapping.
 	// Anthropic uses content block index; OpenAI uses tool call index.
 	blockIndexToToolIndex := map[int]int{}
@@ -812,6 +851,9 @@ func translateAnthropicSSE(r io.Reader, w io.Writer) {
 		case "message_start":
 			if msg, ok := event["message"].(map[string]any); ok {
 				msgID, _ = msg["id"].(string)
+				if usage, ok := msg["usage"].(map[string]any); ok {
+					promptTokens = anthropicPromptTokens(usage)
+				}
 			}
 			// Emit initial role chunk.
 			chunk := streamingChatCompletionChunk{
@@ -909,7 +951,7 @@ func translateAnthropicSSE(r io.Reader, w io.Writer) {
 
 					stopReason = finishReasonStop
 				case "tool_use":
-					stopReason = "tool_calls"
+					stopReason = finishReasonToolCalls
 				}
 				chunk := streamingChatCompletionChunk{
 					ID:     msgID,
@@ -923,8 +965,13 @@ func translateAnthropicSSE(r io.Reader, w io.Writer) {
 				// Include usage if present.
 				if usage, ok := event["usage"].(map[string]any); ok {
 					outputTokens, _ := usage["output_tokens"].(float64)
+					if n := anthropicPromptTokens(usage); n > 0 {
+						promptTokens = n
+					}
 					chunk.Usage = &TokenUsage{
+						PromptTokens:     promptTokens,
 						CompletionTokens: int(outputTokens),
+						TotalTokens:      promptTokens + int(outputTokens),
 					}
 				}
 				writeSSEChunk(w, chunk)

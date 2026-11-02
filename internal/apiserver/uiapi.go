@@ -87,6 +87,10 @@ type UIServer struct {
 	approvals approvalStore
 	// costArchive overrides the archive read by /api/costs (tests); nil means pgStore.
 	costArchive costArchive
+	// routingReader overrides pgStore for routing telemetry reads (tests).
+	routingReader routingEventReader
+	// feedback overrides pgStore for routing feedback (tests).
+	feedback feedbackStore
 	// routerMetricsURLFor builds a model-router metrics URL from a pod IP (tests);
 	// nil means http://<ip>:9091/metrics.
 	routerMetricsURLFor func(podIP string) string
@@ -182,6 +186,9 @@ func (s *UIServer) Handler() http.Handler {
 	mux.HandleFunc("/api/system/status", s.handleSystemStatus)
 	mux.HandleFunc("/api/system/alerts", s.handleAlerts)
 	mux.HandleFunc("/api/runs/history", s.handleListRunHistory)
+	mux.HandleFunc("/api/routing/recommendations", s.handleListRecommendations)
+	mux.HandleFunc("/api/routing/recommendations/", s.handleRecommendationAction)
+	mux.HandleFunc("/api/routing/benchmarks", s.handleListBenchmarks)
 	mux.HandleFunc("/api/approvals", s.handleListApprovals)
 	mux.HandleFunc("/api/approvals/", s.handleApproval)
 	mux.HandleFunc("/api/resources", s.handleResourceCollection)
@@ -346,6 +353,10 @@ func (s *UIServer) handleRunOrStream(w http.ResponseWriter, r *http.Request) {
 		switch parts[2] {
 		case string(ACPRunModeStream):
 			s.handleStream(w, r, ns, runName)
+		case "routing-events":
+			s.handleRunRoutingEvents(w, r, ns, runName)
+		case "feedback":
+			s.handleRunFeedback(w, r, ns, runName)
 		case "stop":
 			s.handleStopRun(w, r, ns, runName)
 		case "answer":
@@ -363,46 +374,49 @@ func (s *UIServer) handleRunOrStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type runDetail struct {
-		Name               string                `json:"name"`
-		Namespace          string                `json:"namespace"`
-		AgentRef           string                `json:"agentRef"`
-		Input              string                `json:"input"`
-		Phase              string                `json:"phase"`
-		Output             string                `json:"output,omitempty"`
-		SpendUSD           string                `json:"spendUSD"`
-		RestartCount       int                   `json:"restartCount"`
-		LastRestartReason  string                `json:"lastRestartReason,omitempty"`
-		StartTime          string                `json:"startTime,omitempty"`
-		CompletionTime     string                `json:"completionTime,omitempty"`
-		RoutingDecisions   []routingDecisionJSON `json:"routingDecisions"`
-		ChildRunRefs       []string              `json:"childRunRefs,omitempty"`
-		ParentRunRef       string                `json:"parentRunRef,omitempty"`
-		ClarifyQuestion    string                `json:"clarifyQuestion,omitempty"`
-		ClarifyAnswer      string                `json:"clarifyAnswer,omitempty"`
-		WaitingSince       string                `json:"waitingSince,omitempty"`
-		ContinuationRunRef string                `json:"continuationRunRef,omitempty"`
-		ContextUsedTokens  int                   `json:"contextUsedTokens"`
-		MaxContextTokens   int                   `json:"maxContextTokens"`
+		Name              string                `json:"name"`
+		Namespace         string                `json:"namespace"`
+		AgentRef          string                `json:"agentRef"`
+		Input             string                `json:"input"`
+		Phase             string                `json:"phase"`
+		Output            string                `json:"output,omitempty"`
+		SpendUSD          string                `json:"spendUSD"`
+		RestartCount      int                   `json:"restartCount"`
+		LastRestartReason string                `json:"lastRestartReason,omitempty"`
+		StartTime         string                `json:"startTime,omitempty"`
+		CompletionTime    string                `json:"completionTime,omitempty"`
+		RoutingDecisions  []routingDecisionJSON `json:"routingDecisions"`
+		// RoutingDecisionsTotal counts every decision; status holds only the latest.
+		RoutingDecisionsTotal int      `json:"routingDecisionsTotal,omitempty"`
+		ChildRunRefs          []string `json:"childRunRefs,omitempty"`
+		ParentRunRef          string   `json:"parentRunRef,omitempty"`
+		ClarifyQuestion       string   `json:"clarifyQuestion,omitempty"`
+		ClarifyAnswer         string   `json:"clarifyAnswer,omitempty"`
+		WaitingSince          string   `json:"waitingSince,omitempty"`
+		ContinuationRunRef    string   `json:"continuationRunRef,omitempty"`
+		ContextUsedTokens     int      `json:"contextUsedTokens"`
+		MaxContextTokens      int      `json:"maxContextTokens"`
 	}
 
 	detail := runDetail{
-		Name:               run.Name,
-		Namespace:          run.Namespace,
-		AgentRef:           run.Spec.AgentRef,
-		Input:              run.Spec.Input,
-		Phase:              string(run.Status.Phase),
-		Output:             run.Status.Output,
-		SpendUSD:           run.Status.SpendUSD,
-		RestartCount:       run.Status.RestartCount,
-		LastRestartReason:  run.Status.LastRestartReason,
-		RoutingDecisions:   make([]routingDecisionJSON, 0, len(run.Status.RoutingDecisions)),
-		ChildRunRefs:       run.Status.ChildRunRefs,
-		ParentRunRef:       run.Spec.ParentRunRef,
-		ClarifyQuestion:    run.Status.ClarifyQuestion,
-		ClarifyAnswer:      run.Status.ClarifyAnswer,
-		ContinuationRunRef: run.Status.ContinuationRunRef,
-		ContextUsedTokens:  run.Status.ContextUsedTokens,
-		MaxContextTokens:   run.Status.MaxContextTokens,
+		Name:                  run.Name,
+		Namespace:             run.Namespace,
+		AgentRef:              run.Spec.AgentRef,
+		Input:                 run.Spec.Input,
+		Phase:                 string(run.Status.Phase),
+		Output:                run.Status.Output,
+		SpendUSD:              run.Status.SpendUSD,
+		RestartCount:          run.Status.RestartCount,
+		LastRestartReason:     run.Status.LastRestartReason,
+		RoutingDecisions:      make([]routingDecisionJSON, 0, len(run.Status.RoutingDecisions)),
+		RoutingDecisionsTotal: run.Status.RoutingDecisionsTotal,
+		ChildRunRefs:          run.Status.ChildRunRefs,
+		ParentRunRef:          run.Spec.ParentRunRef,
+		ClarifyQuestion:       run.Status.ClarifyQuestion,
+		ClarifyAnswer:         run.Status.ClarifyAnswer,
+		ContinuationRunRef:    run.Status.ContinuationRunRef,
+		ContextUsedTokens:     run.Status.ContextUsedTokens,
+		MaxContextTokens:      run.Status.MaxContextTokens,
 	}
 	if run.Status.WaitingSince != nil {
 		detail.WaitingSince = run.Status.WaitingSince.UTC().Format(time.RFC3339)
@@ -420,6 +434,9 @@ func (s *UIServer) handleRunOrStream(w http.ResponseWriter, r *http.Request) {
 			Strategy:   rd.Strategy,
 			Reason:     rd.Reason,
 			Confidence: rd.Confidence,
+			DecisionID: rd.DecisionID,
+			Path:       rd.Path,
+			Category:   rd.Category,
 		}
 		if rd.Timestamp != nil {
 			d.Timestamp = rd.Timestamp.UTC().Format(time.RFC3339)
@@ -446,23 +463,18 @@ func (s *UIServer) handleStream(w http.ResponseWriter, r *http.Request, ns, runN
 
 	ctx := r.Context()
 
+	// emittedRouting counts decisions by absolute position: status keeps only
+	// the most recent ones, so a slice index alone would stall once it is full.
 	var emittedRouting int
 	emitRoutingDecisions := func(run *agentorcav1alpha1.AgentRun) {
-		for i := emittedRouting; i < len(run.Status.RoutingDecisions); i++ {
-			rd := run.Status.RoutingDecisions[i]
+		var fresh []agentorcav1alpha1.RoutingDecision
+		fresh, emittedRouting = routingDecisionsSince(run, emittedRouting)
+		for _, rd := range fresh {
 			if strings.HasPrefix(rd.Reason, "configured provider") {
 				continue
 			}
-			conf := 0.0
-			_, _ = fmt.Sscanf(rd.Confidence, "%f", &conf)
-			writeSSE(w, map[string]any{
-				"type":       "modelSelected",
-				"model":      rd.Model,
-				"reason":     fmt.Sprintf("[%s] %s — %s", rd.Strategy, rd.Provider, rd.Reason),
-				"confidence": conf,
-			})
+			writeSSE(w, rd.TraceEvent())
 		}
-		emittedRouting = len(run.Status.RoutingDecisions)
 	}
 
 	emitTerminal := func(run *agentorcav1alpha1.AgentRun) bool {
@@ -2288,6 +2300,18 @@ type traceEntryJSON struct {
 	ChildRunName string          `json:"childRunName,omitempty"`
 }
 
+// routingDecisionsSince returns the routing decisions of run recorded after the
+// first emitted ones, and the new emitted count. Counts are absolute positions
+// over every decision ever recorded: status holds only the most recent, so the
+// first held decision sits at RoutingDecisionsTotal minus the held count (0
+// when the total was never set).
+func routingDecisionsSince(run *agentorcav1alpha1.AgentRun, emitted int) ([]agentorcav1alpha1.RoutingDecision, int) {
+	held := run.Status.RoutingDecisions
+	base := max(0, run.Status.RoutingDecisionsTotal-len(held))
+	from := min(len(held), max(0, emitted-base))
+	return held[from:], base + len(held)
+}
+
 type routingDecisionJSON struct {
 	Model      string `json:"model"`
 	Provider   string `json:"provider"`
@@ -2295,6 +2319,11 @@ type routingDecisionJSON struct {
 	Reason     string `json:"reason"`
 	Confidence string `json:"confidence"`
 	Timestamp  string `json:"timestamp,omitempty"`
+	// DecisionID, Path and Category identify the decision and what decided it;
+	// they match the AgentRun status field names so archived runs decode too.
+	DecisionID string `json:"decisionID,omitempty"`
+	Path       string `json:"path,omitempty"`
+	Category   string `json:"category,omitempty"`
 }
 
 type archivedRunDetail struct {

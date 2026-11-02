@@ -47,6 +47,20 @@ type Config struct {
 	// AgentName is the Agent this run or deployment runs (hindsight bank IDs).
 	AgentName string
 
+	// SelectorName is the ModelSelector that supplied Providers, recorded on
+	// every routing decision.
+	SelectorName string
+	// SessionID groups the runs of one conversation. It falls back to RunName
+	// when the run has no session label.
+	SessionID string
+	// ParentRunName is set for a run spawned by another run (a subagent).
+	ParentRunName string
+	// WorkflowStep is the AgentWorkflow step this run executes, if any.
+	WorkflowStep string
+	// RunDeadline is when the run's timeout expires; nil when the run has no
+	// timeout. The timeout-proximity routing rule needs it.
+	RunDeadline *time.Time
+
 	// DisableClarify prevents the auto-trigger clarify safety net from activating.
 	// Set from Agent.Spec.DisableClarify for autonomous agents.
 	DisableClarify bool
@@ -57,8 +71,16 @@ type Config struct {
 
 	// Providers is the ordered list of LLM providers resolved from the ModelSelector.
 	Providers []ProviderConfig
-	// Strategy is the routing strategy: "rule-based", "llm-meta", or "hybrid".
+	// Strategy is the routing strategy: "rule-based", "llm-meta", "hybrid" or
+	// "switchyard".
 	Strategy string
+	// Switchyard is the algorithm of the "switchyard" strategy.
+	Switchyard *SwitchyardConfig `json:"switchyard,omitempty"`
+	// Shadow replays a sample of calls on another model for a RoutingBenchmark.
+	Shadow *ShadowConfig `json:"shadow,omitempty"`
+	// AuxProviders are providers the router may call but never routes to: the
+	// benchmark's judge and any shadow targets outside the selector.
+	AuxProviders []ProviderConfig `json:"auxProviders,omitempty"`
 	// CapabilityRouting maps capability tags to provider names.
 	CapabilityRouting map[string]string
 	// FallbackChain is the ordered list of provider names used on 429/5xx.
@@ -471,6 +493,14 @@ type WarmRunInput struct {
 	// Restart marks a re-claim for a run recovering from a pod restart, so
 	// the router drops the original input the agent runtime re-sends.
 	Restart bool `json:"restart,omitempty"`
+	// SessionID is the conversation the run belongs to. A warm pod serves many
+	// runs in turn; a selector that keeps per-session state starts clean when it
+	// changes. Older operators omit it, and the run name stands in.
+	SessionID string `json:"sessionID,omitempty"`
+	// ParentRunName is set for a run spawned by another run.
+	ParentRunName string `json:"parentRunName,omitempty"`
+	// WorkflowStep is the AgentWorkflow step the run executes, if any.
+	WorkflowStep string `json:"workflowStep,omitempty"`
 }
 
 // checkpointKeyForRun is the state-store key of a run's conversation checkpoint.

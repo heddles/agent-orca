@@ -45,6 +45,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
@@ -81,13 +82,20 @@ func main() {
 	var metricsCertPath, metricsCertName, metricsCertKey string
 	var webhookCertPath, webhookCertName, webhookCertKey string
 	var enableLeaderElection bool
+	var routingRecommendations bool
 	var probeAddr string
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var tlsOpts []func(*tls.Config)
+	var routingEventsRetention time.Duration
+	flag.DurationVar(&routingEventsRetention, "routing-events-retention", 30*24*time.Hour,
+		"How long routing telemetry (one row per LLM call) is kept in PostgreSQL. 0 keeps it forever.")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
+	flag.BoolVar(&routingRecommendations, "routing-recommendations", true,
+		"Evaluate every ModelSelector's routing and write RoutingRecommendations (report only). "+
+			"A selector opts out with the annotation agentorca.io/routing-recommendations=disabled.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
@@ -397,6 +405,24 @@ func main() {
 		setupLog.Error(err, "Failed to create controller", "controller", "ModelSelector")
 		os.Exit(1)
 	}
+	benchmarks := &controller.RoutingBenchmarkReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}
+	if pgStore != nil {
+		benchmarks.Results = pgStore
+	}
+	if err := benchmarks.SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "RoutingBenchmark")
+		os.Exit(1)
+	}
+	evaluation := &controller.RoutingEvaluationReconciler{
+		Client: mgr.GetClient(), Scheme: mgr.GetScheme(), Disabled: !routingRecommendations,
+	}
+	if pgStore != nil {
+		evaluation.Source = pgStore
+	}
+	if err := evaluation.SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "RoutingEvaluation")
+		os.Exit(1)
+	}
 	if err := (&controller.ToolReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
@@ -452,6 +478,15 @@ func main() {
 	if u := os.Getenv("APPROVALS_NOTIFY_WEBHOOK_URL"); u != "" {
 		webhookNotifier := &controller.WebhookApprovalNotifier{URL: u, UIURL: os.Getenv("APPROVALS_UI_URL")}
 		approvalNotifier, completionNotifier = webhookNotifier, webhookNotifier
+	}
+	// A recommendation is applied only after an approver agrees, so applying needs
+	// the same PostgreSQL-backed approvals as the other approval flows.
+	if err := (&controller.RoutingRecommendationReconciler{
+		Client: mgr.GetClient(), Scheme: mgr.GetScheme(),
+		Approvals: approvals, ApprovalNotifier: approvalNotifier,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "RoutingRecommendation")
+		os.Exit(1)
 	}
 	var gitHubApp controller.GitHubTokenMinter
 	if dir := os.Getenv("GITHUB_APP_DIR"); dir != "" {
@@ -588,6 +623,15 @@ func main() {
 			notifier = approvalNotifier
 		}
 		internalAPI.WithApprovals(pgStore, notifier)
+		// Routing telemetry: one row per LLM call, posted by each run's router.
+		internalAPI.WithRoutingStore(pgStore)
+		internalAPI.WithShadowStore(pgStore)
+		if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
+			return pgStore.RunRoutingEventsRetention(ctx, routingEventsRetention, postgresql.RoutingEventsRetentionInterval)
+		})); err != nil {
+			setupLog.Error(err, "Unable to schedule routing telemetry retention")
+			os.Exit(1)
+		}
 	}
 	// Filesystem relay (issue #34): carries ACP fs/* requests from agent pods to
 	// the workstation-side bridge. Requires the redis-backed shared state; with
@@ -667,6 +711,9 @@ func main() {
 
 	// Start the external API server (port 8084) for enterprise integrations.
 	externalAPI := apiserver.NewExternalAPIServer(k8sClient, mgr.GetClient(), externalAuth, stateConfig.Backend != "", stateStore) //nolint:lll
+	if pgStore != nil {
+		externalAPI.WithFeedbackStore(pgStore)
+	}
 
 	go func() {
 		srv := newHTTPServer(":8084", externalAPI.Handler())

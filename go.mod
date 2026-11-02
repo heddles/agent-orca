@@ -7,6 +7,7 @@ toolchain go1.26.10
 require (
 	cloud.google.com/go/pubsub/v2 v2.6.0
 	github.com/DATA-DOG/go-sqlmock v1.5.2
+	github.com/NVIDIA-NeMo/Switchyard/bindings/go v0.0.0-00010101000000-000000000000
 	github.com/NVIDIA/OpenShell/sdk/go v0.0.0-20261020123705-bdb956f2cd65
 	github.com/alicebob/miniredis/v2 v2.40.0
 	github.com/coreos/go-oidc/v3 v3.21.0
@@ -96,6 +97,7 @@ require (
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/cpuid/v2 v2.4.0 // indirect
 	github.com/klauspost/crc32 v1.3.0 // indirect
+	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/minio/crc64nvme v1.1.1 // indirect
 	github.com/minio/md5-simd v1.1.2 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
@@ -109,6 +111,7 @@ require (
 	github.com/prometheus/procfs v0.22.0 // indirect
 	github.com/rs/xid v1.6.0 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
+	github.com/tetratelabs/wazero v1.12.0 // indirect
 	github.com/tidwall/gjson v1.19.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
@@ -165,3 +168,8 @@ require (
 	sigs.k8s.io/randfill v1.0.0 // indirect
 	sigs.k8s.io/structured-merge-diff/v6 v6.4.2 // indirect
 )
+
+// Switchyard's Go binding is not published as a module yet; it is vendored,
+// pinned to one upstream commit (see third_party/switchyard/UPSTREAM). Drop this
+// replace and require the upstream module once it is.
+replace github.com/NVIDIA-NeMo/Switchyard/bindings/go => ./third_party/switchyard/bindings/go
