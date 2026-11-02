@@ -53,6 +53,8 @@ import (
 	"github.com/heddles/agent-orca/internal/acpfs"
 	"github.com/heddles/agent-orca/internal/apiserver"
 	"github.com/heddles/agent-orca/internal/controller"
+	"github.com/heddles/agent-orca/internal/githubapp"
+	"github.com/heddles/agent-orca/internal/openshell"
 	"github.com/heddles/agent-orca/internal/podbuilder"
 	"github.com/heddles/agent-orca/internal/postgresql"
 	"github.com/heddles/agent-orca/internal/security"
@@ -417,6 +419,50 @@ func main() {
 		setupLog.Error(err, "Failed to create controller", "controller", "Agent")
 		os.Exit(1)
 	}
+	// OpenShell sandboxes are optional: without a gateway address, Agents with
+	// spec.runtime.sandbox fail their runs with a clear reason.
+	var sandboxes openshell.Gateway
+	sandboxPlacement, err := openshell.PlacementFromEnv()
+	if err != nil {
+		setupLog.Error(err, "Invalid OpenShell sandbox placement")
+		os.Exit(1)
+	}
+	if osCfg, ok := openshell.ConfigFromEnv(); ok {
+		gw, err := openshell.Connect(osCfg, func(ctx context.Context, namespace, pod, container string) (string, error) {
+			raw, err := k8sClient.CoreV1().Pods(namespace).GetLogs(pod, &corev1.PodLogOptions{Container: container}).DoRaw(ctx)
+			return string(raw), err
+		})
+		if err != nil {
+			setupLog.Error(err, "Failed to configure the OpenShell gateway client")
+			os.Exit(1)
+		}
+		sandboxes = gw
+		setupLog.Info("OpenShell sandboxes enabled", "gateway", osCfg.Address,
+			"workspace", osCfg.Workspace, "sandboxNamespace", osCfg.SandboxNamespace)
+	}
+	// The GitHub App gives sandboxed agents short-lived git credentials
+	// (spec.runtime.sandbox.github); without it such runs fail with a clear reason.
+	// Egress approvals need the PostgreSQL store; without it they stay off.
+	var approvals controller.ApprovalStore
+	if pgStore != nil {
+		approvals = pgStore
+	}
+	var approvalNotifier controller.ApprovalNotifier
+	var completionNotifier controller.TextNotifier
+	if u := os.Getenv("APPROVALS_NOTIFY_WEBHOOK_URL"); u != "" {
+		webhookNotifier := &controller.WebhookApprovalNotifier{URL: u, UIURL: os.Getenv("APPROVALS_UI_URL")}
+		approvalNotifier, completionNotifier = webhookNotifier, webhookNotifier
+	}
+	var gitHubApp controller.GitHubTokenMinter
+	if dir := os.Getenv("GITHUB_APP_DIR"); dir != "" {
+		app, err := githubapp.FromDir(dir, os.Getenv("GITHUB_API_URL"))
+		if err != nil {
+			setupLog.Error(err, "Failed to load the GitHub App")
+			os.Exit(1)
+		}
+		gitHubApp = app
+		setupLog.Info("GitHub App enabled for sandbox git access", "appID", app.AppID, "installationID", app.InstallationID)
+	}
 	if err := (&controller.AgentRunReconciler{
 		Client:                     mgr.GetClient(),
 		Scheme:                     mgr.GetScheme(),
@@ -437,6 +483,12 @@ func main() {
 		HindsightURL:               os.Getenv("HINDSIGHT_URL"),
 		HindsightAPIKey:            os.Getenv("HINDSIGHT_API_KEY"),
 		OperatorNamespace:          os.Getenv("POD_NAMESPACE"),
+		Sandboxes:                  sandboxes,
+		SandboxPlacement:           sandboxPlacement,
+		GitHubApp:                  gitHubApp,
+		Approvals:                  approvals,
+		ApprovalNotifier:           approvalNotifier,
+		ClusterDomain:              os.Getenv("CLUSTER_DOMAIN"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "AgentRun")
 		os.Exit(1)
@@ -492,8 +544,17 @@ func main() {
 	}
 
 	if err := (&controller.AgentWorkflowReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:             mgr.GetClient(),
+		Scheme:             mgr.GetScheme(),
+		K8s:                k8sClient,
+		Approvals:          approvals,
+		ApprovalNotifier:   approvalNotifier,
+		CompletionNotifier: completionNotifier,
+		AllowedRegistries:  allowedRegistries,
+		Sandboxes:          sandboxes,
+		SandboxPlacement:   sandboxPlacement,
+		GitHubApp:          gitHubApp,
+		ClusterDomain:      os.Getenv("CLUSTER_DOMAIN"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "AgentWorkflow")
 		os.Exit(1)
@@ -519,6 +580,15 @@ func main() {
 
 	// Start the internal API server (port 8082) for agent-to-agent communication.
 	internalAPI := apiserver.New(k8sClient, mgr.GetClient())
+	// Tool-call approvals (Tool.spec.sideEffect) need the PostgreSQL store; without
+	// it routers asking for one get 503 and the gated tool call is refused.
+	if pgStore != nil {
+		var notifier apiserver.ApprovalNotifier
+		if approvalNotifier != nil {
+			notifier = approvalNotifier
+		}
+		internalAPI.WithApprovals(pgStore, notifier)
+	}
 	// Filesystem relay (issue #34): carries ACP fs/* requests from agent pods to
 	// the workstation-side bridge. Requires the redis-backed shared state; with
 	// no relay both the internal and ACP fs endpoints fail fast with 501.

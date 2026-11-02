@@ -452,3 +452,54 @@ func metricsIngressFromScraper(operatorNamespace string) networkingv1.NetworkPol
 		From: peers,
 	}
 }
+
+// BuildRouterSandboxIngressPolicy admits a run's sandbox supervisor to the router
+// pod on ports 8080/8082. In sandbox mode the agent workload runs in the sandbox
+// runtime's namespace and its outbound connections are opened by the supervisor
+// pod, so the supervisor — not an agent pod — is the router's client.
+//
+// The policy is ingress-only and additive to BuildRouterPodNetworkPolicy.
+// supervisorLabels must identify exactly this run's supervisor (the runtime's
+// per-sandbox ID label), so other sandboxes in the shared namespace stay out.
+func BuildRouterSandboxIngressPolicy(
+	run *agentorcav1alpha1.AgentRun,
+	namespace string,
+	sandboxNamespace string,
+	supervisorLabels map[string]string,
+) *networkingv1.NetworkPolicy {
+	safeRunName := SafeLabelValue(run.Name)
+	port8080 := intstr.FromInt32(8080)
+	port8082 := intstr.FromInt32(8082)
+	protoTCP := corev1Protocol("TCP")
+	return &networkingv1.NetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "agentorca-router-" + run.Name + "-sandbox",
+			Namespace: namespace,
+			Labels: map[string]string{
+				LabelAgentRunName: safeRunName,
+				LabelManagedBy:    ManagedByValue,
+			},
+		},
+		Spec: networkingv1.NetworkPolicySpec{
+			PodSelector: metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					LabelAgentRunName: safeRunName,
+					LabelComponent:    LabelComponentRouter,
+				},
+			},
+			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
+			Ingress: []networkingv1.NetworkPolicyIngressRule{{
+				Ports: []networkingv1.NetworkPolicyPort{
+					{Port: &port8080, Protocol: &protoTCP},
+					{Port: &port8082, Protocol: &protoTCP},
+				},
+				From: []networkingv1.NetworkPolicyPeer{{
+					NamespaceSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"kubernetes.io/metadata.name": sandboxNamespace},
+					},
+					PodSelector: &metav1.LabelSelector{MatchLabels: supervisorLabels},
+				}},
+			}},
+		},
+	}
+}

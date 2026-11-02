@@ -57,6 +57,11 @@ type Server struct {
 	// fsRelay carries ACP fs/* requests from agent pods to the workstation-side
 	// bridge. nil disables filesystem access (fs requests fail with 501).
 	fsRelay acpfs.Relay
+	// approvals backs tool-call approvals (tool_approval_api.go). nil when there
+	// is no PostgreSQL store; such requests fail with 503.
+	approvals ToolApprovalStore
+	// approvalNotifier tells approvers about new requests. Optional.
+	approvalNotifier ApprovalNotifier
 }
 
 // New creates a new API server.
@@ -87,7 +92,8 @@ func (s *Server) handleAgentRun(w http.ResponseWriter, r *http.Request) { //noli
 		writeOperatorAuthFailure(w, true, nil)
 		return
 	}
-	if _, err := s.validateToken(r.Context(), token); err != nil {
+	caller, err := s.validateToken(r.Context(), token)
+	if err != nil {
 		writeOperatorAuthFailure(w, false, err)
 		return
 	}
@@ -111,6 +117,14 @@ func (s *Server) handleAgentRun(w http.ResponseWriter, r *http.Request) { //noli
 		s.clarifyAgentRun(w, r, namespace, parts[1])
 	case r.Method == http.MethodPost && len(parts) == 3 && parts[2] == "loop-detected":
 		s.loopDetectedAgentRun(w, r, namespace, parts[1])
+	case r.Method == http.MethodPost && len(parts) == 3 && parts[2] == "tool-approval":
+		s.requestToolApproval(w, r, caller, namespace, parts[1])
+	case r.Method == http.MethodGet && len(parts) == 4 && parts[2] == "tool-approval":
+		s.getToolApproval(w, r, caller, namespace, parts[1], parts[3])
+	case r.Method == http.MethodPost && len(parts) == 3 && parts[2] == "budget":
+		s.reportBudget(w, r, caller, namespace, parts[1])
+	case r.Method == http.MethodGet && len(parts) == 3 && parts[2] == "budget":
+		s.getBudget(w, r, caller, namespace, parts[1])
 	case r.Method == http.MethodPost && len(parts) == 3 && parts[2] == "propose-step":
 		s.proposeWorkflowStep(w, r, namespace, parts[1])
 	case r.Method == http.MethodPost && len(parts) == 3 && parts[2] == "done":

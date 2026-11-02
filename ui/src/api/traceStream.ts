@@ -31,6 +31,41 @@ export type TraceEvent =
   | { type: 'providerFallback'; from: string; to: string; reason: string; exhausted?: boolean }
   | { type: 'routing'; model: string; provider?: string; strategy?: string; reason?: string; confidence?: number }
   | { type: 'hindsight'; op: 'bank' | 'recall' | 'retain' | string; bankID?: string; failed?: boolean; reason?: string }
+  // A network decision by the sandbox supervisor (G4): a connection (net) or a request on an
+  // allowed connection (http), allowed or denied by the sandbox policy.
+  | {
+      type: 'egress'
+      kind: 'net' | 'http' | string
+      action: 'allowed' | 'denied' | string
+      binary?: string
+      destination?: string
+      method?: string
+      url?: string
+      policy?: string
+      engine?: string
+      reason?: string
+      raw: string
+    }
+  // The run's spend against its budget (AgentRun.spec.budget): a warning near
+  // the cap, a pause at the cap, and how the pause ended.
+  | {
+      type: 'budget'
+      state: 'warning' | 'exceeded' | 'resumed' | 'rejected' | string
+      spentUSD: string
+      capUSD: string
+    }
+  // A tool call held for an approver (Tool.spec.sideEffect + GuardrailPolicy
+  // toolApproval): requested, then approved, rejected, expired, denied by the
+  // policy, or unavailable when the approval service could not be reached.
+  | {
+      type: 'toolApproval'
+      state: 'requested' | 'approved' | 'rejected' | 'expired' | 'denied' | 'withdrawn' | 'unavailable' | string
+      tool: string
+      sideEffect?: string
+      by?: string
+      approvalId?: string
+      reason?: string
+    }
   | {
       type: 'truncation'
       provider?: string

@@ -42,6 +42,8 @@ const TRACE_FILTERS = [
   { key: 'rag', label: 'RAG' },
   { key: 'guardrails', label: 'Guardrails' },
   { key: 'fallbacks', label: 'Fallbacks' },
+  { key: 'network', label: 'Network' },
+  { key: 'budget', label: 'Budget' },
   { key: 'errors', label: 'Errors' },
 ] as const
 type TraceFilter = typeof TRACE_FILTERS[number]['key']
@@ -83,11 +85,13 @@ export function TraceAccordion({ entries, streaming, markdown }: Props) {
     const ev = entry.event
     const bt = (ev as { backendType?: string }).backendType
     switch (filter) {
-      case 'tools': return ev.type === STREAM_EVENT_TYPE.toolCall || ev.type === STREAM_EVENT_TYPE.toolResult
+      case 'tools': return ev.type === STREAM_EVENT_TYPE.toolCall || ev.type === STREAM_EVENT_TYPE.toolResult || ev.type === 'toolApproval'
       case 'mcp': return ((ev.type === STREAM_EVENT_TYPE.toolCall || ev.type === STREAM_EVENT_TYPE.toolResult || ev.type === 'mcpDiscovery') && (bt === 'mcp' || ev.type === 'mcpDiscovery'))
       case 'rag': return ((ev.type === STREAM_EVENT_TYPE.toolCall || ev.type === STREAM_EVENT_TYPE.toolResult || ev.type === 'ragResult') && (bt === 'rag' || ev.type === 'ragResult'))
       case 'guardrails': return ev.type === 'guardrail'
       case 'fallbacks': return ev.type === 'providerFallback'
+      case 'network': return ev.type === 'egress'
+      case 'budget': return ev.type === 'budget'
       case 'errors': return ev.type === STREAM_EVENT_TYPE.error || ev.type === STREAM_EVENT_TYPE.fail
       default: return true
     }
@@ -423,6 +427,73 @@ function TraceRow({ entry, markdown }: { entry: TraceEntry; markdown: boolean })
           <span style={{ ...content, color: exhausted ? '#fca5a5' : '#fcd34d' }}>
             <span style={hi}>fallback</span> {event.from} → {event.to || '(searching)'} — {event.reason}
             {exhausted && <span style={{ color: '#fca5a5', fontWeight: 600 }}> — exhausted</span>}
+          </span>
+        </div>
+      )
+    }
+    case 'egress': {
+      const denied = event.action === 'denied'
+      const target = event.kind === 'http' ? `${event.method ?? ''} ${event.url ?? ''}`.trim() : event.destination
+      return (
+        <div style={denied ? { ...row, background: 'var(--ds-trace-error-bg)', borderRadius: 4, padding: '4px 8px', margin: '2px 0' } : row}>
+          <span style={muted}>{time}</span>
+          <Icon icon={denied ? ICON.stop : ICON.check} size={14} color={denied ? 'var(--ds-error)' : 'var(--ds-success)'} />
+          <span style={{ ...content, ...(denied ? { color: '#fca5a5' } : {}) }}>
+            <span style={hi}>{denied ? 'blocked' : 'allowed'}</span> {target || event.raw}
+            {event.binary ? <> by {event.binary}</> : null}
+            {event.policy ? <> ({event.policy})</> : null}
+            {denied && event.reason ? <> — {event.reason}</> : null}
+          </span>
+        </div>
+      )
+    }
+    case 'toolApproval': {
+      const copy: Record<string, string> = {
+        requested: 'waiting for an approver',
+        approved: 'approved',
+        rejected: 'rejected',
+        expired: 'not decided in time',
+        denied: 'refused by policy',
+        withdrawn: 'withdrawn',
+        unavailable: 'refused: approval service unavailable',
+      }
+      const ok = event.state === 'approved'
+      const waiting = event.state === 'requested'
+      return (
+        <div style={row}>
+          <span style={muted}>{time}</span>
+          <Icon
+            icon={ok ? ICON.check : waiting ? ICON.approval : ICON.stop}
+            size={14}
+            color={ok ? 'var(--ds-success)' : waiting ? 'var(--ds-warning)' : 'var(--ds-error)'}
+          />
+          <span style={content}>
+            <span style={hi}>{event.tool}</span>
+            {event.sideEffect ? <> ({event.sideEffect})</> : null} — {copy[event.state] ?? event.state}
+            {event.by ? <> by {event.by}</> : null}
+            {event.reason ? <> — {event.reason}</> : null}
+          </span>
+        </div>
+      )
+    }
+    case 'budget': {
+      const copy: Record<string, string> = {
+        warning: 'budget warning',
+        exceeded: 'budget reached, paused for approval',
+        resumed: 'budget raised, resuming',
+        rejected: 'budget raise declined, run ending',
+      }
+      const bad = event.state === 'exceeded' || event.state === 'rejected'
+      return (
+        <div style={row}>
+          <span style={muted}>{time}</span>
+          <Icon
+            icon={event.state === 'resumed' ? ICON.check : event.state === 'rejected' ? ICON.stop : ICON.warning}
+            size={14}
+            color={bad ? 'var(--ds-error)' : event.state === 'resumed' ? 'var(--ds-success)' : 'var(--ds-warning)'}
+          />
+          <span style={content}>
+            <span style={hi}>{copy[event.state] ?? event.state}</span> — ${event.spentUSD} spent of ${event.capUSD}
           </span>
         </div>
       )

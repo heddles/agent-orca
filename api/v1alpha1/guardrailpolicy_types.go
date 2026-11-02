@@ -35,6 +35,56 @@ type GuardrailPolicySpec struct {
 	// FormatValidation enforces structural constraints on the final agent output.
 	// +optional
 	FormatValidation *FormatValidation `json:"formatValidation,omitempty"`
+
+	// ToolApproval sets what each tool side-effect class needs before a call runs
+	// (see Tool.spec.sideEffect). Without it, calls to read, write and
+	// unclassified tools run freely and actuate calls need an approval.
+	// +optional
+	ToolApproval *ToolApprovalPolicy `json:"toolApproval,omitempty"`
+}
+
+// ToolApprovalRequirement is what a tool call needs before it runs.
+// +kubebuilder:validation:Enum=none;approve;deny
+type ToolApprovalRequirement string
+
+// Tool approval requirements.
+const (
+	// ToolApprovalNone lets the call run.
+	ToolApprovalNone ToolApprovalRequirement = "none"
+	// ToolApprovalApprove holds the call until an approver allows it. A rejection
+	// or a timeout returns an error to the model; the run goes on.
+	ToolApprovalApprove ToolApprovalRequirement = "approve"
+	// ToolApprovalDeny refuses the call outright.
+	ToolApprovalDeny ToolApprovalRequirement = "deny"
+)
+
+// ToolApprovalPolicy maps tool side-effect classes to approval requirements.
+type ToolApprovalPolicy struct {
+	// Read applies to tools with sideEffect read. Default none.
+	// +optional
+	Read ToolApprovalRequirement `json:"read,omitempty"`
+
+	// Write applies to tools with sideEffect write. Default none.
+	// +optional
+	Write ToolApprovalRequirement `json:"write,omitempty"`
+
+	// Actuate applies to tools with sideEffect actuate. Default approve.
+	// +optional
+	Actuate ToolApprovalRequirement `json:"actuate,omitempty"`
+
+	// Unclassified applies to tools without a sideEffect. Default none.
+	// +optional
+	Unclassified ToolApprovalRequirement `json:"unclassified,omitempty"`
+
+	// Timeout is how long a call waits for a decision before it is refused.
+	// Default 30m.
+	// +optional
+	Timeout *metav1.Duration `json:"timeout,omitempty"`
+
+	// ApproverGroups are the identity-provider groups whose members may decide.
+	// Empty lets any user with access to the run's namespace decide.
+	// +optional
+	ApproverGroups []string `json:"approverGroups,omitempty"`
 }
 
 // GuardrailFilter is a single content filter rule.

@@ -13,6 +13,7 @@ resources:
 - bases/agentorca.agentorca.io_knowledgebases.yaml
 - bases/agentorca.agentorca.io_tenantconfigs.yaml
 - bases/agentorca.agentorca.io_guardrailpolicies.yaml
+- bases/agentorca.agentorca.io_sandboxclasses.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

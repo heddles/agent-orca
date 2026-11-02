@@ -1,6 +1,6 @@
 import { StrictMode, useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { getSystemStatus } from './api/sse'
+import { getSystemStatus, listApprovals } from './api/sse'
 import { ResourceList, type ResourceSelection, type ResourceTab } from './components/ResourceList'
 import { ConfigList } from './components/ConfigList'
 import { ConfigDetailView } from './components/ConfigDetailView'
@@ -13,6 +13,7 @@ import { SystemStatusPage } from './components/SystemStatusPage'
 import { CostDashboard } from './components/CostDashboard'
 import { SystemDashboard } from './components/SystemDashboard'
 import { MarketplaceView } from './components/MarketplaceView'
+import { ApprovalsView } from './components/ApprovalsView'
 import { applyDesignSystem, ds, toggleTheme, applyTheme, getPreferredTheme, type Theme } from './lib/designSystem'
 import { ICON, Icon } from './lib/icons'
 import type { IconComponent } from './lib/icons'
@@ -24,7 +25,7 @@ applyDesignSystem()
 // Apply the saved or system-default theme.
 applyTheme(getPreferredTheme())
 
-type TopLevelTab = ResourceTab | 'home' | 'marketplace' | 'history' | 'status'
+type TopLevelTab = ResourceTab | 'home' | 'marketplace' | 'history' | 'status' | 'approvals'
 
 // ── Navigation state persistence (survives page refresh) ────────────────────
 //
@@ -60,14 +61,18 @@ function saveNavState(state: Partial<NavState>): void {
 
 // Validate the saved tab — ignore stale tabs from a previous deployment.
 const VALID_TABS: TopLevelTab[] = [
-  'home', 'marketplace', 'history', 'status', 'runs', 'deployments', 'workflows',
+  'home', 'marketplace', 'history', 'status', 'approvals', 'runs', 'deployments', 'workflows',
   'agents', 'tools', 'mcpservers', 'modelproviders', 'knowledgebases', 'modelselectors',
 ]
 
 const savedState = loadNavState()
-const initialTab: TopLevelTab = VALID_TABS.includes(savedState.tab as TopLevelTab)
-  ? (savedState.tab as TopLevelTab)
-  : 'home'
+// A ?tab= link (e.g. from an approval notification) wins over the saved tab.
+const linkedTab = new URLSearchParams(window.location.search).get('tab') as TopLevelTab | null
+const initialTab: TopLevelTab = linkedTab && VALID_TABS.includes(linkedTab)
+  ? linkedTab
+  : VALID_TABS.includes(savedState.tab as TopLevelTab)
+    ? (savedState.tab as TopLevelTab)
+    : 'home'
 
 // Inject global markdown rendering styles (aoPulse keyframe now lives in the design system).
 const styleEl = document.createElement('style')
@@ -176,7 +181,24 @@ const HOME_TABS: { key: 'home' | 'marketplace'; label: string }[] = [
 ]
 
 // Dashboard-style tabs that don't use the sidebar navigation.
-const DASHBOARD_TABS: TopLevelTab[] = ['history', 'status']
+const DASHBOARD_TABS: TopLevelTab[] = ['history', 'status', 'approvals']
+
+/** Polls the number of pending approvals for the nav badge. 0 when approvals are off. */
+function usePendingApprovalCount(): number {
+  const [count, setCount] = useState(0)
+  useEffect(() => {
+    let cancelled = false
+    const poll = () => {
+      listApprovals('pending')
+        .then((a) => { if (!cancelled) setCount(a.length) })
+        .catch(() => { if (!cancelled) setCount(0) })
+    }
+    poll()
+    const id = setInterval(poll, 15000)
+    return () => { cancelled = true; clearInterval(id) }
+  }, [])
+  return count
+}
 
 function App() {
   const [tab, setTab] = useState<TopLevelTab>(initialTab)
@@ -186,6 +208,7 @@ function App() {
   // Track if we navigated from home so breadcrumbs show Home origin
   const [navigationOrigin, setNavigationOrigin] = useState<'sidebar' | 'home' | 'marketplace'>(savedState.navigationOrigin ?? 'sidebar')
   const [showCosts, setShowCosts] = useState(false)
+  const pendingApprovals = usePendingApprovalCount()
   const [showRedisBanner, setShowRedisBanner] = useState(false)
   const [showSkip, setShowSkip] = useState(false)
 
@@ -305,6 +328,15 @@ function App() {
           >
             <Icon icon={ICON.warning} size={14} ariaHidden={true} /> Status
           </button>
+          <button
+            style={{ ...layout.navTab, ...(tab === 'approvals' && !showCosts ? layout.navTabActive : {}) }}
+            onClick={() => { setTab('approvals'); setSelection(null); setBreadcrumbs([]); setShowCosts(false) }}
+            aria-label={pendingApprovals > 0 ? `Approvals, ${pendingApprovals} pending` : 'Approvals'}
+            title="Requests waiting for a decision"
+          >
+            <Icon icon={ICON.approval} size={14} ariaHidden={true} /> Approvals
+            {pendingApprovals > 0 && <span style={layout.navBadge}>{pendingApprovals}</span>}
+          </button>
           <span style={layout.navDivider} />
           {OPS_TABS.map((t) => (
             <button
@@ -355,7 +387,7 @@ function App() {
       {/* ── Body ── */}
       <div style={layout.body}>
         {/* Left list panel - hidden on home/marketplace/history/status tabs */}
-        {tab !== 'home' && tab !== 'marketplace' && tab !== 'history' && tab !== 'status' && (
+        {tab !== 'home' && tab !== 'marketplace' && tab !== 'history' && tab !== 'status' && tab !== 'approvals' && (
           <aside data-sidebar style={layout.leftPanel}>
             <div style={layout.listHeader}>
               <span style={layout.listTitle}>{TAB_LABELS[tab as ResourceTab]}</span>
@@ -416,6 +448,13 @@ function App() {
           ) : tab === 'history' ? (
             <RunHistoryView
               onNavigateToRun={(runName, ns) => {
+                setSelection({ kind: 'run', name: runName, namespace: ns })
+              }}
+            />
+          ) : tab === 'approvals' ? (
+            <ApprovalsView
+              onNavigateToRun={(runName, ns) => {
+                setTab('runs')
                 setSelection({ kind: 'run', name: runName, namespace: ns })
               }}
             />
@@ -563,6 +602,19 @@ const layout: Record<string, React.CSSProperties> = {
   navTabActive: {
     color: ds.accent,
     background: 'rgba(59,130,246,.15)',
+  },
+  navBadge: {
+    marginLeft: 6,
+    minWidth: 18,
+    padding: '0 5px',
+    borderRadius: 9,
+    background: ds.warning,
+    color: '#111',
+    fontSize: 11,
+    fontWeight: 700,
+    lineHeight: '18px',
+    textAlign: 'center' as const,
+    fontVariantNumeric: 'tabular-nums',
   },
   topbarRight: {
     marginLeft: 'auto',

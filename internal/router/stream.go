@@ -36,6 +36,9 @@ const maxRateLimitRetries = 3
 // finishReasonStop is the canonical OpenAI finish reason for a completed turn.
 const finishReasonStop = "stop"
 
+// finishReasonToolCalls is the OpenAI finish reason for a turn that ends in tool calls.
+const finishReasonToolCalls = "tool_calls"
+
 // traceEventTypeDone is the schema-aligned completion signal trace event.
 const traceEventTypeDone = "done"
 
@@ -301,7 +304,8 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 		return
 	}
 
-	if !isContinuation {
+	// A budget pause may already have begun the response to hold it open.
+	if !isContinuation && !r.sseStarted.Swap(false) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
@@ -327,6 +331,12 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 	// is a faithful, merge-independent terminal detector.
 	var sawToolCall bool
 
+	// Agent tools declared for this turn (local_tools.go); nil when the agent
+	// runs none.
+	r.mu.Lock()
+	localTools := r.turnLocalTools
+	r.mu.Unlock()
+
 	scanner := bufio.NewScanner(resp.Body)
 	// Allow large SSE lines (up to 1MB).
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -344,6 +354,19 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 	// emits its own [DONE] at the true end of the loop), so the per-turn
 	// suppression logic that used to live here is no longer needed.
 	lineCount := 0
+	// Reasoning arrives a few characters at a time. It is gathered here and
+	// emitted as one `thought` event when the thinking block ends (content, a
+	// tool call, the finish reason or the end of the stream), so a trace holds one
+	// entry per block rather than one per delta.
+	var thought strings.Builder
+	flushThought := func() {
+		if thought.Len() == 0 {
+			return
+		}
+		ev, _ := json.Marshal(map[string]string{"type": "thought", "content": thought.String()})
+		thought.Reset()
+		r.emitTraceEventBoth(string(ev))
+	}
 	for scanner.Scan() {
 		lineCount++
 		line := scanner.Text()
@@ -360,6 +383,13 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 			var chunk streamingChatCompletionChunk
 			if err := json.Unmarshal([]byte(data), &chunk); err == nil {
 				for _, choice := range chunk.Choices {
+					// Reasoning in this chunk precedes its content and tool calls.
+					thought.WriteString(choice.Delta.Reasoning)
+					// Some providers send an empty finish_reason on every chunk; only a
+					// real one ends the thinking block.
+					if choice.Delta.Content != "" || len(choice.Delta.ToolCalls) > 0 || (choice.FinishReason != nil && *choice.FinishReason != "") {
+						flushThought()
+					}
 					if choice.Delta.Content != "" {
 						contentBuilder.WriteString(choice.Delta.Content)
 						// Broadcast to external subscribers (operator SSE stream).
@@ -377,25 +407,22 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 						sawToolCall = true
 						toolCalls = mergeToolCallDeltas(toolCalls, choice.Delta.ToolCalls)
 					}
-					// Surface extended-thinking (model "reasoning") progressively as
-					// `thought` trace events so it is captured in the UI (rendered as an
-					// expandable thinking panel) and replayable on refresh, rather than
-					// being silently dropped. This keeps the agentic chat flow faithful
-					// to the provider's full output instead of terminating on a
-					// content-less thinking block.
-					if choice.Delta.Reasoning != "" {
-						ev, _ := json.Marshal(map[string]string{
-							"type":    "thought",
-							"content": choice.Delta.Reasoning,
-						})
-						r.emitTraceEventBoth(string(ev))
-					}
 					if choice.FinishReason != nil {
 						finishReason = *choice.FinishReason
 					}
 				}
 				if chunk.Usage != nil {
 					usage = *chunk.Usage
+				}
+				// An agent that runs its own tools gets only its calls, sent
+				// once the turn's tool calls are known (returnToolCallsToAgent).
+				if localTools != nil {
+					if stripped, changed := stripToolCallDeltas(chunk); changed {
+						if stripped == nil {
+							continue
+						}
+						line = "data: " + string(stripped)
+					}
 				}
 			}
 		}
@@ -405,6 +432,7 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 		_, _ = fmt.Fprintf(w, "%s\n", line)
 		flusher.Flush()
 	}
+	flushThought()
 	slog.Debug("scanner finished", "isContinuation", isContinuation, "provider", provider.Name, "lines", lineCount, "sawToolCall", sawToolCall, "toolCalls", len(toolCalls))
 
 	spendOutcome := spendOutcomeSuccess
@@ -447,6 +475,10 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 	// event — and the run phase moves to WaitingForInput, so TailTokens closes via
 	// that event (and/or the CRD terminal-state poller). No empty-token sentinel is
 	// written here either.
+
+	if localTools != nil {
+		ensureToolCallIDs(toolCalls)
+	}
 
 	// Build the complete message for conversation history.
 	assistantMsg := Message{
@@ -548,6 +580,19 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 		doneEv, _ := json.Marshal(map[string]string{"type": traceEventTypeDone, "output": fullText})
 		r.emitTraceEventBoth(string(doneEv))
 	}
+	if len(toolCalls) == 0 {
+		tokens := usage.CompletionTokens
+		if tokens == 0 {
+			tokens = estimateTokens([]Message{{Role: "assistant", Content: contentBuilder.String()}})
+		}
+		r.mu.Lock()
+		trip := r.recordTextTurnLocked(tokens)
+		r.mu.Unlock()
+		if trip != nil {
+			// The reply has already streamed; the trip makes the next request 410.
+			r.tripSafeguard(*trip)
+		}
+	}
 	// Handle tool calls if the LLM requested them.
 	// NOTE: r.messages already holds this turn's input + assistantMsg (added above),
 	// so we only need to dispatch, append results, and recurse — not re-append the history.
@@ -567,32 +612,54 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 	// change alters index handling.
 	if len(toolCalls) > 0 {
 
-		toolResults := make([]Message, len(toolCalls))
-		for i, tc := range toolCalls {
+		toolResults := make([]Message, 0, len(toolCalls))
+		var agentCalls []ToolCall
+		for _, tc := range toolCalls {
+			r.mu.Lock()
+			trip := r.recordToolCallLocked(tc)
+			r.mu.Unlock()
+			if trip != nil {
+				r.tripSafeguard(*trip)
+				writeSafeguardHalt(w, flusher, *trip)
+				return
+			}
+			if localTools[tc.Function.Name] {
+				agentCalls = append(agentCalls, tc)
+				continue
+			}
 			result := r.dispatchToolCall(req.Context(), tc)
 
-			// Stream tool call delta to client
-			toolChunk := streamingChatCompletionChunk{
-				ID:     "tool-call-" + tc.ID,
-				Object: "chat.completion.chunk",
-				Choices: []streamChoice{{
-					Index: 0,
-					Delta: streamDelta{ToolCalls: []ToolCall{tc}},
-				}},
+			// Stream tool call delta to client, unless it runs its own tools:
+			// it would take the router's call for one of its own.
+			if localTools == nil {
+				toolChunk := streamingChatCompletionChunk{
+					ID:     "tool-call-" + tc.ID,
+					Object: "chat.completion.chunk",
+					Choices: []streamChoice{{
+						Index: 0,
+						Delta: streamDelta{ToolCalls: []ToolCall{tc}},
+					}},
+				}
+				data, _ := json.Marshal(toolChunk)
+				_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
+				flusher.Flush()
 			}
-			data, _ := json.Marshal(toolChunk)
-			_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
-			flusher.Flush()
 
-			toolResults[i] = Message{
+			toolResults = append(toolResults, Message{
 				Role:       "tool",
 				ToolCallID: tc.ID,
 				Content:    result,
-			}
+			})
 		}
 		r.mu.Lock()
 		r.messages = append(r.messages, toolResults...)
 		r.incrementBufferTokens(estimateTokens(toolResults))
+		if len(agentCalls) > 0 {
+			// The agent's results arrive on its next request (local_tools.go).
+			r.mu.Unlock()
+			r.returnToolCallsToAgent(w, flusher, agentCalls)
+			return
+		}
 		// The continuation compacts the conversation if it has grown past the
 		// threshold (compactStoredConversation), like any other request.
 		continueReq := ChatCompletionRequest{

@@ -200,23 +200,34 @@ spec:
                     type: integer
                   hindsight:
                     description: |-
-                      Hindsight configures the hindsight memory system integration.
-                      When enabled, the model-router will recall relevant memories before each
-                      LLM call and retain the conversation after each turn.
+                      Hindsight configures the hindsight memory system integration. It is
+                      opt-in: without this block the agent has no hindsight memory. When
+                      enabled, the model-router recalls relevant memories before each LLM call
+                      and retains the conversation after each turn, in one bank per Agent by
+                      default, shared by its runs and deployments.
                     properties:
                       bankIdTemplate:
                         description: |-
-                          BankIDTemplate is the template for the hindsight bank ID.
-                          Can use placeholders like {namespace}, {runName}, {agentName} which will be replaced at runtime.
+                          BankIDTemplate is the template for the hindsight bank ID. Placeholders:
+                          {namespace}, {agent-name}, {run-name} and {deployment}. Default
+                          "{namespace}--{agent-name}". A per-run bank is never read again.
                         type: string
                       enabled:
                         default: true
-                        description: Enabled is true when hindsight is active.
+                        description: |-
+                          Enabled turns hindsight on. It defaults to true once the hindsight block
+                          is set.
                         type: boolean
                       recallBudget:
                         default: 5
                         description: RecallBudget is the maximum number of memories
-                          to retrieve per turn.
+                          recalled per turn.
+                        type: integer
+                      recallMaxTokens:
+                        description: |-
+                          RecallMaxTokens caps the size of the recalled memories, in tokens
+                          (hindsight's max_tokens). Default 1024.
+                        minimum: 64
                         type: integer
                       retainOnEveryTurn:
                         default: true
@@ -383,12 +394,193 @@ spec:
                       InputPort is the TCP port the agent's HTTP server listens on (http mode only).
                       Defaults to 8000.
                     type: integer
+                  localTools:
+                    description: |-
+                      LocalTools lets the agent process run tools itself. A function tool the
+                      agent declares in its chat request that the model-router does not provide
+                      (e.g. a shell inside the sandbox) is returned to the agent with
+                      finish_reason "tool_calls"; the agent runs it and sends the result as a
+                      "tool" message on its next request. The router still runs its own tools,
+                      and applies safeguards, guardrails and tracing to both kinds. Agent tools
+                      may not reuse a router tool or built-in name.
+                    type: boolean
                   ociRef:
                     description: |-
                       OCIRef is the OCI image reference for the agent process.
                       Must be signed with Cosign unless imageVerification.skip is set.
                     minLength: 1
                     type: string
+                  sandbox:
+                    description: |-
+                      Sandbox runs the agent process inside an isolated sandbox runtime instead of
+                      a plain agent pod. The agent gets a real shell and may exec subprocesses and
+                      install tools, while the sandbox confines its filesystem (Landlock), syscalls
+                      (seccomp) and network egress (per-host L7 policy enforced by a supervisor).
+
+                      Requires spec.networkIsolation.splitPod=true: the model-router keeps running in
+                      its own pod and stays the only LLM egress path. Admission is gated by the
+                      namespace label `agentorca.io/enable-sandboxes: "true"` and a GuardrailPolicyRef.
+                      Nil (the default) keeps today's pod topology unchanged.
+                    properties:
+                      classRef:
+                        description: |-
+                          ClassRef names a cluster-scoped SandboxClass whose egress, filesystem,
+                          resource defaults, placement and minimum enforcement apply to this Agent.
+                          The Agent's own settings add to the class but cannot weaken it.
+                        type: string
+                      egress:
+                        description: |-
+                          Egress lists extra endpoints the agent process may reach directly, such as
+                          package registries for installing tools. The model-router is always
+                          reachable, and the Agent's tools are added per spec.runtime.sandbox.tools;
+                          everything else is denied.
+                        items:
+                          description: SandboxEgressRule allows the agent to reach
+                            one host.
+                          properties:
+                            access:
+                              default: read-only
+                              description: |-
+                                Access selects the permitted HTTP operations. read-only (the default) allows
+                                GET/HEAD/OPTIONS, enough for package downloads; git clone over HTTPS POSTs,
+                                so it needs read-write.
+                              enum:
+                              - read-only
+                              - read-write
+                              - full
+                              type: string
+                            binaries:
+                              description: |-
+                                Binaries restricts the rule to these executables (absolute paths, e.g.
+                                /usr/bin/git). Empty means any binary in the sandbox.
+                              items:
+                                type: string
+                              type: array
+                            host:
+                              description: Host is the destination hostname. Wildcards
+                                like "*.pythonhosted.org" are supported.
+                              minLength: 1
+                              type: string
+                            ports:
+                              description: Ports lists the destination ports. Defaults
+                                to [443].
+                              items:
+                                format: int32
+                                maximum: 65535
+                                minimum: 1
+                                type: integer
+                              type: array
+                          required:
+                          - host
+                          type: object
+                        type: array
+                      egressPresets:
+                        description: |-
+                          EgressPresets add vetted read-only host lists for package registries and
+                          sources, e.g. go (module proxy and checksum database) or npm.
+                        items:
+                          description: SandboxEgressPreset names a vetted set of package-registry
+                            and source hosts.
+                          enum:
+                          - go
+                          - npm
+                          - pypi
+                          - crates
+                          - maven
+                          - github-read
+                          - mise
+                          type: string
+                        type: array
+                      enforcement:
+                        default: audit
+                        description: |-
+                          Enforcement is the network policy mode. Start with audit, then promote to
+                          enforce once the run's egress has been observed.
+                        enum:
+                        - audit
+                        - enforce
+                        type: string
+                      filesystem:
+                        description: |-
+                          Filesystem adds paths to the sandbox's default filesystem policy
+                          (read-write: /sandbox, /tmp; read-only: system paths).
+                        properties:
+                          readOnly:
+                            description: ReadOnly lists extra directories the agent
+                              may read.
+                            items:
+                              type: string
+                            type: array
+                          readWrite:
+                            description: ReadWrite lists extra directories the agent
+                              may read and write.
+                            items:
+                              type: string
+                            type: array
+                        type: object
+                      github:
+                        description: |-
+                          GitHub gives the agent git access (clone, fetch and optionally push) to
+                          GitHub repositories over HTTPS, using an installation token of the
+                          operator's GitHub App. The token is minted per run, narrowed to these
+                          repositories, refreshed before it expires, and never visible to the
+                          agent: the workload holds a placeholder that the sandbox supervisor
+                          replaces on requests from git to github.com only. Which branches a push
+                          may update is governed by the repositories' rulesets on GitHub.
+                        properties:
+                          push:
+                            description: |-
+                              Push allows git push (contents: write). Without it the token can only
+                              clone and fetch.
+                            type: boolean
+                          repositories:
+                            description: |-
+                              Repositories are the "owner/name" repositories the token is scoped to.
+                              They must belong to the account the operator's GitHub App is installed on.
+                            items:
+                              type: string
+                            maxItems: 50
+                            minItems: 1
+                            type: array
+                        required:
+                        - repositories
+                        type: object
+                      provider:
+                        default: openshell
+                        description: Provider selects the sandbox runtime.
+                        enum:
+                        - openshell
+                        type: string
+                      tools:
+                        description: |-
+                          Tools controls whether the agent process may reach its tools' endpoints
+                          directly from the sandbox. By default it can: each Tool's networkEgress
+                          hosts and the URL of each remote (http/sse) MCP tool are added to the
+                          sandbox egress. Tool calls made through the model-router are unaffected.
+                        properties:
+                          excludeHosts:
+                            description: |-
+                              ExcludeHosts lists hosts that are not added even when a tool declares them.
+                              Matched exactly against the tool's host. It does not filter spec.runtime.sandbox.egress.
+                            items:
+                              type: string
+                            type: array
+                          excludeTools:
+                            description: ExcludeTools lists Tool names (from spec.tools)
+                              whose endpoints are not added.
+                            items:
+                              type: string
+                            type: array
+                          inherit:
+                            default: true
+                            description: |-
+                              Inherit adds the Agent's tool endpoints to the sandbox egress. Set it to
+                              false to keep tools reachable only through the model-router.
+                            type: boolean
+                        type: object
+                    required:
+                    - provider
+                    type: object
                   secretRefs:
                     description: |-
                       SecretRefs lists Kubernetes Secrets to mount into the agent container as volumes

@@ -1,0 +1,82 @@
+# Development sandbox image for coding agents:
+#   ghcr.io/heddles/agent-orca/dev-sandbox:<version>
+#
+# The workload image of an OpenShell sandbox (docs/openshell-sandbox.md) running
+# cmd/coder-agent. It carries the toolchains to build and test agent-orca and
+# similar projects: Go, Node.js, Python, git, make, a C toolchain, ripgrep, jq,
+# and mise for installing other tools into the workspace at run time.
+#
+# OpenShell's Kubernetes driver runs the workload as uid 1000 with /sandbox as the
+# writable workspace; system paths are read-only (Landlock). Every cache and
+# user-level install location therefore lives under /sandbox.
+
+# syntax=docker/dockerfile:1
+FROM --platform=$BUILDPLATFORM golang:1.26 AS builder
+ARG TARGETOS
+ARG TARGETARCH
+
+WORKDIR /workspace
+COPY go.mod go.sum ./
+RUN go mod download
+COPY api/ api/
+COPY internal/ internal/
+COPY pkg/ pkg/
+COPY cmd/coder-agent/ cmd/coder-agent/
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
+    go build -trimpath -o /out/coder-agent ./cmd/coder-agent
+
+FROM node:22-bookworm-slim AS node
+
+FROM golang:1.26-bookworm
+ARG TARGETARCH
+# mise release to install; pinned and verified against the release checksums.
+ARG MISE_VERSION=v2026.10.5
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates curl git jq make gcc g++ libc6-dev pkg-config unzip xz-utils \
+        python3 python3-pip python3-venv ripgrep \
+    && rm -rf /var/lib/apt/lists/*
+
+# Node.js and npm from the official image.
+COPY --from=node /usr/local/bin/node /usr/local/bin/node
+COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
+    && node --version && npm --version
+
+RUN case "${TARGETARCH}" in amd64) arch=x64 ;; arm64) arch=arm64 ;; *) echo "unsupported arch ${TARGETARCH}"; exit 1 ;; esac \
+    && asset="mise-${MISE_VERSION}-linux-${arch}" \
+    && base="https://github.com/jdx/mise/releases/download/${MISE_VERSION}" \
+    && cd /tmp \
+    && curl -fsSLO "${base}/${asset}" \
+    && curl -fsSLO "${base}/SHASUMS256.txt" \
+    && grep "  \./${asset}\$" SHASUMS256.txt | sha256sum -c - \
+    && install -m 0755 "${asset}" /usr/local/bin/mise \
+    && rm -f "${asset}" SHASUMS256.txt \
+    && mise --version
+
+RUN useradd --uid 1000 --home-dir /sandbox --no-create-home --shell /bin/bash sandbox \
+    && mkdir -p /sandbox && chown 1000:1000 /sandbox
+
+COPY --from=builder /out/coder-agent /usr/local/bin/coder-agent
+
+ENV HOME=/sandbox \
+    GOPATH=/sandbox/.go \
+    GOMODCACHE=/sandbox/.go/pkg/mod \
+    GOCACHE=/sandbox/.cache/go-build \
+    XDG_CACHE_HOME=/sandbox/.cache \
+    XDG_CONFIG_HOME=/sandbox/.config \
+    XDG_DATA_HOME=/sandbox/.local/share \
+    npm_config_cache=/sandbox/.cache/npm \
+    npm_config_prefix=/sandbox/.local \
+    PIP_CACHE_DIR=/sandbox/.cache/pip \
+    PIP_USER=1 \
+    PIP_BREAK_SYSTEM_PACKAGES=1 \
+    PYTHONUSERBASE=/sandbox/.local \
+    MISE_DATA_DIR=/sandbox/.local/share/mise \
+    PATH=/sandbox/.local/share/mise/shims:/sandbox/.local/bin:/sandbox/.go/bin:/usr/local/go/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+
+USER 1000:1000
+WORKDIR /sandbox
+ENTRYPOINT ["/usr/local/bin/coder-agent"]

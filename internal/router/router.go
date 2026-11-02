@@ -75,11 +75,18 @@ type Router struct {
 	ruleRouter        *RuleRouter
 	metaRouter        *MetaRouter
 	store             state.Store
-	priorMessages     []Message // conversation history before the current turn (checkpoint + folded turns)
-	messages          []Message // the current turn: client input, assistant replies, tool results
-	turnPreamble      []Message // injected context for the current turn, reused by its continuations; never stored
+	priorMessages     []Message       // conversation history before the current turn (checkpoint + folded turns)
+	messages          []Message       // the current turn: client input, assistant replies, tool results
+	turnPreamble      []Message       // injected context for the current turn, reused by its continuations; never stored
+	turnLocalTools    map[string]bool // agent-run tools the current turn's request declared (local_tools.go)
 	mu                sync.Mutex
 	spendUSD          float64
+	budgetCap         float64       // current spend cap; 0 until the operator reports one (see budget.go)
+	budgetWarned      bool          // the warning for the current cap was sent
+	budgetSynced      bool          // the cap was read from the operator once
+	budgetPoll        time.Duration // how often a paused run asks the operator for the cap (tests shorten it)
+	toolApprovalPoll  time.Duration // how often a call waiting for approval asks for the decision (tests shorten it)
+	sseStarted        atomic.Bool   // a budget pause already began the SSE response of the current request
 	checkpointTTL     time.Duration
 	handedOff         bool // set to true when _handoff tool completes; short-circuits further LLM calls
 	waitingForInput   bool // set to true when _clarify tool completes; short-circuits further LLM calls
@@ -120,6 +127,7 @@ type Router struct {
 	// cancelled and a structured timeout error is returned to the LLM.
 	toolTimeout  time.Duration
 	loopDetected bool // set when a safeguard trips; blocks further LLM calls
+	guard        loopGuard
 
 	// cancelCtx is a run-scoped context used as the parent for LLM requests.
 	// It is detached from HTTP request contexts (so agent disconnects don't cancel
@@ -823,6 +831,7 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 	if !isContinuation {
 		r.streamingActive.Store(true)
 		defer r.streamingActive.Store(false)
+		r.sseStarted.Store(false)
 	}
 
 	// Conversation state (#47): r.priorMessages is the history before this turn
@@ -832,7 +841,17 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 	// per request (system prompt, built-in hints, memory recall) is rebuilt for
 	// every request and never stored. Storing the whole sent request instead
 	// re-appended the history on every turn, doubling the buffer each time.
+	var localTools map[string]bool
+	if !isContinuation {
+		localTools, err = r.localToolsForRequest(chatReq.Tools)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+
 	var turnInput []Message
+	var pendingAgentCalls []ToolCall
 	r.mu.Lock()
 	if !isContinuation {
 		// Fold the previous turn into the history.
@@ -840,12 +859,30 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 			r.priorMessages = append(r.priorMessages, r.messages...)
 			r.messages = nil
 		}
-		turnInput = r.clientTurnInput(chatReq.Messages)
+		r.turnLocalTools = localTools
+		if r.cfg.LocalTools {
+			pendingAgentCalls = unansweredToolCalls(r.priorMessages)
+		}
+		if len(pendingAgentCalls) > 0 {
+			// The previous turn handed the agent its tool calls; this request
+			// carries the results.
+			turnInput, err = r.localToolResults(chatReq.Messages, pendingAgentCalls)
+			if err != nil {
+				r.mu.Unlock()
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+		} else {
+			turnInput = r.clientTurnInput(chatReq.Messages)
+		}
 	}
 	// A continuation's body is rebuilt from r.messages by the tool-call loop;
 	// the stored conversation is the source of truth for both kinds of request.
 	conversation := slices.Concat(r.priorMessages, r.messages, turnInput)
 	r.mu.Unlock()
+	if len(pendingAgentCalls) > 0 {
+		r.traceLocalToolResults(turnInput, pendingAgentCalls)
+	}
 
 	// The injected preamble is built once per turn and reused by the turn's
 	// tool-call continuations, so recall and memory lookups run once per turn.
@@ -900,6 +937,11 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 	// copy so redacted content is what gets stored.
 	if len(turnInput) > 0 {
 		turnInput = slices.Clone(chatReq.Messages[len(chatReq.Messages)-len(turnInput):])
+	}
+
+	// A run at its budget is halted or held here, before another LLM call is paid for.
+	if !r.checkBudget(w, req, isContinuation) {
+		return
 	}
 
 	// Select the best provider.
@@ -1306,6 +1348,7 @@ func (r *Router) recordSpend(usage TokenUsage, provider *ProviderConfig, outcome
 	spent := float64(usage.PromptTokens)*provider.CostPerInputToken +
 		float64(usage.CompletionTokens)*provider.CostPerOutputToken
 	r.spendUSD += spent
+	r.noteBudgetSpendLocked()
 	r.ruleRouter.UpdateSpend(spent)
 	r.metrics.AddSpend(r.cfg.RunNamespace, r.cfg.RunName, provider.Name, provider.LiteLLMModel, outcome, spent)
 	r.flushSpend("failed to persist spend")
@@ -2041,6 +2084,11 @@ func (r *Router) dispatchToolCall(ctx context.Context, tc ToolCall) string { //n
 		r.emitTraceEvent(string(callJSON))
 	}
 
+	// Side-effect gate (tool_approval.go): a call that needs an approver waits
+	// here, before the per-tool timeout starts, so the wait does not count
+	// against it.
+	gated := r.gateToolCall(ctx, tc)
+
 	// Wrap tool execution in a per-tool timeout context so that a hanging
 	// tool (e.g. blocking HTTP handler, deadlock, infinite loop) does not
 	// block the entire run indefinitely. The timeout error is surfaced as
@@ -2115,6 +2163,10 @@ func (r *Router) dispatchToolCall(ctx context.Context, tc ToolCall) string { //n
 		for _, td := range r.cfg.ToolDefinitions {
 			if td.Name == tc.Function.Name {
 				found = true
+				if gated != "" {
+					result = gated
+					break
+				}
 				switch td.BackendType {
 				case backendTypeMCP:
 					result, appUrl = r.callMCPTool(toolCtx, td, tc.Function.Arguments)
@@ -4305,6 +4357,7 @@ func (r *Router) ClaimRun(input WarmRunInput) {
 	r.cfg.RestartResume = input.Restart
 	r.restartResume = input.Restart
 	r.loopDetected = false
+	r.guard = loopGuard{}
 	r.liveBufferTokens = 0
 	r.lastCompactedTokens = 0
 
@@ -4517,10 +4570,19 @@ func (r *Router) ensureHindsightBank(ctx context.Context) (string, error) {
 	return bankID, nil
 }
 
-// hindsightBankID derives the hindsight bank ID from the tenant namespace and agent name.
-// Format: <namespace>/<agent-name> ensures tenant isolation.
+// hindsightBankID expands the configured bank template (default
+// "{namespace}--{agent-name}": one bank per Agent, scoped by tenant namespace).
 func (r *Router) hindsightBankID() string {
-	return r.cfg.RunNamespace + "--" + r.cfg.DeploymentName
+	tmpl := r.cfg.Hindsight.BankIDTemplate
+	if tmpl == "" {
+		tmpl = "{namespace}--{agent-name}"
+	}
+	return strings.NewReplacer(
+		"{namespace}", r.cfg.RunNamespace,
+		"{agent-name}", r.cfg.AgentName, "{agentName}", r.cfg.AgentName,
+		"{run-name}", r.cfg.RunName, "{runName}", r.cfg.RunName,
+		"{deployment}", r.cfg.DeploymentName,
+	).Replace(tmpl)
 }
 
 // hindsightRecall queries hindsight for relevant memories before an LLM call.
@@ -4535,7 +4597,7 @@ func (r *Router) hindsightRecall(ctx context.Context, query string) (string, err
 
 	// Build recall request
 	recallReq := hindsight.NewRecallRequest(query)
-	recallReq.MaxTokens = new(int32(r.cfg.Hindsight.RecallBudget))
+	recallReq.MaxTokens = new(int32(r.cfg.Hindsight.RecallMaxTokens))
 
 	// Call hindsight recall API
 	resp, _, err := client.MemoryAPI.RecallMemories(ctx, bankID).RecallRequest(*recallReq).Execute()
@@ -4546,6 +4608,9 @@ func (r *Router) hindsightRecall(ctx context.Context, query string) (string, err
 	// Concatenate fact texts from results
 	var results []string
 	for _, result := range resp.Results {
+		if r.cfg.Hindsight.RecallBudget > 0 && len(results) == r.cfg.Hindsight.RecallBudget {
+			break
+		}
 		if result.Text != "" {
 			results = append(results, result.Text)
 		}

@@ -56,6 +56,8 @@ jobs:
             dockerfile: Dockerfile.ui-proxy
           - name: openai-reference
             dockerfile: Dockerfile.go.openai-reference
+          - name: dev-sandbox
+            dockerfile: Dockerfile.dev-sandbox
     steps:
       - uses: actions/checkout@v7
         with:
@@ -153,6 +155,9 @@ jobs:
           # Released charts deploy the images built for this tag, not :latest.
           sed -i -E "s/^(\s+tag: )\"latest\"/\1\"${TAG}\"/" charts/agent-orca/values.yaml
           mkdir -p dist
+          # agent-orca depends on the OpenShell gateway chart from an OCI registry;
+          # helm package fails without it in charts/.
+          helm dependency build charts/agent-orca
           for c in agent-orca agent-orca-resources model-providers; do
             helm lint "charts/$c"
             helm package "charts/$c" --version "$version" --app-version "$TAG" -d dist
@@ -214,7 +219,7 @@ jobs:
             echo "helm install agent-orca ${CHART_REPO}/agent-orca --version ${TAG#v} -n agent-orca-system --create-namespace"
             echo '```'
             echo
-            echo "Images: \`${IMAGE_REPO}/{operator,model-router,mcp-ingester,ui-proxy,openai-reference}:${TAG}\`"
+            echo "Images: \`${IMAGE_REPO}/{operator,model-router,mcp-ingester,ui-proxy,openai-reference,dev-sandbox}:${TAG}\`"
           } > notes.md
 
           if gh release view "$TAG" >/dev/null 2>&1; then

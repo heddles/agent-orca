@@ -137,7 +137,7 @@ func TestArchiveRunBindsCostCapture(t *testing.T) {
 }
 
 func TestMigrationAddsCostCaptureColumn(t *testing.T) {
-	if !strings.Contains(MigrationSQL, "ADD COLUMN IF NOT EXISTS cost_capture TEXT") {
+	if !strings.Contains(migration0001(t), "ADD COLUMN IF NOT EXISTS cost_capture TEXT") {
 		t.Fatal("migration must add cost_capture for tables created before this column existed")
 	}
 }

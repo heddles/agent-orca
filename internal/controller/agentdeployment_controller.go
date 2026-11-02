@@ -139,6 +139,15 @@ func (r *AgentDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
+	// Deployment and warm-pool pods are plain agent pods. Running a sandboxed
+	// Agent in them would silently drop its sandbox, so refuse instead.
+	if agent.Spec.Runtime.Sandbox != nil {
+		deployment.Status.Phase = agentorcav1alpha1.AgentDeploymentPhaseFailed
+		deployment.Status.Message = fmt.Sprintf("Agent %s uses spec.runtime.sandbox, which AgentDeployments do not support yet; run it as AgentRuns", agent.Name)
+		_ = r.Status().Patch(ctx, &deployment, client.MergeFrom(statusBase))
+		return ctrl.Result{}, nil
+	}
+
 	saName := security.AgentSAName(agent.Name)
 	if agent.Spec.ServiceAccountRef != nil {
 		saName = agent.Spec.ServiceAccountRef.Name
@@ -642,6 +651,7 @@ func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig( //nolint:gocycl
 			BackendRef:  backendRef,
 			Command:     tool.Spec.Command,
 			Args:        tool.Spec.Args,
+			SideEffect:  string(tool.Spec.SideEffect),
 		})
 	}
 
@@ -876,7 +886,9 @@ func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig( //nolint:gocycl
 		RunNamespace:               deploy.Namespace,
 		AgentSAName:                saName,
 		DeploymentName:             deploy.Name,
+		AgentName:                  agent.Name,
 		DisableClarify:             agent.Spec.DisableClarify,
+		LocalTools:                 agent.Spec.Runtime.LocalTools,
 		Providers:                  providers,
 		Strategy:                   selector.Spec.Strategy,
 		CapabilityRouting:          selector.Spec.CapabilityRouting,
@@ -899,14 +911,8 @@ func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig( //nolint:gocycl
 		SystemPrompt:               agent.Spec.SystemPrompt,
 		KnowledgeBases:             kbConfigs,
 		LongTermMemory:             longTermMemory,
-		Hindsight: router.HindsightConfig{
-			Enabled:           true,
-			URL:               r.HindsightURL,
-			BankIDTemplate:    "{namespace}--{agent-name}",
-			RecallBudget:      5,
-			RetainOnEveryTurn: true,
-		},
-		Filesystem: fsCfg,
+		Hindsight:                  hindsightConfig(agent, r.HindsightURL),
+		Filesystem:                 fsCfg,
 	}
 
 	// Per-tool-result token cap and loop guards. We deliberately seed sane defaults
@@ -995,8 +1001,10 @@ func maxRequestTokens(providers []router.ProviderConfig) int {
 
 // applySafeguardDefaults seeds conservative loop guards that only trip on genuine stalls
 // (not on legitimate repeated tool use — e.g. reading many distinct files during a PR
-// review — then layers explicit deployment overrides on top. ToolFrequencyCap is left 0
-// (opt-in) because big batch jobs can legitimately call one tool hundreds of times.
+// review — then layers explicit run or deployment overrides on top. ToolFrequencyCap is
+// left 0 (opt-in) because big batch jobs can legitimately call one tool hundreds of
+// times. An override of 0 (unset) keeps the default; a negative override disables the
+// check. Used for AgentDeployments and standalone AgentRuns alike.
 func applySafeguardDefaults(s *router.RouterSafeguards, deployTimeoutSec int, ov *agentorcav1alpha1.AgentRunSafeguards) {
 	if s == nil {
 		return
@@ -1014,18 +1022,17 @@ func applySafeguardDefaults(s *router.RouterSafeguards, deployTimeoutSec int, ov
 	if ov == nil {
 		return
 	}
-	if ov.MaxConsecutiveNoopTurns > 0 {
-		s.MaxConsecutiveNoopTurns = ov.MaxConsecutiveNoopTurns
+	override := func(dst *int, v int) {
+		if v != 0 {
+			*dst = max(v, 0)
+		}
 	}
+	override(&s.MaxConsecutiveNoopTurns, ov.MaxConsecutiveNoopTurns)
 	if ov.MinSubstantiveTokens > 0 {
 		s.MinSubstantiveTokens = ov.MinSubstantiveTokens
 	}
-	if ov.MaxRepeatedToolCalls > 0 {
-		s.MaxRepeatedToolCalls = ov.MaxRepeatedToolCalls
-	}
-	if ov.ToolFrequencyCap > 0 {
-		s.ToolFrequencyCap = ov.ToolFrequencyCap
-	}
+	override(&s.MaxRepeatedToolCalls, ov.MaxRepeatedToolCalls)
+	override(&s.ToolFrequencyCap, ov.ToolFrequencyCap)
 	if ov.ToolExecutionTimeoutSec > 0 {
 		s.ToolExecutionTimeoutSec = ov.ToolExecutionTimeoutSec
 	}

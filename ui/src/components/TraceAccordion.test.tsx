@@ -77,6 +77,68 @@ describe('TraceAccordion', () => {
     expect(screen.getByText('code')).toBeInTheDocument()
   })
 
+  it('renders tool approval events under the Tools filter', async () => {
+    render(
+      <TraceAccordion
+        entries={[
+          entry(0, { type: 'toolApproval', state: 'requested', tool: 'deploy', sideEffect: 'actuate', approvalId: 'a1' }),
+          entry(1, { type: 'toolApproval', state: 'rejected', tool: 'deploy', sideEffect: 'actuate', by: 'bob', reason: 'not on a Friday' }),
+          entry(2, { type: STREAM_EVENT_TYPE.modelSelected, model: 'm', reason: 'r', confidence: 0.5 }),
+        ]}
+      />,
+    )
+    await openAccordion()
+    expect(screen.getByText(/waiting for an approver/)).toBeInTheDocument()
+    expect(screen.getByText(/rejected by bob — not on a Friday/)).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Tools' }))
+    expect(screen.queryByText(/routed/)).toBeNull()
+    expect(screen.getByText(/waiting for an approver/)).toBeInTheDocument()
+  })
+
+  it('renders budget events and filters them under Budget', async () => {
+    render(
+      <TraceAccordion
+        entries={[
+          entry(0, { type: 'budget', state: 'warning', spentUSD: '1.6200', capUSD: '2.0000' }),
+          entry(1, { type: 'budget', state: 'exceeded', spentUSD: '2.0300', capUSD: '2.0000' }),
+          entry(2, { type: 'budget', state: 'resumed', spentUSD: '2.0300', capUSD: '3.5000' }),
+          entry(3, { type: STREAM_EVENT_TYPE.modelSelected, model: 'm', reason: 'r', confidence: 0.5 }),
+        ]}
+      />,
+    )
+    await openAccordion()
+    expect(screen.getByText('budget warning')).toBeInTheDocument()
+    expect(screen.getByText('budget reached, paused for approval')).toBeInTheDocument()
+    expect(screen.getByText('budget raised, resuming')).toBeInTheDocument()
+    expect(screen.getByText(/\$2.0300 spent of \$3.5000/)).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Budget' }))
+    expect(screen.queryByText(/routed/)).toBeNull()
+    expect(screen.getByText('budget warning')).toBeInTheDocument()
+  })
+
+  it('renders sandbox network decisions and filters them under Network', async () => {
+    render(
+      <TraceAccordion
+        entries={[
+          entry(0, { type: 'egress', kind: 'net', action: 'allowed', binary: '/usr/bin/curl', destination: 'pypi.org:443', policy: 'agentorca-egress-0', raw: 'NET:OPEN ...' }),
+          entry(1, { type: 'egress', kind: 'http', action: 'denied', method: 'POST', url: 'https://pypi.org/simple/', reason: 'POST /simple/ not permitted by policy', raw: 'HTTP:POST ...' }),
+          entry(2, { type: STREAM_EVENT_TYPE.modelSelected, model: 'm', reason: 'r', confidence: 0.5 }),
+        ]}
+      />,
+    )
+    await openAccordion()
+    expect(screen.getByText(/pypi.org:443/)).toBeInTheDocument()
+    expect(screen.getByText(/by \/usr\/bin\/curl/)).toBeInTheDocument()
+    expect(screen.getByText('blocked')).toBeInTheDocument()
+    expect(screen.getByText(/POST https:\/\/pypi.org\/simple\//)).toBeInTheDocument()
+    expect(screen.getByText(/ — POST \/simple\/ not permitted by policy/)).toBeInTheDocument()
+    expect(screen.queryByText(/2014/)).toBeNull()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Network' }))
+    expect(screen.queryByText(/routed/)).not.toBeInTheDocument()
+    expect(screen.getByText('allowed')).toBeInTheDocument()
+  })
+
   it('renders model_selected with confidence', async () => {
     render(
       <TraceAccordion entries={[entry(0, { type: STREAM_EVENT_TYPE.modelSelected, model: 'm', reason: 'r', confidence: 0.42 })]} />,

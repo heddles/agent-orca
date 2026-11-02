@@ -1,0 +1,46 @@
+# A deploy tool that needs an approver before it runs (docs/tool-side-effects.md).
+# Reads run freely; the tool is classified "actuate", which needs approval by
+# default; unclassified tools are held too, so nothing slips through unmarked.
+apiVersion: agentorca.agentorca.io/v1alpha1
+kind: GuardrailPolicy
+metadata:
+  name: factory
+  namespace: agent-orca-system
+spec:
+  toolApproval:
+    read: none
+    write: none
+    actuate: approve
+    unclassified: approve
+    timeout: 30m
+    approverGroups: [release-managers]
+---
+apiVersion: agentorca.agentorca.io/v1alpha1
+kind: Tool
+metadata:
+  name: deploy
+  namespace: agent-orca-system
+spec:
+  type: regular
+  ociRef: ghcr.io/example/deploy-tool:1.0.0
+  sideEffect: actuate
+  schema:
+    description: Deploy a release to an environment.
+    input:
+      type: object
+      properties:
+        env: {type: string, enum: [staging, prod]}
+        version: {type: string}
+      required: [env, version]
+---
+apiVersion: agentorca.agentorca.io/v1alpha1
+kind: Agent
+metadata:
+  name: release-agent
+  namespace: agent-orca-system
+spec:
+  modelSelectorRef: default
+  guardrailPolicyRef: factory
+  tools: [deploy]
+  runtime:
+    ociRef: ghcr.io/heddles/agent-orca/openai-reference:latest

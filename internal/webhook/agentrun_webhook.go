@@ -31,9 +31,14 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"regexp"
+	"slices"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -76,6 +81,10 @@ func (v *AgentRunValidator) validate(ctx context.Context, run *agentorcav1alpha1
 	}
 	if run.Spec.Input == "" {
 		return fmt.Errorf("%s", "spec.input is required")
+	}
+
+	if err := validateRunBudget(run.Spec.Budget); err != nil {
+		return err
 	}
 
 	// Verify the referenced Agent exists.
@@ -138,6 +147,99 @@ func (v *AgentValidator) validate(ctx context.Context, agent *agentorcav1alpha1.
 	if agent.Spec.Runtime.SecurityContextOverride != nil {
 		if err := v.validateSecurityContextOverride(ctx, agent); err != nil {
 			return err
+		}
+	}
+	if agent.Spec.Runtime.Sandbox != nil {
+		if err := v.validateSandbox(ctx, agent); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateSandbox enforces the gating + consistency rules for running an Agent
+// in a sandbox. A sandboxed agent has a shell and may exec and install
+// arbitrary binaries, so, like a privileged pod, it needs a namespace opt-in
+// and a GuardrailPolicyRef. The remaining rules reject configurations the
+// sandbox path cannot honour, rather than silently dropping them.
+func (v *AgentValidator) validateSandbox(ctx context.Context, agent *agentorcav1alpha1.Agent) error {
+	rt := agent.Spec.Runtime
+	if agent.Spec.GuardrailPolicyRef == "" {
+		return fmt.Errorf("spec.runtime.sandbox is set but spec.guardrailPolicyRef is empty: " +
+			"a GuardrailPolicyRef is required for sandboxed agents")
+	}
+	var ns corev1.Namespace
+	if err := v.Client.Get(ctx, client.ObjectKey{Name: agent.Namespace}, &ns); err != nil {
+		return fmt.Errorf("looking up namespace %q for sandbox validation: %w", agent.Namespace, err)
+	}
+	if ns.Labels[security.LabelEnableSandboxes] != "true" {
+		return fmt.Errorf("spec.runtime.sandbox is set, but namespace %q is not opted in: "+
+			"add label %s=true to the namespace", agent.Namespace, security.LabelEnableSandboxes)
+	}
+
+	// The model-router must stay in its own pod: the sandbox only runs the agent.
+	if agent.Spec.NetworkIsolation == nil || !agent.Spec.NetworkIsolation.SplitPod {
+		return fmt.Errorf("spec.runtime.sandbox requires spec.networkIsolation.splitPod=true")
+	}
+	if rt.SecurityContextOverride != nil {
+		return fmt.Errorf("spec.runtime.sandbox and spec.runtime.securityContextOverride are mutually exclusive")
+	}
+	if len(rt.SecretRefs) > 0 {
+		return fmt.Errorf("spec.runtime.secretRefs cannot be mounted into a sandbox; " +
+			"attach the credential to a Tool so the model-router holds it")
+	}
+	if rt.InputMode == "http" {
+		return fmt.Errorf("spec.runtime.sandbox supports inputMode=env only: the sandbox admits no inbound connections")
+	}
+	// OpenShell does not run the image's ENTRYPOINT: an empty command creates
+	// an idle scratch sandbox, and the run would wait for its timeout.
+	if len(rt.Command) == 0 {
+		return fmt.Errorf("spec.runtime.sandbox requires spec.runtime.command: " +
+			"OpenShell runs the given command, not the image's ENTRYPOINT")
+	}
+	switch rt.Framework {
+	case "autogen", "semantic-kernel":
+		return fmt.Errorf("framework %q configures the agent with an init container, "+
+			"which sandboxes do not run; use openai-compatible or langgraph", rt.Framework)
+	case "shim":
+		return fmt.Errorf("framework \"shim\" rewrites vendor hostnames to the router, " +
+			"which the sandbox network policy does not allow; use openai-compatible")
+	}
+
+	if name := rt.Sandbox.ClassRef; name != "" {
+		if err := v.validateSandboxClass(ctx, name, &ns); err != nil {
+			return err
+		}
+	}
+	if gh := rt.Sandbox.GitHub; gh != nil {
+		if err := validateSandboxGitHub(gh); err != nil {
+			return err
+		}
+	}
+
+	for i, rule := range rt.Sandbox.Egress {
+		for _, b := range rule.Binaries {
+			if !strings.HasPrefix(b, "/") {
+				return fmt.Errorf("spec.runtime.sandbox.egress[%d].binaries: %q is not an absolute path", i, b)
+			}
+		}
+	}
+	// A misspelled exclusion would silently leave the tool reachable.
+	if t := rt.Sandbox.Tools; t != nil {
+		for _, name := range t.ExcludeTools {
+			if !slices.Contains(agent.Spec.Tools, name) {
+				return fmt.Errorf("spec.runtime.sandbox.tools.excludeTools: %q is not in spec.tools", name)
+			}
+		}
+	}
+	if fs := rt.Sandbox.Filesystem; fs != nil {
+		for _, p := range slices.Concat(fs.ReadOnly, fs.ReadWrite) {
+			if !strings.HasPrefix(p, "/") {
+				return fmt.Errorf("spec.runtime.sandbox.filesystem: %q is not an absolute path", p)
+			}
+		}
+		if slices.Contains(fs.ReadWrite, "/") {
+			return fmt.Errorf("spec.runtime.sandbox.filesystem.readWrite must not include /")
 		}
 	}
 	return nil
@@ -223,6 +325,13 @@ func (v *ToolValidator) checkRegistry(ociRef string) error {
 	return checkRegistryAllowlist(ociRef, v.AllowedRegistries)
 }
 
+// CheckRegistryAllowlist verifies an OCI image reference against an allowlist of
+// registry prefixes; an empty allowlist allows everything. The workflow
+// controller uses it for container steps, which no admission webhook sees.
+func CheckRegistryAllowlist(ociRef string, allowedRegistries []string) error {
+	return checkRegistryAllowlist(ociRef, allowedRegistries)
+}
+
 func checkRegistryAllowlist(ociRef string, allowedRegistries []string) error {
 	if len(allowedRegistries) == 0 {
 		return nil // no restriction
@@ -287,3 +396,49 @@ func SetupToolWebhook(mgr ctrl.Manager, allowedRegistries []string) error {
 
 // Ensure the runtime import is referenced to satisfy the Go import checker.
 var _ runtime.Object
+
+// githubRepoPattern is an "owner/name" GitHub repository slug.
+var githubRepoPattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/[A-Za-z0-9._-]{1,100}$`)
+
+// validateSandboxGitHub checks spec.runtime.sandbox.github: the operator's
+// GitHub App token is scoped to one installation, so every repository must be
+// a slug under one owner.
+func validateSandboxGitHub(gh *agentorcav1alpha1.SandboxGitHub) error {
+	owner := ""
+	for i, repo := range gh.Repositories {
+		if !githubRepoPattern.MatchString(repo) || strings.HasSuffix(repo, ".git") {
+			return fmt.Errorf("spec.runtime.sandbox.github.repositories[%d] %q is not an owner/name repository", i, repo)
+		}
+		o, _, _ := strings.Cut(repo, "/")
+		if owner == "" {
+			owner = o
+		} else if !strings.EqualFold(o, owner) {
+			return fmt.Errorf("spec.runtime.sandbox.github.repositories must share one owner (the GitHub App installation's account): "+
+				"%q and %q differ", owner, o)
+		}
+	}
+	return nil
+}
+
+// validateSandboxClass checks that the SandboxClass exists and is available
+// to the Agent's namespace.
+func (v *AgentValidator) validateSandboxClass(ctx context.Context, name string, ns *corev1.Namespace) error {
+	var class agentorcav1alpha1.SandboxClass
+	if err := v.Client.Get(ctx, client.ObjectKey{Name: name}, &class); err != nil {
+		if apierrors.IsNotFound(err) {
+			return fmt.Errorf("spec.runtime.sandbox.classRef: SandboxClass %q not found", name)
+		}
+		return fmt.Errorf("looking up SandboxClass %q: %w", name, err)
+	}
+	if class.Spec.NamespaceSelector == nil {
+		return nil
+	}
+	selector, err := metav1.LabelSelectorAsSelector(class.Spec.NamespaceSelector)
+	if err != nil {
+		return fmt.Errorf("SandboxClass %q has an invalid namespaceSelector: %w", name, err)
+	}
+	if !selector.Matches(labels.Set(ns.Labels)) {
+		return fmt.Errorf("spec.runtime.sandbox.classRef: SandboxClass %q is not available to namespace %q", name, ns.Name)
+	}
+	return nil
+}

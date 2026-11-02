@@ -61,6 +61,7 @@ import {
   HelpCircle,
   LoaderCircle,
   Play,
+  ShieldCheck,
 } from 'lucide-react'
 
 export type IconComponent = typeof Bot // structural type: any Lucide icon
@@ -115,6 +116,7 @@ export const ICON = {
 
   // History
   history: History,
+  approval: ShieldCheck,
 
   // Agent templates
   templates: {

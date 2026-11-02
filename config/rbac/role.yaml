@@ -109,6 +109,14 @@ rules:
   - patch
   - update
 - apiGroups:
+  - agentorca.agentorca.io
+  resources:
+  - sandboxclasses
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - apps
   resources:
   - deployments
