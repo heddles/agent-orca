@@ -29,6 +29,9 @@ import (
 	"time"
 )
 
+// shellStopSegment is the path segment of the stop endpoint.
+const shellStopSegment = "stop"
+
 // fakeShellAPI emulates the operator's /shell endpoints.
 type fakeShellAPI struct {
 	srv *httptest.Server
@@ -83,7 +86,7 @@ func newFakeShellAPI(t *testing.T) *fakeShellAPI {
 				return
 			}
 			_, _ = w.Write([]byte(f.result))
-		case r.Method == http.MethodPost && len(parts) == 5 && parts[4] == "stop":
+		case r.Method == http.MethodPost && len(parts) == 5 && parts[4] == shellStopSegment:
 			f.mu.Lock()
 			f.stopped = append(f.stopped, parts[3])
 			f.mu.Unlock()
