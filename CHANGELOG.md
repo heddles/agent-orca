@@ -225,7 +225,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A deployment's routing events were never recorded.** The operator looked the sidecar up as an
   AgentRun, and a deployment's sidecar posts under the deployment's name, so every post was refused
-  with a 404. The operator now accepts either.
+  with a 404. The operator now accepts either. Its network policy also admitted only run pods on the
+  internal API port (`:8082`), so a deployment's sidecar could not reach it at all; it now admits
+  deployment pods too.
 
 - **OpenAI gpt-6 models failed every tool call** — OpenAI answers HTTP 400 ("Function tools with
   reasoning_effort are not supported ... use /v1/responses") when a request with tools reaches these
