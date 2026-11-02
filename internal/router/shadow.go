@@ -570,8 +570,15 @@ func (s *shadowRunner) takeLease(ctx context.Context, amountUSD float64) (int64,
 		slog.Warn("shadow lease request failed", "err", err)
 		return 0, false
 	}
+	if status == http.StatusTooManyRequests {
+		slog.Debug("shadow lease denied: budget or hourly limit reached")
+		return 0, false
+	}
 	if status != http.StatusOK {
-		slog.Debug("shadow lease denied", "status", status)
+		// Anything but a spent budget is a setup problem, such as a missing route
+		// or a benchmark that does not cover this Agent; say so instead of
+		// quietly never sampling.
+		slog.Warn("shadow lease refused", "status", status, "body", strings.TrimSpace(string(body)))
 		return 0, false
 	}
 	if json.Unmarshal(body, &resp) != nil || resp.LeaseID == 0 {

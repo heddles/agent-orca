@@ -24,7 +24,11 @@ import (
 	"strings"
 	"testing"
 
+	authv1 "k8s.io/api/authentication/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	k8sfake "k8s.io/client-go/kubernetes/fake"
+	clienttesting "k8s.io/client-go/testing"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -205,6 +209,37 @@ func TestShadow_BenchmarkMustCoverTheCallersAgent(t *testing.T) {
 	}
 	if w := shadowPostTo(s.recordShadowResult, shadowCaller, shadowStray, resultBody); w.Code != http.StatusForbidden || len(store.results) != 0 {
 		t.Errorf("result for an uncovered Agent = %d with %d stored, want 403 and none", w.Code, len(store.results))
+	}
+}
+
+// The handlers are reached through the route table, behind the token review. The
+// other tests call them directly, which is how the routes once went unregistered
+// and every lease request from a router was a 404.
+func TestShadowRoutesAreRegisteredBehindTheTokenReview(t *testing.T) {
+	store := &fakeShadowStore{cap: 10}
+	s := shadowServer(t, false, store)
+	s.k8s = k8sfake.NewSimpleClientset()
+	s.k8s.(*k8sfake.Clientset).PrependReactor("create", "tokenreviews", func(clienttesting.Action) (bool, runtime.Object, error) {
+		return true, &authv1.TokenReview{Status: authv1.TokenReviewStatus{
+			Authenticated: true, User: authv1.UserInfo{Username: shadowCaller},
+		}}, nil
+	})
+	call := func(method, path, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer tok")
+		rec := httptest.NewRecorder()
+		s.handleAgentRun(rec, req)
+		return rec
+	}
+	base := "/agentrun/" + routingTestNS + "/" + shadowRun
+	if rec := call(http.MethodPost, base+"/shadow-lease", `{"benchmark":"bench","amountUsd":0.1}`); rec.Code != http.StatusOK {
+		t.Errorf("shadow-lease = %d %s, want 200", rec.Code, rec.Body)
+	}
+	if rec := call(http.MethodPost, base+"/shadow-results", resultBody); rec.Code != http.StatusNoContent {
+		t.Errorf("shadow-results = %d %s, want 204", rec.Code, rec.Body)
+	}
+	if rec := call(http.MethodGet, base+"/shadow-lease", ""); rec.Code != http.StatusNotFound {
+		t.Errorf("GET shadow-lease = %d, want 404 (POST only)", rec.Code)
 	}
 }
 

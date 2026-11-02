@@ -147,6 +147,10 @@ func (s *Server) handleAgentRun(w http.ResponseWriter, r *http.Request) { //noli
 		s.recordRoutingDecision(w, r, namespace, parts[1])
 	case r.Method == http.MethodPost && len(parts) == 3 && parts[2] == "routing-events":
 		s.recordRoutingEvents(w, r, caller, namespace, parts[1])
+	case r.Method == http.MethodPost && len(parts) == 3 && parts[2] == "shadow-lease":
+		s.takeShadowLease(w, r, caller, namespace, parts[1])
+	case r.Method == http.MethodPost && len(parts) == 3 && parts[2] == "shadow-results":
+		s.recordShadowResult(w, r, caller, namespace, parts[1])
 	case r.Method == http.MethodPost && len(parts) == 3 && parts[2] == "fs":
 		s.enqueueFSRequest(w, r, namespace, parts[1])
 	case r.Method == http.MethodGet && len(parts) == 4 && parts[2] == "fs":
