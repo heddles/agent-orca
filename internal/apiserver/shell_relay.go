@@ -41,6 +41,9 @@ import (
 var shellJobIDPattern = regexp.MustCompile(`^sh-[0-9a-f]{16}$`)
 
 const (
+	// shellRoute is the path segment of the sandbox_exec endpoints.
+	shellRoute = "shell"
+
 	// maxShellCommandBytes bounds one command's script.
 	maxShellCommandBytes = 64 << 10
 	// shellPollInterval is how often a long poll re-reads a running job.

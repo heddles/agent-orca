@@ -144,11 +144,11 @@ func (s *Server) handleAgentRun(w http.ResponseWriter, r *http.Request) { //noli
 		s.enqueueFSRequest(w, r, namespace, parts[1])
 	case r.Method == http.MethodGet && len(parts) == 4 && parts[2] == "fs":
 		s.takeFSResponse(w, r, namespace, parts[1], parts[3])
-	case r.Method == http.MethodPost && len(parts) == 3 && parts[2] == "shell":
+	case r.Method == http.MethodPost && len(parts) == 3 && parts[2] == shellRoute:
 		s.startShellJob(w, r, caller, namespace, parts[1])
-	case r.Method == http.MethodGet && len(parts) == 4 && parts[2] == "shell":
+	case r.Method == http.MethodGet && len(parts) == 4 && parts[2] == shellRoute:
 		s.pollShellJob(w, r, caller, namespace, parts[1], parts[3])
-	case r.Method == http.MethodPost && len(parts) == 5 && parts[2] == "shell" && parts[4] == "stop":
+	case r.Method == http.MethodPost && len(parts) == 5 && parts[2] == shellRoute && parts[4] == "stop":
 		s.stopShellJob(w, r, caller, namespace, parts[1], parts[3])
 	default:
 		http.Error(w, "not found", http.StatusNotFound)

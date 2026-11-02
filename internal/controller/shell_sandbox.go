@@ -184,7 +184,7 @@ func (s *ShellSandboxService) create(ctx context.Context, sc *shellContext) (*os
 	if err := s.Client.Get(ctx, client.ObjectKey{Name: sc.run.Namespace}, &ns); err != nil {
 		return nil, fmt.Errorf("reading namespace %q: %w", sc.run.Namespace, err)
 	}
-	if ns.Labels[security.LabelEnableSandboxes] != "true" {
+	if ns.Labels[security.LabelEnableSandboxes] != annotationTrue {
 		return nil, shellsandbox.Rejectedf("namespace %q is not opted in to sandboxes (label %s=true)",
 			sc.run.Namespace, security.LabelEnableSandboxes)
 	}
@@ -204,7 +204,7 @@ func (s *ShellSandboxService) create(ctx context.Context, sc *shellContext) (*os
 	labels := map[string]string{
 		openshell.LabelRunName:      sc.run.Name,
 		openshell.LabelRunNamespace: sc.run.Namespace,
-		openshell.LabelShell:        "true",
+		openshell.LabelShell:        annotationTrue,
 	}
 	sb, err := s.Sandboxes.Create(ctx, sc.name, spec, labels)
 	if err != nil {

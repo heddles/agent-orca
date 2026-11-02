@@ -55,7 +55,7 @@ func shellRun() *agentorcav1alpha1.AgentRun {
 func shellNamespace(optedIn bool) *corev1.Namespace {
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "default"}}
 	if optedIn {
-		ns.Labels = map[string]string{security.LabelEnableSandboxes: "true"}
+		ns.Labels = map[string]string{security.LabelEnableSandboxes: annotationTrue}
 	}
 	return ns
 }
@@ -155,7 +155,7 @@ func TestShellStartCreatesTheRunsSandboxOnceAndRunsTheJob(t *testing.T) {
 	if strings.Join(spec.Command, " ") != "sh -c while :; do sleep 3600; done" {
 		t.Errorf("the main process must be idle, got %v", spec.Command)
 	}
-	if sb.Labels[openshell.LabelShell] != "true" || sb.Labels[openshell.LabelRunName] != "run-1" {
+	if sb.Labels[openshell.LabelShell] != annotationTrue || sb.Labels[openshell.LabelRunName] != "run-1" {
 		t.Errorf("labels = %v", sb.Labels)
 	}
 	var run agentorcav1alpha1.AgentRun
