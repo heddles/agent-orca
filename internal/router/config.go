@@ -516,7 +516,7 @@ type KnowledgeBaseConfig struct {
 	VectorStoreURL string
 	// CollectionName is the Qdrant collection to search.
 	CollectionName string
-	// EmbeddingProviderName is the ModelProvider to use for embedding queries.
+	// EmbeddingProviderName is the ModelProvider for embedding queries.
 	EmbeddingProviderName string
 	// EmbeddingModel is the LiteLLM model identifier for embeddings.
 	EmbeddingModel string
@@ -651,9 +651,6 @@ func ConfigFromEnv() (*Config, error) {
 	}
 	if cfg.Hindsight.RecallMaxTokens <= 0 {
 		cfg.Hindsight.RecallMaxTokens = 1024
-	}
-	if !cfg.Hindsight.RetainOnEveryTurn {
-		cfg.Hindsight.RetainOnEveryTurn = true
 	}
 
 	return &cfg, nil
