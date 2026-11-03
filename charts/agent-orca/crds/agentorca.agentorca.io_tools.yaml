@@ -484,6 +484,18 @@ spec:
                   - name
                   type: object
                 type: array
+              sideEffect:
+                description: |-
+                  SideEffect classifies what a call to this tool changes, so a GuardrailPolicy
+                  can require approval before it runs: read (changes nothing), write (changes
+                  state that can be undone or is reviewed later, such as a branch) or actuate
+                  (acts on the world and is hard to take back: a deploy, a payment, a
+                  device command). A tool without a class is "unclassified".
+                enum:
+                - read
+                - write
+                - actuate
+                type: string
               type:
                 default: regular
                 description: Type declares the tool implementation kind.

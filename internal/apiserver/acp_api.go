@@ -1445,9 +1445,12 @@ func (s *ACPServer) resumeACPRun(w http.ResponseWriter, r *http.Request, run *ag
 			Labels:       run.Labels, // shallow copy — inherits deployment/session/source
 		},
 		Spec: agentorcav1alpha1.AgentRunSpec{
-			AgentRef:    run.Spec.AgentRef,
-			Input:       continuationInput,
-			PriorRunRef: run.Name,
+			AgentRef:        run.Spec.AgentRef,
+			Input:           continuationInput,
+			Timeout:         run.Spec.Timeout,
+			RestartPolicy:   run.Spec.RestartPolicy,
+			PriorRunRef:     run.Name,
+			WorkflowSandbox: run.Spec.WorkflowSandbox,
 		},
 	}
 	if err := s.crdClient.Create(r.Context(), continuation); err != nil {

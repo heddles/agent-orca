@@ -126,11 +126,13 @@ The operator propagates `auth` (both bearer and OAuth) to child `Tool` CRs and r
 
 To prevent large tool results from blowing the context window, the model-router auto-sizes `MaxToolResultTokens` per deployment: ~10% of the model `ContextWindow`, floored at 8k, capped at 64k, bounded by half of `MaxRequestTokens`. Example: a 128k-window model gets ~12,800 tokens (not chars) of truncated tool-result capacity.
 
-Flow/Displacement: tool calls are monitored with conservative loop guards:
+Flow/Displacement: the model-router enforces conservative loop guards on every AgentRun and AgentDeployment run:
 
 - `MaxRepeatedToolCalls`: 50 (identical tool + args)
-- `MaxConsecutiveNoopTurns`: 15
+- `MaxConsecutiveNoopTurns`: 15 (consecutive text-only turns under `MinSubstantiveTokens`; not applied to chat runs)
 - `ToolFrequencyCap`: off by default (opt-in)
+
+Override them with `spec.safeguards`; a negative value disables a check. When one trips, the router stops the tool loop and ends the agent's response with `Run halted by safeguard: …`. It emits a `fail` trace event and answers later requests with 410. The operator then fails the run with `status.loopDetected` set, without retrying it.
 
 When a tool result is actually truncated, a trace event is emitted (`toolResultTruncated`).
 

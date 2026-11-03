@@ -1,0 +1,139 @@
+# Software factory pack, part 1: sandbox classes, model selectors and a GitHub MCP
+# server scoped to issues and pull requests (plans/governed-software-factory.md).
+#
+#   kubectl apply -f config/samples/software-factory/00-infrastructure.yaml
+#
+# Sandboxes land on the autoscaled sandbox pool (label and taint openshell=coder-agent).
+# The writer class backs the planner/architect/programmer/security shared sandbox;
+# the reviewer class backs the reviewer's own fresh sandbox.
+---
+apiVersion: agentorca.agentorca.io/v1alpha1
+kind: SandboxClass
+metadata:
+  name: factory-writer
+spec:
+  namespaceSelector:
+    matchLabels: {agentorca.io/enable-sandboxes: "true"}
+  enforcement: enforce
+  egressPresets: [go, npm, pypi, github-read]
+  resources:
+    requests: {cpu: "2", memory: 4Gi, ephemeral-storage: 20Gi}
+    limits: {cpu: "4", memory: 8Gi, ephemeral-storage: 20Gi}
+  nodeSelector: {openshell: coder-agent}
+  tolerations:
+    - {key: openshell, operator: Equal, value: coder-agent, effect: NoExecute}
+---
+apiVersion: agentorca.agentorca.io/v1alpha1
+kind: SandboxClass
+metadata:
+  name: factory-reviewer
+spec:
+  namespaceSelector:
+    matchLabels: {agentorca.io/enable-sandboxes: "true"}
+  enforcement: enforce
+  egressPresets: [go, github-read]
+  resources:
+    requests: {cpu: "1", memory: 2Gi, ephemeral-storage: 10Gi}
+    limits: {cpu: "2", memory: 4Gi, ephemeral-storage: 10Gi}
+  nodeSelector: {openshell: coder-agent}
+  tolerations:
+    - {key: openshell, operator: Equal, value: coder-agent, effect: NoExecute}
+---
+# Both selectors use the free OpenRouter provider while paid credits are unavailable.
+# The plan wants the reviewers on a different model family from the builders, so a blind spot in
+# one family is not shared by the check on its work.
+apiVersion: agentorca.agentorca.io/v1alpha1
+kind: ModelSelector
+metadata:
+  name: factory-build
+  namespace: agent-orca-system
+spec:
+  strategy: rule-based
+  providers:
+    - {name: openrouter-free, weight: 100}
+---
+apiVersion: agentorca.agentorca.io/v1alpha1
+kind: ModelSelector
+metadata:
+  name: factory-review
+  namespace: agent-orca-system
+spec:
+  strategy: rule-based
+  providers:
+    - {name: openrouter-free, weight: 100}
+---
+# The planner reads issues through a read-only server; only the publisher can write
+# (open pull requests, comment). A prompt cannot enforce that split, so the planner
+# is not given a tool that can write. Both reuse the token Secret of the existing
+# github-mcp server and expose issues and pull requests only.
+apiVersion: agentorca.agentorca.io/v1alpha1
+kind: MCPServer
+metadata:
+  name: github-mcp-factory-read
+  namespace: agent-orca-system
+spec:
+  transport: stdio
+  ociRef: ghcr.io/github/github-mcp-server:latest
+  args: [/server/github-mcp-server, stdio]
+  discoverability: enabled
+  allowedAgents: [factory-planner, factory-ci-fixer, factory-adversary]
+  envFrom:
+    - name: GITHUB_PERSONAL_ACCESS_TOKEN
+      valueFrom:
+        secretKeyRef: {name: github-mcp-token, key: token}
+    - {name: GITHUB_TOOLSETS, value: "issues,pull_requests,actions"}
+    - {name: GITHUB_READ_ONLY, value: "1"}
+  networkEgress:
+    - {host: api.github.com, port: 443, protocol: TCP}
+  tools: []
+  resources:
+    limits: {cpu: 200m, memory: 128Mi}
+    requests: {cpu: 50m, memory: 64Mi}
+---
+apiVersion: agentorca.agentorca.io/v1alpha1
+kind: MCPServer
+metadata:
+  name: github-mcp-factory
+  namespace: agent-orca-system
+spec:
+  transport: stdio
+  ociRef: ghcr.io/github/github-mcp-server:latest
+  args: [/server/github-mcp-server, stdio]
+  discoverability: enabled
+  allowedAgents: [factory-publisher]
+  envFrom:
+    - name: GITHUB_PERSONAL_ACCESS_TOKEN
+      valueFrom:
+        secretKeyRef: {name: github-mcp-token, key: token}
+    - {name: GITHUB_TOOLSETS, value: "issues,pull_requests"}
+  networkEgress:
+    - {host: api.github.com, port: 443, protocol: TCP}
+  tools: []
+  resources:
+    limits: {cpu: 200m, memory: 128Mi}
+    requests: {cpu: 50m, memory: 64Mi}
+---
+# Only the merger can merge. It runs after the second approval and is told to check that the
+# approved head SHA is still the PR head and that every check is green.
+apiVersion: agentorca.agentorca.io/v1alpha1
+kind: MCPServer
+metadata:
+  name: github-mcp-factory-merge
+  namespace: agent-orca-system
+spec:
+  transport: stdio
+  ociRef: ghcr.io/github/github-mcp-server:latest
+  args: [/server/github-mcp-server, stdio]
+  discoverability: enabled
+  allowedAgents: [factory-merger]
+  envFrom:
+    - name: GITHUB_PERSONAL_ACCESS_TOKEN
+      valueFrom:
+        secretKeyRef: {name: github-mcp-token, key: token}
+    - {name: GITHUB_TOOLSETS, value: "pull_requests,actions"}
+  networkEgress:
+    - {host: api.github.com, port: 443, protocol: TCP}
+  tools: []
+  resources:
+    limits: {cpu: 200m, memory: 128Mi}
+    requests: {cpu: 50m, memory: 64Mi}

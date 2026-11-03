@@ -21,6 +21,8 @@ limitations under the License.
 package podbuilder
 
 import (
+	"strings"
+
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -105,6 +107,39 @@ var DefaultRouterResources = corev1.ResourceRequirements{
 	},
 }
 
+// SwitchyardRouterResources are the resource requirements of the model-router
+// sidecar of a pod whose ModelSelector uses strategy switchyard. Switchyard's
+// engine runs a WebAssembly guest in-process: measured at about 108 MB of peak
+// memory (152 MB against 44 MB without it) plus about 18 MB per extra CPU, which
+// leaves little of DefaultRouterResources' 256Mi for the conversation itself.
+var SwitchyardRouterResources = corev1.ResourceRequirements{
+	Requests: corev1.ResourceList{
+		corev1.ResourceCPU:    resource.MustParse("100m"),
+		corev1.ResourceMemory: resource.MustParse("256Mi"),
+	},
+	Limits: corev1.ResourceList{
+		corev1.ResourceCPU:    resource.MustParse("500m"),
+		corev1.ResourceMemory: resource.MustParse("512Mi"),
+	},
+}
+
+// routerStrategySwitchyard is the ModelSelector strategy that needs
+// SwitchyardRouterResources.
+const routerStrategySwitchyard = "switchyard"
+
+// routerResourcesFor picks the model-router sidecar's resources: an explicit
+// override, else the Switchyard defaults for a switchyard selector, else the
+// ordinary defaults.
+func routerResourcesFor(cfg PodConfig) corev1.ResourceRequirements {
+	switch {
+	case cfg.RouterResources != nil:
+		return *cfg.RouterResources
+	case cfg.RouterStrategy == routerStrategySwitchyard:
+		return SwitchyardRouterResources
+	}
+	return DefaultRouterResources
+}
+
 // PodConfig holds all inputs needed to build an agent pod spec.
 // Controllers populate this struct with their specific configuration and call Build().
 type PodConfig struct {
@@ -152,8 +187,12 @@ type PodConfig struct {
 	// Defaults to 8080 if zero.
 	RouterProbePort int
 	// RouterResources overrides the default model-router resource requirements.
-	// If nil, DefaultRouterResources is used.
+	// If nil, DefaultRouterResources is used, or SwitchyardRouterResources when
+	// RouterStrategy is "switchyard".
 	RouterResources *corev1.ResourceRequirements
+	// RouterStrategy is the routing strategy of the ModelSelector the router
+	// serves. Only "switchyard" changes anything (the router's memory).
+	RouterStrategy string
 	// WebhookNotifySecretRef, when set, mounts the referenced Secret key as the
 	// WEBHOOK_URL env var into the model-router sidecar so the _webhook_notify
 	// builtin tool can POST to a Slack incoming webhook. Not mounted to the agent
@@ -276,10 +315,7 @@ func Build(cfg PodConfig) *corev1.Pod {
 		routerProbePort = 8080
 	}
 
-	routerResources := DefaultRouterResources
-	if cfg.RouterResources != nil {
-		routerResources = *cfg.RouterResources
-	}
+	routerResources := routerResourcesFor(cfg)
 
 	routerPorts := []corev1.ContainerPort{ //nolint:prealloc
 
@@ -320,7 +356,7 @@ func Build(cfg PodConfig) *corev1.Pod {
 	modelRouterContainer := corev1.Container{
 		Name:            "model-router",
 		Image:           cfg.ModelRouterImage,
-		ImagePullPolicy: corev1.PullIfNotPresent,
+		ImagePullPolicy: routerPullPolicy(cfg.ModelRouterImage),
 		RestartPolicy:   &alwaysRestart,
 		Env: []corev1.EnvVar{
 			{Name: "AGENTORC_ROUTER_CONFIG", Value: RouterConfigDir + "/" + RouterConfigKey},
@@ -527,10 +563,7 @@ func BuildRouterOnly(cfg PodConfig) *corev1.Pod {
 		routerProbePort = 8080
 	}
 
-	routerResources := DefaultRouterResources
-	if cfg.RouterResources != nil {
-		routerResources = *cfg.RouterResources
-	}
+	routerResources := routerResourcesFor(cfg)
 
 	routerConfigVol := corev1.Volume{
 		Name: RouterConfigVolume,
@@ -568,7 +601,7 @@ func BuildRouterOnly(cfg PodConfig) *corev1.Pod {
 	routerContainer := corev1.Container{
 		Name:            "model-router",
 		Image:           cfg.ModelRouterImage,
-		ImagePullPolicy: corev1.PullIfNotPresent,
+		ImagePullPolicy: routerPullPolicy(cfg.ModelRouterImage),
 		Env: []corev1.EnvVar{
 			{Name: "AGENTORC_ROUTER_CONFIG", Value: RouterConfigDir + "/" + RouterConfigKey},
 		},
@@ -652,4 +685,15 @@ func redisSecretMount() corev1.VolumeMount {
 		MountPath: RedisSecretDir,
 		ReadOnly:  true,
 	}
+}
+
+// routerPullPolicy is Always for a development build of the router and
+// IfNotPresent otherwise. A development deploy pushes a new image under the same
+// "-dirty" tag every time, so a node that kept the first one would run stale
+// router code. A release tag or a digest never changes, so it is pulled once.
+func routerPullPolicy(image string) corev1.PullPolicy {
+	if strings.Contains(image, "@sha256:") || !strings.HasSuffix(image, "-dirty") {
+		return corev1.PullIfNotPresent
+	}
+	return corev1.PullAlways
 }

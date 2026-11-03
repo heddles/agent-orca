@@ -166,13 +166,17 @@ setup-test-e2e: ## Set up a fresh Kind cluster for e2e tests (deletes existing c
 # Test tiers (controlled by env vars):
 #   default             operator + webhook tests (manager)
 #   STREAMING_E2E=true  + SSE token streaming tests (needs LLM credentials)
+#   ROUTING_E2E=true    + routing telemetry tests (deploys PostgreSQL and a fake LLM; no credentials)
+# E2E_LABEL narrows the run to specs carrying a Ginkgo label, e.g. routing-e2e.
 #
 # Examples:
 #   make test-e2e
 #   STREAMING_E2E=true make test-e2e
+#   ROUTING_E2E=true E2E_LABEL=routing-e2e make test-e2e
+E2E_LABEL ?=
 .PHONY: test-e2e
 test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e suite
-	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) ROUTER_IMG=$(ROUTER_IMG) STREAMING_E2E=$(STREAMING_E2E) go test -tags=e2e ./test/e2e/ -v -ginkgo.v
+	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) ROUTER_IMG=$(ROUTER_IMG) STREAMING_E2E=$(STREAMING_E2E) go test -tags=e2e ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter='$(E2E_LABEL)'
 	$(MAKE) cleanup-test-e2e
 
 .PHONY: lint-demos
@@ -219,6 +223,23 @@ lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
 lint-config: golangci-lint ## Verify golangci-lint linter configuration
 	"$(GOLANGCI_LINT)" config verify
 
+.PHONY: docker-deps
+docker-deps: ## Regenerate each Go Dockerfile's source COPY lines from the packages its binary imports.
+	go run ./hack/gen-docker-copies
+
+.PHONY: switchyard-update
+switchyard-update: ## Vendor Switchyard at SHA=<40 character commit> [BRANCH=<name>] and rebuild its WebAssembly guest (needs Docker).
+	@test -n "$(SHA)" || { echo "usage: make switchyard-update SHA=<commit> [BRANCH=<branch>]"; exit 1; }
+	hack/switchyard-update.sh update $(SHA) $(BRANCH)
+
+.PHONY: switchyard-verify
+switchyard-verify: ## Rebuild the Switchyard guest from the pinned commit and compare it with the committed one (needs Docker).
+	hack/switchyard-update.sh verify
+
+.PHONY: verify-docker-deps
+verify-docker-deps: ## Fail if a Go Dockerfile's generated COPY lines are stale (run make docker-deps).
+	go run ./hack/gen-docker-copies -check
+
 ##@ Build
 
 .PHONY: build
@@ -263,7 +284,7 @@ docker-push: ## Push docker image with the manager.
 
 .PHONY: docker-build-model-router
 docker-build-model-router: ## Build docker image for the model-router sidecar.
-	$(CONTAINER_TOOL) build -t ${ROUTER_IMG} -f Dockerfile.model-router .
+	$(CONTAINER_TOOL) build -t ${ROUTER_IMG} -f cmd/model-router/Dockerfile .
 
 # PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
 # architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:

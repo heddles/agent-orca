@@ -79,12 +79,15 @@ spec:
 
 | Field | Description |
 |---|---|
-| `strategy` | `rule-based` (default), `llm-meta`, or `hybrid` |
+| `strategy` | `rule-based` (default), `llm-meta`, `hybrid`, or `switchyard` |
 | `providers` | List of `{name, weight}` for probabilistic routing |
 | `fallbackChain` | Ordered providers to try on 429/5xx errors |
 | `budgetCap` | Max USD spend `perRun` and/or `perDay` |
-| `capabilityRouting` | Map of capability tag → provider name |
+| `capabilityRouting` | Map of capability tag → provider name. The keys `capable`, `efficient`, `judge` and `subagent.<group>` are roles for `switchyard`, not keyword tags |
 | `metaRouter` | Config for the LLM that decides routing (llm-meta/hybrid) |
+| `switchyard` | The Switchyard algorithm spec for `strategy: switchyard`; required for it and rejected otherwise. See [Switchyard routing](switchyard-routing.md) |
+
+**Status:** `conditions` (`ProvidersResolved`, `SwitchyardValid`, `Ready`), `observedGeneration`, and `activeProviders` (the selector's providers that exist and are Ready).
 
 ```yaml
 apiVersion: agentorca.agentorca.io/v1alpha1
@@ -135,6 +138,7 @@ spec:
 |---|---|
 | `schema` | JSON Schema `description`, `input`, `output` shown to the LLM |
 | `networkEgress` | Allowlisted outbound hosts/ports |
+| `sideEffect` | `read`, `write` or `actuate`: what a call changes, so a GuardrailPolicy can require approval before it runs. See [Tool side effects](tool-side-effects.md) |
 | `cloudAuth` | Tool-specific cloud identity (GCP/AWS/Azure) |
 
 ```yaml
@@ -173,12 +177,17 @@ spec:
 | `runtime.ociRef` | OCI image (must be Cosign-signed) |
 | `runtime.framework` | `openai-compatible`, `autogen`, `semantic-kernel`, `langgraph`, `shim` |
 | `runtime.shimTarget` | Hostname to intercept when framework=`shim` |
+| `runtime.sandbox` | Run the agent in an NVIDIA OpenShell sandbox with a shell, exec and policy-controlled egress (see [openshell-sandbox.md](openshell-sandbox.md)) |
+| `runtime.localTools` | Let the agent process run the tools it declares (e.g. a shell in its sandbox): the router returns their calls with `finish_reason: tool_calls` and takes the results on the next request (see [agent-run-tools.md](agent-run-tools.md)) |
+| `shell` | Give the agent a `sandbox_exec` tool that runs shell commands in a per-run OpenShell sandbox governed by the named SandboxClass (see [sandbox-shell.md](sandbox-shell.md)): `classRef`, `image`, `workDir`, `maxTimeoutSeconds` |
+| `runtime.sandbox.classRef` | A cluster-scoped [SandboxClass](openshell-sandbox.md#sandbox-classes): egress presets and rules, filesystem, resource defaults, placement and minimum enforcement the Agent adds to but cannot weaken |
 | `memory.checkpointEvery` | LLM turns between checkpoints (default: 1) |
 | `memory.resumeWindowSeconds` | State retention after failure (default: 3600) |
 | `memory.archiveOnCompletion` | Promote checkpoint to object storage on success |
 | `memory.episodicSummaryEvery` | Summarize conversation every N turns to compress context (0 disables) |
 | `memory.summaryModelSelectorRef` | ModelSelector for summarization calls (defaults to agent's own) |
 | `memory.longTermMemoryRef` | KnowledgeBase name for persistent cross-session memory |
+| `memory.hindsight` | Opt-in [hindsight](hindsight-auth.md) memory: recall before each LLM call and retain each turn, in one bank per Agent (`bankIdTemplate`, default `{namespace}--{agent-name}`), up to `recallBudget` memories (default 5) within `recallMaxTokens` (default 1024). Off unless set; `enabled` defaults to true once the block is present |
 | `knowledgeBases` | KnowledgeBase names; injects `_rag_search` / `_rag_ingest` tools |
 | `guardrailPolicyRef` | GuardrailPolicy name for input/output content filtering |
 | `cloudAuth` | Cloud identity for the agent's SA (GCP/AWS/Azure) |
@@ -229,7 +238,8 @@ spec:
 | `restartPolicy.maxRetries` | Retry count on failure (default: 3) |
 | `parentRunRef` | Parent AgentRun when this is spawned as a sub-agent tool |
 | `priorRunRef` | Previous AgentRun in a chat session; loads its conversation checkpoint for continuation |
-| `safeguards` | Loop detection limits (`maxConsecutiveNoopTurns`, `maxRepeatedToolCalls`) |
+| `safeguards` | Loop detection limits. Defaults apply when unset: `maxRepeatedToolCalls` 50 (same tool + identical arguments), `maxConsecutiveNoopTurns` 15 (not for chat runs), `toolFrequencyCap` off. A negative value disables a check. A trip fails the run without retrying it. |
+| `budget` | A cap on the run's model spend in USD (`maxUSD`). A warning at `warnAtPercent` (default 80); at the cap the run fails (`onExceeded: fail`, the default) or pauses until an approver raises the cap (`onExceeded: pause`). See [Run budgets](run-budgets.md). Unlike the ModelSelector's `budgetCap`, which only steers routing toward cheaper models, this one is enforced. |
 | `egress` | Result egress sink configuration (optional) |
 
 **Egress configuration (optional):**
@@ -321,7 +331,7 @@ graph LR
 | `phase` | Current lifecycle phase |
 | `spendUSD` | Cumulative USD spend for this run |
 | `output` | Agent output (truncated to 10 KB) |
-| `routingDecisions` | History of model selection choices |
+| `routingDecisions` | The most recent 100 model selection choices (provider, strategy, reason, confidence, decision ID, deciding path, task stage). `routingDecisionsTotal` counts every decision, including those that rolled off. |
 | `childRunRefs` | Sub-agent AgentRuns spawned via tools |
 | `checkpointRef` | Storage key for conversation state |
 | `clarifyQuestion` | Question posed to the human when phase is `WaitingForInput` |
@@ -448,6 +458,7 @@ See [docs/rag.md](rag.md) for the full RAG guide including local development set
 |---|---|
 | `inputFilters` | Filters applied to every user message before it is sent to the LLM |
 | `outputFilters` | Filters applied to every LLM response before it is returned to the agent/caller |
+| `toolApproval` | What each tool side-effect class needs before a call runs: `none`, `approve` or `deny`, with approver groups and a timeout. `actuate` tools need approval by default. See [Tool side effects](tool-side-effects.md) |
 
 Each filter has:
 
@@ -612,6 +623,7 @@ Every AgentRun/AgentDeployment enforces:
 - **Short-lived tokens:** projected ServiceAccount tokens with 15-minute TTL
 - **Image signing:** OCI images verified by Cosign before execution
 - **Optional syscall auditing:** Tetragon TracingPolicy attached per run
+- **Optional sandboxing:** agents with `runtime.sandbox` run in an OpenShell sandbox (Landlock, seccomp, per-host L7 egress) instead of a pod
 - **Cloud identity federation:** GCP Workload Identity, AWS IRSA, Azure Workload Identity via SA annotations
 
 ---

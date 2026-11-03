@@ -51,6 +51,65 @@ export async function getRun(runId: string, namespace: string): Promise<AgentRun
   return res.json()
 }
 
+/** Fetch every LLM call a run made, oldest first. AgentRun status keeps only the
+ *  latest routing decisions, so this is the full history of a long run. Rejects
+ *  when the operator has no PostgreSQL store (HTTP 503). */
+export async function getRunRoutingEvents(runId: string, namespace: string): Promise<RoutingEventInfo[]> {
+  const res = await apiFetch(`/api/runs/${encodeURIComponent(namespace)}/${encodeURIComponent(runId)}/routing-events`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  const body = (await res.json()) as { events?: RoutingEventInfo[] }
+  return body.events ?? []
+}
+
+/** A person's rating of a run, or of one of its routing decisions. */
+export interface RoutingFeedback {
+  /** Empty for a rating of the whole run. */
+  decisionId?: string
+  /** 1 for a thumbs up, -1 for a thumbs down. */
+  rating: 1 | -1
+  comment?: string
+}
+
+/** The caller's own ratings of a run. Rejects when the operator has no PostgreSQL
+ *  store (HTTP 503), so the UI can hide the thumbs. */
+export async function getRunFeedback(runId: string, namespace: string): Promise<RoutingFeedback[]> {
+  const res = await apiFetch(`/api/runs/${encodeURIComponent(namespace)}/${encodeURIComponent(runId)}/feedback`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  const body = (await res.json()) as { feedback?: Array<{ decisionId?: string; rating: 1 | -1; comment?: string }> }
+  return (body.feedback ?? []).map((f) => ({ decisionId: f.decisionId, rating: f.rating, comment: f.comment }))
+}
+
+/** Rates a run, or one routing decision of it. Rating the same target again
+ *  replaces the earlier rating. */
+export async function submitRunFeedback(runId: string, namespace: string, feedback: RoutingFeedback): Promise<void> {
+  const res = await apiFetch(`/api/runs/${encodeURIComponent(namespace)}/${encodeURIComponent(runId)}/feedback`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(feedback),
+  })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+}
+
+/** Shows a routing event in the decision list the router accordion renders. */
+export function routingEventToDecision(e: RoutingEventInfo): RoutingDecisionInfo {
+  const reason = e.fallbackFrom
+    ? `fallback from ${e.fallbackFrom}`
+    : e.errorClass
+      ? `${e.path ?? 'call'} (${e.errorClass})`
+      : (e.path ?? '')
+  return {
+    model: e.model ?? e.provider,
+    provider: e.provider,
+    strategy: e.strategy ?? '',
+    reason,
+    confidence: String(e.confidence ?? 0),
+    timestamp: e.createdAt,
+    decisionID: e.decisionID,
+    path: e.path,
+    category: e.stage,
+  }
+}
+
 /** Fetch all Agents across all namespaces. */
 export async function listAgents(namespace = ''): Promise<AgentSummary[]> {
   const res = await apiFetch(`/api/agents?namespace=${namespace}`)
@@ -229,6 +288,35 @@ export interface RoutingDecisionInfo {
   reason: string
   confidence: string
   timestamp?: string
+  /** Identifies the decision across traces, status and routing telemetry. */
+  decisionID?: string
+  /** What decided: a rule path, `meta`, `meta-cache` or `fallback`. */
+  path?: string
+  /** The task stage the request was classified as. */
+  category?: string
+}
+
+/** One LLM call from routing telemetry (`GET /api/runs/{ns}/{name}/routing-events`). */
+export interface RoutingEventInfo {
+  decisionID: string
+  parentDecisionID?: string
+  provider: string
+  model?: string
+  strategy?: string
+  path?: string
+  stage?: string
+  confidence?: number
+  promptTokens?: number
+  completionTokens?: number
+  costUSD?: number
+  latencyMS?: number
+  ttftMS?: number
+  finishReason?: string
+  fallbackFrom?: string
+  errorClass?: string
+  toolCalls?: number
+  toolErrors?: number
+  createdAt?: string
 }
 
 export interface AgentRunDetail {
@@ -244,6 +332,8 @@ export interface AgentRunDetail {
   startTime?: string
   completionTime?: string
   routingDecisions: RoutingDecisionInfo[]
+  /** Every decision recorded; `routingDecisions` holds only the latest ones. */
+  routingDecisionsTotal?: number
   /** Child AgentRun names spawned by this run via the agent-as-tool pattern. */
   childRunRefs?: string[]
   /** Parent AgentRun name, if this run was spawned as a child. */
@@ -360,8 +450,30 @@ export interface AgentWorkflowSummary {
   completionTime?: string
 }
 
+/** One run of a step. A step inside a loop has one per pass. */
+export interface WorkflowStepPass {
+  pass: number
+  agentRunRef: string
+  phase: string
+  output?: string
+  spendUSD?: string
+}
+
+/** A loop: the steps that repeat, what ends it, and how far along it is. */
+export interface WorkflowLoopSummary {
+  id: string
+  gate: string
+  steps: string[]
+  until: string
+  maxIterations: number
+  /** 1-based pass the loop is on. */
+  pass: number
+  state: 'pending' | 'running' | 'repeating' | 'satisfied' | 'exhausted'
+}
+
 export interface WorkflowStepSummary {
   name: string
+  type?: string
   agentRef: string
   input?: string
   phase: string
@@ -371,10 +483,22 @@ export interface WorkflowStepSummary {
   failureReason?: string
   startTime?: string
   completionTime?: string
+  /** 0 on the first pass; set once a loop has sent the step back. */
+  iteration?: number
+  /** Id of the loop this step repeats in, if any. */
+  loop?: string
+  /** The output is from the previous pass: the step is queued to run again. */
+  staleOutput?: boolean
+  passes?: WorkflowStepPass[]
 }
 
 export interface AgentWorkflowDetail extends AgentWorkflowSummary {
   steps: WorkflowStepSummary[]
+  loops?: WorkflowLoopSummary[]
+  /** The shared sandbox never came up or was lost; retry "sandbox" to provision it again. */
+  sandboxFailed?: boolean
+  /** Phase of the workflow's shared sandbox: Provisioning until its checkout is done. */
+  sandboxPhase?: string
 }
 
 /** Fetch all AgentWorkflows across all namespaces. */
@@ -560,6 +684,16 @@ export async function cancelRun(runId: string, namespace: string): Promise<void>
   if (!res.ok) throw new Error(await res.text())
 }
 
+/** Runs a failed workflow step again. A workflow that already ended is revived;
+ *  a failed loop gate restarts its loop. */
+export async function retryWorkflowStep(namespace: string, name: string, step: string): Promise<void> {
+  const res = await apiFetch(
+    `/api/workflows/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/steps/${encodeURIComponent(step)}/retry`,
+    { method: 'POST' },
+  )
+  if (!res.ok) throw new Error((await res.text()).trim() || `HTTP ${res.status}`)
+}
+
 /** Submit a human answer to a clarifying question for a WaitingForInput run.
  *  Returns the name of the continuation run created to carry the work forward. */
 export async function answerClarification(
@@ -697,4 +831,222 @@ export async function getResource(kind: ResourceKind, namespace: string, name: s
   const res = await apiFetch(`/api/resources/${encodeURIComponent(kind)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`)
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json()
+}
+
+// ── Approvals (G2) ───────────────────────────────────────────────────────────
+
+/** What a sandbox asked for, as stored in an egress approval's details. */
+export interface EgressRequestDetails {
+  sandbox?: string
+  chunkID?: string
+  rule?: string
+  hosts?: string[]
+  binaries?: string[]
+  rationale?: string
+  securityNotes?: string
+  validation?: string
+  hits?: number
+  lastSeen?: string
+}
+
+/** What a paused run asks for, as stored in a budget approval's details. */
+export interface BudgetRequestDetails {
+  raise?: number
+  spentUSD?: string
+  capUSD?: string
+  raiseByUSD?: string
+  newCapUSD?: string
+  description?: string
+}
+
+/** What a workflow's approval step asks, as stored in its approval's details. */
+export interface WorkflowGateDetails {
+  workflow?: string
+  step?: string
+  message?: string
+}
+
+/** What a gated tool call asks for, as stored in a tool approval's details. */
+export interface ToolRequestDetails {
+  tool?: string
+  sideEffect?: string
+  arguments?: string
+  agent?: string
+}
+
+/** What a routing change asks for, as stored in a "routing" or "routing-rollback" approval's details. */
+export interface RoutingRequestDetails {
+  recommendation?: string
+  selector?: string
+  detector?: string
+  category?: string
+  /** What the evidence shows, in a sentence. */
+  summary?: string
+  caveat?: string
+  /** The JSON merge patch that will be applied to the ModelSelector. */
+  patch?: unknown
+  evidence?: RecommendationEvidence
+  baseGeneration?: number
+}
+
+/** A request for a decision: egress a sandbox's policy does not allow (kind
+ *  "egress"), or a higher spend cap for a run that reached its budget ("budget"), or a tool call
+ *  whose side-effect class needs an approver ("tool"). */
+export interface Approval {
+  id: string
+  namespace: string
+  runName: string
+  kind: string
+  summary: string
+  details?: EgressRequestDetails & BudgetRequestDetails & ToolRequestDetails & WorkflowGateDetails & RoutingRequestDetails
+  approverGroups: string[]
+  status: 'pending' | 'approved' | 'rejected' | 'expired' | 'withdrawn'
+  requestedAt: string
+  expiresAt: string
+  decidedBy?: string
+  decidedAt?: string
+  reason?: string
+  appliedAt?: string
+}
+
+/** Lists approvals in the caller's namespaces. status '' lists every status. */
+export async function listApprovals(status = 'pending'): Promise<Approval[]> {
+  const res = await apiFetch(`/api/approvals?status=${encodeURIComponent(status)}`)
+  if (!res.ok) throw new Error(res.status === 503 ? 'not configured' : `HTTP ${res.status}`)
+  const body = await res.json()
+  return body.approvals ?? []
+}
+
+/** Approves or rejects a pending approval as the signed-in user. */
+export async function decideApproval(id: string, action: 'approve' | 'reject', reason: string): Promise<Approval> {
+  const res = await apiFetch(`/api/approvals/${encodeURIComponent(id)}/${action}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason }),
+  })
+  if (!res.ok) {
+    const text = (await res.text()).trim()
+    throw new Error(text || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+// ── Routing recommendations ──────────────────────────────────────────────────
+
+/** One threshold's cost and quality loss, measured on the benchmark's replayed calls. */
+export interface FrontierPoint {
+  threshold: number
+  costUsd: number
+  /** Share of calls routed to the model whose answer lost. */
+  loss: number
+  current?: boolean
+}
+
+/** The numbers behind a recommendation. Which are present depends on the check that found it. */
+export interface RecommendationEvidence {
+  samples?: number
+  netWin?: number
+  netWinLo?: number
+  netWinHi?: number
+  deltaCostUsd?: number
+  usdPerNetWin?: number
+  inconsistentRate?: number
+  projectedMonthlySavingsUsd?: number
+  errorRate?: number
+  calls?: number
+  fromThreshold?: number
+  toThreshold?: number
+  lossChange?: number
+  lossChangeHi?: number
+  frontier?: FrontierPoint[]
+  routingLift?: number
+  routingLiftHi?: number
+}
+
+export type RecommendationPhase =
+  | 'Proposed' | 'PendingApproval' | 'Applied' | 'Rejected' | 'Stale' | 'Superseded' | 'RolledBack' | 'Expired'
+
+/** A change to a ModelSelector the routing evidence supports, with what the caller may ask for. */
+export interface RoutingRecommendation {
+  name: string
+  namespace: string
+  selector: string
+  benchmark?: string
+  detector: 'overspend' | 'underpowered' | 'threshold' | 'deadProvider' | 'strategySwitch'
+  agent?: string
+  category?: string
+  summary: string
+  patch?: string
+  rollbackPatch?: string
+  reason?: string
+  caveat?: string
+  baseGeneration: number
+  action: 'none' | 'requestApply' | 'rollback'
+  phase: RecommendationPhase
+  message?: string
+  evidence?: RecommendationEvidence
+  corroboration?: string[]
+  lastEvaluated?: string
+  createdAt: string
+  appliedAt?: string
+  appliedRollbackPatch?: string
+  postApply?: { verdict: 'Confirmed' | 'Regressed' | 'Inconclusive' | 'NotAssessed'; evaluatedAt?: string; message?: string }
+  conditions?: { type: string; status: string; reason?: string; message?: string }[]
+  canRequestApply: boolean
+  canRollback: boolean
+  blockedReason?: string
+  kubectlPatch?: string
+}
+
+/** One RoutingBenchmark's configuration and what it has found. */
+export interface RoutingBenchmark {
+  name: string
+  namespace: string
+  mode: 'reportOnly' | 'proposeApply'
+  agents: string[]
+  ready: boolean
+  readyReason?: string
+  readyMessage?: string
+  warnings?: string[]
+  sampleRate?: string
+  judge?: string
+  perDayUSD: string
+  shadowSpendTodayUSD?: string
+  budgetExhausted?: boolean
+  sampledCalls: number
+  judgedPairs: number
+  judgeInconsistentRate?: string
+  categories?: { agent: string; category: string; samples: number; servedWins: number; shadowWins: number; ties: number }[]
+  lastEvaluated?: string
+}
+
+async function readError(res: Response): Promise<string> {
+  const text = (await res.text()).trim()
+  return text || `HTTP ${res.status}`
+}
+
+/** Lists routing recommendations in the caller's namespaces, open ones first. phase '' lists every phase. */
+export async function listRoutingRecommendations(phase = ''): Promise<RoutingRecommendation[]> {
+  const res = await apiFetch(`/api/routing/recommendations${phase ? `?phase=${encodeURIComponent(phase)}` : ''}`)
+  if (!res.ok) throw new Error(await readError(res))
+  return (await res.json()).recommendations ?? []
+}
+
+/** Lists RoutingBenchmarks in the caller's namespaces. */
+export async function listRoutingBenchmarks(): Promise<RoutingBenchmark[]> {
+  const res = await apiFetch('/api/routing/benchmarks')
+  if (!res.ok) throw new Error(await readError(res))
+  return (await res.json()).benchmarks ?? []
+}
+
+/**
+ * Asks the operator to raise an approval to apply a recommendation or to undo an applied one.
+ * Nothing changes until an approver agrees.
+ */
+export async function askRecommendationAction(namespace: string, name: string, action: 'requestApply' | 'rollback'): Promise<void> {
+  const res = await apiFetch(
+    `/api/routing/recommendations/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/action`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action }) },
+  )
+  if (!res.ok) throw new Error(await readError(res))
 }

@@ -45,6 +45,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
@@ -53,6 +54,8 @@ import (
 	"github.com/heddles/agent-orca/internal/acpfs"
 	"github.com/heddles/agent-orca/internal/apiserver"
 	"github.com/heddles/agent-orca/internal/controller"
+	"github.com/heddles/agent-orca/internal/githubapp"
+	"github.com/heddles/agent-orca/internal/openshell"
 	"github.com/heddles/agent-orca/internal/podbuilder"
 	"github.com/heddles/agent-orca/internal/postgresql"
 	"github.com/heddles/agent-orca/internal/security"
@@ -79,13 +82,20 @@ func main() {
 	var metricsCertPath, metricsCertName, metricsCertKey string
 	var webhookCertPath, webhookCertName, webhookCertKey string
 	var enableLeaderElection bool
+	var routingRecommendations bool
 	var probeAddr string
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var tlsOpts []func(*tls.Config)
+	var routingEventsRetention time.Duration
+	flag.DurationVar(&routingEventsRetention, "routing-events-retention", 30*24*time.Hour,
+		"How long routing telemetry (one row per LLM call) is kept in PostgreSQL. 0 keeps it forever.")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
+	flag.BoolVar(&routingRecommendations, "routing-recommendations", true,
+		"Evaluate every ModelSelector's routing and write RoutingRecommendations (report only). "+
+			"A selector opts out with the annotation agentorca.io/routing-recommendations=disabled.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
@@ -395,6 +405,24 @@ func main() {
 		setupLog.Error(err, "Failed to create controller", "controller", "ModelSelector")
 		os.Exit(1)
 	}
+	benchmarks := &controller.RoutingBenchmarkReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}
+	if pgStore != nil {
+		benchmarks.Results = pgStore
+	}
+	if err := benchmarks.SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "RoutingBenchmark")
+		os.Exit(1)
+	}
+	evaluation := &controller.RoutingEvaluationReconciler{
+		Client: mgr.GetClient(), Scheme: mgr.GetScheme(), Disabled: !routingRecommendations,
+	}
+	if pgStore != nil {
+		evaluation.Source = pgStore
+	}
+	if err := evaluation.SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "RoutingEvaluation")
+		os.Exit(1)
+	}
 	if err := (&controller.ToolReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
@@ -417,6 +445,59 @@ func main() {
 		setupLog.Error(err, "Failed to create controller", "controller", "Agent")
 		os.Exit(1)
 	}
+	// OpenShell sandboxes are optional: without a gateway address, Agents with
+	// spec.runtime.sandbox fail their runs with a clear reason.
+	var sandboxes openshell.Gateway
+	sandboxPlacement, err := openshell.PlacementFromEnv()
+	if err != nil {
+		setupLog.Error(err, "Invalid OpenShell sandbox placement")
+		os.Exit(1)
+	}
+	if osCfg, ok := openshell.ConfigFromEnv(); ok {
+		gw, err := openshell.Connect(osCfg, func(ctx context.Context, namespace, pod, container string) (string, error) {
+			raw, err := k8sClient.CoreV1().Pods(namespace).GetLogs(pod, &corev1.PodLogOptions{Container: container}).DoRaw(ctx)
+			return string(raw), err
+		})
+		if err != nil {
+			setupLog.Error(err, "Failed to configure the OpenShell gateway client")
+			os.Exit(1)
+		}
+		sandboxes = gw
+		setupLog.Info("OpenShell sandboxes enabled", "gateway", osCfg.Address,
+			"workspace", osCfg.Workspace, "sandboxNamespace", osCfg.SandboxNamespace)
+	}
+	// The GitHub App gives sandboxed agents short-lived git credentials
+	// (spec.runtime.sandbox.github); without it such runs fail with a clear reason.
+	// Egress approvals need the PostgreSQL store; without it they stay off.
+	var approvals controller.ApprovalStore
+	if pgStore != nil {
+		approvals = pgStore
+	}
+	var approvalNotifier controller.ApprovalNotifier
+	var completionNotifier controller.TextNotifier
+	if u := os.Getenv("APPROVALS_NOTIFY_WEBHOOK_URL"); u != "" {
+		webhookNotifier := &controller.WebhookApprovalNotifier{URL: u, UIURL: os.Getenv("APPROVALS_UI_URL")}
+		approvalNotifier, completionNotifier = webhookNotifier, webhookNotifier
+	}
+	// A recommendation is applied only after an approver agrees, so applying needs
+	// the same PostgreSQL-backed approvals as the other approval flows.
+	if err := (&controller.RoutingRecommendationReconciler{
+		Client: mgr.GetClient(), Scheme: mgr.GetScheme(),
+		Approvals: approvals, ApprovalNotifier: approvalNotifier,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "RoutingRecommendation")
+		os.Exit(1)
+	}
+	var gitHubApp controller.GitHubTokenMinter
+	if dir := os.Getenv("GITHUB_APP_DIR"); dir != "" {
+		app, err := githubapp.FromDir(dir, os.Getenv("GITHUB_API_URL"))
+		if err != nil {
+			setupLog.Error(err, "Failed to load the GitHub App")
+			os.Exit(1)
+		}
+		gitHubApp = app
+		setupLog.Info("GitHub App enabled for sandbox git access", "appID", app.AppID, "installationID", app.InstallationID)
+	}
 	if err := (&controller.AgentRunReconciler{
 		Client:                     mgr.GetClient(),
 		Scheme:                     mgr.GetScheme(),
@@ -437,6 +518,12 @@ func main() {
 		HindsightURL:               os.Getenv("HINDSIGHT_URL"),
 		HindsightAPIKey:            os.Getenv("HINDSIGHT_API_KEY"),
 		OperatorNamespace:          os.Getenv("POD_NAMESPACE"),
+		Sandboxes:                  sandboxes,
+		SandboxPlacement:           sandboxPlacement,
+		GitHubApp:                  gitHubApp,
+		Approvals:                  approvals,
+		ApprovalNotifier:           approvalNotifier,
+		ClusterDomain:              os.Getenv("CLUSTER_DOMAIN"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "AgentRun")
 		os.Exit(1)
@@ -492,8 +579,17 @@ func main() {
 	}
 
 	if err := (&controller.AgentWorkflowReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:             mgr.GetClient(),
+		Scheme:             mgr.GetScheme(),
+		K8s:                k8sClient,
+		Approvals:          approvals,
+		ApprovalNotifier:   approvalNotifier,
+		CompletionNotifier: completionNotifier,
+		AllowedRegistries:  allowedRegistries,
+		Sandboxes:          sandboxes,
+		SandboxPlacement:   sandboxPlacement,
+		GitHubApp:          gitHubApp,
+		ClusterDomain:      os.Getenv("CLUSTER_DOMAIN"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "AgentWorkflow")
 		os.Exit(1)
@@ -519,6 +615,24 @@ func main() {
 
 	// Start the internal API server (port 8082) for agent-to-agent communication.
 	internalAPI := apiserver.New(k8sClient, mgr.GetClient())
+	// Tool-call approvals (Tool.spec.sideEffect) need the PostgreSQL store; without
+	// it routers asking for one get 503 and the gated tool call is refused.
+	if pgStore != nil {
+		var notifier apiserver.ApprovalNotifier
+		if approvalNotifier != nil {
+			notifier = approvalNotifier
+		}
+		internalAPI.WithApprovals(pgStore, notifier)
+		// Routing telemetry: one row per LLM call, posted by each run's router.
+		internalAPI.WithRoutingStore(pgStore)
+		internalAPI.WithShadowStore(pgStore)
+		if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
+			return pgStore.RunRoutingEventsRetention(ctx, routingEventsRetention, postgresql.RoutingEventsRetentionInterval)
+		})); err != nil {
+			setupLog.Error(err, "Unable to schedule routing telemetry retention")
+			os.Exit(1)
+		}
+	}
 	// Filesystem relay (issue #34): carries ACP fs/* requests from agent pods to
 	// the workstation-side bridge. Requires the redis-backed shared state; with
 	// no relay both the internal and ACP fs endpoints fail fast with 501.
@@ -530,6 +644,16 @@ func main() {
 	}
 	if fsRelay != nil {
 		internalAPI.SetFilesystemRelay(fsRelay)
+	}
+	// sandbox_exec (Agent.spec.shell) needs the OpenShell gateway; without one the
+	// internal API answers 501 and the tool reports that to the agent.
+	if sandboxes != nil {
+		internalAPI.SetShellSandboxes(&controller.ShellSandboxService{
+			Client:            mgr.GetClient(),
+			Sandboxes:         sandboxes,
+			SandboxPlacement:  sandboxPlacement,
+			AllowedRegistries: allowedRegistries,
+		})
 	}
 	go func() {
 		srv := newHTTPServer(":8082", internalAPI.Handler())
@@ -587,6 +711,9 @@ func main() {
 
 	// Start the external API server (port 8084) for enterprise integrations.
 	externalAPI := apiserver.NewExternalAPIServer(k8sClient, mgr.GetClient(), externalAuth, stateConfig.Backend != "", stateStore) //nolint:lll
+	if pgStore != nil {
+		externalAPI.WithFeedbackStore(pgStore)
+	}
 
 	go func() {
 		srv := newHTTPServer(":8084", externalAPI.Handler())

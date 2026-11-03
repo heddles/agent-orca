@@ -23,6 +23,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -841,8 +842,11 @@ func TestACPPresumeRun_CreatesContinuation(t *testing.T) {
 			},
 		},
 		Spec: agentorcav1alpha1.AgentRunSpec{
-			AgentRef: "support-bot",
-			Input:    "What is my password?",
+			AgentRef:        "support-bot",
+			Input:           "What is my password?",
+			Timeout:         &metav1.Duration{Duration: time.Minute},
+			RestartPolicy:   &agentorcav1alpha1.AgentRunRestartPolicy{MaxRetries: 0},
+			WorkflowSandbox: &agentorcav1alpha1.WorkflowSandboxRef{Name: "ao-workflow", Fresh: true},
 		},
 		Status: agentorcav1alpha1.AgentRunStatus{
 			Phase:           agentorcav1alpha1.AgentRunPhaseWaitingForInput,
@@ -900,6 +904,10 @@ func TestACPPresumeRun_CreatesContinuation(t *testing.T) {
 	}
 	if cont.Labels["agentorca.io/deployment"] != "dep-resume" {
 		t.Errorf("expected continuation to inherit deployment label, got %q", cont.Labels["agentorca.io/deployment"])
+	}
+	if cont.Spec.WorkflowSandbox == nil || cont.Spec.WorkflowSandbox.Name != "ao-workflow" || !cont.Spec.WorkflowSandbox.Fresh ||
+		cont.Spec.RestartPolicy == nil || cont.Spec.RestartPolicy.MaxRetries != 0 || cont.Spec.Timeout == nil {
+		t.Errorf("continuation lost its workflow sandbox, restart policy or timeout: %+v", cont.Spec)
 	}
 }
 

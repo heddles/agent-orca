@@ -241,7 +241,7 @@ so clients can show why a run is silent before the first token arrives:
 event: trace
 data: {"type":"routing","model":"z-ai/glm-5.3-flash","provider":"openrouter-free","strategy":"rule-based","reason":"weighted random","confidence":0.5}
 event: trace
-data: {"type":"hindsight","op":"recall","bankID":"agent-orca-system--senior-programmer-chat"}
+data: {"type":"hindsight","op":"recall","bankID":"agent-orca-system--senior-programmer"}
 event: trace
 data: {"type":"truncation","provider":"openrouter-free","before":1021745,"after":313516,"budget":314366}
 ```

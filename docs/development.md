@@ -105,6 +105,72 @@ Always use `kubebuilder create api` and `kubebuilder create webhook` to scaffold
 The e2e tests are designed to validate the solution in an isolated environment (similar to GitHub Actions CI).
 Ensure you run them against a dedicated [Kind](https://kind.sigs.k8s.io/) cluster (not your “real” dev/prod cluster).
 
+### Dockerfile Source COPY Lines Are Generated
+Each Go image copies only the packages its binary imports, so an edit to `internal/rag`
+does not rebuild the model-router (and skaffold does not rebuild it either). The
+`# BEGIN generated go-deps` … `# END generated go-deps` block in `Dockerfile`,
+`cmd/model-router/Dockerfile`, `cmd/oauth-proxy/Dockerfile`, `Dockerfile.mcp-ingester`,
+`Dockerfile.ui-proxy` and `Dockerfile.dev-sandbox` is written by
+`hack/gen-docker-copies` from `go list -deps`; never edit it by hand.
+
+```
+make docker-deps          # Rewrite the blocks after adding or removing an import
+make verify-docker-deps   # What CI runs: fails when a block is stale
+```
+
+If an image build fails with a missing package, the import is new: run `make docker-deps`.
+A new Dockerfile that builds Go code gets the two marker lines where its `COPY` lines go,
+and an entry in `targets` in `hack/gen-docker-copies/main.go`. `.dockerignore` stays an
+allowlist: a directory a Dockerfile needs must also be re-included there.
+
+### Switchyard Is Vendored, and Its WebAssembly Guest Is in Git LFS
+The model-router uses [NVIDIA NeMo Switchyard](https://github.com/NVIDIA-NeMo/Switchyard)'s
+routing algorithms. Its Go binding is not published as a module yet, so it is vendored in
+`third_party/switchyard` (a `replace` in `go.mod`), pinned to one upstream commit recorded in
+`third_party/switchyard/UPSTREAM`. The binding runs Switchyard's Rust core as a WebAssembly
+guest in-process (wazero), so builds need no cgo and no Rust.
+
+The guest, `third_party/switchyard/bindings/go/internal/wasm/switchyard.wasm` (7 MB), is stored
+in **Git LFS**. Install [git-lfs](https://git-lfs.com) once (`git lfs install`) before cloning,
+or run `git lfs pull` in an existing clone. Without it the file is a text pointer; the
+Switchyard tests then fail with exactly that instruction. CI fetches it through
+`.github/actions/lfs-pull`, which caches it by checksum.
+
+```
+make switchyard-update SHA=<40 character commit> BRANCH=<branch>   # vendor a new commit
+make switchyard-verify                                             # rebuild and compare
+```
+
+Both need Docker, not a local Rust toolchain: the guest is built by upstream's own
+`scripts/build-go-wasm.sh` inside a digest-pinned Rust image (`rust:1.99.1-bookworm`, linux/amd64),
+so the bytes do not depend on the machine. `switchyard-verify` also runs weekly and on any change
+to the vendored files (`.github/workflows/switchyard-wasm.yml`). Upstream is fetched from
+codeload, not `gh api`, which NVIDIA's SAML blocks. After an update, commit the new guest through
+LFS, run `make docker-deps`, and check the guest benchmarks (`go test -bench . ./internal/router/switchyard`).
+
+### How the Sidecar Uses Switchyard
+With `strategy: switchyard` in the router config (`Config.Switchyard.Algorithm`, a Switchyard algorithm
+spec whose targets are ModelProvider names), the sidecar builds a Switchyard engine and asks it which
+provider serves each LLM call. Which providers are eligible comes from the selector's `capabilityRouting`
+roles: `capable`, `efficient` and `judge` name one provider each, and `any` is every provider with a weight.
+`internal/router/switchyard` is the adapter (allowlist, validation, host calls); `selector_switchyard.go` is
+the selector.
+
+- **Served:** `auto`, `stage_router`, `llm_classifier`, `composite`, `plan_execute`, `random`, `passthrough`,
+  `subagents`. An LLM judge is an ordinary non-streaming model call through the router's own forwarders and
+  is charged to the run. **Not served:** `advisor`, `vgr`, `noop` (they answer for the model) and
+  `prefill_router`; typed decision services (`classifier.decision`) abort the decision.
+- **It never fails a request.** If the engine cannot start, the algorithm errors, a judge fails or times
+  out, or something unsupported is asked of it, the rule router decides, and the decision is recorded with
+  path `switchyard-failopen` and the cause in its reason.
+- **Kill switch:** `MODEL_ROUTER_DISABLE_SWITCHYARD=true` on the model-router container routes with the
+  rule router alone.
+- **Session state.** Switchyard keeps holds and escalation latches per session, in memory, per sidecar. A
+  warm pod claimed for another conversation gets a fresh engine (`ClaimRun`); state is not shared
+  between pods, so an escalation does not survive a pod restart.
+- **Cost of a decision:** about 1 ms at 10 messages, 8 ms at 200, 20 ms at 500 (almost all inside the
+  guest), against an LLM call of seconds. The engine adds about 110 MB of peak memory at start.
+
 ## After Making Changes
 
 **After editing `*_types.go` or markers:**
@@ -117,6 +183,7 @@ make generate   # Regenerate DeepCopy methods
 ```
 make lint-fix   # Auto-fix code style
 make test       # Run unit tests
+make docker-deps  # If you added or removed an import of a repo package
 ```
 
 ## CLI Commands Cheat Sheet

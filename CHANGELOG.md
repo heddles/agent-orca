@@ -9,6 +9,114 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A Routing tab in the UI** — lists the operator's routing recommendations with the evidence behind
+  each, the patch and how to undo it, and lets you copy a change as a `kubectl patch` command or as YAML.
+  Where a benchmark allows applying, it asks for an approval to apply a change or to undo one (nothing
+  changes until an approver agrees). A threshold recommendation draws the cost against quality of each
+  threshold the benchmark tried, with a table view. A second tab shows each RoutingBenchmark: its Agents,
+  spend against its daily budget, and who won per Agent and kind of work. The approvals inbox now shows
+  what a routing approval changes. New UI API endpoints: `GET /api/routing/recommendations`,
+  `GET /api/routing/benchmarks` and `POST /api/routing/recommendations/{ns}/{name}/action`.
+- **Applying a routing recommendation, with approval** — a `RoutingBenchmark` with `mode: proposeApply`
+  and `approverGroups` now lets its Agents' selectors be changed by a recommendation once an approver
+  agrees. The operator raises an approval for each recommendation that has a patch (or you ask with
+  `spec.action: requestApply`), and applies the patch to the ModelSelector only after approval, only if
+  the selector has not changed since the finding (otherwise the recommendation is `Stale`), and only to
+  `spec`. It records the patch that undoes the change; `spec.action: rollback` asks for it, with its own
+  approval. A window after a change that sent work to a cheaper model, the operator checks the answers
+  afterwards and, if they got clearly worse, records `Regressed` and asks for a rollback. Nothing is ever
+  rolled back without an approver. Needs PostgreSQL (migration `0007` adds an index for the evaluator).
+- **Routing recommendations** — the operator now looks at how each ModelSelector has been routing and
+  writes what it finds as `RoutingRecommendation` resources: a summary, the numbers behind it, a JSON
+  merge patch against the selector and the patch that undoes it. It never changes a selector itself.
+  Without any setup it reports providers that fail most calls. With a `RoutingBenchmark` covering the
+  Agents, it also reports a model that is not worth its price for a kind of work, one that is too weak
+  for it, a better `base_threshold` for a composite selector, and a rule-based selector that routes no
+  better than chance. A change to a selector several Agents share is held back, with the reason, until
+  every one of them has enough evidence. Read them with `kubectl get routingrecommendations`; turn them
+  off for a selector with the annotation `agentorca.io/routing-recommendations: disabled`, or for the
+  operator with `--routing-recommendations=false`. It needs PostgreSQL.
+- **RoutingBenchmark** — a new resource that measures how well routing serves a set of Agents, chosen by
+  `agentRefs` or an `agentSelector`. Evidence is kept per Agent, whether its work runs as an AgentRun, an
+  AgentDeployment or a workflow step, so it builds up across runs. The operator validates the benchmark,
+  stores shadow results and budget leases in Postgres (migration `0005`), and reports judged pairs, judge
+  disagreement and shadow spend in its status. The internal API gains `shadow-lease` and
+  `shadow-results`. The model-router replays a sample of calls on the other model and has a judge compare
+  the answers, in the background and without running tools or touching the user's stream. Each Agent is
+  held to `shadow.maxPerHour` samples, and a deployment is held to `budget.perRunUSD` per day.
+- **Rating how models were chosen** — thumbs up or down on a run or on one routing decision, with an
+  optional comment. In the run view the thumbs sit on each "routed" row and under the output; through
+  the task API it is `POST /v1/tasks/{id}/feedback`, and through the UI API
+  `POST /api/runs/{ns}/{name}/feedback` (`GET` returns the caller's own ratings). Rating the same
+  target again replaces the earlier rating. Ratings are stored in `routing_feedback` (migration
+  `0004`), which needs PostgreSQL: without it the endpoints answer 503 rather than drop the rating.
+  Each rating is filed under the Agent whose work it rates, and the deployment or workflow step the
+  run was part of (migration `0006`), so ratings count towards the Agent even after the run is gone.
+- **A plain reason for every routing decision** — the reason on a decision is now one sentence that
+  says what was chosen and why, for example "Escalated to sonnet-5-5: tool calls have been failing
+  repeatedly (stage tool-exec; stage_router override)". It covers every Switchyard label, every rule,
+  the meta-router, Switchyard fail-open and fallback (which names the provider that failed). The
+  `routing request` log line gains `algorithm`, `label` and `stage`, the routing trace event gains
+  `algorithm`, `label` and `candidates`, and `AgentRun.status.routingDecisions` gains optional
+  `algorithm` and `label`. In the run view, the "routed" row shows the sentence and a "why this model"
+  disclosure with the label, stage, path, candidates and decision ID. The `modelSelected` event no
+  longer prefixes the reason with `[strategy] provider —`; both are separate fields.
+
+- **`switchyard` ModelSelector strategy and a ModelSelector controller** — a ModelSelector can now
+  set `strategy: switchyard` with a Switchyard algorithm in `spec.switchyard` (required for the
+  strategy and rejected for the others; `capabilityRouting` keys `capable`, `efficient`, `judge` and
+  `subagent.<group>` are roles). The ModelSelector controller, which was an empty scaffold, now
+  reports `ProvidersResolved`, `SwitchyardValid` (Switchyard itself validates the algorithm, once per
+  spec change) and `Ready` conditions, `observedGeneration`, and `activeProviders`; it never blocks a
+  run. The model-router of a `switchyard` selector gets a 512Mi memory limit instead of 256Mi. Runs and
+  deployments resolve their selector through one shared function. Samples:
+  `config/samples/switchyard-*.yaml`. See `docs/switchyard-routing.md`.
+- **Switchyard selector in the model-router** — with `strategy: switchyard` in its config, the
+  sidecar routes each call with a Switchyard algorithm (`stage_router`, `llm_classifier`,
+  `composite`, `plan_execute`, `auto`, `random`, `passthrough`, `subagents`): which provider is eligible
+  comes from the selector's `capabilityRouting` roles (`capable`, `efficient`, `judge`), tool
+  side-effect classes seed the stage router's tool semantics, and an LLM judge runs as an ordinary
+  model call charged to the run. The next provider Switchyard ranks becomes the first fallback.
+  It never fails a request: whenever the algorithm cannot decide, the rule router does and the
+  decision is recorded as `switchyard-failopen` with the cause. `MODEL_ROUTER_DISABLE_SWITCHYARD=true`
+  switches it off. A warm pod claimed for another conversation starts with a clean engine (the claim
+  now carries the run's session, parent and workflow step). Not reachable from a ModelSelector until
+  the CRD gains the strategy. See `docs/development.md`.
+- **Switchyard routing binding, vendored** — NVIDIA NeMo Switchyard's Go binding is vendored in
+  `third_party/switchyard`, pinned to one upstream commit, with its WebAssembly guest built by
+  upstream's script in a digest-pinned Rust image and stored in **Git LFS** (install git-lfs to
+  clone; CI caches the object). It runs in-process through wazero, so images stay cgo-free and
+  need no Rust. Nothing routes with it yet. `make switchyard-update` / `make switchyard-verify`
+  (also a weekly and path-triggered workflow) vendor and check it. A local `go.mod` replace now
+  also gets its `go.mod` into every image before `go mod download`
+  (`go-mod-replaces` block, generated like the dependency one). See `docs/development.md`.
+- **Routing decision identity and a `Selector` seam** — every routing decision now carries a
+  decision ID (UUIDv7), the rule or meta-router path that made it, and the task stage
+  (`tool-exec`, `code`, `summarize`, `chat`). They appear in the `routing` trace event and in
+  `status.routingDecisions` (`decisionID`, `path`, `category`, `parentDecisionID`). A fallback
+  after a provider failure is recorded as its own decision pointing at the one it replaced.
+  Provider selection moved behind a `Selector` interface in `internal/router`; the existing
+  rule and meta-router logic is its first implementation. `internal/router/testdata/routing`
+  holds golden routing fixtures (`go test ./internal/router -run TestRoutingGolden -update`).
+- **Routing telemetry** — with PostgreSQL configured, every LLM call becomes a
+  `routing_events` row (provider, deciding path, task stage, tokens, cost, latency, time to
+  first token, fallback/error, tool-call outcomes; metadata only), and a run's outcome is
+  recorded in `run_outcomes` when it is archived. Rows are kept for
+  `--routing-events-retention` (default 720h). The run page can load the full decision
+  history (`GET /api/runs/{ns}/{name}/routing-events`) when `status.routingDecisions`, now
+  capped at the latest 100, is only a window. New router metrics: `llm_tokens_total`,
+  `llm_latency_seconds`, `llm_ttft_seconds`, `llm_errors_total`, `routing_decisions_total`,
+  `routing_fallbacks_total`, `telemetry_events_dropped_total`; `tool_calls_total` and
+  `stream_duration_seconds`, defined but never recorded before, now are. See
+  `docs/observability.md`.
+- **Routing e2e harness** — `test/fakellm`, a deterministic OpenAI-compatible server for tests
+  (scripted failures, latency, tool calls, judge verdicts), and a path-filtered
+  `E2E Routing Tests` workflow that runs the routing telemetry specs (`ROUTING_E2E=true`,
+  `E2E_LABEL` selects specs) against a Kind cluster with PostgreSQL.
+- **Sandbox shell for agents** (`Agent.spec.shell`) — a built-in `sandbox_exec` tool runs
+  shell commands in an OpenShell sandbox the operator creates for the run on the first call
+  and deletes when the run ends. The agent stays in its normal pod; the SandboxClass it names
+  is the only policy on the sandbox. See `docs/sandbox-shell.md`.
 - **Hindsight API-key authentication** (`hindsight.apiKeySecret` chart value, fixes the
   application-level half of #58) — the model-router sends
   `Authorization: Bearer <key>` on hindsight bank/recall/retain calls so hindsight can
@@ -123,6 +231,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A `stage:<name>` route in `capabilityRouting` now takes effect.** The rule router sends calls of
+  that stage (`tool-exec`, `code`, `summarize` or `chat`) to the named provider. It applies after the
+  vision, context, budget and timeout rules, which still win, and before keyword hints. Until now such
+  keys were reserved and ignored. A selector that has none behaves as before.
+
+- **Go images copy only the packages their binary imports** — the `COPY cmd/ internal/ api/`
+  lines of the Go Dockerfiles are now generated from `go list -deps` by
+  `hack/gen-docker-copies` (`make docker-deps`; CI runs `make verify-docker-deps` in the Lint
+  job). The model-router image needs 12 of the 21 `internal/` packages and `ui-proxy` none, so
+  editing an unrelated package no longer invalidates their build cache or, under skaffold,
+  rebuilds them. `Dockerfile.model-router` was a duplicate of `cmd/model-router/Dockerfile`
+  and is gone; `make docker-build-model-router` (used by the e2e suite) now builds the same
+  Dockerfile the release does. See `docs/development.md`.
 - Terminal `done` trace event is now emitted by the model-router whenever the
   OpenAI turn loop ends without dispatching tools (previously only the `_done`
   built-in emitted it, so framework agents never produced a terminal marker);
@@ -139,6 +260,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   strict clients (previously rejected with `-32602 Invalid params`).
 
 ### Fixed
+
+- **A deployment's routing events were never recorded.** The operator looked the sidecar up as an
+  AgentRun, and a deployment's sidecar posts under the deployment's name, so every post was refused
+  with a 404. The operator now accepts either. Its network policy also admitted only run pods on the
+  internal API port (`:8082`), so a deployment's sidecar could not reach it at all; it now admits
+  deployment pods too.
+
+- **OpenAI gpt-6 models failed every tool call** — OpenAI answers HTTP 400 ("Function tools with
+  reasoning_effort are not supported ... use /v1/responses") when a request with tools reaches these
+  models on `/v1/chat/completions`, and `gpt-6.1-sol` cannot turn reasoning off. Every agent call
+  carries tools, so a selector made only of OpenAI models could not answer at all. The router now
+  switches a provider to the Responses API the first time OpenAI asks for it and remembers that for
+  the life of the router; the Responses stream is translated to chat-completion chunks, so nothing
+  downstream changes. Other 400s still fail over as before. No ModelProvider field is involved.
+  Reasoning items are not carried between turns, so the model reasons afresh on each call.
+
+- **Anthropic calls recorded zero prompt tokens** — the streaming translator read only the output
+  count and dropped the input count Anthropic sends in `message_start`, so every Anthropic call
+  showed `prompt_tokens = 0`. Cost, `routing_events` and the context-size accounting that depends on
+  prompt tokens were all too low. Cache writes and cache reads now count toward the prompt as well,
+  in the streaming and non-streaming paths. Cached tokens are priced at the full input rate, so cost
+  for cache-heavy runs is slightly high rather than low.
+
+- **Routing rules that never fired** — the router passed a zero token estimate and no
+  timeout to the rule router, so the `maxRequestTokens` filter, the large-context rule and
+  the near-timeout rule were dead. They now run. Runs with large conversations, a provider
+  `maxRequestTokens`, or a `spec.timeout` can be routed to a different provider than before.
+- **Weight-0 providers could win the budget, timeout and context rules** — providers reserved
+  for the fallback chain and meta-router escalation are now skipped by those rules (and by
+  vision routing, unless no weighted provider has the capability).
+- **Capability keyword routing was order-dependent** — keys are matched in sorted order, and
+  the role/stage keys `capable`, `efficient`, `judge`, `any`, `stage:*` and `subagent.*` are
+  reserved and never matched against message text.
+- **Meta-router prompts to Anthropic providers** — they were sent in OpenAI format to the
+  Messages endpoint and always failed. The meta-router now uses the same provider
+  forwarders as normal calls, with a 15s timeout.
+- **Meta-router saw its own history twice** — the conversation was prepended a second time
+  before routing, skewing keyword matching and the decision cache key. The run's budget,
+  timeout and turn state now also reach the meta-router cache key as designed.
+- **Duplicate and lost routing decisions** — each LLM call used to post a second, re-rolled
+  decision (it could disagree with the real one) and concurrent posts overwrote each other.
+  A call now posts one decision; posts use an optimistic lock, and `status.routingDecisions`
+  keeps the most recent 100 (`status.routingDecisionsTotal` counts all of them).
 
 - ACP sessions showed a truncated or empty final response when an agent ended its turn
   with `_done(output=...)` (#74): the answer rides only the terminal `done` trace
