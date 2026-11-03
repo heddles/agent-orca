@@ -425,7 +425,7 @@ type LongTermMemoryConfig struct {
 	VectorStoreURL string `json:"vectorStoreURL,omitempty"`
 	// CollectionName is the Qdrant collection.
 	CollectionName string `json:"collectionName,omitempty"`
-	// EmbeddingProviderName is the ModelProvider for embedding queries.
+	// EmbeddingProviderName is the ModelProvider to use for embedding queries.
 	EmbeddingProviderName string `json:"embeddingProviderName,omitempty"`
 	// EmbeddingModel is the LiteLLM model identifier for embeddings.
 	EmbeddingModel string `json:"embeddingModel,omitempty"`
@@ -452,6 +452,8 @@ type HindsightConfig struct {
 	// recall to a single memory.
 	RecallMaxTokens int `json:"recallMaxTokens,omitempty"`
 	// RetainOnEveryTurn is true to retain conversation after every LLM turn.
+	// Defaults to true; set false to retain only at run boundaries (see the
+	// per-turn gate in stream.go).
 	RetainOnEveryTurn bool `json:"retainOnEveryTurn,omitempty"`
 	// APIKey authenticates the router to a hindsight API running with the
 	// ApiKeyTenantExtension (sent as "Authorization: Bearer <key>"). It is read
@@ -516,7 +518,7 @@ type KnowledgeBaseConfig struct {
 	VectorStoreURL string
 	// CollectionName is the Qdrant collection to search.
 	CollectionName string
-	// EmbeddingProviderName is the ModelProvider for embedding queries.
+	// EmbeddingProviderName is the ModelProvider to use for embedding queries.
 	EmbeddingProviderName string
 	// EmbeddingModel is the LiteLLM model identifier for embeddings.
 	EmbeddingModel string
@@ -651,6 +653,23 @@ func ConfigFromEnv() (*Config, error) {
 	}
 	if cfg.Hindsight.RecallMaxTokens <= 0 {
 		cfg.Hindsight.RecallMaxTokens = 1024
+	}
+	// RetainOnEveryTurn defaults to true (the CRD default) and an explicit false
+	// must survive. A plain bool cannot tell "omitted" from "false", and the old
+	// `if !x { x = true }` default silently turned an explicit false back on —
+	// which made the flag, and the streaming retain gate that reads it, inert.
+	// Detect presence in the raw config instead: only an explicit false disables
+	// per-turn retain.
+	var retainPresence struct {
+		Hindsight struct {
+			RetainOnEveryTurn *bool `json:"retainOnEveryTurn"`
+		} `json:"hindsight"`
+	}
+	if err := json.Unmarshal(data, &retainPresence); err != nil {
+		return nil, fmt.Errorf("parsing router config for hindsight defaults: %w", err)
+	}
+	if retainPresence.Hindsight.RetainOnEveryTurn == nil {
+		cfg.Hindsight.RetainOnEveryTurn = true
 	}
 
 	return &cfg, nil
