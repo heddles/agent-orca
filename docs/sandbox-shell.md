@@ -92,8 +92,9 @@ operator restart. The router stops the job if the command times out or the run i
 
 ## Limitations
 
-- **AgentRuns only.** An AgentDeployment's pods have no per-run sandbox to attach to, so the
-  tool is not added to them.
+- **One sandbox per run, not per conversation.** A warm pod of an AgentDeployment gets the
+  tool too, but the sandbox belongs to the run the pod is claimed for. In a chat each message
+  is a new run, so files and installed tools from an earlier message are gone.
 - **No git or secrets in the sandbox.** Cloning a private repository is not supported yet; public
   hosts the class allows work. (Workflow sandboxes, `AgentWorkflow.spec.sandbox`, have git access.)
 - **Not tied to tool side-effect classes.** Every command is allowed; the sandbox's policy is the
