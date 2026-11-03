@@ -44,15 +44,43 @@ type Config struct {
 	// DeploymentName is set when this run is part of an AgentDeployment.
 	// Used to scope deployment-shared state keys.
 	DeploymentName string
+	// AgentName is the Agent this run or deployment runs (hindsight bank IDs).
+	AgentName string
+
+	// SelectorName is the ModelSelector that supplied Providers, recorded on
+	// every routing decision.
+	SelectorName string
+	// SessionID groups the runs of one conversation. It falls back to RunName
+	// when the run has no session label.
+	SessionID string
+	// ParentRunName is set for a run spawned by another run (a subagent).
+	ParentRunName string
+	// WorkflowStep is the AgentWorkflow step this run executes, if any.
+	WorkflowStep string
+	// RunDeadline is when the run's timeout expires; nil when the run has no
+	// timeout. The timeout-proximity routing rule needs it.
+	RunDeadline *time.Time
 
 	// DisableClarify prevents the auto-trigger clarify safety net from activating.
 	// Set from Agent.Spec.DisableClarify for autonomous agents.
 	DisableClarify bool
 
+	// LocalTools lets the agent run the tools it declares itself
+	// (Agent.Spec.Runtime.LocalTools); see local_tools.go.
+	LocalTools bool
+
 	// Providers is the ordered list of LLM providers resolved from the ModelSelector.
 	Providers []ProviderConfig
-	// Strategy is the routing strategy: "rule-based", "llm-meta", or "hybrid".
+	// Strategy is the routing strategy: "rule-based", "llm-meta", "hybrid" or
+	// "switchyard".
 	Strategy string
+	// Switchyard is the algorithm of the "switchyard" strategy.
+	Switchyard *SwitchyardConfig `json:"switchyard,omitempty"`
+	// Shadow replays a sample of calls on another model for a RoutingBenchmark.
+	Shadow *ShadowConfig `json:"shadow,omitempty"`
+	// AuxProviders are providers the router may call but never routes to: the
+	// benchmark's judge and any shadow targets outside the selector.
+	AuxProviders []ProviderConfig `json:"auxProviders,omitempty"`
 	// CapabilityRouting maps capability tags to provider names.
 	CapabilityRouting map[string]string
 	// FallbackChain is the ordered list of provider names used on 429/5xx.
@@ -63,8 +91,17 @@ type Config struct {
 	// MetaRouterThreshold is the minimum rule-router confidence below which meta-router is invoked.
 	MetaRouterThreshold float64
 
-	// BudgetPerRunUSD is the maximum USD spend for this run (0 = unlimited).
+	// BudgetPerRunUSD is the maximum USD spend for this run (0 = unlimited). It
+	// only steers routing toward cheaper models; Budget enforces a cap.
 	BudgetPerRunUSD float64
+
+	// Budget enforces a spend cap on the run (AgentRun.spec.budget); nil means
+	// the run is not capped.
+	Budget *BudgetConfig `json:"budget,omitempty"`
+
+	// ToolApproval sets what each tool side-effect class needs before a call
+	// runs (GuardrailPolicy.spec.toolApproval); nil applies the defaults.
+	ToolApproval *ToolApprovalConfig `json:"toolApproval,omitempty"`
 
 	// ToolDefinitions are the OpenAI function definitions to inject into every chat completion.
 	// Built by the operator from Tool CRDs, MCP tool lists, and agent-as-tool schemas.
@@ -201,6 +238,11 @@ type Config struct {
 	// tools that relay to the user's workstation via the ACP bridge. nil means
 	// filesystem access is disabled (Agent.spec.filesystem was unset).
 	Filesystem *FilesystemConfig `json:"filesystem,omitempty"`
+
+	// Shell enables the built-in sandbox_exec tool, which runs shell commands
+	// in a sandbox the operator keeps for the run. Populated by the operator
+	// from Agent.spec.shell.
+	Shell *ShellConfig `json:"shell,omitempty"`
 }
 
 // ProviderConfig is a fully-resolved LLM provider ready for dispatch.
@@ -321,6 +363,9 @@ type ToolDefinition struct {
 	Command []string `json:"command,omitempty"`
 	// Args overrides the container command arguments for pod-type tools.
 	Args []string `json:"args,omitempty"`
+	// SideEffect is the tool's class (Tool.spec.sideEffect): read, write,
+	// actuate, or empty when unclassified.
+	SideEffect string `json:"sideEffect,omitempty"`
 	// AppResourceURI is the ui:// resource URI from _meta.ui.resourceUri, if present.
 	// Only set when AllowApps is true on the owning MCPServer.
 	AppResourceURI string `json:"appResourceUri,omitempty"`
@@ -396,11 +441,16 @@ type HindsightConfig struct {
 	Enabled bool `json:"enabled,omitempty"`
 	// URL is the hindsight API endpoint (e.g. http://hindsight.hindsight.svc.cluster.local:8888).
 	URL string `json:"url,omitempty"`
-	// BankIDTemplate is the template for the hindsight bank ID. Can use placeholders like
-	// {namespace}, {runName}, {agentName} which will be replaced at runtime.
+	// BankIDTemplate is the template for the hindsight bank ID. Placeholders:
+	// {namespace}, {agent-name}, {run-name} and {deployment} (camelCase spellings
+	// are accepted too). Default "{namespace}--{agent-name}".
 	BankIDTemplate string `json:"bankIdTemplate,omitempty"`
-	// RecallBudget is the maximum number of memories to retrieve per turn.
+	// RecallBudget is the maximum number of memories recalled per turn.
 	RecallBudget int `json:"recallBudget,omitempty"`
+	// RecallMaxTokens caps the size of the recalled memories (hindsight's
+	// max_tokens). It was once set from RecallBudget, which truncated every
+	// recall to a single memory.
+	RecallMaxTokens int `json:"recallMaxTokens,omitempty"`
 	// RetainOnEveryTurn is true to retain conversation after every LLM turn.
 	RetainOnEveryTurn bool `json:"retainOnEveryTurn,omitempty"`
 	// APIKey authenticates the router to a hindsight API running with the
@@ -443,6 +493,14 @@ type WarmRunInput struct {
 	// Restart marks a re-claim for a run recovering from a pod restart, so
 	// the router drops the original input the agent runtime re-sends.
 	Restart bool `json:"restart,omitempty"`
+	// SessionID is the conversation the run belongs to. A warm pod serves many
+	// runs in turn; a selector that keeps per-session state starts clean when it
+	// changes. Older operators omit it, and the run name stands in.
+	SessionID string `json:"sessionID,omitempty"`
+	// ParentRunName is set for a run spawned by another run.
+	ParentRunName string `json:"parentRunName,omitempty"`
+	// WorkflowStep is the AgentWorkflow step the run executes, if any.
+	WorkflowStep string `json:"workflowStep,omitempty"`
 }
 
 // checkpointKeyForRun is the state-store key of a run's conversation checkpoint.
@@ -590,6 +648,9 @@ func ConfigFromEnv() (*Config, error) {
 
 	if cfg.Hindsight.RecallBudget <= 0 {
 		cfg.Hindsight.RecallBudget = 5
+	}
+	if cfg.Hindsight.RecallMaxTokens <= 0 {
+		cfg.Hindsight.RecallMaxTokens = 1024
 	}
 	if !cfg.Hindsight.RetainOnEveryTurn {
 		cfg.Hindsight.RetainOnEveryTurn = true

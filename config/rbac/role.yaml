@@ -66,6 +66,8 @@ rules:
   - mcpservers
   - modelproviders
   - modelselectors
+  - routingbenchmarks
+  - routingrecommendations
   - tenantconfigs
   - tools
   verbs:
@@ -87,6 +89,8 @@ rules:
   - mcpservers/finalizers
   - modelproviders/finalizers
   - modelselectors/finalizers
+  - routingbenchmarks/finalizers
+  - routingrecommendations/finalizers
   - tenantconfigs/finalizers
   - tools/finalizers
   verbs:
@@ -102,12 +106,22 @@ rules:
   - mcpservers/status
   - modelproviders/status
   - modelselectors/status
+  - routingbenchmarks/status
+  - routingrecommendations/status
   - tenantconfigs/status
   - tools/status
   verbs:
   - get
   - patch
   - update
+- apiGroups:
+  - agentorca.agentorca.io
+  resources:
+  - sandboxclasses
+  verbs:
+  - get
+  - list
+  - watch
 - apiGroups:
   - apps
   resources:

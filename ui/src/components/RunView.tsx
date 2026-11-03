@@ -6,6 +6,8 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   getRun,
+  getRunRoutingEvents,
+  routingEventToDecision,
   isSSEClientParseEventType,
   subscribeToRunStream,
   cancelRun,
@@ -341,9 +343,13 @@ export function RunView({
         </div>
       ) : viewTab === 'trace' ? (
         <div id="trace-panel" role="tabpanel" style={{ flex: 1, overflowY: 'auto' }}>
-          <TraceAccordion entries={entries} streaming={isRunning} markdown={markdown} />
+          <TraceAccordion entries={entries} streaming={isRunning} markdown={markdown} feedbackRun={{ namespace, runName: runId }} />
           {detail && detail.routingDecisions.length > 0 && (
-            <RouterAccordion decisions={detail.routingDecisions} />
+            <RouterAccordion
+              decisions={detail.routingDecisions}
+              total={detail.routingDecisionsTotal}
+              loadAll={() => getRunRoutingEvents(detail.name, detail.namespace).then((evs) => evs.map(routingEventToDecision))}
+            />
           )}
         </div>
       ) : (
@@ -370,6 +376,7 @@ export function RunView({
               output={output || ''}
               streaming={isRunning && !output}
               markdown={markdown}
+              feedbackRun={{ namespace, runName: runId }}
             />
           )}
 

@@ -44,6 +44,12 @@ rules:
       - modelselectors
       - modelselectors/status
       - modelselectors/finalizers
+      - routingbenchmarks
+      - routingbenchmarks/status
+      - routingbenchmarks/finalizers
+      - routingrecommendations
+      - routingrecommendations/status
+      - routingrecommendations/finalizers
       - tenantconfigs
       - tenantconfigs/status
       - tenantconfigs/finalizers
@@ -51,6 +57,10 @@ rules:
       - tools/status
       - tools/finalizers
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # SandboxClasses are written by cluster admins; the operator only reads them.
+  - apiGroups: ["agentorca.agentorca.io"]
+    resources: ["sandboxclasses"]
+    verbs: ["get", "list", "watch"]
   # Create and manage workloads for AgentRuns
   - apiGroups: [""]
     resources: ["pods", "pods/log", "serviceaccounts", "configmaps", "events", "endpoints"]

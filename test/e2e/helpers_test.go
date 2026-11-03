@@ -41,6 +41,11 @@ import (
 // These also require a valid LLM provider credential to get token responses.
 func streamingE2E() bool { return os.Getenv("STREAMING_E2E") == "true" }
 
+// routingE2E returns true when the routing telemetry specs should run. They
+// deploy their own PostgreSQL and a deterministic fake LLM (test/fakellm), so
+// they need no credentials.
+func routingE2E() bool { return os.Getenv("ROUTING_E2E") == "true" }
+
 // --- CRD readiness ---
 
 // waitForCRDReady blocks until the named CRD exists, has no deletionTimestamp,
@@ -173,7 +178,12 @@ type httpResult struct {
 // postChatCompletion sends a minimal chat completion request to the model-router.
 func postChatCompletion(localPort int, token string) httpResult {
 	GinkgoHelper()
-	payload := `{"model":"default","messages":[{"role":"user","content":"e2e"}]}`
+	return postChat(localPort, token, `{"model":"default","messages":[{"role":"user","content":"e2e"}]}`)
+}
+
+// postChat sends the given chat completion request body to the model-router.
+func postChat(localPort int, token, payload string) httpResult {
+	GinkgoHelper()
 	req, err := http.NewRequest("POST",
 		fmt.Sprintf("http://127.0.0.1:%d/v1/chat/completions", localPort),
 		bytes.NewBufferString(payload),
