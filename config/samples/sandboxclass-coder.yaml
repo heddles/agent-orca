@@ -1,0 +1,19 @@
+# A SandboxClass for coding agents (docs/openshell-sandbox.md#sandbox-classes).
+# Cluster-scoped: only cluster admins create classes, which is why placement
+# (tolerations) lives here and not on Agents. Use it from an Agent with
+# spec.runtime.sandbox.classRef: coder.
+apiVersion: agentorca.agentorca.io/v1alpha1
+kind: SandboxClass
+metadata:
+  name: coder
+spec:
+  namespaceSelector:
+    matchLabels: {agentorca.io/enable-sandboxes: "true"}
+  enforcement: enforce
+  egressPresets: [go, npm, pypi, github-read]
+  resources:
+    requests: {cpu: "2", memory: 4Gi, ephemeral-storage: 20Gi}
+    limits: {cpu: "4", memory: 8Gi, ephemeral-storage: 20Gi}
+  # Builds run on a dedicated, tainted node pool.
+  tolerations:
+    - {key: openshell, operator: Equal, value: coder-agent, effect: NoExecute}

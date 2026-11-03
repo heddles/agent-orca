@@ -23,10 +23,15 @@ ARG TARGETOS
 ARG TARGETARCH
 WORKDIR /workspace
 COPY go.mod go.sum ./
+# A go.mod replace to a local directory needs that directory's go.mod before the download.
+# BEGIN generated go-mod-replaces (hack/gen-docker-copies; run `make docker-deps`, do not edit)
+COPY third_party/switchyard/bindings/go/go.mod third_party/switchyard/bindings/go/go.mod
+COPY third_party/switchyard/bindings/go/go.sum third_party/switchyard/bindings/go/go.sum
+# END generated go-mod-replaces
 RUN go mod download
-COPY cmd/ cmd/
-COPY internal/ internal/
-COPY api/ api/
+# BEGIN generated go-deps (hack/gen-docker-copies; run `make docker-deps`, do not edit)
+COPY cmd/ui-proxy/ cmd/ui-proxy/
+# END generated go-deps
 # Copy the built SPA into the Go package directory so //go:embed dist works.
 COPY --from=ui-builder /ui/dist ./cmd/ui-proxy/dist/
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \

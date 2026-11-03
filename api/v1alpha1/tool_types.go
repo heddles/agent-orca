@@ -82,6 +82,15 @@ type ToolSpec struct {
 	// +optional
 	MCPConfig *MCPConfig `json:"mcpConfig,omitempty"`
 
+	// SideEffect classifies what a call to this tool changes, so a GuardrailPolicy
+	// can require approval before it runs: read (changes nothing), write (changes
+	// state that can be undone or is reviewed later, such as a branch) or actuate
+	// (acts on the world and is hard to take back: a deploy, a payment, a
+	// device command). A tool without a class is "unclassified".
+	// +kubebuilder:validation:Enum=read;write;actuate
+	// +optional
+	SideEffect ToolSideEffect `json:"sideEffect,omitempty"`
+
 	// NetworkEgress defines additional outbound network rules for tool pods.
 	// Added to the per-run NetworkPolicy allowlist.
 	// +optional
@@ -110,6 +119,16 @@ type ToolSpec struct {
 	// +optional
 	Args []string `json:"args,omitempty"`
 }
+
+// ToolSideEffect classifies a tool by what its calls change.
+type ToolSideEffect string
+
+// Tool side-effect classes.
+const (
+	ToolSideEffectRead    ToolSideEffect = "read"
+	ToolSideEffectWrite   ToolSideEffect = "write"
+	ToolSideEffectActuate ToolSideEffect = "actuate"
+)
 
 // ToolSchema describes the JSON Schema for tool input and output.
 type ToolSchema struct {

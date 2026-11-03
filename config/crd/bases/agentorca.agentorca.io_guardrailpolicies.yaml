@@ -265,6 +265,57 @@ spec:
                   - type
                   type: object
                 type: array
+              toolApproval:
+                description: |-
+                  ToolApproval sets what each tool side-effect class needs before a call runs
+                  (see Tool.spec.sideEffect). Without it, calls to read, write and
+                  unclassified tools run freely and actuate calls need an approval.
+                properties:
+                  actuate:
+                    description: Actuate applies to tools with sideEffect actuate.
+                      Default approve.
+                    enum:
+                    - none
+                    - approve
+                    - deny
+                    type: string
+                  approverGroups:
+                    description: |-
+                      ApproverGroups are the identity-provider groups whose members may decide.
+                      Empty lets any user with access to the run's namespace decide.
+                    items:
+                      type: string
+                    type: array
+                  read:
+                    description: Read applies to tools with sideEffect read. Default
+                      none.
+                    enum:
+                    - none
+                    - approve
+                    - deny
+                    type: string
+                  timeout:
+                    description: |-
+                      Timeout is how long a call waits for a decision before it is refused.
+                      Default 30m.
+                    type: string
+                  unclassified:
+                    description: Unclassified applies to tools without a sideEffect.
+                      Default none.
+                    enum:
+                    - none
+                    - approve
+                    - deny
+                    type: string
+                  write:
+                    description: Write applies to tools with sideEffect write. Default
+                      none.
+                    enum:
+                    - none
+                    - approve
+                    - deny
+                    type: string
+                type: object
             type: object
           status:
             description: GuardrailPolicyStatus holds the observed state of a GuardrailPolicy.

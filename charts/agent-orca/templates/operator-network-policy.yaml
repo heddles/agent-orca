@@ -37,12 +37,19 @@ spec:
     - ports:
         - port: 9443
           protocol: TCP
-    # Port 8082: internal API — allow from agent run pods in any namespace (pods labeled agentorca.io/run)
+    # Port 8082: internal API — allow from agent run pods in any namespace (pods labeled
+    # agentorca.io/run) and from AgentDeployment pods (labeled agentdeployment.agentorca.io).
+    # A deployment's model-router posts routing events and benchmark samples here too.
     - from:
         - namespaceSelector: {}
           podSelector:
             matchExpressions:
               - key: agentorca.io/run
+                operator: Exists
+        - namespaceSelector: {}
+          podSelector:
+            matchExpressions:
+              - key: agentdeployment.agentorca.io
                 operator: Exists
       ports:
         - port: 8082
@@ -99,4 +106,14 @@ spec:
           protocol: TCP
         - port: 53
           protocol: UDP
+    {{- if .Values.openshell.enabled }}
+    # OpenShell gateway gRPC API, for sandboxed agents.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ include "agent-orca.openshell.gatewayNamespace" . }}
+      ports:
+        - port: {{ .Values.openshell.gateway.port }}
+          protocol: TCP
+    {{- end }}
     {{- end }}

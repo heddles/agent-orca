@@ -130,6 +130,17 @@ func TestApplySafeguardDefaults(t *testing.T) {
 			t.Errorf("ToolFrequencyCap: got %d, want 1000", s.ToolFrequencyCap)
 		}
 	})
+
+	t.Run("negative overrides disable a check", func(t *testing.T) {
+		s := &router.RouterSafeguards{}
+		applySafeguardDefaults(s, 0, &agentorcav1alpha1.AgentRunSafeguards{
+			MaxRepeatedToolCalls:    -1,
+			MaxConsecutiveNoopTurns: -1,
+		})
+		if s.MaxRepeatedToolCalls != 0 || s.MaxConsecutiveNoopTurns != 0 {
+			t.Fatalf("got repeated=%d noop=%d, want both disabled (0)", s.MaxRepeatedToolCalls, s.MaxConsecutiveNoopTurns)
+		}
+	})
 }
 
 // TestBuildDeploymentRouterConfig_LimitsAndSafeguards verifies the operator injects the

@@ -38,7 +38,8 @@ const (
 type AgentRunSafeguards struct {
 	// MaxConsecutiveNoopTurns halts the run if the LLM produces this many consecutive
 	// turns with no tool calls and fewer than MinSubstantiveTokens output tokens.
-	// 0 disables the check.
+	// Not applied to chat (http input) runs. Unset uses the default of 15; a
+	// negative value disables the check.
 	// +optional
 	MaxConsecutiveNoopTurns int `json:"maxConsecutiveNoopTurns,omitempty"`
 
@@ -49,12 +50,14 @@ type AgentRunSafeguards struct {
 	MinSubstantiveTokens int `json:"minSubstantiveTokens,omitempty"`
 
 	// MaxRepeatedToolCalls halts the run if the same tool is called with identical
-	// arguments this many times within the run. 0 disables the check.
+	// arguments this many times within the run. Unset uses the default of 50; a
+	// negative value disables the check.
 	// +optional
 	MaxRepeatedToolCalls int `json:"maxRepeatedToolCalls,omitempty"`
 
 	// ToolFrequencyCap halts the run if any single tool is called more than this many
-	// times in total across the run. 0 disables the check.
+	// times in total across the run. Unset (the default) or a negative value
+	// disables the check.
 	// +optional
 	ToolFrequencyCap int `json:"toolFrequencyCap,omitempty"`
 
@@ -78,6 +81,26 @@ type LoopDetectedInfo struct {
 	// ToolName is the name of the tool involved, for tool-based trips.
 	// +optional
 	ToolName string `json:"toolName,omitempty"`
+}
+
+// WorkflowSandboxRef selects the existing workflow-owned sandbox in which the
+// AgentRun's agent process runs as a detached job. The workflow controller sets
+// it; ordinary AgentRuns leave it nil and create their own workload sandbox.
+type WorkflowSandboxRef struct {
+	// Name is the gateway sandbox name.
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+	// ID is the gateway sandbox ID, used for router ingress.
+	// +optional
+	ID string `json:"id,omitempty"`
+	// Fresh is true for the step's dedicated sandbox. It is deleted when the last
+	// run in a clarification chain ends; a shared sandbox is workflow-owned.
+	// +optional
+	Fresh bool `json:"fresh,omitempty"`
+	// ProviderOwner is the original step AgentRun name used for tool credential
+	// providers. Continuations retain it so their policy and providers still match.
+	// +optional
+	ProviderOwner string `json:"providerOwner,omitempty"`
 }
 
 // AgentRunSpec defines the desired state of an AgentRun.
@@ -126,6 +149,105 @@ type AgentRunSpec struct {
 	// Independent of webhook callbacks — both can be configured simultaneously.
 	// +optional
 	Egress *EgressConfig `json:"egress,omitempty"`
+
+	// Budget caps the run's model spend. When the cap is reached the run fails or
+	// pauses for approval, per budget.onExceeded. Without it the run is not capped
+	// (the ModelSelector's budgetCap only steers routing).
+	// +optional
+	Budget *RunBudget `json:"budget,omitempty"`
+
+	// WorkflowSandbox runs the agent in an existing workflow sandbox instead of
+	// creating a sandbox whose main process is the agent. Set only by the
+	// AgentWorkflow controller and inherited by clarification continuations.
+	// +optional
+	WorkflowSandbox *WorkflowSandboxRef `json:"workflowSandbox,omitempty"`
+}
+
+// ConditionToolApprovalPending is True on an AgentRun while a tool call waits
+// for an approver (Tool.spec.sideEffect with GuardrailPolicy.spec.toolApproval).
+const ConditionToolApprovalPending = "ToolApprovalPending"
+
+// RunBudgetAction is what happens when a run reaches its budget.
+// +kubebuilder:validation:Enum=fail;pause
+type RunBudgetAction string
+
+const (
+	// RunBudgetFail halts the run, like a safeguard trip.
+	RunBudgetFail RunBudgetAction = "fail"
+	// RunBudgetPause holds the run (its agent keeps waiting, with sandbox and
+	// workspace intact) and asks approvers to raise the cap or close it.
+	RunBudgetPause RunBudgetAction = "pause"
+)
+
+// RunBudget caps an AgentRun's model spend.
+type RunBudget struct {
+	// MaxUSD is the spend, in USD, at which the run fails or pauses. Example: "2.50".
+	// +kubebuilder:validation:Pattern=`^[0-9]+(\.[0-9]+)?$`
+	MaxUSD string `json:"maxUSD"`
+
+	// WarnAtPercent is the share of the cap at which a warning is emitted (a
+	// trace event and a Kubernetes event). Default 80.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=99
+	// +kubebuilder:default=80
+	// +optional
+	WarnAtPercent int `json:"warnAtPercent,omitempty"`
+
+	// OnExceeded is what happens at the cap: "fail" (default) halts the run;
+	// "pause" holds it until an approver raises the cap or the pause times out.
+	// Pausing needs PostgreSQL (approvals are stored there); without it a run that
+	// reaches its cap fails.
+	// +kubebuilder:default=fail
+	// +optional
+	OnExceeded RunBudgetAction `json:"onExceeded,omitempty"`
+
+	// RaiseByUSD is how much one approval adds to the cap. Defaults to MaxUSD.
+	// +kubebuilder:validation:Pattern=`^[0-9]+(\.[0-9]+)?$`
+	// +optional
+	RaiseByUSD string `json:"raiseByUSD,omitempty"`
+
+	// PauseTimeout is how long a paused run waits for a decision before it fails.
+	// Default 24h.
+	// +optional
+	PauseTimeout *metav1.Duration `json:"pauseTimeout,omitempty"`
+
+	// ApproverGroups are the identity-provider groups whose members may decide a
+	// raise. Empty lets any user with access to the run's namespace decide.
+	// +optional
+	ApproverGroups []string `json:"approverGroups,omitempty"`
+}
+
+// RunBudgetState is where a run stands against its budget.
+// +kubebuilder:validation:Enum=ok;warning;exceeded
+type RunBudgetState string
+
+// Run budget states.
+const (
+	RunBudgetOK       RunBudgetState = "ok"
+	RunBudgetWarning  RunBudgetState = "warning"
+	RunBudgetExceeded RunBudgetState = "exceeded"
+)
+
+// RunBudgetStatus is the observed state of a run's budget.
+type RunBudgetStatus struct {
+	// State is ok, warning (past warnAtPercent) or exceeded (paused or failing).
+	State RunBudgetState `json:"state"`
+
+	// CapUSD is the current cap: spec.budget.maxUSD plus the approved raises. Only
+	// the operator sets it, never the model-router.
+	CapUSD string `json:"capUSD"`
+
+	// SpentUSD is the spend the model-router last reported.
+	// +optional
+	SpentUSD string `json:"spentUSD,omitempty"`
+
+	// Raises counts the approved raises.
+	// +optional
+	Raises int `json:"raises,omitempty"`
+
+	// UpdatedAt is when the router last reported.
+	// +optional
+	UpdatedAt *metav1.Time `json:"updatedAt,omitempty"`
 }
 
 // CallbackConfig defines webhooks triggered on AgentRun completion.
@@ -168,6 +290,30 @@ type RoutingDecision struct {
 	// Timestamp is when the routing decision was made.
 	// +optional
 	Timestamp *metav1.Time `json:"timestamp,omitempty"`
+
+	// DecisionID identifies this decision across traces, status and telemetry.
+	// +optional
+	DecisionID string `json:"decisionID,omitempty"`
+
+	// Path names what decided: a rule path, the meta-router, or a fallback.
+	// +optional
+	Path string `json:"path,omitempty"`
+
+	// Category is the task stage the request was classified as.
+	// +optional
+	Category string `json:"category,omitempty"`
+
+	// Algorithm names the Switchyard algorithm that decided, when one did.
+	// +optional
+	Algorithm string `json:"algorithm,omitempty"`
+
+	// Label is the label the algorithm gave the call, such as override.
+	// +optional
+	Label string `json:"label,omitempty"`
+
+	// ParentDecisionID is the decision a fallback replaced.
+	// +optional
+	ParentDecisionID string `json:"parentDecisionID,omitempty"`
 }
 
 // AgentRunStatus defines the observed state of an AgentRun.
@@ -184,6 +330,22 @@ type AgentRunStatus struct {
 	// Empty when using the default combined-pod (sidecar) topology.
 	// +optional
 	RouterPodName string `json:"routerPodName,omitempty"`
+
+	// SandboxName is the sandbox runtime's name for this run's sandbox when
+	// spec.runtime.sandbox is set on the Agent. Empty otherwise.
+	// +optional
+	SandboxName string `json:"sandboxName,omitempty"`
+
+	// SandboxGitTokenExpiry is when the run's current GitHub installation token
+	// expires (spec.runtime.sandbox.github). The operator mints a new one before
+	// then.
+	// +optional
+	SandboxGitTokenExpiry *metav1.Time `json:"sandboxGitTokenExpiry,omitempty"`
+
+	// SandboxDecisionsSeen is the time of the last sandbox network decision
+	// copied into the run's trace; the next read continues after it.
+	// +optional
+	SandboxDecisionsSeen *metav1.MicroTime `json:"sandboxDecisionsSeen,omitempty"`
 
 	// StartTime is when the agent pod started.
 	// +optional
@@ -247,6 +409,10 @@ type AgentRunStatus struct {
 	// +optional
 	ContinuationRunRef string `json:"continuationRunRef,omitempty"`
 
+	// Budget is the run's standing against spec.budget.
+	// +optional
+	Budget *RunBudgetStatus `json:"budget,omitempty"`
+
 	// LoopDetected is set when the run was halted by a safeguard trip.
 	// The run phase will be Failed when this is set.
 	// +optional
@@ -268,9 +434,15 @@ type AgentRunStatus struct {
 
 	// RoutingDecisions records the model routing decisions made during this run.
 	// Populated by the controller from the resolved ModelSelector configuration
-	// and updated by the model-router sidecar at runtime.
+	// and updated by the model-router sidecar at runtime. It holds the most
+	// recent decisions only (see RoutingDecisionsTotal).
 	// +optional
 	RoutingDecisions []RoutingDecision `json:"routingDecisions,omitempty"`
+
+	// RoutingDecisionsTotal counts every decision recorded during this run,
+	// including those that have rolled out of RoutingDecisions.
+	// +optional
+	RoutingDecisionsTotal int `json:"routingDecisionsTotal,omitempty"`
 
 	// ContextUsedTokens is the estimated token count of the conversation context.
 	// Updated by the model-router at runtime and reflects the current size of the

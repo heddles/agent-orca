@@ -28,6 +28,8 @@ import {
   Database,
   DollarSign,
   Hash,
+  ThumbsDown,
+  ThumbsUp,
   Headphones,
   Home,
   History,
@@ -61,6 +63,7 @@ import {
   HelpCircle,
   LoaderCircle,
   Play,
+  ShieldCheck,
 } from 'lucide-react'
 
 export type IconComponent = typeof Bot // structural type: any Lucide icon
@@ -115,6 +118,7 @@ export const ICON = {
 
   // History
   history: History,
+  approval: ShieldCheck,
 
   // Agent templates
   templates: {
@@ -149,6 +153,8 @@ export const ICON = {
   settings: Settings,
   thought: Activity,
   routed: ArrowRight,
+  thumbsUp: ThumbsUp,
+  thumbsDown: ThumbsDown,
   event: Bell,
   parseError: Octagon,
 

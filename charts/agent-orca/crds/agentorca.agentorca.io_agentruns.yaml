@@ -63,6 +63,56 @@ spec:
                 description: AgentRef names the Agent to run.
                 minLength: 1
                 type: string
+              budget:
+                description: |-
+                  Budget caps the run's model spend. When the cap is reached the run fails or
+                  pauses for approval, per budget.onExceeded. Without it the run is not capped
+                  (the ModelSelector's budgetCap only steers routing).
+                properties:
+                  approverGroups:
+                    description: |-
+                      ApproverGroups are the identity-provider groups whose members may decide a
+                      raise. Empty lets any user with access to the run's namespace decide.
+                    items:
+                      type: string
+                    type: array
+                  maxUSD:
+                    description: 'MaxUSD is the spend, in USD, at which the run fails
+                      or pauses. Example: "2.50".'
+                    pattern: ^[0-9]+(\.[0-9]+)?$
+                    type: string
+                  onExceeded:
+                    default: fail
+                    description: |-
+                      OnExceeded is what happens at the cap: "fail" (default) halts the run;
+                      "pause" holds it until an approver raises the cap or the pause times out.
+                      Pausing needs PostgreSQL (approvals are stored there); without it a run that
+                      reaches its cap fails.
+                    enum:
+                    - fail
+                    - pause
+                    type: string
+                  pauseTimeout:
+                    description: |-
+                      PauseTimeout is how long a paused run waits for a decision before it fails.
+                      Default 24h.
+                    type: string
+                  raiseByUSD:
+                    description: RaiseByUSD is how much one approval adds to the cap.
+                      Defaults to MaxUSD.
+                    pattern: ^[0-9]+(\.[0-9]+)?$
+                    type: string
+                  warnAtPercent:
+                    default: 80
+                    description: |-
+                      WarnAtPercent is the share of the cap at which a warning is emitted (a
+                      trace event and a Kubernetes event). Default 80.
+                    maximum: 99
+                    minimum: 1
+                    type: integer
+                required:
+                - maxUSD
+                type: object
               callbacks:
                 description: Callbacks configures webhooks invoked on run completion.
                 properties:
@@ -182,12 +232,14 @@ spec:
                     description: |-
                       MaxConsecutiveNoopTurns halts the run if the LLM produces this many consecutive
                       turns with no tool calls and fewer than MinSubstantiveTokens output tokens.
-                      0 disables the check.
+                      Not applied to chat (http input) runs. Unset uses the default of 15; a
+                      negative value disables the check.
                     type: integer
                   maxRepeatedToolCalls:
                     description: |-
                       MaxRepeatedToolCalls halts the run if the same tool is called with identical
-                      arguments this many times within the run. 0 disables the check.
+                      arguments this many times within the run. Unset uses the default of 50; a
+                      negative value disables the check.
                     type: integer
                   minSubstantiveTokens:
                     default: 20
@@ -206,13 +258,40 @@ spec:
                   toolFrequencyCap:
                     description: |-
                       ToolFrequencyCap halts the run if any single tool is called more than this many
-                      times in total across the run. 0 disables the check.
+                      times in total across the run. Unset (the default) or a negative value
+                      disables the check.
                     type: integer
                 type: object
               timeout:
                 description: Timeout is the maximum duration for this run. Defaults
                   to 5 minutes.
                 type: string
+              workflowSandbox:
+                description: |-
+                  WorkflowSandbox runs the agent in an existing workflow sandbox instead of
+                  creating a sandbox whose main process is the agent. Set only by the
+                  AgentWorkflow controller and inherited by clarification continuations.
+                properties:
+                  fresh:
+                    description: |-
+                      Fresh is true for the step's dedicated sandbox. It is deleted when the last
+                      run in a clarification chain ends; a shared sandbox is workflow-owned.
+                    type: boolean
+                  id:
+                    description: ID is the gateway sandbox ID, used for router ingress.
+                    type: string
+                  name:
+                    description: Name is the gateway sandbox name.
+                    minLength: 1
+                    type: string
+                  providerOwner:
+                    description: |-
+                      ProviderOwner is the original step AgentRun name used for tool credential
+                      providers. Continuations retain it so their policy and providers still match.
+                    type: string
+                required:
+                - name
+                type: object
             required:
             - agentRef
             - input
@@ -220,6 +299,36 @@ spec:
           status:
             description: AgentRunStatus defines the observed state of an AgentRun.
             properties:
+              budget:
+                description: Budget is the run's standing against spec.budget.
+                properties:
+                  capUSD:
+                    description: |-
+                      CapUSD is the current cap: spec.budget.maxUSD plus the approved raises. Only
+                      the operator sets it, never the model-router.
+                    type: string
+                  raises:
+                    description: Raises counts the approved raises.
+                    type: integer
+                  spentUSD:
+                    description: SpentUSD is the spend the model-router last reported.
+                    type: string
+                  state:
+                    description: State is ok, warning (past warnAtPercent) or exceeded
+                      (paused or failing).
+                    enum:
+                    - ok
+                    - warning
+                    - exceeded
+                    type: string
+                  updatedAt:
+                    description: UpdatedAt is when the router last reported.
+                    format: date-time
+                    type: string
+                required:
+                - capUSD
+                - state
+                type: object
               checkpointRef:
                 description: |-
                   CheckpointRef is the storage key of the latest conversation checkpoint.
@@ -398,17 +507,41 @@ spec:
                 description: |-
                   RoutingDecisions records the model routing decisions made during this run.
                   Populated by the controller from the resolved ModelSelector configuration
-                  and updated by the model-router sidecar at runtime.
+                  and updated by the model-router sidecar at runtime. It holds the most
+                  recent decisions only (see RoutingDecisionsTotal).
                 items:
                   description: RoutingDecision records a single model routing decision
                     made during an AgentRun.
                   properties:
+                    algorithm:
+                      description: Algorithm names the Switchyard algorithm that decided,
+                        when one did.
+                      type: string
+                    category:
+                      description: Category is the task stage the request was classified
+                        as.
+                      type: string
                     confidence:
                       description: Confidence is a 0.0–1.0 score indicating routing
                         confidence.
                       type: string
+                    decisionID:
+                      description: DecisionID identifies this decision across traces,
+                        status and telemetry.
+                      type: string
+                    label:
+                      description: Label is the label the algorithm gave the call,
+                        such as override.
+                      type: string
                     model:
                       description: Model is the selected model identifier (e.g. "anthropic/claude-sonnet-4-6").
+                      type: string
+                    parentDecisionID:
+                      description: ParentDecisionID is the decision a fallback replaced.
+                      type: string
+                    path:
+                      description: 'Path names what decided: a rule path, the meta-router,
+                        or a fallback.'
                       type: string
                     provider:
                       description: Provider is the ModelProvider CRD name that was
@@ -431,6 +564,29 @@ spec:
                   - provider
                   type: object
                 type: array
+              routingDecisionsTotal:
+                description: |-
+                  RoutingDecisionsTotal counts every decision recorded during this run,
+                  including those that have rolled out of RoutingDecisions.
+                type: integer
+              sandboxDecisionsSeen:
+                description: |-
+                  SandboxDecisionsSeen is the time of the last sandbox network decision
+                  copied into the run's trace; the next read continues after it.
+                format: date-time
+                type: string
+              sandboxGitTokenExpiry:
+                description: |-
+                  SandboxGitTokenExpiry is when the run's current GitHub installation token
+                  expires (spec.runtime.sandbox.github). The operator mints a new one before
+                  then.
+                format: date-time
+                type: string
+              sandboxName:
+                description: |-
+                  SandboxName is the sandbox runtime's name for this run's sandbox when
+                  spec.runtime.sandbox is set on the Agent. Empty otherwise.
+                type: string
               spendUSD:
                 description: SpendUSD is the total USD spend for this run so far,
                   updated periodically.

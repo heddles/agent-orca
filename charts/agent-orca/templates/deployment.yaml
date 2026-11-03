@@ -126,6 +126,62 @@ spec:
                   name: {{ .Values.hindsight.apiKeySecret.name | quote }}
                   key: {{ .Values.hindsight.apiKeySecret.key | default "api-key" | quote }}
             {{- end }}
+            - name: CLUSTER_DOMAIN
+              value: {{ .Values.clusterDomain | default "cluster.local" | quote }}
+            {{- with .Values.approvals }}
+            {{- if .notifyWebhookSecret.name }}
+            - name: APPROVALS_NOTIFY_WEBHOOK_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .notifyWebhookSecret.name | quote }}
+                  key: {{ .notifyWebhookSecret.key | default "url" | quote }}
+            {{- end }}
+            {{- with .uiURL }}
+            - name: APPROVALS_UI_URL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if .Values.github.app.secretName }}
+            - name: GITHUB_APP_DIR
+              value: /etc/github-app
+            {{- with .Values.github.app.apiURL }}
+            - name: GITHUB_API_URL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if .Values.openshell.enabled }}
+            - name: OPENSHELL_GATEWAY_ADDRESS
+              value: {{ include "agent-orca.openshell.gatewayAddress" . | quote }}
+            - name: OPENSHELL_WORKSPACE
+              value: {{ .Values.openshell.workspace | quote }}
+            - name: OPENSHELL_SANDBOX_NAMESPACE
+              value: {{ .Values.openshell.sandboxNamespace | default .Release.Namespace | quote }}
+            {{- with .Values.openshell.placement }}
+            {{- if or .nodeSelector .tolerations .runtimeClassName .priorityClassName }}
+            {{- /* Label values are strings; --set turns "true" into a bool. */}}
+            {{- $selector := dict }}
+            {{- range $k, $v := .nodeSelector }}{{ $_ := set $selector $k (toString $v) }}{{ end }}
+            - name: OPENSHELL_SANDBOX_PLACEMENT
+              value: {{ toJson (dict "nodeSelector" $selector "tolerations" .tolerations "runtimeClassName" .runtimeClassName "priorityClassName" .priorityClassName) | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if .Values.openshell.tls.secretName }}
+            - name: OPENSHELL_TLS_CERT_FILE
+              value: /etc/openshell/tls/tls.crt
+            - name: OPENSHELL_TLS_KEY_FILE
+              value: /etc/openshell/tls/tls.key
+            - name: OPENSHELL_TLS_CA_FILE
+              value: /etc/openshell/tls/ca.crt
+            {{- end }}
+            {{- if .Values.openshell.tls.insecure }}
+            - name: OPENSHELL_TLS_INSECURE
+              value: "true"
+            {{- end }}
+            {{- if .Values.openshell.tokenSecret.name }}
+            - name: OPENSHELL_TOKEN_FILE
+              value: /etc/openshell/token/{{ .Values.openshell.tokenSecret.key }}
+            {{- end }}
+            {{- end }}
           args:
             - --leader-elect={{ .Values.operator.leaderElection }}
             - --health-probe-bind-address=:8081
@@ -194,6 +250,21 @@ spec:
             - name: webhook-tls
               mountPath: /tmp/k8s-webhook-server/serving-certs
               readOnly: true
+            {{- if and .Values.openshell.enabled .Values.openshell.tls.secretName }}
+            - name: openshell-tls
+              mountPath: /etc/openshell/tls
+              readOnly: true
+            {{- end }}
+            {{- if and .Values.openshell.enabled .Values.openshell.tokenSecret.name }}
+            - name: openshell-token
+              mountPath: /etc/openshell/token
+              readOnly: true
+            {{- end }}
+            {{- if .Values.github.app.secretName }}
+            - name: github-app
+              mountPath: /etc/github-app
+              readOnly: true
+            {{- end }}
       volumes:
         - name: tmp
           emptyDir:
@@ -201,6 +272,21 @@ spec:
         - name: webhook-tls
           secret:
             secretName: {{ .Values.webhook.tlsSecretName | default (printf "%s-webhook-tls" (include "agent-orca.fullname" .)) }}
+        {{- if and .Values.openshell.enabled .Values.openshell.tls.secretName }}
+        - name: openshell-tls
+          secret:
+            secretName: {{ .Values.openshell.tls.secretName }}
+        {{- end }}
+        {{- if and .Values.openshell.enabled .Values.openshell.tokenSecret.name }}
+        - name: openshell-token
+          secret:
+            secretName: {{ .Values.openshell.tokenSecret.name }}
+        {{- end }}
+        {{- if .Values.github.app.secretName }}
+        - name: github-app
+          secret:
+            secretName: {{ .Values.github.app.secretName }}
+        {{- end }}
       {{- with .Values.global.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}

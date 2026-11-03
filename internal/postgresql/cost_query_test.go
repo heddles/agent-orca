@@ -123,9 +123,12 @@ func TestArchiveRunBindsCostCapture(t *testing.T) {
 			for i := range args {
 				args[i] = sqlmock.AnyArg()
 			}
+			mock.ExpectBegin()
 			mock.ExpectExec(`INSERT INTO archived_runs`).
 				WithArgs(append(args, tc.want)...).
 				WillReturnResult(sqlmock.NewResult(1, 1))
+			mock.ExpectExec(`INSERT INTO run_outcomes`).WillReturnResult(sqlmock.NewResult(1, 1))
+			mock.ExpectCommit()
 			if err := s.ArchiveRun(context.Background(), run, nil); err != nil {
 				t.Fatal(err)
 			}
@@ -137,7 +140,7 @@ func TestArchiveRunBindsCostCapture(t *testing.T) {
 }
 
 func TestMigrationAddsCostCaptureColumn(t *testing.T) {
-	if !strings.Contains(MigrationSQL, "ADD COLUMN IF NOT EXISTS cost_capture TEXT") {
+	if !strings.Contains(migration0001(t), "ADD COLUMN IF NOT EXISTS cost_capture TEXT") {
 		t.Fatal("migration must add cost_capture for tables created before this column existed")
 	}
 }

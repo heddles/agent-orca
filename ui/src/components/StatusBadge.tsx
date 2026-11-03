@@ -19,9 +19,11 @@ const PHASE_LABEL: Record<string, string> = {
   Skipped: 'Skipped',
   Creating: 'Creating',
   Paused: 'Paused',
+  Template: 'Template',
   Cancelled: 'Cancelled',
   HandedOff: 'Handed Off',
   WaitingForInput: 'Waiting for Input',
+  WaitingForApproval: 'Waiting for Approval',
 }
 
 export function StatusBadge({ phase, pulse }: Props) {

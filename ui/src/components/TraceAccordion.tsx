@@ -1,10 +1,11 @@
 /** Collapsible execution trace accordion. */
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import Markdown from 'react-markdown'
 import { STREAM_EVENT_TYPE } from '../contracts/events'
 import { isSSEClientParseEventType } from '../api/traceStream'
 import type { TraceEntry, TraceEvent } from '../api/sse'
 import { MCPAppFrame } from './MCPAppFrame'
+import { FeedbackThumbs, useRunFeedback, type FeedbackTarget, type RunFeedback } from './FeedbackThumbs'
 import { Icon, ICON } from '../lib/icons'
 import type { IconComponent } from '../lib/icons'
 
@@ -12,6 +13,8 @@ interface Props {
   entries: TraceEntry[]
   streaming?: boolean
   markdown?: boolean
+  /** The run these entries belong to; with it, each routed row can be rated. */
+  feedbackRun?: FeedbackTarget
 }
 
 /** Fun loading quips shown while trace events are being retrieved.
@@ -42,11 +45,14 @@ const TRACE_FILTERS = [
   { key: 'rag', label: 'RAG' },
   { key: 'guardrails', label: 'Guardrails' },
   { key: 'fallbacks', label: 'Fallbacks' },
+  { key: 'network', label: 'Network' },
+  { key: 'budget', label: 'Budget' },
   { key: 'errors', label: 'Errors' },
 ] as const
 type TraceFilter = typeof TRACE_FILTERS[number]['key']
 
-export function TraceAccordion({ entries, streaming, markdown }: Props) {
+export function TraceAccordion({ entries, streaming, markdown, feedbackRun }: Props) {
+  const feedback = useRunFeedback(feedbackRun)
   const [open, setOpen] = useState(false)
   const [filter, setFilter] = useState<TraceFilter>('all')
   // Pick a random quip; cycles while in the empty/loading state.
@@ -83,11 +89,13 @@ export function TraceAccordion({ entries, streaming, markdown }: Props) {
     const ev = entry.event
     const bt = (ev as { backendType?: string }).backendType
     switch (filter) {
-      case 'tools': return ev.type === STREAM_EVENT_TYPE.toolCall || ev.type === STREAM_EVENT_TYPE.toolResult
+      case 'tools': return ev.type === STREAM_EVENT_TYPE.toolCall || ev.type === STREAM_EVENT_TYPE.toolResult || ev.type === 'toolApproval'
       case 'mcp': return ((ev.type === STREAM_EVENT_TYPE.toolCall || ev.type === STREAM_EVENT_TYPE.toolResult || ev.type === 'mcpDiscovery') && (bt === 'mcp' || ev.type === 'mcpDiscovery'))
       case 'rag': return ((ev.type === STREAM_EVENT_TYPE.toolCall || ev.type === STREAM_EVENT_TYPE.toolResult || ev.type === 'ragResult') && (bt === 'rag' || ev.type === 'ragResult'))
       case 'guardrails': return ev.type === 'guardrail'
       case 'fallbacks': return ev.type === 'providerFallback'
+      case 'network': return ev.type === 'egress'
+      case 'budget': return ev.type === 'budget'
       case 'errors': return ev.type === STREAM_EVENT_TYPE.error || ev.type === STREAM_EVENT_TYPE.fail
       default: return true
     }
@@ -150,7 +158,7 @@ export function TraceAccordion({ entries, streaming, markdown }: Props) {
             <div style={s.empty}>No events match the "{TRACE_FILTERS.find(f => f.key === filter)?.label}" filter.</div>
           )}
           {filteredEntries.map((entry) => (
-            <TraceRow key={entry.id} entry={entry} markdown={markdown ?? false} />
+            <TraceRow key={entry.id} entry={entry} markdown={markdown ?? false} feedback={feedback} />
           ))}
         </div>
       )}
@@ -170,7 +178,9 @@ function backendTypeIcon(backendType?: string): IconComponent {
   }
 }
 
-function TraceRow({ entry, markdown }: { entry: TraceEntry; markdown: boolean }) {
+type RoutedEvent = Extract<TraceEvent, { type: 'routing' } | { type: typeof STREAM_EVENT_TYPE.modelSelected }>
+
+function TraceRow({ entry, markdown, feedback }: { entry: TraceEntry; markdown: boolean; feedback: RunFeedback | null }) {
   const { event, ts } = entry
   const time = ts.slice(11, 23)
   const childLabel = entry.childRunName
@@ -196,6 +206,49 @@ function TraceRow({ entry, markdown }: { entry: TraceEntry; markdown: boolean })
   const hi: React.CSSProperties = { color: 'var(--ds-text-primary)' }
   const content: React.CSSProperties = { color: 'var(--ds-text-secondary)', flex: 1, lineHeight: 1.5, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }
   const mdWrap: React.CSSProperties = { color: 'var(--ds-text-secondary)', fontFamily: 'system-ui,sans-serif', fontSize: 12, lineHeight: 1.5, flex: 1 }
+
+  // The "routed" row: the reason is already one plain sentence, and the fields
+  // that back it sit behind a disclosure so a reader can see why this model.
+  const routedRow = (ev: RoutedEvent, iconColor: string) => {
+    const pct = ev.confidence != null ? Math.round(ev.confidence * 100) : null
+    const facts: Array<[string, string | undefined]> = [
+      ['Provider', ev.provider],
+      ['Model', ev.model],
+      ['Strategy', ev.strategy],
+      ['Algorithm', ev.algorithm],
+      ['Label', ev.label],
+      ['Stage', ev.stage],
+      ['Path', ev.path],
+      ['Candidates', ev.candidates?.join(' → ')],
+      ['Decision', ev.decisionId],
+    ]
+    const shown = facts.filter(([, v]) => v)
+    return (
+      <div style={row}>
+        <span style={muted}>{time}</span>
+        <Icon icon={ICON.routed} size={14} color={iconColor} />
+        <span style={content}>
+          <span style={hi}>routed</span> {ev.model}
+          {ev.reason ? <> — {ev.reason}</> : null}
+          {pct != null ? <> (confidence: {pct}%)</> : null}
+          {feedback && ev.decisionId && <FeedbackThumbs feedback={feedback} decisionId={ev.decisionId} label={`routing to ${ev.model}`} />}
+          {shown.length > 0 && (
+            <details data-testid="routing-details" style={{ marginTop: 2 }}>
+              <summary style={{ ...muted, cursor: 'pointer' }}>why this model</summary>
+              <dl style={{ margin: '4px 0 0', display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '2px 12px' }}>
+                {shown.map(([k, v]) => (
+                  <Fragment key={k}>
+                    <dt style={muted}>{k}</dt>
+                    <dd style={{ margin: 0, wordBreak: 'break-all' }}>{v}</dd>
+                  </Fragment>
+                ))}
+              </dl>
+            </details>
+          )}
+        </span>
+      </div>
+    )
+  }
 
   switch (event.type) {
     case 'token':
@@ -283,13 +336,7 @@ function TraceRow({ entry, markdown }: { entry: TraceEntry; markdown: boolean })
         </div>
       )
     case STREAM_EVENT_TYPE.modelSelected:
-      return (
-        <div style={row}>
-          <span style={muted}>{time}</span>
-          <Icon icon={ICON.routed} size={14} color="var(--ds-purple)" />
-          <span style={content}><span style={hi}>routed</span> {event.model} — {event.reason} (confidence: {(event.confidence * 100).toFixed(0)}%)</span>
-        </div>
-      )
+      return routedRow(event, 'var(--ds-purple)')
     case STREAM_EVENT_TYPE.finalOutput:
       return (
         <div style={{ ...row, background: 'var(--ds-trace-success-bg)', borderRadius: 4, padding: '4px 8px', margin: '2px 0' }}>
@@ -427,21 +474,75 @@ function TraceRow({ entry, markdown }: { entry: TraceEntry; markdown: boolean })
         </div>
       )
     }
-    case 'routing': {
-      const pct = event.confidence != null ? Math.round(event.confidence * 100) : null
+    case 'egress': {
+      const denied = event.action === 'denied'
+      const target = event.kind === 'http' ? `${event.method ?? ''} ${event.url ?? ''}`.trim() : event.destination
       return (
-        <div style={row}>
+        <div style={denied ? { ...row, background: 'var(--ds-trace-error-bg)', borderRadius: 4, padding: '4px 8px', margin: '2px 0' } : row}>
           <span style={muted}>{time}</span>
-          <Icon icon={ICON.routed} size={14} color="var(--ds-accent)" />
-          <span style={content}>
-            <span style={hi}>routed</span> {event.model}
-            {event.strategy || event.provider ? <> — [{event.strategy}] {event.provider}</> : null}
-            {event.reason ? <> — {event.reason}</> : null}
-            {pct != null ? <> (confidence: {pct}%)</> : null}
+          <Icon icon={denied ? ICON.stop : ICON.check} size={14} color={denied ? 'var(--ds-error)' : 'var(--ds-success)'} />
+          <span style={{ ...content, ...(denied ? { color: '#fca5a5' } : {}) }}>
+            <span style={hi}>{denied ? 'blocked' : 'allowed'}</span> {target || event.raw}
+            {event.binary ? <> by {event.binary}</> : null}
+            {event.policy ? <> ({event.policy})</> : null}
+            {denied && event.reason ? <> — {event.reason}</> : null}
           </span>
         </div>
       )
     }
+    case 'toolApproval': {
+      const copy: Record<string, string> = {
+        requested: 'waiting for an approver',
+        approved: 'approved',
+        rejected: 'rejected',
+        expired: 'not decided in time',
+        denied: 'refused by policy',
+        withdrawn: 'withdrawn',
+        unavailable: 'refused: approval service unavailable',
+      }
+      const ok = event.state === 'approved'
+      const waiting = event.state === 'requested'
+      return (
+        <div style={row}>
+          <span style={muted}>{time}</span>
+          <Icon
+            icon={ok ? ICON.check : waiting ? ICON.approval : ICON.stop}
+            size={14}
+            color={ok ? 'var(--ds-success)' : waiting ? 'var(--ds-warning)' : 'var(--ds-error)'}
+          />
+          <span style={content}>
+            <span style={hi}>{event.tool}</span>
+            {event.sideEffect ? <> ({event.sideEffect})</> : null} — {copy[event.state] ?? event.state}
+            {event.by ? <> by {event.by}</> : null}
+            {event.reason ? <> — {event.reason}</> : null}
+          </span>
+        </div>
+      )
+    }
+    case 'budget': {
+      const copy: Record<string, string> = {
+        warning: 'budget warning',
+        exceeded: 'budget reached, paused for approval',
+        resumed: 'budget raised, resuming',
+        rejected: 'budget raise declined, run ending',
+      }
+      const bad = event.state === 'exceeded' || event.state === 'rejected'
+      return (
+        <div style={row}>
+          <span style={muted}>{time}</span>
+          <Icon
+            icon={event.state === 'resumed' ? ICON.check : event.state === 'rejected' ? ICON.stop : ICON.warning}
+            size={14}
+            color={bad ? 'var(--ds-error)' : event.state === 'resumed' ? 'var(--ds-success)' : 'var(--ds-warning)'}
+          />
+          <span style={content}>
+            <span style={hi}>{copy[event.state] ?? event.state}</span> — ${event.spentUSD} spent of ${event.capUSD}
+          </span>
+        </div>
+      )
+    }
+    case 'routing':
+      return routedRow(event, 'var(--ds-accent)')
     case 'hindsight': {
       const opLabel =
         event.op === 'recall'
