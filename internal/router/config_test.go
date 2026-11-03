@@ -104,3 +104,33 @@ func TestConfigFromEnv_CompactionRatioDefault(t *testing.T) {
 		t.Errorf("default ContextCompactionRatio = %v, want 0.5", cfg.ContextCompactionRatio)
 	}
 }
+
+// TestConfigFromEnv_RetainOnEveryTurnIsHonoured is the regression for
+// ConfigFromEnv coercing retainOnEveryTurn: false back to true, which made the
+// flag — and the streaming retain gate that reads it — unreachable through
+// normal configuration. Both an explicit false and an explicit true must
+// survive ConfigFromEnv verbatim. (The operator-driven default of true lives
+// on the CRD field, +kubebuilder:default=true, not here.)
+func TestConfigFromEnv_RetainOnEveryTurnIsHonoured(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		body string
+		want bool
+	}{
+		{name: "explicit false stays false", body: `{"runName":"r","hindsight":{"enabled":true,"retainOnEveryTurn":false}}`, want: false},
+		{name: "explicit true stays true", body: `{"runName":"r","hindsight":{"enabled":true,"retainOnEveryTurn":true}}`, want: true},
+		{name: "omitted is false", body: `{"runName":"r","hindsight":{"enabled":true}}`, want: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			writeRouterConfig(t, tt.body)
+			t.Setenv("HINDSIGHT_API_KEY", "")
+			cfg, err := ConfigFromEnv()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Hindsight.RetainOnEveryTurn != tt.want {
+				t.Errorf("RetainOnEveryTurn = %v, want %v", cfg.Hindsight.RetainOnEveryTurn, tt.want)
+			}
+		})
+	}
+}
