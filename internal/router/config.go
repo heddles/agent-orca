@@ -425,7 +425,7 @@ type LongTermMemoryConfig struct {
 	VectorStoreURL string `json:"vectorStoreURL,omitempty"`
 	// CollectionName is the Qdrant collection.
 	CollectionName string `json:"collectionName,omitempty"`
-	// EmbeddingProviderName is the ModelProvider to use for embedding queries.
+	// EmbeddingProviderName is the ModelProvider for embedding queries.
 	EmbeddingProviderName string `json:"embeddingProviderName,omitempty"`
 	// EmbeddingModel is the LiteLLM model identifier for embeddings.
 	EmbeddingModel string `json:"embeddingModel,omitempty"`
