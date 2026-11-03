@@ -452,7 +452,12 @@ type HindsightConfig struct {
 	// recall to a single memory.
 	RecallMaxTokens int `json:"recallMaxTokens,omitempty"`
 	// RetainOnEveryTurn is true to retain conversation after every LLM turn.
-	RetainOnEveryTurn bool `json:"retainOnEveryTurn,omitempty"`
+	// Defaults to true; set false to stop the per-turn retain (see the gate in
+	// stream.go). Deliberately NOT omitempty: the operator marshals this struct
+	// into the router ConfigMap, and omitempty would drop an explicit false —
+	// the router would then read "absent" and default back to true, leaving the
+	// flag inert on the operator path.
+	RetainOnEveryTurn bool `json:"retainOnEveryTurn"`
 	// APIKey authenticates the router to a hindsight API running with the
 	// ApiKeyTenantExtension (sent as "Authorization: Bearer <key>"). It is read
 	// from the HINDSIGHT_API_KEY env var, never from the config file, so the
@@ -652,7 +657,22 @@ func ConfigFromEnv() (*Config, error) {
 	if cfg.Hindsight.RecallMaxTokens <= 0 {
 		cfg.Hindsight.RecallMaxTokens = 1024
 	}
-	if !cfg.Hindsight.RetainOnEveryTurn {
+	// RetainOnEveryTurn defaults to true and an explicit false must survive. A
+	// plain bool cannot tell "omitted" from "false", and the old
+	// `if !x { x = true }` default silently turned an explicit false back on,
+	// leaving the flag (and the streaming retain gate that reads it) inert.
+	// Detect presence in the raw config instead: only an explicit false disables
+	// per-turn retain. The operator always emits the key (the struct tag has no
+	// omitempty), so this default only applies to hand-written configs.
+	var retainPresence struct {
+		Hindsight struct {
+			RetainOnEveryTurn *bool `json:"retainOnEveryTurn"`
+		} `json:"hindsight"`
+	}
+	if err := json.Unmarshal(data, &retainPresence); err != nil {
+		return nil, fmt.Errorf("parsing router config for hindsight defaults: %w", err)
+	}
+	if retainPresence.Hindsight.RetainOnEveryTurn == nil {
 		cfg.Hindsight.RetainOnEveryTurn = true
 	}
 
