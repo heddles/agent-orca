@@ -41,7 +41,7 @@ Releases publish it with the other images.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `AGENTORC_INPUT` | (set by the operator) | The task |
+| `AGENTORC_INPUT` | (set by the operator) | The task. A long or multi-line task arrives exactly in `AGENTORC_INPUT_B64` and `_B64_2`, ... (see [agent images](agent-images.md)); the agent reads it with `agent.Input()` |
 | `CODER_WORKSPACE` | `/sandbox` | The directory the file tools work in |
 | `CODER_MAX_TURNS` | `300` | Maximum requests to the router |
 

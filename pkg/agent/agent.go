@@ -48,6 +48,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -591,15 +592,30 @@ func (a *Agent) RunStream(ctx context.Context, input string) (<-chan string, <-c
 	return contentChan, errChan
 }
 
-// Input returns the run's input (AGENTORC_INPUT). In a sandbox, a multi-line
-// input arrives base64-encoded in AGENTORC_INPUT_B64, because the sandbox
-// gateway accepts no line breaks in environment values, while AGENTORC_INPUT
-// holds a one-line version; Input prefers the exact one.
+// Input returns the run's input (AGENTORC_INPUT). In a sandbox, a multi-line or
+// long input arrives base64-encoded in AGENTORC_INPUT_B64, because the sandbox
+// gateway accepts no line breaks in environment values and caps each value at
+// 8192 bytes. A long input continues in AGENTORC_INPUT_B64_2, _3 and so on; the
+// parts are joined in order before decoding. AGENTORC_INPUT holds a one-line
+// version (cut, with a note, if it is too long); Input prefers the exact one.
 func Input() string {
-	if enc := os.Getenv("AGENTORC_INPUT_B64"); enc != "" {
+	if enc := joinedEnv("AGENTORC_INPUT_B64"); enc != "" {
 		if b, err := base64.StdEncoding.DecodeString(enc); err == nil {
 			return string(b)
 		}
 	}
 	return os.Getenv("AGENTORC_INPUT")
+}
+
+// joinedEnv returns the variable name followed by name_2, name_3, ... up to the
+// first one that is not set.
+func joinedEnv(name string) string {
+	s := os.Getenv(name)
+	for i := 2; ; i++ {
+		part, ok := os.LookupEnv(name + "_" + strconv.Itoa(i))
+		if !ok {
+			return s
+		}
+		s += part
+	}
 }

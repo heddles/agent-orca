@@ -19,10 +19,14 @@ package openshell
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
 	"reflect"
 	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	osv1 "github.com/NVIDIA/OpenShell/sdk/go/openshell/v1"
 	"github.com/NVIDIA/OpenShell/sdk/go/openshell/v1/fake"
@@ -391,6 +395,74 @@ func TestSandboxEnvEncodesLineBreaks(t *testing.T) {
 	if err != nil || string(dec) != in["AGENTORC_INPUT"] {
 		t.Errorf("exact copy = %q, %v", dec, err)
 	}
+}
+
+// The gateway rejects an environment value over 8192 bytes. A long multi-line input
+// continues in _B64_2, _B64_3, ...; joined in order and decoded it is exact.
+func TestSandboxEnvSplitsLongValues(t *testing.T) {
+	var b strings.Builder
+	for i := 0; b.Len() < 30000; i++ {
+		fmt.Fprintf(&b, "line %d: caf\u00e9 and some text to fill the line\n", i)
+	}
+	input := b.String()
+	got := sandboxEnv(map[string]string{"AGENTORC_INPUT": input, "OPENAI_API_KEY": "tok"})
+
+	for k, v := range got {
+		if len(v) > 8192 {
+			t.Errorf("%s is %d bytes, over the gateway's 8192", k, len(v))
+		}
+		if strings.ContainsAny(v, "\r\n") {
+			t.Errorf("%s has a line break", k)
+		}
+	}
+	var enc strings.Builder
+	for i := 1; ; i++ {
+		name := "AGENTORC_INPUT_B64"
+		if i > 1 {
+			name += "_" + strconv.Itoa(i)
+		}
+		part, ok := got[name]
+		if !ok {
+			break
+		}
+		enc.WriteString(part)
+	}
+	dec, err := base64.StdEncoding.DecodeString(enc.String())
+	if err != nil || string(dec) != input {
+		t.Fatalf("joined parts do not decode to the input: err=%v, got %d bytes, want %d", err, len(dec), len(input))
+	}
+	if _, ok := got["AGENTORC_INPUT_B64_5"]; !ok {
+		t.Errorf("expected at least five parts for %d bytes of input, got keys %v", len(input), keys(got))
+	}
+	line := got["AGENTORC_INPUT"]
+	if !utf8.ValidString(line) || !strings.HasSuffix(line, "[cut: the full text is in AGENTORC_INPUT_B64]") {
+		t.Errorf("one-line copy is not a clean, marked cut: ...%q", line[max(0, len(line)-80):])
+	}
+	if got["OPENAI_API_KEY"] != "tok" {
+		t.Errorf("a short value changed: %q", got["OPENAI_API_KEY"])
+	}
+}
+
+// A long value with no line break needs the same treatment.
+func TestSandboxEnvSplitsLongSingleLineValues(t *testing.T) {
+	long := strings.Repeat("x", 9000)
+	got := sandboxEnv(map[string]string{"K": long})
+	if len(got["K"]) > 8192 || got["K_B64"] == "" || got["K_B64_2"] == "" {
+		t.Fatalf("long single-line value not split: K=%d, K_B64=%d, K_B64_2=%d", len(got["K"]), len(got["K_B64"]), len(got["K_B64_2"]))
+	}
+	dec, err := base64.StdEncoding.DecodeString(got["K_B64"] + got["K_B64_2"])
+	if err != nil || string(dec) != long {
+		t.Errorf("round trip failed: %v", err)
+	}
+}
+
+func keys(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	slices.Sort(out)
+	return out
 }
 
 func TestBuildSpecExtraRouterHostsAreLiteralEndpoints(t *testing.T) {
