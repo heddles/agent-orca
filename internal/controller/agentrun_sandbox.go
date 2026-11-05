@@ -310,6 +310,7 @@ func (r *AgentRunReconciler) checkSandboxProgress(ctx context.Context, run *agen
 	}
 	r.refreshSandboxGit(ctx, run, agent)
 	r.recordSandboxDecisions(ctx, run, sb)
+	r.recordHarnessEvents(ctx, run, agent, sb)
 	r.reconcileEgressApprovals(ctx, run, agent, sb)
 
 	outcome, reason := openshell.Observe(sb)

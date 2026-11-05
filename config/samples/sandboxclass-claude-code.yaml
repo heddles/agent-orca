@@ -40,6 +40,7 @@ spec:
   networkIsolation: {splitPod: true}
   runtime:
     ociRef: claude-code-sandbox:dev      # build it from docs/examples/claude-code.Dockerfile
+    harness: claude-code                 # the operator reads the CLI's stream into the run's trace
     framework: openai-compatible
     inputMode: env
     sandbox: {provider: openshell, classRef: claude-code}
@@ -47,7 +48,7 @@ spec:
     args:
       - |
         export CLAUDE_CODE_OAUTH_TOKEN="$AGENTORCA_CRED_CLAUDE_OAUTH" HOME=/sandbox
-        claude -p "$AGENTORC_INPUT" --output-format json < /dev/null
+        claude -p "$AGENTORC_INPUT" --output-format stream-json --verbose --allowedTools Bash < /dev/null
 ---
 apiVersion: agentorca.agentorca.io/v1alpha1
 kind: AgentRun

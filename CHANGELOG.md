@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Coding-agent harness trace** — an Agent with `spec.runtime.harness: claude-code` (sandbox required) runs the
+  Claude Code CLI with `--output-format stream-json --verbose`, and the operator copies what it did into the run's
+  trace as `harness` events: tool calls and their results, the final result with token usage, and the
+  subscription's five-hour and seven-day utilization. New metrics:
+  `agentorca_harness_tool_calls_total`, `agentorca_harness_tokens_total` and
+  `agentorca_harness_subscription_utilization`. See `docs/claude-code-subscription.md`.
 - **Sandbox credentials** — a `SandboxClass` can now hold `credentials`: secrets its sandboxes use but never
   read. The sandbox gets a placeholder in `AGENTORCA_CRED_<NAME>`, and the supervisor swaps in the real value
   only on the credential's bound `host:port` (optionally limited to binaries and URL paths), with the access

@@ -437,6 +437,11 @@ spec:
                 description: HandoffTarget is the Agent name this run handed off to,
                   if Phase is HandedOff.
                 type: string
+              harnessLinesSeen:
+                description: |-
+                  HarnessLinesSeen is how many lines of the harness's output stream have
+                  been copied into the run's trace; the next read continues after them.
+                type: integer
               inputMode:
                 description: |-
                   InputMode mirrors Agent.spec.runtime.inputMode, cached here so the controller
