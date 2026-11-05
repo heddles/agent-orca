@@ -67,8 +67,13 @@ func (r *AgentRunReconciler) recordHarnessEvents(ctx context.Context, run *agent
 		logger.V(1).Info("reading harness output", "sandbox", sb.Name, "err", err.Error())
 		return
 	}
-	events, consumed := openshell.ParseClaudeStream(logs, run.Status.HarnessLinesSeen)
-	if consumed <= run.Status.HarnessLinesSeen {
+	runKey := run.Namespace + "/" + run.Name
+	skip := run.Status.HarnessLinesSeen
+	if n, ok := r.harnessRecorded.Load(runKey); ok && n.(int) > skip {
+		skip = n.(int) // the cached run is behind a patch made moments ago
+	}
+	events, consumed := openshell.ParseClaudeStream(logs, skip)
+	if consumed <= skip {
 		return
 	}
 	key := "tokens:" + run.Namespace + ":" + run.Name
@@ -87,6 +92,7 @@ func (r *AgentRunReconciler) recordHarnessEvents(ctx context.Context, run *agent
 		}
 		observeHarnessEvent(ns, harness, e)
 	}
+	r.harnessRecorded.Store(runKey, consumed)
 	patch := client.MergeFrom(run.DeepCopy())
 	run.Status.HarnessLinesSeen = consumed
 	if err := r.Status().Patch(ctx, run, patch); err != nil {

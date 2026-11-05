@@ -77,3 +77,30 @@ func TestRecordHarnessEvents_NoHarness(t *testing.T) {
 		t.Fatalf("an agent without a harness got trace events: %v", store.events)
 	}
 }
+
+// Two reconciles can run back to back with the same cached run, before the status
+// patch of the first is visible. The second must not record the first's lines again.
+func TestRecordHarnessEvents_StaleWatermark(t *testing.T) {
+	raw, err := os.ReadFile("../openshell/testdata/claude-stream.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw := newStubGateway()
+	run, token := gitRun()
+	agent := gitAgent()
+	agent.Spec.Runtime.Harness = openshell.HarnessClaudeCode
+	r, _ := sandboxReconciler(t, gw, run, token)
+	nop, _ := state.NewStoreFromConfig(state.Config{})
+	store := &traceRecorder{Store: nop, events: map[string][]string{}}
+	r.StateStore = store
+	gw.logs = strings.SplitAfter(string(raw), "\n")[0] // just the init line
+	sb := &osv1.Sandbox{Name: "sb-1"}
+
+	stale := run.DeepCopy() // what the cache still holds: HarnessLinesSeen == 0
+	r.recordHarnessEvents(context.Background(), run, agent, sb)
+	r.recordHarnessEvents(context.Background(), stale, agent, sb)
+
+	if n := len(store.events["tokens:default:run-1"]); n != 1 {
+		t.Fatalf("trace events = %d, want 1: the init line was recorded twice", n)
+	}
+}
