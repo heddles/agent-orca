@@ -67,7 +67,7 @@ func (r *AgentRunReconciler) recordHarnessEvents(ctx context.Context, run *agent
 		logger.V(1).Info("reading harness output", "sandbox", sb.Name, "err", err.Error())
 		return
 	}
-	runKey := run.Namespace + "/" + run.Name
+	runKey := run.Namespace + "/" + run.Name + "/" + string(run.UID) // a recreated run has a new UID
 	skip := run.Status.HarnessLinesSeen
 	if n, ok := r.harnessRecorded.Load(runKey); ok && n.(int) > skip {
 		skip = n.(int) // the cached run is behind a patch made moments ago

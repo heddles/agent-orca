@@ -74,7 +74,7 @@ const (
 type AgentRunReconciler struct {
 	client.Client
 	// harnessRecorded is how many lines of each run's harness output this operator
-	// has put in the trace (by namespace/name). A reconcile can read a cached run
+	// has put in the trace (by namespace, name and UID). A reconcile can read a cached run
 	// whose status watermark is behind a patch another reconcile just made; this
 	// keeps it from recording those lines again. Entries are a few bytes.
 	harnessRecorded  sync.Map
