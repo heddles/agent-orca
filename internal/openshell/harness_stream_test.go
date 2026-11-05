@@ -16,7 +16,7 @@ func TestParseClaudeStream_RealRun(t *testing.T) {
 	if consumed != 6 {
 		t.Fatalf("consumed %d lines, want 6", consumed)
 	}
-	var kinds []string
+	kinds := make([]string, 0, len(events))
 	for _, e := range events {
 		kinds = append(kinds, e.Kind)
 	}
