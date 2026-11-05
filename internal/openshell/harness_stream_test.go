@@ -91,14 +91,31 @@ func TestClaudeResult(t *testing.T) {
 	}
 }
 
-func TestParseClaudeStream_TimeOnlyWhenReported(t *testing.T) {
+func TestParseClaudeStream_UntimedStepsTakeNeighbourTime(t *testing.T) {
 	raw, _ := os.ReadFile("testdata/claude-stream.jsonl")
 	events, _ := ParseClaudeStream(string(raw), 0)
-	if events[1].Time == nil || events[1].Time.IsZero() { // tool_use
-		t.Errorf("tool_use has no time: %+v", events[1])
+	// init, tool_use, rate_limit, tool_result, message, result
+	for i, e := range events {
+		if e.Time == nil || e.Time.IsZero() {
+			t.Fatalf("event %d (%s) has no time", i, e.Kind)
+		}
 	}
-	b, _ := json.Marshal(events[0]) // init: the CLI gives it no timestamp
+	if !events[0].Time.Equal(*events[1].Time) {
+		t.Errorf("init time %v, want the next step's %v", events[0].Time, events[1].Time)
+	}
+	if !events[2].Time.Equal(*events[1].Time) {
+		t.Errorf("rate_limit time %v, want the previous step's %v", events[2].Time, events[1].Time)
+	}
+	if !events[5].Time.Equal(*events[4].Time) {
+		t.Errorf("result time %v, want the previous step's %v", events[5].Time, events[4].Time)
+	}
+	// A read with no timestamped step at all leaves times unset.
+	only, _ := ParseClaudeStream(`{"type":"result","num_turns":1}`+"\n", 0)
+	if only[0].Time != nil {
+		t.Errorf("a lone result got a time: %v", only[0].Time)
+	}
+	b, _ := json.Marshal(only[0])
 	if strings.Contains(string(b), `"time"`) {
-		t.Errorf("init event carries a time it does not have: %s", b)
+		t.Errorf("unset time must be omitted: %s", b)
 	}
 }

@@ -99,8 +99,8 @@ The CLI's own stream fills that gap. Each `harness` trace event has a `kind`:
 `costUsd` is the **list-price equivalent**, not what the subscription is billed. `status.spendUSD` stays
 empty, because the router never saw the calls.
 
-Steps the CLI timestamps (tool calls, results, messages) carry its own `time`, and the UI shows that. The
-others (`init`, `rate_limit`, `result`) show when the operator read them.
+Each step carries a `time` from the CLI, and the UI shows it. The few steps the CLI does not timestamp (`init`,
+`rate_limit`, `result`) take the time of the step next to them.
 
 The operator reads the workload's logs on each poll (about every 10 s) and keeps its place in
 `status.harnessLinesSeen`, so nothing is recorded twice across polls or operator restarts.

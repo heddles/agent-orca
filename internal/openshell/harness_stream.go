@@ -57,7 +57,8 @@ type HarnessUsage struct {
 
 // HarnessEvent is one thing the harness did, read from its output stream.
 type HarnessEvent struct {
-	// Time is when the CLI reported the step, for the lines that carry a timestamp.
+	// Time is when the CLI reported the step. A step the CLI does not timestamp takes
+	// its neighbour's time; Time is nil only when no step in the read has one.
 	Time *time.Time `json:"time,omitempty"`
 	Kind string     `json:"kind"`
 	// Model is the model that answered (init, result).
@@ -154,7 +155,33 @@ func ParseClaudeStream(logs string, skip int) (events []HarnessEvent, consumed i
 	if consumed < skip {
 		consumed = skip
 	}
+	fillNeighbourTimes(events)
 	return events, consumed
+}
+
+// fillNeighbourTimes gives the steps the CLI does not timestamp (init, rate_limit,
+// result) the time of the step before them, or of the one after for those at the
+// start. Left blank they would show when the operator read them, which can be ten
+// seconds after the step and sorts them out of order against their neighbours.
+func fillNeighbourTimes(events []HarnessEvent) {
+	var prev *time.Time
+	for i := range events {
+		if events[i].Time != nil {
+			prev = events[i].Time
+		} else if prev != nil {
+			t := *prev
+			events[i].Time = &t
+		}
+	}
+	var next *time.Time
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Time != nil {
+			next = events[i].Time
+		} else if next != nil {
+			t := *next
+			events[i].Time = &t
+		}
+	}
 }
 
 func eventsOf(l *streamLine) []HarnessEvent {
