@@ -46,6 +46,7 @@ const TRACE_FILTERS = [
   { key: 'guardrails', label: 'Guardrails' },
   { key: 'fallbacks', label: 'Fallbacks' },
   { key: 'network', label: 'Network' },
+  { key: 'harness', label: 'Harness' },
   { key: 'budget', label: 'Budget' },
   { key: 'errors', label: 'Errors' },
 ] as const
@@ -95,6 +96,7 @@ export function TraceAccordion({ entries, streaming, markdown, feedbackRun }: Pr
       case 'guardrails': return ev.type === 'guardrail'
       case 'fallbacks': return ev.type === 'providerFallback'
       case 'network': return ev.type === 'egress'
+      case 'harness': return ev.type === 'harness'
       case 'budget': return ev.type === 'budget'
       case 'errors': return ev.type === STREAM_EVENT_TYPE.error || ev.type === STREAM_EVENT_TYPE.fail
       default: return true
@@ -182,7 +184,9 @@ type RoutedEvent = Extract<TraceEvent, { type: 'routing' } | { type: typeof STRE
 
 function TraceRow({ entry, markdown, feedback }: { entry: TraceEntry; markdown: boolean; feedback: RunFeedback | null }) {
   const { event, ts } = entry
-  const time = ts.slice(11, 23)
+  // A harness step carries the CLI's own time; the trace's time is when the operator polled.
+  const reported = event.type === 'harness' && event.time ? new Date(event.time) : null
+  const time = (reported && !Number.isNaN(reported.getTime()) ? reported.toISOString() : ts).slice(11, 23)
   const childLabel = entry.childRunName
     ? <span style={s.childBadge}>{entry.childRunName.split('-').slice(-2).join('-')}</span>
     : null
@@ -489,6 +493,82 @@ function TraceRow({ entry, markdown, feedback }: { entry: TraceEntry; markdown: 
           </span>
         </div>
       )
+    }
+    case 'harness': {
+      const pct = (v: number) => `${Math.round(v * 100)}%`
+      const tone = (bad: boolean) => (bad ? { ...row, background: 'var(--ds-trace-error-bg)', borderRadius: 4, padding: '4px 8px', margin: '2px 0' } : row)
+      switch (event.kind) {
+        case 'init':
+          return (
+            <div style={row}>
+              <span style={muted}>{time}</span>
+              <Icon icon={ICON.agent} size={14} color="var(--ds-accent)" />
+              <span style={content}><span style={hi}>agent CLI started</span>{event.model ? <> on {event.model}</> : null}</span>
+            </div>
+          )
+        case 'message':
+          return (
+            <div style={row}>
+              <span style={muted}>{time}</span>
+              <Icon icon={ICON.thought} size={14} color="var(--ds-accent)" />
+              <span style={content}><span style={hi}>says</span> {event.text}</span>
+            </div>
+          )
+        case 'tool_use':
+          return (
+            <div style={row}>
+              <span style={muted}>{time}</span>
+              <Icon icon={ICON.tool} size={14} color="var(--ds-warning)" />
+              <span style={content}><span style={hi}>runs {event.tool}</span> <span style={{ color: 'var(--ds-text-muted)' }}>{event.input}</span></span>
+            </div>
+          )
+        case 'tool_result':
+          return (
+            <div style={tone(!!event.isError)}>
+              <span style={muted}>{time}</span>
+              <Icon icon={event.isError ? ICON.stop : ICON.check} size={14} color={event.isError ? 'var(--ds-error)' : 'var(--ds-success)'} />
+              <span style={{ ...content, ...(event.isError ? { color: '#fca5a5' } : {}) }}><span style={hi}>{event.isError ? 'failed' : 'result'}</span> {event.text}</span>
+            </div>
+          )
+        case 'rate_limit': {
+          const windows = Object.entries(event.utilization ?? {})
+          const limited = !!event.status && event.status !== 'allowed'
+          return (
+            <div style={limited ? { ...row, background: 'var(--ds-trace-warning-bg)', borderRadius: 4, padding: '4px 8px', margin: '2px 0' } : row}>
+              <span style={muted}>{time}</span>
+              <Icon icon={ICON.timer} size={14} color={limited ? 'var(--ds-warning)' : 'var(--ds-text-secondary)'} />
+              <span style={content}>
+                <span style={hi}>subscription</span>{' '}
+                {windows.map(([w, v]) => `${w.replace('_', '-')} ${pct(v)} used`).join(' · ') || 'usage unknown'}
+                {limited ? <> — {event.status}</> : null}
+              </span>
+            </div>
+          )
+        }
+        case 'result': {
+          const u = event.usage
+          return (
+            <div style={tone(!!event.isError)}>
+              <span style={muted}>{time}</span>
+              <Icon icon={event.isError ? ICON.stop : ICON.check} size={14} color={event.isError ? 'var(--ds-error)' : 'var(--ds-success)'} />
+              <span style={{ ...content, ...(event.isError ? { color: '#fca5a5' } : {}) }}>
+                <span style={hi}>{event.isError ? 'agent CLI failed' : 'agent CLI finished'}</span>
+                {event.turns ? <> — {event.turns} turns</> : null}
+                {u ? <> · {u.inputTokens.toLocaleString()} in / {u.outputTokens.toLocaleString()} out tokens</> : null}
+                {event.durationMs ? <> · {(event.durationMs / 1000).toFixed(1)}s</> : null}
+                {event.text ? <>: {event.text}</> : null}
+              </span>
+            </div>
+          )
+        }
+        default:
+          return (
+            <div style={row}>
+              <span style={muted}>{time}</span>
+              <span style={content}><span style={hi}>agent CLI</span> {event.kind}</span>
+            </div>
+          )
+      }
     }
     case 'toolApproval': {
       const copy: Record<string, string> = {

@@ -375,6 +375,16 @@ spec:
                     - langgraph
                     - shim
                     type: string
+                  harness:
+                    description: |-
+                      Harness says the agent process is a coding-agent CLI rather than an
+                      OpenAI-compatible loop, so the operator reads its output stream into the
+                      run's trace: tool calls and results, token usage and subscription use.
+                      claude-code expects the CLI run with --output-format stream-json
+                      --verbose. Requires runtime.sandbox. See docs/claude-code-subscription.md.
+                    enum:
+                    - claude-code
+                    type: string
                   inputMode:
                     description: |-
                       InputMode controls how the operator delivers the run input to the agent.
@@ -656,6 +666,9 @@ spec:
                 required:
                 - ociRef
                 type: object
+                x-kubernetes-validations:
+                - message: spec.runtime.harness requires spec.runtime.sandbox
+                  rule: '!has(self.harness) || has(self.sandbox)'
               serviceAccountRef:
                 description: |-
                   ServiceAccountRef references a pre-existing ServiceAccount to use for agent pods.

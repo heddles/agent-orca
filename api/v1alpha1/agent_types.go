@@ -207,6 +207,7 @@ type KnowledgeBaseRef struct {
 }
 
 // AgentRuntime describes the agent process container image and framework.
+// +kubebuilder:validation:XValidation:rule="!has(self.harness) || has(self.sandbox)",message="spec.runtime.harness requires spec.runtime.sandbox"
 type AgentRuntime struct {
 	// OCIRef is the OCI image reference for the agent process.
 	// Must be signed with Cosign unless imageVerification.skip is set.
@@ -299,6 +300,15 @@ type AgentRuntime struct {
 	// may not reuse a router tool or built-in name.
 	// +optional
 	LocalTools bool `json:"localTools,omitempty"`
+
+	// Harness says the agent process is a coding-agent CLI rather than an
+	// OpenAI-compatible loop, so the operator reads its output stream into the
+	// run's trace: tool calls and results, token usage and subscription use.
+	// claude-code expects the CLI run with --output-format stream-json
+	// --verbose. Requires runtime.sandbox. See docs/claude-code-subscription.md.
+	// +kubebuilder:validation:Enum=claude-code
+	// +optional
+	Harness string `json:"harness,omitempty"`
 }
 
 // SandboxProvider names a sandbox runtime implementation.
