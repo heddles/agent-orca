@@ -139,6 +139,34 @@ describe('TraceAccordion', () => {
     expect(screen.getByText('allowed')).toBeInTheDocument()
   })
 
+  it('renders a coding-agent harness run and filters to it', async () => {
+    render(
+      <TraceAccordion
+        entries={[
+          entry(0, { type: 'harness', kind: 'init', model: 'claude-sonnet-5-5' }),
+          entry(1, { type: 'harness', kind: 'tool_use', tool: 'Bash', toolUseId: 't1', input: '{"command":"echo hello && ls /sandbox"}' }),
+          entry(2, { type: 'harness', kind: 'tool_result', toolUseId: 't1', text: 'hello' }),
+          entry(3, { type: 'harness', kind: 'tool_result', toolUseId: 't2', text: 'permission denied', isError: true }),
+          entry(4, { type: 'harness', kind: 'rate_limit', status: 'allowed', utilization: { five_hour: 0.11, seven_day: 0.39 } }),
+          entry(5, { type: 'harness', kind: 'result', text: 'pong', turns: 2, durationMs: 3632, usage: { inputTokens: 4, outputTokens: 94 } }),
+          entry(6, { type: STREAM_EVENT_TYPE.modelSelected, model: 'm', reason: 'r', confidence: 0.5 }),
+        ]}
+      />,
+    )
+    await openAccordion()
+    expect(screen.getByText(/agent CLI started/)).toBeInTheDocument()
+    expect(screen.getByText('runs Bash')).toBeInTheDocument()
+    expect(screen.getByText(/echo hello && ls \/sandbox/)).toBeInTheDocument()
+    expect(screen.getByText('failed')).toBeInTheDocument()
+    expect(screen.getByText(/five-hour 11% used · seven-day 39% used/)).toBeInTheDocument()
+    expect(screen.getByText(/2 turns/)).toBeInTheDocument()
+    expect(screen.getByText(/4 in \/ 94 out tokens/)).toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Harness' }))
+    expect(screen.queryByText(/routed/)).not.toBeInTheDocument()
+    expect(screen.getByText('runs Bash')).toBeInTheDocument()
+  })
+
   it('renders model_selected with confidence', async () => {
     render(
       <TraceAccordion entries={[entry(0, { type: STREAM_EVENT_TYPE.modelSelected, model: 'm', reason: 'r', confidence: 0.42 })]} />,

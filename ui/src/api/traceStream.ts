@@ -74,6 +74,26 @@ export type TraceEvent =
       reason?: string
       raw: string
     }
+  // A step of a coding-agent CLI harness (Agent.spec.runtime.harness), read from the CLI's
+  // output stream: what it said, ran, got back, and how much of its subscription it used.
+  | {
+      type: 'harness'
+      kind: 'init' | 'message' | 'tool_use' | 'tool_result' | 'result' | 'rate_limit' | string
+      model?: string
+      tool?: string
+      toolUseId?: string
+      input?: string
+      text?: string
+      isError?: boolean
+      turns?: number
+      durationMs?: number
+      // List-price equivalent, not what a subscription bills.
+      costUsd?: number
+      usage?: { inputTokens: number; outputTokens: number; cacheReadTokens?: number; cacheCreationTokens?: number }
+      status?: string
+      // Share (0 to 1) of each subscription window used, e.g. five_hour, seven_day.
+      utilization?: Record<string, number>
+    }
   // The run's spend against its budget (AgentRun.spec.budget): a warning near
   // the cap, a pause at the cap, and how the pause ended.
   | {
