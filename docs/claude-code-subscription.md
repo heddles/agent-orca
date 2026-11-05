@@ -74,8 +74,12 @@ kubectl exec -i -n agent-orca-system postgres-1 -c postgres -- psql -U postgres 
   where name='claude-code-demo' and e->'event'->>'type'='harness' order by e->>'id'"
 ```
 
-`status.output` also holds the CLI's stdout, but it is capped at 10 KB, so a long run loses its end. Use the
-trace.
+`status.output` is the CLI's answer (the `result` line's text), and the run page shows it as the final output.
+The stream itself is in the trace. A run whose CLI died before printing a result keeps the raw stdout as its
+output.
+
+The run's model is the one the CLI reports: the operator records it as a routing decision with provider
+`claude-code`, so the UI shows it as the run's model instead of the model selector's unused candidates.
 
 ## What you can track
 
@@ -94,6 +98,9 @@ The CLI's own stream fills that gap. Each `harness` trace event has a `kind`:
 
 `costUsd` is the **list-price equivalent**, not what the subscription is billed. `status.spendUSD` stays
 empty, because the router never saw the calls.
+
+Steps the CLI timestamps (tool calls, results, messages) carry its own `time`, and the UI shows that. The
+others (`init`, `rate_limit`, `result`) show when the operator read them.
 
 The operator reads the workload's logs on each poll (about every 10 s) and keeps its place in
 `status.harnessLinesSeen`, so nothing is recorded twice across polls or operator restarts.

@@ -19,9 +19,11 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"slices"
 
 	osv1 "github.com/NVIDIA/OpenShell/sdk/go/openshell/v1"
 	"github.com/prometheus/client_golang/prometheus"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
@@ -78,7 +80,11 @@ func (r *AgentRunReconciler) recordHarnessEvents(ctx context.Context, run *agent
 	}
 	key := "tokens:" + run.Namespace + ":" + run.Name
 	ns, harness := run.Namespace, agent.Spec.Runtime.Harness
+	model := ""
 	for _, e := range events {
+		if e.Kind == openshell.HarnessInit && e.Model != "" {
+			model = e.Model
+		}
 		ev, err := json.Marshal(struct {
 			Type string `json:"type"`
 			openshell.HarnessEvent
@@ -95,6 +101,15 @@ func (r *AgentRunReconciler) recordHarnessEvents(ctx context.Context, run *agent
 	r.harnessRecorded.Store(runKey, consumed)
 	patch := client.MergeFrom(run.DeepCopy())
 	run.Status.HarnessLinesSeen = consumed
+	if model != "" && !slices.ContainsFunc(run.Status.RoutingDecisions, func(d agentorcav1alpha1.RoutingDecision) bool { return d.Provider == harness }) {
+		// The model-router is not in the path, so the model that answered is the one
+		// the CLI reports. Recording it as the run's last decision makes it the run's
+		// resolved model in the UI, ahead of the selector's unused candidates.
+		now := metav1.Now()
+		run.Status.RoutingDecisions = append(run.Status.RoutingDecisions, agentorcav1alpha1.RoutingDecision{
+			Model: model, Provider: harness, Strategy: "harness", Reason: "model reported by the " + harness + " CLI", Timestamp: &now,
+		})
+	}
 	if err := r.Status().Patch(ctx, run, patch); err != nil {
 		logger.Error(err, "recording the harness output watermark")
 	}

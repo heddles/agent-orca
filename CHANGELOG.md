@@ -14,7 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   trace as `harness` events: tool calls and their results, the final result with token usage, and the
   subscription's five-hour and seven-day utilization. New metrics:
   `agentorca_harness_tool_calls_total`, `agentorca_harness_tokens_total` and
-  `agentorca_harness_subscription_utilization`. See `docs/claude-code-subscription.md`.
+  `agentorca_harness_subscription_utilization`. A harness run's output is the CLI's answer and its model is the one
+  the CLI reports. See `docs/claude-code-subscription.md`.
 - **Sandbox credentials** — a `SandboxClass` can now hold `credentials`: secrets its sandboxes use but never
   read. The sandbox gets a placeholder in `AGENTORCA_CRED_<NAME>`, and the supervisor swaps in the real value
   only on the credential's bound `host:port` (optionally limited to binaries and URL paths), with the access

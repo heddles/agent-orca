@@ -184,7 +184,9 @@ type RoutedEvent = Extract<TraceEvent, { type: 'routing' } | { type: typeof STRE
 
 function TraceRow({ entry, markdown, feedback }: { entry: TraceEntry; markdown: boolean; feedback: RunFeedback | null }) {
   const { event, ts } = entry
-  const time = ts.slice(11, 23)
+  // A harness step carries the CLI's own time; the trace's time is when the operator polled.
+  const reported = event.type === 'harness' && event.time ? new Date(event.time) : null
+  const time = (reported && !Number.isNaN(reported.getTime()) ? reported.toISOString() : ts).slice(11, 23)
   const childLabel = entry.childRunName
     ? <span style={s.childBadge}>{entry.childRunName.split('-').slice(-2).join('-')}</span>
     : null

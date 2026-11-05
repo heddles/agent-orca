@@ -1,6 +1,7 @@
 package openshell
 
 import (
+	"encoding/json"
 	"os"
 	"strings"
 	"testing"
@@ -71,5 +72,33 @@ func TestParseClaudeStream_BlockResult(t *testing.T) {
 	events, _ := ParseClaudeStream(line, 0)
 	if len(events) != 1 || events[0].Text != "boom" || !events[0].IsError {
 		t.Fatalf("events = %+v", events)
+	}
+}
+
+func TestClaudeResult(t *testing.T) {
+	raw, _ := os.ReadFile("testdata/claude-stream.jsonl")
+	text, isErr, ok := ClaudeResult(string(raw))
+	if !ok || isErr || !strings.HasPrefix(text, "Done. The command printed") {
+		t.Fatalf("ClaudeResult = %q, %v, %v", text, isErr, ok)
+	}
+	lines := strings.SplitAfter(string(raw), "\n")
+	if _, _, ok := ClaudeResult(strings.Join(lines[:5], "")); ok {
+		t.Fatal("a stream without its result line must report ok=false")
+	}
+	_, isErr, ok = ClaudeResult(`{"type":"result","is_error":true,"result":"boom"}` + "\n")
+	if !ok || !isErr {
+		t.Fatalf("an error result: isErr=%v ok=%v", isErr, ok)
+	}
+}
+
+func TestParseClaudeStream_TimeOnlyWhenReported(t *testing.T) {
+	raw, _ := os.ReadFile("testdata/claude-stream.jsonl")
+	events, _ := ParseClaudeStream(string(raw), 0)
+	if events[1].Time == nil || events[1].Time.IsZero() { // tool_use
+		t.Errorf("tool_use has no time: %+v", events[1])
+	}
+	b, _ := json.Marshal(events[0]) // init: the CLI gives it no timestamp
+	if strings.Contains(string(b), `"time"`) {
+		t.Errorf("init event carries a time it does not have: %s", b)
 	}
 }

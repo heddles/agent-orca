@@ -322,12 +322,23 @@ func (r *AgentRunReconciler) checkSandboxProgress(ctx context.Context, run *agen
 				logger.Error(err, "collecting sandbox output", "sandbox", sb.Name)
 				return "(log collection failed)"
 			}
+			if agent.Spec.Runtime.Harness == openshell.HarnessClaudeCode {
+				// The stream is in the trace; the run's output is the CLI's answer.
+				if text, _, ok := openshell.ClaudeResult(out); ok {
+					return text
+				}
+			}
 			return out
 		})
 	case openshell.OutcomeFailed:
 		// The sandbox (and its workload logs) is deleted on retry, so keep the
 		// tail of the agent's output in the failure reason, as for agent pods.
 		if out, err := r.Sandboxes.MainProcessLogs(ctx, sb); err == nil {
+			if agent.Spec.Runtime.Harness == openshell.HarnessClaudeCode {
+				if text, _, ok := openshell.ClaudeResult(out); ok && text != "" {
+					out = text // the CLI's own error, not the last lines of its stream
+				}
+			}
 			if tail := lastLines(strings.TrimSpace(out), 10); tail != "" {
 				reason += "\n[agent] " + truncate(tail, 1024)
 			}

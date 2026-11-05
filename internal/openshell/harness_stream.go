@@ -57,8 +57,9 @@ type HarnessUsage struct {
 
 // HarnessEvent is one thing the harness did, read from its output stream.
 type HarnessEvent struct {
-	Time time.Time `json:"time,omitempty"`
-	Kind string    `json:"kind"`
+	// Time is when the CLI reported the step, for the lines that carry a timestamp.
+	Time *time.Time `json:"time,omitempty"`
+	Kind string     `json:"kind"`
 	// Model is the model that answered (init, result).
 	Model string `json:"model,omitempty"`
 	// Tool and ToolUseID identify a tool call; a tool_result carries the ID of
@@ -200,7 +201,11 @@ func blockEvents(l *streamLine) []HarnessEvent {
 	}
 	var out []HarnessEvent
 	for _, b := range blocks {
-		ev := HarnessEvent{Time: l.Timestamp}
+		ev := HarnessEvent{}
+		if !l.Timestamp.IsZero() {
+			t := l.Timestamp
+			ev.Time = &t
+		}
 		switch b.Type {
 		case "text":
 			if strings.TrimSpace(b.Text) == "" {
@@ -261,4 +266,17 @@ func truncateText(s string) string {
 		cut--
 	}
 	return s[:cut] + "…"
+}
+
+// ClaudeResult returns what the CLI's final result line says: the answer, or
+// the error when isError is set. ok is false while the stream has no result
+// line, as when the CLI was killed.
+func ClaudeResult(logs string) (text string, isError, ok bool) {
+	events, _ := ParseClaudeStream(logs, 0)
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Kind == HarnessResult {
+			return events[i].Text, events[i].IsError, true
+		}
+	}
+	return "", false, false
 }

@@ -167,6 +167,20 @@ describe('TraceAccordion', () => {
     expect(screen.getByText('runs Bash')).toBeInTheDocument()
   })
 
+  it('shows a harness step at the time the CLI reported, not when it was polled', async () => {
+    render(
+      <TraceAccordion
+        entries={[
+          { ...entry(0, { type: 'harness', kind: 'tool_use', tool: 'Bash', time: '2026-11-05T19:32:35.85Z', input: '{}' }), ts: '2026-11-05T19:32:46.013Z' },
+          { ...entry(1, { type: 'harness', kind: 'rate_limit', utilization: { five_hour: 0.1 } }), ts: '2026-11-05T19:32:46.014Z' },
+        ]}
+      />,
+    )
+    await openAccordion()
+    expect(screen.getByText('19:32:35.850')).toBeInTheDocument() // the CLI's time
+    expect(screen.getByText('19:32:46.014')).toBeInTheDocument() // no reported time: the trace's
+  })
+
   it('renders model_selected with confidence', async () => {
     render(
       <TraceAccordion entries={[entry(0, { type: STREAM_EVENT_TYPE.modelSelected, model: 'm', reason: 'r', confidence: 0.42 })]} />,

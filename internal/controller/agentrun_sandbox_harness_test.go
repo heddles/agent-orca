@@ -9,6 +9,7 @@ import (
 
 	osv1 "github.com/NVIDIA/OpenShell/sdk/go/openshell/v1"
 
+	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
 	"github.com/heddles/agent-orca/internal/openshell"
 	"github.com/heddles/agent-orca/internal/state"
 )
@@ -102,5 +103,51 @@ func TestRecordHarnessEvents_StaleWatermark(t *testing.T) {
 
 	if n := len(store.events["tokens:default:run-1"]); n != 1 {
 		t.Fatalf("trace events = %d, want 1: the init line was recorded twice", n)
+	}
+}
+
+func TestRecordHarnessEvents_ReportsModel(t *testing.T) {
+	raw, _ := os.ReadFile("../openshell/testdata/claude-stream.jsonl")
+	gw := newStubGateway()
+	run, token := gitRun()
+	agent := gitAgent()
+	agent.Spec.Runtime.Harness = openshell.HarnessClaudeCode
+	r, cl := sandboxReconciler(t, gw, run, token)
+	nop, _ := state.NewStoreFromConfig(state.Config{})
+	r.StateStore = &traceRecorder{Store: nop, events: map[string][]string{}}
+	gw.logs = string(raw)
+
+	r.recordHarnessEvents(context.Background(), run, agent, &osv1.Sandbox{Name: "sb-1"})
+
+	got := fetchSandboxRun(t, cl, run)
+	n := len(got.Status.RoutingDecisions)
+	if n != 1 || got.Status.RoutingDecisions[0].Model != "claude-sonnet-5-5" || got.Status.RoutingDecisions[0].Provider != "claude-code" {
+		t.Fatalf("routing decisions = %+v, want the CLI's model once", got.Status.RoutingDecisions)
+	}
+}
+
+func TestCheckSandboxProgress_HarnessOutputIsTheResult(t *testing.T) {
+	raw, _ := os.ReadFile("../openshell/testdata/claude-stream.jsonl")
+	gw := newStubGateway()
+	gw.logs = string(raw)
+	run := sandboxedRun(t, gw)
+	sb := gw.sandboxes[run.Status.SandboxName]
+	sb.Status.Phase = osv1.SandboxCompleted
+	exit := int32(0)
+	sb.Status.ExitCode = &exit
+	r, cl := sandboxReconciler(t, gw, run)
+	agent := sandboxedAgent()
+	agent.Spec.Runtime.Harness = openshell.HarnessClaudeCode
+
+	if _, err := r.checkProgress(context.Background(), run, agent); err != nil {
+		t.Fatalf("checkProgress: %v", err)
+	}
+
+	got := fetchSandboxRun(t, cl, run)
+	if got.Status.Phase != agentorcav1alpha1.AgentRunPhaseSucceeded {
+		t.Fatalf("phase = %s", got.Status.Phase)
+	}
+	if !strings.HasPrefix(got.Status.Output, "Done. The command printed") || strings.Contains(got.Status.Output, `"type"`) {
+		t.Fatalf("output = %q, want the CLI's answer, not its stream", got.Status.Output)
 	}
 }

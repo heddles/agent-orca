@@ -78,6 +78,8 @@ export type TraceEvent =
   // output stream: what it said, ran, got back, and how much of its subscription it used.
   | {
       type: 'harness'
+      // When the CLI reported the step, if it said; otherwise the row falls back to the trace's time.
+      time?: string
       kind: 'init' | 'message' | 'tool_use' | 'tool_result' | 'result' | 'rate_limit' | string
       model?: string
       tool?: string
