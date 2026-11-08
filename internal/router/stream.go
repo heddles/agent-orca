@@ -516,7 +516,11 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 		r.shadow.consider(servedCall{ev: ct.ev, served: ct.provider, req: chatReq, answer: assistantMsg, usage: usage})
 	}
 
-	if r.cfg.Hindsight.Enabled {
+	// Retain this turn only when the Agent asked for per-turn retain. The flag
+	// defaults true on the CRD, so existing agents are unaffected; an Agent that
+	// sets retainOnEveryTurn: false now stops the per-turn retain (it was a
+	// no-op before: the retain step read only Hindsight.Enabled).
+	if r.cfg.Hindsight.Enabled && r.cfg.Hindsight.RetainOnEveryTurn {
 
 		bankID, errEnsureHindsightBank := r.ensureHindsightBank(req.Context())
 
