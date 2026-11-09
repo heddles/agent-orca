@@ -347,6 +347,11 @@ type AgentRunStatus struct {
 	// +optional
 	SandboxDecisionsSeen *metav1.MicroTime `json:"sandboxDecisionsSeen,omitempty"`
 
+	// HarnessLinesSeen is how many lines of the harness's output stream have
+	// been copied into the run's trace; the next read continues after them.
+	// +optional
+	HarnessLinesSeen int `json:"harnessLinesSeen,omitempty"`
+
 	// StartTime is when the agent pod started.
 	// +optional
 	StartTime *metav1.Time `json:"startTime,omitempty"`

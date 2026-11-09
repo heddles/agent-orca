@@ -32,6 +32,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	osv1 "github.com/NVIDIA/OpenShell/sdk/go/openshell/v1"
@@ -72,6 +73,11 @@ const (
 // AgentRunReconciler reconciles a AgentRun object.
 type AgentRunReconciler struct {
 	client.Client
+	// harnessRecorded is how many lines of each run's harness output this operator
+	// has put in the trace (by namespace, name and UID). A reconcile can read a cached run
+	// whose status watermark is behind a patch another reconcile just made; this
+	// keeps it from recording those lines again. Entries are a few bytes.
+	harnessRecorded  sync.Map
 	Scheme           *runtime.Scheme
 	Recorder         record.EventRecorder
 	K8s              kubernetes.Interface

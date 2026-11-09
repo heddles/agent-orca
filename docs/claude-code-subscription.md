@@ -57,20 +57,64 @@ an Agent and an AgentRun. The pieces that matter:
   variable holds a placeholder like `openshell:resolve:env:…`. The CLI sends it as its bearer
   token and the supervisor replaces it on the wire.
 - `< /dev/null` stops the CLI waiting 3 seconds for stdin.
-- `--output-format json` makes the result and usage machine-readable.
+- `harness: claude-code` and `--output-format stream-json --verbose` make the CLI print one JSON line per
+  step, which the operator reads into the run's trace (see [What you can track](#what-you-can-track)).
+- `--allowedTools Bash` lets the CLI run shell commands without a prompt, which `-p` cannot answer. Widen or
+  narrow it as the task needs.
 
 ## 4. Read the result
 
-The run's `status.output` holds the CLI's stdout. `result` is the answer:
+The run's trace has a `harness` event for each step the CLI took. The last one, `kind: result`, has the
+answer, token usage and turn count:
 
 ```shell
-kubectl get agentrun claude-code-demo -n agent-orca-system -o jsonpath='{.status.output}' | jq '{result, usage, total_cost_usd, num_turns}'
+kubectl exec -i -n agent-orca-system postgres-1 -c postgres -- psql -U postgres -d agentorca -At -c \
+ "select e->'event'->>'kind', e->'event'->>'tool', e->'event'->>'input', e->'event'->>'text'
+  from archived_runs, jsonb_array_elements(trace_events) e
+  where name='claude-code-demo' and e->'event'->>'type'='harness' order by e->>'id'"
 ```
+
+`status.output` is the CLI's answer (the `result` line's text), and the run page shows it as the final output.
+The stream itself is in the trace. A run whose CLI died before printing a result keeps the raw stdout as its
+output.
+
+The run's model is the one the CLI reports: the operator records it as a routing decision with provider
+`claude-code`, so the UI shows it as the run's model instead of the model selector's unused candidates.
 
 ## What you can track
 
-**Network (works today).** The run trace has an `egress` event for each connection and request,
-with the binary that made it. Filter the **Network** tab in the UI, or query the archive:
+**What the agent did (`harness` events).** The sandbox supervisor reports network connections only. It emits
+no event for the processes the agent spawns, so process-level tracking is not available from the sandbox.
+The CLI's own stream fills that gap. Each `harness` trace event has a `kind`:
+
+| `kind` | Fields |
+|---|---|
+| `init` | `model` |
+| `message` | `text` (truncated to 2 KB) |
+| `tool_use` | `tool`, `toolUseId`, `input` (compact JSON, truncated) |
+| `tool_result` | `toolUseId` (the call it answers), `text`, `isError` |
+| `rate_limit` | `status`, `utilization` (share of each subscription window used, 0 to 1: `five_hour`, `seven_day`) |
+| `result` | `text`, `isError`, `turns`, `durationMs`, `usage` (input, output, cache read and creation tokens), `costUsd`, `model` |
+
+`costUsd` is the **list-price equivalent**, not what the subscription is billed. `status.spendUSD` stays
+empty, because the router never saw the calls.
+
+Each step carries a `time` from the CLI, and the UI shows it. The few steps the CLI does not timestamp (`init`,
+`rate_limit`, `result`) take the time of the step next to them.
+
+The operator reads the workload's logs on each poll (about every 10 s) and keeps its place in
+`status.harnessLinesSeen`, so nothing is recorded twice across polls or operator restarts.
+
+**Metrics:**
+
+| Metric | |
+|---|---|
+| `agentorca_harness_tool_calls_total{namespace,harness,tool}` | Tool calls the CLI made |
+| `agentorca_harness_tokens_total{namespace,harness,type}` | Tokens by `input`, `output`, `cache_read`, `cache_creation`, added when a run's `result` arrives |
+| `agentorca_harness_subscription_utilization{namespace,harness,window}` | The last reported share of a subscription window used. Watch `five_hour` to see a run approach the limit. |
+
+**Network (`egress` events).** Each connection and request is in the trace, with the binary that made it.
+Filter the **Network** tab in the UI, or query the archive:
 
 ```shell
 kubectl exec -i -n agent-orca-system postgres-1 -c postgres -- psql -U postgres -d agentorca -At -c \
@@ -81,13 +125,6 @@ kubectl exec -i -n agent-orca-system postgres-1 -c postgres -- psql -U postgres 
 
 Connection events carry the `binary`; per-request `http` events do not. The model call is
 `POST https://api.anthropic.com/v1/messages`.
-
-**Usage.** Take token counts from the CLI's JSON: `usage` and `num_turns`. Note
-`total_cost_usd` is the **list-price equivalent**, not what the subscription is billed.
-`status.spendUSD` stays empty, because the router never saw the calls.
-
-**Not yet tracked.** The sandbox's process events (what the CLI spawned) are parsed away
-(`internal/openshell/ocsf.go` keeps only `NET` and `HTTP` lines).
 
 ## Troubleshooting
 

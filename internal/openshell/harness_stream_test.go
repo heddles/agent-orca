@@ -1,0 +1,121 @@
+package openshell
+
+import (
+	"encoding/json"
+	"os"
+	"strings"
+	"testing"
+)
+
+func TestParseClaudeStream_RealRun(t *testing.T) {
+	raw, err := os.ReadFile("testdata/claude-stream.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, consumed := ParseClaudeStream(string(raw), 0)
+	if consumed != 6 {
+		t.Fatalf("consumed %d lines, want 6", consumed)
+	}
+	kinds := make([]string, 0, len(events))
+	for _, e := range events {
+		kinds = append(kinds, e.Kind)
+	}
+	want := "init tool_use rate_limit tool_result message result"
+	if got := strings.Join(kinds, " "); got != want {
+		t.Fatalf("kinds = %q, want %q", got, want)
+	}
+	use, res, last := events[1], events[3], events[5]
+	if use.Tool != "Bash" || !strings.Contains(use.Input, `"command":"echo hello && ls /sandbox"`) {
+		t.Errorf("tool_use = %+v", use)
+	}
+	if res.ToolUseID != use.ToolUseID || res.Text != "hello" || res.IsError {
+		t.Errorf("tool_result = %+v, want it to answer %s", res, use.ToolUseID)
+	}
+	if rl := events[2]; rl.Status != "allowed" || rl.Utilization["five_hour"] != 0.11 || rl.Utilization["seven_day"] != 0.39 {
+		t.Errorf("rate_limit = %+v", rl)
+	}
+	if last.Turns != 2 || last.Usage == nil || last.Usage.OutputTokens != 94 || last.Usage.CacheReadTokens != 29844 || last.Model != "claude-sonnet-5-5" {
+		t.Errorf("result = %+v", last)
+	}
+}
+
+func TestParseClaudeStream_Resumes(t *testing.T) {
+	raw, _ := os.ReadFile("testdata/claude-stream.jsonl")
+	lines := strings.SplitAfter(string(raw), "\n")
+	first := strings.Join(lines[:3], "")
+	ev1, n1 := ParseClaudeStream(first, 0)
+	ev2, n2 := ParseClaudeStream(string(raw), n1)
+	if n1 != 3 || n2 != 6 || len(ev1)+len(ev2) != 6 {
+		t.Fatalf("n1=%d n2=%d events=%d+%d", n1, n2, len(ev1), len(ev2))
+	}
+}
+
+func TestParseClaudeStream_PartialLastLine(t *testing.T) {
+	raw, _ := os.ReadFile("testdata/claude-stream.jsonl")
+	lines := strings.SplitAfter(string(raw), "\n")
+	partial := lines[0] + lines[1][:40] // second line cut mid-write
+	_, n := ParseClaudeStream(partial, 0)
+	if n != 1 {
+		t.Fatalf("consumed %d, want 1: the half-written line must wait", n)
+	}
+}
+
+func TestParseClaudeStream_IgnoresNoise(t *testing.T) {
+	events, n := ParseClaudeStream("warning: something\n{\"type\":\"result\",\"num_turns\":1}\n", 0)
+	if n != 2 || len(events) != 1 || events[0].Kind != HarnessResult {
+		t.Fatalf("n=%d events=%+v", n, events)
+	}
+}
+
+func TestParseClaudeStream_BlockResult(t *testing.T) {
+	line := `{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","is_error":true,"content":[{"type":"text","text":"boom"}]}]}}` + "\n"
+	events, _ := ParseClaudeStream(line, 0)
+	if len(events) != 1 || events[0].Text != "boom" || !events[0].IsError {
+		t.Fatalf("events = %+v", events)
+	}
+}
+
+func TestClaudeResult(t *testing.T) {
+	raw, _ := os.ReadFile("testdata/claude-stream.jsonl")
+	text, isErr, ok := ClaudeResult(string(raw))
+	if !ok || isErr || !strings.HasPrefix(text, "Done. The command printed") {
+		t.Fatalf("ClaudeResult = %q, %v, %v", text, isErr, ok)
+	}
+	lines := strings.SplitAfter(string(raw), "\n")
+	if _, _, ok := ClaudeResult(strings.Join(lines[:5], "")); ok {
+		t.Fatal("a stream without its result line must report ok=false")
+	}
+	_, isErr, ok = ClaudeResult(`{"type":"result","is_error":true,"result":"boom"}` + "\n")
+	if !ok || !isErr {
+		t.Fatalf("an error result: isErr=%v ok=%v", isErr, ok)
+	}
+}
+
+func TestParseClaudeStream_UntimedStepsTakeNeighbourTime(t *testing.T) {
+	raw, _ := os.ReadFile("testdata/claude-stream.jsonl")
+	events, _ := ParseClaudeStream(string(raw), 0)
+	// init, tool_use, rate_limit, tool_result, message, result
+	for i, e := range events {
+		if e.Time == nil || e.Time.IsZero() {
+			t.Fatalf("event %d (%s) has no time", i, e.Kind)
+		}
+	}
+	if !events[0].Time.Equal(*events[1].Time) {
+		t.Errorf("init time %v, want the next step's %v", events[0].Time, events[1].Time)
+	}
+	if !events[2].Time.Equal(*events[1].Time) {
+		t.Errorf("rate_limit time %v, want the previous step's %v", events[2].Time, events[1].Time)
+	}
+	if !events[5].Time.Equal(*events[4].Time) {
+		t.Errorf("result time %v, want the previous step's %v", events[5].Time, events[4].Time)
+	}
+	// A read with no timestamped step at all leaves times unset.
+	only, _ := ParseClaudeStream(`{"type":"result","num_turns":1}`+"\n", 0)
+	if only[0].Time != nil {
+		t.Errorf("a lone result got a time: %v", only[0].Time)
+	}
+	b, _ := json.Marshal(only[0])
+	if strings.Contains(string(b), `"time"`) {
+		t.Errorf("unset time must be omitted: %s", b)
+	}
+}
