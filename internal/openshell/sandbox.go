@@ -26,6 +26,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	osv1 "github.com/NVIDIA/OpenShell/sdk/go/openshell/v1"
 	"github.com/NVIDIA/OpenShell/sdk/go/openshell/v1/types"
@@ -453,24 +454,56 @@ func isLoopback(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// EnvB64Suffix marks the base64 copy of an environment value that had line
-// breaks (see sandboxEnv).
+// EnvB64Suffix marks the base64 copy of an environment value that the gateway
+// would not take as it is (see sandboxEnv).
 const EnvB64Suffix = "_B64"
 
-// sandboxEnv makes env acceptable to the gateway, which rejects values with
-// line breaks. Such a value (typically a multi-line AGENTORC_INPUT) is passed
-// exactly, base64-encoded, as <NAME>_B64, and <NAME> keeps a one-line version
-// with each line break replaced by a space for agents that do not know the
-// encoding.
+// maxEnvValueBytes is how long one environment value may be. The gateway rejects
+// a value over 8192 bytes ("spec.environment value exceeds maximum length"); this
+// leaves some room. It is a multiple of 4 so every base64 chunk is whole.
+const maxEnvValueBytes = 8000
+
+// sandboxEnv makes env acceptable to the gateway, which rejects values with line
+// breaks and values over 8192 bytes. Such a value (typically a long, multi-line
+// AGENTORC_INPUT) is passed exactly, base64-encoded, as <NAME>_B64. When the
+// encoding is longer than one value may be, it continues in <NAME>_B64_2,
+// <NAME>_B64_3 and so on; the exact value is the parts joined in that order and
+// decoded. <NAME> keeps a one-line version, with each line break replaced by a
+// space, for agents that do not know the encoding. If even that is too long it is
+// cut, and ends with a note saying where the full text is.
 func sandboxEnv(env map[string]string) map[string]string {
 	out := make(map[string]string, len(env))
 	for k, v := range env {
-		if !strings.ContainsAny(v, "\r\n") {
+		if !strings.ContainsAny(v, "\r\n") && len(v) <= maxEnvValueBytes {
 			out[k] = v
 			continue
 		}
-		out[k+EnvB64Suffix] = base64.StdEncoding.EncodeToString([]byte(v))
-		out[k] = strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ").Replace(v)
+		enc := base64.StdEncoding.EncodeToString([]byte(v))
+		for i := 1; enc != ""; i++ {
+			name := k + EnvB64Suffix
+			if i > 1 {
+				name += "_" + strconv.Itoa(i)
+			}
+			n := min(len(enc), maxEnvValueBytes)
+			out[name], enc = enc[:n], enc[n:]
+		}
+		out[k] = oneLine(k, v)
 	}
 	return out
+}
+
+// oneLine returns v with line breaks replaced by spaces, cut to fit one
+// environment value. A cut value ends with a note naming the variable that holds
+// the whole text, so an agent that reads only this copy can see it is partial.
+func oneLine(name, v string) string {
+	line := strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ").Replace(v)
+	if len(line) <= maxEnvValueBytes {
+		return line
+	}
+	note := " [cut: the full text is in " + name + EnvB64Suffix + "]"
+	keep := maxEnvValueBytes - len(note)
+	for keep > 0 && !utf8.RuneStart(line[keep]) {
+		keep--
+	}
+	return line[:keep] + note
 }

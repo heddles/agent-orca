@@ -290,6 +290,18 @@ func TestInputPrefersExactMultiLineCopy(t *testing.T) {
 	}
 }
 
+func TestInputJoinsContinuationParts(t *testing.T) {
+	want := strings.Repeat("a line of the input\n", 1000)
+	enc := base64.StdEncoding.EncodeToString([]byte(want))
+	t.Setenv("AGENTORC_INPUT", "cut copy")
+	t.Setenv("AGENTORC_INPUT_B64", enc[:8000])
+	t.Setenv("AGENTORC_INPUT_B64_2", enc[8000:16000])
+	t.Setenv("AGENTORC_INPUT_B64_3", enc[16000:])
+	if got := Input(); got != want {
+		t.Errorf("Input() = %d bytes, want %d", len(got), len(want))
+	}
+}
+
 func conflict(w http.ResponseWriter) { http.Error(w, "request in progress", http.StatusConflict) }
 
 // The router answers 409 while it finishes the previous turn; the SDK retries,

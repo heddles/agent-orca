@@ -61,6 +61,7 @@ SDKs with zero framework-specific wiring.
 | `OPENAI_BASE_URL` | `http://<model-router>:8080/v1` | OpenAI-compatible endpoint; call `POST $OPENAI_BASE_URL/chat/completions` |
 | `OPENAI_API_KEY` | *(empty)* | The model-router handles auth; the key is never read by the operator |
 | `AGENTORC_INPUT` | run input text | `env` input mode (default) |
+| `AGENTORC_INPUT_B64`, `AGENTORC_INPUT_B64_2`, ... | the exact input, base64-encoded, in parts | Sandboxed runs only, when the input has line breaks or is over 8000 bytes. The gateway takes no line breaks in an environment value and at most 8192 bytes per value. Join the parts in order and decode; `AGENTORC_INPUT` is then a one-line copy, cut with a note if it is too long. The Go SDK's `agent.Input()` does this. In a shell: `for v in AGENTORC_INPUT_B64 AGENTORC_INPUT_B64_2 AGENTORC_INPUT_B64_3; do eval "printf %s \"\${$v:-}\""; done \| base64 -d` |
 | `AGENTORC_INPUT_SOURCE` | the deployment's input-source type (`chat`, `queue`, `pubsub`, `loop`) | AgentDeployment pods only |
 | `AGENTORC_RUN_ID` | the `AgentRun` name | For runs |
 | `AGENTORC_AGENT` | the `Agent` name | For deployments |

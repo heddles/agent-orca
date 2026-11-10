@@ -22,7 +22,7 @@ limitations under the License.
 // Agent's systemPrompt, tools and governance come from the model-router as for
 // any agent. Environment:
 //
-//	AGENTORC_INPUT     the task (set by the operator; AGENTORC_INPUT_B64 when multi-line)
+//	AGENTORC_INPUT     the task (set by the operator; AGENTORC_INPUT_B64, _B64_2, ... when multi-line or long)
 //	CODER_WORKSPACE    directory the tools work in (default /sandbox)
 //	CODER_MAX_TURNS    maximum requests to the router (default 300)
 package main
