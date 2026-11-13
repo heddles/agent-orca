@@ -119,10 +119,23 @@ In-depth guides, organized by audience. **Developers** start with the first bloc
 | [Context Management](docs/context-management.md) | Developers / Operators | Context window compaction, episodic summaries, warm-pool session chaining, MCP auth |
 | [Rate Limiting](docs/rate-limiting.md) | Operators | Per-tenant quotas, budget enforcement, HTTP 429/402 responses |
 | [Cost Tracking](docs/cost-tracking.md) | Operators | How LLM spend is measured, persisted, and budgeted |
+| [OpenShell Sandbox](docs/openshell-sandbox.md) | Developers / Operators | Run an agent in an NVIDIA OpenShell sandbox: prerequisites, SandboxClass, egress policy, credentials |
+| [Sandbox Shell](docs/sandbox-shell.md) | Developers / Operators | Give an agent a `sandbox_exec` shell tool without sandboxing the agent itself |
+| [Claude Code on a Subscription](docs/claude-code-subscription.md) | Developers / Operators | Run the Claude Code CLI in a sandbox on a Claude subscription, with `runtime.harness` tracing |
+| [Coding Agent](docs/coder-agent.md) | Developers | Coding agent running in a sandbox |
+| [Agent-run Tools](docs/agent-run-tools.md) | Developers | Tools the agent process runs itself (`runtime.localTools`) |
+| [Tool Side Effects](docs/tool-side-effects.md) | Operators | Tool side-effect classes and the approvals they need |
+| [Run Budgets](docs/run-budgets.md) | Operators | Per-run spend budgets |
+| [Hindsight Auth](docs/hindsight-auth.md) | Operators | Hindsight long-term memory: API authentication and per-Agent banks |
+| [Switchyard Routing](docs/switchyard-routing.md) | Operators | Switchyard routing integration |
 | [Observability](docs/observability.md) | Operators | Health probes, Prometheus metrics, audit logging, ServiceMonitor/PodMonitor |
 | [Egress Sinks](docs/egress-sinks.md) | Operators | Kafka/PubSub/Redis result delivery, AgentDeployment input sources |
 | [CRDs](docs/crds.md) | Operators | All CRD definitions and field references |
 | [Authentication](docs/auth.md) | Operators | OAuth2, OIDC, ServiceAccount, BFF trust model |
+| [Redis Setup](docs/redis.md) | Operators | Redis setup and configuration |
+| [MCP Apps](docs/mcp-apps.md) | Developers | MCP Apps (sandboxed iframe UI) |
+| [Admin API](docs/admin-api.md) | Operators | Admin API reference (tenant lifecycle management) |
+| [ServiceAccount & IAM](docs/serviceaccount-iam.md) | Operators | ServiceAccount and cloud IAM identity |
 | [OIDC Login](docs/oauth-login.md) | Operators | Interactive OIDC authorization-code login for the UI & External API |
 | [Enterprise Integration](docs/enterprise-integration.md) | Enterprise | End-to-end enterprise setup (tenants, webhooks, guardrails, KBs) |
 | [Demos](docs/demos.md) | Developers | Full catalog of demo deployments |
@@ -144,6 +157,11 @@ graph TD
     A --> AR["AgentRun<br/>One-time execution"]
     A --> AD["AgentDeployment<br/>Long-running service"]
     A --> AW["AgentWorkflow<br/>Declarative DAG of steps"]
+    SC["SandboxClass (CRD)<br/>Admin-set sandbox profile"] -->|constrains| A
+    RB["RoutingBenchmark (CRD)<br/>Replays calls, judges routing"] -->|measures| A
+    RB -->|proposes| RR["RoutingRecommendation (CRD)<br/>Reviewed ModelSelector patch"]
+    RR -->|patches| MS
+    TC["TenantConfig (CRD)<br/>External auth, quotas, agent visibility"] -.->|scopes access to| A
 
     AD -->|each input message spawns| AR
     AR -->|agent-type tool spawns child| AR
@@ -159,12 +177,18 @@ graph TD
     Dep -->|checkpoints state| CS
     KB -->|auto-deploys| QD[(Qdrant)]
     KB -->|ingestion jobs via| MI["MCP Ingester sidecar"]
-    AR -->|archives completed runs| PG[(PostgreSQL<br/>Run archival)]
+    AR -->|archives completed runs| PG[(PostgreSQL<br/>Run archival, approvals)]
+    Pod1 -->|"recall / retain memory<br/>(memory.hindsight)"| HS[("Hindsight<br/>Long-term memory bank per Agent")]
+    Dep -->|recall / retain memory| HS
+    Pod1 -->|"runtime.sandbox: agent process runs in"| OS["OpenShell sandbox<br/>Landlock · seccomp · egress allowlist"]
+    OS -->|"LLM calls only via"| Pod1
+    GW["OpenShell gateway<br/>+ Agent Sandbox controller"] -->|provisions| OS
+    SC -.->|profile applied by| GW
 
     classDef crd fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
     classDef infra fill:#f3f4f6,stroke:#6b7280,color:#374151
-    class MP,MS,T,A,AR,AD,AW,KB,GP,MCPS crd
-    class Pod1,Dep,CS,QD,MI,TE,PG infra
+    class MP,MS,T,A,AR,AD,AW,KB,GP,MCPS,SC,RB,RR,TC crd
+    class Pod1,Dep,CS,QD,MI,TE,PG,HS,OS,GW infra
 ```
 
 **`AgentPod`** = an agent container + a **model-router sidecar** (the LLM proxy that owns
@@ -173,6 +197,13 @@ persistence, and built-in tool resolution) + an optional **tool-executor sidecar
 (dispatches tool calls, including child agents and MCP servers). KnowledgeBases
 auto-deploy a **Qdrant** vector store and use the **MCP-ingester** image in Kubernetes Jobs to
 detect document types, extract text (PDF, DOCX, PPTX, XLSX, HTML), chunk, and embed documents.
+**Optional backends:** **PostgreSQL** (CloudNativePG) archives completed runs and stores
+approvals. **Hindsight** is the opt-in long-term memory service (`spec.memory.hindsight`),
+with one bank per Agent. See [docs/hindsight-auth.md](docs/hindsight-auth.md).
+**OpenShell** (NVIDIA) runs an Agent's process in a sandbox when `spec.runtime.sandbox` is
+set; the **Agent Sandbox** controller and OpenShell gateway are installed separately, and
+the model-router stays outside the sandbox as the only path to LLMs. See
+[docs/openshell-sandbox.md](docs/openshell-sandbox.md).
 See [docs/crds.md](docs/crds.md) for detailed CRD documentation.
 
 ### Operator pod
@@ -274,6 +305,20 @@ ports, all fronted by a single `agent-orca-internal-api` Service:
 - Budget caps across all steps
 - Adaptive step proposals from agents
 - Creates AgentRuns for each step
+
+**SandboxClass** — Reusable sandbox profile set by cluster admins
+- Limits which namespaces' Agents may use it (`namespaceSelector`)
+- Carries egress presets (e.g. `pypi`, `crates`, `maven`, `github-read`, `mise`) for sandboxed Agents
+- See [docs/openshell-sandbox.md](docs/openshell-sandbox.md)
+
+**RoutingBenchmark** — Measures whether routing choices are worth their cost
+- Selects Agents by `agentRefs` or `agentSelector`
+- Shadow sampling replays a sample of calls on another model; a `judge` compares the answers
+- `mode: proposeApply` requires `approverGroups`
+
+**RoutingRecommendation** — A reviewable change to a ModelSelector
+- Created by the operator from benchmark and passive evidence
+- Holds the patch and a rollback patch (both immutable); a person decides whether to apply it
 
 ### How session state works (two layers)
 

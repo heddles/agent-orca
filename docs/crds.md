@@ -1,6 +1,6 @@
 # agent-orca CRDs
 
-agent-orca uses eight Custom Resource Definitions (CRDs) that form a layered model: from raw LLM endpoints at the bottom to long-running agent services at the top.
+agent-orca uses fourteen Custom Resource Definitions (CRDs) that form a layered model: from raw LLM endpoints at the bottom to long-running agent services at the top.
 
 ---
 
@@ -15,6 +15,13 @@ graph TD
     A --> AR[AgentRun<br/>One-time execution]
     A --> AD[AgentDeployment<br/>Long-running service]
     A --> AW[AgentWorkflow<br/>Declarative DAG of steps]
+    GP[GuardrailPolicy<br/>Content filtering] --> A
+    MCPS[MCPServer<br/>External MCP servers] -->|creates| T
+    SC[SandboxClass<br/>Admin-set sandbox profile] -->|constrains| A
+    TC[TenantConfig<br/>External auth, quotas, visibility] -.->|scopes access to| A
+    RB[RoutingBenchmark<br/>Shadow-samples and judges routing] -->|measures| A
+    RB -->|evidence for| RR[RoutingRecommendation<br/>Reviewed ModelSelector patch]
+    RR -->|patches| MS
 
     AD -->|each input message spawns| AR
     AR -->|agent-type tool spawns child| AR
@@ -26,11 +33,14 @@ graph TD
     Pod1 -->|checkpoints state| CS[(Checkpoint Store)]
     Dep -->|checkpoints state| CS
     KB -->|auto-deploys| QD[(Qdrant)]
+    AR -->|archives completed runs| PG[(PostgreSQL)]
+    Pod1 -->|recall / retain memory| HS[(Hindsight)]
+    Pod1 -->|runtime.sandbox| OS[OpenShell sandbox]
 
     classDef crd fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
     classDef infra fill:#f3f4f6,stroke:#6b7280,color:#374151
-    class MP,MS,T,A,AR,AD,AW,KB crd
-    class Pod1,Dep,CS,QD infra
+    class MP,MS,T,A,AR,AD,AW,KB,GP,MCPS,SC,TC,RB,RR crd
+    class Pod1,Dep,CS,QD,PG,HS,OS infra
 ```
 
 ---
@@ -179,6 +189,7 @@ spec:
 | `runtime.shimTarget` | Hostname to intercept when framework=`shim` |
 | `runtime.sandbox` | Run the agent in an NVIDIA OpenShell sandbox with a shell, exec and policy-controlled egress (see [openshell-sandbox.md](openshell-sandbox.md)) |
 | `runtime.localTools` | Let the agent process run the tools it declares (e.g. a shell in its sandbox): the router returns their calls with `finish_reason: tool_calls` and takes the results on the next request (see [agent-run-tools.md](agent-run-tools.md)) |
+| `runtime.harness` | Marks the agent process as a coding-agent CLI (`claude-code`) so the operator reads its output stream into the run's trace: tool calls and results, token usage and subscription use. The CLI must run with `--output-format stream-json --verbose`. Requires `runtime.sandbox` (see [claude-code-subscription.md](claude-code-subscription.md)) |
 | `shell` | Give the agent a `sandbox_exec` tool that runs shell commands in a per-run OpenShell sandbox governed by the named SandboxClass (see [sandbox-shell.md](sandbox-shell.md)): `classRef`, `image`, `workDir`, `maxTimeoutSeconds` |
 | `runtime.sandbox.classRef` | A cluster-scoped [SandboxClass](openshell-sandbox.md#sandbox-classes): egress presets and rules, filesystem, resource defaults, placement and minimum enforcement the Agent adds to but cannot weaken, and the [credentials](openshell-sandbox.md#class-credentials) (GitHub token, API keys) its sandboxes can use but never read |
 | `memory.checkpointEvery` | LLM turns between checkpoints (default: 1) |
@@ -535,6 +546,115 @@ spec:
 
 ---
 
+## 9. AgentWorkflow
+
+**Purpose:** A declarative DAG of steps. The controller creates one AgentRun per agent step, runs container and approval steps itself, and enforces a budget across the whole workflow. See [agentworkflow.md](agentworkflow.md).
+
+**Key fields:**
+
+| Field | Description |
+|---|---|
+| `mode` | `workflow` (default) runs. `template` is validated but never run; workflows are created from it with `fromTemplate` |
+| `parameters` | Typed inputs of a template (`type`, `required`, `default`, `enum`, `pattern`, `maxLength`) |
+| `fromTemplate` | Template name plus `parameters` to instantiate |
+| `steps` | Steps with `name`, `type` (agent, container or approval), `agentRef`, `input`, `dependsOn`, CEL `condition`, `timeout`, `callbacks` and an optional `loop` |
+| `sandbox` | A shared sandbox (`image`, `classRef`, `repo`, `ref`, `branch`, `push`) that steps can run in |
+| `budgetCap` | Spend cap across all steps |
+| `timeout`, `onStepFailure` | Whole-workflow deadline and failure policy |
+| `adaptivePolicy` | Lets agents propose extra steps: `maxDynamicSteps`, `allowedAgentRefs`, `allowLoops`, `maxLoopIterations`, `requireApprovalForUnlisted` |
+
+---
+
+## 10. MCPServer
+
+**Purpose:** Declares an external Model Context Protocol server and creates a child Tool for each tool it exposes. See [mcp-access-control.md](mcp-access-control.md).
+
+| Field | Description |
+|---|---|
+| `transport` | `stdio` (sidecar), `http` or `sse` |
+| `url` / `ociRef` | Where an HTTP/SSE server lives, or the image for a stdio server |
+| `args`, `env`, `envFrom` | Process arguments and environment |
+| `auth` | Bearer-token or OAuth authentication for HTTP/SSE servers |
+| `tools` | Declared tools (`name`, `description`, `inputSchema`); `discoverability`, `includePatterns` and `excludePatterns` control discovery |
+| `allowedAgents` | Agents allowed to use the server |
+| `networkEgress`, `resources` | Network rules and resource limits |
+| `allowApps` | Allow MCP apps |
+
+Status reports `ready`, `discovering`, `toolCount` and conditions.
+
+---
+
+## 11. TenantConfig
+
+**Purpose:** Enterprise authentication and authorization for the ACP API and External Task API. It sets which agents and namespaces a tenant can see and use.
+
+| Field | Description |
+|---|---|
+| `authMode` | `issued` (OAuth2 client credentials) or `federated` (OIDC) |
+| `issued` | `clientID` and `clientSecretRef` |
+| `federated` | `issuerURL`, `clientID`, `matchClaim`/`matchValue`, `redirectURI`, `scopes` and `claimMappings` (user ID, groups, email) |
+| `allowedNamespaces` | Namespaces the tenant may reach |
+| `allowedAgents` | Agents visible to the tenant. Discovery is limited to this list |
+| `rateLimit` | `requestsPerMinute` and `concurrentRuns` |
+| `budgetPerDayUSD` | Daily spend cap |
+
+---
+
+## 12. SandboxClass
+
+**Purpose:** A reusable, **cluster-scoped** sandbox profile set by cluster admins for Agents with `runtime.sandbox` (see [openshell-sandbox.md](openshell-sandbox.md)). Agents cannot weaken it.
+
+| Field | Description |
+|---|---|
+| `namespaceSelector` | Namespaces whose Agents may use the class. Empty means all |
+| `enforcement` | Minimum network enforcement. With `enforce`, an Agent cannot weaken it to `audit` |
+| `egressPresets` | Vetted read-only host lists (`pypi`, `crates`, `maven`, `github-read`, `mise`, and others) |
+| `egress` | Extra rules: `host`, `port`, `binaries`, `paths` |
+| `filesystem`, `resources` | Filesystem policy and resource limits |
+| `nodeSelector`, `tolerations`, `runtimeClassName`, `priorityClassName` | Placement |
+| `approval` | Proposed rules for unlisted hosts: `approverGroups`, `timeout`, `autoApprove` rules |
+| `credentials` | Secrets sandboxes may use without holding. The sandbox sees a placeholder and the supervisor swaps in the real value only on the bound endpoint. Sources: `githubApp` or `secretRef`. Max 16 |
+
+---
+
+## 13. RoutingBenchmark
+
+**Purpose:** Measures whether routing choices are worth their cost. It replays a sample of an Agent's calls on another model, has a judge compare the two answers, and accumulates evidence per Agent across runs, deployments and workflow steps.
+
+| Field | Description |
+|---|---|
+| `agentRefs` / `agentSelector` | Agents to benchmark. One is required; an empty selector matches every Agent |
+| `mode` | `reportOnly` (default) or `proposeApply`, which raises an approval request and needs `approverGroups` |
+| `shadow` | Shadow sampling: `enabled`, `sampleRate`, `arms`, `providers`, `maxPerRun`, `maxPerHour`, `excludeRunSelector`, `includeToolTurns` |
+| `judge` | `providerRef`, `positionSwap`, `rubric`, `maxTokens`. Required when shadow sampling is on |
+| `budget` | `perDayUSD` and `perRunUSD` caps on shadow spend |
+| `evaluation` | `window`, `interval`, `minSamples`, `groupBy`, `confidenceLevel`, `nonInferiorityMargin` |
+| `thresholds` | `minNetWinDelta`, `maxUSDPerNetWin`, `deadProviderErrorRate` |
+| `storeTranscripts` | Keep sampled transcripts |
+
+Status reports sampled calls, judged pairs, judge inconsistency, spend today, `budgetExhausted`, matched Agents and per-category results.
+
+---
+
+## 14. RoutingRecommendation
+
+**Purpose:** A change to a ModelSelector that benchmark and passive evidence support. The operator proposes it; a person decides. Everything except `action` is immutable.
+
+| Field | Description |
+|---|---|
+| `selectorRef` | The ModelSelector it concerns |
+| `benchmarkRef` | Source benchmark. Empty when it rests on passive data alone |
+| `detector` | `overspend`, `underpowered`, `threshold`, `deadProvider` or `strategySwitch` |
+| `agent`, `category` | What the finding is about. Empty for the selector as a whole |
+| `summary`, `reason`, `caveat` | Human-readable explanation |
+| `patch` / `rollbackPatch` | The change and the patch that undoes it |
+| `baseGeneration` | The ModelSelector generation it was made against |
+| `action` | `none`, `requestApply` or `rollback`. The only mutable field |
+
+Status `phase` is one of `Proposed`, `PendingApproval`, `Applied`, `Rejected`, `Stale`, `Superseded`, `RolledBack` or `Expired`. After an apply, `postApply.verdict` is `Confirmed`, `Regressed`, `Inconclusive` or `NotAssessed`.
+
+---
+
 ## How They All Fit Together
 
 ```mermaid
@@ -640,3 +760,9 @@ Every AgentRun/AgentDeployment enforces:
 | `AgentDeployment` | Execution | Until deleted | App team |
 | `AgentWorkflow` | Orchestration | Until deleted | App team |
 | `KnowledgeBase` | RAG config | Permanent | App team |
+| `GuardrailPolicy` | Content filtering | Permanent | Platform/security team |
+| `MCPServer` | Tool source | Permanent | Platform/app team |
+| `TenantConfig` | External auth and quotas | Permanent | Platform team |
+| `SandboxClass` | Cluster-scoped sandbox profile | Permanent | Platform team |
+| `RoutingBenchmark` | Routing evaluation | Permanent | Platform team |
+| `RoutingRecommendation` | Proposed ModelSelector change | Until decided | Operator creates; platform team decides |

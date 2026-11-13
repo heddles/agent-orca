@@ -65,6 +65,15 @@ Multi-group layout organizes APIs by group name (e.g., `batch`, `apps`). Check t
 | [agentworkflow.md](agentworkflow.md) | Developers | AgentWorkflow CRD (declarative DAG) |
 | [alternatives.md](alternatives.md) | Architects | agent-orca vs OpenClaw comparison |
 | [cost-tracking.md](cost-tracking.md) | Operators | LLM spend tracking |
+| [openshell-sandbox.md](openshell-sandbox.md) | Developers / Operators | Run an agent in an NVIDIA OpenShell sandbox: prerequisites, SandboxClass, egress policy, credentials |
+| [sandbox-shell.md](sandbox-shell.md) | Developers / Operators | Give an agent a `sandbox_exec` shell tool without sandboxing the agent itself |
+| [claude-code-subscription.md](claude-code-subscription.md) | Developers / Operators | Run the Claude Code CLI in a sandbox on a Claude subscription, with `runtime.harness` tracing |
+| [coder-agent.md](coder-agent.md) | Developers | Coding agent running in a sandbox |
+| [agent-run-tools.md](agent-run-tools.md) | Developers | Tools the agent process runs itself (`runtime.localTools`) |
+| [tool-side-effects.md](tool-side-effects.md) | Operators | Tool side-effect classes and the approvals they need |
+| [run-budgets.md](run-budgets.md) | Operators | Per-run spend budgets |
+| [hindsight-auth.md](hindsight-auth.md) | Operators | Hindsight long-term memory: API authentication and per-Agent banks |
+| [switchyard-routing.md](switchyard-routing.md) | Operators | Switchyard routing integration |
 | [demos.md](demos.md) | Developers | Demo catalog |
 | [local-model-selection.md](local-model-selection.md) | Developers | Local model selection |
 | [mcp-apps.md](mcp-apps.md) | Developers | MCP Apps (sandboxed iframe UI) |
