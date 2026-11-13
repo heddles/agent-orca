@@ -19,7 +19,9 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"slices"
+	"strconv"
 
 	osv1 "github.com/NVIDIA/OpenShell/sdk/go/openshell/v1"
 	"github.com/prometheus/client_golang/prometheus"
@@ -81,9 +83,13 @@ func (r *AgentRunReconciler) recordHarnessEvents(ctx context.Context, run *agent
 	key := "tokens:" + run.Namespace + ":" + run.Name
 	ns, harness := run.Namespace, agent.Spec.Runtime.Harness
 	model := ""
+	spent := 0.0
 	for _, e := range events {
 		if e.Kind == openshell.HarnessInit && e.Model != "" {
 			model = e.Model
+		}
+		if e.Kind == openshell.HarnessResult && e.CostUSD > 0 {
+			spent += e.CostUSD
 		}
 		ev, err := json.Marshal(struct {
 			Type string `json:"type"`
@@ -101,6 +107,14 @@ func (r *AgentRunReconciler) recordHarnessEvents(ctx context.Context, run *agent
 	r.harnessRecorded.Store(runKey, consumed)
 	patch := client.MergeFrom(run.DeepCopy())
 	run.Status.HarnessLinesSeen = consumed
+	if spent > 0 {
+		// The model-router is not in the path, so nothing else records this run's spend.
+		// The CLI reports a list-price equivalent, which on a subscription is a measure of
+		// how much of the usage window the run took, not a bill. Each line is read once
+		// (the watermark above), so adding is safe.
+		prev, _ := strconv.ParseFloat(run.Status.SpendUSD, 64)
+		run.Status.SpendUSD = fmt.Sprintf("%.6f", prev+spent)
+	}
 	if model != "" && !slices.ContainsFunc(run.Status.RoutingDecisions, func(d agentorcav1alpha1.RoutingDecision) bool { return d.Provider == harness }) {
 		// The model-router is not in the path, so the model that answered is the one
 		// the CLI reports. Recording it as the run's last decision makes it the run's

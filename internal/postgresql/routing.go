@@ -314,7 +314,10 @@ func upsertRunOutcome(ctx context.Context, tx *sql.Tx, run *agentorcav1alpha1.Ag
 			phase = EXCLUDED.phase,
 			fail_reason_class = EXCLUDED.fail_reason_class,
 			turns = EXCLUDED.turns,
-			total_cost_usd = EXCLUDED.total_cost_usd,
+			-- An empty spend on a re-archive (see ArchiveRun) must not erase the recorded one.
+			total_cost_usd = CASE WHEN EXCLUDED.total_cost_usd = 0
+			                      THEN run_outcomes.total_cost_usd
+			                      ELSE EXCLUDED.total_cost_usd END,
 			tool_approval_rejections = EXCLUDED.tool_approval_rejections,
 			budget_exceeded = EXCLUDED.budget_exceeded,
 			restart_count = EXCLUDED.restart_count,

@@ -98,6 +98,9 @@ func TestRoutingEventsAgainstPostgres(t *testing.T) {
 	t.Run("archiving records the outcome from what is stored, and again updates it", func(t *testing.T) {
 		archiveRecordsOutcome(t, store, db)
 	})
+	t.Run("a re-archive with a shorter trace and no spend keeps what was stored", func(t *testing.T) {
+		reArchiveKeepsTraceAndSpend(t, store, db)
+	})
 	t.Run("pruning deletes what is older than the cutoff", func(t *testing.T) { prunes(t, store) })
 }
 
@@ -177,6 +180,56 @@ func archiveRecordsOutcome(t *testing.T, store *Store, db *sql.DB) {
 	}
 	if phase != "Succeeded" || selector != itSelector || turns != 2 || cost < 0.00059 || cost > 0.00061 {
 		t.Errorf("outcome = %s/%s/%d turns/%v", phase, selector, turns, cost)
+	}
+}
+
+// reArchiveKeepsTraceAndSpend is the controller-restart back-fill: the run is
+// archived with its full trace and spend, then re-archived after the Redis stream
+// expired (one synthesised event) from a status that no longer carries the spend.
+func reArchiveKeepsTraceAndSpend(t *testing.T, store *Store, db *sql.DB) {
+	t.Helper()
+	ctx := context.Background()
+	run := &agentorcav1alpha1.AgentRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "rearchive-run", Namespace: itNamespace},
+		Spec:       agentorcav1alpha1.AgentRunSpec{AgentRef: "coder"},
+		Status:     agentorcav1alpha1.AgentRunStatus{Phase: agentorcav1alpha1.AgentRunPhaseSucceeded, SpendUSD: "0.250000"},
+	}
+	full := []byte(`[{"id":0,"event":{"type":"harness","kind":"tool_use"}},{"id":1,"event":{"type":"harness","kind":"result","costUsd":0.25}},{"id":2,"event":{"type":"done"}}]`)
+	if err := store.ArchiveRun(ctx, run, full); err != nil {
+		t.Fatalf("first archive: %v", err)
+	}
+	run.Status.SpendUSD = ""
+	if err := store.ArchiveRun(ctx, run, []byte(`[{"id":0,"event":{"type":"modelSelected"}}]`)); err != nil {
+		t.Fatalf("re-archive: %v", err)
+	}
+	var n int
+	var spend string
+	var cost float64
+	if err := db.QueryRowContext(ctx, `SELECT jsonb_array_length(trace_events), spend_usd FROM archived_runs
+		WHERE namespace = $1 AND name = $2`, itNamespace, "rearchive-run").Scan(&n, &spend); err != nil {
+		t.Fatalf("reading the archive: %v", err)
+	}
+	if n != 3 || spend != "0.250000" {
+		t.Errorf("after the re-archive: %d trace events, spend %q; want 3 and 0.250000", n, spend)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT total_cost_usd::float8 FROM run_outcomes
+		WHERE namespace = $1 AND run_name = $2`, itNamespace, "rearchive-run").Scan(&cost); err != nil {
+		t.Fatalf("reading the outcome: %v", err)
+	}
+	if cost < 0.2499 || cost > 0.2501 {
+		t.Errorf("outcome cost after the re-archive = %v, want 0.25", cost)
+	}
+	// A longer trace still replaces a shorter one (a back-fill that found more).
+	longer := []byte(`[{"id":0},{"id":1},{"id":2},{"id":3}]`)
+	if err := store.ArchiveRun(ctx, run, longer); err != nil {
+		t.Fatalf("third archive: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT jsonb_array_length(trace_events) FROM archived_runs
+		WHERE namespace = $1 AND name = $2`, itNamespace, "rearchive-run").Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 4 {
+		t.Errorf("a longer trace did not replace the stored one: %d events", n)
 	}
 }
 

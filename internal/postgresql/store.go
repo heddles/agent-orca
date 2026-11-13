@@ -180,9 +180,12 @@ func (s *Store) ArchiveRun(ctx context.Context, run *agentorcav1alpha1.AgentRun,
 
 	labelsJSON, _ := json.Marshal(archived.Labels)
 
-	// UPSERT by composite key so re-archival updates the row. When upserting
-	// with a nil traceEventsJSON (e.g. Redis stream expired during a back-fill),
-	// the existing trace_events column is preserved rather than overwritten.
+	// UPSERT by composite key so re-archival updates the row. A re-archive never
+	// loses what an earlier one stored: once the Redis stream has expired, a
+	// back-fill reads back only the events synthesised from the run status, so a
+	// shorter trace (or a nil one) keeps the stored trace, and an empty spend keeps
+	// the stored spend. Every terminal reconcile re-archives, so without this a
+	// controller restart rewrote every finished run with a one-event trace.
 	const q = `
 		INSERT INTO archived_runs (
 			id, name, namespace, labels, agent_ref, input, parent_run_ref,
@@ -197,7 +200,9 @@ func (s *Store) ArchiveRun(ctx context.Context, run *agentorcav1alpha1.AgentRun,
 		)
 		ON CONFLICT (id) DO UPDATE SET
 			phase = EXCLUDED.phase,
-			spend_usd = EXCLUDED.spend_usd,
+			spend_usd = CASE WHEN COALESCE(EXCLUDED.spend_usd, '') = ''
+			                 THEN archived_runs.spend_usd
+			                 ELSE EXCLUDED.spend_usd END,
 			cost_capture = EXCLUDED.cost_capture,
 			output = EXCLUDED.output,
 			raw_output = EXCLUDED.raw_output,
@@ -207,9 +212,14 @@ func (s *Store) ArchiveRun(ctx context.Context, run *agentorcav1alpha1.AgentRun,
 			context_used_tokens = EXCLUDED.context_used_tokens,
 			routing_decisions = EXCLUDED.routing_decisions,
 			child_run_refs = EXCLUDED.child_run_refs,
-			trace_events = CASE WHEN EXCLUDED.trace_events IS NOT NULL
-			                    THEN EXCLUDED.trace_events
-			                    ELSE archived_runs.trace_events END,
+			trace_events = CASE
+				WHEN EXCLUDED.trace_events IS NULL THEN archived_runs.trace_events
+				WHEN archived_runs.trace_events IS NULL
+				  OR jsonb_typeof(archived_runs.trace_events) <> 'array' THEN EXCLUDED.trace_events
+				WHEN jsonb_typeof(EXCLUDED.trace_events) = 'array'
+				 AND jsonb_array_length(EXCLUDED.trace_events) >= jsonb_array_length(archived_runs.trace_events)
+				THEN EXCLUDED.trace_events
+				ELSE archived_runs.trace_events END,
 			updated_at = EXCLUDED.updated_at
 	`
 	now := time.Now().UTC()

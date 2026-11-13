@@ -151,3 +151,29 @@ func TestCheckSandboxProgress_HarnessOutputIsTheResult(t *testing.T) {
 		t.Fatalf("output = %q, want the CLI's answer, not its stream", got.Status.Output)
 	}
 }
+
+// The model-router is not in a Claude Code run's path, so the CLI's own result is the
+// only place its spend shows up. It must reach the run's SpendUSD (and from there the
+// archive and /api/costs), added once even when the result line is read twice.
+func TestRecordHarnessEvents_RecordsSpend(t *testing.T) {
+	raw, _ := os.ReadFile("../openshell/testdata/claude-stream.jsonl")
+	gw := newStubGateway()
+	run, token := gitRun()
+	agent := gitAgent()
+	agent.Spec.Runtime.Harness = openshell.HarnessClaudeCode
+	r, cl := sandboxReconciler(t, gw, run, token)
+	nop, _ := state.NewStoreFromConfig(state.Config{})
+	r.StateStore = &traceRecorder{Store: nop, events: map[string][]string{}}
+	gw.logs = string(raw)
+	sb := &osv1.Sandbox{Name: "sb-1"}
+
+	r.recordHarnessEvents(context.Background(), run, agent, sb)
+	got := fetchSandboxRun(t, cl, run)
+	if got.Status.SpendUSD != "0.019344" {
+		t.Fatalf("SpendUSD = %q, want 0.019344 from the CLI's result line", got.Status.SpendUSD)
+	}
+	r.recordHarnessEvents(context.Background(), got, agent, sb) // nothing new to read
+	if again := fetchSandboxRun(t, cl, run); again.Status.SpendUSD != "0.019344" {
+		t.Fatalf("SpendUSD = %q after a second read, want it unchanged", again.Status.SpendUSD)
+	}
+}
