@@ -1030,7 +1030,7 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 		resp, err = r.forwardToProviderStream(req.Context(), provider, chatReq)
 	}
 	if err != nil {
-		slog.Warn("primary provider failed (streaming), trying fallback", "provider", primaryName, "err", err)
+		logProviderFailure(primaryName, err, chatReq.Messages, len(r.fallbackCandidates(sel.Candidates, primaryName)) > 0)
 		if fitErr == nil {
 			// fitErr means the request never left the router: no provider call failed.
 			r.recordProviderError(provider)
@@ -1057,15 +1057,15 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 			// it fit but failed (e.g. a transient 500) and the fallbacks were
 			// merely too small, that is a retriable upstream failure (502).
 			if fitErr != nil && (errors.Is(err, errExceedsContextWindow) || errors.Is(err, errNoFallbackProviders)) {
-				http.Error(w, fitErr.Error(), http.StatusRequestEntityTooLarge)
+				r.writeStreamError(w, req, fitErr.Error(), http.StatusRequestEntityTooLarge)
 				return
 			}
 			if errors.Is(err, errExceedsContextWindow) {
-				http.Error(w, "upstream error: primary provider failed and every fallback is too small for this request",
+				r.writeStreamError(w, req, "upstream error: primary provider failed and every fallback is too small for this request",
 					http.StatusBadGateway)
 				return
 			}
-			http.Error(w, "upstream error", http.StatusBadGateway)
+			r.writeStreamError(w, req, "upstream error", http.StatusBadGateway)
 			return
 		}
 		r.emitTraceEventBoth(fmt.Sprintf(`{"type":"providerFallback","from":%q,"to":%q,"reason":%q}`, primaryName, provider.Name, "streaming fallback succeeded"))
@@ -1151,15 +1151,14 @@ func (r *Router) HandleGemini(w http.ResponseWriter, req *http.Request) {
 	r.mu.Lock()
 	conversation := slices.Concat(r.priorMessages, r.messages, openAIReq.Messages)
 	r.mu.Unlock()
-	provider, _ := r.selectProvider(req.Context(), conversation)
+	provider, sel := r.selectProvider(req.Context(), conversation)
 	if provider == nil {
 		http.Error(w, "no available provider", http.StatusServiceUnavailable)
 		return
 	}
 
-	respBody, err := r.forwardToProvider(req.Context(), provider, openAIReq)
+	respBody, provider, err := r.forwardWithFallback(req.Context(), provider, sel.Candidates, openAIReq)
 	if err != nil {
-		r.recordProviderError(provider)
 		http.Error(w, "upstream error", http.StatusBadGateway)
 		return
 	}
@@ -1296,6 +1295,37 @@ func (r *Router) forwardToProvider(_ context.Context, provider *ProviderConfig, 
 	return r.forwardToProviderWithin(context.Background(), provider, chatReq, r.cfg.LLMRequestTimeout)
 }
 
+// forwardWithFallback forwards to provider and, when that fails, to each other
+// candidate in order (the fallback chain when order is empty). A provider that
+// answered is never retried; a request it rejected is offered to the others.
+func (r *Router) forwardWithFallback(ctx context.Context, provider *ProviderConfig, order []string, chatReq ChatCompletionRequest) ([]byte, *ProviderConfig, error) {
+	body, err := r.forwardToProvider(ctx, provider, chatReq)
+	if err == nil {
+		return body, provider, nil
+	}
+	r.recordProviderError(provider)
+	fallbacks := r.fallbackCandidates(order, provider.Name)
+	logProviderFailure(provider.Name, err, chatReq.Messages, len(fallbacks) > 0)
+	for _, name := range fallbacks {
+		for i := range r.cfg.Providers {
+			p := &r.cfg.Providers[i]
+			if p.Name != name {
+				continue
+			}
+			slog.Info("trying fallback provider", "provider", name)
+			body, ferr := r.forwardToProvider(ctx, p, chatReq)
+			if ferr == nil {
+				return body, p, nil
+			}
+			r.recordProviderError(p)
+			slog.Warn("fallback provider failed", "provider", name, "errorClass", classifyProviderError(ferr), "err", ferr)
+			logRejectedRoles(name, ferr, chatReq.Messages)
+			err = ferr
+		}
+	}
+	return nil, nil, err
+}
+
 // forwardToProviderWithin is forwardToProvider bounded by parent and timeout.
 // Routing-side calls (the meta-router) use it so a slow provider cannot stall
 // the request that is waiting on the decision.
@@ -1329,6 +1359,7 @@ func (r *Router) forwardToProviderWithin(parent context.Context, provider *Provi
 
 	// Inject trust-boundary hint for any <rag-context> content present in the messages.
 	chatReq = r.injectRAGTrustBoundaryHint(chatReq)
+	chatReq.Messages = normalizeSystemMessages(chatReq.Messages)
 
 	reqBody, err := json.Marshal(chatReq)
 	if err != nil {
@@ -1359,7 +1390,7 @@ func (r *Router) forwardToProviderWithin(parent context.Context, provider *Provi
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("provider %s returned %d: %s", provider.Name, resp.StatusCode, body)
+		return nil, newProviderHTTPError(provider.Name, resp.StatusCode, body)
 	}
 	return body, nil
 }
@@ -4677,6 +4708,10 @@ func sanitizeRAGSearchResponse(data []byte) []byte {
 func (r *Router) injectRAGTrustBoundaryHint(chatReq ChatCompletionRequest) ChatCompletionRequest {
 	hasRAG := false
 	for _, msg := range chatReq.Messages {
+		// Already present (e.g. a request that was prepared once before): do not repeat it.
+		if msg.Role == "system" && messageText(msg) == ragTrustBoundaryInstruction {
+			return chatReq
+		}
 		if content, ok := msg.Content.(string); ok && strings.Contains(content, "<rag-context") {
 			hasRAG = true
 			break

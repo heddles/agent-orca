@@ -96,6 +96,17 @@ func classifyProviderError(err error) string {
 	if err == nil {
 		return ""
 	}
+	var pe *ProviderHTTPError
+	if errors.As(err, &pe) {
+		switch {
+		case pe.Status == http.StatusTooManyRequests:
+			return errClassRateLimited
+		case pe.Status >= 500:
+			return errClassProvider5xx
+		case pe.Status >= 400:
+			return errClassProvider4xx
+		}
+	}
 	msg := err.Error()
 	switch {
 	case errors.Is(err, context.DeadlineExceeded), strings.Contains(msg, "deadline exceeded"):

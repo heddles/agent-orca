@@ -112,7 +112,7 @@ func (r *Router) forwardToResponsesStream(ctx context.Context, cancel context.Ca
 		respBody, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
 		cancel()
-		return nil, fmt.Errorf("provider %s returned %d: %s", provider.Name, resp.StatusCode, respBody)
+		return nil, newProviderHTTPError(provider.Name, resp.StatusCode, respBody)
 	}
 
 	pr, pw := io.Pipe()
@@ -161,7 +161,7 @@ func toResponsesInput(msgs []Message) (string, []any) {
 	input := make([]any, 0, len(msgs))
 	for _, m := range msgs {
 		switch m.Role {
-		case "system", "developer":
+		case roleSystem, roleDeveloper:
 			if text := messageText(m); text != "" {
 				instructions = append(instructions, text)
 			}
@@ -211,7 +211,7 @@ func responsesUserContent(content any) any {
 	out := make([]any, 0, len(parts))
 	for _, p := range parts {
 		switch p["type"] {
-		case "text":
+		case partTypeText:
 			out = append(out, map[string]any{"type": "input_text", "text": p["text"]})
 		case partTypeImageURL:
 			url := p[partTypeImageURL]

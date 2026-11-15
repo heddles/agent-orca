@@ -642,6 +642,14 @@ func (r *AgentRunReconciler) handleRunSuccess(ctx context.Context, run *agentorc
 		output = agentStdout(ctx)
 	}
 
+	// The agent's HTTP call failed (non-2xx, or an error event instead of an
+	// answer): the run failed, whatever the body says.
+	if run.Status.InputMode == "http" && r.StateStore != nil {
+		if reason, lerr := r.StateStore.LoadKV(ctx, router.HTTPFailureScope, run.Name); lerr == nil && len(reason) > 0 {
+			return r.failRun(ctx, run, string(reason))
+		}
+	}
+
 	raw := truncate(output, 4096)
 	finalOutput := truncate(output, 10240)
 
@@ -1961,6 +1969,9 @@ func (r *AgentRunReconciler) failRun(ctx context.Context, run *agentorcav1alpha1
 	now := metav1.Now()
 	run.Status.CompletionTime = &now
 	run.Status.LastRestartReason = reason
+	if run.Status.FailureReason == "" {
+		run.Status.FailureReason = reason
+	}
 	if err := r.Status().Patch(ctx, run, patch); err != nil {
 		return ctrl.Result{}, fmt.Errorf("patching failed status: %w", err)
 	}

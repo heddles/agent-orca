@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -104,11 +105,89 @@ func RunHTTPInput(ctx context.Context, cfg HTTPInputConfig, store state.Store) e
 	}
 
 	output := httpRunOutput(resp.Header.Get("Content-Type"), respBody)
+	// A failed agent call is a failed run, not an answer: record why before the
+	// output, because the controller acts on the output as soon as it appears.
+	if reason := httpRunFailure(resp.StatusCode, respBody); reason != "" {
+		if err := store.SaveKV(ctx, HTTPFailureScope, cfg.RunName, []byte(reason), time.Hour); err != nil {
+			slog.Error("saving http failure reason", "err", err)
+		}
+		output = reason
+	}
 	if err := store.SaveHTTPOutput(ctx, cfg.RunName, output); err != nil {
 		return fmt.Errorf("saving http output: %w", err)
 	}
 
 	return nil
+}
+
+// HTTPFailureScope is the state-store KV scope, keyed by run name, in which
+// RunHTTPInput records why an http-mode agent call failed. The controller reads
+// it to end the run Failed instead of Succeeded with the error as output.
+const HTTPFailureScope = "http-failure"
+
+// httpRunFailure returns why an agent's response is a failure, or "" when it is
+// an answer: a non-2xx status, or a 2xx body that carries an error and no
+// content (an SSE error event, or the legacy `data: [DONE]` + `{"error":...}`).
+func httpRunFailure(status int, body []byte) string {
+	text := strings.TrimSpace(string(body))
+	if status < 200 || status > 299 {
+		reason := fmt.Sprintf("agent returned HTTP %d", status)
+		if msg := errorPayloadMessage(text); msg != "" {
+			return reason + ": " + msg
+		}
+		if text != "" {
+			return reason + ": " + truncateReason(text)
+		}
+		return reason
+	}
+	if _, hasContent := sseContent(body); hasContent {
+		return ""
+	}
+	var envelope struct {
+		Output string `json:"output"`
+	}
+	if json.Unmarshal(body, &envelope) == nil && envelope.Output != "" {
+		return ""
+	}
+	for line := range strings.SplitSeq(text, "\n") {
+		line = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "data:"))
+		if msg := errorPayloadMessage(line); msg != "" {
+			return "agent call failed: " + msg
+		}
+	}
+	return ""
+}
+
+func truncateReason(s string) string {
+	if len(s) > 500 {
+		return s[:500] + "..."
+	}
+	return s
+}
+
+// errorPayloadMessage extracts the message from {"error":"..."} or
+// {"error":{"message":"..."}}; "" when s is not such a payload.
+func errorPayloadMessage(s string) string {
+	if !strings.HasPrefix(s, "{") {
+		return ""
+	}
+	var p struct {
+		Error json.RawMessage `json:"error"`
+	}
+	if json.Unmarshal([]byte(s), &p) != nil || len(p.Error) == 0 {
+		return ""
+	}
+	var str string
+	if json.Unmarshal(p.Error, &str) == nil {
+		return str
+	}
+	var obj struct {
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(p.Error, &obj) == nil && obj.Message != "" {
+		return obj.Message
+	}
+	return string(p.Error)
 }
 
 // httpInputTimeout returns the deadline the model-router imposes when waiting for an

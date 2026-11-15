@@ -401,3 +401,37 @@ func TestRunProbesPastAHungRouterPath(t *testing.T) {
 		t.Fatalf("output %q, err %v after %d hung probes, want done after 2", res.Output, err, hung)
 	}
 }
+
+func TestRunFailsWhenEveryProviderFails(t *testing.T) {
+	cases := map[string]func(w http.ResponseWriter){
+		"502": func(w http.ResponseWriter) { http.Error(w, "upstream error", http.StatusBadGateway) },
+		"sse error event": func(w http.ResponseWriter) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = fmt.Fprint(w, "data: {\"error\":{\"message\":\"upstream error\",\"type\":\"upstream_error\"}}\n\n")
+		},
+		"legacy body": func(w http.ResponseWriter) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = fmt.Fprint(w, "data: [DONE]\n{\"error\":\"upstream error\"}\n")
+		},
+	}
+	for name, resp := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := &fakeRouter{responses: []func(http.ResponseWriter){resp}}
+			srv := f.serve(t)
+			res, err := New(WithBaseURL(srv.URL+"/v1")).Run(context.Background(), "go")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Phase != PhaseFailed || !strings.Contains(res.FailureReason, "upstream error") || res.Output != "" {
+				t.Errorf("result = %+v, want Failed with the upstream error", res)
+			}
+			srv2 := (&fakeRouter{responses: []func(http.ResponseWriter){resp}}).serve(t)
+			content, errs := New(WithBaseURL(srv2.URL+"/v1")).RunStream(context.Background(), "go")
+			for range content {
+			}
+			if err := <-errs; err == nil || !strings.Contains(err.Error(), "upstream error") {
+				t.Errorf("RunStream err = %v, want the upstream error", err)
+			}
+		})
+	}
+}

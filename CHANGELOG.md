@@ -277,6 +277,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Models served by mlx_lm.server (and other strict chat templates) reject agent-orca's requests** with
+  `System message must be at the beginning.` The router sent the system prompt, built-in tool hints,
+  memory, recall and compaction summaries as separate system messages. Every request to an
+  OpenAI-compatible provider now carries a single system message at index 0, which holds those parts in
+  their original order. `developer` messages and system messages that turn up later in the history are
+  folded into it. The stored conversation is unchanged. Streaming requests now also get the memory-context
+  trust-boundary instruction that only non-streaming requests had.
+- **The other weighted providers are now fallbacks.** When a selector weights several providers and no
+  `fallbackChain` is set, a failed provider now falls back to the others, heaviest first, instead of
+  failing the request. A provider that rejects a request (a 4xx other than 408 or 429) is not retried
+  and the next candidate is tried. 408, 429, 5xx and network errors count as retryable. The router logs
+  "no fallback configured" when there is nothing to try. For a rejected request it also logs the
+  message role sequence, never the content. Gemini-surface requests now fall back too.
+- **A run whose providers all failed was marked Succeeded** with output like
+  `data: [DONE]\n{"error":"upstream error"}`. The reference agent wrote `[DONE]` before the error, and
+  neither the sidecar nor the operator checked the response. Upstream failures now return a 502, or an SSE
+  error event without `[DONE]`. The run then ends `Failed` with the upstream error as its
+  `failureReason`.
 - **The programming-agent demo chart renders a valid placeholder Secret** — with `githubToken` unset, the
   `github-mcp-token` placeholder had its `annotations` outside `metadata`. Helm applied it anyway, but Argo
   CD's diff (and any server-side apply) rejected it with `.annotations: field not declared in schema`.

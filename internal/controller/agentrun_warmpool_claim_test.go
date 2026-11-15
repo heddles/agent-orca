@@ -30,12 +30,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
+	"github.com/heddles/agent-orca/internal/router"
 	"github.com/heddles/agent-orca/internal/state"
 )
 
 // testStore is a minimal state.Store stub for controller tests; only HTTP output is
 // modelled, everything else is a no-op.
-type testStore struct{ httpOutput string }
+type testStore struct{ httpOutput, httpFailure string }
 
 func (s testStore) SaveMessages(context.Context, string, []json.RawMessage, time.Duration) error {
 	return nil
@@ -61,9 +62,14 @@ func (s testStore) DeleteKey(context.Context, string) error { return nil }
 func (s testStore) SaveKV(context.Context, string, string, []byte, time.Duration) error {
 	return nil
 }
-func (s testStore) LoadKV(context.Context, string, string) ([]byte, error) { return nil, nil }
-func (s testStore) DeleteKV(context.Context, string, string) error         { return nil }
-func (s testStore) ListKV(context.Context, string) ([]string, error)       { return nil, nil }
+func (s testStore) LoadKV(_ context.Context, scope, _ string) ([]byte, error) {
+	if scope == router.HTTPFailureScope && s.httpFailure != "" {
+		return []byte(s.httpFailure), nil
+	}
+	return nil, nil
+}
+func (s testStore) DeleteKV(context.Context, string, string) error   { return nil }
+func (s testStore) ListKV(context.Context, string) ([]string, error) { return nil, nil }
 func (s testStore) ListMessageKeys(context.Context, string) ([]string, error) {
 	return nil, nil
 }
@@ -202,5 +208,44 @@ func TestCheckProgress_HTTPPeekReturnsWarmPodToIdle(t *testing.T) {
 	}
 	if gotRun.Status.Output != httpOut {
 		t.Fatalf("run output = %q, want httpOut", gotRun.Status.Output)
+	}
+}
+
+// An http-input run whose router saved an http-failure reason must end Failed
+// with that reason, even though the agent process exited cleanly.
+func TestHandleRunSuccess_HTTPFailureReasonFailsRun(t *testing.T) {
+	scheme := warmReuseScheme(t)
+	const reason = "upstream returned 401: invalid api key"
+	run := &agentorcav1alpha1.AgentRun{ObjectMeta: metav1.ObjectMeta{
+		Name: "run-f", Namespace: "default",
+	}, Status: agentorcav1alpha1.AgentRunStatus{
+		Phase:     agentorcav1alpha1.AgentRunPhaseRunning,
+		InputMode: "http",
+	}}
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&agentorcav1alpha1.AgentRun{}).
+		WithObjects(run).
+		Build()
+	r := &AgentRunReconciler{
+		Client:     cl,
+		Scheme:     scheme,
+		StateStore: testStore{httpOutput: "partial body", httpFailure: reason},
+		K8s:        newFakeClientsetWithLogs(),
+	}
+
+	if _, err := r.handleRunSuccess(context.Background(), run, func(context.Context) string { return "" }); err != nil {
+		t.Fatalf("handleRunSuccess: %v", err)
+	}
+
+	var got agentorcav1alpha1.AgentRun
+	if err := cl.Get(context.Background(), client.ObjectKeyFromObject(run), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.Phase != agentorcav1alpha1.AgentRunPhaseFailed {
+		t.Fatalf("phase = %q, want Failed", got.Status.Phase)
+	}
+	if got.Status.FailureReason != reason {
+		t.Fatalf("FailureReason = %q, want %q", got.Status.FailureReason, reason)
 	}
 }

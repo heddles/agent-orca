@@ -150,13 +150,15 @@ func TestSummaryCompactionReplacesHistoryOnce(t *testing.T) {
 	}
 
 	sent := provider.lastStreamed().Messages
-	if got, want := roles(sent), "ssu"; got != want {
-		t.Fatalf("request after compaction roles = %q, want %q (pinned task, summary, new input)", got, want)
+	// The pinned task and summary reach the provider as one merged system message.
+	if got, want := roles(sent), "su"; got != want {
+		t.Fatalf("request after compaction roles = %q, want %q (merged system, new input)", got, want)
 	}
-	if got := messageText(sent[0]); got != pinnedTaskOpen+originalTask {
+	got := messageText(sent[0])
+	if !strings.HasPrefix(got, pinnedTaskOpen+originalTask) {
 		t.Fatalf("pinned task = %q", got)
 	}
-	if got := messageText(sent[1]); !strings.HasPrefix(got, summaryOpenPrefix+"1 — replaces 22 earlier messages]") ||
+	if !strings.Contains(got, summaryOpenPrefix+"1 — replaces 22 earlier messages]") ||
 		!strings.Contains(got, "widget progress") {
 		t.Fatalf("summary message = %.200q", got)
 	}
@@ -394,11 +396,11 @@ func TestSummaryCompactionMidToolLoopKeepsTurn(t *testing.T) {
 	p.mu.Lock()
 	cont := p.streamed[1].Messages
 	p.mu.Unlock()
-	if got, want := roles(cont), "ssuat"; got != want {
-		t.Fatalf("continuation roles = %q, want %q (pinned, summary, latest user, tool call, tool result)", got, want)
+	if got, want := roles(cont), "suat"; got != want {
+		t.Fatalf("continuation roles = %q, want %q (merged system, latest user, tool call, tool result)", got, want)
 	}
-	if messageText(cont[2]) != "store this" {
-		t.Fatalf("latest user message = %q", messageText(cont[2]))
+	if messageText(cont[1]) != "store this" {
+		t.Fatalf("latest user message = %q", messageText(cont[1]))
 	}
 	if got, want := roles(storedConversation(r)), "ssuata"; got != want {
 		t.Fatalf("stored conversation roles = %q, want %q", got, want)

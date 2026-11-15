@@ -161,6 +161,10 @@ func (r *Router) forwardToProviderStream(ctx context.Context, provider *Provider
 	chatReq.Messages = adaptToolCallsForProvider(provider, chatReq.Messages)
 	chatReq.Stream = true
 
+	// Same trust-boundary hint as the non-streaming path, then one merged system message.
+	chatReq = r.injectRAGTrustBoundaryHint(chatReq)
+	chatReq.Messages = normalizeSystemMessages(chatReq.Messages)
+
 	if _, ok := r.responsesOnly.Load(provider.Name); ok {
 		return r.forwardToResponsesStream(llmCtx, cancel, provider, chatReq)
 	}
@@ -200,7 +204,7 @@ func (r *Router) forwardToProviderStream(ctx context.Context, provider *Provider
 			return r.forwardToResponsesStream(llmCtx, cancel, provider, chatReq)
 		}
 		cancel()
-		return nil, fmt.Errorf("provider %s returned %d: %s", provider.Name, resp.StatusCode, body)
+		return nil, newProviderHTTPError(provider.Name, resp.StatusCode, body)
 	}
 	// Caller owns resp.Body; cancel the context when the body is closed.
 	resp.Body = &cancelOnClose{ReadCloser: resp.Body, cancel: cancel}
@@ -285,6 +289,24 @@ func (r *Router) forwardToAnthropicStream(ctx context.Context, provider *Provide
 	translated := *resp
 	translated.Body = pr
 	return &translated, nil
+}
+
+// writeStreamError reports a failure on a streaming chat request. Before the
+// response has begun it is an HTTP error status. After (a budget pause holding
+// the response open, or a tool-call continuation of a stream already sent) the
+// status can no longer change, so it is a well-formed SSE error event, with no
+// [DONE]: a [DONE] would make the failure look like a finished answer.
+func (r *Router) writeStreamError(w http.ResponseWriter, req *http.Request, msg string, status int) {
+	started := r.sseStarted.Swap(false) || req.Context().Value(continuationKey{}) != nil
+	if !started {
+		http.Error(w, msg, status)
+		return
+	}
+	data, _ := json.Marshal(map[string]any{"error": map[string]string{"message": msg, "type": "upstream_error"}})
+	_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
 }
 
 // handleStreamingResponse proxies SSE chunks from the provider to the client,
@@ -751,7 +773,8 @@ func (r *Router) tryFallbackStream(
 				if err == nil {
 					return resp, p, fitted, nil
 				}
-				slog.Warn("fallback provider failed (streaming)", "provider", name, "err", err)
+				slog.Warn("fallback provider failed (streaming)", "provider", name, "errorClass", classifyProviderError(err), "err", err)
+				logRejectedRoles(name, err, fitted.req.Messages)
 				r.recordProviderError(p)
 			}
 		}
