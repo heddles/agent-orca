@@ -45,7 +45,8 @@
     "algorithm": "composite",
     "label": "",
     "candidates": [
-      "weak"
+      "weak",
+      "strong"
     ],
     "judgeCalls": 1
   }

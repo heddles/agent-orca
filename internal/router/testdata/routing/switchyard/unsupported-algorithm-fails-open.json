@@ -32,7 +32,8 @@
     "algorithm": "advisor",
     "label": "",
     "candidates": [
-      "weak"
+      "weak",
+      "strong"
     ],
     "judgeCalls": 0
   }

@@ -255,6 +255,10 @@ func (a *Agent) Run(ctx context.Context, input string, opts ...RunOption) (*RunR
 
 	for turn := 0; turn < cfg.maxTurns; turn++ {
 		reply, closed, err := a.send(ctx, pending)
+		if errors.Is(err, ErrUpstream) {
+			// Every provider failed: the run failed, with the reason.
+			return &RunResult{Phase: PhaseFailed, FailureReason: err.Error()}, nil
+		}
 		if err != nil {
 			return nil, fmt.Errorf("turn %d: %w", turn, err)
 		}
@@ -362,6 +366,11 @@ func (a *Agent) send(ctx context.Context, msgs []message) (*reply, *RunResult, e
 		return nil, closedRun(strings.TrimSpace(string(body))), nil
 	default:
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		if resp.StatusCode >= 500 {
+			// The providers failed: that fails the run (see Run).
+			return nil, nil, fmt.Errorf("%w: model-router returned %d: %s",
+				ErrUpstream, resp.StatusCode, strings.TrimSpace(string(body)))
+		}
 		return nil, nil, fmt.Errorf("model-router returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 	r, err := readStream(resp.Body, nil)
@@ -497,13 +506,28 @@ func readStream(body io.Reader, onContent func(string)) (*reply, error) {
 	var content strings.Builder
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	var upstreamErr string
 	for scanner.Scan() {
-		data, ok := strings.CutPrefix(scanner.Text(), "data: ")
-		if !ok || data == "" {
+		line := scanner.Text()
+		data, ok := strings.CutPrefix(line, "data: ")
+		if !ok {
+			// A bare JSON error body (the legacy `data: [DONE]` then
+			// `{"error":...}`) is not an SSE frame but is still a failure.
+			if msg := errorMessage(strings.TrimSpace(line)); msg != "" {
+				upstreamErr = msg
+			}
+			continue
+		}
+		if data == "" {
 			continue
 		}
 		if data == "[DONE]" {
-			break
+			// Keep reading: an error may follow it.
+			continue
+		}
+		if msg := errorMessage(data); msg != "" {
+			upstreamErr = msg
+			continue
 		}
 		var chunk struct {
 			Choices []struct {
@@ -547,7 +571,39 @@ func readStream(body io.Reader, onContent func(string)) (*reply, error) {
 		return nil, fmt.Errorf("reading stream: %w", err)
 	}
 	r.content = content.String()
+	// An error with nothing to show for it is a failed call, not an empty answer.
+	if upstreamErr != "" && r.content == "" && len(r.toolCalls) == 0 {
+		return nil, fmt.Errorf("%w: %s", ErrUpstream, upstreamErr)
+	}
 	return &r, nil
+}
+
+// ErrUpstream marks a model-router reply that carried an error instead of an answer.
+var ErrUpstream = errors.New("model-router upstream error")
+
+// errorMessage returns the message of an {"error": "..."} or
+// {"error": {"message": "..."}} payload, or "" if s is not one.
+func errorMessage(s string) string {
+	if !strings.HasPrefix(s, "{") {
+		return ""
+	}
+	var p struct {
+		Error json.RawMessage `json:"error"`
+	}
+	if json.Unmarshal([]byte(s), &p) != nil || len(p.Error) == 0 || string(p.Error) == "null" {
+		return ""
+	}
+	var str string
+	if json.Unmarshal(p.Error, &str) == nil {
+		return str
+	}
+	var obj struct {
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(p.Error, &obj) == nil && obj.Message != "" {
+		return obj.Message
+	}
+	return string(p.Error)
 }
 
 // RunStream sends input as a single turn and streams the reply's text. It does

@@ -232,10 +232,26 @@ func (s *legacySelector) provider(name string) *ProviderConfig {
 	return nil
 }
 
-// candidates lists the chosen provider followed by the fallback chain.
+// candidates lists the chosen provider, then the other weighted providers
+// (heaviest first), then the fallback chain, without duplicates. Weight-0
+// providers are reserved for the chain and the meta-router, so they only
+// appear when listed there.
 func (s *legacySelector) candidates(chosen string) []string {
-	out := []string{chosen}
-	for _, name := range s.cfg.FallbackChain {
+	return weightedCandidates(s.cfg, []string{chosen})
+}
+
+// weightedCandidates appends the other weighted providers and then the
+// fallback chain to out, skipping names already present.
+func weightedCandidates(cfg *Config, out []string) []string {
+	out = slices.Clone(out)
+	weighted := slices.Clone(cfg.Providers)
+	slices.SortStableFunc(weighted, func(a, b ProviderConfig) int { return b.Weight - a.Weight })
+	for _, p := range weighted {
+		if p.Weight > 0 && !slices.Contains(out, p.Name) {
+			out = append(out, p.Name)
+		}
+	}
+	for _, name := range cfg.FallbackChain {
 		if !slices.Contains(out, name) {
 			out = append(out, name)
 		}

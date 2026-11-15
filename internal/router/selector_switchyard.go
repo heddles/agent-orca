@@ -317,15 +317,10 @@ func (s *switchyardSelector) provider(name string) *ProviderConfig {
 	return nil
 }
 
-// candidates lists Switchyard's choices, best first, then the fallback chain.
+// candidates lists Switchyard's choices, best first, then the other weighted
+// providers and the fallback chain.
 func (s *switchyardSelector) candidates(selected []string) []string {
-	out := slices.Clone(selected)
-	for _, name := range s.cfg.FallbackChain {
-		if !slices.Contains(out, name) {
-			out = append(out, name)
-		}
-	}
-	return out
+	return weightedCandidates(s.cfg, selected)
 }
 
 // NewSession implements sessionSelector: a different conversation gets an engine
