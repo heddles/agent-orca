@@ -103,6 +103,8 @@ type UIServer struct {
 	evalSpend evalSpendSource
 	// evalExperiments overrides the experiment store (tests); nil means pgStore.
 	evalExperiments evalExperimentStore
+	// evalGates overrides the publish gate store (tests); nil means pgStore.
+	evalGates evalGateStore
 	// evalReviews overrides the review store (tests); nil means pgStore.
 	evalReviews evalReviewStore
 	// evalLimits are the configured limits on experiments.
