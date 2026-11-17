@@ -21,6 +21,8 @@ import (
 	"math"
 	"slices"
 	"sort"
+
+	"github.com/heddles/agent-orca/internal/evals/compare"
 )
 
 // Detector names added with the sweep and the strategy switch.
@@ -174,7 +176,7 @@ func sweep(selector string, current float64, calls []Call, o Options) (Finding, 
 		if math.IsNaN(c.costCI.Hi) || math.IsNaN(c.lossCI.Hi) {
 			continue
 		}
-		if c.costCI.Hi < 0 && c.lossCI.Hi < o.NonInferiorityMargin {
+		if c.costCI.Hi < 0 && compare.WithinMargin(c.lossCI, o.NonInferiorityMargin) {
 			cheaper = append(cheaper, c)
 		}
 		if o.MaxUSDPerNetWin != nil && c.lossCI.Hi < 0 && c.dCost > 0 && c.dLoss < 0 && c.dCost/-c.dLoss <= *o.MaxUSDPerNetWin {
@@ -240,7 +242,7 @@ func agentVeto(calls []Call, from, to float64, o Options) string {
 			}
 			return d / float64(len(idx)), true
 		})
-		if ci.Lo > o.NonInferiorityMargin {
+		if compare.ExceedsMargin(ci, o.NonInferiorityMargin) {
 			return fmt.Sprintf("agent %s uses the same selector and would clearly get worse answers at %.2f; give it a selector of its own or change the threshold by hand", a, to)
 		}
 	}
