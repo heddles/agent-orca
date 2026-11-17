@@ -22,6 +22,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
+	"github.com/heddles/agent-orca/internal/routingbench"
 )
 
 // spec.evaluation.includeExperiments is off unless the benchmark sets it, so the
@@ -32,7 +33,7 @@ func TestEvaluation_IncludeExperimentsIsOffByDefault(t *testing.T) {
 	if w.src.calls == 0 || w.src.last.IncludeExperiments {
 		t.Fatalf("query = %+v, calls %d: experiments must not be included by default", w.src.last, w.src.calls)
 	}
-	if recs := w.recs(t); len(recs) != 1 || recs[0].Spec.Detector != "overspend" {
+	if recs := w.recs(t); len(recs) != 1 || recs[0].Spec.Detector != routingbench.DetectorOverspend {
 		t.Errorf("recommendations = %+v", recs)
 	}
 }
@@ -52,7 +53,7 @@ func TestEvaluation_IncludeExperimentsReachesTheSource(t *testing.T) {
 	// The observations are the same shadow samples, so the finding is the same
 	// and names no experiment samples.
 	recs := w.recs(t)
-	if len(recs) != 1 || recs[0].Spec.Detector != "overspend" {
+	if len(recs) != 1 || recs[0].Spec.Detector != routingbench.DetectorOverspend {
 		t.Fatalf("recommendations = %+v", recs)
 	}
 }
