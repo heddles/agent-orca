@@ -24,8 +24,10 @@ COPY internal/apiserver/ internal/apiserver/
 COPY internal/checkpoint/ internal/checkpoint/
 COPY internal/controller/ internal/controller/
 COPY internal/egress/ internal/egress/
+COPY internal/evals/calibrate/ internal/evals/calibrate/
 COPY internal/evals/compare/ internal/evals/compare/
 COPY internal/evals/graders/ internal/evals/graders/
+COPY internal/evals/judge/ internal/evals/judge/
 COPY internal/evals/redact/ internal/evals/redact/
 COPY internal/evals/runner/ internal/evals/runner/
 COPY internal/executor/ internal/executor/
