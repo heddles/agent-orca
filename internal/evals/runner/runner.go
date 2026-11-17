@@ -279,14 +279,27 @@ func (s slot) String() string {
 
 // ── cleanup and sweep ───────────────────────────────────────────────────────
 
-// cleanup deletes the Agents and ModelSelectors made for an experiment.
+// cleanup deletes the Agents and ModelSelectors made for an experiment. It lists
+// and deletes one by one: the operator's role has no deletecollection verb.
 func (r *Runner) cleanup(ctx context.Context, e postgresql.EvalExperiment) {
-	sel := client.MatchingLabels{tenancy.LabelEvalExperiment: tenancy.ExperimentLabel(e.ID)}
-	if err := r.kube.DeleteAllOf(ctx, &agentorcav1alpha1.Agent{}, client.InNamespace(e.Namespace), sel); err != nil {
-		r.log.Error("deleting an experiment's agents", "experiment", e.ID, "err", err)
+	sel := client.MatchingLabels{tenancy.LabelEvalExperiment: tenancy.ExperimentLabel(e.ID), tenancy.LabelTenantID: e.TenantID}
+	var agents agentorcav1alpha1.AgentList
+	if err := r.kube.List(ctx, &agents, client.InNamespace(e.Namespace), sel); err != nil {
+		r.log.Error("listing an experiment's agents", "experiment", e.ID, "err", err)
 	}
-	if err := r.kube.DeleteAllOf(ctx, &agentorcav1alpha1.ModelSelector{}, client.InNamespace(e.Namespace), sel); err != nil {
-		r.log.Error("deleting an experiment's model selectors", "experiment", e.ID, "err", err)
+	for i := range agents.Items {
+		if err := client.IgnoreNotFound(r.kube.Delete(ctx, &agents.Items[i])); err != nil {
+			r.log.Error("deleting an experiment's agent", "experiment", e.ID, "agent", agents.Items[i].Name, "err", err)
+		}
+	}
+	var selectors agentorcav1alpha1.ModelSelectorList
+	if err := r.kube.List(ctx, &selectors, client.InNamespace(e.Namespace), sel); err != nil {
+		r.log.Error("listing an experiment's model selectors", "experiment", e.ID, "err", err)
+	}
+	for i := range selectors.Items {
+		if err := client.IgnoreNotFound(r.kube.Delete(ctx, &selectors.Items[i])); err != nil {
+			r.log.Error("deleting an experiment's model selector", "experiment", e.ID, "selector", selectors.Items[i].Name, "err", err)
+		}
 	}
 }
 

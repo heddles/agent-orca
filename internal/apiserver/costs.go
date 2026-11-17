@@ -36,6 +36,19 @@ type costArchive interface {
 	QueryCostRows(ctx context.Context, q postgresql.CostQuery) ([]postgresql.CostRow, error)
 }
 
+// evalSpendSource is the part of the store that reports what experiments cost.
+// Their runs are left out of every production figure; this is the one place
+// their money shows.
+type evalSpendSource interface {
+	QueryEvalSpend(ctx context.Context, q postgresql.EvalSpendQuery) (postgresql.EvalSpend, error)
+}
+
+// evalSpendView is the "Evaluations" line of the cost view.
+type evalSpendView struct {
+	TotalUSD    string `json:"totalUSD"`
+	Experiments int    `json:"experiments"`
+}
+
 // untrackedSampleSize caps the run names returned in untrackedSample.
 const untrackedSampleSize = 10
 
@@ -92,6 +105,10 @@ type costResponse struct {
 	// ArchiveUnavailable is set when the run archive is configured but could not
 	// be read, so the totals cover live runs only.
 	ArchiveUnavailable bool `json:"archiveUnavailable,omitempty"`
+	// Evaluations is what evaluation experiments spent in the same window. It is
+	// not part of TotalUSD, ByAgent or any other figure above: experiment runs
+	// are not production traffic. Absent without PostgreSQL.
+	Evaluations *evalSpendView `json:"evaluations,omitempty"`
 }
 
 func usd(v float64) string { return fmt.Sprintf("%.4f", v) }
@@ -257,12 +274,17 @@ func (s *UIServer) handleCosts(w http.ResponseWriter, r *http.Request) {
 		since = &t
 	}
 
+	ctx := r.Context()
+	includeEval := wantsEval(r)
+	if includeEval {
+		ctx = withEvalIncluded(ctx)
+	}
 	var extra []client.ListOption
 	if deployment != "" {
 		extra = append(extra, client.MatchingLabels{"agentorca.io/deployment": deployment})
 	}
 	var list agentorcav1alpha1.AgentRunList
-	if err := listCRDsMultiNamespace(r.Context(), s.crdClient, &list, ns, extra...); err != nil {
+	if err := listCRDsMultiNamespace(ctx, s.crdClient, &list, ns, extra...); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -289,7 +311,7 @@ func (s *UIServer) handleCosts(w http.ResponseWriter, r *http.Request) {
 	var archived []costEntry
 	archiveFailed := false
 	if arch := s.costArchiveSource(); arch != nil {
-		q := postgresql.CostQuery{Deployment: deployment, Run: runFilter, Since: since}
+		q := postgresql.CostQuery{Deployment: deployment, Run: runFilter, Since: since, IncludeEval: includeEval}
 		skip := false
 		if tenant, ok := TenantFromContext(r.Context()); ok && tenant != nil {
 			// An empty namespace filter means "all", so a tenant with no
@@ -315,6 +337,43 @@ func (s *UIServer) handleCosts(w http.ResponseWriter, r *http.Request) {
 
 	resp := aggregateCosts(mergeCostEntries(live, archived))
 	resp.ArchiveUnavailable = archiveFailed
+	resp.Evaluations = s.evalSpendLine(r, since, ns)
 	resp.InFlightUnscraped = unscraped
 	jsonResponse(w, resp)
+}
+
+// evalSpendLine reports what experiments spent in the window, for the cost view's
+// separate Evaluations line. It is nil without a store, and when the caller has
+// no namespace to look in.
+func (s *UIServer) evalSpendLine(r *http.Request, since *time.Time, ns string) *evalSpendView {
+	var src evalSpendSource
+	switch {
+	case s.evalSpend != nil:
+		src = s.evalSpend
+	case s.pgStore != nil:
+		src = s.pgStore
+	default:
+		return nil
+	}
+	q := postgresql.EvalSpendQuery{Since: since}
+	if tenant, ok := TenantFromContext(r.Context()); ok && tenant != nil {
+		q.Namespaces = tenantNamespaces(tenant)
+		if q.Namespaces == nil {
+			q.Namespaces = []string{}
+		}
+		if ns != "" {
+			if !namespaceAllowed(r.Context(), ns) {
+				return nil
+			}
+			q.Namespaces = []string{ns}
+		}
+	} else if ns != "" {
+		q.Namespaces = []string{ns}
+	}
+	spend, err := src.QueryEvalSpend(pgScope(r.Context()), q)
+	if err != nil {
+		slog.Error("summing evaluation spend", "err", err)
+		return nil
+	}
+	return &evalSpendView{TotalUSD: usd(spend.TotalUSD), Experiments: spend.Experiments}
 }

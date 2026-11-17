@@ -19,6 +19,7 @@ package apiserver
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"slices"
 
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -68,6 +69,54 @@ func firstNamespace(namespaces []string) string {
 // back to a single cl.List honoring the optional ns (the ?namespace= query param,
 // or all namespaces when empty), preserving the previous non-tenant behavior.
 func listCRDsMultiNamespace(ctx context.Context, cl client.Client, listType client.ObjectList, ns string, extra ...client.ListOption) error {
+	if err := listCRDsAcrossNamespaces(ctx, cl, listType, ns, extra...); err != nil {
+		return err
+	}
+	if evalIncluded(ctx) {
+		return nil
+	}
+	return dropEvalObjects(listType)
+}
+
+// includeEvalKey marks a context whose lists keep the objects of evaluation
+// experiments (?includeEval=true on the endpoints that offer it).
+type includeEvalKey struct{}
+
+func withEvalIncluded(ctx context.Context) context.Context {
+	return context.WithValue(ctx, includeEvalKey{}, true)
+}
+
+func evalIncluded(ctx context.Context) bool {
+	v, _ := ctx.Value(includeEvalKey{}).(bool)
+	return v
+}
+
+// wantsEval reports whether the request asks for evaluation runs too.
+func wantsEval(r *http.Request) bool { return r.URL.Query().Get("includeEval") == "true" }
+
+// dropEvalObjects removes the objects of evaluation experiments from a list: the
+// hidden Agents and ModelSelectors an experiment makes and its AgentRuns are not
+// production objects, and no listing, count or total should show them. The
+// objects can still be read by name.
+func dropEvalObjects(list client.ObjectList) error {
+	items, err := meta.ExtractList(list)
+	if err != nil {
+		return err
+	}
+	kept := make([]runtime.Object, 0, len(items))
+	for _, it := range items {
+		if o, ok := it.(client.Object); ok && tenancy.IsEval(o.GetLabels()) {
+			continue
+		}
+		kept = append(kept, it)
+	}
+	if len(kept) == len(items) {
+		return nil
+	}
+	return meta.SetList(list, kept)
+}
+
+func listCRDsAcrossNamespaces(ctx context.Context, cl client.Client, listType client.ObjectList, ns string, extra ...client.ListOption) error {
 	tenant, ok := TenantFromContext(ctx)
 	if !ok || tenant == nil {
 		return cl.List(ctx, listType, append(nsListOpts(ns), extra...)...)

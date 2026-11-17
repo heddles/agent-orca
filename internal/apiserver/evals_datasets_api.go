@@ -70,6 +70,8 @@ type EvalsConfig struct {
 	MaxCaseBytes int
 	// DisallowUnredactedCases refuses a capture with redact:false.
 	DisallowUnredactedCases bool
+	// DisableExperiments turns the experiment endpoints off (they answer 503).
+	DisableExperiments bool
 }
 
 func (c EvalsConfig) limits() postgresql.EvalLimits {
@@ -112,6 +114,8 @@ func (s *UIServer) registerEvalRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/evals/datasets/", s.handleEvalDataset)
 	mux.HandleFunc("/api/evals/cases/", s.handleEvalCase)
 	mux.HandleFunc("/api/evals/results/", s.handleEvalResult)
+	mux.HandleFunc("/api/evals/experiments", s.handleEvalExperiments)
+	mux.HandleFunc("/api/evals/experiments/", s.handleEvalExperiment)
 }
 
 // evalPreflight checks the role and the store. It reports whether to go on.
@@ -134,7 +138,7 @@ func evalFail(w http.ResponseWriter, what string, err error) {
 		jsonError(w, "not found", http.StatusNotFound)
 	case errors.Is(err, postgresql.ErrEvalExists):
 		jsonError(w, err.Error(), http.StatusConflict)
-	case errors.Is(err, postgresql.ErrDatasetFull):
+	case errors.Is(err, postgresql.ErrDatasetFull), errors.Is(err, postgresql.ErrTooManyExperiments), errors.Is(err, postgresql.ErrExperimentFinished):
 		jsonError(w, err.Error(), http.StatusConflict)
 	case errors.Is(err, postgresql.ErrEvalTooLarge):
 		jsonError(w, err.Error(), http.StatusRequestEntityTooLarge)

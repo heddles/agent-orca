@@ -54,6 +54,7 @@ import (
 	"github.com/heddles/agent-orca/internal/acpfs"
 	"github.com/heddles/agent-orca/internal/apiserver"
 	"github.com/heddles/agent-orca/internal/controller"
+	evalrunner "github.com/heddles/agent-orca/internal/evals/runner"
 	"github.com/heddles/agent-orca/internal/githubapp"
 	"github.com/heddles/agent-orca/internal/openshell"
 	"github.com/heddles/agent-orca/internal/podbuilder"
@@ -815,7 +816,23 @@ func main() {
 	uiAPI := apiserver.NewUIServer(k8sClient, mgr.GetClient(), stateConfig.Backend != "", stateStore, uiAuthEnabled, externalAuth, pgStore, alertManager) //nolint:lll
 	uiAPI.SetOwnership(ownershipDetect, tenancy.HandoffTTLFromEnv())
 	uiAPI.SetRevisionsKeep(apiserver.RevisionsKeepFromEnv())
-	uiAPI.SetEvals(evalsConfigFromEnv())
+	evalsCfg := evalsConfigFromEnv()
+	uiAPI.SetEvals(evalsCfg)
+	uiAPI.SetEvalExperimentLimits(evalExperimentLimitsFromEnv())
+	// The evaluation experiment runner needs PostgreSQL. It is a manager runnable
+	// that wants leader election (the default), so one operator runs it at a time.
+	if pgStore != nil && !evalsCfg.DisableExperiments {
+		var limiter evalrunner.Limiter
+		if rl := externalAuth.RateLimiter(); rl != nil {
+			limiter = rl
+		}
+		if err := mgr.Add(evalrunner.New(pgStore.AsPlatform(), mgr.GetClient(), evalrunner.Config{
+			Interval: evalRunnerIntervalFromEnv(), Limiter: limiter,
+		})); err != nil {
+			setupLog.Error(err, "Unable to add the evaluation experiment runner")
+			os.Exit(1)
+		}
+	}
 	if uiOIDC != nil {
 		uiAPI.SetOIDCLogin(uiOIDC)
 	}
@@ -1006,5 +1023,33 @@ func evalsConfigFromEnv() apiserver.EvalsConfig {
 	if v, err := strconv.ParseBool(strings.TrimSpace(os.Getenv("EVALS_ALLOW_UNREDACTED_CASES"))); err == nil {
 		c.DisallowUnredactedCases = !v
 	}
+	if v, err := strconv.ParseBool(strings.TrimSpace(os.Getenv("EVALS_ENABLED"))); err == nil {
+		c.DisableExperiments = !v
+	}
 	return c
+}
+
+// evalExperimentLimitsFromEnv reads the limits on experiments (chart values
+// operator.evals.*). An unset or unreadable value keeps the default.
+func evalExperimentLimitsFromEnv() postgresql.EvalExperimentLimits {
+	var l postgresql.EvalExperimentLimits
+	if n, err := strconv.Atoi(strings.TrimSpace(os.Getenv("EVALS_MAX_ACTIVE_EXPERIMENTS_PER_TENANT"))); err == nil && n > 0 {
+		l.MaxActivePerTenant = n
+	}
+	if n, err := strconv.Atoi(strings.TrimSpace(os.Getenv("EVALS_MAX_CASES_PER_EXPERIMENT"))); err == nil && n > 0 {
+		l.MaxCasesPerExperiment = n
+	}
+	if v, err := strconv.ParseFloat(strings.TrimSpace(os.Getenv("EVALS_MAX_BUDGET_PER_EXPERIMENT_USD")), 64); err == nil && v > 0 {
+		l.MaxBudgetUSD = v
+	}
+	return l
+}
+
+// evalRunnerIntervalFromEnv is how often the experiment runner polls
+// (EVALS_RUNNER_INTERVAL_SECONDS, default 5).
+func evalRunnerIntervalFromEnv() time.Duration {
+	if n, err := strconv.Atoi(strings.TrimSpace(os.Getenv("EVALS_RUNNER_INTERVAL_SECONDS"))); err == nil && n > 0 {
+		return time.Duration(n) * time.Second
+	}
+	return 0
 }

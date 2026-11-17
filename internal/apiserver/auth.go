@@ -910,6 +910,16 @@ func attachQuotaFields(id *TenantIdentity, tc *agentorcav1alpha1.TenantConfig) *
 	return id
 }
 
+// RateLimiter returns the per-tenant request-rate limiter the API servers use, so
+// the operator's own request sources (the evaluation runner) draw on the same
+// buckets. Nil when a is nil.
+func (a *ExternalAuth) RateLimiter() *RateLimiter {
+	if a == nil {
+		return nil
+	}
+	return a.rateLimiter
+}
+
 // tenantConfigFor returns the live TenantConfig for a tenant name, or nil.
 func (a *ExternalAuth) tenantConfigFor(name string) *agentorcav1alpha1.TenantConfig {
 	if a == nil || name == "" {
