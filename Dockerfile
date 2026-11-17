@@ -27,6 +27,7 @@ COPY internal/egress/ internal/egress/
 COPY internal/evals/compare/ internal/evals/compare/
 COPY internal/evals/graders/ internal/evals/graders/
 COPY internal/evals/redact/ internal/evals/redact/
+COPY internal/evals/runner/ internal/evals/runner/
 COPY internal/executor/ internal/executor/
 COPY internal/framework/ internal/framework/
 COPY internal/githubapp/ internal/githubapp/

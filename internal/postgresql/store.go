@@ -105,6 +105,9 @@ type HistoryQuery struct {
 	Namespaces []string
 	// Search matches against the run name case-insensitively.
 	Search string
+	// IncludeEval lists the runs of evaluation experiments too. The zero value
+	// leaves them out: they are not production traffic.
+	IncludeEval bool
 }
 
 // HistoryResult is a single row in a history listing.
@@ -297,6 +300,9 @@ func queryHistory(ctx context.Context, tx dbtx, scope string, q HistoryQuery) (*
 		paramN++
 	}
 
+	if !q.IncludeEval {
+		where = append(where, notEvalRunSQL)
+	}
 	if q.Phase != "" {
 		add(fmt.Sprintf("$%d::text = ANY(string_to_array(phase, ','))", paramN), q.Phase)
 	}
@@ -387,7 +393,13 @@ type CostQuery struct {
 	Run string
 	// Since drops runs that finished (or, if unfinished, started) before it.
 	Since *time.Time
+	// IncludeEval counts the runs of evaluation experiments too. The zero value
+	// leaves them out: their spend is reported on its own (QueryEvalSpend).
+	IncludeEval bool
 }
+
+// notEvalRunSQL keeps out the archived runs that carry an evaluation label.
+const notEvalRunSQL = `NOT jsonb_exists_any(COALESCE(labels, '{}'::jsonb), ARRAY['agentorca.io/eval', 'agentorca.io/eval-experiment'])`
 
 // CostRow is the slice of an archived run that cost aggregation needs.
 type CostRow struct {
@@ -434,6 +446,9 @@ func queryCostRows(ctx context.Context, tx dbtx, scope string, q CostQuery) ([]C
 		where = append(where, fmt.Sprintf("tenant_id = $%d", paramN))
 		args = append(args, tid)
 		paramN++
+	}
+	if !q.IncludeEval {
+		where = append(where, notEvalRunSQL)
 	}
 	if len(q.Namespaces) > 0 {
 		ph := make([]string, len(q.Namespaces))

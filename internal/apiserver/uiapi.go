@@ -99,6 +99,12 @@ type UIServer struct {
 	revisionsKeep int
 	// evals overrides the evaluation dataset store (tests); nil means pgStore.
 	evals evalStore
+	// evalSpend overrides the source of the cost view's Evaluations line (tests).
+	evalSpend evalSpendSource
+	// evalExperiments overrides the experiment store (tests); nil means pgStore.
+	evalExperiments evalExperimentStore
+	// evalLimits are the configured limits on experiments.
+	evalLimits postgresql.EvalExperimentLimits
 	// evalCfg holds the limits on evaluation datasets and cases.
 	evalCfg EvalsConfig
 	// auditUnavailable logs once that there is no PostgreSQL store to audit into.
@@ -312,6 +318,14 @@ func (s *UIServer) handleListRuns(w http.ResponseWriter, r *http.Request) {
 		ns := r.URL.Query().Get("namespace")
 		opts := nsListOpts(ns)
 		if err := s.crdClient.List(r.Context(), &list, opts...); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	// Evaluation runs are not production traffic: leave them out unless asked.
+	if !wantsEval(r) {
+		if err := dropEvalObjects(&list); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -2287,6 +2301,8 @@ func (s *UIServer) handleListRunHistory(w http.ResponseWriter, r *http.Request) 
 		Phase:    phase,
 		AgentRef: agentRef,
 		Search:   search,
+		// Evaluation runs are not production traffic: ?includeEval=true lists them.
+		IncludeEval: wantsEval(r),
 	}
 	// Apply tenant scoping across all authorized namespaces (not just the first)
 	// so the history view reflects every namespace the tenant can access.

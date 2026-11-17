@@ -31,6 +31,7 @@ import (
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
 	"github.com/heddles/agent-orca/internal/podbuilder"
 	"github.com/heddles/agent-orca/internal/router"
+	"github.com/heddles/agent-orca/internal/tenancy"
 )
 
 // Defaults of a RoutingBenchmark's shadow settings, applied again here because
@@ -75,6 +76,12 @@ type shadowSource struct {
 // first benchmark by name that covers the Agent wins. A benchmark whose judge or
 // shadow providers do not exist is skipped; its Ready condition says why.
 func resolveShadow(ctx context.Context, c client.Reader, agent *agentorcav1alpha1.Agent, src shadowSource, routing selectorRouting) (shadowRouting, error) {
+	// An evaluation run is never sampled: it would spend a benchmark's budget on
+	// traffic that is not production and count the same call twice. This holds
+	// whatever a benchmark's ExcludeRunSelector says.
+	if tenancy.IsEval(src.RunLabels) {
+		return shadowRouting{}, nil
+	}
 	namespace := agent.Namespace
 	var list agentorcav1alpha1.RoutingBenchmarkList
 	if err := c.List(ctx, &list, client.InNamespace(namespace)); err != nil {

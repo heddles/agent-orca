@@ -105,6 +105,16 @@ spec:
               value: {{ dig "maxCaseBytes" 65536 (.Values.operator.evals | default dict) | toString | quote }}
             - name: EVALS_ALLOW_UNREDACTED_CASES
               value: {{ dig "allowUnredactedCases" true (.Values.operator.evals | default dict) | toString | quote }}
+            - name: EVALS_ENABLED
+              value: {{ dig "enabled" true (.Values.operator.evals | default dict) | toString | quote }}
+            - name: EVALS_MAX_BUDGET_PER_EXPERIMENT_USD
+              value: {{ dig "maxBudgetPerExperimentUSD" 25 (.Values.operator.evals | default dict) | toString | quote }}
+            - name: EVALS_MAX_CASES_PER_EXPERIMENT
+              value: {{ dig "maxCasesPerExperiment" 500 (.Values.operator.evals | default dict) | toString | quote }}
+            - name: EVALS_MAX_ACTIVE_EXPERIMENTS_PER_TENANT
+              value: {{ dig "maxActiveExperimentsPerTenant" 2 (.Values.operator.evals | default dict) | toString | quote }}
+            - name: EVALS_RUNNER_INTERVAL_SECONDS
+              value: {{ dig "runnerIntervalSeconds" 5 (.Values.operator.evals | default dict) | toString | quote }}
             {{- if .Values.cloudProvider }}
             - name: CLOUD_PROVIDER_OVERRIDE
               value: {{ .Values.cloudProvider | quote }}

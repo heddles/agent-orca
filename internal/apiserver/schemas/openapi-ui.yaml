@@ -400,6 +400,33 @@ components:
           properties:
             pending: { type: boolean, description: An export marked the object for handoff and the handoff has not expired. }
             expires: { type: string, format: date-time }
+    EvalExperiment:
+      type: object
+      required: [id, namespace, datasetId, datasetVersion, status, arms, repeats, budgetUsd, spentUsd, resultsTotal]
+      properties:
+        id: { type: integer }
+        namespace: { type: string }
+        datasetId: { type: integer }
+        datasetVersion: { type: integer, description: The dataset version the experiment runs, frozen at creation }
+        name: { type: string }
+        status: { type: string, enum: [queued, running, grading, awaiting_review, complete, cancelled, failed] }
+        arms: { type: array, items: { type: object, description: label, agent, revision, hash (filled when it starts), modelProvider } }
+        repeats: { type: integer }
+        budgetUsd: { type: number }
+        spentUsd: { type: number }
+        runBudgetUsd: { type: number }
+        timeoutSeconds: { type: integer }
+        concurrency: { type: integer }
+        cancelRequested: { type: boolean }
+        cases: { type: integer }
+        resultsDone: { type: integer }
+        resultsTotal: { type: integer }
+        summary: { type: object, description: stoppedBy, partial, results, skipped, spentUsd and the paired comparison }
+        error: { type: string }
+        createdBy: { type: string }
+        createdAt: { type: string, format: date-time }
+        startedAt: { type: string, format: date-time }
+        finishedAt: { type: string, format: date-time }
     EvalDataset:
       type: object
       description: >
@@ -1437,6 +1464,139 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { description: A dataset with that name exists in the workspace }
         '503': { description: Evaluations need the PostgreSQL store }
+  /api/evals/experiments:
+    get:
+      tags: [evals]
+      summary: List evaluation experiments
+      description: >
+        Experiments in the caller's tenant and usable workspaces, newest first.
+        Needs the viewer role. 503 without PostgreSQL, or when
+        operator.evals.enabled is false.
+      parameters:
+        - { in: query, name: namespace, schema: { type: string } }
+        - { in: query, name: datasetId, schema: { type: integer } }
+        - { in: query, name: status, schema: { type: string } }
+        - { in: query, name: limit, schema: { type: integer, minimum: 1, maximum: 200 } }
+        - { in: query, name: cursor, schema: { type: string } }
+      responses:
+        '200':
+          description: experiments, with the cursor of the next page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [experiments]
+                properties:
+                  experiments: { type: array, items: { $ref: '#/components/schemas/EvalExperiment' } }
+                  nextCursor: { type: string }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { description: Experiments need the PostgreSQL store and operator.evals.enabled }
+    post:
+      tags: [evals]
+      summary: Queue an evaluation experiment
+      description: >
+        Runs 2 to 4 arms (an agent, optionally at a saved revision or on a
+        different ModelProvider) over a dataset at its current version. Needs the
+        builder role. Audited (create, kind EvalExperiment). The dataset needs at
+        least one grader. An arm that names objects the workspace lacks is a 422
+        with a missing list, the same payload as using a template. At most two
+        experiments per tenant are queued or running (409).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [datasetId, arms, budgetUsd]
+              properties:
+                datasetId: { type: integer }
+                name: { type: string }
+                arms:
+                  type: array
+                  minItems: 2
+                  maxItems: 4
+                  items:
+                    type: object
+                    required: [agent]
+                    properties:
+                      label: { type: string, description: DNS label of at most 20 characters; defaults to arm1, arm2 }
+                      agent: { type: string }
+                      revision: { type: integer, description: A saved revision number; omitted runs the live agent }
+                      hash: { type: string, description: Content hash the revision must still have }
+                      modelProvider: { type: string }
+                repeats: { type: integer, minimum: 1, maximum: 5 }
+                budgetUsd: { type: number }
+                runBudgetUsd: { type: number }
+                timeoutSeconds: { type: integer }
+                concurrency: { type: integer, minimum: 1, maximum: 16 }
+      responses:
+        '201':
+          description: queued
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/EvalExperiment' } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: The dataset has no graders, or the tenant has too many active experiments }
+        '422': { description: An arm names a missing agent, revision or object }
+        '503': { description: Experiments need the PostgreSQL store and operator.evals.enabled }
+  /api/evals/experiments/{id}:
+    get:
+      tags: [evals]
+      summary: Get an evaluation experiment
+      description: Needs the viewer role. Another tenant's experiment is a 404.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: integer } }
+      responses:
+        '200':
+          description: the experiment, with progress and, once it ends, its summary
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/EvalExperiment' } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { description: Experiments need the PostgreSQL store and operator.evals.enabled }
+  /api/evals/experiments/{id}/results:
+    get:
+      tags: [evals]
+      summary: List an experiment's results
+      description: One result per case, arm and repeat, with grades. Needs the viewer role.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: integer } }
+        - { in: query, name: arm, schema: { type: string } }
+        - { in: query, name: caseId, schema: { type: integer } }
+        - { in: query, name: limit, schema: { type: integer, minimum: 1, maximum: 200 } }
+        - { in: query, name: cursor, schema: { type: string } }
+      responses:
+        '200':
+          description: results and the cursor of the next page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [results]
+                properties:
+                  results: { type: array, items: { type: object } }
+                  nextCursor: { type: string }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { description: Experiments need the PostgreSQL store and operator.evals.enabled }
+  /api/evals/experiments/{id}/cancel:
+    post:
+      tags: [evals]
+      summary: Cancel an evaluation experiment
+      description: >
+        Needs the builder role. Audited. A queued experiment is cancelled at once;
+        a running one is stopped by the runner, which deletes its runs and keeps
+        the results so far. 409 when it has already ended.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: integer } }
+      responses:
+        '200':
+          description: the experiment
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/EvalExperiment' } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: The experiment has ended }
   /api/evals/datasets/{id}:
     parameters:
       - { in: path, name: id, required: true, schema: { type: integer, format: int64 } }
