@@ -73,6 +73,13 @@ func loadObservations(ctx context.Context, tx dbtx, scope string, q routingbench
 	if err := closeRows(rows); err != nil {
 		return ev, fmt.Errorf("loading shadow samples: %w", err)
 	}
+	if q.IncludeExperiments {
+		extra, err := loadExperimentSamples(ctx, tx, scope, q)
+		if err != nil {
+			return ev, err
+		}
+		ev.Samples = append(ev.Samples, extra...)
+	}
 
 	rows, err = tx.QueryContext(ctx, `
 		SELECT agent, stage, provider, COUNT(*)

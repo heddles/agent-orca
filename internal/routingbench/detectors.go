@@ -64,13 +64,16 @@ type Input struct {
 
 // Evidence is the numbers behind a finding.
 type Evidence struct {
-	Samples          int      `json:"samples"`
-	NetWin           float64  `json:"netWin"`
-	NetWinLo         float64  `json:"netWinLo"`
-	NetWinHi         float64  `json:"netWinHi"`
-	DeltaCostUSD     float64  `json:"deltaCostUsd"`
-	USDPerNetWin     *float64 `json:"usdPerNetWin,omitempty"`
-	InconsistentRate float64  `json:"inconsistentRate"`
+	Samples int `json:"samples"`
+	// ExperimentSamples is how many of Samples came from evaluation experiments
+	// (spec.evaluation.includeExperiments); the rest are shadow samples.
+	ExperimentSamples int      `json:"experimentSamples,omitempty"`
+	NetWin            float64  `json:"netWin"`
+	NetWinLo          float64  `json:"netWinLo"`
+	NetWinHi          float64  `json:"netWinHi"`
+	DeltaCostUSD      float64  `json:"deltaCostUsd"`
+	USDPerNetWin      *float64 `json:"usdPerNetWin,omitempty"`
+	InconsistentRate  float64  `json:"inconsistentRate"`
 	// ProjectedMonthlySavingsUSD is set by overspend findings when the traffic
 	// is known.
 	ProjectedMonthlySavingsUSD *float64 `json:"projectedMonthlySavingsUsd,omitempty"`
