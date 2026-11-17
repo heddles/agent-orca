@@ -76,7 +76,7 @@ export class ApiError extends Error {
   }
 }
 
-async function failure(res: Response): Promise<ApiError> {
+export async function failure(res: Response): Promise<ApiError> {
   let message = ''
   let errors: string[] = []
   let current: string | undefined

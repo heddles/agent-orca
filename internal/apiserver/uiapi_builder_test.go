@@ -13,6 +13,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
+	"github.com/heddles/agent-orca/internal/postgresql"
 	"github.com/heddles/agent-orca/internal/tenancy"
 )
 
@@ -326,7 +327,7 @@ func TestPublishAndUnpublish(t *testing.T) {
 	if n := countRunning(deps.Items, "pub-agent"); n != 1 {
 		t.Errorf("deployments of mine = %d", n)
 	}
-	if len(f.audit.events) != 2 || f.audit.events[0].Action != "create" || f.audit.events[1].Action != "update" {
+	if len(f.audit.events) != 2 || f.audit.events[0].Action != postgresql.AuditCreate || f.audit.events[1].Action != postgresql.AuditUpdate {
 		t.Errorf("audit = %+v", f.audit.events)
 	}
 

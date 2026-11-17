@@ -165,7 +165,7 @@ func (s *UIServer) handleUseTemplate(w http.ResponseWriter, r *http.Request) {
 		if members[i].kind == kindAgent {
 			agent = u
 		}
-		s.recordAudit(w, r, auditEventFor(postgresql.AuditCreate, members[i].kind, u.GetNamespace(), u.GetName(), u.GetResourceVersion(),
+		s.recordWrite(w, r, u, auditEventFor(postgresql.AuditCreate, members[i].kind, u.GetNamespace(), u.GetName(), u.GetResourceVersion(),
 			fmt.Sprintf("created %s %s/%s from template %s/%s", members[i].kind, u.GetNamespace(), u.GetName(), src.Namespace, src.Name)))
 	}
 	agent.Object["ownership"] = s.ownershipOf(ctx, agent, kindAgent)

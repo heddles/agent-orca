@@ -47,7 +47,7 @@ function messageOf(e: unknown): string {
 }
 
 /** The workspaces the caller can create agents in, and the primary one. */
-export function useWorkspaces(): { workspaces: Me['workspaces']; primary: string; loaded: boolean } {
+export function useWorkspaces(): { workspaces: Me['workspaces']; primary: string; loaded: boolean; roles: string[] } {
   const [me, setMe] = useState<Me | null>(null)
   const [loaded, setLoaded] = useState(false)
   useEffect(() => {
@@ -57,7 +57,7 @@ export function useWorkspaces(): { workspaces: Me['workspaces']; primary: string
   }, [])
   const workspaces = me?.workspaces ?? []
   const primary = (workspaces.find((w) => w.primary) ?? workspaces[0])?.namespace ?? ''
-  return { workspaces, primary, loaded }
+  return { workspaces, primary, loaded, roles: me?.roles ?? [] }
 }
 
 /** A kind of reference in words a business user knows. */

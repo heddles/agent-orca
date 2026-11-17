@@ -232,6 +232,17 @@ func (s *UIServer) prepareNew(w http.ResponseWriter, r *http.Request, obj *unstr
 // atomic: a name that exists is a 409, never a takeover. summary overrides the
 // audit text.
 func (s *UIServer) createUIObject(w http.ResponseWriter, r *http.Request, info crdKindInfo, obj *unstructured.Unstructured, summary string) {
+	s.createUIObjectAs(w, r, info, obj, summary, uiWrite{})
+}
+
+// uiWrite says how createUIObjectAs differs from a plain create: the status of
+// the answer (default 201 Created) and how the revision is recorded.
+type uiWrite struct {
+	status   int
+	revision revisionMeta
+}
+
+func (s *UIServer) createUIObjectAs(w http.ResponseWriter, r *http.Request, info crdKindInfo, obj *unstructured.Unstructured, summary string, how uiWrite) {
 	if err := s.persistNew(r, info.gvk, obj); err != nil {
 		if k8serrors.IsAlreadyExists(err) {
 			current := ""
@@ -251,8 +262,11 @@ func (s *UIServer) createUIObject(w http.ResponseWriter, r *http.Request, info c
 	if summary == "" {
 		summary = fmt.Sprintf("created %s %s/%s", info.gvk, obj.GetNamespace(), obj.GetName())
 	}
-	s.recordAudit(w, r, auditEventFor(postgresql.AuditCreate, info.gvk, obj.GetNamespace(), obj.GetName(), obj.GetResourceVersion(), summary))
-	w.WriteHeader(http.StatusCreated)
+	s.recordWriteAs(w, r, obj, auditEventFor(postgresql.AuditCreate, info.gvk, obj.GetNamespace(), obj.GetName(), obj.GetResourceVersion(), summary), how.revision)
+	if how.status == 0 {
+		how.status = http.StatusCreated
+	}
+	w.WriteHeader(how.status)
 	s.respondObject(w, r, obj, info.gvk)
 }
 
@@ -369,7 +383,7 @@ func (s *UIServer) updateResource(w http.ResponseWriter, r *http.Request, info c
 	}
 	unstructured.RemoveNestedField(obj.Object, "metadata", "managedFields")
 	if !isDryRun(r) {
-		s.recordAudit(w, r, auditEventFor(postgresql.AuditUpdate, info.gvk, ns, name, obj.GetResourceVersion(),
+		s.recordWrite(w, r, obj, auditEventFor(postgresql.AuditUpdate, info.gvk, ns, name, obj.GetResourceVersion(),
 			fmt.Sprintf("updated %s %s/%s (resourceVersion %s to %s)", info.gvk, ns, name, in.resourceVersion, obj.GetResourceVersion())))
 	}
 	s.respondObject(w, r, obj, info.gvk)
@@ -398,7 +412,7 @@ func (s *UIServer) deleteResource(w http.ResponseWriter, r *http.Request, info c
 		writeAPIError(w, "deleting resource", err)
 		return
 	}
-	s.recordAudit(w, r, auditEventFor(postgresql.AuditDelete, info.gvk, ns, name, obj.GetResourceVersion(),
+	s.recordWrite(w, r, obj, auditEventFor(postgresql.AuditDelete, info.gvk, ns, name, obj.GetResourceVersion(),
 		fmt.Sprintf("deleted %s %s/%s", info.gvk, ns, name)))
 	jsonResponse(w, map[string]string{"status": "deleted"})
 }
