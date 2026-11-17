@@ -2,8 +2,8 @@
  * Role gating hook. This is UX only: the API enforces roles. It decides which
  * sidebar sections and banners are shown, from the roles GET /api/me returns.
  *
- *   viewer, runner  Home, Agents, Runs, Approvals
- *   builder         adds Build, Evaluate, Operate
+ *   viewer, runner  Home, Agents, Runs, Approvals, Evaluate (read only)
+ *   builder         adds Build, Operate, and changing evaluation datasets
  *   admin           adds Settings
  *
  * When /api/me fails, or reports no tenant (authentication disabled, or the UI
@@ -18,7 +18,7 @@ export type Section =
 /** The lowest role that shows each section. */
 const SECTION_ROLE: Record<Section, string> = {
   home: 'viewer', agents: 'viewer', runs: 'viewer', approvals: 'viewer',
-  build: 'builder', evaluate: 'builder', operate: 'builder',
+  build: 'builder', evaluate: 'viewer', operate: 'builder',
   settings: 'admin',
 }
 
@@ -45,4 +45,14 @@ export function canSee(roles: Roles, section: Section): boolean {
 /** Whether platform setup problems (for example a missing state store) are shown: admins only. */
 export function canSeeSetupBanners(roles: Roles): boolean {
   return roles === null || roles.includes('admin')
+}
+
+/** Whether the caller may change evaluation datasets, cases and graders (the builder role). */
+export function canWriteEvals(roles: Roles): boolean {
+  return roles === null || roles.includes('builder')
+}
+
+/** Whether the caller may grade a result (the runner role, which builders and admins hold too). */
+export function canGradeEvals(roles: Roles): boolean {
+  return roles === null || roles.includes('runner')
 }

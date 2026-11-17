@@ -206,8 +206,8 @@ describe('sidebar', () => {
   })
 
   it.each([
-    ['viewer', ['Home', 'Agents', 'Runs', 'Approvals'], ['Build', 'Evaluate', 'Operate', 'Settings']],
-    ['runner', ['Home', 'Agents', 'Runs', 'Approvals'], ['Build', 'Evaluate', 'Operate', 'Settings']],
+    ['viewer', ['Home', 'Agents', 'Runs', 'Approvals', 'Evaluate'], ['Build', 'Operate', 'Settings']],
+    ['runner', ['Home', 'Agents', 'Runs', 'Approvals', 'Evaluate'], ['Build', 'Operate', 'Settings']],
     ['builder', ['Home', 'Agents', 'Runs', 'Approvals', 'Build', 'Evaluate', 'Operate'], ['Settings']],
     ['admin', ['Home', 'Agents', 'Runs', 'Approvals', 'Build', 'Evaluate', 'Operate', 'Settings'], []],
   ])('shows a %s the sections their role allows', async (role, shown, hidden) => {
