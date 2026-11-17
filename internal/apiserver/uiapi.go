@@ -200,6 +200,7 @@ func (s *UIServer) Handler() http.Handler {
 	mux.HandleFunc("/api/resources", s.handleResourceCollection)
 	mux.HandleFunc("/api/resources/", s.handleResource)
 	mux.HandleFunc("/api/openapi.json", s.handleUIOpenAPI)
+	s.registerAgentRoutes(mux)
 	if s.oidcLogin != nil {
 		s.oidcLogin.Register(mux)
 	}

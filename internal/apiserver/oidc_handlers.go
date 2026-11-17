@@ -661,13 +661,16 @@ func (h *OIDCLoginHandler) verifySession(r *http.Request) (*TenantIdentity, bool
 }
 
 // claimIsTrue reports whether an OIDC claim value denotes a truthy boolean.
+// claimTrue is the string form of a true boolean claim.
+const claimTrue = "true"
+
 // go-oidc unmarshals ID-token claims into map[string]any: booleans arrive as bool.
 func claimIsTrue(v any) bool {
 	if b, ok := v.(bool); ok {
 		return b
 	}
 	if s, ok := v.(string); ok {
-		return s == "true"
+		return s == claimTrue
 	}
 	return false
 }

@@ -1,0 +1,56 @@
+# Template: Research assistant
+# Based on: charts/demos/demo-llm-research and the parallel swarm demo
+# Curated by the platform team; see README.md for the template labels.
+apiVersion: agentorca.agentorca.io/v1alpha1
+kind: Agent
+metadata:
+  name: research-assistant
+  namespace: agent-orca-system
+  labels:
+    agentorca.io/template: "true"
+    agentorca.io/scope: platform
+    agentorca.io/template-group: research-assistant
+  annotations:
+    agentorca.io/maintainer: Platform team
+    agentorca.io/description: "Researches a question from several angles and returns a structured brief with what is known, what is disputed and what is still unknown."
+    agentorca.io/example-inputs: '["What are the main approaches to carbon capture and how mature is each?", "Compare event sourcing and CRUD for a small team building an internal tool."]'
+    agentorca.io/input-schema: '{"type":"object","required":["question"],"properties":{"question":{"type":"string","title":"Question","description":"What you want to find out."},"depth":{"type":"string","title":"How deep","description":"A quick answer or a thorough brief.","enum":["quick","standard","thorough"],"default":"standard"},"focus":{"type":"array","title":"Angles to cover","description":"Optional topics the brief must cover.","items":{"type":"string"}}}}'
+spec:
+  modelSelectorRef: default
+  systemPrompt: |
+    You are a careful research assistant. You answer questions with a short, structured brief.
+
+    The input is either plain text or a JSON object with "question" (required), "depth"
+    (quick, standard or thorough) and "focus" (a list of angles to cover).
+
+    Method:
+    1. Restate the question in one line and note any assumption you had to make.
+    2. Break it into three to five sub-questions and answer each separately.
+    3. For every claim, say how sure you are. Separate what is well established from what is
+       disputed and from what you could not determine.
+    4. Never invent sources. If you cannot point to a source you are certain of, say "unsourced".
+    5. End with a summary of at most five bullets and a list of open questions.
+
+    Match the length to the requested depth: quick is a paragraph, standard is about one page,
+    thorough covers every angle given in "focus".
+  runtime:
+    ociRef: ghcr.io/heddles/agent-orca/openai-reference:latest
+    framework: openai-compatible
+  memory:
+    checkpointEvery: 1
+  resources:
+    requests: {cpu: 50m, memory: 64Mi}
+    limits: {cpu: 200m, memory: 128Mi}
+---
+apiVersion: agentorca.agentorca.io/v1alpha1
+kind: AgentDeployment
+metadata:
+  name: research-assistant-chat
+  namespace: agent-orca-system
+  labels:
+    agentorca.io/scope: platform
+    agentorca.io/template-group: research-assistant
+spec:
+  agentRef: research-assistant
+  inputSource:
+    type: chat

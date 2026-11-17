@@ -1,8 +1,9 @@
 /**
- * RunHistoryView — paginated, filterable, sortable table of historical AgentRuns
- * archived to PostgreSQL. Provides search, phase filter, agent filter, and
- * sortable columns. Clicking a row navigates to the RunHistoryDetailView for
- * that run.
+ * RunsView — one table for every run: live runs (AgentRun resources in the
+ * cluster) merged with archived runs (read from PostgreSQL). The two are
+ * different data sources, so they are fetched separately and merged here; when
+ * a run is in both, the live copy wins. Filters: search, status, agent, source.
+ * Clicking a row opens the live or the archived detail view for that run.
  *
  * Honours better-layout §5 (progressive disclosure — filter bar collapses on
  * narrow viewports), better-accessibility §5 (keyboard operable sort buttons),
@@ -12,25 +13,38 @@
 import { useEffect, useState, useCallback, useMemo } from 'react'
 import {
   listRunHistory,
+  listRuns,
+  type AgentRunSummary,
   type RunHistorySummary,
   type RunHistoryResponse,
 } from '../api/sse'
 import { StatusBadge } from './StatusBadge'
 import { DESIGN, ds } from '../lib/designSystem'
 import { Icon, ICON } from '../lib/icons'
+import { PageHeader, EmptyState } from '../lib/layout'
 
 const PAGE_SIZES = [25, 50, 100]
 const PHASE_OPTIONS = ['', 'Pending', 'Running', 'Succeeded', 'Failed', 'HandedOff', 'WaitingForInput']
 
 type SortKey = 'name' | 'agent' | 'phase' | 'cost' | 'started' | 'completed'
 type SortDir = 'asc' | 'desc'
+export type RunSource = 'live' | 'archived'
+type SourceFilter = '' | RunSource
+
+/** A run from either source, tagged with where it came from. */
+type RunRow = RunHistorySummary & { source: RunSource }
 
 interface Props {
-  /** Navigate to a run's detail view. */
-  onNavigateToRun: (runName: string, namespace: string) => void
+  /** Open a run's detail view: the live view or the archived one. */
+  onNavigateToRun: (runName: string, namespace: string, source: RunSource) => void
+  /** Workspace to list; empty means all. */
+  namespace?: string
 }
 
-export function RunHistoryView({ onNavigateToRun }: Props) {
+export function RunsView({ onNavigateToRun, namespace = '' }: Props) {
+  const [live, setLive] = useState<AgentRunSummary[]>([])
+  const [liveError, setLiveError] = useState<string | null>(null)
+  const [sourceFilter, setSourceFilter] = useState<SourceFilter>('')
   const [page, setPage] = useState<RunHistoryResponse>({
     runs: [],
     total: 0,
@@ -55,6 +69,7 @@ export function RunHistoryView({ onNavigateToRun }: Props) {
         phase: filters.phase,
         agentRef: filters.agentRef,
         search: filters.search,
+        namespace,
       })
       setNotConfigured(false)
       // Defensive: an older/empty archive may serialize `runs` as null; coerce
@@ -70,11 +85,17 @@ export function RunHistoryView({ onNavigateToRun }: Props) {
         setNotConfigured(false)
         setError(msg)
       }
+    }
+    try {
+      setLive(await listRuns(namespace))
+      setLiveError(null)
+    } catch (e: any) {
+      setLiveError(e?.message ?? String(e))
     } finally {
       setLoading(false)
       setLastSynced(new Date())
     }
-  }, [page.limit, page.offset, filters])
+  }, [page.limit, page.offset, filters, namespace])
 
   useEffect(() => {
     void load()
@@ -103,7 +124,26 @@ export function RunHistoryView({ onNavigateToRun }: Props) {
   // Normalize to a non-null array: the backend may serialize an empty page as
   // `runs: null` (nil slice), which crashes the spread/map below with
   // "can't access property Symbol.iterator, t.runs is null".
-  const runs = page.runs ?? []
+  const archived = page.runs ?? []
+
+  // Merge both sources. Archived rows are already filtered by the server; live
+  // rows are filtered here with the same criteria. A run present in both is
+  // shown once, as live (even when the filters hide the live copy).
+  const runs = useMemo<RunRow[]>(() => {
+    const phase = filters.phase
+    const agent = filters.agentRef.trim().toLowerCase()
+    const search = filters.search.trim().toLowerCase()
+    const liveRows: RunRow[] = live
+      .filter((r) => (!phase || r.phase === phase)
+        && (!agent || r.agentRef.toLowerCase().includes(agent))
+        && (!search || r.name.toLowerCase().includes(search)))
+      .map((r) => ({ ...r, source: 'live' as const }))
+    const allLiveKeys = new Set(live.map((r) => `${r.namespace}/${r.name}`))
+    const archivedRows: RunRow[] = archived
+      .filter((r) => !allLiveKeys.has(`${r.namespace}/${r.name}`))
+      .map((r) => ({ ...r, source: 'archived' as const }))
+    return [...liveRows, ...archivedRows].filter((r) => !sourceFilter || r.source === sourceFilter)
+  }, [live, archived, filters, sourceFilter])
 
   // Sort the current page's rows (local sort — better for responsiveness than
   // re-querying the server for a column click).
@@ -149,28 +189,21 @@ export function RunHistoryView({ onNavigateToRun }: Props) {
     }
   }
 
+  const filtered = Boolean(filters.phase || filters.agentRef || filters.search || sourceFilter)
+  const archivedShown = runs.filter((r) => r.source === 'archived').length
+  const liveShown = runs.length - archivedShown
+  const total = liveShown + (sourceFilter === 'live' ? 0 : Math.max(page.total - (archived.length - archivedShown), archivedShown))
+  const firstRun = !loading && !filtered && !notConfigured && !error && !liveError && runs.length === 0
+
   const totalPages = Math.ceil(page.total / page.limit)
   const currentPage = totalPages > 0 ? Math.floor(page.offset / page.limit) + 1 : 0
 
-  if (notConfigured) {
-    return (
-      <div style={s.empty}>
-        <Icon icon={ICON.database} size={36} ariaHidden style={{ opacity: 0.25 }} />
-        <div style={s.emptyTitle}>Run history is not available</div>
-        <div style={s.emptyBody}>
-          The PostgreSQL archival store is not configured, so past sessions are not
-          retained. Set <code style={s.code}>PG_DSN</code> on the operator to enable
-          historical run tracking and session detail views.
-        </div>
-      </div>
-    )
-  }
-
-  if (error && !loading) {
+  // Both sources failed: nothing to show. One failing is reported inline below.
+  if (error && liveError && !loading) {
     return (
       <div style={s.empty}>
         <Icon icon={ICON.warning} size={36} ariaHidden style={{ color: 'var(--ds-error)' }} />
-        <div style={s.emptyTitle}>Failed to load run history</div>
+        <div style={s.emptyTitle}>Failed to load runs</div>
         <div style={s.emptyBody}>{error}</div>
         <button type="button" style={s.retryBtn} onClick={() => void load()}>
           <Icon icon={ICON.retry} size={12} ariaHidden style={{ marginRight: 4 }} /> Retry
@@ -181,6 +214,23 @@ export function RunHistoryView({ onNavigateToRun }: Props) {
 
   return (
     <div style={s.root}>
+      <PageHeader
+        title="Runs"
+        description="Every run of your agents, running now and finished. Open one to see its output, cost and what the agent did."
+      />
+      {notConfigured && (
+        <div role="note" style={s.note}>
+          Past runs are not being kept, so only runs still in the cluster are listed. A platform admin
+          can turn on run history by connecting a database (<code style={s.code}>PG_DSN</code> on the operator).
+        </div>
+      )}
+      {error && <div role="alert" style={s.note}>Could not load past runs: {error}</div>}
+      {liveError && <div role="alert" style={s.note}>Could not load live runs: {liveError}</div>}
+      {firstRun ? (
+        <EmptyState icon={ICON.runs} title="No runs yet">
+          Runs appear here once an agent has been started. Open Agents, pick a published agent and send it a message to create your first run.
+        </EmptyState>
+      ) : (<>
       {/* Filter bar */}
       <div style={s.filterBar}>
         <div style={s.filterGroup}>
@@ -195,16 +245,29 @@ export function RunHistoryView({ onNavigateToRun }: Props) {
           />
         </div>
         <div style={s.filterGroup}>
-          <label style={s.filterLabel}>Phase</label>
+          <label style={s.filterLabel}>Status</label>
           <select
             value={filters.phase}
             onChange={(e) => handleFilterChange('phase', e.target.value)}
             style={s.select}
-            aria-label="Filter by phase"
+            aria-label="Filter by status"
           >
             {PHASE_OPTIONS.map((p) => (
-              <option key={p || 'all'} value={p}>{p || 'All phases'}</option>
+              <option key={p || 'all'} value={p}>{p || 'All statuses'}</option>
             ))}
+          </select>
+        </div>
+        <div style={s.filterGroup}>
+          <label style={s.filterLabel}>Source</label>
+          <select
+            value={sourceFilter}
+            onChange={(e) => setSourceFilter(e.target.value as SourceFilter)}
+            style={s.select}
+            aria-label="Filter by source"
+          >
+            <option value="">Live and past</option>
+            <option value="live">Live only</option>
+            <option value="archived">Past only</option>
           </select>
         </div>
         <div style={s.filterGroup}>
@@ -244,8 +307,8 @@ export function RunHistoryView({ onNavigateToRun }: Props) {
       {/* Results summary */}
       <div style={s.summary}>
         <span style={s.summaryText}>
-          {page.total} run{page.total !== 1 ? 's' : ''} found
-          {filters.phase || filters.agentRef || filters.search ? ' (filtered)' : ''}
+          {total} run{total !== 1 ? 's' : ''} found
+          {filtered ? ' (filtered)' : ''}
         </span>
         <span style={s.summaryText}>
           {lastSynced ? `Last synced ${formatAge(lastSynced)} ago` : '• Idle'}
@@ -269,6 +332,7 @@ export function RunHistoryView({ onNavigateToRun }: Props) {
                 {renderHeader('cost', 'Cost', { ...s.th, textAlign: 'right' }, s.sortBtn)}
                 {renderHeader('started', 'Started', s.th, s.sortBtn)}
                 {renderHeader('completed', 'Completed', s.th, s.sortBtn)}
+                <th style={s.th}>Source</th>
                 <th style={s.th}>Namespace</th>
                 <th style={s.th}>Context</th>
                 <th style={s.th}>Actions</th>
@@ -277,10 +341,8 @@ export function RunHistoryView({ onNavigateToRun }: Props) {
             <tbody>
               {sorted.length === 0 && (
                 <tr>
-                  <td colSpan={9} style={s.empty}>
-                    {filters.phase || filters.agentRef || filters.search
-                      ? 'No runs match your filters.'
-                      : 'No historical runs found.'}
+                  <td colSpan={10} style={s.empty}>
+                    {filtered ? 'No runs match your filters.' : 'No runs found.'}
                   </td>
                 </tr>
               )}
@@ -288,7 +350,7 @@ export function RunHistoryView({ onNavigateToRun }: Props) {
                 <RunHistoryRow
                   key={`${run.namespace}/${run.name}`}
                   run={run}
-                  onClick={() => onNavigateToRun(run.name, run.namespace)}
+                  onClick={() => onNavigateToRun(run.name, run.namespace, run.source)}
                 />
               ))}
             </tbody>
@@ -335,6 +397,7 @@ export function RunHistoryView({ onNavigateToRun }: Props) {
           </div>
         </div>
       )}
+      </>)}
     </div>
   )
 
@@ -368,7 +431,7 @@ export function RunHistoryView({ onNavigateToRun }: Props) {
   }
 }
 
-function RunHistoryRow({ run, onClick }: { run: RunHistorySummary; onClick: () => void }) {
+function RunHistoryRow({ run, onClick }: { run: RunRow; onClick: () => void }) {
   const started = run.startTime ? new Date(run.startTime).toLocaleString() : '—'
   const completed = run.completionTime ? new Date(run.completionTime).toLocaleString() : '—'
   const contextPct = run.maxContextTokens
@@ -396,6 +459,7 @@ function RunHistoryRow({ run, onClick }: { run: RunHistorySummary; onClick: () =
       </td>
       <td style={s.td}>{started}</td>
       <td style={s.td}>{completed}</td>
+      <td style={s.td}>{run.source === 'live' ? 'Live' : 'Past'}</td>
       <td style={s.td}>
         <code style={s.code}>{run.namespace}</code>
       </td>
@@ -430,7 +494,7 @@ const s: Record<string, React.CSSProperties> = {
   root: {
     flex: 1,
     overflowY: 'auto',
-    padding: `${DESIGN.space.xl} ${DESIGN.space.xxl}`,
+    padding: `0 ${DESIGN.space.xl} ${DESIGN.space.xl}`,
     display: 'flex',
     flexDirection: 'column',
     gap: DESIGN.space.lg,
@@ -642,6 +706,14 @@ const s: Record<string, React.CSSProperties> = {
     lineHeight: 1.5,
     maxWidth: 480,
     textAlign: 'center' as const,
+  },
+  note: {
+    padding: '8px 12px',
+    fontSize: 13,
+    color: 'var(--ds-text-secondary)',
+    background: 'var(--ds-surface)',
+    border: '1px solid var(--ds-border)',
+    borderRadius: DESIGN.radii.md,
   },
   retryBtn: {
     marginTop: DESIGN.space.md,

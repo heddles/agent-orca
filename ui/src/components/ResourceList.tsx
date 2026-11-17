@@ -186,7 +186,7 @@ export function ResourceList({ tab, namespace = 'default', selection, onSelect }
     return (
       <div style={s.list}>
         {filterInput}
-        {!hasAny && <div style={s.empty}>{q ? 'No runs match your filter.' : 'No runs found.'}</div>}
+        {!hasAny && <div style={s.empty}>{q ? 'No runs match your filter.' : 'No runs yet. Start an agent from Agents and its runs will show up here.'}</div>}
         {PHASE_GROUPS.map((g) => {
           const items = groups.get(g.label) ?? []
           if (items.length === 0) return null
@@ -231,7 +231,7 @@ export function ResourceList({ tab, namespace = 'default', selection, onSelect }
     return (
       <div style={s.list}>
         {filterInput}
-        {!hasAny && <div style={s.empty}>{q ? 'No deployments match your filter.' : 'No deployments found.'}</div>}
+        {!hasAny && <div style={s.empty}>{q ? 'No published agents match your filter.' : 'No published agents yet. An agent becomes chat-ready once it is published to this workspace.'}</div>}
         {PHASE_GROUPS.map((g) => {
           const items = groups.get(g.label) ?? []
           if (items.length === 0) return null
@@ -276,7 +276,7 @@ export function ResourceList({ tab, namespace = 'default', selection, onSelect }
   return (
     <div style={s.list}>
       {filterInput}
-      {!hasAny && <div style={s.empty}>{q ? 'No workflows match your filter.' : 'No workflows found.'}</div>}
+      {!hasAny && <div style={s.empty}>{q ? 'No workflows match your filter.' : 'No workflows yet. Workflows chain several agents into one job.'}</div>}
       {PHASE_GROUPS.map((g) => {
         const items = groups.get(g.label) ?? []
         if (items.length === 0) return null

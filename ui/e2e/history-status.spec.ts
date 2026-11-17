@@ -59,14 +59,12 @@ test.describe('System Status API contract', () => {
 test.describe('History tab', () => {
   test('shows either a run list, an empty state, or an actionable not-configured banner', async ({ page, request }) => {
     const status = await fetchStatus(request)
-    await page.goto('/')
-    await page.getByRole('button', { name: /run history/i }).click()
+    await page.goto('/runs')
 
     if (status && !status.runHistoryConfigured) {
-      // PostgreSQL archival not wired → the UI must surface an actionable banner,
-      // never a silent blank (the original bug).
-      await expect(page.getByText(/Run history is not available/i)).toBeVisible({ timeout: 15_000 })
-      await expect(page.getByText(/PostgreSQL archival store is not configured/i)).toBeVisible()
+      // PostgreSQL archival not wired → the UI must say so in plain language,
+      // never a silent blank (the original bug). Live runs are still listed.
+      await expect(page.getByText(/Past runs are not being kept/i)).toBeVisible({ timeout: 15_000 })
     } else if (status && status.runHistoryConfigured) {
       // Archive is wired — table header or a genuine empty/filtered state.
       await expect(page.getByText(/run/i, { exact: false })).toBeVisible({ timeout: 15_000 })
@@ -81,7 +79,7 @@ test.describe('History tab', () => {
     // Regression: an empty archive serializes `runs` as null (nil slice). The UI
     // previously did `[...page.runs]` on null → "can't access property
     // Symbol.iterator, t.runs is null", which unmounted the whole React root and
-    // left `tab:"history"` stuck in sessionStorage (forcing a cache clear).
+    // left the history view stuck on reload.
     const crashes: string[] = []
     page.on('pageerror', (e) => crashes.push(String(e)))
 
@@ -107,13 +105,14 @@ test.describe('History tab', () => {
       await route.fulfill({ status: 200, contentType: 'application/json', body: '[]' })
     })
 
-    await page.goto('/')
-    await page.getByRole('button', { name: /run history/i }).click()
+    await page.route(/\/api\/runs\?/, (route) => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }))
+    await page.goto('/runs')
     await page.waitForTimeout(1500)
 
     expect(crashes.filter((e) => /Symbol.iterator|runs is null/i.test(e)),
       'status page must not crash the root on a null runs array').toEqual([])
-    await expect(page.getByText(/No historical runs found/i)).toBeVisible()
+    // With no live runs either, the new-user empty state is shown.
+    await expect(page.getByText(/No runs yet|No runs found/i).first()).toBeVisible()
   })
 })
 
@@ -122,8 +121,7 @@ test.describe('Status page', () => {
     const status = await fetchStatus(request)
     test.skip(!status, 'System status unreachable')
 
-    await page.goto('/')
-    await page.getByRole('button', { name: /system status/i }).click()
+    await page.goto('/operate/status')
 
     await expect(page.getByRole('heading', { name: /System Status/i })).toBeVisible({ timeout: 15_000 })
     await expect(page.getByText(/Subsystem Health/i)).toBeVisible()
@@ -143,8 +141,7 @@ test.describe('Status page', () => {
     const status = await fetchStatus(request)
     test.skip(!status || status.modelProviders.length === 0, 'No model providers in cluster')
 
-    await page.goto('/')
-    await page.getByRole('button', { name: /system status/i }).click()
+    await page.goto('/operate/status')
     await expect(page.getByText(/Model Providers/i)).toBeVisible({ timeout: 15_000 })
 
     // Stage C: the table gained a Namespace column header.
@@ -169,8 +166,7 @@ test.describe('Status page', () => {
     const status = await fetchStatus(request)
     test.skip(!status, 'System status unreachable')
 
-    await page.goto('/')
-    await page.getByRole('button', { name: /system status/i }).click()
+    await page.goto('/operate/status')
     await expect(page.getByText(/Metrics/i)).toBeVisible({ timeout: 15_000 })
 
     // The redesign replaced card views with graphs + a latency heatmap, a
@@ -224,8 +220,7 @@ test.describe('Status page', () => {
     })
     await page.route('**/api/system/alerts*', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }))
 
-    await page.goto('/')
-    await page.getByRole('button', { name: /system status/i }).click()
+    await page.goto('/operate/status')
     await expect(page.getByRole('radiogroup', { name: /time range/i })).toBeVisible({ timeout: 15000 })
     // Heatmap renders a row per percentile.
     await expect(page.locator('text=/^p50$/')).toBeVisible()
@@ -281,8 +276,7 @@ test.describe('Status page', () => {
     })
     await page.route('**/api/system/alerts*', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }))
 
-    await page.goto('/')
-    await page.getByRole('button', { name: /system status/i }).click()
+    await page.goto('/operate/status')
     await expect(page.getByRole('columnheader', { name: /Namespace/i })).toBeVisible({ timeout: 15000 })
 
     // No render crash.
@@ -327,8 +321,7 @@ test.describe('Status page', () => {
     await page.route('**/api/system/status*', (route) => route.fulfill({ status: 200, contentType: 'application/json', body }))
     await page.route('**/api/system/alerts*', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }))
 
-    await page.goto('/')
-    await page.getByRole('button', { name: /system status/i }).click()
+    await page.goto('/operate/status')
     await expect(page.getByRole('columnheader', { name: /Namespace/i })).toBeVisible({ timeout: 15000 })
     expect(crashes).toEqual([])
 
@@ -364,8 +357,7 @@ test.describe('Status page', () => {
     await page.route('**/api/system/status*', (route) => route.fulfill({ status: 200, contentType: 'application/json', body }))
     await page.route('**/api/system/alerts*', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }))
 
-    await page.goto('/')
-    await page.getByRole('button', { name: /system status/i }).click()
+    await page.goto('/operate/status')
     await expect(page.getByText(/Model Providers/i)).toBeVisible({ timeout: 15_000 })
 
     // Default: expanded. The table (Namespace columnheader) is visible.
@@ -386,8 +378,7 @@ test.describe('Status page', () => {
     const status = await fetchStatus(request)
     test.skip(!status || status.modelProviders.length === 0, 'No model providers in cluster')
 
-    await page.goto('/')
-    await page.getByRole('button', { name: /system status/i }).click()
+    await page.goto('/operate/status')
     await expect(page.getByText(/Model Providers/i)).toBeVisible({ timeout: 15_000 })
 
     // The providers table (identified by its Namespace column) must live in a
@@ -419,8 +410,9 @@ test.describe('History → detail navigation', () => {
     }
     const run = body.runs[0]
 
-    await page.goto('/')
-    await page.getByRole('button', { name: /run history/i }).click()
+    await page.goto('/runs')
+    // Past runs only: a run that is also still live would open the live view.
+    await page.getByLabel('Filter by source').selectOption('archived')
 
     // Wait for the table then click the detail chevron within the target row.
     const row = page.locator('tr', { hasText: run.name })
@@ -471,9 +463,11 @@ test.describe('History → detail navigation', () => {
         metrics: { requestCount24h: 1, p50LatencyMs: 10, p95LatencyMs: 20, p99LatencyMs: 30, tokenThroughput: 0, egressPublished: 0, egressFailed: 0 }, alerts: [] }),
     }))
     await page.route('**/api/system/alerts*', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }))
+    await page.route(/\/api\/runs\?/, (route) => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }))
 
-    await page.goto('/')
-    await page.getByRole('button', { name: /run history/i }).click()
+    await page.goto('/runs')
+    // Past runs only: a run that is also still live would open the live view.
+    await page.getByLabel('Filter by source').selectOption('archived')
     await expect(page.locator('tr', { hasText: 'run-1' })).toBeVisible({ timeout: 15_000 })
     await page.locator('tr', { hasText: 'run-1' }).getByRole('button', { name: /view/i }).first().click()
 

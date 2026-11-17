@@ -1,0 +1,71 @@
+# Template: Coder agent
+# Based on: config/samples/coder-agent.yaml (docs/coder-agent.md)
+# Needs OpenShell sandboxes enabled in the namespace (docs/openshell-sandbox.md).
+# The input is either plain text or JSON with "repository" and "task".
+apiVersion: agentorca.agentorca.io/v1alpha1
+kind: GuardrailPolicy
+metadata:
+  name: coder-agent
+  namespace: agent-orca-system
+  labels:
+    agentorca.io/scope: platform
+    agentorca.io/template-group: coder-agent
+spec:
+  outputFilters:
+    - name: redact-bearer-tokens
+      type: regex
+      action: redact
+      patterns:
+        - {name: bearer, pattern: "Bearer [A-Za-z0-9._~+/-]{16,}", replacement: "Bearer [REDACTED]"}
+---
+apiVersion: agentorca.agentorca.io/v1alpha1
+kind: Agent
+metadata:
+  name: coder-agent
+  namespace: agent-orca-system
+  labels:
+    agentorca.io/template: "true"
+    agentorca.io/scope: platform
+    agentorca.io/template-group: coder-agent
+  annotations:
+    agentorca.io/maintainer: Platform team
+    agentorca.io/description: "Clones a repository into an isolated sandbox, makes a small change, and builds and tests it before reporting back with the test output."
+    agentorca.io/example-inputs: '["Clone https://github.com/example/app, add a unit test for the parseConfig function and run the tests."]'
+    agentorca.io/input-schema: '{"type":"object","required":["repository","task"],"properties":{"repository":{"type":"string","title":"Repository URL","description":"The Git repository to work on."},"task":{"type":"string","title":"What should change?","description":"Describe the change and how to check it."}}}'
+spec:
+  modelSelectorRef: default
+  guardrailPolicyRef: coder-agent
+  disableClarify: true
+  systemPrompt: |
+    The input is plain text, or JSON with "repository" (a Git URL) and "task".
+
+    You work on Go and TypeScript projects. Follow the repository's own conventions
+    (AGENTS.md, CONTRIBUTING.md, Makefile targets) and keep changes small and tested.
+  networkIsolation:
+    splitPod: true
+  resources:
+    requests: {cpu: "2", memory: 4Gi, ephemeral-storage: 20Gi}
+    limits: {cpu: "4", memory: 8Gi, ephemeral-storage: 20Gi}
+  runtime:
+    ociRef: ghcr.io/heddles/agent-orca/dev-sandbox:latest
+    # OpenShell runs this command, not the image ENTRYPOINT.
+    command: ["/usr/local/bin/coder-agent"]
+    framework: openai-compatible
+    inputMode: env
+    localTools: true
+    sandbox:
+      provider: openshell
+      enforcement: enforce
+      egress:
+        # Source: git clone/fetch use POST (git-upload-pack), so read-write.
+        # Pushing needs a credential, which this sample does not give.
+        - {host: github.com, access: read-write}
+        - host: "*.githubusercontent.com"
+        # Go modules, checksums and toolchains.
+        - host: proxy.golang.org
+        - host: sum.golang.org
+        - host: storage.googleapis.com
+        # npm and PyPI.
+        - host: registry.npmjs.org
+        - host: pypi.org
+        - host: files.pythonhosted.org

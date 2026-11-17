@@ -133,7 +133,7 @@ export function ConfigList({ tab, namespace = 'default', selection, onSelect }: 
     return <div style={s.loading}>Loading…</div>
   }
 
-  const emptyLabel = { agents: 'agents', tools: 'tools', mcpservers: 'MCP servers', modelproviders: 'model providers', knowledgebases: 'knowledge bases', modelselectors: 'model selectors' }[tab]
+  const emptyLabel = { agents: 'agents', tools: 'tool connections', mcpservers: 'server connections', modelproviders: 'providers', knowledgebases: 'knowledge sources', modelselectors: 'model selection rules' }[tab]
 
   return (
     <div style={s.list}>
@@ -159,7 +159,7 @@ export function ConfigList({ tab, namespace = 'default', selection, onSelect }: 
         )}
       </div>
       {filtered.length === 0 && (
-        <div style={s.empty}>{q ? `No ${emptyLabel} match your filter.` : `No ${emptyLabel} found.`}</div>
+        <div style={s.empty}>{q ? `No ${emptyLabel} match your filter.` : `No ${emptyLabel} yet. They are added by your platform team.`}</div>
       )}
       {filtered.map((item) => {
         const active = selection?.kind === item.kind && selection.name === item.name

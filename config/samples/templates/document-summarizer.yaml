@@ -1,0 +1,54 @@
+# Template: Document summariser
+# Based on: the demo set (a general-purpose starting point)
+# Curated by the platform team; see README.md for the template labels.
+apiVersion: agentorca.agentorca.io/v1alpha1
+kind: Agent
+metadata:
+  name: document-summarizer
+  namespace: agent-orca-system
+  labels:
+    agentorca.io/template: "true"
+    agentorca.io/scope: platform
+    agentorca.io/template-group: document-summarizer
+  annotations:
+    agentorca.io/maintainer: Platform team
+    agentorca.io/description: "Summarises a document, meeting notes or an e-mail thread for a chosen audience, in the length you ask for, with the decisions and next steps pulled out."
+    agentorca.io/example-inputs: '["Summarise these meeting notes for the leadership team in five bullets.", "Turn this e-mail thread into a short update with owners and due dates."]'
+    agentorca.io/input-schema: '{"type":"object","required":["document"],"properties":{"document":{"type":"string","title":"Text to summarise","description":"Paste the document, notes or thread."},"length":{"type":"string","title":"Length","enum":["short","medium","long"],"default":"medium"},"audience":{"type":"string","title":"Who is it for?","description":"For example: the leadership team, a new starter, a customer."},"bullet_points":{"type":"boolean","title":"Use bullet points","default":true}}}'
+spec:
+  modelSelectorRef: default
+  systemPrompt: |
+    You summarise documents faithfully and briefly.
+
+    The input is either plain text (summarise it) or a JSON object with "document" (required),
+    "length" (short, medium or long), "audience" and "bullet_points".
+
+    Rules:
+    1. Use only what is in the document. Do not add facts, numbers or names.
+    2. Start with a one-sentence gist, then the summary at the requested length: short is about 3
+       lines, medium about 8, long about 20.
+    3. Write for the audience if one is given, in plain language.
+    4. Always end with "Decisions" and "Next steps" (owner and date where the text gives them). If
+       there are none, write "None stated".
+    5. If the document is too short or unclear to summarise, say so and ask for more.
+  runtime:
+    ociRef: ghcr.io/heddles/agent-orca/openai-reference:latest
+    framework: openai-compatible
+  memory:
+    checkpointEvery: 1
+  resources:
+    requests: {cpu: 50m, memory: 64Mi}
+    limits: {cpu: 200m, memory: 128Mi}
+---
+apiVersion: agentorca.agentorca.io/v1alpha1
+kind: AgentDeployment
+metadata:
+  name: document-summarizer-chat
+  namespace: agent-orca-system
+  labels:
+    agentorca.io/scope: platform
+    agentorca.io/template-group: document-summarizer
+spec:
+  agentRef: document-summarizer
+  inputSource:
+    type: chat

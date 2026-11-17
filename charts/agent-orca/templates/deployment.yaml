@@ -75,6 +75,8 @@ spec:
             {{- end }}
             - name: TENANT_ISOLATION_MODE
               value: {{ .Values.operator.tenantIsolationMode | default "audit" | quote }}
+            - name: PLATFORM_NAMESPACES
+              value: {{ join "," (.Values.operator.platformNamespaces | default (list .Release.Namespace)) | quote }}
             - name: ALLOW_LEGACY_TENANT_TOKENS
               value: {{ .Values.operator.allowLegacyTenantTokens | toString | quote }}
             - name: MACHINE_DEFAULT_ROLE
