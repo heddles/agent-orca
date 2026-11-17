@@ -25,6 +25,7 @@ COPY internal/checkpoint/ internal/checkpoint/
 COPY internal/controller/ internal/controller/
 COPY internal/egress/ internal/egress/
 COPY internal/evals/compare/ internal/evals/compare/
+COPY internal/evals/redact/ internal/evals/redact/
 COPY internal/executor/ internal/executor/
 COPY internal/framework/ internal/framework/
 COPY internal/githubapp/ internal/githubapp/

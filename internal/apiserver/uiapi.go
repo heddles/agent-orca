@@ -97,6 +97,10 @@ type UIServer struct {
 	revisions revisionStore
 	// revisionsKeep is how many revisions an object keeps; zero is DefaultRevisionsKeep.
 	revisionsKeep int
+	// evals overrides the evaluation dataset store (tests); nil means pgStore.
+	evals evalStore
+	// evalCfg holds the limits on evaluation datasets and cases.
+	evalCfg EvalsConfig
 	// auditUnavailable logs once that there is no PostgreSQL store to audit into.
 	auditUnavailable sync.Once
 	// routerMetricsURLFor builds a model-router metrics URL from a pod IP (tests);
@@ -211,6 +215,7 @@ func (s *UIServer) Handler() http.Handler {
 	mux.HandleFunc("/api/openapi.json", s.handleUIOpenAPI)
 	s.registerAgentRoutes(mux)
 	s.registerBuilderRoutes(mux)
+	s.registerEvalRoutes(mux)
 	if s.oidcLogin != nil {
 		s.oidcLogin.Register(mux)
 	}
@@ -380,6 +385,8 @@ func (s *UIServer) handleRunOrStream(w http.ResponseWriter, r *http.Request) {
 			s.handleRunRoutingEvents(w, r, ns, runName)
 		case "feedback":
 			s.handleRunFeedback(w, r, ns, runName)
+		case "dataset":
+			s.handleRunToDataset(w, r, ns, runName)
 		case "stop":
 			s.handleStopRun(w, r, ns, runName)
 		case "answer":

@@ -815,6 +815,7 @@ func main() {
 	uiAPI := apiserver.NewUIServer(k8sClient, mgr.GetClient(), stateConfig.Backend != "", stateStore, uiAuthEnabled, externalAuth, pgStore, alertManager) //nolint:lll
 	uiAPI.SetOwnership(ownershipDetect, tenancy.HandoffTTLFromEnv())
 	uiAPI.SetRevisionsKeep(apiserver.RevisionsKeepFromEnv())
+	uiAPI.SetEvals(evalsConfigFromEnv())
 	if uiOIDC != nil {
 		uiAPI.SetOIDCLogin(uiOIDC)
 	}
@@ -990,4 +991,20 @@ func parseAlertWebhooks(urls, hmacSecretB64 string) []apiserver.AlertWebhook {
 		}
 	}
 	return out
+}
+
+// evalsConfigFromEnv reads the limits on evaluation datasets (chart values
+// operator.evals.*). An unset or unreadable value keeps the default.
+func evalsConfigFromEnv() apiserver.EvalsConfig {
+	var c apiserver.EvalsConfig
+	if n, err := strconv.Atoi(strings.TrimSpace(os.Getenv("EVALS_MAX_CASES_PER_DATASET"))); err == nil && n > 0 {
+		c.MaxCasesPerDataset = n
+	}
+	if n, err := strconv.Atoi(strings.TrimSpace(os.Getenv("EVALS_MAX_CASE_BYTES"))); err == nil && n > 0 {
+		c.MaxCaseBytes = n
+	}
+	if v, err := strconv.ParseBool(strings.TrimSpace(os.Getenv("EVALS_ALLOW_UNREDACTED_CASES"))); err == nil {
+		c.DisallowUnredactedCases = !v
+	}
+	return c
 }
