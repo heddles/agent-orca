@@ -57,6 +57,18 @@ operator:
   # runs started before the upgrade keep working. false is an escape hatch:
   # change it with no runs in flight.
   stateTenantPrefix: true
+  # Evaluation datasets (docs/evaluations.md). Datasets live in PostgreSQL, so
+  # without a database the endpoints answer 503 whatever these say.
+  evals:
+    # The most live cases one dataset may hold (EVALS_MAX_CASES_PER_DATASET).
+    maxCasesPerDataset: 2000
+    # The size limit, in bytes, of a case's input and of its reference, each
+    # (EVALS_MAX_CASE_BYTES). The database ceiling is 65536; a higher value is
+    # capped to it.
+    maxCaseBytes: 65536
+    # Allow a case copied from a run to keep the original text (redact: false).
+    # false makes the API refuse that (EVALS_ALLOW_UNREDACTED_CASES).
+    allowUnredactedCases: true
   # extraArgs are appended to the operator container args. Use this to enable
   # optional features such as OIDC login, e.g.:
   #   extraArgs:
