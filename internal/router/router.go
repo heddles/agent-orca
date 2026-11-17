@@ -1337,7 +1337,7 @@ func (r *Router) forwardToProviderWithin(parent context.Context, provider *Provi
 	// Skip when a custom BaseURL is set since the proxy is
 	// OpenAI-compatible and expects the standard format regardless of model prefix.
 	if strings.HasPrefix(provider.LiteLLMModel, "anthropic/") && provider.BaseURL == "" {
-		key, err := readAPIKey(provider.APIKeyFile)
+		key, err := providerAPIKey(provider)
 		if err != nil {
 			return nil, fmt.Errorf("reading API key for %s: %w", provider.Name, err)
 		}
@@ -1367,7 +1367,7 @@ func (r *Router) forwardToProviderWithin(parent context.Context, provider *Provi
 	}
 
 	endpoint := liteLLMEndpoint(provider)
-	key, err := readAPIKey(provider.APIKeyFile)
+	key, err := providerAPIKey(provider)
 	if err != nil {
 		return nil, fmt.Errorf("reading API key for %s: %w", provider.Name, err)
 	}

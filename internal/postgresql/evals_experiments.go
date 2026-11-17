@@ -560,7 +560,7 @@ func (s *Store) ClaimEvalExperiments(ctx context.Context, owner string, lease ti
 		rows, err := tx.QueryContext(ctx, `
 		WITH picked AS (
 			SELECT id FROM eval_experiments
-			WHERE status IN ('queued','running')
+			WHERE status IN ('queued','running','awaiting_review')
 			  AND (lease_owner = $1 OR lease_until IS NULL OR lease_until < now())
 			ORDER BY id FOR UPDATE SKIP LOCKED LIMIT $3)
 		UPDATE eval_experiments e
@@ -597,7 +597,7 @@ func (s *Store) ActiveEvalExperiments(ctx context.Context, ids []int64) (map[int
 	err := s.scoped(ctx, func(tx dbtx, scope string) error {
 		rows, err := tx.QueryContext(ctx, `SELECT id FROM eval_experiments
 			WHERE id IN (SELECT jsonb_array_elements_text($1::jsonb)::bigint)
-			  AND status IN ('queued','running','grading') AND ($2::text = '*' OR tenant_id = $2)`, string(j), scope)
+			  AND status IN ('queued','running','grading','awaiting_review') AND ($2::text = '*' OR tenant_id = $2)`, string(j), scope)
 		if err != nil {
 			return err
 		}
@@ -745,19 +745,18 @@ func (s *Store) RecordEvalRunResult(ctx context.Context, experimentID int64, r E
 			return err
 		}
 		recorded = true
+		spend := r.CostUSD
 		for _, g := range grades {
-			err := tx.QueryRowContext(ctx, `
-			INSERT INTO eval_grades (tenant_id, result_id, grader_id, score, pass, not_graded, rationale)
-			SELECT $1, $2, id, $4, $5, $6, $7 FROM eval_graders WHERE id = $3 AND dataset_id = $8 AND tenant_id = $1
-			RETURNING id`, tenant, r.ID, g.GraderID, g.Score, g.Pass, g.NotGraded, g.Detail, datasetID).Scan(&g.ID)
+			err := insertGrade(ctx, tx, tenant, datasetID, r.ID, &g)
 			if errors.Is(err, sql.ErrNoRows) {
 				return fmt.Errorf("%w: a grader of the dataset was deleted during the experiment", ErrInvalidEval)
 			}
 			if err != nil {
 				return err
 			}
+			spend += g.JudgeCostUSD
 		}
-		_, err = tx.ExecContext(ctx, `UPDATE eval_experiments SET spent_usd = spent_usd + $2, updated_at = now() WHERE id = $1`, experimentID, r.CostUSD)
+		_, err = tx.ExecContext(ctx, `UPDATE eval_experiments SET spent_usd = spent_usd + $2, updated_at = now() WHERE id = $1`, experimentID, spend)
 		return err
 	})
 	if err != nil {
@@ -786,7 +785,7 @@ func (s *Store) FinishEvalExperiment(ctx context.Context, id int64, status strin
 		res, err := tx.ExecContext(ctx, `UPDATE eval_experiments
 			SET status = $2, summary = $3::jsonb, error = $4, finished_at = now(), updated_at = now(),
 			    cancel_requested = FALSE, lease_owner = '', lease_until = NULL
-			WHERE id = $1 AND status IN ('queued','running','grading') AND ($5::text = '*' OR tenant_id = $5)`,
+			WHERE id = $1 AND status IN ('queued','running','grading','awaiting_review') AND ($5::text = '*' OR tenant_id = $5)`,
 			id, status, sum, errText, scope)
 		if err != nil {
 			return err
@@ -817,7 +816,7 @@ func (s *Store) EvalSummaryRows(ctx context.Context, id int64) ([]compare.Row, e
 	err := s.scoped(ctx, func(tx dbtx, scope string) error {
 		rows, err := tx.QueryContext(ctx, `
 			SELECT r.id, r.case_id, r.arm, r.repeat, r.phase, r.cost_usd::float8, r.cost_complete, r.latency_ms,
-			       g.grader_id, g.score, g.pass, g.not_graded, gr.weight, gr.required
+			       g.grader_id, g.score, g.pass, g.not_graded, gr.weight, gr.required, g.status
 			FROM eval_results r
 			LEFT JOIN eval_grades g ON g.result_id = r.id AND g.tenant_id = r.tenant_id
 			LEFT JOIN eval_graders gr ON gr.id = g.grader_id AND gr.tenant_id = g.tenant_id
@@ -837,9 +836,10 @@ func (s *Store) EvalSummaryRows(ctx context.Context, id int64) ([]compare.Row, e
 				graderID                 sql.NullInt64
 				score, weight            sql.NullFloat64
 				pass, notGraded, require sql.NullBool
+				status                   sql.NullString
 			)
 			if err := rows.Scan(&rid, &caseID, &row.Arm, &row.Repeat, &row.Phase, &row.CostUSD, &row.CostComplete, &latency,
-				&graderID, &score, &pass, &notGraded, &weight, &require); err != nil {
+				&graderID, &score, &pass, &notGraded, &weight, &require, &status); err != nil {
 				return err
 			}
 			if rid != lastID {
@@ -854,7 +854,7 @@ func (s *Store) EvalSummaryRows(ctx context.Context, id int64) ([]compare.Row, e
 			if !graderID.Valid || (notGraded.Bool && !require.Bool) {
 				continue
 			}
-			g := compare.Grade{GraderID: graderID.Int64, Score: score.Float64, Pass: pass.Bool, Status: compare.GradeOK,
+			g := compare.Grade{GraderID: graderID.Int64, Score: score.Float64, Pass: pass.Bool, Status: status.String,
 				Weight: weight.Float64, Required: require.Bool}
 			if notGraded.Bool {
 				g.Score, g.Pass = 0, false

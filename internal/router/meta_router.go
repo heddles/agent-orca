@@ -377,6 +377,13 @@ func liteLLMEndpoint(provider *ProviderConfig) string {
 // trimmed of leading/trailing whitespace before being returned. This is
 // the single entry point for reading provider API keys across the
 // streaming, non-streaming, anthropic, and meta-router code paths.
+func providerAPIKey(p *ProviderConfig) (string, error) {
+	if p.APIKey != "" {
+		return p.APIKey, nil
+	}
+	return readAPIKey(p.APIKeyFile)
+}
+
 func readAPIKey(path string) (string, error) {
 	if path == "" {
 		return "", fmt.Errorf("no API key file configured")
