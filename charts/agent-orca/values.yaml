@@ -316,6 +316,11 @@ ownership:
   # How long an exported object waits for Git to adopt it.
   handoffTTL: 168h
 
+# Revision history of objects written through the UI API (needs PostgreSQL).
+# keep is how many revisions each object keeps, REVISIONS_KEEP.
+revisions:
+  keep: 50
+
 # External API server for enterprise integrations.
 # Exposes a REST API (port 8084) for external task submission, polling, and SSE streaming.
 # Authenticated via TenantConfig CRDs (OAuth2 client_credentials or federated OIDC).

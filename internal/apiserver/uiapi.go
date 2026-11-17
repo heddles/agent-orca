@@ -93,6 +93,10 @@ type UIServer struct {
 	feedback feedbackStore
 	// audit overrides the audit store (tests); nil means pgStore.
 	audit auditStore
+	// revisions overrides the revision store (tests); nil means pgStore.
+	revisions revisionStore
+	// revisionsKeep is how many revisions an object keeps; zero is DefaultRevisionsKeep.
+	revisionsKeep int
 	// auditUnavailable logs once that there is no PostgreSQL store to audit into.
 	auditUnavailable sync.Once
 	// routerMetricsURLFor builds a model-router metrics URL from a pod IP (tests);
@@ -906,7 +910,7 @@ func (s *UIServer) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("creating agent: %v", err), http.StatusInternalServerError)
 		return
 	}
-	s.recordAudit(w, r, auditEventFor(postgresql.AuditCreate, "Agent", agent.Namespace, agent.Name, agent.ResourceVersion,
+	s.recordWrite(w, r, agent, auditEventFor(postgresql.AuditCreate, "Agent", agent.Namespace, agent.Name, agent.ResourceVersion,
 		fmt.Sprintf("created Agent %s/%s", agent.Namespace, agent.Name)))
 
 	replicas := int32(1)
@@ -926,7 +930,7 @@ func (s *UIServer) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 	stampOwner(r.Context(), deployment)
 	stampUI(r, deployment)
 	if err := s.crdClient.Create(r.Context(), deployment); err == nil {
-		s.recordAudit(w, r, auditEventFor(postgresql.AuditCreate, "AgentDeployment", deployment.Namespace, deployment.Name, deployment.ResourceVersion,
+		s.recordWrite(w, r, deployment, auditEventFor(postgresql.AuditCreate, "AgentDeployment", deployment.Namespace, deployment.Name, deployment.ResourceVersion,
 			fmt.Sprintf("created AgentDeployment %s/%s", deployment.Namespace, deployment.Name)))
 	} else {
 		w.WriteHeader(http.StatusCreated)
@@ -2059,7 +2063,7 @@ func (s *UIServer) handleDeleteDeployment(w http.ResponseWriter, r *http.Request
 		http.Error(w, fmt.Sprintf("deleting deployment: %v", err), http.StatusInternalServerError)
 		return
 	}
-	s.recordAudit(w, r, auditEventFor(postgresql.AuditDelete, "AgentDeployment", namespace, deploymentName, deployment.ResourceVersion,
+	s.recordWrite(w, r, &deployment, auditEventFor(postgresql.AuditDelete, "AgentDeployment", namespace, deploymentName, deployment.ResourceVersion,
 		fmt.Sprintf("deleted AgentDeployment %s/%s", namespace, deploymentName)))
 	jsonResponse(w, map[string]string{"status": "ok"})
 }
@@ -2519,7 +2523,7 @@ func (s *UIServer) handleResourceCollection(w http.ResponseWriter, r *http.Reque
 func (s *UIServer) handleResource(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/resources/")
 	parts := strings.Split(path, "/")
-	if len(parts) < 3 || len(parts) > 4 {
+	if len(parts) < 3 || len(parts) > 6 {
 		http.Error(w, "expected /api/resources/{kind}/{namespace}/{name}", http.StatusBadRequest)
 		return
 	}
@@ -2527,6 +2531,14 @@ func (s *UIServer) handleResource(w http.ResponseWriter, r *http.Request) {
 	info, ok := crdKinds[kind]
 	if !ok {
 		http.Error(w, `{"error":"unknown resource kind"}`, http.StatusBadRequest)
+		return
+	}
+	if len(parts) >= 4 && parts[3] == "revisions" {
+		s.revisionsAction(w, r, info, ns, name, parts[4:])
+		return
+	}
+	if len(parts) > 4 {
+		http.Error(w, "expected /api/resources/{kind}/{namespace}/{name}", http.StatusBadRequest)
 		return
 	}
 	if len(parts) == 4 {

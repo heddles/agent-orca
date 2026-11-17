@@ -4,7 +4,7 @@
  * read-only, with Copy YAML and Duplicate.
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
-import { Link, useNavigate } from 'react-router'
+import { Link, useNavigate, useSearchParams } from 'react-router'
 import {
   ApiError, cancelHandoff, createResource, dryRunResource, getBuilderOptions, getResource, publishAgent,
   unpublishAgent, updateResource, type BuilderOptions, type KubeObject, type OptionItem,
@@ -20,6 +20,7 @@ import { DSButton, DSChip } from '../lib/primitives'
 import { ICON } from '../lib/icons'
 import { parseYAML, stringifyYAML } from '../lib/yaml'
 import { publishedAgentPath, ROUTES, buildPath } from '../lib/routes'
+import { RevisionHistory } from './RevisionHistory'
 import { BuilderTestPanel } from './BuilderTestPanel'
 import { DuplicateDialog, ExportDialog, Field, field, useWorkspaces } from './BuilderParts'
 
@@ -66,7 +67,12 @@ interface Props {
 export function AgentBuilder({ namespace, name }: Props) {
   const isNew = !name
   const navigate = useNavigate()
-  const { workspaces, primary, loaded: workspacesLoaded } = useWorkspaces()
+  const { workspaces, primary, loaded: workspacesLoaded, roles } = useWorkspaces()
+  const [params, setParams] = useSearchParams()
+  const tab: 'edit' | 'history' = params.get('tab') === 'history' && !isNew ? 'history' : 'edit'
+  const setTab = (t: 'edit' | 'history') => setParams((p) => { const n = new URLSearchParams(p); if (t === 'history') n.set('tab', 'history'); else n.delete('tab'); return n }, { replace: true })
+  const [historyKey, setHistoryKey] = useState(0)
+  const [latestVersion, setLatestVersion] = useState<number | null>(null)
 
   const [loading, setLoading] = useState(!isNew)
   const [loadError, setLoadError] = useState('')
@@ -104,6 +110,7 @@ export function AgentBuilder({ namespace, name }: Props) {
   const currentJSON = JSON.stringify(current)
   const dirty = !loading && initialJSON !== '' && currentJSON !== initialJSON
   const ownership = saved?.ownership
+  const handoffPending = !!ownership?.handoff?.pending
   const readOnly = !isNew && !!ownership && (ownership.owner !== 'ui' || !ownership.editable)
   const banner = readOnly ? ownershipBanner(ownership) : null
   const noModel = !!options && options.modelSelectors.length === 0 && !form.modelSelector
@@ -247,6 +254,19 @@ export function AgentBuilder({ namespace, name }: Props) {
     }
   }
 
+  // Restore: the history tab asks for the live version again after someone else changed the agent.
+  const reloadLive = async () => {
+    const obj = await getResource(KIND, form.namespace, form.name)
+    adopt(obj)
+    setConflict(false)
+    setHistoryKey((k) => k + 1)
+  }
+  const canRestore = roles.some((r) => r === 'builder' || r === 'admin') && !readOnly && !handoffPending
+  const historyNote = readOnly
+    ? (ownership?.owner === 'ui' ? 'You can look at the history but not restore a version.' : 'This agent is not managed here, so its history is read-only and no version can be restored.')
+    : handoffPending ? 'This agent is being handed over to Git, so versions cannot be restored until the handoff ends.'
+      : !canRestore ? 'Restoring a version needs the builder role.' : ''
+
   const save = async () => {
     setAttempted(true)
     setNotice('')
@@ -279,6 +299,7 @@ export function AgentBuilder({ namespace, name }: Props) {
         return
       }
       adopt(result)
+      setHistoryKey((k) => k + 1)
       setNotice('Saved.')
     } catch (e) {
       if (e instanceof ApiError && e.status === 409 && !isNew) setConflict(true)
@@ -297,6 +318,7 @@ export function AgentBuilder({ namespace, name }: Props) {
     try {
       const r = await publishAgent(form.namespace, form.name, { chat })
       setPublished(true)
+      setHistoryKey((k) => k + 1)
       setPublishMsg({ ok: true, text: 'Published. People can now use this agent.', deployment: r.deployment.metadata?.name })
     } catch (e) {
       setPublishMsg({ ok: false, text: `Could not publish: ${messageOf(e)}` })
@@ -369,6 +391,7 @@ export function AgentBuilder({ namespace, name }: Props) {
         description={isNew ? 'Describe what the agent should do. You can try it before anyone else uses it.' : 'Change what this agent does, then save and try it.'}
         actions={
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            {latestVersion !== null && <DSChip size="sm" variant="neutral">Version {latestVersion}</DSChip>}
             {dirty && <DSChip size="sm" variant="warning" dot>Unsaved changes</DSChip>}
             {!readOnly && <DSButton type="button" variant="primary" onClick={save} disabled={saving || noModel} title={noModel ? 'Set up a model first' : undefined}>{saving ? 'Saving…' : 'Save'}</DSButton>}
           </div>
@@ -410,7 +433,40 @@ export function AgentBuilder({ namespace, name }: Props) {
         )}
         <div role="status" aria-live="polite" style={{ fontSize: 12, color: ds.textSecondary, minHeight: 16 }}>{notice}</div>
 
-        <div style={s.columns}>
+        {!isNew && (
+          <div role="tablist" aria-label="Agent sections" style={{ display: 'flex', gap: 4, borderBottom: '1px solid var(--ds-border)' }}>
+            {(['edit', 'history'] as const).map((t) => (
+              <button
+                key={t} type="button" role="tab" id={`tab-${t}`} aria-selected={tab === t} aria-controls={`panel-${t}`}
+                tabIndex={tab === t ? 0 : -1} onClick={() => setTab(t)}
+                onKeyDown={(e) => { if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') { e.preventDefault(); setTab(t === 'edit' ? 'history' : 'edit'); document.getElementById(`tab-${t === 'edit' ? 'history' : 'edit'}`)?.focus() } }}
+                style={{ ...toggleBtn(false), padding: '8px 14px', fontSize: 13, background: 'transparent', color: tab === t ? ds.textPrimary : ds.textSecondary, borderBottom: `2px solid ${tab === t ? ds.accent : 'transparent'}`, fontWeight: tab === t ? 600 : 400 }}
+              >
+                {t === 'edit' ? 'Edit' : 'History'}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {!isNew && (
+          <div role="tabpanel" id="panel-history" aria-labelledby="tab-history" hidden={tab !== 'history'}>
+            <RevisionHistory
+              kind={KIND} namespace={form.namespace} name={form.name} isAgent
+              refreshKey={historyKey} live={saved} canRestore={canRestore} readOnlyNote={historyNote} dirty={dirty}
+              onLoaded={setLatestVersion}
+              onReload={reloadLive}
+              onRestored={(obj, from) => {
+                adopt(obj)
+                setConflict(false)
+                setSaveErrors([])
+                setHistoryKey((k) => k + 1)
+                setNotice(`Restored version ${from}. The form now shows it.`)
+              }}
+            />
+          </div>
+        )}
+
+        <div style={tab === 'edit' ? s.columns : { display: 'none' }} role={isNew ? undefined : 'tabpanel'} id="panel-edit" aria-labelledby={isNew ? undefined : 'tab-edit'} hidden={tab !== 'edit'}>
           <div style={s.main}>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
               <div role="group" aria-label="View" style={s.toggle}>

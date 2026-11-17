@@ -163,7 +163,7 @@ func (s *UIServer) createDeployment(w http.ResponseWriter, r *http.Request, agen
 		writeAPIError(w, "creating deployment", err)
 		return
 	}
-	s.recordAudit(w, r, auditEventFor(postgresql.AuditCreate, kindAgentDeployment, u.GetNamespace(), u.GetName(), u.GetResourceVersion(),
+	s.recordWrite(w, r, u, auditEventFor(postgresql.AuditCreate, kindAgentDeployment, u.GetNamespace(), u.GetName(), u.GetResourceVersion(),
 		fmt.Sprintf("published Agent %s/%s as AgentDeployment %s", agent.Namespace, agent.Name, u.GetName())))
 	w.WriteHeader(http.StatusCreated)
 	s.respondDeployment(w, r, u)
@@ -188,7 +188,7 @@ func (s *UIServer) updateDeployment(w http.ResponseWriter, r *http.Request, dep 
 		writeAPIError(w, "updating deployment", err)
 		return
 	}
-	s.recordAudit(w, r, auditEventFor(postgresql.AuditUpdate, kindAgentDeployment, dep.Namespace, dep.Name, dep.ResourceVersion,
+	s.recordWrite(w, r, dep, auditEventFor(postgresql.AuditUpdate, kindAgentDeployment, dep.Namespace, dep.Name, dep.ResourceVersion,
 		fmt.Sprintf("published Agent %s/%s through AgentDeployment %s", agent.Namespace, agent.Name, dep.Name)))
 	m, err := runtime.DefaultUnstructuredConverter.ToUnstructured(dep)
 	if err != nil {

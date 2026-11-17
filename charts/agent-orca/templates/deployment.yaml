@@ -87,6 +87,8 @@ spec:
               value: {{ dig "argoTrackingLabel" "" (.Values.ownership | default dict) | quote }}
             - name: OWNERSHIP_HANDOFF_TTL
               value: {{ dig "handoffTTL" "" (.Values.ownership | default dict) | quote }}
+            - name: REVISIONS_KEEP
+              value: {{ dig "keep" 50 (.Values.revisions | default dict) | toString | quote }}
             - name: TENANT_ISOLATION_MODE
               value: {{ .Values.operator.tenantIsolationMode | default "audit" | quote }}
             - name: PLATFORM_NAMESPACES
