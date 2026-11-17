@@ -12,9 +12,9 @@ func twoArms() []EvalArm {
 	return []EvalArm{{Label: "base", Agent: "support"}, {Label: "cand", Agent: "support", ModelProvider: "cheap"}}
 }
 
-func evalExpFixture(ctx context.Context, t *testing.T, s *Store, ns, name string) (EvalDataset, []EvalCase) {
+func evalExpFixture(ctx context.Context, t *testing.T, s *Store, name string) (EvalDataset, []EvalCase) {
 	t.Helper()
-	d := evalDS(ctx, t, s, ns, name)
+	d := evalDS(ctx, t, s, evalNSA, name)
 	cases, _, err := s.AddEvalCases(ctx, d.ID, []EvalCase{{Input: "one", Reference: "1"}, {Input: "two"}}, EvalLimits{})
 	if err != nil {
 		t.Fatal(err)
@@ -25,7 +25,7 @@ func evalExpFixture(ctx context.Context, t *testing.T, s *Store, ns, name string
 func TestEvalExperimentsAgainstPostgres(t *testing.T) {
 	s, _ := appStore(t)
 	ctx := WithTenant(context.Background(), tenantA)
-	d, cases := evalExpFixture(ctx, t, s, evalNSA, "exp")
+	d, cases := evalExpFixture(ctx, t, s, "exp")
 	lim := EvalExperimentLimits{}
 
 	// Create: the dataset version is frozen, defaults are filled in.
@@ -79,7 +79,7 @@ func TestEvalExperimentsAgainstPostgres(t *testing.T) {
 	}
 	// Another tenant has its own allowance.
 	b := WithTenant(context.Background(), tenantB)
-	dB, _ := evalExpFixture(b, t, s, evalNSA, "exp")
+	dB, _ := evalExpFixture(b, t, s, "exp")
 	if _, err := s.CreateEvalExperiment(b, EvalExperiment{DatasetID: dB.ID, Arms: twoArms(), BudgetUSD: 1, CreatedBy: evalUser}, lim); err != nil {
 		t.Fatalf("tenant B: %v", err)
 	}
@@ -87,6 +87,7 @@ func TestEvalExperimentsAgainstPostgres(t *testing.T) {
 	checkExperimentRunnerCalls(t, s, ctx, e, cases)
 }
 
+//nolint:gocyclo // one scenario, step by step
 func checkExperimentRunnerCalls(t *testing.T, s *Store, ctx context.Context, e EvalExperiment, cases []EvalCase) {
 	t.Helper()
 	plat := WithPlatform(context.Background())
@@ -199,8 +200,8 @@ func TestEvalExperimentsTenantIsolation(t *testing.T) {
 	s, raw := appStore(t)
 	base := context.Background()
 	a, b, plat := WithTenant(base, tenantA), WithTenant(base, tenantB), WithPlatform(base)
-	dA, casesA := evalExpFixture(a, t, s, evalNSA, "iso")
-	dB, casesB := evalExpFixture(b, t, s, evalNSA, "iso")
+	dA, casesA := evalExpFixture(a, t, s, "iso")
+	dB, casesB := evalExpFixture(b, t, s, "iso")
 	eA, err := s.CreateEvalExperiment(a, EvalExperiment{DatasetID: dA.ID, Arms: twoArms(), BudgetUSD: 1, CreatedBy: evalUser}, EvalExperimentLimits{})
 	if err != nil {
 		t.Fatal(err)

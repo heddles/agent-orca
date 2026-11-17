@@ -92,7 +92,7 @@ func evalIncluded(ctx context.Context) bool {
 }
 
 // wantsEval reports whether the request asks for evaluation runs too.
-func wantsEval(r *http.Request) bool { return r.URL.Query().Get("includeEval") == "true" }
+func wantsEval(r *http.Request) bool { return r.URL.Query().Get("includeEval") == claimTrue }
 
 // dropEvalObjects removes the objects of evaluation experiments from a list: the
 // hidden Agents and ModelSelectors an experiment makes and its AgentRuns are not

@@ -2,6 +2,7 @@ package postgresql
 
 import (
 	"context"
+	"maps"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -12,9 +13,7 @@ import (
 
 func archivedRun(name string, labels map[string]string) *agentorcav1alpha1.AgentRun {
 	l := map[string]string{tenancy.LabelTenantID: tenantA}
-	for k, v := range labels {
-		l[k] = v
-	}
+	maps.Copy(l, labels)
 	return &agentorcav1alpha1.AgentRun{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: evalNSA, Labels: l},
 		Spec:       agentorcav1alpha1.AgentRunSpec{AgentRef: "support", Input: "q"},

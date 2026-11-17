@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -90,14 +91,7 @@ func (f *fakeExperimentStore) ListEvalExperiments(ctx context.Context, q postgre
 	return out, nil
 }
 
-func contains(list []string, s string) bool {
-	for _, v := range list {
-		if v == s {
-			return true
-		}
-	}
-	return false
-}
+func contains(list []string, s string) bool { return slices.Contains(list, s) }
 
 func (f *fakeExperimentStore) RequestEvalCancel(ctx context.Context, id int64) (postgresql.EvalExperiment, error) {
 	e, err := f.GetEvalExperiment(ctx, id)
@@ -155,11 +149,11 @@ func newExpFixture(t *testing.T) *expFixture {
 	f.s.evalExperiments = exps
 	own := map[string]string{tenancy.LabelTenantID: isoA}
 	for _, o := range []client.Object{
-		&agentorcav1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "helper", Namespace: "shared", Labels: own},
+		&agentorcav1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: helperAgent, Namespace: sharedNS, Labels: own},
 			Spec: agentorcav1alpha1.AgentSpec{ModelSelectorRef: "default", Tools: []string{"search"}}},
-		&agentorcav1alpha1.ModelSelector{ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: "shared", Labels: own}},
-		&agentorcav1alpha1.Tool{ObjectMeta: metav1.ObjectMeta{Name: "search", Namespace: "shared", Labels: own}},
-		&agentorcav1alpha1.ModelProvider{ObjectMeta: metav1.ObjectMeta{Name: "cheap", Namespace: "shared", Labels: own}},
+		&agentorcav1alpha1.ModelSelector{ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: sharedNS, Labels: own}},
+		&agentorcav1alpha1.Tool{ObjectMeta: metav1.ObjectMeta{Name: "search", Namespace: sharedNS, Labels: own}},
+		&agentorcav1alpha1.ModelProvider{ObjectMeta: metav1.ObjectMeta{Name: "cheap", Namespace: sharedNS, Labels: own}},
 	} {
 		if err := f.s.crdClient.Create(context.Background(), o); err != nil {
 			t.Fatal(err)
@@ -185,12 +179,14 @@ func expBody(datasetID int64, arms string) string {
 	return fmt.Sprintf(`{"datasetId":%d,"name":"v2 vs v1","arms":%s,"budgetUsd":2,"runBudgetUsd":0.5}`, datasetID, arms)
 }
 
+const helperAgent = "helper"
+
 const twoModelArms = `[{"label":"base","agent":"helper"},{"label":"cheap","agent":"helper","modelProvider":"cheap"}]`
 
-func (f *expFixture) create(arms string) (postgresql.EvalDataset, experimentView) {
+func (f *expFixture) create() (postgresql.EvalDataset, experimentView) {
 	f.t.Helper()
 	d := f.graded(fmt.Sprintf("ds-%d", len(f.exps.exps)))
-	rec := f.do(f.builder(), http.MethodPost, "/api/evals/experiments", expBody(d.ID, arms))
+	rec := f.do(f.builder(), http.MethodPost, "/api/evals/experiments", expBody(d.ID, twoModelArms))
 	if rec.Code != http.StatusCreated {
 		f.t.Fatalf("create = %d %s", rec.Code, rec.Body)
 	}
@@ -208,7 +204,7 @@ func TestExperiments_CreateIsAuditedWithoutText(t *testing.T) {
 		t.Fatalf("create = %d %s", rec.Code, rec.Body)
 	}
 	got := evalDecode[experimentView](t, rec)
-	if got.Status != postgresql.ExperimentQueued || got.DatasetVersion != 2 || got.Namespace != "shared" || got.ResultsTotal != 2 ||
+	if got.Status != postgresql.ExperimentQueued || got.DatasetVersion != 2 || got.Namespace != sharedNS || got.ResultsTotal != 2 ||
 		got.Repeats != 1 || got.Concurrency != 4 || got.CreatedBy != builderUser || len(got.Arms) != 2 {
 		t.Fatalf("created = %+v", got)
 	}
@@ -216,10 +212,10 @@ func TestExperiments_CreateIsAuditedWithoutText(t *testing.T) {
 		t.Fatalf("audit rows = %d, want %d", f.auditCount(), before+1)
 	}
 	e := f.audit.events[len(f.audit.events)-1]
-	if e.Kind != kindEvalExperiment || e.Action != postgresql.AuditCreate || e.Namespace != "shared" || e.Name != fmt.Sprint(got.ID) {
+	if e.Kind != kindEvalExperiment || e.Action != postgresql.AuditCreate || e.Namespace != sharedNS || e.Name != fmt.Sprint(got.ID) {
 		t.Errorf("audit = %+v", e)
 	}
-	for _, text := range []string{"secret question", "secret answer", "helper"} {
+	for _, text := range []string{"secret question", "secret answer", helperAgent} {
 		if strings.Contains(e.Summary, text) {
 			t.Errorf("audit summary %q holds %q", e.Summary, text)
 		}
@@ -240,7 +236,7 @@ func TestExperiments_CreateIsAuditedWithoutText(t *testing.T) {
 
 func TestExperiments_Roles(t *testing.T) {
 	f := newExpFixture(t)
-	d, e := f.create(twoModelArms)
+	d, e := f.create()
 	body := expBody(d.ID, twoModelArms)
 	for _, role := range []tenancy.Role{tenancy.RoleViewer, tenancy.RoleRunner} {
 		id := idFor(role, isoA)
@@ -263,7 +259,7 @@ func TestExperiments_Roles(t *testing.T) {
 
 func TestExperiments_CancelIsAudited(t *testing.T) {
 	f := newExpFixture(t)
-	_, e := f.create(twoModelArms)
+	_, e := f.create()
 	before := f.auditCount()
 	rec := f.do(f.builder(), http.MethodPost, fmt.Sprintf("/api/evals/experiments/%d/cancel", e.ID), "")
 	if rec.Code != http.StatusOK || evalDecode[experimentView](t, rec).Status != postgresql.ExperimentCancelled {
@@ -285,7 +281,7 @@ func TestExperiments_CancelIsAudited(t *testing.T) {
 
 func TestExperiments_ForeignTenantSeesNothing(t *testing.T) {
 	f := newExpFixture(t)
-	d, e := f.create(twoModelArms)
+	d, e := f.create()
 	b := idFor(tenancy.RoleAdmin, isoB)
 	for _, c := range []struct{ method, path, body string }{
 		{http.MethodGet, fmt.Sprintf("/api/evals/experiments/%d", e.ID), ""},
@@ -308,7 +304,7 @@ func TestExperiments_ForeignTenantSeesNothing(t *testing.T) {
 
 func TestExperiments_ANamespaceTheCallerMayNotUseIsNotFound(t *testing.T) {
 	f := newExpFixture(t)
-	_, e := f.create(twoModelArms)
+	_, e := f.create()
 	f.exps.exps[e.ID].Namespace = "elsewhere"
 	if rec := f.do(f.builder(), http.MethodGet, fmt.Sprintf("/api/evals/experiments/%d", e.ID), ""); rec.Code != http.StatusNotFound {
 		t.Errorf("get = %d", rec.Code)
@@ -325,7 +321,7 @@ func TestExperiments_MissingReferencesAre422WithTheTemplatePayload(t *testing.T)
 	// The agent names a Tool the workspace does not have, and a model arm
 	// names a provider it does not have.
 	if err := f.s.crdClient.Create(context.Background(), &agentorcav1alpha1.Agent{
-		ObjectMeta: metav1.ObjectMeta{Name: "needy", Namespace: "shared", Labels: map[string]string{tenancy.LabelTenantID: isoA}},
+		ObjectMeta: metav1.ObjectMeta{Name: "needy", Namespace: sharedNS, Labels: map[string]string{tenancy.LabelTenantID: isoA}},
 		Spec:       agentorcav1alpha1.AgentSpec{ModelSelectorRef: "default", Tools: []string{"ghost-tool"}},
 	}); err != nil {
 		t.Fatal(err)
@@ -347,7 +343,7 @@ func TestExperiments_MissingReferencesAre422WithTheTemplatePayload(t *testing.T)
 		byName[m.Kind+"/"+m.Name] = m
 	}
 	tool, provider := byName["Tool/ghost-tool"], byName["ModelProvider/nope"]
-	if tool.Arm != "cand" || tool.Namespace != "shared" || len(tool.Alternatives) != 1 || tool.Alternatives[0] != "search" ||
+	if tool.Arm != "cand" || tool.Namespace != sharedNS || len(tool.Alternatives) != 1 || tool.Alternatives[0] != "search" ||
 		provider.Arm != "cand" || len(provider.Alternatives) != 1 || provider.Alternatives[0] != "cheap" {
 		t.Errorf("missing = %+v", got.Missing)
 	}
@@ -378,7 +374,7 @@ func TestExperiments_RevisionArmsNeedARevisionAndAMatchingHash(t *testing.T) {
 	if rec := f.do(f.builder(), http.MethodPost, "/api/evals/experiments", expBody(d.ID, arms)); rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("unknown revision: %d %s", rec.Code, rec.Body)
 	}
-	revs.add("shared", "helper", 3, `{"spec":{"modelSelectorRef":"default","tools":["search"],"systemPrompt":"old"}}`)
+	revs.add(sharedNS, helperAgent, 3, `{"spec":{"modelSelectorRef":"default","tools":["search"],"systemPrompt":"old"}}`)
 	if rec := f.do(f.builder(), http.MethodPost, "/api/evals/experiments", expBody(d.ID, arms)); rec.Code != http.StatusCreated {
 		t.Fatalf("known revision: %d %s", rec.Code, rec.Body)
 	}
@@ -493,7 +489,7 @@ func TestEvalRunsAreLeftOutOfTheRunList(t *testing.T) {
 		s.handleListRuns(rec, req)
 		var out []struct{ Name string }
 		_ = json.Unmarshal(rec.Body.Bytes(), &out)
-		var n []string
+		n := make([]string, 0, len(out))
 		for _, r := range out {
 			n = append(n, r.Name)
 		}
@@ -555,7 +551,7 @@ func TestEvalRunsAreLeftOutOfTheFleet(t *testing.T) {
 			Spec: agentorcav1alpha1.AgentSpec{ModelSelectorRef: fleetTestSelector}},
 		evalLabelled(&agentorcav1alpha1.AgentRun{
 			ObjectMeta: metav1.ObjectMeta{Name: "eval-run", Namespace: insightsNS},
-			Spec:       agentorcav1alpha1.AgentRunSpec{AgentRef: "helper"},
+			Spec:       agentorcav1alpha1.AgentRunSpec{AgentRef: helperAgent},
 			Status: agentorcav1alpha1.AgentRunStatus{Phase: agentorcav1alpha1.AgentRunPhaseFailed, SpendUSD: "99",
 				StartTime: &now, CompletionTime: &now},
 		}),
@@ -566,7 +562,7 @@ func TestEvalRunsAreLeftOutOfTheFleet(t *testing.T) {
 	}
 	id := &TenantIdentity{TenantID: "tnt_a", TenantName: "a", Namespaces: []string{insightsNS}, UserID: "ada", Roles: tenancy.RoleViewer.Expand()}
 	code, got := fleetGet(t, s, id, fleetPath)
-	if code != http.StatusOK || len(got.Agents) != 1 || got.Agents[0].Name != "helper" {
+	if code != http.StatusOK || len(got.Agents) != 1 || got.Agents[0].Name != helperAgent {
 		t.Fatalf("fleet = %d %+v", code, got.Agents)
 	}
 	row := got.Agents[0]

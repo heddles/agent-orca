@@ -50,6 +50,8 @@ const (
 	kindEvalExperiment = "EvalExperiment"
 	experimentsSeg     = "experiments"
 	maxExperimentBody  = 64 << 10
+	segResults         = "results"
+	segCancel          = "cancel"
 )
 
 // evalExperimentStore is the slice of postgresql.Store the experiment endpoints use.
@@ -145,11 +147,11 @@ func (s *UIServer) handleEvalExperiment(w http.ResponseWriter, r *http.Request) 
 	switch {
 	case len(parts) == 1 && r.Method == http.MethodGet:
 		s.getEvalExperiment(w, r, id)
-	case len(parts) == 2 && parts[1] == "results" && r.Method == http.MethodGet:
+	case len(parts) == 2 && parts[1] == segResults && r.Method == http.MethodGet:
 		s.listEvalExperimentResults(w, r, id)
-	case len(parts) == 2 && parts[1] == "cancel" && r.Method == http.MethodPost:
+	case len(parts) == 2 && parts[1] == segCancel && r.Method == http.MethodPost:
 		s.cancelEvalExperiment(w, r, id)
-	case len(parts) == 2 && parts[1] != "results" && parts[1] != "cancel":
+	case len(parts) == 2 && parts[1] != segResults && parts[1] != segCancel:
 		http.NotFound(w, r)
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

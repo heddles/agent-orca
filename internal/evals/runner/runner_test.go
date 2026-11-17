@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"sync"
@@ -131,7 +132,7 @@ func (f *fakeStore) ListEvalExperimentResultKeys(ctx context.Context, id int64) 
 	f.wantScope(ctx, id)
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	var out []postgresql.EvalResultKey
+	out := make([]postgresql.EvalResultKey, 0, len(f.results[id]))
 	for s, r := range f.results[id] {
 		out = append(out, postgresql.EvalResultKey{CaseID: s.caseID, Arm: s.arm, Repeat: s.repeat, Phase: r.Phase, CostUSD: r.CostUSD})
 	}
@@ -171,7 +172,7 @@ func (f *fakeStore) EvalSummaryRows(ctx context.Context, id int64) ([]compare.Ro
 	f.wantScope(ctx, id)
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	var out []compare.Row
+	out := make([]compare.Row, 0, len(f.results[id]))
 	for s, r := range f.results[id] {
 		row := compare.Row{CaseID: s.caseID, Arm: s.arm, Repeat: s.repeat, Phase: r.Phase, CostUSD: r.CostUSD, CostComplete: !r.CostIncomplete}
 		for _, g := range f.grades[id][s] {
@@ -223,7 +224,8 @@ func newEnv(t *testing.T, o opts) *env {
 	if err := agentorcav1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
-	objs := []client.Object{
+	objs := make([]client.Object, 0, 5+len(o.tcs)+len(o.extras))
+	objs = append(objs,
 		&agentorcav1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "support", Namespace: ns, Labels: labelled(tenant)},
 			Spec: agentorcav1alpha1.AgentSpec{ModelSelectorRef: "default", SystemPrompt: "live prompt"}},
 		&agentorcav1alpha1.ModelSelector{ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: ns, Labels: labelled(tenant)},
@@ -231,7 +233,7 @@ func newEnv(t *testing.T, o opts) *env {
 		&agentorcav1alpha1.ModelProvider{ObjectMeta: metav1.ObjectMeta{Name: "big", Namespace: ns, Labels: labelled(tenant)}},
 		&agentorcav1alpha1.ModelProvider{ObjectMeta: metav1.ObjectMeta{Name: "cheap", Namespace: ns, Labels: labelled(tenant)}},
 		&agentorcav1alpha1.TenantConfig{ObjectMeta: metav1.ObjectMeta{Name: "acme"}, Spec: agentorcav1alpha1.TenantConfigSpec{TenantID: tenant}},
-	}
+	)
 	for i := range o.tcs {
 		objs = append(objs, &o.tcs[i])
 	}
@@ -308,19 +310,13 @@ func (e *env) names(list client.ObjectList) []string {
 	return out
 }
 
-func contains(list []string, want string) bool {
-	for _, s := range list {
-		if s == want {
-			return true
-		}
-	}
-	return false
-}
+func contains(list []string, want string) bool { return slices.Contains(list, want) }
 
 func containsGrader() postgresql.EvalGrader {
 	return postgresql.EvalGrader{ID: 9, DatasetID: 7, Name: "ok", Kind: "contains", Config: []byte(`{"value":"ok"}`), Weight: 1, Required: true}
 }
 
+//nolint:gocyclo // one scenario, step by step
 func TestExperimentRunsToCompletion(t *testing.T) {
 	e := newEnv(t, opts{})
 	e.store.graders = []postgresql.EvalGrader{containsGrader()}
@@ -591,8 +587,9 @@ func TestSweepDeletesWhatFinishedOrVanishedExperimentsLeft(t *testing.T) {
 	if sels := e.names(&agentorcav1alpha1.ModelSelectorList{}); !contains(sels, "eval-1-cand") || contains(sels, "eval-2-cand") || !contains(sels, "default") {
 		t.Errorf("selectors = %v", sels)
 	}
-	var names []string
-	for _, run := range e.runs() {
+	runs := e.runs()
+	names := make([]string, 0, len(runs))
+	for _, run := range runs {
 		names = append(names, run.Name)
 	}
 	want := []string{"eval-1-running", "eval-2-done", "production-run"}

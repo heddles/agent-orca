@@ -1033,13 +1033,14 @@ func evalsConfigFromEnv() apiserver.EvalsConfig {
 // operator.evals.*). An unset or unreadable value keeps the default.
 func evalExperimentLimitsFromEnv() postgresql.EvalExperimentLimits {
 	var l postgresql.EvalExperimentLimits
-	if n, err := strconv.Atoi(strings.TrimSpace(os.Getenv("EVALS_MAX_ACTIVE_EXPERIMENTS_PER_TENANT"))); err == nil && n > 0 {
+	env := func(name string) string { return strings.TrimSpace(os.Getenv(name)) }
+	if n, err := strconv.Atoi(env("EVALS_MAX_ACTIVE_EXPERIMENTS_PER_TENANT")); err == nil && n > 0 {
 		l.MaxActivePerTenant = n
 	}
-	if n, err := strconv.Atoi(strings.TrimSpace(os.Getenv("EVALS_MAX_CASES_PER_EXPERIMENT"))); err == nil && n > 0 {
+	if n, err := strconv.Atoi(env("EVALS_MAX_CASES_PER_EXPERIMENT")); err == nil && n > 0 {
 		l.MaxCasesPerExperiment = n
 	}
-	if v, err := strconv.ParseFloat(strings.TrimSpace(os.Getenv("EVALS_MAX_BUDGET_PER_EXPERIMENT_USD")), 64); err == nil && v > 0 {
+	if v, err := strconv.ParseFloat(env("EVALS_MAX_BUDGET_PER_EXPERIMENT_USD"), 64); err == nil && v > 0 {
 		l.MaxBudgetUSD = v
 	}
 	return l
