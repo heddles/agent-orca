@@ -13,7 +13,7 @@
  *   /approvals                                Approvals
  *   /build                                    my agents, with Create and Use a template
  *   /build/new, /build/:ns/:name              the agent builder
- *   /evaluate                                 placeholder for a later stage
+ *   /evaluate, /evaluate/:id                  evaluation datasets, and one with its cases and graders
  *   /operate/{fleet,costs,routing,status}     Operate tabs (fleet is the default)
  *   /operate/workflows[/:ns/:name]            workflows
  *   /settings/providers[/:ns/:name]           model providers
@@ -46,6 +46,8 @@ import { FleetView } from './components/FleetView'
 import { RoutingInsightsView } from './components/RoutingInsightsView'
 import { AgentBuilder } from './components/AgentBuilder'
 import { BuildHome } from './components/BuildHome'
+import { EvalDatasets } from './components/EvalDatasets'
+import { EvalDatasetDetail } from './components/EvalDatasetDetail'
 import { AppShell } from './shell/AppShell'
 import { ICON } from './lib/icons'
 import { ds } from './lib/designSystem'
@@ -280,17 +282,13 @@ function BuilderRoute() {
   return <AgentBuilder key={`${ns}/${name}`} namespace={ns} name={name} />
 }
 
-// ── Evaluate (a later stage) ─────────────────────────────────────────────────
+// ── Evaluate ─────────────────────────────────────────────────────────────────
 
-function ComingPage({ title, description, children }: { title: string; description: string; children: ReactNode }) {
-  return (
-    <Page>
-      <PageHeader title={title} description={description} />
-      <EmptyState icon={title === 'Build' ? ICON.tool : ICON.check} title={`${title} is not available yet`}>
-        {children}
-      </EmptyState>
-    </Page>
-  )
+function EvalDatasetRoute() {
+  const { id = '' } = useParams()
+  const n = Number(id)
+  if (!Number.isInteger(n) || n < 1) return <Navigate to={ROUTES.evaluate} replace />
+  return <EvalDatasetDetail key={n} id={n} />
 }
 
 // ── Operate ──────────────────────────────────────────────────────────────────
@@ -435,15 +433,10 @@ export function AppRoutes() {
           <Route path="new" element={<AgentBuilder key="new" />} />
           <Route path=":ns/:name" element={<BuilderRoute />} />
         </Route>
-        <Route
-          path="evaluate"
-          element={
-            <ComingPage title="Evaluate" description="Test an agent against example cases before you rely on it.">
-              Evaluations are planned. Until then, use Runs to review what an agent actually did and Operate
-              to watch its cost.
-            </ComingPage>
-          }
-        />
+        <Route path="evaluate">
+          <Route index element={<EvalDatasets />} />
+          <Route path=":id" element={<EvalDatasetRoute />} />
+        </Route>
 
         <Route path="operate" element={<OperateLayout />}>
           <Route index element={<Navigate to="fleet" replace />} />

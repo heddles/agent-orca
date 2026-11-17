@@ -27,6 +27,8 @@ export const ROUTES = {
   knowledge: '/settings/knowledge',
 } as const
 
+/** An evaluation dataset. */
+export const datasetPath = (id: number) => `/evaluate/${id}`
 export const buildNewPath = '/build/new'
 /** An agent in the builder. */
 export const buildPath = (ns: string, name: string) => `/build/${enc(ns)}/${enc(name)}`
