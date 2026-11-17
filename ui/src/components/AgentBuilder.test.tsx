@@ -26,6 +26,11 @@ vi.mock('../api/builder', async () => {
     cancelHandoff: (...a: unknown[]) => m.cancelHandoff(...a),
   }
 })
+vi.mock('../api/revisions', () => ({
+  listRevisions: () => Promise.resolve({ revisions: [], next: '' }),
+  getRevision: () => Promise.reject(new Error('not used')),
+  restoreRevision: () => Promise.reject(new Error('not used')),
+}))
 vi.mock('../api/catalog', async () => {
   const actual = await vi.importActual<typeof import('../api/catalog')>('../api/catalog')
   return {

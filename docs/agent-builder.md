@@ -117,3 +117,8 @@ namespaces plus platform-scoped objects:
 
 `description` is the object's description where it has one (a knowledge base,
 a tool's schema description) or its `agentorca.io/description` annotation.
+
+## Revision history
+
+Every UI save keeps a revision that can be listed, read and restored; see
+[revisions.md](revisions.md).

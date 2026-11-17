@@ -333,6 +333,37 @@ components:
           type: array
           items: { $ref: '#/components/schemas/AuditEvent' }
         nextCursor: { type: string, description: Pass as cursor for the next page; absent on the last. }
+    Revision:
+      type: object
+      required: [revision, action, userId, createdAt, summary, resourceVersion]
+      properties:
+        revision: { type: integer, description: Number of the revision, counting up per object. }
+        action: { type: string, enum: [create, update, restore, delete] }
+        userId: { type: string }
+        createdAt: { type: string, format: date-time }
+        summary: { type: string }
+        resourceVersion: { type: string, description: The resourceVersion the write produced (the one before the delete, for a delete). }
+        restoredFrom: { type: integer, description: The revision a restore applied; only for action restore. }
+    RevisionDetail:
+      allOf:
+        - $ref: '#/components/schemas/Revision'
+        - type: object
+          required: [object]
+          properties:
+            object:
+              type: object
+              description: >
+                The object as stored after the write, without status, managedFields,
+                resourceVersion, uid, generation and creationTimestamp, and without
+                the owner, actor and handoff annotations.
+    RevisionPage:
+      type: object
+      required: [revisions, next]
+      properties:
+        revisions:
+          type: array
+          items: { $ref: '#/components/schemas/Revision' }
+        next: { type: string, description: Pass as before for the next (older) page; empty on the last. }
     Ownership:
       type: object
       description: >
@@ -873,6 +904,121 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/ResourceConflict' }
+  /api/resources/{kind}/{namespace}/{name}/revisions:
+    get:
+      tags: [resources]
+      summary: Revision history of an object the UI wrote
+      description: >
+        Needs the viewer role, and the live object must be readable by the
+        caller. For a deleted object the caller must be a builder; the history
+        shown is that of the caller's own tenant. Every UI create, update,
+        restore and delete adds a revision; a save that changes nothing does not.
+        Newest first. Without PostgreSQL the answer is 501.
+      parameters:
+        - in: path
+          name: kind
+          required: true
+          schema: { $ref: '#/components/schemas/ResourceKind' }
+        - in: path
+          name: namespace
+          required: true
+          schema: { type: string }
+        - in: path
+          name: name
+          required: true
+          schema: { type: string }
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+        - in: query
+          name: before
+          description: The next value of the previous page.
+          schema: { type: integer, minimum: 1 }
+      responses:
+        '200':
+          description: a page of revisions
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RevisionPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '501': { description: revision history needs PostgreSQL }
+  /api/resources/{kind}/{namespace}/{name}/revisions/{n}:
+    get:
+      tags: [resources]
+      summary: One revision with its object
+      description: Same access as the list.
+      parameters:
+        - in: path
+          name: kind
+          required: true
+          schema: { $ref: '#/components/schemas/ResourceKind' }
+        - in: path
+          name: namespace
+          required: true
+          schema: { type: string }
+        - in: path
+          name: name
+          required: true
+          schema: { type: string }
+        - in: path
+          name: n
+          required: true
+          schema: { type: integer, minimum: 1 }
+      responses:
+        '200':
+          description: the revision and its object
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RevisionDetail' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '501': { description: revision history needs PostgreSQL }
+  /api/resources/{kind}/{namespace}/{name}/revisions/{n}/restore:
+    post:
+      tags: [resources]
+      summary: Apply an earlier revision again
+      description: >
+        Needs the builder role (admin for tools, mcpservers, modelproviders and
+        modelselectors). Applies revision n's object to the live UI-owned object
+        through the same server-side apply, webhooks and audit as an update, and
+        stores a new revision with action restore and restoredFrom n. If the
+        object was deleted and the name is free it is created again with the
+        atomic create. A Git-owned object cannot be restored (409). The optional
+        resourceVersion is checked against the live object; a different one is a
+        409. Supports dryRun=true.
+      parameters:
+        - in: path
+          name: kind
+          required: true
+          schema: { $ref: '#/components/schemas/ResourceKind' }
+        - in: path
+          name: namespace
+          required: true
+          schema: { type: string }
+        - in: path
+          name: name
+          required: true
+          schema: { type: string }
+        - in: path
+          name: n
+          required: true
+          schema: { type: integer, minimum: 1 }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                resourceVersion: { type: string, description: The version of the live object the caller last read. }
+      responses:
+        '200':
+          description: the restored object, with an ownership field (see Ownership)
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/ResourceConflict' }
+        '501': { description: revision history needs PostgreSQL }
   /api/builder/options:
     get:
       tags: [builder]
