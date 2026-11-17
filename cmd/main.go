@@ -600,6 +600,7 @@ func main() {
 		setupLog.Error(err, "Invalid "+tenancy.ModeEnvVar+"; using audit")
 	}
 	setupLog.Info("Tenant isolation", "mode", string(tenancy.CurrentMode()))
+	tenancy.SetPlatformNamespacesFromEnv()
 	if err := agentwebhook.SetupTenantIsolationWebhooks(mgr, tenantAdminGroups, os.Getenv("POD_NAMESPACE")); err != nil {
 		setupLog.Error(err, "Failed to set up tenant isolation webhooks")
 		os.Exit(1)

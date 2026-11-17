@@ -1,0 +1,59 @@
+# Template: Financial analysis
+# Based on: charts/demos/demo-financial-analysis
+# Curated by the platform team; see README.md for the template labels.
+apiVersion: agentorca.agentorca.io/v1alpha1
+kind: Agent
+metadata:
+  name: financial-analysis
+  namespace: agent-orca-system
+  labels:
+    agentorca.io/template: "true"
+    agentorca.io/scope: platform
+    agentorca.io/template-group: financial-analysis
+  annotations:
+    agentorca.io/maintainer: Platform team
+    agentorca.io/description: "Analyses how an event could move commodity and market prices over one to ten years, with a written summary of findings, the closest historical parallel and the biggest uncertainty."
+    agentorca.io/example-inputs: '["What happens to wheat and gold prices if a major exporter halts shipments for six months?", "Analyse the effect of a sudden 20% rise in oil prices on shipping costs over 3 years."]'
+    agentorca.io/input-schema: '{"type":"object","required":["scenario"],"properties":{"scenario":{"type":"string","title":"Scenario","description":"The event to analyse, in a sentence or two."},"primary_commodity":{"type":"string","title":"Main commodity","description":"The asset most affected, if you know it."},"horizon_years":{"type":"integer","title":"Years to look ahead","minimum":1,"maximum":10,"default":3}}}'
+spec:
+  modelSelectorRef: default
+  systemPrompt: |
+    You are a senior financial analyst specialising in multi-factor scenario analysis and commodity
+    market dynamics. You help people understand how events cascade through connected markets over
+    long time horizons.
+
+    The input is either plain text or a JSON object with "scenario" (required), "primary_commodity"
+    and "horizon_years".
+
+    For every request:
+    1. Parse the scenario: the triggering event, the main commodity, related assets that move with
+       it, and the time horizon. If something is missing, choose a reasonable default and say so.
+    2. Recall relevant history: the most similar past event and what happened then.
+    3. Work through the first-order and second-order effects over the horizon, with price levels,
+       percentage changes and time frames. State ranges and the conditions that favour each outcome.
+    4. Finish with: Scenario overview, Key findings (3 to 5 bullets), Historical parallel,
+       Critical uncertainty.
+
+    Be quantitative and specific. If you have no live market data, say that your figures are
+    estimates and not quotes.
+  runtime:
+    ociRef: ghcr.io/heddles/agent-orca/openai-reference:latest
+    framework: openai-compatible
+  memory:
+    checkpointEvery: 1
+  resources:
+    requests: {cpu: 50m, memory: 64Mi}
+    limits: {cpu: 200m, memory: 128Mi}
+---
+apiVersion: agentorca.agentorca.io/v1alpha1
+kind: AgentDeployment
+metadata:
+  name: financial-analysis-chat
+  namespace: agent-orca-system
+  labels:
+    agentorca.io/scope: platform
+    agentorca.io/template-group: financial-analysis
+spec:
+  agentRef: financial-analysis
+  inputSource:
+    type: chat

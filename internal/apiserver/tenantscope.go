@@ -19,6 +19,7 @@ package apiserver
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -73,17 +74,36 @@ func listCRDsMultiNamespace(ctx context.Context, cl client.Client, listType clie
 	}
 
 	namespaces := tenantNamespaces(tenant)
-	if len(namespaces) == 0 {
+
+	// Platform catalog namespaces the tenant does not claim add only their
+	// platform-scoped objects (templates and other shared things).
+	type target struct {
+		ns       string
+		platform bool
+	}
+	targets := make([]target, 0, len(namespaces))
+	for _, n := range namespaces {
+		targets = append(targets, target{ns: n})
+	}
+	for _, n := range tenancy.PlatformNamespaces() {
+		if !slices.Contains(namespaces, n) {
+			targets = append(targets, target{ns: n, platform: true})
+		}
+	}
+	if len(targets) == 0 {
 		return nil
 	}
 
 	var all []runtime.Object
-	for _, n := range namespaces {
+	for _, tg := range targets {
 		sub, ok := listType.DeepCopyObject().(client.ObjectList)
 		if !ok {
 			return fmt.Errorf("listCRDsMultiNamespace: %T does not implement client.ObjectList", listType)
 		}
-		opts := append([]client.ListOption{client.InNamespace(n)}, extra...)
+		opts := append([]client.ListOption{client.InNamespace(tg.ns)}, extra...)
+		if tg.platform {
+			opts = append(opts, client.MatchingLabels{tenancy.LabelScope: tenancy.ScopePlatform})
+		}
 		if err := cl.List(ctx, sub, opts...); err != nil {
 			return err
 		}

@@ -12,7 +12,15 @@
 		}
 	}
 
-	# Serve static files with SPA fallback
+	# The OIDC login flow (/oauth/login, /oauth/callback, /oauth/logout) is served
+	# by the UI API server; it must not fall through to the SPA fallback below.
+	handle /oauth/* {
+		reverse_proxy localhost:8083
+	}
+
+	# Serve static files; every other path is a client-side route (for example
+	# /runs/live/<namespace>/<name>) and falls back to index.html. Names with
+	# dots are fine: try_files only serves a file that exists.
 	handle {
 		root * /srv
 		try_files {path} /index.html

@@ -116,10 +116,16 @@ func main() {
 	// Everything else — serve the React SPA with index.html fallback for client-side routing.
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		p := path.Clean(r.URL.Path)
-		// If the path has a file extension and exists in the embedded FS, serve it directly.
-		if p != "/" && strings.Contains(path.Base(p), ".") {
-			fileServer.ServeHTTP(w, r)
-			return
+		// Serve real files directly. Build assets that do not exist stay a 404
+		// rather than falling back to index.html. Resource names may contain
+		// dots (for example /runs/live/team/my.run), so a dot in the last
+		// segment does not make a path a file; the embedded FS decides.
+		if p != "/" {
+			info, err := fs.Stat(uiFS, strings.TrimPrefix(p, "/"))
+			if (err == nil && !info.IsDir()) || strings.HasPrefix(p, "/assets/") {
+				fileServer.ServeHTTP(w, r)
+				return
+			}
 		}
 		// For all other paths (client-side routes), serve index.html.
 		r2 := r.Clone(r.Context())

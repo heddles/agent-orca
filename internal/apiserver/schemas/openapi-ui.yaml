@@ -174,6 +174,30 @@ components:
         reason: { type: string }
         confidence: { type: string }
         timestamp: { type: string, format: date-time, nullable: true }
+    CatalogEntry:
+      type: object
+      properties:
+        name: { type: string }
+        namespace: { type: string }
+        description: { type: string }
+        exampleInputs: { type: array, items: { type: string } }
+        maintainer: { type: string }
+        published: { type: boolean }
+        deployment: { type: string }
+        conversational: { type: boolean }
+        template: { type: boolean }
+        templateGroup: { type: string }
+        tools: { type: array, items: { type: string } }
+        modelSelector: { type: string }
+        runCount: { type: integer }
+        typicalCostUSD: { type: number, nullable: true }
+        members:
+          type: array
+          items:
+            type: object
+            properties:
+              kind: { type: string }
+              name: { type: string }
     CurrentUser:
       type: object
       required: [userId, groups, tenant, workspaces, roles]
@@ -236,6 +260,122 @@ components:
 security:
   - BearerAuth: []
 paths:
+  /api/catalog:
+    get:
+      tags: [agents]
+      summary: Agent catalog
+      description: >
+        Every agent the caller may read, with its description, example inputs,
+        maintainer, whether it is published (has an AgentDeployment), template
+        membership, and the median cost of its finished runs.
+      parameters:
+        - in: query
+          name: namespace
+          schema: { type: string }
+      responses:
+        '200':
+          description: catalog entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/CatalogEntry' }
+  /api/my/runs:
+    get:
+      tags: [runs]
+      summary: The signed-in user's recent runs
+      description: >
+        Up to 20 recent runs started by the signed-in user (recorded in the
+        agentorca.io/created-by annotation, set for runs started through the UI
+        or ACP API). When the user has none, the tenant's recent runs are
+        returned and scope is "tenant".
+      parameters:
+        - in: query
+          name: namespace
+          schema: { type: string }
+      responses:
+        '200':
+          description: recent runs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  scope: { type: string, enum: [user, tenant] }
+                  userId: { type: string }
+                  runs:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name: { type: string }
+                        namespace: { type: string }
+                        agentRef: { type: string }
+                        phase: { type: string }
+                        spendUSD: { type: string }
+                        input: { type: string }
+                        output: { type: string }
+                        clarifyQuestion: { type: string }
+                        createdBy: { type: string }
+                        createdAt: { type: string, format: date-time }
+                        completionTime: { type: string, format: date-time }
+  /api/agents/{namespace}/{name}/manifest:
+    get:
+      tags: [agents]
+      summary: Agent manifest with the run-form input schema
+      description: >
+        Same manifest as the ACP GET /agents/{name}. Returns 404 for an agent
+        outside the caller's tenant.
+      parameters:
+        - { in: path, name: namespace, required: true, schema: { type: string } }
+        - { in: path, name: name, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: agent manifest
+          content:
+            application/json: { schema: { type: object } }
+        '404': { description: not found, or not in the caller's tenant }
+  /api/agents/{namespace}/{name}/run:
+    post:
+      tags: [agents]
+      summary: Start a run of an agent
+      description: >
+        Same behaviour as the ACP POST /agents/{name}/run. The run is stamped
+        with the caller's tenant and records the user in the
+        agentorca.io/created-by annotation. Returns 404 for an agent outside
+        the caller's tenant.
+      parameters:
+        - { in: path, name: namespace, required: true, schema: { type: string } }
+        - { in: path, name: name, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [input]
+              properties:
+                session_id: { type: string }
+                input:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      role: { type: string }
+                      parts:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            content_type: { type: string }
+                            content: { type: string }
+      responses:
+        '201':
+          description: run created
+          content:
+            application/json: { schema: { type: object } }
+        '404': { description: not found, or not in the caller's tenant }
+        '429': { description: tenant quota exceeded }
   /healthz:
     get:
       tags: [health]

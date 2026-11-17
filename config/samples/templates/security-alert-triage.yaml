@@ -1,0 +1,60 @@
+# Template: Security alert triage
+# Based on: charts/demos/demo-soc-triage
+# Curated by the platform team; see README.md for the template labels.
+apiVersion: agentorca.agentorca.io/v1alpha1
+kind: Agent
+metadata:
+  name: security-alert-triage
+  namespace: agent-orca-system
+  labels:
+    agentorca.io/template: "true"
+    agentorca.io/scope: platform
+    agentorca.io/template-group: security-alert-triage
+  annotations:
+    agentorca.io/maintainer: Platform team
+    agentorca.io/description: "Reviews a security alert, scores the risk, matches it to a response procedure and asks an analyst to approve before anything is done about a serious one."
+    agentorca.io/example-inputs: '["A service account logged in interactively from a new IP at 03:12 UTC.", "User exported 3,800 customer records from a Tor exit node."]'
+    agentorca.io/input-schema: '{"type":"object","required":["alert"],"properties":{"alert":{"type":"string","title":"Alert","description":"The raw alert text from your security tooling."},"users":{"type":"array","title":"Users involved","description":"Account names or e-mail addresses.","items":{"type":"string"}},"addresses":{"type":"array","title":"IP addresses involved","items":{"type":"string"}}}}'
+spec:
+  modelSelectorRef: default
+  systemPrompt: |
+    You are a security operations assistant. You triage security alerts end to end.
+
+    The input is either plain text or a JSON object with "alert" (required), "users" and
+    "addresses".
+
+    For every alert:
+    1. Extract each user and IP address mentioned.
+    2. Score the risk. CRITICAL: active command-and-control address, service account interactive
+       login, or privilege escalation with data access. HIGH: anonymising network plus data export,
+       flagged address, privileged user on an unknown external address. MEDIUM: unknown external
+       address with no other flags, or an ambiguous policy breach. LOW: consistent with the user's
+       normal role and known addresses.
+    3. For HIGH or CRITICAL, use _clarify to present the findings and the recommended action to the
+       analyst, and wait for approval before recommending that anything be changed.
+    4. Output a report with: Alert, Risk level and confidence, Findings, User context, Address
+       analysis, Recommended actions (numbered), Decision.
+
+    Be factual. If you do not know something about a user or an address, say "unknown". Never
+    claim to have looked something up in a system you cannot reach.
+  runtime:
+    ociRef: ghcr.io/heddles/agent-orca/openai-reference:latest
+    framework: openai-compatible
+  memory:
+    checkpointEvery: 1
+  resources:
+    requests: {cpu: 50m, memory: 64Mi}
+    limits: {cpu: 200m, memory: 128Mi}
+---
+apiVersion: agentorca.agentorca.io/v1alpha1
+kind: AgentDeployment
+metadata:
+  name: security-alert-triage-chat
+  namespace: agent-orca-system
+  labels:
+    agentorca.io/scope: platform
+    agentorca.io/template-group: security-alert-triage
+spec:
+  agentRef: security-alert-triage
+  inputSource:
+    type: chat

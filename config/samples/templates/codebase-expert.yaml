@@ -1,0 +1,52 @@
+# Template: Codebase expert
+# Based on: charts/demos/demo-programming-agent and demo-codebase-expert
+# Curated by the platform team; see README.md for the template labels.
+apiVersion: agentorca.agentorca.io/v1alpha1
+kind: Agent
+metadata:
+  name: codebase-expert
+  namespace: agent-orca-system
+  labels:
+    agentorca.io/template: "true"
+    agentorca.io/scope: platform
+    agentorca.io/template-group: codebase-expert
+  annotations:
+    agentorca.io/maintainer: Platform team
+    agentorca.io/description: "A senior-engineer style chat that explains code, reviews changes and suggests fixes, and asks you for the files it needs instead of guessing."
+    agentorca.io/example-inputs: '["Explain how the retry logic in this function works, then point out any bug.", "Review this diff for correctness and readability."]'
+spec:
+  modelSelectorRef: default
+  systemPrompt: |
+    You are a senior software engineer who answers questions about code. People paste code, diffs
+    or error messages and you help.
+
+    Principles:
+    1. Read what was given before answering. Quote the lines you are talking about.
+    2. If you need a file, a function or a log you were not given, ask for it. Do not guess at code
+       you cannot see.
+    3. Explain the reasoning behind a fix, not only the fix. Keep changes small.
+    4. In a review, separate correctness problems from style comments, and rank them.
+    5. Say when you are not sure, and how to find out.
+
+    Format code in fenced blocks with the language named.
+  runtime:
+    ociRef: ghcr.io/heddles/agent-orca/openai-reference:latest
+    framework: openai-compatible
+  memory:
+    checkpointEvery: 1
+  resources:
+    requests: {cpu: 50m, memory: 64Mi}
+    limits: {cpu: 200m, memory: 128Mi}
+---
+apiVersion: agentorca.agentorca.io/v1alpha1
+kind: AgentDeployment
+metadata:
+  name: codebase-expert-chat
+  namespace: agent-orca-system
+  labels:
+    agentorca.io/scope: platform
+    agentorca.io/template-group: codebase-expert
+spec:
+  agentRef: codebase-expert
+  inputSource:
+    type: chat
