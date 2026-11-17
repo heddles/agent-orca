@@ -80,7 +80,7 @@ func newWriteFixture(t *testing.T, objs ...client.Object) *writeFixture {
 func (f *writeFixture) as(role tenancy.Role) *TenantIdentity {
 	id := tenantA()
 	id.Namespace, id.Namespaces = sharedNS, []string{sharedNS}
-	id.UserID, id.Roles = "ada", role.Expand() //nolint:goconst
+	id.UserID, id.Roles = builderUser, role.Expand() //nolint:goconst
 	return id
 }
 
@@ -132,7 +132,7 @@ func TestCreateResourceOwnership(t *testing.T) {
 	if a[tenancy.AnnotationOwner] != tenancy.OwnerUI {
 		t.Errorf("owner = %q, want ui (the body's %q must be dropped)", a[tenancy.AnnotationOwner], "git")
 	}
-	if a[tenancy.AnnotationLastModifiedBy] != "ada" || a[tenancy.AnnotationLastModifiedAt] == "" || a["note"] != "hi" {
+	if a[tenancy.AnnotationLastModifiedBy] != builderUser || a[tenancy.AnnotationLastModifiedAt] == "" || a["note"] != "hi" {
 		t.Errorf("annotations = %v", a)
 	}
 	if got.Labels["app.kubernetes.io/managed-by"] != "argocd" || got.Labels["keep"] != "me" {
@@ -144,7 +144,7 @@ func TestCreateResourceOwnership(t *testing.T) {
 	if got.Status.ServiceAccountName != "" {
 		t.Errorf("status taken from the body: %+v", got.Status)
 	}
-	if len(f.audit.events) != 1 || f.audit.events[0].Action != postgresql.AuditCreate || f.audit.events[0].UserID != "ada" ||
+	if len(f.audit.events) != 1 || f.audit.events[0].Action != postgresql.AuditCreate || f.audit.events[0].UserID != builderUser ||
 		f.audit.events[0].Kind != "Agent" || f.audit.events[0].Name != "bot" || f.audit.events[0].ResourceVersion == "" {
 		t.Errorf("audit = %+v", f.audit.events)
 	}
@@ -223,7 +223,7 @@ func TestUpdateResource(t *testing.T) {
 		}
 		got := f.tool("owned")
 		if got.Spec.OCIRef != "edited" || got.Annotations[tenancy.AnnotationOwner] != tenancy.OwnerUI ||
-			got.Annotations[tenancy.AnnotationLastModifiedBy] != "ada" || got.Labels[tenancy.LabelTenantID] != isoA {
+			got.Annotations[tenancy.AnnotationLastModifiedBy] != builderUser || got.Labels[tenancy.LabelTenantID] != isoA {
 			t.Errorf("tool = %+v", got.ObjectMeta)
 		}
 		if got.ResourceVersion == rv {
@@ -252,7 +252,7 @@ func TestUpdateResource(t *testing.T) {
 	})
 	t.Run("an object owned by git is a 409", func(t *testing.T) {
 		rec := f.do(builder, http.MethodPut, "/api/resources/tools/shared/from-git", body("from-git", f.tool("from-git").ResourceVersion, ""))
-		if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "not owned by the UI") {
+		if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "use Duplicate") {
 			t.Errorf("code = %d %s", rec.Code, rec.Body.String())
 		}
 	})
@@ -352,7 +352,7 @@ func TestAuditFailureDoesNotFailTheWriteButIsLoud(t *testing.T) {
 	// The annotation still names the actor.
 	var got agentorcav1alpha1.Agent
 	_ = f.c.Get(context.Background(), client.ObjectKey{Namespace: sharedNS, Name: "bot"}, &got)
-	if got.Annotations[tenancy.AnnotationLastModifiedBy] != "ada" {
+	if got.Annotations[tenancy.AnnotationLastModifiedBy] != builderUser {
 		t.Errorf("annotations = %v", got.Annotations)
 	}
 }
@@ -481,7 +481,7 @@ func TestCreateAgentIsStampedAndAudited(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, o := range []metav1.Object{&ag, &dep} {
-		if o.GetAnnotations()[tenancy.AnnotationOwner] != tenancy.OwnerUI || o.GetAnnotations()[tenancy.AnnotationLastModifiedBy] != "ada" {
+		if o.GetAnnotations()[tenancy.AnnotationOwner] != tenancy.OwnerUI || o.GetAnnotations()[tenancy.AnnotationLastModifiedBy] != builderUser {
 			t.Errorf("annotations = %v", o.GetAnnotations())
 		}
 	}

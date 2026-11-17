@@ -27,13 +27,6 @@ const (
 	fleetWindow7d  = "7d"
 )
 
-// Agent owners as the fleet reports them.
-const (
-	fleetOwnerUI      = "ui"
-	fleetOwnerGit     = "git"
-	fleetOwnerUnknown = "unknown"
-)
-
 // Health values.
 const (
 	healthHealthy  = "healthy"
@@ -48,9 +41,6 @@ const (
 	condAvailable      = "Available"
 	fleetPendingStatus = "pending"
 )
-
-// fleetGitOwner is the owner annotation value a GitOps writer sets.
-const fleetGitOwner = "git"
 
 // fleetBudget is the spend in the window against the budgets that apply. A
 // budget is null when none is set. Budgets are daily limits, scaled to the
@@ -102,16 +92,12 @@ func (s *UIServer) registerFleetRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/fleet", s.handleFleet)
 }
 
-// fleetOwner is the agent's owner as the fleet shows it. Stage U2 replaces
-// this with the ownership rules; the fleet only needs the one answer.
-func fleetOwner(a *agentorcav1alpha1.Agent) string {
-	switch tenancy.OwnerOf(a) {
-	case tenancy.OwnerUI:
-		return fleetOwnerUI
-	case fleetGitOwner:
-		return fleetOwnerGit
-	}
-	return fleetOwnerUnknown
+// fleetOwner is the agent's owner as the fleet shows it: the same answer the
+// ownership field on every other UI API object gives (ui, git or unknown),
+// including Argo CD, Flux and Helm tracking metadata and not only the owner
+// annotation.
+func (s *UIServer) fleetOwner(a *agentorcav1alpha1.Agent) string {
+	return tenancy.Detect(a, s.ownDetect).Owner
 }
 
 // fleetHealthOf derives an agent's health from its own and its deployment's
@@ -366,7 +352,7 @@ func (s *UIServer) handleFleet(w http.ResponseWriter, r *http.Request) {
 		dep := depByAgent[key]
 		row := fleetRow{
 			Name: a.Name, Namespace: a.Namespace, Maintainer: agentMaintainer(a),
-			Published: dep != nil, Owner: fleetOwner(a), Health: fleetHealthOf(a, dep),
+			Published: dep != nil, Owner: s.fleetOwner(a), Health: fleetHealthOf(a, dep),
 			PendingApprovals: pending[key],
 			Spend: fleetBudget{
 				AgentBudgetUSD:  scaleBudget(perDay[a.Namespace+"/"+a.Spec.ModelSelectorRef], days),

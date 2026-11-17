@@ -73,6 +73,20 @@ spec:
             - name: TENANT_ADMIN_GROUP
               value: {{ .Values.operator.tenantAdminGroup | quote }}
             {{- end }}
+            - name: POD_SERVICE_ACCOUNT
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.serviceAccountName
+            - name: OWNERSHIP_GITOPS_SERVICE_ACCOUNTS
+              value: {{ join "," (dig "gitopsWriters" "serviceAccounts" (list) (.Values.ownership | default dict)) | quote }}
+            - name: OWNERSHIP_GITOPS_FIELD_MANAGERS
+              value: {{ join "," (dig "gitopsWriters" "fieldManagers" (list) (.Values.ownership | default dict)) | quote }}
+            - name: OWNERSHIP_ARGO_LABEL_TRACKING
+              value: {{ dig "argoLabelTracking" false (.Values.ownership | default dict) | toString | quote }}
+            - name: OWNERSHIP_ARGO_TRACKING_LABEL
+              value: {{ dig "argoTrackingLabel" "" (.Values.ownership | default dict) | quote }}
+            - name: OWNERSHIP_HANDOFF_TTL
+              value: {{ dig "handoffTTL" "" (.Values.ownership | default dict) | quote }}
             - name: TENANT_ISOLATION_MODE
               value: {{ .Values.operator.tenantIsolationMode | default "audit" | quote }}
             - name: PLATFORM_NAMESPACES

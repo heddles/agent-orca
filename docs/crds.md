@@ -6,6 +6,8 @@ agent-orca uses fourteen Custom Resource Definitions (CRDs) that form a layered 
 
 ## CRD Overview
 
+Objects created in the UI are owned by the UI, and objects a GitOps tool tracks are owned by Git. Argo CD, Flux and Helm writes to UI-owned objects are denied by a webhook. See [GitOps and the UI](gitops-coexistence.md).
+
 ```mermaid
 graph TD
     MP[ModelProvider<br/>Registers and authenticates into an LLM endpoint] --> MS[ModelSelector<br/>Routes across providers]
@@ -737,6 +739,8 @@ sequenceDiagram
 ---
 
 ## Security Model
+
+Ownership of UI-managed kinds, and how Git and the UI avoid overwriting each other, is covered in [GitOps and the UI](gitops-coexistence.md). Tenant boundaries are in [Tenant isolation](tenant-isolation.md).
 
 Every AgentRun/AgentDeployment enforces:
 

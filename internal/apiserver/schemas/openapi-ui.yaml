@@ -42,6 +42,50 @@ components:
       scheme: bearer
       bearerFormat: "K8s-SA-token or OIDC-tenant-JWT"
   schemas:
+    DryRunResult:
+      type: object
+      description: The answer of a write with dryRun=true.
+      required: [valid]
+      properties:
+        valid: { type: boolean }
+        object: { type: object, description: The object as it would be stored (valid is true). }
+        errors:
+          type: array
+          items: { type: string }
+          description: Validation, webhook, ownership or conflict messages (valid is false).
+        currentResourceVersion: { type: string, description: Set on a stale-version conflict. }
+    BuilderOption:
+      type: object
+      required: [name, namespace]
+      properties:
+        name: { type: string }
+        namespace: { type: string }
+        description: { type: string }
+    BuilderOptions:
+      type: object
+      required: [modelSelectors, tools, mcpServers, knowledgeBases, guardrailPolicies]
+      properties:
+        modelSelectors: { type: array, items: { $ref: '#/components/schemas/BuilderOption' } }
+        tools: { type: array, items: { $ref: '#/components/schemas/BuilderOption' } }
+        mcpServers: { type: array, items: { $ref: '#/components/schemas/BuilderOption' } }
+        knowledgeBases: { type: array, items: { $ref: '#/components/schemas/BuilderOption' } }
+        guardrailPolicies: { type: array, items: { $ref: '#/components/schemas/BuilderOption' } }
+    CreatedRef:
+      type: object
+      required: [kind, namespace, name]
+      properties:
+        kind: { type: string }
+        namespace: { type: string }
+        name: { type: string }
+    UseTemplateResult:
+      type: object
+      required: [agent, created]
+      properties:
+        agent: { type: object, description: The new Agent, with an ownership field. }
+        created:
+          type: array
+          items: { $ref: '#/components/schemas/CreatedRef' }
+          description: Every object made, in creation order.
     Error:
       type: object
       required: [error]
@@ -289,6 +333,40 @@ components:
           type: array
           items: { $ref: '#/components/schemas/AuditEvent' }
         nextCursor: { type: string, description: Pass as cursor for the next page; absent on the last. }
+    Ownership:
+      type: object
+      description: >
+        Who owns the object. Carried by every object the resource and catalog
+        endpoints return. Git tracking metadata (Argo CD, Flux, Helm) wins over an
+        agentorca.io/owner annotation.
+      required: [owner, editable, handoff]
+      properties:
+        owner:
+          type: string
+          enum: [ui, git, unknown]
+          description: >
+            ui for an object created through the UI API; git for an object a GitOps
+            tool tracks or that is annotated agentorca.io/owner=git; unknown for
+            an object with neither (made by hand), which the UI does not edit.
+        tool:
+          type: string
+          enum: [argocd, flux-kustomize, flux-helm, helm, git]
+          description: The tool that manages a Git-owned object.
+        app:
+          type: string
+          description: The Argo CD application, Flux Kustomization or HelmRelease (namespace/name), or Helm release.
+        editable:
+          type: boolean
+          description: >
+            True only for a UI-owned object of the caller's tenant when the caller
+            holds the role that writes the kind (builder, or admin for tools,
+            mcpservers, modelproviders and modelselectors).
+        handoff:
+          type: object
+          required: [pending]
+          properties:
+            pending: { type: boolean, description: An export marked the object for handoff and the handoff has not expired. }
+            expires: { type: string, format: date-time }
     ResourceKind:
       type: string
       enum: [agents, tools, mcpservers, modelproviders, knowledgebases, modelselectors, agentdeployments, agentworkflows]
@@ -551,7 +629,10 @@ paths:
           name: namespace
           schema: { type: string }
       responses:
-        '200': { description: list of resources }
+        '200':
+          description: >
+            list of resources; every item carries an ownership field
+            (see Ownership)
     post:
       tags: [resources]
       summary: Create a new CRD of the given kind
@@ -568,12 +649,21 @@ paths:
           name: kind
           required: true
           schema: { $ref: '#/components/schemas/ResourceKind' }
+        - in: query
+          name: dryRun
+          description: >
+            true runs the whole write (tenant, role, ownership, label stamping,
+            server-side apply, both webhooks) with dryRun=All and stores nothing:
+            no audit row, no last-modified side effects. The answer is 200
+            {valid:true, object} on success, else the status a real write gives
+            with {valid:false, errors}. See DryRunResult.
+          schema: { type: boolean }
       requestBody:
         required: true
         content:
           application/json: { schema: { type: object } }
       responses:
-        '201': { description: resource created }
+        '201': { description: resource created (200 with a DryRunResult when dryRun=true) }
         '400': { $ref: '#/components/responses/BadRequest' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
@@ -595,7 +685,14 @@ paths:
           required: true
           schema: { type: string }
       responses:
-        '200': { description: resource }
+        '200':
+          description: the resource, with an ownership field (see Ownership)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ownership: { $ref: '#/components/schemas/Ownership' }
         '404': { $ref: '#/components/responses/NotFound' }
     put:
       tags: [resources]
@@ -604,8 +701,149 @@ paths:
         Needs the builder role (admin for tools, mcpservers, modelproviders and
         modelselectors). The body must carry metadata.resourceVersion as read. A
         stale version is a 409 whose body names currentResourceVersion. An object
-        without agentorca.io/owner=ui (made by Git or by hand) is a 409 too.
+        the UI does not own is a 409 too: a Git-owned object (tracked by Argo CD,
+        Flux or Helm, or agentorca.io/owner=git) points at Duplicate, and so does
+        an object with no owner. A pending handoff survives an edit.
         Applied server-side as field manager agent-orca-ui; admission webhooks run.
+      parameters:
+        - in: path
+          name: kind
+          required: true
+          schema: { $ref: '#/components/schemas/ResourceKind' }
+        - in: path
+          name: namespace
+          required: true
+          schema: { type: string }
+        - in: path
+          name: name
+          required: true
+          schema: { type: string }
+        - in: query
+          name: dryRun
+          description: >
+            true runs the whole write (tenant, role, ownership, label stamping,
+            server-side apply, both webhooks) with dryRun=All and stores nothing:
+            no audit row, no last-modified side effects. The answer is 200
+            {valid:true, object} on success, else the status a real write gives
+            with {valid:false, errors}. See DryRunResult.
+          schema: { type: boolean }
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { type: object } }
+      responses:
+        '200':
+          description: updated resource, or a DryRunResult when dryRun=true
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/ResourceConflict' }
+        '428': { description: metadata.resourceVersion is missing from the body }
+    delete:
+      tags: [resources]
+      summary: Delete a CRD (only objects owned by the UI)
+      description: >
+        Needs the builder role (admin for tools, mcpservers, modelproviders and
+        modelselectors). Only UI-owned objects can be deleted; a Git-owned object
+        or one with no owner is a 403.
+      parameters:
+        - in: path
+          name: kind
+          required: true
+          schema: { $ref: '#/components/schemas/ResourceKind' }
+        - in: path
+          name: namespace
+          required: true
+          schema: { type: string }
+        - in: path
+          name: name
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: { status: "deleted" } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/resources/{kind}/{namespace}/{name}/export:
+    post:
+      tags: [resources]
+      summary: Export a UI-owned object as a manifest to commit to Git
+      description: >
+        Needs the builder role (admin for tools, mcpservers, modelproviders and
+        modelselectors). Returns a clean manifest as YAML: no status,
+        managedFields, resourceVersion, uid, creationTimestamp, generation,
+        finalizers, and no owner, actor or handoff annotations. It sets
+        agentorca.io/owner=git, keeps the labels (agentorca.io/tenant-id
+        included) and other annotations, among them agentorca.io/maintainer.
+        Unless handoff=false the live object is also annotated
+        agentorca.io/handoff=pending until now plus the handoff lifetime (Helm
+        ownership.handoffTTL, default 7 days), so the GitOps tool the manifest is
+        committed to may adopt it; ownership flips to Git once it has. Only a
+        UI-owned object can be exported (409 otherwise). The UI never writes to
+        Git: a person commits the manifest. Audited.
+      parameters:
+        - in: path
+          name: kind
+          required: true
+          schema: { $ref: '#/components/schemas/ResourceKind' }
+        - in: path
+          name: namespace
+          required: true
+          schema: { type: string }
+        - in: path
+          name: name
+          required: true
+          schema: { type: string }
+        - in: query
+          name: handoff
+          description: Set to false to export without marking the object for handoff.
+          schema: { type: string, enum: ['false'] }
+      responses:
+        '200':
+          description: the manifest
+          content:
+            application/yaml: { schema: { type: string } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/ResourceConflict' }
+  /api/resources/{kind}/{namespace}/{name}/handoff:
+    delete:
+      tags: [resources]
+      summary: Cancel a pending handoff
+      description: >
+        Needs the builder role (admin for tools, mcpservers, modelproviders and
+        modelselectors). Removes the handoff annotations, so GitOps writes to the
+        object are blocked again. 409 when there is no handoff. Audited.
+      parameters:
+        - in: path
+          name: kind
+          required: true
+          schema: { $ref: '#/components/schemas/ResourceKind' }
+        - in: path
+          name: namespace
+          required: true
+          schema: { type: string }
+        - in: path
+          name: name
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: '{"status": "cancelled"}' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/ResourceConflict' }
+  /api/resources/{kind}/{namespace}/{name}/duplicate:
+    post:
+      tags: [resources]
+      summary: Make a UI-owned copy of a Git-owned or UI-owned object
+      description: >
+        Needs the builder role (admin for tools, mcpservers, modelproviders and
+        modelselectors). Creates a copy under the new name in the caller's
+        workspace namespace, with the same atomic create as POST
+        /api/resources/{kind} (an existing name is a 409). The source may be
+        Git-owned, UI-owned, without an owner, or platform-shared (a template); it
+        must be readable by the caller. The copy is UI-owned and stamped with the
+        caller's tenant ID; the source's Git tracking metadata, owner and handoff
+        annotations, status and server-owned metadata are dropped. Audited.
       parameters:
         - in: path
           name: kind
@@ -622,26 +860,56 @@ paths:
       requestBody:
         required: true
         content:
-          application/json: { schema: { type: object } }
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, description: Name of the copy. }
       responses:
-        '200': { description: updated resource }
+        '201':
+          description: the copy, with an ownership field (see Ownership)
         '400': { $ref: '#/components/responses/BadRequest' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/ResourceConflict' }
-        '428': { description: metadata.resourceVersion is missing from the body }
-    delete:
-      tags: [resources]
-      summary: Delete a CRD (only objects owned by the UI)
+  /api/builder/options:
+    get:
+      tags: [builder]
+      summary: What the agent builder form can pick from
       description: >
-        Needs the builder role (admin for tools, mcpservers, modelproviders and
-        modelselectors). Only objects with agentorca.io/owner=ui can be deleted;
-        any other is a 403.
+        Model selectors, tools, MCP servers, knowledge bases and guardrail
+        policies in the caller's own namespaces, plus the platform-scoped ones.
+        Needs the viewer role.
+      responses:
+        '200':
+          description: the options
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/BuilderOptions' } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/templates/{namespace}/{name}/use:
+    post:
+      tags: [builder]
+      summary: Copy a platform template into the caller's workspace
+      description: >
+        Needs the builder role; audited. The source is an Agent labelled
+        agentorca.io/template=true and agentorca.io/scope=platform in a platform
+        namespace. The agent and everything sharing its agentorca.io/template-group
+        label (deployment, tools, guardrail policy) are copied into the namespace
+        named in the body when the tenant may use it, else the tenant's first
+        allowed namespace. The agent gets exactly the requested name; the others
+        get a suffix (-deploy, -tool, -guardrail, numbered when there are
+        several). References between the copies are rewritten; references to
+        other objects (a shared ModelSelector) stay. Copies are UI-owned and
+        stamped with the caller's tenant ID; the template, scope and
+        template-group labels and the owner, handoff and actor annotations are
+        dropped, the maintainer, description and example-input annotations are
+        kept. All or nothing: a failure removes what was already created.
+        Before anything is created, every same-namespace reference of the copies
+        (ModelSelector, Tool, KnowledgeBase, GuardrailPolicy, ...) must be another
+        copy or an object of the target namespace the caller may read; if not, the
+        answer is 422 and nothing is created.
       parameters:
-        - in: path
-          name: kind
-          required: true
-          schema: { $ref: '#/components/schemas/ResourceKind' }
         - in: path
           name: namespace
           required: true
@@ -650,8 +918,106 @@ paths:
           name: name
           required: true
           schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, description: Name of the new agent (a DNS label of at most 40 characters). }
+                namespace: { type: string }
+                replace:
+                  type: object
+                  additionalProperties: { type: string }
+                  description: >
+                    Points references of the template at objects of the target
+                    namespace, keyed Kind/name, for example
+                    {"ModelSelector/default": "my-selector"}. Applied to the
+                    copies before the reference check.
       responses:
-        '200': { description: { status: "deleted" } }
+        '201':
+          description: the copies
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/UseTemplateResult' } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422':
+          description: >
+            references that do not resolve in the target namespace, one
+            plain-language message each (with the namespace's own objects of that
+            kind as alternatives)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [errors]
+                properties:
+                  errors: { type: array, items: { type: string } }
+  /api/agents/{namespace}/{name}/publish:
+    post:
+      tags: [builder]
+      summary: Publish an agent (create or update its AgentDeployment)
+      description: >
+        Needs the builder role; audited. The agent must be UI-owned and in the
+        caller's tenant; a Git-owned agent, or a Git-owned deployment, is a 409.
+        Creates the minimal deployment (agentRef, chat input, one replica; the
+        rest comes from the agent and its model selector), stamped and annotated
+        like any UI-created object, or updates the one that already runs the agent.
+      parameters:
+        - in: path
+          name: namespace
+          required: true
+          schema: { type: string }
+        - in: path
+          name: name
+          required: true
+          schema: { type: string }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, description: Deployment name. Default is the agent's existing deployment, else the agent's name. }
+                chat: { type: boolean, default: true, description: Take chat input. false leaves inputSource unchanged or unset. }
+      responses:
+        '200':
+          description: an existing deployment was updated
+          content:
+            application/json:
+              schema: { type: object, properties: { deployment: { type: object } } }
+        '201':
+          description: the deployment was created
+          content:
+            application/json:
+              schema: { type: object, properties: { deployment: { type: object } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/ResourceConflict' }
+    delete:
+      tags: [builder]
+      summary: Unpublish an agent (delete its AgentDeployment)
+      description: >
+        Needs the builder role; audited. Deletes the deployment that runs the
+        agent (?deployment= is needed only when several do; without it that is a 409), under the ownership guard
+        of a deployment delete: a deployment the UI does not own is a 403.
+      parameters:
+        - in: path
+          name: namespace
+          required: true
+          schema: { type: string }
+        - in: path
+          name: name
+          required: true
+          schema: { type: string }
+        - { in: query, name: deployment, schema: { type: string } }
+      responses:
+        '200': { description: deleted }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
   /api/audit:

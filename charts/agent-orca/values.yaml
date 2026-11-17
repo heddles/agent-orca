@@ -291,6 +291,31 @@ webhook:
   # If certManager is false, provide a pre-created TLS secret name.
   tlsSecretName: ""
 
+# Ownership of UI-managed objects, and GitOps coexistence. An object the UI API
+# creates is owned by the UI; the ownership webhook (failurePolicy: Fail, not
+# configurable) denies writes to it from the GitOps writers below. See
+# docs/gitops-coexistence.md.
+ownership:
+  gitopsWriters:
+    # Service accounts of GitOps controllers: namespace:name or the full
+    # system:serviceaccount:<namespace>:<name>. Replacing the list replaces the
+    # defaults, so keep the tools you use.
+    serviceAccounts:
+      - argocd:argocd-application-controller
+      - flux-system:kustomize-controller
+      - flux-system:helm-controller
+    # Field managers the same tools write with.
+    fieldManagers:
+      - argocd-controller
+      - kustomize-controller
+      - helm-controller
+  # Set true when Argo CD tracks resources by label (application.resourceTrackingMethod:
+  # label). Off by default because Helm sets the same label.
+  argoLabelTracking: false
+  argoTrackingLabel: app.kubernetes.io/instance
+  # How long an exported object waits for Git to adopt it.
+  handoffTTL: 168h
+
 # External API server for enterprise integrations.
 # Exposes a REST API (port 8084) for external task submission, polling, and SSE streaming.
 # Authenticated via TenantConfig CRDs (OAuth2 client_credentials or federated OIDC).

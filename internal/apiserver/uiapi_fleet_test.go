@@ -239,3 +239,28 @@ func TestFleetTenantArchiveQueryIsScoped(t *testing.T) {
 		t.Fatal("a tenant without namespaces must not reach the archive")
 	}
 }
+
+// The fleet's owner column must agree with the ownership field every other
+// UI API object carries: an agent applied by Helm, Flux or Argo CD has tracking
+// metadata but no owner annotation, and is Git's, not unknown.
+func TestFleetOwnerFollowsOwnershipDetection(t *testing.T) {
+	s := &UIServer{}
+	meta := func(ann, labels map[string]string) *agentorcav1alpha1.Agent {
+		return &agentorcav1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: insightsNS, Annotations: ann, Labels: labels}}
+	}
+	for _, tc := range []struct {
+		name string
+		in   *agentorcav1alpha1.Agent
+		want string
+	}{
+		{"ui annotation", meta(map[string]string{tenancy.AnnotationOwner: tenancy.OwnerUI}, nil), tenancy.OwnerUI},
+		{"git annotation", meta(map[string]string{tenancy.AnnotationOwner: tenancy.OwnerGit}, nil), tenancy.OwnerGit},
+		{"argo tracking id", meta(map[string]string{"argocd.argoproj.io/tracking-id": "app:agentorca.agentorca.io/Agent:ns/a"}, nil), tenancy.OwnerGit},
+		{"flux kustomization", meta(nil, map[string]string{"kustomize.toolkit.fluxcd.io/name": "apps", "kustomize.toolkit.fluxcd.io/namespace": "flux-system"}), tenancy.OwnerGit},
+		{"no signal", meta(nil, nil), tenancy.OwnerUnknown},
+	} {
+		if got := s.fleetOwner(tc.in); got != tc.want {
+			t.Errorf("%s: fleetOwner = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
