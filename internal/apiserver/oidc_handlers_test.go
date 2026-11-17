@@ -362,7 +362,7 @@ func TestUIRunAuth_AcceptsSessionCookie(t *testing.T) {
 	h := newHandler(auth, &oidc.IDTokenPrincipal{Issuer: "https://idp.example.com"})
 	ui := NewUIServer(nil, nil, false, nil, true, auth, nil, nil)
 	ui.SetOIDCLogin(h)
-	ident := &TenantIdentity{TenantName: "github-oidc", Namespace: "default", UserID: "sub-1", Groups: []string{"g"}}
+	ident := &TenantIdentity{Roles: testAdminRoles, TenantName: "github-oidc", Namespace: "default", UserID: "sub-1", Groups: []string{"g"}}
 	signed, err := auth.MintSessionForIdentity(ident)
 	if err != nil {
 		t.Fatalf("minting: %v", err)

@@ -87,7 +87,7 @@ func TestRateLimiter_RefillOverTime(t *testing.T) {
 
 func TestAttachQuotaFields(t *testing.T) {
 	t.Run("nil config leaves quotas unset", func(t *testing.T) {
-		out := attachQuotaFields(&TenantIdentity{TenantName: "x"}, nil)
+		out := attachQuotaFields(&TenantIdentity{Roles: testAdminRoles, TenantName: "x"}, nil)
 		if out.RateLimitRPM != 0 || out.ConcurrentRuns != 0 || out.BudgetPerDayUSD != "" {
 			t.Fatalf("quota fields not zeroed: %+v", out)
 		}
@@ -104,7 +104,7 @@ func TestAttachQuotaFields(t *testing.T) {
 				BudgetPerDayUSD: "100.00",
 			},
 		}
-		out := attachQuotaFields(&TenantIdentity{}, tc)
+		out := attachQuotaFields(&TenantIdentity{Roles: testAdminRoles}, tc)
 		if out.RateLimitRPM != 60 || out.ConcurrentRuns != 3 || out.BudgetPerDayUSD != "100.00" {
 			t.Fatalf("quota fields wrong: %+v", out)
 		}
@@ -113,7 +113,7 @@ func TestAttachQuotaFields(t *testing.T) {
 		tc := &agentorcav1alpha1.TenantConfig{
 			Spec: agentorcav1alpha1.TenantConfigSpec{BudgetPerDayUSD: "5.00"},
 		}
-		out := attachQuotaFields(&TenantIdentity{RateLimitRPM: 9, ConcurrentRuns: 9}, tc)
+		out := attachQuotaFields(&TenantIdentity{Roles: testAdminRoles, RateLimitRPM: 9, ConcurrentRuns: 9}, tc)
 		if out.RateLimitRPM != 0 || out.ConcurrentRuns != 0 || out.BudgetPerDayUSD != "5.00" {
 			t.Fatalf("fields not reset from nil rateLimit: %+v", out)
 		}
@@ -149,7 +149,7 @@ func fakeClientWith(t *testing.T, objs ...client.Object) client.Client {
 
 func TestEnforceQuotas_NoLimitsPasses(t *testing.T) {
 	kube := fakeClientWith(t, runWith("tenant-acme", "r1", "Running", "0.01"))
-	tenant := &TenantIdentity{TenantName: "acme", Namespace: "tenant-acme"}
+	tenant := &TenantIdentity{Roles: testAdminRoles, TenantName: "acme", Namespace: "tenant-acme"}
 	if err := enforceQuotas(context.Background(), kube, NewRateLimiter(), tenant); err != nil {
 		t.Fatalf("expected no quota error, got %v", err)
 	}
@@ -164,7 +164,7 @@ func TestEnforceQuotas_NilTenantPasses(t *testing.T) {
 func TestEnforceQuotas_RateLimited(t *testing.T) {
 	kube := fakeClientWith(t)
 	rl := NewRateLimiter()
-	tenant := &TenantIdentity{TenantName: "acme", Namespace: "tenant-acme", RateLimitRPM: 1}
+	tenant := &TenantIdentity{Roles: testAdminRoles, TenantName: "acme", Namespace: "tenant-acme", RateLimitRPM: 1}
 	if err := enforceQuotas(context.Background(), kube, rl, tenant); err != nil {
 		t.Fatalf("first submission should pass: %v", err)
 	}
@@ -187,7 +187,7 @@ func TestEnforceQuotas_ConcurrentRunCap(t *testing.T) {
 		runWith("tenant-acme", "r1", "Running", "0.01"),
 		runWith("tenant-acme", "r2", "WaitingForInput", "0.00"),
 	)
-	tenant := &TenantIdentity{TenantName: "acme", Namespace: "tenant-acme", ConcurrentRuns: 2}
+	tenant := &TenantIdentity{Roles: testAdminRoles, TenantName: "acme", Namespace: "tenant-acme", ConcurrentRuns: 2}
 	err := enforceQuotas(context.Background(), kube, NewRateLimiter(), tenant)
 	qe, ok := err.(*QuotaError)
 	if !ok {
@@ -204,7 +204,7 @@ func TestEnforceQuotas_ConcurrentRunCap(t *testing.T) {
 func TestEnforceQuotas_ConcurrentCapNotReached(t *testing.T) {
 	// One active run, cap 3 -> allowed.
 	kube := fakeClientWith(t, runWith("tenant-acme", "r1", "Running", "0.01"))
-	tenant := &TenantIdentity{TenantName: "acme", Namespace: "tenant-acme", ConcurrentRuns: 3}
+	tenant := &TenantIdentity{Roles: testAdminRoles, TenantName: "acme", Namespace: "tenant-acme", ConcurrentRuns: 3}
 	if err := enforceQuotas(context.Background(), kube, NewRateLimiter(), tenant); err != nil {
 		t.Fatalf("under cap should pass: %v", err)
 	}
@@ -240,7 +240,7 @@ func TestEnforceQuotas_BudgetExceeded(t *testing.T) {
 			},
 		},
 	)
-	tenant := &TenantIdentity{TenantName: "acme", Namespace: "tenant-acme", BudgetPerDayUSD: "0.05"}
+	tenant := &TenantIdentity{Roles: testAdminRoles, TenantName: "acme", Namespace: "tenant-acme", BudgetPerDayUSD: "0.05"}
 	err := enforceQuotas(context.Background(), kube, NewRateLimiter(), tenant)
 	qe, ok := err.(*QuotaError)
 	if !ok {
@@ -253,7 +253,7 @@ func TestEnforceQuotas_BudgetExceeded(t *testing.T) {
 
 func TestEnforceQuotas_BudgetWithinLimit(t *testing.T) {
 	kube := fakeClientWith(t, runWith("tenant-acme", "r1", "Succeeded", "0.01"))
-	tenant := &TenantIdentity{TenantName: "acme", Namespace: "tenant-acme", BudgetPerDayUSD: "1.00"}
+	tenant := &TenantIdentity{Roles: testAdminRoles, TenantName: "acme", Namespace: "tenant-acme", BudgetPerDayUSD: "1.00"}
 	if err := enforceQuotas(context.Background(), kube, NewRateLimiter(), tenant); err != nil {
 		t.Fatalf("expected no error under budget, got %v", err)
 	}

@@ -222,7 +222,7 @@ func TestTenantIsolationEnvtest(t *testing.T) {
 
 	// The API: tenant A cannot read tenant B's tool in the shared namespace.
 	s := &UIServer{crdClient: c}
-	identity := &TenantIdentity{TenantID: idA, TenantName: "acme", Namespace: "shared", Namespaces: []string{"a-only", "shared"}}
+	identity := &TenantIdentity{Roles: testAdminRoles, TenantID: idA, TenantName: "acme", Namespace: "shared", Namespaces: []string{"a-only", "shared"}}
 	get := func(name string) int {
 		rec := httptest.NewRecorder()
 		s.handleResource(rec, asTenant(httptest.NewRequest(http.MethodGet, "/api/resources/tools/shared/"+name, nil), identity))

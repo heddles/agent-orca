@@ -603,7 +603,7 @@ func (h *OIDCLoginHandler) handleCallback(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	ident := attachQuotaFields(&TenantIdentity{
+	ident := h.auth.withRoles(attachQuotaFields(&TenantIdentity{
 		TenantID:      tc.Status.TenantID,
 		TenantName:    tc.Name,
 		Namespace:     firstNamespace(tc.Spec.AllowedNamespaces),
@@ -611,7 +611,7 @@ func (h *OIDCLoginHandler) handleCallback(w http.ResponseWriter, r *http.Request
 		AllowedAgents: tc.Spec.AllowedAgents,
 		UserID:        principal.UserID,
 		Groups:        principal.Groups,
-	}, tc)
+	}, tc), tc)
 
 	signed, err := h.auth.MintSessionForIdentity(ident)
 	if err != nil {

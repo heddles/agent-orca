@@ -281,7 +281,7 @@ func TestHandleCosts_TenantScoping(t *testing.T) {
 		liveRun("other-run", "other", "a", agentorcav1alpha1.AgentRunPhaseSucceeded, "50.0", costDay1),
 	)
 
-	tenant := &TenantIdentity{TenantName: "t", Namespaces: []string{"mine"}}
+	tenant := &TenantIdentity{Roles: testAdminRoles, TenantName: "t", Namespaces: []string{"mine"}}
 	got := getCosts(t, s, "?namespace=other", context.WithValue(context.Background(), tenantIdentityKey, tenant))
 	if got.TotalUSD != usd(3) {
 		t.Fatalf("tenant total = %s, want 3.0000 (own live + archive only)", got.TotalUSD)
@@ -291,7 +291,7 @@ func TestHandleCosts_TenantScoping(t *testing.T) {
 	}
 
 	arch.n = 0
-	none := &TenantIdentity{TenantName: "empty"}
+	none := &TenantIdentity{Roles: testAdminRoles, TenantName: "empty"}
 	got = getCosts(t, s, "", context.WithValue(context.Background(), tenantIdentityKey, none))
 	if arch.n != 0 {
 		t.Fatal("a tenant without namespaces must not query the archive")

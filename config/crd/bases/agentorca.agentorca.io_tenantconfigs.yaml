@@ -229,6 +229,46 @@ spec:
                       per minute.
                     type: integer
                 type: object
+              roles:
+                description: |-
+                  Roles maps OIDC groups to roles inside this tenant. A signed-in user gets
+                  the highest role any of their groups maps to, plus every role below it
+                  (admin includes builder, builder includes runner, runner includes viewer).
+                  Omit it and every signed-in user is a runner, which is how tenants behaved
+                  before roles existed. Once it is set, a user in none of the listed groups
+                  gets defaultRole, or no access at all when that is unset.
+                properties:
+                  admin:
+                    description: Admin lists the groups that get the admin role.
+                    items:
+                      type: string
+                    type: array
+                  builder:
+                    description: Builder lists the groups that get the builder role.
+                    items:
+                      type: string
+                    type: array
+                  defaultRole:
+                    description: |-
+                      DefaultRole is the role of a signed-in user who is in none of the groups
+                      above. Unset means such a user has no access.
+                    enum:
+                    - viewer
+                    - runner
+                    - builder
+                    - admin
+                    type: string
+                  runner:
+                    description: Runner lists the groups that get the runner role.
+                    items:
+                      type: string
+                    type: array
+                  viewer:
+                    description: Viewer lists the groups that get the viewer role.
+                    items:
+                      type: string
+                    type: array
+                type: object
               tenantID:
                 description: |-
                   TenantID pins the tenant's stable identifier ("tnt_" plus a UUIDv7). Omit

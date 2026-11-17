@@ -37,10 +37,10 @@ func TestPgScope(t *testing.T) {
 	}{
 		{"no identity is the platform (auth disabled, UI proxy)", context.Background(), postgresql.PlatformScope, true},
 		{"nil identity is the platform", withIdentity(nil), postgresql.PlatformScope, true},
-		{"tenant with an ID", withIdentity(&TenantIdentity{TenantID: isoA, TenantName: "acme"}), isoA, true},
-		{"empty identity gets no scope", withIdentity(&TenantIdentity{}), "", true},
-		{"named tenant without an ID gets no scope", withIdentity(&TenantIdentity{TenantName: "acme"}), "", true},
-		{"namespace-only identity gets no scope", withIdentity(&TenantIdentity{Namespace: "a-ns"}), "", true},
+		{"tenant with an ID", withIdentity(&TenantIdentity{Roles: testAdminRoles, TenantID: isoA, TenantName: "acme"}), isoA, true},
+		{"empty identity gets no scope", withIdentity(&TenantIdentity{Roles: testAdminRoles}), "", true},
+		{"named tenant without an ID gets no scope", withIdentity(&TenantIdentity{Roles: testAdminRoles, TenantName: "acme"}), "", true},
+		{"namespace-only identity gets no scope", withIdentity(&TenantIdentity{Roles: testAdminRoles, Namespace: "a-ns"}), "", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -56,7 +56,7 @@ func TestPgScope(t *testing.T) {
 // defaults to the platform, because pgScope sets an explicitly empty scope.
 func TestPgScopeEmptyIdentityIsRefusedByAPlatformStore(t *testing.T) {
 	store := (&postgresql.Store{}).AsPlatform()
-	_, err := store.GetRun(pgScope(withIdentity(&TenantIdentity{TenantName: "legacy"})), "ns", "run")
+	_, err := store.GetRun(pgScope(withIdentity(&TenantIdentity{Roles: testAdminRoles, TenantName: "legacy"})), "ns", "run")
 	if !errors.Is(err, postgresql.ErrNoTenantScope) {
 		t.Errorf("GetRun err = %v, want ErrNoTenantScope", err)
 	}

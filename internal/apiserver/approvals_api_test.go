@@ -73,7 +73,7 @@ func approvalsServer() (*UIServer, *fakeApprovals) {
 }
 
 func asUser(r *http.Request, user string, groups ...string) *http.Request {
-	return r.WithContext(context.WithValue(r.Context(), tenantIdentityKey, &TenantIdentity{
+	return r.WithContext(context.WithValue(r.Context(), tenantIdentityKey, &TenantIdentity{Roles: testAdminRoles,
 		Namespaces: []string{"team-a"}, UserID: user, Groups: groups,
 	}))
 }
