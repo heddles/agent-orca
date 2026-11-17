@@ -79,7 +79,7 @@ func newWriteFixture(t *testing.T, objs ...client.Object) *writeFixture {
 // as is an identity of tenant A holding role, with a name to find in the audit.
 func (f *writeFixture) as(role tenancy.Role) *TenantIdentity {
 	id := tenantA()
-	id.Namespace, id.Namespaces = "shared", []string{"shared"}
+	id.Namespace, id.Namespaces = sharedNS, []string{sharedNS}
 	id.UserID, id.Roles = "ada", role.Expand() //nolint:goconst
 	return id
 }
@@ -103,11 +103,14 @@ func (f *writeFixture) do(id *TenantIdentity, method, path, body string) *httpte
 func (f *writeFixture) tool(name string) *agentorcav1alpha1.Tool {
 	f.t.Helper()
 	var tl agentorcav1alpha1.Tool
-	if err := f.c.Get(context.Background(), client.ObjectKey{Namespace: "shared", Name: name}, &tl); err != nil {
+	if err := f.c.Get(context.Background(), client.ObjectKey{Namespace: sharedNS, Name: name}, &tl); err != nil {
 		f.t.Fatalf("get tool %s: %v", name, err)
 	}
 	return &tl
 }
+
+// sharedNS is the namespace both test tenants may use.
+const sharedNS = "shared"
 
 const newAgentBody = `{"apiVersion":"agentorca.agentorca.io/v1alpha1","kind":"Agent",
  "metadata":{"name":"bot","namespace":"elsewhere","labels":{"keep":"me","app.kubernetes.io/managed-by":"argocd"},
@@ -122,7 +125,7 @@ func TestCreateResourceOwnership(t *testing.T) {
 		t.Fatalf("create = %d %s", rec.Code, rec.Body.String())
 	}
 	var got agentorcav1alpha1.Agent
-	if err := f.c.Get(context.Background(), client.ObjectKey{Namespace: "shared", Name: "bot"}, &got); err != nil {
+	if err := f.c.Get(context.Background(), client.ObjectKey{Namespace: sharedNS, Name: "bot"}, &got); err != nil {
 		t.Fatalf("created in the tenant's namespace, not the body's: %v", err)
 	}
 	a := got.Annotations
@@ -160,7 +163,7 @@ func TestCreateResourceNoManagedByStamp(t *testing.T) {
 		t.Fatalf("create = %d %s", rec.Code, rec.Body.String())
 	}
 	var got agentorcav1alpha1.Agent
-	_ = f.c.Get(context.Background(), client.ObjectKey{Namespace: "shared", Name: "plain"}, &got)
+	_ = f.c.Get(context.Background(), client.ObjectKey{Namespace: sharedNS, Name: "plain"}, &got)
 	if _, has := got.Labels["app.kubernetes.io/managed-by"]; has {
 		t.Errorf("the UI stamped managed-by: %v", got.Labels)
 	}
@@ -191,15 +194,15 @@ func TestCreateResourceValidation(t *testing.T) {
 }
 
 func uiOwnedTool(name string) *agentorcav1alpha1.Tool {
-	return isoTool("shared", name, tenancy.LabelTenantID, isoA)
+	return isoTool(sharedNS, name, tenancy.LabelTenantID, isoA)
 }
 
 func TestUpdateResource(t *testing.T) {
 	owned := uiOwnedTool("owned")
 	owned.ResourceVersion = ""
-	gitTool := isoTool("shared", "from-git", tenancy.LabelTenantID, isoA)
+	gitTool := isoTool(sharedNS, "from-git", tenancy.LabelTenantID, isoA)
 	gitTool.Annotations = map[string]string{tenancy.AnnotationOwner: "git"}
-	unowned := isoTool("shared", "unowned", tenancy.LabelTenantID, isoA)
+	unowned := isoTool(sharedNS, "unowned", tenancy.LabelTenantID, isoA)
 	unowned.Annotations = nil
 	f := newWriteFixture(t, owned, gitTool, unowned)
 
@@ -270,10 +273,10 @@ func TestUpdateResource(t *testing.T) {
 }
 
 func TestDeleteResourceOwnership(t *testing.T) {
-	gitTool := isoTool("shared", "from-git", tenancy.LabelTenantID, isoA)
+	gitTool := isoTool(sharedNS, "from-git", tenancy.LabelTenantID, isoA)
 	gitTool.Annotations = map[string]string{tenancy.AnnotationOwner: "git"}
 	// What the old UI API left behind: a managed-by label and nothing else.
-	legacy := isoTool("shared", "legacy-ui", tenancy.LabelTenantID, isoA)
+	legacy := isoTool(sharedNS, "legacy-ui", tenancy.LabelTenantID, isoA)
 	legacy.Annotations = nil
 	f := newWriteFixture(t, uiOwnedTool("mine"), gitTool, legacy)
 	admin := f.as(tenancy.RoleAdmin)
@@ -288,7 +291,7 @@ func TestDeleteResourceOwnership(t *testing.T) {
 	if rec := f.do(admin, http.MethodDelete, "/api/resources/tools/shared/mine", ""); rec.Code != http.StatusOK {
 		t.Fatalf("delete owned = %d %s", rec.Code, rec.Body.String())
 	}
-	if err := f.c.Get(context.Background(), client.ObjectKey{Namespace: "shared", Name: "mine"}, &agentorcav1alpha1.Tool{}); err == nil {
+	if err := f.c.Get(context.Background(), client.ObjectKey{Namespace: sharedNS, Name: "mine"}, &agentorcav1alpha1.Tool{}); err == nil {
 		t.Error("owned tool survived")
 	}
 	if len(f.audit.events) != 1 || f.audit.events[0].Action != postgresql.AuditDelete || f.audit.events[0].Name != "mine" {
@@ -348,7 +351,7 @@ func TestAuditFailureDoesNotFailTheWriteButIsLoud(t *testing.T) {
 	}
 	// The annotation still names the actor.
 	var got agentorcav1alpha1.Agent
-	_ = f.c.Get(context.Background(), client.ObjectKey{Namespace: "shared", Name: "bot"}, &got)
+	_ = f.c.Get(context.Background(), client.ObjectKey{Namespace: sharedNS, Name: "bot"}, &got)
 	if got.Annotations[tenancy.AnnotationLastModifiedBy] != "ada" {
 		t.Errorf("annotations = %v", got.Annotations)
 	}
@@ -378,10 +381,10 @@ func TestMachineActorIsNamed(t *testing.T) {
 func TestAuditEndpoint(t *testing.T) {
 	f := newWriteFixture(t)
 	f.audit.events = []postgresql.AuditEvent{
-		{ID: 1, Action: "create", Kind: "Agent", Namespace: "shared", Name: "a"},
-		{ID: 2, Action: "update", Kind: "Agent", Namespace: "shared", Name: "a"},
+		{ID: 1, Action: "create", Kind: "Agent", Namespace: sharedNS, Name: "a"},
+		{ID: 2, Action: "update", Kind: "Agent", Namespace: sharedNS, Name: "a"},
 		{ID: 3, Action: "delete", Kind: "Agent", Namespace: "other-tenants-ns", Name: "z"},
-		{ID: 4, Action: "create", Kind: "Tool", Namespace: "shared", Name: "t"},
+		{ID: 4, Action: "create", Kind: "Tool", Namespace: sharedNS, Name: "t"},
 	}
 	get := func(id *TenantIdentity, query string) (*httptest.ResponseRecorder, auditPage) {
 		req := httptest.NewRequest(http.MethodGet, "/api/audit"+query, nil)
@@ -406,7 +409,7 @@ func TestAuditEndpoint(t *testing.T) {
 	if rec.Code != http.StatusOK || len(page.Events) != 3 || page.Events[0].ID != 4 || page.NextCursor != "" {
 		t.Fatalf("admin read = %d %+v", rec.Code, page)
 	}
-	if !slices.Equal(f.audit.lastList.Namespaces, []string{"shared"}) {
+	if !slices.Equal(f.audit.lastList.Namespaces, []string{sharedNS}) {
 		t.Errorf("the query was not limited to the tenant's namespaces: %+v", f.audit.lastList)
 	}
 
@@ -470,7 +473,7 @@ func TestCreateAgentIsStampedAndAudited(t *testing.T) {
 	}
 	var ag agentorcav1alpha1.Agent
 	var dep agentorcav1alpha1.AgentDeployment
-	key := client.ObjectKey{Namespace: "shared", Name: "chatty"}
+	key := client.ObjectKey{Namespace: sharedNS, Name: "chatty"}
 	if err := f.c.Get(context.Background(), key, &ag); err != nil {
 		t.Fatal(err)
 	}

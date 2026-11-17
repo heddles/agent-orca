@@ -25,6 +25,9 @@ import (
 const (
 	isoA = "tnt_01935c7e-aaaa-7aaa-8bbb-00000000000a"
 	isoB = "tnt_01935c7e-bbbb-7aaa-8bbb-00000000000b"
+
+	// isoAName is tenant A's name in these tests.
+	isoAName = "acme"
 )
 
 func isoMode(t *testing.T, m tenancy.Mode) {
@@ -43,7 +46,7 @@ func isoTool(ns, name string, kv ...string) *agentorcav1alpha1.Tool {
 }
 
 func tenantA() *TenantIdentity {
-	return &TenantIdentity{Roles: testAdminRoles, TenantID: isoA, TenantName: "acme", Namespace: "shared", Namespaces: []string{"shared", "a-only"}}
+	return &TenantIdentity{Roles: testAdminRoles, TenantID: isoA, TenantName: isoAName, Namespace: "shared", Namespaces: []string{"shared", "a-only"}}
 }
 
 func asTenant(r *http.Request, t *TenantIdentity) *http.Request {
@@ -212,7 +215,7 @@ func TestRunLookupIgnoresForeignTenant(t *testing.T) {
 	isoMode(t, tenancy.ModeEnforce)
 	run := func(name, tid string) *agentorcav1alpha1.AgentRun {
 		return &agentorcav1alpha1.AgentRun{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "shared", Labels: map[string]string{
-			tenancy.LabelTenantID: tid, tenancy.LabelTenantName: "acme", // the name label is no defence
+			tenancy.LabelTenantID: tid, tenancy.LabelTenantName: isoAName, // the name label is no defence
 		}}}
 	}
 	c := fake.NewClientBuilder().WithScheme(listCRDTestScheme(t)).WithObjects(run("mine", isoA), run("theirs", isoB)).Build()
@@ -252,7 +255,7 @@ func TestHandleMe(t *testing.T) {
 	id := tenantA()
 	id.UserID, id.Groups = "grace", []string{"devs"}
 	me := get(id)
-	if me.UserID != "grace" || me.Tenant == nil || me.Tenant.ID != isoA || me.Tenant.Name != "acme" ||
+	if me.UserID != "grace" || me.Tenant == nil || me.Tenant.ID != isoA || me.Tenant.Name != isoAName ||
 		!slices.Equal(me.Groups, []string{"devs"}) || len(me.Workspaces) != 2 || !me.Workspaces[0].Primary ||
 		me.Workspaces[0].Namespace != "shared" || !slices.Equal(me.Roles, testAdminRoles) { //nolint:goconst
 		t.Errorf("me = %+v", me)
@@ -292,7 +295,7 @@ func idTenant(name, id string, namespaces ...string) *agentorcav1alpha1.TenantCo
 }
 
 func TestServiceAccountResolvesToTenant(t *testing.T) {
-	a1 := idTenant("acme", isoA, "a-ns", "shared")
+	a1 := idTenant(isoAName, isoA, "a-ns", "shared")
 	b1 := idTenant("globex", isoB, "b-ns", "shared")
 	tests := []struct {
 		name    string
@@ -331,7 +334,7 @@ func TestServiceAccountResolvesToTenant(t *testing.T) {
 }
 
 func TestServiceAccountOfUnregisteredTenantIsRejected(t *testing.T) {
-	a := saAuth(t, "system:serviceaccount:a-ns:ci", idTenant("acme", "", "a-ns"))
+	a := saAuth(t, "system:serviceaccount:a-ns:ci", idTenant(isoAName, "", "a-ns"))
 	if _, err := a.validateK8sToken(context.Background(), "tok"); err == nil {
 		t.Error("a service account of a tenant with no ID was accepted")
 	}
@@ -341,13 +344,13 @@ func TestServiceAccountOfUnregisteredTenantIsRejected(t *testing.T) {
 // live TenantConfig of its tid wins, so tightening or widening a tenant takes
 // effect on the next request.
 func TestIssuedTokenUsesLiveTenantConfig(t *testing.T) {
-	tc := tenantWithID("acme", tidNew)
+	tc := tenantWithID(isoAName, tidNew)
 	tc.Spec.AllowedNamespaces = []string{defaultNamespace}
 	a := testAuth(t, testRSAKey(t), tc)
-	a.SetTenantRegistry(registryWith(rec(tidNew, "acme", tenancy.StateActive)))
+	a.SetTenantRegistry(registryWith(rec(tidNew, isoAName, tenancy.StateActive)))
 
 	tok, err := a.MintSessionForIdentity(&TenantIdentity{Roles: testAdminRoles,
-		TenantID: tidNew, TenantName: "acme", Namespace: "old-ns", Namespaces: []string{"old-ns", defaultNamespace},
+		TenantID: tidNew, TenantName: isoAName, Namespace: "old-ns", Namespaces: []string{"old-ns", defaultNamespace},
 		AllowedAgents: []string{"stale-agent"}, UserID: "grace",
 	})
 	if err != nil {
@@ -377,10 +380,10 @@ func TestIssuedTokenUsesLiveTenantConfig(t *testing.T) {
 }
 
 func TestLegacyIssuedTokenKeepsItsClaims(t *testing.T) {
-	tc := tenantWithID("acme", "")
+	tc := tenantWithID(isoAName, "")
 	a := testAuth(t, testRSAKey(t), tc)
 	tok, err := a.MintSessionForIdentity(&TenantIdentity{Roles: testAdminRoles,
-		TenantName: "acme", Namespace: "claimed", Namespaces: []string{"claimed"}, AllowedAgents: []string{"x"}, UserID: "grace",
+		TenantName: isoAName, Namespace: "claimed", Namespaces: []string{"claimed"}, AllowedAgents: []string{"x"}, UserID: "grace",
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -39,9 +39,11 @@ interface Props {
   onNavigateToRun: (runName: string, namespace: string, source: RunSource) => void
   /** Workspace to list; empty means all. */
   namespace?: string
+  /** Start with the agent filter set, for links from the fleet overview. */
+  initialAgent?: string
 }
 
-export function RunsView({ onNavigateToRun, namespace = '' }: Props) {
+export function RunsView({ onNavigateToRun, namespace = '', initialAgent = '' }: Props) {
   const [live, setLive] = useState<AgentRunSummary[]>([])
   const [liveError, setLiveError] = useState<string | null>(null)
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('')
@@ -51,7 +53,7 @@ export function RunsView({ onNavigateToRun, namespace = '' }: Props) {
     limit: 50,
     offset: 0,
   })
-  const [filters, setFilters] = useState({ phase: '', agentRef: '', search: '' })
+  const [filters, setFilters] = useState({ phase: '', agentRef: initialAgent, search: '' })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notConfigured, setNotConfigured] = useState(false)
