@@ -32,15 +32,17 @@ var _ routingbench.Source = (*Store)(nil)
 
 func TestLoadObservations_MapsRows(t *testing.T) {
 	s, mock := costMock(t)
+	expectScopeBegin(mock)
 	mock.ExpectQuery(`FROM shadow_results r`).
 		WillReturnRows(sqlmock.NewRows([]string{"agent", "stage", "served", "shadow", "winner", "inconsistent", "served_cost", "shadow_cost", "algorithm", "confidence"}).
 			AddRow("coder", "chat", "strong", "weak", "served", false, 0.01, 0.001, "composite", 0.4))
-	mock.ExpectQuery(`FROM routing_events\s+WHERE NOT is_shadow AND namespace = \$1 AND agent = ANY\(\$2::text\[\]\)\s+AND created_at >= \$3 AND created_at <= \$4\s+AND error_class = ''`).
+	mock.ExpectQuery(`FROM routing_events\s+WHERE NOT is_shadow AND namespace = \$1 AND agent = ANY\(\$2::text\[\]\)\s+AND created_at >= \$3 AND created_at <= \$4\s+AND \(\$5::text = '\*' OR tenant_id = \$5\)\s+AND error_class = ''`).
 		WillReturnRows(sqlmock.NewRows([]string{"agent", "stage", "provider", "n"}).AddRow("coder", "chat", "strong", 7))
 	mock.ExpectQuery(`COUNT\(\*\) FILTER \(WHERE error_class <> ''\)`).
 		WillReturnRows(sqlmock.NewRows([]string{"selector", "provider", "calls", "errors"}).AddRow("balanced", "weak", 10, 4))
 	mock.ExpectQuery(`FROM routing_feedback f`).
 		WillReturnRows(sqlmock.NewRows([]string{"agent", "stage", "up", "down"}).AddRow("coder", "chat", 1, 3))
+	mock.ExpectCommit()
 
 	now := time.Now()
 	got, err := s.LoadObservations(context.Background(), routingbench.Query{Namespace: "ns", Agents: []string{"coder"}, Since: now.Add(-time.Hour), Now: now})
@@ -67,7 +69,9 @@ func TestLoadObservations_MapsRows(t *testing.T) {
 
 func TestLoadObservations_NamesTheQueryThatFailed(t *testing.T) {
 	s, mock := costMock(t)
+	expectScopeBegin(mock)
 	mock.ExpectQuery(`FROM shadow_results r`).WillReturnError(context.DeadlineExceeded)
+	mock.ExpectRollback()
 	_, err := s.LoadObservations(context.Background(), routingbench.Query{Namespace: "ns"})
 	if err == nil || !strings.Contains(err.Error(), "loading shadow samples") || !strings.Contains(err.Error(), "deadline") {
 		t.Errorf("err = %v", err)

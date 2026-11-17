@@ -24,6 +24,7 @@ COPY internal/ratelimit/ internal/ratelimit/
 COPY internal/router/ internal/router/
 COPY internal/security/*.go internal/security/
 COPY internal/state/ internal/state/
+COPY internal/tenancy/ internal/tenancy/
 COPY third_party/switchyard/bindings/go/ third_party/switchyard/bindings/go/
 # END generated go-deps
 

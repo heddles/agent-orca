@@ -56,19 +56,19 @@ func TestExistingPointsRoundTrip(t *testing.T) {
 
 	// Upsert two chunks using the production pointID scheme.
 	ids := []string{
-		pointID("doc-a", 0),
-		pointID("doc-a", 1),
+		pointID("tnt-a", "doc-a", 0),
+		pointID("tnt-a", "doc-a", 1),
 	}
 	points := []Point{
 		{ID: ids[0], Vector: []float32{1, 1}, Payload: map[string]any{"doc_id": "doc-a", "content_hash": contentHash("alpha")}},
 		{ID: ids[1], Vector: []float32{2, 2}, Payload: map[string]any{"doc_id": "doc-a", "content_hash": contentHash("beta")}},
 	}
-	if err := qClient.Upsert(ctx, collection, points); err != nil {
+	if err := qClient.Upsert(ctx, collection, "tnt-test", points); err != nil {
 		t.Fatalf("upserting: %v", err)
 	}
 
 	// Both written points must be found, keyed by the exact input IDs.
-	existing, err := qClient.ExistingPoints(ctx, collection, ids)
+	existing, err := qClient.ExistingPoints(ctx, collection, "tnt-test", ids)
 	if err != nil {
 		t.Fatalf("ExistingPoints: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestExistingPointsRoundTrip(t *testing.T) {
 	}
 
 	// A chunk never written must be absent (resume would embed it).
-	missing := pointID("doc-a", 2)
+	missing := pointID("tnt-a", "doc-a", 2)
 	if _, ok := existing[missing]; ok {
 		t.Errorf("unwritten point %q reported as existing", missing)
 	}
@@ -93,18 +93,18 @@ func TestExistingPointsRoundTrip(t *testing.T) {
 	// Cross-check with the production pendingChunks filter, pre-hash-era path:
 	// a point stored WITHOUT a content_hash payload must be reported as
 	// pending (re-embedded once), not silently skipped.
-	legacyID := pointID("doc-legacy", 0)
-	if err := qClient.Upsert(ctx, collection, []Point{{ID: legacyID, Vector: []float32{3, 3}, Payload: map[string]any{"doc_id": "doc-legacy"}}}); err != nil {
+	legacyID := pointID("tnt-a", "doc-legacy", 0)
+	if err := qClient.Upsert(ctx, collection, "tnt-test", []Point{{ID: legacyID, Vector: []float32{3, 3}, Payload: map[string]any{"doc_id": "doc-legacy"}}}); err != nil {
 		t.Fatalf("upserting legacy point: %v", err)
 	}
-	existing, err = qClient.ExistingPoints(ctx, collection, []string{legacyID})
+	existing, err = qClient.ExistingPoints(ctx, collection, "tnt-test", []string{legacyID})
 	if err != nil {
 		t.Fatalf("ExistingPoints (legacy): %v", err)
 	}
 	if hash, ok := existing[legacyID]; !ok || hash != "" {
 		t.Errorf("legacy point round-trip: got %v, want present with empty hash", existing)
 	}
-	if todo := pendingChunks([]Chunk{{DocID: "doc-legacy", Index: 0, Text: "x"}}, existing); len(todo) != 1 {
+	if todo := pendingChunks("tnt-a", []Chunk{{DocID: "doc-legacy", Index: 0, Text: "x"}}, existing); len(todo) != 1 {
 		t.Errorf("legacy point must be re-embedded (todo=1), got %d", len(todo))
 	}
 

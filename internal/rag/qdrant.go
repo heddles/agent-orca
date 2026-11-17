@@ -19,8 +19,10 @@ package rag
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"slices"
@@ -31,6 +33,32 @@ import (
 )
 
 var qdrantHTTPClient = &http.Client{Timeout: 10 * time.Second}
+
+// TenantPayloadKey is the payload field that holds a point's tenant ID. Every
+// point carries it and every read filters on it.
+//
+// Isolation strategy: one shared collection per KnowledgeBase with a mandatory
+// tenant_id payload filter, rather than a collection per tenant. Qdrant's
+// guidance for multitenancy is a payload partition (a keyword index marked
+// is_tenant co-locates a tenant's vectors and keeps filtered search fast); a
+// collection per tenant costs memory and file handles per tenant and does not
+// scale to many small tenants. The filter is applied inside QdrantClient, which
+// refuses calls with no tenant ID, so no caller can search unfiltered.
+const TenantPayloadKey = "tenant_id"
+
+// ErrTenantRequired is returned by a QdrantClient call that has no tenant ID.
+var ErrTenantRequired = errors.New("qdrant: a tenant ID is required")
+
+// ErrTenantConflict is returned by Upsert when a point ID is already owned by
+// another tenant. Point IDs derive from the tenant ID, so this only happens if
+// a caller supplies IDs of its own; the write is refused rather than
+// overwriting the other tenant's point.
+var ErrTenantConflict = errors.New("qdrant: point ID belongs to another tenant")
+
+// tenantFilter matches only the tenant's points.
+func tenantFilter(tenantID string) *pb.Filter {
+	return &pb.Filter{Must: []*pb.Condition{pb.NewMatch(TenantPayloadKey, tenantID)}}
+}
 
 // QdrantClient wraps the official Qdrant Go gRPC client for vector operations.
 type QdrantClient struct {
@@ -62,19 +90,48 @@ func (q *QdrantClient) EnsureCollection(ctx context.Context, name string, dimens
 	if err != nil {
 		return fmt.Errorf("listing collections: %w", err)
 	}
-	if slices.Contains(collections, name) {
-		return nil
+	if !slices.Contains(collections, name) {
+		err = q.client.CreateCollection(ctx, &pb.CreateCollection{
+			CollectionName: name,
+			VectorsConfig: pb.NewVectorsConfig(&pb.VectorParams{
+				Size:     dimensions,
+				Distance: pb.Distance_Cosine,
+			}),
+		})
+		if err != nil {
+			return fmt.Errorf("creating collection %q: %w", name, err)
+		}
 	}
+	// The tenant index is created on existing collections too; creating an index
+	// that exists is a no-op.
+	isTenant := true
+	if _, err := q.client.CreateFieldIndex(ctx, &pb.CreateFieldIndexCollection{
+		CollectionName:   name,
+		FieldName:        TenantPayloadKey,
+		FieldType:        pb.FieldType_FieldTypeKeyword.Enum(),
+		FieldIndexParams: pb.NewPayloadIndexParamsKeyword(&pb.KeywordIndexParams{IsTenant: &isTenant}),
+	}); err != nil {
+		return fmt.Errorf("indexing %s on %q: %w", TenantPayloadKey, name, err)
+	}
+	return nil
+}
 
-	err = q.client.CreateCollection(ctx, &pb.CreateCollection{
-		CollectionName: name,
-		VectorsConfig: pb.NewVectorsConfig(&pb.VectorParams{
-			Size:     dimensions,
-			Distance: pb.Distance_Cosine,
-		}),
+// BackfillTenant stamps tenantID on the collection's points that have no tenant
+// yet (those ingested before tenant IDs existed). Points that already carry a
+// tenant are left alone, so it is safe to repeat.
+func (q *QdrantClient) BackfillTenant(ctx context.Context, collection, tenantID string) error {
+	if tenantID == "" {
+		return ErrTenantRequired
+	}
+	wait := true
+	_, err := q.client.SetPayload(ctx, &pb.SetPayloadPoints{
+		CollectionName: collection,
+		Wait:           &wait,
+		Payload:        pb.NewValueMap(map[string]any{TenantPayloadKey: tenantID}),
+		PointsSelector: pb.NewPointsSelectorFilter(&pb.Filter{Must: []*pb.Condition{pb.NewIsEmpty(TenantPayloadKey)}}),
 	})
 	if err != nil {
-		return fmt.Errorf("creating collection %q: %w", name, err)
+		return fmt.Errorf("backfilling %s on %q: %w", TenantPayloadKey, collection, err)
 	}
 	return nil
 }
@@ -93,22 +150,45 @@ type SearchResult struct {
 }
 
 // Upsert inserts or updates points in the given collection.
-func (q *QdrantClient) Upsert(ctx context.Context, collection string, points []Point) error {
+func (q *QdrantClient) Upsert(ctx context.Context, collection, tenantID string, points []Point) error {
 	if len(points) == 0 {
 		return nil
+	}
+	if tenantID == "" {
+		return ErrTenantRequired
+	}
+
+	// Defence in depth behind tenant-derived point IDs: never overwrite a point
+	// another tenant owns. Points with no tenant (pre-backfill) may be claimed.
+	ids := make([]string, len(points))
+	for i, p := range points {
+		ids[i] = p.ID
+	}
+	owners, err := q.pointOwners(ctx, collection, ids)
+	if err != nil {
+		return err
+	}
+	for id, owner := range owners {
+		if owner != "" && owner != tenantID {
+			return fmt.Errorf("%w: %s in %q", ErrTenantConflict, id, collection)
+		}
 	}
 
 	pbPoints := make([]*pb.PointStruct, len(points))
 	for i, p := range points {
+		payload := make(map[string]any, len(p.Payload)+1)
+		maps.Copy(payload, p.Payload)
+		// Set last: source metadata must not be able to name another tenant.
+		payload[TenantPayloadKey] = tenantID
 		pbPoints[i] = &pb.PointStruct{
 			Id:      pb.NewID(p.ID),
 			Vectors: pb.NewVectorsDense(p.Vector),
-			Payload: pb.NewValueMap(p.Payload),
+			Payload: pb.NewValueMap(payload),
 		}
 	}
 
 	wait := true
-	_, err := q.client.Upsert(ctx, &pb.UpsertPoints{
+	_, err = q.client.Upsert(ctx, &pb.UpsertPoints{
 		CollectionName: collection,
 		Wait:           &wait,
 		Points:         pbPoints,
@@ -123,7 +203,10 @@ func (q *QdrantClient) Upsert(ctx context.Context, collection string, points []P
 // in the collection, the stored "content_hash" payload value (empty string
 // for points written before content hashing was introduced). Missing points
 // are absent from the map.
-func (q *QdrantClient) ExistingPoints(ctx context.Context, collection string, ids []string) (map[string]string, error) {
+func (q *QdrantClient) ExistingPoints(ctx context.Context, collection, tenantID string, ids []string) (map[string]string, error) {
+	if tenantID == "" {
+		return nil, ErrTenantRequired
+	}
 	existing := make(map[string]string, len(ids))
 	const batchSize = 500
 	for start := 0; start < len(ids); start += batchSize {
@@ -141,7 +224,7 @@ func (q *QdrantClient) ExistingPoints(ctx context.Context, collection string, id
 			Ids:            pbIDs,
 			WithPayload: &pb.WithPayloadSelector{
 				SelectorOptions: &pb.WithPayloadSelector_Include{
-					Include: &pb.PayloadIncludeSelector{Fields: []string{"content_hash"}},
+					Include: &pb.PayloadIncludeSelector{Fields: []string{"content_hash", TenantPayloadKey}},
 				},
 			},
 			WithVectors: &pb.WithVectorsSelector{
@@ -152,6 +235,10 @@ func (q *QdrantClient) ExistingPoints(ctx context.Context, collection string, id
 			return nil, fmt.Errorf("fetching %d existing points from %q: %w", len(batch), collection, err)
 		}
 		for _, p := range points {
+			// A point another tenant owns does not exist for this one.
+			if owner, ok := p.GetPayload()[TenantPayloadKey]; ok && owner.GetStringValue() != tenantID {
+				continue
+			}
 			hash := ""
 			if v, ok := p.GetPayload()["content_hash"]; ok {
 				hash = v.GetStringValue()
@@ -163,11 +250,15 @@ func (q *QdrantClient) ExistingPoints(ctx context.Context, collection string, id
 }
 
 // Search performs a nearest neighbor search and returns the top-K results.
-func (q *QdrantClient) Search(ctx context.Context, collection string, vector []float32, topK int) ([]SearchResult, error) {
+func (q *QdrantClient) Search(ctx context.Context, collection, tenantID string, vector []float32, topK int) ([]SearchResult, error) {
+	if tenantID == "" {
+		return nil, ErrTenantRequired
+	}
 	limit := uint64(topK)
 	scored, err := q.client.Query(ctx, &pb.QueryPoints{
 		CollectionName: collection,
 		Query:          pb.NewQueryDense(vector),
+		Filter:         tenantFilter(tenantID),
 		Limit:          &limit,
 		WithPayload:    pb.NewWithPayload(true),
 	})
@@ -193,14 +284,18 @@ type CollectionStats struct {
 }
 
 // CollectionStats returns point count, unique document count, and storage size.
-func (q *QdrantClient) CollectionStats(ctx context.Context, collection string) (*CollectionStats, error) {
-	info, err := q.client.GetCollectionInfo(ctx, collection)
+func (q *QdrantClient) CollectionStats(ctx context.Context, collection, tenantID string) (*CollectionStats, error) {
+	if tenantID == "" {
+		return nil, ErrTenantRequired
+	}
+	exact := true
+	count, err := q.client.Count(ctx, &pb.CountPoints{CollectionName: collection, Filter: tenantFilter(tenantID), Exact: &exact})
 	if err != nil {
-		return nil, fmt.Errorf("getting collection info for %q: %w", collection, err)
+		return nil, fmt.Errorf("counting points in %q: %w", collection, err)
 	}
 
 	stats := &CollectionStats{
-		PointCount: info.GetPointsCount(),
+		PointCount: count,
 	}
 
 	// Count unique doc_id values by scrolling with minimal payload.
@@ -210,6 +305,7 @@ func (q *QdrantClient) CollectionStats(ctx context.Context, collection string) (
 	for {
 		points, next, err := q.client.ScrollAndOffset(ctx, &pb.ScrollPoints{
 			CollectionName: collection,
+			Filter:         tenantFilter(tenantID),
 			Limit:          &batchSize,
 			Offset:         offset,
 			WithPayload: &pb.WithPayloadSelector{
@@ -365,4 +461,97 @@ func splitHostPort(addr string) (string, int, error) {
 		return "", 0, fmt.Errorf("invalid port %q: %w", portStr, err)
 	}
 	return host, port, nil
+}
+
+// pointOwners returns the stored tenant ID of each of the given point IDs that
+// exists (empty string for a point with no tenant). Missing points are absent.
+func (q *QdrantClient) pointOwners(ctx context.Context, collection string, ids []string) (map[string]string, error) {
+	owners := make(map[string]string)
+	const batchSize = 500
+	for start := 0; start < len(ids); start += batchSize {
+		batch := ids[start:min(start+batchSize, len(ids))]
+		pbIDs := make([]*pb.PointId, len(batch))
+		for i, id := range batch {
+			pbIDs[i] = pb.NewID(id)
+		}
+		points, err := q.client.Get(ctx, &pb.GetPoints{
+			CollectionName: collection,
+			Ids:            pbIDs,
+			WithPayload: &pb.WithPayloadSelector{
+				SelectorOptions: &pb.WithPayloadSelector_Include{
+					Include: &pb.PayloadIncludeSelector{Fields: []string{TenantPayloadKey}},
+				},
+			},
+			WithVectors: &pb.WithVectorsSelector{SelectorOptions: &pb.WithVectorsSelector_Enable{Enable: false}},
+		})
+		if err != nil {
+			return nil, fmt.Errorf("checking owners of %d points in %q: %w", len(batch), collection, err)
+		}
+		for _, p := range points {
+			owners[p.GetId().GetUuid()] = p.GetPayload()[TenantPayloadKey].GetStringValue()
+		}
+	}
+	return owners, nil
+}
+
+// MigrateLegacyPointIDs rewrites the tenant's points that still carry a
+// pre-tenant point ID (a hash of document ID and chunk index only) to the
+// tenant-derived ID, keeping vector and payload, then deletes the old point.
+// It needs no re-embedding, is idempotent, and only touches points the tenant
+// already owns (run BackfillTenant first so legacy points are stamped).
+// Points whose payload lacks doc_id or chunk_index cannot be re-derived and
+// are left under their old ID: still tenant-filtered on read, but not covered
+// by the cross-tenant overwrite guarantee until re-ingested. It returns the
+// number of points moved.
+func (q *QdrantClient) MigrateLegacyPointIDs(ctx context.Context, collection, tenantID string) (int, error) {
+	if tenantID == "" {
+		return 0, ErrTenantRequired
+	}
+	moved := 0
+	var offset *pb.PointId
+	limit := uint32(100)
+	for {
+		points, next, err := q.client.ScrollAndOffset(ctx, &pb.ScrollPoints{
+			CollectionName: collection,
+			Filter:         tenantFilter(tenantID),
+			Limit:          &limit,
+			Offset:         offset,
+			WithPayload:    pb.NewWithPayload(true),
+			WithVectors:    &pb.WithVectorsSelector{SelectorOptions: &pb.WithVectorsSelector_Enable{Enable: true}},
+		})
+		if err != nil {
+			return moved, fmt.Errorf("scrolling %q for point migration: %w", collection, err)
+		}
+		var upserts []*pb.PointStruct
+		var stale []*pb.PointId
+		for _, p := range points {
+			docID := p.GetPayload()["doc_id"].GetStringValue()
+			idx := p.GetPayload()["chunk_index"]
+			vec := p.GetVectors().GetVector().GetDense().GetData()
+			if docID == "" || idx == nil || len(vec) == 0 {
+				continue
+			}
+			want := pointID(tenantID, docID, int(idx.GetIntegerValue()))
+			if p.GetId().GetUuid() == want {
+				continue
+			}
+			upserts = append(upserts, &pb.PointStruct{Id: pb.NewID(want), Vectors: pb.NewVectorsDense(vec), Payload: p.GetPayload()})
+			stale = append(stale, p.GetId())
+		}
+		if len(upserts) > 0 {
+			wait := true
+			if _, err := q.client.Upsert(ctx, &pb.UpsertPoints{CollectionName: collection, Wait: &wait, Points: upserts}); err != nil {
+				return moved, fmt.Errorf("writing migrated points to %q: %w", collection, err)
+			}
+			if _, err := q.client.Delete(ctx, &pb.DeletePoints{CollectionName: collection, Wait: &wait, Points: pb.NewPointsSelector(stale...)}); err != nil {
+				return moved, fmt.Errorf("deleting legacy points from %q: %w", collection, err)
+			}
+			moved += len(upserts)
+		}
+		if next == nil || len(points) == 0 {
+			break
+		}
+		offset = next
+	}
+	return moved, nil
 }

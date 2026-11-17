@@ -25,6 +25,7 @@ import (
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
 	"github.com/heddles/agent-orca/internal/postgresql"
+	"github.com/heddles/agent-orca/internal/tenancy"
 )
 
 // callSource is where a router's calls, or a person's rating, come from: an
@@ -36,6 +37,8 @@ type callSource struct {
 	Name   string
 	Agent  string
 	Tenant string
+	// TenantID is the tenant's stable ID from the agentorca.io/tenant-id label.
+	TenantID string
 	// Deployment, Workflow and WorkflowStep say what the work is part of, when
 	// it is: an AgentDeployment's chat run, or a workflow step's run.
 	Deployment   string
@@ -47,7 +50,7 @@ type callSource struct {
 func sourceOfRun(run *agentorcav1alpha1.AgentRun) callSource {
 	return callSource{
 		Kind: postgresql.SourceKindRun, Name: run.Name, Agent: run.Spec.AgentRef,
-		Tenant:     run.Labels["agentorca.io/tenant"],
+		Tenant: run.Labels["agentorca.io/tenant"], TenantID: run.Labels[tenancy.LabelTenantID],
 		Deployment: run.Labels["agentorca.io/deployment"],
 		Workflow:   run.Labels["agentorca.io/workflow"], WorkflowStep: run.Labels["agentorca.io/workflow-step"],
 	}
@@ -79,6 +82,6 @@ func resolveCallSource(ctx context.Context, c client.Reader, namespace, name str
 	}
 	return callSource{
 		Kind: postgresql.SourceKindDeployment, Name: name, Agent: dep.Spec.AgentRef,
-		Tenant: dep.Labels["agentorca.io/tenant"], Deployment: name,
+		Tenant: dep.Labels["agentorca.io/tenant"], TenantID: dep.Labels[tenancy.LabelTenantID], Deployment: name,
 	}, nil
 }

@@ -36,6 +36,7 @@ import (
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
 	"github.com/heddles/agent-orca/internal/openshell"
+	"github.com/heddles/agent-orca/internal/tenancy"
 )
 
 const workflowPollInterval = 10 * time.Second
@@ -371,6 +372,13 @@ func (r *AgentWorkflowReconciler) startAgentStep(
 		}
 	}
 
+	if denied, err := tenancy.EnforceRefs(ctx, r.Client, wf); err != nil {
+		return err
+	} else if denied != "" {
+		finishStep(wf, ss, false, "", denied)
+		return nil
+	}
+
 	runName := workflowAgentRunName(wf, step, ss.NameGeneration())
 	run := &agentorcav1alpha1.AgentRun{
 		ObjectMeta: metav1.ObjectMeta{
@@ -413,7 +421,7 @@ func (r *AgentWorkflowReconciler) startAgentStep(
 	}
 
 	// Set the workflow as owner so kubectl delete agentworkflow cascades.
-	if err := controllerutil.SetControllerReference(wf, run, r.Scheme); err != nil {
+	if err := tenancy.SetControllerReference(wf, run, r.Scheme); err != nil {
 		return fmt.Errorf("setting owner reference on step AgentRun: %w", err)
 	}
 

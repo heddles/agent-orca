@@ -18,14 +18,19 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
+	"github.com/heddles/agent-orca/internal/tenancy"
 )
 
 // TenantRefresher is implemented by ExternalAuth to refresh the tenant cache.
@@ -39,6 +44,22 @@ type TenantConfigReconciler struct {
 	client.Client
 	Scheme    *runtime.Scheme
 	Refresher TenantRefresher
+	// Registry is the tenant registry, the source of truth for tenant IDs. Nil
+	// when Postgres is not configured: IDs are then still assigned and mirrored
+	// to status, but nothing records their lifecycle.
+	Registry tenancy.Registry
+	// OperatorNamespace is the namespace the operator runs in, which tenant
+	// workload ingress policies admit. Empty omits that peer.
+	OperatorNamespace string
+	// Now is the clock; nil means time.Now.
+	Now func() time.Time
+}
+
+func (r *TenantConfigReconciler) now() time.Time {
+	if r.Now != nil {
+		return r.Now()
+	}
+	return time.Now()
 }
 
 // +kubebuilder:rbac:groups=agentorca.agentorca.io,resources=tenantconfigs,verbs=get;list;watch;create;update;patch;delete
@@ -52,12 +73,30 @@ func (r *TenantConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		if r.Refresher != nil {
 			_ = r.Refresher.RefreshTenants(ctx)
 		}
-		return ctrl.Result{}, client.IgnoreNotFound(err)
+		if apierrors.IsNotFound(err) {
+			// A deleted tenant's policies go with it (idempotent).
+			return ctrl.Result{}, r.syncTenantWorkloadPolicies(ctx)
+		}
+		return ctrl.Result{}, err
 	}
 
+	if !tc.DeletionTimestamp.IsZero() {
+		return ctrl.Result{}, r.finalize(ctx, &tc)
+	}
+
+	// Register before anything else so a Ready tenant always has an ID. Existing
+	// TenantConfigs get theirs here on the first reconcile after an upgrade.
+	tenantID, idErr := r.syncTenantID(ctx, &tc)
+
 	ready, message := r.validate(&tc)
+	if idErr != nil {
+		ready, message = false, fmt.Sprintf("tenant ID: %v", idErr)
+	}
 
 	patch := client.MergeFrom(tc.DeepCopy())
+	if idErr == nil {
+		tc.Status.TenantID = tenantID
+	}
 	tc.Status.Ready = ready
 	tc.Status.Message = message
 	now := metav1.Now()
@@ -77,6 +116,9 @@ func (r *TenantConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	if err := r.Status().Patch(ctx, &tc, patch); err != nil {
 		return ctrl.Result{}, fmt.Errorf("patching TenantConfig status: %w", err)
 	}
+	if idErr != nil && !errors.Is(idErr, tenancy.ErrIDInUse) {
+		return ctrl.Result{}, idErr // a registry outage is retried; a conflict needs a human
+	}
 
 	// Refresh the auth middleware's tenant cache.
 	if r.Refresher != nil {
@@ -85,7 +127,66 @@ func (r *TenantConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		}
 	}
 
+	// Keep the tenant's workload ingress policies in step with the namespaces
+	// it claims.
+	if err := r.syncTenantWorkloadPolicies(ctx); err != nil {
+		return ctrl.Result{}, fmt.Errorf("syncing tenant workload network policies: %w", err)
+	}
+
 	return ctrl.Result{}, nil
+}
+
+// syncTenantID registers the TenantConfig in the registry and returns its ID.
+func (r *TenantConfigReconciler) syncTenantID(ctx context.Context, tc *agentorcav1alpha1.TenantConfig) (string, error) {
+	if r.Registry == nil {
+		switch {
+		case tc.Spec.TenantID != "":
+			return tc.Spec.TenantID, nil
+		case tc.Status.TenantID != "":
+			return tc.Status.TenantID, nil
+		}
+		return tenancy.NewID()
+	}
+	if controllerutil.AddFinalizer(tc, tenancy.RegistryFinalizer) {
+		if err := r.Update(ctx, tc); err != nil {
+			return "", fmt.Errorf("adding finalizer: %w", err)
+		}
+	}
+	return tenancy.Sync(ctx, r.Registry, tenancy.Claim{
+		Name: tc.Name, Namespace: tc.Namespace, UID: string(tc.UID),
+		Pinned: tc.Spec.TenantID, Current: tc.Status.TenantID,
+	}, r.now())
+}
+
+// finalize records the tenant's deletion so its sessions stop working, then
+// lets the TenantConfig go.
+func (r *TenantConfigReconciler) finalize(ctx context.Context, tc *agentorcav1alpha1.TenantConfig) error {
+	// The tenant is deleting, so the sync drops its workload policies.
+	if err := r.syncTenantWorkloadPolicies(ctx); err != nil {
+		return fmt.Errorf("removing tenant workload network policies: %w", err)
+	}
+	if !controllerutil.ContainsFinalizer(tc, tenancy.RegistryFinalizer) {
+		return nil
+	}
+	if r.Registry != nil {
+		id := tc.Status.TenantID
+		if id == "" {
+			id = tc.Spec.TenantID
+		}
+		if id != "" {
+			if err := tenancy.MarkDeleted(ctx, r.Registry, id, r.now()); err != nil {
+				return fmt.Errorf("marking tenant deleted: %w", err)
+			}
+		}
+	}
+	controllerutil.RemoveFinalizer(tc, tenancy.RegistryFinalizer)
+	if err := r.Update(ctx, tc); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	if r.Refresher != nil {
+		_ = r.Refresher.RefreshTenants(ctx)
+	}
+	return nil
 }
 
 func (r *TenantConfigReconciler) validate(tc *agentorcav1alpha1.TenantConfig) (bool, string) {

@@ -31,6 +31,7 @@ import (
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
 	"github.com/heddles/agent-orca/internal/security"
+	"github.com/heddles/agent-orca/internal/tenancy"
 )
 
 const agentFinalizer = "agentorca.io/agent-cleanup"
@@ -92,7 +93,7 @@ func (r *AgentReconciler) reconcileManagedSA(ctx context.Context, agent *agentor
 	var existing corev1.ServiceAccount
 	err := r.Get(ctx, client.ObjectKey{Name: saName, Namespace: agent.Namespace}, &existing)
 	if errors.IsNotFound(err) {
-		if err2 := ctrl.SetControllerReference(agent, desired, r.Scheme); err2 != nil {
+		if err2 := tenancy.SetControllerReference(agent, desired, r.Scheme); err2 != nil {
 			return fmt.Errorf("setting owner reference on SA: %w", err2)
 		}
 		return r.Create(ctx, desired)

@@ -154,7 +154,7 @@ func (s *Server) takeShadowLease(w http.ResponseWriter, r *http.Request, caller,
 	}
 	now := time.Now().UTC()
 	id, err := s.shadow.TakeShadowLease(r.Context(), postgresql.LeaseRequest{
-		Namespace: namespace, Benchmark: req.Benchmark,
+		TenantID: call.src.TenantID, Namespace: namespace, Benchmark: req.Benchmark,
 		Agent: call.src.Agent, SourceKind: call.src.Kind, SourceName: call.src.Name,
 		AmountUSD: req.AmountUSD, DayStart: now.Truncate(24 * time.Hour), PerDayUSD: perDay, PerRunUSD: perRun,
 		MaxPerHour: maxPerHour, TTL: shadowLeaseTTL, Now: now,
@@ -204,6 +204,7 @@ func (s *Server) recordShadowResult(w http.ResponseWriter, r *http.Request, call
 	}
 	res.Namespace = namespace
 	res.Agent, res.SourceKind, res.SourceName, res.Tenant = call.src.Agent, call.src.Kind, call.src.Name, call.src.Tenant
+	res.TenantID = call.src.TenantID
 	res.Selector, res.SelectorGeneration = call.selector, call.generation
 	if err := res.Validate(); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)

@@ -70,7 +70,7 @@ func readFeedback(w http.ResponseWriter, r *http.Request) (feedbackRequest, erro
 // it cannot be stored.
 func feedbackFrom(req feedbackRequest, namespace string, src callSource, tenantName, user, source string) (postgresql.Feedback, error) {
 	f := postgresql.Feedback{
-		Tenant: tenantName, Namespace: namespace, RunName: src.Name,
+		Tenant: tenantName, TenantID: src.TenantID, Namespace: namespace, RunName: src.Name,
 		Agent: src.Agent, Deployment: src.Deployment, Workflow: src.Workflow, WorkflowStep: src.WorkflowStep,
 		DecisionID: req.DecisionID, TurnIndex: req.Turn,
 		Rating: req.Rating, Comment: req.Comment, UserID: user, Source: source,
@@ -131,7 +131,7 @@ func (s *UIServer) handleRunFeedback(w http.ResponseWriter, r *http.Request, ns,
 	user := feedbackUser(tenant)
 
 	if r.Method == http.MethodGet {
-		list, err := store.FeedbackForRun(r.Context(), ns, runName, user)
+		list, err := store.FeedbackForRun(pgScope(r.Context()), ns, runName, user)
 		if err != nil {
 			slog.Error("loading feedback", "run", runName, "ns", ns, "err", err)
 			http.Error(w, "loading feedback failed", http.StatusInternalServerError)
@@ -158,7 +158,7 @@ func (s *UIServer) handleRunFeedback(w http.ResponseWriter, r *http.Request, ns,
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if err := store.UpsertFeedback(r.Context(), f); err != nil {
+	if err := store.UpsertFeedback(pgScope(r.Context()), f); err != nil {
 		slog.Error("storing feedback", "run", runName, "ns", ns, "err", err)
 		http.Error(w, "storing feedback failed", http.StatusInternalServerError)
 		return
@@ -182,7 +182,7 @@ func (s *ExternalAPIServer) feedbackTask(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	run, err := findRunInNamespaces(r.Context(), s.crdClient, tenant, taskID)
-	if err != nil || run.Labels["agentorca.io/tenant"] != tenant.TenantName {
+	if err != nil || !runVisibleTo(tenant, run) {
 		http.Error(w, `{"error":"task not found"}`, http.StatusNotFound)
 		return
 	}
@@ -200,7 +200,7 @@ func (s *ExternalAPIServer) feedbackTask(w http.ResponseWriter, r *http.Request,
 		jsonError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if err := s.feedback.UpsertFeedback(r.Context(), f); err != nil {
+	if err := s.feedback.UpsertFeedback(pgScope(r.Context()), f); err != nil {
 		slog.Error("storing feedback", "task", taskID, "err", err)
 		http.Error(w, `{"error":"storing feedback failed"}`, http.StatusInternalServerError)
 		return

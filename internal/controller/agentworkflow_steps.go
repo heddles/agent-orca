@@ -45,11 +45,11 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
 	"github.com/heddles/agent-orca/internal/postgresql"
+	"github.com/heddles/agent-orca/internal/tenancy"
 	agentwebhook "github.com/heddles/agent-orca/internal/webhook"
 )
 
@@ -146,7 +146,7 @@ func (r *AgentWorkflowReconciler) startContainerStep(ctx context.Context, wf *ag
 		env[i] = agentorcav1alpha1.StepEnvVar{Name: e.Name, Value: resolveTemplates(e.Value, allStatuses)}
 	}
 	pod := buildStepPod(wf, step, ss.NameGeneration(), env, stepTimeout(wf, step, defaultContainerStepTimeout))
-	if err := controllerutil.SetControllerReference(wf, pod, r.Scheme); err != nil {
+	if err := tenancy.SetControllerReference(wf, pod, r.Scheme); err != nil {
 		return fmt.Errorf("setting owner reference on step pod: %w", err)
 	}
 	if err := r.ensureStepNetworkPolicy(ctx, wf); err != nil {
@@ -234,7 +234,7 @@ func (r *AgentWorkflowReconciler) ensureStepNetworkPolicy(ctx context.Context, w
 			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress, networkingv1.PolicyTypeEgress},
 		},
 	}
-	if err := controllerutil.SetControllerReference(wf, np, r.Scheme); err != nil {
+	if err := tenancy.SetControllerReference(wf, np, r.Scheme); err != nil {
 		return fmt.Errorf("setting owner reference on step network policy: %w", err)
 	}
 	if err := r.Create(ctx, np); err != nil && !apierrors.IsAlreadyExists(err) {
@@ -368,6 +368,7 @@ func (r *AgentWorkflowReconciler) approvalRequest(wf *agentorcav1alpha1.AgentWor
 	}
 	return postgresql.Approval{
 		Tenant:         wf.Labels["agentorca.io/tenant"],
+		TenantID:       wf.Labels[tenancy.LabelTenantID],
 		Namespace:      wf.Namespace,
 		Kind:           postgresql.ApprovalKindWorkflow,
 		SourceKey:      approvalSourcePrefix(wf) + step.Name,

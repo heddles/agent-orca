@@ -45,7 +45,7 @@ func TestApprovalsAgainstPostgres(t *testing.T) {
 	if _, err := Migrate(ctx, db); err != nil {
 		t.Fatal(err)
 	}
-	s := &Store{db: db}
+	s := &Store{db: db, defaultScope: PlatformScope}
 
 	req := Approval{
 		Namespace: "team-a", RunName: "run-1", Kind: ApprovalKindEgress, SourceKey: "sb-1/chunk-1",

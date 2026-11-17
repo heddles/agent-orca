@@ -122,6 +122,69 @@ webhooks:
         resources: ["sandboxclasses"]
     failurePolicy: {{ .Values.webhook.failurePolicy | default "Fail" }}
     sideEffects: None
+  - name: vtenantconfig.kb.io
+    admissionReviewVersions: ["v1"]
+    clientConfig:
+      service:
+        name: {{ include "agent-orca.fullname" . }}-webhook
+        namespace: {{ .Release.Namespace }}
+        path: /validate-agentorca-agentorca-io-v1alpha1-tenantconfig
+      {{- if not .Values.webhook.certManager }}
+      caBundle: {{ $caCert | b64enc }}
+      {{- end }}
+    rules:
+      - apiGroups: ["agentorca.agentorca.io"]
+        apiVersions: ["v1alpha1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["tenantconfigs"]
+    failurePolicy: {{ .Values.webhook.failurePolicy | default "Fail" }}
+    sideEffects: None
+  - name: vtenantisolation.kb.io
+    admissionReviewVersions: ["v1"]
+    clientConfig:
+      service:
+        name: {{ include "agent-orca.fullname" . }}-webhook
+        namespace: {{ .Release.Namespace }}
+        path: /validate-agentorca-agentorca-io-v1alpha1-tenantisolation
+      {{- if not .Values.webhook.certManager }}
+      caBundle: {{ $caCert | b64enc }}
+      {{- end }}
+    rules:
+      - apiGroups: ["agentorca.agentorca.io"]
+        apiVersions: ["v1alpha1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["agents", "tools", "mcpservers", "knowledgebases", "modelselectors", "modelproviders", "agentdeployments", "agentworkflows", "agentruns"]
+    failurePolicy: {{ .Values.webhook.failurePolicy | default "Fail" }}
+    sideEffects: None
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: {{ include "agent-orca.fullname" . }}-mutating
+  labels:
+    {{- include "agent-orca.labels" . | nindent 4 }}
+  {{- if .Values.webhook.certManager }}
+  annotations:
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "agent-orca.fullname" . }}-webhook-cert
+  {{- end }}
+webhooks:
+  - name: mtenantlabel.kb.io
+    admissionReviewVersions: ["v1"]
+    clientConfig:
+      service:
+        name: {{ include "agent-orca.fullname" . }}-webhook
+        namespace: {{ .Release.Namespace }}
+        path: /mutate-agentorca-agentorca-io-v1alpha1-tenantlabel
+      {{- if not .Values.webhook.certManager }}
+      caBundle: {{ $caCert | b64enc }}
+      {{- end }}
+    rules:
+      - apiGroups: ["agentorca.agentorca.io"]
+        apiVersions: ["v1alpha1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["agents", "tools", "mcpservers", "knowledgebases", "modelselectors", "modelproviders", "agentdeployments", "agentworkflows", "agentruns"]
+    failurePolicy: {{ .Values.webhook.failurePolicy | default "Fail" }}
+    sideEffects: None
 ---
 apiVersion: v1
 kind: Service

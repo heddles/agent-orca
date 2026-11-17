@@ -35,6 +35,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
+	"github.com/heddles/agent-orca/internal/tenancy"
 )
 
 // tenantAuthModeIssued is the TenantConfig authMode value for issued JWTs.
@@ -176,7 +177,11 @@ func (s *ExternalAPIServer) requireSAOrSelfTenant(name string, capability adminC
 				writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 				return
 			}
-			if ident.TenantName != name {
+			// The name alone does not identify a tenant (a recreated TenantConfig
+			// reuses it), so the token's tenant ID must also be the named
+			// TenantConfig's.
+			if tc := s.auth.tenantConfigFor(name); ident.TenantName != name ||
+				(tc != nil && ident.TenantID != "" && tenancy.TenantIDOf(tc) != "" && tenancy.TenantIDOf(tc) != ident.TenantID) {
 				// Valid token, different tenant → 404 (do not reveal existence).
 				writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 				return

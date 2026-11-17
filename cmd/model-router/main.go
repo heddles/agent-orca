@@ -60,7 +60,10 @@ func main() { //nolint:gocyclo
 		slog.Error("failed to connect to state store", "err", err)
 		os.Exit(1)
 	}
-	defer func() { _ = store.Close() }()
+	rawStore := store
+	defer func() { _ = rawStore.Close() }()
+	// Keys live under the run's tenant prefix (a no-op for unlabelled runs).
+	store = state.ForTenant(store, cfg.TenantID)
 
 	// Warm pods: layer a local-disk L1 cache (the disk-backed emptyDir mounted by
 	// the operator) on top of the durable Redis store so checkpoint reads are

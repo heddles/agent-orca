@@ -38,6 +38,7 @@ import (
 	"github.com/heddles/agent-orca/internal/openshell"
 	"github.com/heddles/agent-orca/internal/podbuilder"
 	"github.com/heddles/agent-orca/internal/security"
+	"github.com/heddles/agent-orca/internal/tenancy"
 )
 
 // Sandbox mode runs the agent process in an OpenShell sandbox instead of the
@@ -280,7 +281,7 @@ func (r *AgentRunReconciler) ensureRouterSandboxIngress(ctx context.Context, run
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, np, func() error {
 		np.Labels = want.Labels
 		np.Spec = want.Spec
-		return controllerutil.SetControllerReference(run, np, r.Scheme)
+		return tenancy.SetControllerReference(run, np, r.Scheme)
 	})
 	if err != nil {
 		return fmt.Errorf("ensuring router sandbox ingress policy: %w", err)

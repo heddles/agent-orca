@@ -21,6 +21,9 @@ spec:
     - jsonPath: .spec.allowedNamespaces
       name: Namespaces
       type: string
+    - jsonPath: .status.tenantID
+      name: TenantID
+      type: string
     - jsonPath: .status.ready
       name: Ready
       type: boolean
@@ -226,6 +229,15 @@ spec:
                       per minute.
                     type: integer
                 type: object
+              tenantID:
+                description: |-
+                  TenantID pins the tenant's stable identifier ("tnt_" plus a UUIDv7). Omit
+                  it and the operator generates one at creation (see status.tenantID). Pin
+                  it for a deterministic ID in GitOps, or to restore a deleted tenant's data
+                  after disaster recovery: only a platform admin may pin the ID of a deleted
+                  tenant. Once set it cannot change.
+                pattern: ^tnt_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$
+                type: string
             required:
             - allowedNamespaces
             - authMode
@@ -300,6 +312,12 @@ spec:
                 description: Ready indicates the tenant configuration has been validated
                   and is active.
                 type: boolean
+              tenantID:
+                description: |-
+                  TenantID mirrors the tenant registry's ID for this TenantConfig. The
+                  registry is the source of truth; this copy lets controllers and kubectl
+                  read the ID without a database round trip.
+                type: string
             type: object
         type: object
     served: true

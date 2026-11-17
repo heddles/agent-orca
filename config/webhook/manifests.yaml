@@ -1,5 +1,39 @@
 ---
 apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: mutating-webhook-configuration
+webhooks:
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /mutate-agentorca-agentorca-io-v1alpha1-tenantlabel
+  failurePolicy: Fail
+  name: mtenantlabel.kb.io
+  rules:
+  - apiGroups:
+    - agentorca.agentorca.io
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - agents
+    - tools
+    - mcpservers
+    - knowledgebases
+    - modelselectors
+    - modelproviders
+    - agentdeployments
+    - agentworkflows
+    - agentruns
+  sideEffects: None
+---
+apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration
 metadata:
   name: validating-webhook-configuration
@@ -63,6 +97,54 @@ webhooks:
     - UPDATE
     resources:
     - sandboxclasses
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-agentorca-agentorca-io-v1alpha1-tenantconfig
+  failurePolicy: Fail
+  name: vtenantconfig.kb.io
+  rules:
+  - apiGroups:
+    - agentorca.agentorca.io
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - tenantconfigs
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-agentorca-agentorca-io-v1alpha1-tenantisolation
+  failurePolicy: Fail
+  name: vtenantisolation.kb.io
+  rules:
+  - apiGroups:
+    - agentorca.agentorca.io
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - agents
+    - tools
+    - mcpservers
+    - knowledgebases
+    - modelselectors
+    - modelproviders
+    - agentdeployments
+    - agentworkflows
+    - agentruns
   sideEffects: None
 - admissionReviewVersions:
   - v1

@@ -23,6 +23,27 @@ operator:
   # Comma-separated list of allowed OCI registry prefixes.
   # Empty = allow all registries.
   allowedRegistries: ""
+  # Tenant identity. adminGroup is the group (from the requester's userInfo) whose
+  # members may pin the ID of a deleted TenantConfig, which restores that
+  # tenant's data. Empty = nobody may.
+  tenantAdminGroup: ""
+  # Accept session and issued tokens minted before tenant IDs existed (no "tid"
+  # claim), mapping them by tenant name. A one-release bridge: set false once
+  # existing sessions have rolled over.
+  allowLegacyTenantTokens: true
+  # Tenant isolation mode, TENANT_ISOLATION_MODE. "audit" (default) logs and
+  # counts label and cross-tenant reference violations
+  # (agentorca_tenant_isolation_violations_total) and lets them through.
+  # "enforce" denies them. Run audit first, check the metric stays at zero, then
+  # switch. In enforce mode objects without agentorca.io/tenant-id are hidden
+  # from the APIs, so let the startup backfill label existing objects first.
+  tenantIsolationMode: audit
+  # Prefix every Redis key of a run with "t:<tenant ID>:" (AGENTORCA_STATE_TENANT_PREFIX).
+  # On by default; the operator, the UI/external/ACP APIs and the model-router
+  # all follow this one setting. Reads fall back to the old unprefixed key, so
+  # runs started before the upgrade keep working. false is an escape hatch:
+  # change it with no runs in flight.
+  stateTenantPrefix: true
   # extraArgs are appended to the operator container args. Use this to enable
   # optional features such as OIDC login, e.g.:
   #   extraArgs:

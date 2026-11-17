@@ -29,6 +29,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
+	"github.com/heddles/agent-orca/internal/state"
+	"github.com/heddles/agent-orca/internal/tenancy"
 )
 
 const (
@@ -59,12 +61,12 @@ var errSpendStoreUnavailable = errors.New("no state store configured: run spend 
 // "" with a nil error for a run that genuinely recorded no spend, and a non-nil
 // error whenever the answer is unknown, so callers can tell "free" from
 // "untracked".
-func (r *AgentRunReconciler) loadSpend(ctx context.Context, runName string) (string, error) {
+func (r *AgentRunReconciler) loadSpend(ctx context.Context, runName, tenantID string) (string, error) {
 	if r.StateStore == nil {
 		return "", errSpendStoreUnavailable
 	}
 	key := fmt.Sprintf("agentorca/runs/%s/state", runName)
-	usd, err := r.StateStore.LoadSpend(ctx, key)
+	usd, err := state.ForTenantIfEnabled(r.StateStore, tenantID).LoadSpend(ctx, key)
 	if err != nil {
 		return "", fmt.Errorf("loading spend from %s: %w", key, err)
 	}
@@ -79,7 +81,7 @@ func (r *AgentRunReconciler) loadSpend(ctx context.Context, runName string) (str
 // earlier stamp already recorded: that value is a lower bound, and the
 // condition says it is incomplete.
 func (r *AgentRunReconciler) stampSpend(ctx context.Context, run *agentorcav1alpha1.AgentRun) {
-	spend, err := r.loadSpend(ctx, run.Name)
+	spend, err := r.loadSpend(ctx, run.Name, run.Labels[tenancy.LabelTenantID])
 	if err != nil {
 		log.FromContext(ctx).Error(err, "run spend could not be captured", "run", run.Name)
 		meta.SetStatusCondition(&run.Status.Conditions, metav1.Condition{
@@ -149,4 +151,19 @@ func (r *AgentRunReconciler) ensureSpendStamped(ctx context.Context, run *agento
 		return costCaptureRetryInterval, nil
 	}
 	return 0, nil
+}
+
+// stateFor returns the state store scoped to obj's tenant, so keys are
+// prefixed with the tenant ID once state.PrefixEnabled (see internal/state).
+func (r *AgentRunReconciler) stateFor(obj client.Object) state.Store {
+	return state.ForTenantIfEnabled(r.StateStore, obj.GetLabels()[tenancy.LabelTenantID])
+}
+
+// stateTenantID is the tenant ID a router config carries: set only while tenant
+// key prefixes are enabled, so the router and the operator agree on key names.
+func stateTenantID(obj client.Object) string {
+	if !state.PrefixEnabled() {
+		return ""
+	}
+	return obj.GetLabels()[tenancy.LabelTenantID]
 }

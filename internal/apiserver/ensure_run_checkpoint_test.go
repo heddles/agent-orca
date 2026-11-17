@@ -58,7 +58,7 @@ func TestEnsureRunCheckpoint_PreservesExisting(t *testing.T) {
 	})
 	srv := &UIServer{store: store}
 	history := []agentorcav1alpha1.ConversationMessage{{Role: "user", Content: "fallback only"}}
-	if err := srv.ensureRunCheckpoint(context.Background(), "run-1", history); err != nil {
+	if err := srv.ensureRunCheckpoint(context.Background(), nil, "run-1", history); err != nil {
 		t.Fatalf("ensureRunCheckpoint: %v", err)
 	}
 	if len(store.written) != 0 {
@@ -75,7 +75,7 @@ func TestEnsureRunCheckpoint_FallbackWhenEmpty(t *testing.T) {
 		{Role: "user", Content: "hi"},
 		{Role: "assistant", Content: "hello"},
 	}
-	if err := srv.ensureRunCheckpoint(context.Background(), "run-2", history); err != nil {
+	if err := srv.ensureRunCheckpoint(context.Background(), nil, "run-2", history); err != nil {
 		t.Fatalf("ensureRunCheckpoint: %v", err)
 	}
 	got, ok := store.written["agentorca/runs/run-2/state"]

@@ -51,6 +51,7 @@ func freshRoutingDB(t *testing.T) (*Store, *sql.DB) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	store = store.AsPlatform()
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		t.Fatal(err)

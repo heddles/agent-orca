@@ -28,6 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
+	"github.com/heddles/agent-orca/internal/tenancy"
 )
 
 const (
@@ -283,6 +284,7 @@ func (r *MCPServerReconciler) applyChildTool(
 	server *agentorcav1alpha1.MCPServer,
 	desired *agentorcav1alpha1.Tool,
 ) error {
+	tenancy.InheritLabels(server, desired)
 	if existing, ok := existingByName[desired.Name]; ok {
 		// Update if spec changed.
 		existing.Spec = desired.Spec
@@ -290,7 +292,7 @@ func (r *MCPServerReconciler) applyChildTool(
 		return r.Update(ctx, existing)
 	}
 	// Create new child Tool.
-	if err := ctrl.SetControllerReference(server, desired, r.Scheme); err != nil {
+	if err := tenancy.SetControllerReference(server, desired, r.Scheme); err != nil {
 		return err
 	}
 	return r.Create(ctx, desired)

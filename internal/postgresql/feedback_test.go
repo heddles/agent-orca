@@ -72,9 +72,11 @@ func TestUpsertFeedback_BindsEveryColumn(t *testing.T) {
 	f := Feedback{Tenant: "acme", Namespace: "ns", RunName: "run", Agent: "coder", Deployment: "assistant",
 		Workflow: "release", WorkflowStep: "review", DecisionID: "d-1", TurnIndex: &turn,
 		Rating: 1, Comment: "right call", UserID: "ada", Source: FeedbackSourceAPI}
+	expectScopeBegin(mock)
 	mock.ExpectExec(`INSERT INTO routing_feedback`).
-		WithArgs("acme", "ns", "run", "coder", "assistant", "release", "review", "d-1", 3, 1, "right call", "ada", "api").
+		WithArgs("acme", "ns", "run", "coder", "assistant", "release", "review", "d-1", 3, 1, "right call", "ada", "api", "").
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
 	if err := s.UpsertFeedback(context.Background(), f); err != nil {
 		t.Fatal(err)
 	}
@@ -85,9 +87,11 @@ func TestUpsertFeedback_BindsEveryColumn(t *testing.T) {
 
 func TestUpsertFeedback_NoTurnBindsNull(t *testing.T) {
 	s, mock := costMock(t)
+	expectScopeBegin(mock)
 	mock.ExpectExec(`INSERT INTO routing_feedback`).
-		WithArgs("", "ns", "run", "coder", "", "", "", "", nil, -1, "", "ada", "ui").
+		WithArgs("", "ns", "run", "coder", "", "", "", "", nil, -1, "", "ada", "ui", "").
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
 	if err := s.UpsertFeedback(context.Background(), goodFeedback()); err != nil {
 		t.Fatal(err)
 	}
@@ -120,11 +124,13 @@ func TestUpsertFeedback_RejectsInvalidBeforeTheDatabase(t *testing.T) {
 func TestFeedbackForRun(t *testing.T) {
 	s, mock := costMock(t)
 	at := time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)
-	cols := []string{"tenant", "agent", "deployment", "workflow", "workflow_step", "decision_id", "turn_index", "rating", "comment", "user_id", "source", "created_at", "updated_at"}
-	mock.ExpectQuery(`FROM routing_feedback`).WithArgs("ns", "run", "ada").
+	cols := []string{"tenant", "tenant_id", "agent", "deployment", "workflow", "workflow_step", "decision_id", "turn_index", "rating", "comment", "user_id", "source", "created_at", "updated_at"}
+	expectScopeBegin(mock)
+	mock.ExpectQuery(`FROM routing_feedback`).WithArgs("ns", "run", "ada", "*").
 		WillReturnRows(sqlmock.NewRows(cols).
-			AddRow("acme", "coder", "", "release", "review", "d-1", 2, 1, "good", "ada", "ui", at, at).
-			AddRow("acme", "coder", "", "", "", "", nil, -1, "", "ada", "ui", at, at))
+			AddRow("acme", "", "coder", "", "release", "review", "d-1", 2, 1, "good", "ada", "ui", at, at).
+			AddRow("acme", "", "coder", "", "", "", "", nil, -1, "", "ada", "ui", at, at))
+	mock.ExpectCommit()
 	got, err := s.FeedbackForRun(context.Background(), "ns", "run", "ada")
 	if err != nil {
 		t.Fatal(err)

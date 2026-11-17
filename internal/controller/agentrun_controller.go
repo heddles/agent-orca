@@ -64,6 +64,7 @@ import (
 	"github.com/heddles/agent-orca/internal/router"
 	"github.com/heddles/agent-orca/internal/security"
 	"github.com/heddles/agent-orca/internal/state"
+	"github.com/heddles/agent-orca/internal/tenancy"
 )
 
 const (
@@ -207,6 +208,18 @@ func (r *AgentRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			return r.failRun(ctx, &run, fmt.Sprintf("agent %q not found", run.Spec.AgentRef))
 		}
 		return ctrl.Result{}, err
+	}
+
+	// A run may use only its own tenant's Agent, and that Agent only its own
+	// tenant's Tools, KnowledgeBases, selectors and Secrets.
+	if run.Status.Phase == "" || run.Status.Phase == agentorcav1alpha1.AgentRunPhasePending {
+		denied, err := tenancy.EnforceRefs(ctx, r.Client, &run, &agent)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if denied != "" {
+			return r.failRun(ctx, &run, denied)
+		}
 	}
 
 	saName := security.AgentSAName(agent.Name)
@@ -370,7 +383,7 @@ func (r *AgentRunReconciler) startRun(ctx context.Context, run *agentorcav1alpha
 
 		// Router pod: model-router as standalone container with provider/tool mounts.
 		routerPod := r.buildRouterPod(run, agent, saName, routerCfg.Strategy, providerVolumes, providerMounts, toolSecretVolumes, toolSecretMounts, mcpBinVolumes, mcpBinMounts)
-		if err := ctrl.SetControllerReference(run, routerPod, r.Scheme); err != nil {
+		if err := tenancy.SetControllerReference(run, routerPod, r.Scheme); err != nil {
 			return r.failRun(ctx, run, fmt.Sprintf("setting router pod owner ref: %v", err))
 		}
 		if err := r.Create(ctx, routerPod); err != nil && !errors.IsAlreadyExists(err) {
@@ -426,7 +439,7 @@ func (r *AgentRunReconciler) startRun(ctx context.Context, run *agentorcav1alpha
 		} else {
 			// Agent pod: agent container only, pointing OPENAI_BASE_URL at the router Service.
 			agentPod := r.buildAgentOnlyPod(run, agent, saName, tokenSecretName, routerBaseURL)
-			if err := ctrl.SetControllerReference(run, agentPod, r.Scheme); err != nil {
+			if err := tenancy.SetControllerReference(run, agentPod, r.Scheme); err != nil {
 				return r.failRun(ctx, run, fmt.Sprintf("setting agent pod owner ref: %v", err))
 			}
 			if err := r.Create(ctx, agentPod); err != nil && !errors.IsAlreadyExists(err) {
@@ -454,7 +467,7 @@ func (r *AgentRunReconciler) startRun(ctx context.Context, run *agentorcav1alpha
 		}
 		if podName == "" {
 			pod := r.buildAgentPod(run, agent, saName, tokenSecretName, routerCfg.Strategy, providerVolumes, providerMounts, toolSecretVolumes, toolSecretMounts, mcpBinVolumes, mcpBinMounts)
-			if err := ctrl.SetControllerReference(run, pod, r.Scheme); err != nil {
+			if err := tenancy.SetControllerReference(run, pod, r.Scheme); err != nil {
 				return r.failRun(ctx, run, fmt.Sprintf("setting pod owner ref: %v", err))
 			}
 			if err := r.Create(ctx, pod); err != nil && !errors.IsAlreadyExists(err) {
@@ -547,7 +560,7 @@ func (r *AgentRunReconciler) checkProgress(ctx context.Context, run *agentorcav1
 	// HTTP-mode agents are long-running servers that never exit on their own.
 	// Poll the state store for output instead of waiting for PodSucceeded.
 	if run.Status.InputMode == "http" && pod.Status.Phase == corev1.PodRunning && r.StateStore != nil {
-		httpOut, err := r.StateStore.LoadHTTPOutput(ctx, run.Name)
+		httpOut, err := r.stateFor(run).LoadHTTPOutput(ctx, run.Name)
 		if err == nil && httpOut != "" {
 			result, err := r.handlePodSuccess(ctx, run, &pod)
 			// One-shot pods (no warm-pool label) are torn down here so they don't linger
@@ -634,7 +647,7 @@ func (r *AgentRunReconciler) handleRunSuccess(ctx context.Context, run *agentorc
 	// that terminate with stdout as their only signal).
 	output := ""
 	if run.Status.InputMode == "http" && r.StateStore != nil {
-		if httpOut, lerr := r.StateStore.LoadHTTPOutput(ctx, run.Name); lerr == nil && httpOut != "" {
+		if httpOut, lerr := r.stateFor(run).LoadHTTPOutput(ctx, run.Name); lerr == nil && httpOut != "" {
 			output = httpOut
 		}
 	}
@@ -1247,6 +1260,7 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 	cfg := &router.Config{
 		RunName:                    run.Name,
 		RunNamespace:               run.Namespace,
+		TenantID:                   stateTenantID(run),
 		AgentSAName:                saName,
 		AgentName:                  agent.Name,
 		DisableClarify:             agent.Spec.DisableClarify,
@@ -1318,7 +1332,7 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 // ensureRole creates the per-run Role if it doesn't exist.
 func (r *AgentRunReconciler) ensureRole(ctx context.Context, run *agentorcav1alpha1.AgentRun) error {
 	role := security.BuildRunRole(run)
-	if err := ctrl.SetControllerReference(run, role, r.Scheme); err != nil {
+	if err := tenancy.SetControllerReference(run, role, r.Scheme); err != nil {
 		return fmt.Errorf("setting role owner ref: %w", err)
 	}
 	if err := r.Create(ctx, role); err != nil && !errors.IsAlreadyExists(err) {
@@ -1330,7 +1344,7 @@ func (r *AgentRunReconciler) ensureRole(ctx context.Context, run *agentorcav1alp
 // ensureRoleBinding creates the per-run RoleBinding if it doesn't exist.
 func (r *AgentRunReconciler) ensureRoleBinding(ctx context.Context, run *agentorcav1alpha1.AgentRun, saName string) error {
 	rb := security.BuildRunRoleBinding(run, saName, run.Namespace)
-	if err := ctrl.SetControllerReference(run, rb, r.Scheme); err != nil {
+	if err := tenancy.SetControllerReference(run, rb, r.Scheme); err != nil {
 		return fmt.Errorf("setting rolebinding owner ref: %w", err)
 	}
 	if err := r.Create(ctx, rb); err != nil && !errors.IsAlreadyExists(err) {
@@ -1376,8 +1390,8 @@ func (r *AgentRunReconciler) ensureTokenReviewerBinding(ctx context.Context, run
 // ensureNetworkPolicy creates the per-run NetworkPolicy if it doesn't exist.
 func (r *AgentRunReconciler) ensureNetworkPolicy(ctx context.Context, run *agentorcav1alpha1.AgentRun, toolEgressRules []agentorcav1alpha1.EgressRule, hasAgentTools bool, hasKnowledgeBases bool) error { //nolint:unparam
 
-	np := security.BuildNetworkPolicy(run, run.Namespace, toolEgressRules, r.StateConfig.Backend == "redis", r.HindsightURL, r.OperatorNamespace)
-	if err := ctrl.SetControllerReference(run, np, r.Scheme); err != nil {
+	np := security.BuildNetworkPolicy(run, run.Namespace, toolEgressRules, r.StateConfig.Backend == "redis", r.HindsightURL, r.OperatorNamespace, security.WithRedisURL(r.StateConfig.RedisURL))
+	if err := tenancy.SetControllerReference(run, np, r.Scheme); err != nil {
 		return fmt.Errorf("setting networkpolicy owner ref: %w", err)
 	}
 	if err := r.Create(ctx, np); err != nil && !errors.IsAlreadyExists(err) {
@@ -1390,8 +1404,8 @@ func (r *AgentRunReconciler) ensureNetworkPolicy(ctx context.Context, run *agent
 //   - Router pod policy: full egress (providers, K8s API, Redis, tools) + ingress from agent pod
 //   - Agent pod policy: egress restricted to router pod ports 8080/8082 + DNS only
 func (r *AgentRunReconciler) ensureSplitPodNetworkPolicies(ctx context.Context, run *agentorcav1alpha1.AgentRun, toolEgressRules []agentorcav1alpha1.EgressRule) error {
-	routerNP := security.BuildRouterPodNetworkPolicy(run, run.Namespace, toolEgressRules, r.StateConfig.Backend == "redis", r.HindsightURL, r.OperatorNamespace)
-	if err := ctrl.SetControllerReference(run, routerNP, r.Scheme); err != nil {
+	routerNP := security.BuildRouterPodNetworkPolicy(run, run.Namespace, toolEgressRules, r.StateConfig.Backend == "redis", r.HindsightURL, r.OperatorNamespace, security.WithRedisURL(r.StateConfig.RedisURL))
+	if err := tenancy.SetControllerReference(run, routerNP, r.Scheme); err != nil {
 		return fmt.Errorf("setting router networkpolicy owner ref: %w", err)
 	}
 	if err := r.Create(ctx, routerNP); err != nil && !errors.IsAlreadyExists(err) {
@@ -1399,7 +1413,7 @@ func (r *AgentRunReconciler) ensureSplitPodNetworkPolicies(ctx context.Context, 
 	}
 
 	agentNP := security.BuildAgentPodNetworkPolicy(run, run.Namespace)
-	if err := ctrl.SetControllerReference(run, agentNP, r.Scheme); err != nil {
+	if err := tenancy.SetControllerReference(run, agentNP, r.Scheme); err != nil {
 		return fmt.Errorf("setting agent networkpolicy owner ref: %w", err)
 	}
 	if err := r.Create(ctx, agentNP); err != nil && !errors.IsAlreadyExists(err) {
@@ -1432,7 +1446,7 @@ func (r *AgentRunReconciler) ensureRouterService(ctx context.Context, run *agent
 			Type: corev1.ServiceTypeClusterIP,
 		},
 	}
-	if err := ctrl.SetControllerReference(run, svc, r.Scheme); err != nil {
+	if err := tenancy.SetControllerReference(run, svc, r.Scheme); err != nil {
 		return fmt.Errorf("setting router service owner ref: %w", err)
 	}
 	if err := r.Create(ctx, svc); err != nil && !errors.IsAlreadyExists(err) {
@@ -1601,7 +1615,7 @@ func (r *AgentRunReconciler) ensureRouterConfigMap(ctx context.Context, run *age
 			podbuilder.RouterConfigKey: string(data),
 		},
 	}
-	if err := ctrl.SetControllerReference(run, cm, r.Scheme); err != nil {
+	if err := tenancy.SetControllerReference(run, cm, r.Scheme); err != nil {
 		return fmt.Errorf("setting configmap owner ref: %w", err)
 	}
 	if err := r.Create(ctx, cm); err != nil && !errors.IsAlreadyExists(err) {
@@ -1650,7 +1664,7 @@ func (r *AgentRunReconciler) ensureTokenSecret(ctx context.Context, run *agentor
 			"OPENAI_API_KEY":  result.Status.Token,
 		},
 	}
-	if err := ctrl.SetControllerReference(run, secret, r.Scheme); err != nil {
+	if err := tenancy.SetControllerReference(run, secret, r.Scheme); err != nil {
 		return "", fmt.Errorf("setting secret owner ref: %w", err)
 	}
 	if err := r.Create(ctx, secret); err != nil && !errors.IsAlreadyExists(err) {
@@ -1820,7 +1834,7 @@ func (r *AgentRunReconciler) ensureCleanup(ctx context.Context, run *agentorcav1
 				}
 				// Signal via Redis for immediate effect on the child's model-router.
 				if r.StateStore != nil {
-					_ = r.StateStore.SignalCancel(ctx, child.Namespace, child.Name)
+					_ = r.stateFor(run).SignalCancel(ctx, child.Namespace, child.Name)
 				}
 			}
 		}
@@ -2023,7 +2037,7 @@ func (r *AgentRunReconciler) loadTraceEventsForArchive(ctx context.Context, run 
 
 	// Read the parent run's trace events from its Redis token stream.
 	streamKey := "tokens:" + run.Namespace + ":" + run.Name
-	parentEvents, err := r.StateStore.ReadTraceEvents(ctx, streamKey)
+	parentEvents, err := r.stateFor(run).ReadTraceEvents(ctx, streamKey)
 	if err != nil {
 		log.Log.Error(err, "failed to read trace events for archival", "run", run.Name, "ns", run.Namespace)
 		return nil
@@ -2035,7 +2049,7 @@ func (r *AgentRunReconciler) loadTraceEventsForArchive(ctx context.Context, run 
 	// subscription behaviour).
 	for _, childName := range run.Status.ChildRunRefs {
 		childKey := "tokens:" + run.Namespace + ":" + childName
-		childEvents, err := r.StateStore.ReadTraceEvents(ctx, childKey)
+		childEvents, err := r.stateFor(run).ReadTraceEvents(ctx, childKey)
 		if err != nil {
 			continue
 		}
@@ -2285,7 +2299,7 @@ func (r *AgentRunReconciler) recordRunInDeploymentIndex(ctx context.Context, run
 	if r.StateConfig.TTLSeconds > 0 {
 		ttl = int64(r.StateConfig.TTLSeconds)
 	}
-	if err := r.StateStore.SaveKV(ctx, scope, run.Name, []byte("1"), time.Duration(ttl)*time.Second); err != nil {
+	if err := r.stateFor(run).SaveKV(ctx, scope, run.Name, []byte("1"), time.Duration(ttl)*time.Second); err != nil {
 		log.FromContext(ctx).V(1).Info("failed to record run in deployment index (non-fatal)", "run", run.Name, "deployment", dep, "err", err)
 	}
 }

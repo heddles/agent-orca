@@ -39,6 +39,7 @@ import (
 	"github.com/heddles/agent-orca/internal/checkpoint"
 	"github.com/heddles/agent-orca/internal/security"
 	"github.com/heddles/agent-orca/internal/state"
+	"github.com/heddles/agent-orca/internal/tenancy"
 )
 
 // ACPServer implements the Agent Communication Protocol (ACP) API.
@@ -635,6 +636,7 @@ func (s *ACPServer) handleAgentRun(w http.ResponseWriter, r *http.Request, tenan
 			Labels: map[string]string{
 				security.LabelManagedBy: "agent-orca",
 				"agentorca.io/tenant":   tenant.TenantName,
+				tenancy.LabelTenantID:   tenant.TenantID,
 			},
 		},
 		Spec: agentorcav1alpha1.AgentRunSpec{
@@ -793,7 +795,7 @@ func (s *ACPServer) enrichACPRunForWarmPods(ctx context.Context, run *agentorcav
 	// Chain to the prior run in this session so the warm pod's model-router
 	// loads the prior conversation checkpoint.
 	if s.checkpoint != nil {
-		if cp, err := s.checkpoint.Load(ctx, sessionID); err == nil && cp != nil {
+		if cp, err := sessionStore(ctx, s.checkpoint).Load(ctx, sessionID); err == nil && cp != nil {
 			run.Spec.PriorRunRef = cp.LastRunRef
 		}
 	}
@@ -805,13 +807,13 @@ func (s *ACPServer) updateSessionCheckpoint(ctx context.Context, sessionID, runN
 	if sessionID == "" || s.checkpoint == nil {
 		return
 	}
-	cp, _ := s.checkpoint.Load(ctx, sessionID)
+	cp, _ := sessionStore(ctx, s.checkpoint).Load(ctx, sessionID)
 	if cp == nil {
 		cp = &agentorcav1alpha1.Checkpoint{SessionID: sessionID}
 	}
 	cp.LastRunRef = runName
 	cp.Version++
-	if _, err := s.checkpoint.Save(ctx, cp); err != nil {
+	if _, err := sessionStore(ctx, s.checkpoint).Save(ctx, cp); err != nil {
 		slog.Warn("failed to update ACP session checkpoint", "session", sessionID, "run", runName, "err", err)
 	}
 }
@@ -902,6 +904,7 @@ func (s *ACPServer) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 			Labels: map[string]string{
 				security.LabelManagedBy: "agent-orca",
 				"agentorca.io/tenant":   tenant.TenantName,
+				tenancy.LabelTenantID:   tenant.TenantID,
 			},
 		},
 		Spec: agentorcav1alpha1.AgentRunSpec{
@@ -1316,7 +1319,7 @@ func (s *ACPServer) streamACPRun(w http.ResponseWriter, r *http.Request, run *ag
 
 	// Stream tokens
 	streamKey := fmt.Sprintf("tokens:%s:%s", run.Namespace, run.Name)
-	tokenCh, err := s.store.TailTokens(r.Context(), streamKey)
+	tokenCh, err := runState(s.store, run).TailTokens(r.Context(), streamKey)
 	if err != nil {
 		slog.Warn("failed to open token stream for ACP", "key", streamKey, "err", err)
 		return err
@@ -1428,7 +1431,7 @@ func (s *ACPServer) resumeACPRun(w http.ResponseWriter, r *http.Request, run *ag
 	continuationInput := run.Spec.Input
 	if s.store != nil {
 		checkpointKey := fmt.Sprintf("agentorca/runs/%s/state", run.Name)
-		if msgs, lerr := s.store.LoadMessages(r.Context(), checkpointKey); lerr != nil || len(msgs) == 0 {
+		if msgs, lerr := runState(s.store, run).LoadMessages(r.Context(), checkpointKey); lerr != nil || len(msgs) == 0 {
 			continuationInput = fmt.Sprintf(
 				"%s\n\n---\nPrevious attempt asked: %s\nHuman answered: %s\n---\nPlease proceed with the above information.", //nolint:lll
 				run.Spec.Input, run.Status.ClarifyQuestion, req.AwaitResume.Answer)
@@ -1462,7 +1465,7 @@ func (s *ACPServer) resumeACPRun(w http.ResponseWriter, r *http.Request, run *ag
 	// (which starts fresh) finds it during initialization / ClaimRun.
 	if s.store != nil {
 		answerKey := fmt.Sprintf("clarify-answer:%s:%s", run.Namespace, continuation.Name)
-		if err := s.store.SaveAnswer(r.Context(), answerKey, req.AwaitResume.Answer, 1*time.Hour); err != nil {
+		if err := runState(s.store, continuation).SaveAnswer(r.Context(), answerKey, req.AwaitResume.Answer, 1*time.Hour); err != nil {
 			slog.Warn("failed to save ACP clarify answer", "run", continuation.Name, "err", err)
 		}
 	}

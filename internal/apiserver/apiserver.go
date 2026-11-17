@@ -52,6 +52,7 @@ import (
 	"github.com/heddles/agent-orca/internal/rag"
 	"github.com/heddles/agent-orca/internal/security"
 	"github.com/heddles/agent-orca/internal/shellsandbox"
+	"github.com/heddles/agent-orca/internal/tenancy"
 )
 
 // Server handles the operator's internal API for agent-to-agent communication.
@@ -1074,7 +1075,14 @@ func (s *Server) ragSearch(w http.ResponseWriter, r *http.Request, namespace, na
 		topK = 5
 	}
 
-	results, err := qClient.Search(r.Context(), req.CollectionName, vectors[0], topK)
+	// The search is always filtered to one tenant: the caller's, else the
+	// KnowledgeBase's. req.CollectionName comes from the request, so the filter,
+	// not the name, is what keeps another tenant's vectors out of the answer.
+	searchTenant := kb.Labels[tenancy.LabelTenantID]
+	if t, ok := TenantFromContext(r.Context()); ok && t != nil && t.TenantID != "" {
+		searchTenant = t.TenantID
+	}
+	results, err := qClient.Search(r.Context(), req.CollectionName, searchTenant, vectors[0], topK)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("searching qdrant: %v", err), http.StatusInternalServerError)
 		return
@@ -1162,6 +1170,7 @@ func (s *Server) ragIngest(w http.ResponseWriter, r *http.Request, namespace, na
 		uint64(dimensions),
 		embedder,
 		chunkCfg,
+		kb.Labels[tenancy.LabelTenantID],
 	)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("ingesting documents: %v", err), http.StatusInternalServerError)

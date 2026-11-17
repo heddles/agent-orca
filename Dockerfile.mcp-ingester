@@ -22,6 +22,7 @@ COPY internal/podbuilder/ internal/podbuilder/
 COPY internal/rag/ internal/rag/
 COPY internal/ratelimit/ internal/ratelimit/
 COPY internal/security/*.go internal/security/
+COPY internal/tenancy/ internal/tenancy/
 # END generated go-deps
 
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \

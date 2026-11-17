@@ -22,6 +22,15 @@ import (
 
 // TenantConfigSpec defines authentication and authorization for an enterprise tenant.
 type TenantConfigSpec struct {
+	// TenantID pins the tenant's stable identifier ("tnt_" plus a UUIDv7). Omit
+	// it and the operator generates one at creation (see status.tenantID). Pin
+	// it for a deterministic ID in GitOps, or to restore a deleted tenant's data
+	// after disaster recovery: only a platform admin may pin the ID of a deleted
+	// tenant. Once set it cannot change.
+	// +optional
+	// +kubebuilder:validation:Pattern=`^tnt_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`
+	TenantID string `json:"tenantID,omitempty"`
+
 	// AuthMode selects the authentication strategy for this tenant.
 	// "issued" — agent-orca issues OAuth2 tokens via client_credentials grant.
 	// "federated" — agent-orca trusts JWTs from the tenant's external IdP.
@@ -165,6 +174,12 @@ type TenantRateLimit struct {
 
 // TenantConfigStatus holds the observed state of a TenantConfig.
 type TenantConfigStatus struct {
+	// TenantID mirrors the tenant registry's ID for this TenantConfig. The
+	// registry is the source of truth; this copy lets controllers and kubectl
+	// read the ID without a database round trip.
+	// +optional
+	TenantID string `json:"tenantID,omitempty"`
+
 	// Ready indicates the tenant configuration has been validated and is active.
 	// +optional
 	Ready bool `json:"ready,omitempty"`
@@ -184,6 +199,7 @@ type TenantConfigStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="AuthMode",type=string,JSONPath=`.spec.authMode`
 // +kubebuilder:printcolumn:name="Namespaces",type=string,JSONPath=`.spec.allowedNamespaces`
+// +kubebuilder:printcolumn:name="TenantID",type=string,JSONPath=`.status.tenantID`
 // +kubebuilder:printcolumn:name="Ready",type=boolean,JSONPath=`.status.ready`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 

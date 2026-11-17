@@ -67,6 +67,16 @@ spec:
             - name: ALLOWED_REGISTRIES
               value: {{ .Values.operator.allowedRegistries | quote }}
             {{- end }}
+            {{- if .Values.operator.tenantAdminGroup }}
+            - name: TENANT_ADMIN_GROUP
+              value: {{ .Values.operator.tenantAdminGroup | quote }}
+            {{- end }}
+            - name: TENANT_ISOLATION_MODE
+              value: {{ .Values.operator.tenantIsolationMode | default "audit" | quote }}
+            - name: ALLOW_LEGACY_TENANT_TOKENS
+              value: {{ .Values.operator.allowLegacyTenantTokens | toString | quote }}
+            - name: AGENTORCA_STATE_TENANT_PREFIX
+              value: {{ .Values.operator.stateTenantPrefix | toString | quote }}
             {{- if .Values.cloudProvider }}
             - name: CLOUD_PROVIDER_OVERRIDE
               value: {{ .Values.cloudProvider | quote }}

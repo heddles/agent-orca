@@ -46,6 +46,7 @@ import (
 	"github.com/heddles/agent-orca/internal/postgresql"
 	"github.com/heddles/agent-orca/internal/security"
 	"github.com/heddles/agent-orca/internal/state"
+	"github.com/heddles/agent-orca/internal/tenancy"
 )
 
 // uiAPIRequestTimeout bounds the total time for a UI API request (auth +
@@ -170,6 +171,7 @@ func (s *UIServer) Handler() http.Handler {
 	mux.HandleFunc("/healthz", healthzHandler)
 	mux.HandleFunc("/readyz", readyzHandlerBuilder(k8sReady(s.k8s), s.store != nil, s.store))
 	mux.HandleFunc("/version", versionHandler)
+	mux.HandleFunc("/api/me", s.handleMe)
 	mux.HandleFunc("/api/runs", s.handleListRuns)
 	mux.HandleFunc("/api/runs/", s.handleRunOrStream)
 	mux.HandleFunc("/api/agents", s.handleAgents)
@@ -347,7 +349,7 @@ func (s *UIServer) handleRunOrStream(w http.ResponseWriter, r *http.Request) {
 
 	if len(parts) == 3 {
 		if after, ok := strings.CutPrefix(parts[2], "mcpapp/"); ok {
-			s.handleMCPApp(w, r, after)
+			s.handleMCPApp(w, r, ns, runName, after)
 			return
 		}
 		switch parts[2] {
@@ -368,8 +370,7 @@ func (s *UIServer) handleRunOrStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var run agentorcav1alpha1.AgentRun
-	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: runName, Namespace: ns}, &run); err != nil {
-		http.Error(w, "not found", http.StatusNotFound)
+	if !s.ownedRun(w, r, ns, runName, &run) {
 		return
 	}
 
@@ -448,6 +449,10 @@ func (s *UIServer) handleRunOrStream(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *UIServer) handleStream(w http.ResponseWriter, r *http.Request, ns, runName string) { //nolint:gocyclo
+	var gate agentorcav1alpha1.AgentRun
+	if !s.ownedRun(w, r, ns, runName, &gate) {
+		return
+	}
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
@@ -545,7 +550,7 @@ func (s *UIServer) handleStream(w http.ResponseWriter, r *http.Request, ns, runN
 			}
 		}()
 
-		tokenCh, streamErr := s.store.TailTokens(streamCtx, streamKey)
+		tokenCh, streamErr := runState(s.store, &gate).TailTokens(streamCtx, streamKey)
 		if streamErr != nil {
 			slog.Warn("failed to open token stream", "key", streamKey, "err", streamErr)
 		} else {
@@ -653,8 +658,7 @@ func (s *UIServer) handleStopRun(w http.ResponseWriter, r *http.Request, ns, run
 		return
 	}
 	var run agentorcav1alpha1.AgentRun
-	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: runName, Namespace: ns}, &run); err != nil {
-		http.Error(w, "not found", http.StatusNotFound)
+	if !s.ownedRun(w, r, ns, runName, &run) {
 		return
 	}
 	if run.Status.Phase != agentorcav1alpha1.AgentRunPhasePending &&
@@ -672,7 +676,7 @@ func (s *UIServer) handleStopRun(w http.ResponseWriter, r *http.Request, ns, run
 		return
 	}
 	if s.store != nil {
-		_ = s.store.SignalCancel(r.Context(), ns, runName)
+		_ = runState(s.store, &run).SignalCancel(r.Context(), ns, runName)
 	}
 	jsonResponse(w, map[string]string{"status": "cancelled"})
 }
@@ -692,8 +696,7 @@ func (s *UIServer) handleAnswerRun(w http.ResponseWriter, r *http.Request, ns, r
 	}
 
 	var run agentorcav1alpha1.AgentRun
-	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: runName, Namespace: ns}, &run); err != nil {
-		http.Error(w, "not found", http.StatusNotFound)
+	if !s.ownedRun(w, r, ns, runName, &run) {
 		return
 	}
 	if run.Status.Phase != agentorcav1alpha1.AgentRunPhaseWaitingForInput {
@@ -705,7 +708,7 @@ func (s *UIServer) handleAnswerRun(w http.ResponseWriter, r *http.Request, ns, r
 	hasCheckpoint := false
 	if s.store != nil {
 		checkpointKey := fmt.Sprintf("agentorca/runs/%s/state", runName)
-		if msgs, err := s.store.LoadMessages(r.Context(), checkpointKey); err == nil && len(msgs) > 0 {
+		if msgs, err := runState(s.store, &run).LoadMessages(r.Context(), checkpointKey); err == nil && len(msgs) > 0 {
 			hasCheckpoint = true
 		}
 	}
@@ -737,7 +740,7 @@ func (s *UIServer) handleAnswerRun(w http.ResponseWriter, r *http.Request, ns, r
 
 	if s.store != nil {
 		answerKey := fmt.Sprintf("clarify-answer:%s:%s", ns, continuation.Name)
-		if err := s.store.SaveAnswer(r.Context(), answerKey, req.Answer, 1*time.Hour); err != nil {
+		if err := runState(s.store, continuation).SaveAnswer(r.Context(), answerKey, req.Answer, 1*time.Hour); err != nil {
 			slog.Warn("saving clarify answer to state store", "err", err)
 		}
 	}
@@ -751,14 +754,14 @@ func (s *UIServer) handleAnswerRun(w http.ResponseWriter, r *http.Request, ns, r
 	}
 
 	if sessionID := run.Labels["agentorca.io/session"]; sessionID != "" && s.checkpoint != nil {
-		if cp, err := s.checkpoint.Load(r.Context(), sessionID); err == nil && cp != nil {
+		if cp, err := sessionStore(r.Context(), s.checkpoint).Load(r.Context(), sessionID); err == nil && cp != nil {
 			cp.LastRunRef = continuation.Name
 			cp.ConversationHistory = append(cp.ConversationHistory,
 				agentorcav1alpha1.ConversationMessage{Role: "assistant", Content: run.Status.ClarifyQuestion},
 				agentorcav1alpha1.ConversationMessage{Role: "user", Content: req.Answer},
 			)
 			cp.Version++
-			if _, err := s.checkpoint.Save(r.Context(), cp); err != nil {
+			if _, err := sessionStore(r.Context(), s.checkpoint).Save(r.Context(), cp); err != nil {
 				slog.Warn("failed to update checkpoint for continuation", "session", sessionID, "err", err)
 			}
 		}
@@ -863,6 +866,11 @@ func (s *UIServer) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 			},
 		},
 	}
+	if !namespaceAllowed(r.Context(), agent.Namespace) {
+		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		return
+	}
+	stampOwner(r.Context(), agent)
 	if err := s.crdClient.Create(r.Context(), agent); err != nil {
 		http.Error(w, fmt.Sprintf("creating agent: %v", err), http.StatusInternalServerError)
 		return
@@ -882,6 +890,7 @@ func (s *UIServer) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 			Replicas: &replicas,
 		},
 	}
+	stampOwner(r.Context(), deployment)
 	if err := s.crdClient.Create(r.Context(), deployment); err != nil {
 		w.WriteHeader(http.StatusCreated)
 		jsonResponse(w, map[string]any{
@@ -983,12 +992,20 @@ func (s *UIServer) handleListTools(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, out)
 }
 
-func (s *UIServer) handleMCPApp(w http.ResponseWriter, r *http.Request, key string) {
+func (s *UIServer) handleMCPApp(w http.ResponseWriter, r *http.Request, ns, runName, key string) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	data, err := s.store.LoadKV(r.Context(), "mcpapp", key)
+	// The cached app lives under the owning run's tenant key, so the run is
+	// loaded to find the tenant (and to refuse a run the caller cannot see).
+	var run agentorcav1alpha1.AgentRun
+	if s.store == nil || s.crdClient.Get(r.Context(), client.ObjectKey{Name: runName, Namespace: ns}, &run) != nil ||
+		!canRead(r.Context(), &run, "AgentRun") {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	data, err := runState(s.store, &run).LoadKV(r.Context(), "mcpapp", key)
 	if err != nil || data == nil {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
@@ -1689,12 +1706,12 @@ func (s *UIServer) handleExecute(w http.ResponseWriter, r *http.Request, namespa
 	}
 
 	var deployment agentorcav1alpha1.AgentDeployment
-	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: deploymentName, Namespace: namespace}, &deployment); err != nil {
+	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: deploymentName, Namespace: namespace}, &deployment); err != nil || !canWrite(r.Context(), &deployment, "AgentDeployment") {
 		http.Error(w, "deployment not found", http.StatusNotFound)
 		return
 	}
 
-	existing, err := s.checkpoint.Load(r.Context(), sessionID)
+	existing, err := sessionStore(r.Context(), s.checkpoint).Load(r.Context(), sessionID)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("loading checkpoint: %v", err), http.StatusInternalServerError)
 		return
@@ -1721,7 +1738,7 @@ func (s *UIServer) handleExecute(w http.ResponseWriter, r *http.Request, namespa
 	if existing != nil && existing.Metadata.StartTime != nil {
 		cp.Metadata.StartTime = existing.Metadata.StartTime
 	}
-	if _, err := s.checkpoint.Save(r.Context(), cp); err != nil {
+	if _, err := sessionStore(r.Context(), s.checkpoint).Save(r.Context(), cp); err != nil {
 		http.Error(w, fmt.Sprintf("saving checkpoint: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -1752,18 +1769,19 @@ func (s *UIServer) handleExecute(w http.ResponseWriter, r *http.Request, namespa
 			ToolExecutionTimeoutSec: deployment.Spec.ToolExecutionTimeoutSec,
 		}
 	}
+	stampOwner(r.Context(), run)
 	if err := s.crdClient.Create(r.Context(), run); err != nil {
 		http.Error(w, fmt.Sprintf("creating agent run: %v", err), http.StatusInternalServerError)
 		return
 	}
 
 	cp.LastRunRef = run.Name
-	if _, err := s.checkpoint.Save(r.Context(), cp); err != nil {
+	if _, err := sessionStore(r.Context(), s.checkpoint).Save(r.Context(), cp); err != nil {
 		slog.Warn("failed to update checkpoint LastRunRef", "run", run.Name, "err", err)
 	}
 
 	if s.store != nil && priorRunRef != "" {
-		if err := s.ensureRunCheckpoint(r.Context(), priorRunRef, cp.ConversationHistory); err != nil {
+		if err := s.ensureRunCheckpoint(r.Context(), run, priorRunRef, cp.ConversationHistory); err != nil {
 			slog.Warn("safety-net checkpoint write failed", "run", priorRunRef, "err", err)
 		}
 	}
@@ -1774,12 +1792,12 @@ func (s *UIServer) handleExecute(w http.ResponseWriter, r *http.Request, namespa
 	})
 }
 
-func (s *UIServer) ensureRunCheckpoint(ctx context.Context, runName string, history []agentorcav1alpha1.ConversationMessage) error {
+func (s *UIServer) ensureRunCheckpoint(ctx context.Context, owner client.Object, runName string, history []agentorcav1alpha1.ConversationMessage) error {
 	if s.store == nil || runName == "" {
 		return nil
 	}
 	priorCheckpointKey := fmt.Sprintf("agentorca/runs/%s/state", runName)
-	if existing, err := s.store.LoadMessages(ctx, priorCheckpointKey); err == nil && len(existing) > 0 {
+	if existing, err := runState(s.store, owner).LoadMessages(ctx, priorCheckpointKey); err == nil && len(existing) > 0 {
 		return nil
 	}
 	var msgs []json.RawMessage
@@ -1791,17 +1809,20 @@ func (s *UIServer) ensureRunCheckpoint(ctx context.Context, runName string, hist
 		raw, _ := json.Marshal(routerMsg)
 		msgs = append(msgs, raw)
 	}
-	return s.store.SaveMessages(ctx, priorCheckpointKey, msgs, 24*time.Hour)
+	return runState(s.store, owner).SaveMessages(ctx, priorCheckpointKey, msgs, 24*time.Hour)
 }
 
 func (s *UIServer) handleChatHistory(w http.ResponseWriter, r *http.Request, namespace, deploymentName string) { //nolint:unparam
+	if !s.ownedDeployment(w, r, namespace, deploymentName) {
+		return
+	}
 	sessionID := r.URL.Query().Get("sessionId")
 	if sessionID == "" {
 		jsonResponse(w, map[string]any{"messages": []any{}})
 		return
 	}
 
-	cp, err := s.checkpoint.Load(r.Context(), sessionID)
+	cp, err := sessionStore(r.Context(), s.checkpoint).Load(r.Context(), sessionID)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("loading checkpoint: %v", err), http.StatusInternalServerError)
 		return
@@ -1818,6 +1839,9 @@ func (s *UIServer) handleChatHistory(w http.ResponseWriter, r *http.Request, nam
 }
 
 func (s *UIServer) handleSaveResponse(w http.ResponseWriter, r *http.Request, namespace, deploymentName string) { //nolint:unparam
+	if !s.ownedDeployment(w, r, namespace, deploymentName) {
+		return
+	}
 	var req struct {
 		SessionID    string `json:"sessionId"`
 		Output       string `json:"output"`
@@ -1832,7 +1856,7 @@ func (s *UIServer) handleSaveResponse(w http.ResponseWriter, r *http.Request, na
 		return
 	}
 
-	cp, err := s.checkpoint.Load(r.Context(), req.SessionID)
+	cp, err := sessionStore(r.Context(), s.checkpoint).Load(r.Context(), req.SessionID)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("loading checkpoint: %v", err), http.StatusInternalServerError)
 		return
@@ -1856,18 +1880,18 @@ func (s *UIServer) handleSaveResponse(w http.ResponseWriter, r *http.Request, na
 	cp.Metadata.TotalMessages = len(cp.ConversationHistory)
 	cp.Metadata.LastMessageTime = &metav1.Time{Time: time.Now()}
 
+	var lastRun agentorcav1alpha1.AgentRun // names the tenant whose run checkpoint is rewritten below
 	if cp.LastRunRef != "" {
-		var run agentorcav1alpha1.AgentRun
-		if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: cp.LastRunRef, Namespace: namespace}, &run); err == nil && run.Status.SpendUSD != "" {
+		if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: cp.LastRunRef, Namespace: namespace}, &lastRun); err == nil && lastRun.Status.SpendUSD != "" {
 			existing, _ := strconv.ParseFloat(cp.Metadata.TotalCostUSD, 64)
-			runSpend, _ := strconv.ParseFloat(run.Status.SpendUSD, 64)
+			runSpend, _ := strconv.ParseFloat(lastRun.Status.SpendUSD, 64)
 			if runSpend > 0 {
 				cp.Metadata.TotalCostUSD = fmt.Sprintf("%.6f", existing+runSpend)
 			}
 		}
 	}
 
-	if _, err := s.checkpoint.Save(r.Context(), cp); err != nil {
+	if _, err := sessionStore(r.Context(), s.checkpoint).Save(r.Context(), cp); err != nil {
 		http.Error(w, fmt.Sprintf("saving checkpoint: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -1883,7 +1907,7 @@ func (s *UIServer) handleSaveResponse(w http.ResponseWriter, r *http.Request, na
 			raw, _ := json.Marshal(routerMsg)
 			msgs = append(msgs, raw)
 		}
-		_ = s.store.SaveMessages(r.Context(), checkpointKey, msgs, 24*time.Hour)
+		_ = runState(s.store, &lastRun).SaveMessages(r.Context(), checkpointKey, msgs, 24*time.Hour)
 	}
 
 	jsonResponse(w, map[string]string{"status": "ok"})
@@ -1897,7 +1921,7 @@ func (s *UIServer) handleDeploymentStream(w http.ResponseWriter, r *http.Request
 	}
 
 	var deployment agentorcav1alpha1.AgentDeployment
-	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: deploymentName, Namespace: namespace}, &deployment); err != nil {
+	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: deploymentName, Namespace: namespace}, &deployment); err != nil || !canWrite(r.Context(), &deployment, "AgentDeployment") {
 		http.Error(w, "deployment not found", http.StatusNotFound)
 		return
 	}
@@ -1916,7 +1940,7 @@ func (s *UIServer) handleDeploymentStream(w http.ResponseWriter, r *http.Request
 
 func (s *UIServer) handleGetDeployment(w http.ResponseWriter, r *http.Request, namespace, deploymentName string) {
 	var deployment agentorcav1alpha1.AgentDeployment
-	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: deploymentName, Namespace: namespace}, &deployment); err != nil {
+	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: deploymentName, Namespace: namespace}, &deployment); err != nil || !canWrite(r.Context(), &deployment, "AgentDeployment") {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
@@ -1962,7 +1986,7 @@ func (s *UIServer) handleGetDeployment(w http.ResponseWriter, r *http.Request, n
 
 func (s *UIServer) handleDeleteDeployment(w http.ResponseWriter, r *http.Request, namespace, deploymentName string) {
 	var deployment agentorcav1alpha1.AgentDeployment
-	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: deploymentName, Namespace: namespace}, &deployment); err != nil {
+	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: deploymentName, Namespace: namespace}, &deployment); err != nil || !canWrite(r.Context(), &deployment, "AgentDeployment") {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
@@ -2026,7 +2050,7 @@ func (s *UIServer) handleGetWorkflow(w http.ResponseWriter, r *http.Request) {
 	namespace, name := parts[0], parts[1]
 
 	var wf agentorcav1alpha1.AgentWorkflow
-	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: name, Namespace: namespace}, &wf); err != nil {
+	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: name, Namespace: namespace}, &wf); err != nil || !canWrite(r.Context(), &wf, "AgentWorkflow") {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
@@ -2192,7 +2216,7 @@ func (s *UIServer) handleListRunHistory(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	page, err := s.pgStore.QueryHistory(r.Context(), q)
+	page, err := s.pgStore.QueryHistory(pgScope(r.Context()), q)
 	if err != nil {
 		slog.Error("querying run history", "err", err)
 		http.Error(w, "querying run history: "+err.Error(), http.StatusInternalServerError)
@@ -2206,7 +2230,7 @@ func (s *UIServer) handleGetArchivedRun(w http.ResponseWriter, r *http.Request, 
 		http.Error(w, "run archival not configured", http.StatusServiceUnavailable)
 		return
 	}
-	archive, err := s.pgStore.GetRun(r.Context(), namespace, runName)
+	archive, err := s.pgStore.GetRun(pgScope(r.Context()), namespace, runName)
 	if err != nil {
 		slog.Error("loading archived run", "run", runName, "ns", namespace, "err", err)
 		http.Error(w, "loading archived run: "+err.Error(), http.StatusInternalServerError)
@@ -2485,8 +2509,18 @@ func (s *UIServer) createResource(w http.ResponseWriter, r *http.Request, info c
 	}
 	// Enforce tenant scoping: when a tenant identity is present, force the
 	// namespace to the tenant's namespace (don't trust the body).
-	if tenant, ok := TenantFromContext(r.Context()); ok && tenant != nil && tenant.Namespace != "" {
-		obj.SetNamespace(tenant.Namespace)
+	// Ownership comes from the caller's tenant, never from the body: drop any
+	// tenant-id or platform-scope label the body carries, then stamp our own.
+	tenancy.StripOwnership(obj)
+	if tenant, ok := TenantFromContext(r.Context()); ok && tenant != nil {
+		if tenant.Namespace != "" {
+			obj.SetNamespace(tenant.Namespace)
+		}
+		if tenant.TenantID == "" {
+			http.Error(w, `{"error":"tenant has no ID yet"}`, http.StatusForbidden)
+			return
+		}
+		tenancy.Stamp(obj, tenant.TenantID)
 	}
 
 	if err := s.crdClient.Create(r.Context(), obj); err != nil {
@@ -2506,6 +2540,10 @@ func (s *UIServer) getResource(w http.ResponseWriter, r *http.Request, info crdK
 			code = http.StatusNotFound
 		}
 		http.Error(w, err.Error(), code)
+		return
+	}
+	if !canRead(r.Context(), obj, info.gvk) {
+		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
 		return
 	}
 	jsonResponse(w, obj)
@@ -2530,6 +2568,29 @@ func (s *UIServer) updateResource(w http.ResponseWriter, r *http.Request, info c
 	// Enforce name/namespace from URL path — never trust the body.
 	obj.SetName(name)
 	obj.SetNamespace(ns)
+
+	// The object must exist, belong to the caller's tenant and sit in one of the
+	// caller's namespaces; anything else is not found. Platform-shared objects
+	// are read-only here.
+	existing := info.newObj()
+	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: name, Namespace: ns}, existing); err != nil {
+		code := http.StatusInternalServerError
+		if k8serrors.IsNotFound(err) {
+			code = http.StatusNotFound
+		}
+		http.Error(w, err.Error(), code)
+		return
+	}
+	if !s.authorizeWrite(w, r, existing, info.gvk) {
+		return
+	}
+	// Ownership is fixed by the stored object, not the body.
+	tenancy.StripOwnership(obj)
+	if tid, _ := tenancy.TenantOf(existing); tid != "" {
+		tenancy.Stamp(obj, tid)
+	} else if t, ok := TenantFromContext(r.Context()); ok && t != nil {
+		tenancy.Stamp(obj, t.TenantID)
+	}
 
 	if accessor, ok := obj.(metav1.Object); ok {
 		// Set the managed-by label so we never accidentally create unmodified resources.
@@ -2564,6 +2625,9 @@ func (s *UIServer) deleteResource(w http.ResponseWriter, r *http.Request, info c
 		http.Error(w, err.Error(), code)
 		return
 	}
+	if !s.authorizeWrite(w, r, obj, info.gvk) {
+		return
+	}
 	// Managed-by guard: only allow deletion of agent-orca-managed resources.
 	if !isManagedByAgentOrca(obj) {
 		http.Error(w, `{"error":"resource is not managed by agent-orca"}`, http.StatusForbidden)
@@ -2574,6 +2638,42 @@ func (s *UIServer) deleteResource(w http.ResponseWriter, r *http.Request, info c
 		return
 	}
 	jsonResponse(w, map[string]string{"status": "deleted"})
+}
+
+// ownedDeployment reports whether the caller may use the deployment, answering
+// 404 when it may not or it does not exist.
+func (s *UIServer) ownedDeployment(w http.ResponseWriter, r *http.Request, ns, name string) bool {
+	var d agentorcav1alpha1.AgentDeployment
+	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: name, Namespace: ns}, &d); err != nil || !canWrite(r.Context(), &d, "AgentDeployment") {
+		http.Error(w, "not found", http.StatusNotFound)
+		return false
+	}
+	return true
+}
+
+// ownedRun reads the run and reports whether the caller may use it. A run
+// that is missing, in a namespace the caller may not use, or owned by another
+// tenant is the same 404.
+func (s *UIServer) ownedRun(w http.ResponseWriter, r *http.Request, ns, name string, run *agentorcav1alpha1.AgentRun) bool {
+	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: name, Namespace: ns}, run); err != nil || !canWrite(r.Context(), run, "AgentRun") {
+		http.Error(w, "not found", http.StatusNotFound)
+		return false
+	}
+	return true
+}
+
+// authorizeWrite answers 404 for an object the caller cannot see and 403 for a
+// platform-shared one it can see but not change. It reports whether to go on.
+func (s *UIServer) authorizeWrite(w http.ResponseWriter, r *http.Request, obj client.Object, kind string) bool {
+	switch accessTo(r.Context(), obj, kind) {
+	case tenancy.AccessOwn:
+		return true
+	case tenancy.AccessPlatform:
+		http.Error(w, `{"error":"platform-shared resource is read-only"}`, http.StatusForbidden)
+	default:
+		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+	}
+	return false
 }
 
 // isManagedByAgentOrca returns true if the object is managed by agent-orca.

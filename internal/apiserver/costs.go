@@ -300,7 +300,7 @@ func (s *UIServer) handleCosts(w http.ResponseWriter, r *http.Request) {
 			q.Namespaces = []string{ns}
 		}
 		if !skip {
-			rows, err := arch.QueryCostRows(r.Context(), q)
+			rows, err := arch.QueryCostRows(pgScope(r.Context()), q)
 			if err != nil {
 				// Live data is still useful; say the archive part is missing
 				// instead of failing the whole dashboard.

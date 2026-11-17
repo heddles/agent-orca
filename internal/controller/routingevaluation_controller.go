@@ -43,6 +43,7 @@ import (
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
 	"github.com/heddles/agent-orca/internal/routingbench"
+	"github.com/heddles/agent-orca/internal/tenancy"
 )
 
 // Labels and annotations of a RoutingRecommendation.
@@ -413,7 +414,7 @@ func (r *RoutingEvaluationReconciler) create(ctx context.Context, sel *agentorca
 	if f.Patch != nil {
 		rec.Spec.Patch, rec.Spec.RollbackPatch = string(f.Patch.Forward), string(f.Patch.Rollback)
 	}
-	if err := ctrl.SetControllerReference(sel, rec, r.Scheme); err != nil {
+	if err := tenancy.SetControllerReference(sel, rec, r.Scheme); err != nil {
 		return nil, fmt.Errorf("owning RoutingRecommendation: %w", err)
 	}
 	if err := r.Create(ctx, rec); err != nil {

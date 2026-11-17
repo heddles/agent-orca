@@ -32,7 +32,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -40,6 +39,7 @@ import (
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
 	"github.com/heddles/agent-orca/internal/podbuilder"
 	"github.com/heddles/agent-orca/internal/security"
+	"github.com/heddles/agent-orca/internal/tenancy"
 )
 
 const (
@@ -129,6 +129,8 @@ type mcpIngestConfig struct {
 	// Qdrant destination.
 	QdrantURL      string `json:"qdrantURL"`
 	CollectionName string `json:"collectionName"`
+	// TenantID is the KnowledgeBase's tenant; the ingester stamps it on every point.
+	TenantID string `json:"tenantID"`
 }
 
 // runMCPIngestion manages the lifecycle of an MCP ingestion Job for a single
@@ -233,7 +235,7 @@ func (r *KnowledgeBaseReconciler) runMCPIngestion(
 		},
 		Data: map[string]string{mcpIngestConfigKey: string(cfgJSON)},
 	}
-	if err := ctrl.SetControllerReference(kb, configCM, r.Scheme); err != nil {
+	if err := tenancy.SetControllerReference(kb, configCM, r.Scheme); err != nil {
 		return false, 0, fmt.Errorf("setting owner ref on config ConfigMap: %w", err)
 	}
 	if err := r.Create(ctx, configCM); err != nil && !apierrors.IsAlreadyExists(err) {
@@ -242,7 +244,7 @@ func (r *KnowledgeBaseReconciler) runMCPIngestion(
 
 	// Build and create the Job.
 	job := r.buildIngestJob(kb, toolCR, &src, &mp, jobName, configCMName)
-	if err := ctrl.SetControllerReference(kb, job, r.Scheme); err != nil {
+	if err := tenancy.SetControllerReference(kb, job, r.Scheme); err != nil {
 		return false, 0, fmt.Errorf("setting owner ref on Job: %w", err)
 	}
 	if err := r.Create(ctx, job); err != nil {
@@ -526,7 +528,7 @@ func (r *KnowledgeBaseReconciler) runSourcesIngestion(ctx context.Context, kb *a
 		},
 		Data: map[string]string{mcpIngestConfigKey: string(cfgJSON)},
 	}
-	if err := ctrl.SetControllerReference(kb, configCM, r.Scheme); err != nil {
+	if err := tenancy.SetControllerReference(kb, configCM, r.Scheme); err != nil {
 		return false, 0, fmt.Errorf("setting owner ref on config ConfigMap: %w", err)
 	}
 	if err := r.Create(ctx, configCM); err != nil && !apierrors.IsAlreadyExists(err) {
@@ -535,7 +537,7 @@ func (r *KnowledgeBaseReconciler) runSourcesIngestion(ctx context.Context, kb *a
 
 	// Build and create the Job.
 	job := r.buildSourcesIngestJob(kb, &mp, jobName, configCMName)
-	if err := ctrl.SetControllerReference(kb, job, r.Scheme); err != nil {
+	if err := tenancy.SetControllerReference(kb, job, r.Scheme); err != nil {
 		return false, 0, fmt.Errorf("setting owner ref on Job: %w", err)
 	}
 	if err := r.Create(ctx, job); err != nil {
@@ -615,7 +617,7 @@ func (r *KnowledgeBaseReconciler) ensureIngestRBAC(ctx context.Context, kb *agen
 
 // ensureIngestObject creates obj (owned by the KB) if it does not exist.
 func (r *KnowledgeBaseReconciler) ensureIngestObject(ctx context.Context, kb *agentorcav1alpha1.KnowledgeBase, obj client.Object) error {
-	if err := ctrl.SetControllerReference(kb, obj, r.Scheme); err != nil {
+	if err := tenancy.SetControllerReference(kb, obj, r.Scheme); err != nil {
 		return fmt.Errorf("setting owner ref on %T: %w", obj, err)
 	}
 	if err := r.Create(ctx, obj); err != nil && !apierrors.IsAlreadyExists(err) {
@@ -638,7 +640,7 @@ func (r *KnowledgeBaseReconciler) ensureIngestNetworkPolicy(ctx context.Context,
 	var existing networkingv1.NetworkPolicy
 	err := r.Get(ctx, client.ObjectKey{Name: np.Name, Namespace: kb.Namespace}, &existing)
 	if apierrors.IsNotFound(err) {
-		if err := ctrl.SetControllerReference(kb, np, r.Scheme); err != nil {
+		if err := tenancy.SetControllerReference(kb, np, r.Scheme); err != nil {
 			return fmt.Errorf("setting owner ref on ingestion NetworkPolicy: %w", err)
 		}
 		if err := r.Create(ctx, np); err != nil && !apierrors.IsAlreadyExists(err) {
@@ -683,6 +685,7 @@ func (r *KnowledgeBaseReconciler) buildSourcesIngestConfig(
 		EmbeddingModel:     embeddingModel,
 		EmbeddingKeyFile:   fmt.Sprintf("/etc/embed-key/%s", mp.Spec.CredentialsRef.Key),
 		EmbeddingDims:      kb.Status.EmbeddingDimensions,
+		TenantID:           kb.Labels[tenancy.LabelTenantID],
 		EmbeddingDocPrompt: mp.Spec.DocPrompt,
 		EmbeddingRPM:       rpm,
 		EmbeddingTPM:       tpm,
@@ -713,6 +716,7 @@ func (r *KnowledgeBaseReconciler) buildSourcesIngestJob(
 		"app.kubernetes.io/name":       "mcp-ingester",
 		"app.kubernetes.io/managed-by": "agentorca",
 	}
+	labels = tenancyLabels(kb, labels)
 
 	volumes := []corev1.Volume{
 		{
@@ -944,6 +948,7 @@ func (r *KnowledgeBaseReconciler) buildIngestJob(
 		"app.kubernetes.io/name":       "mcp-ingester",
 		"app.kubernetes.io/managed-by": "agentorca",
 	}
+	labels = tenancyLabels(kb, labels)
 
 	volumes := []corev1.Volume{
 		{

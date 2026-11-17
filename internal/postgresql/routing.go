@@ -33,9 +33,12 @@ import (
 // The JSON tags are the wire format the model-router posts; the router keeps
 // its own matching type so its image does not link this package.
 type RoutingEvent struct {
-	DecisionID       string          `json:"decisionID"`
-	ParentDecisionID string          `json:"parentDecisionID,omitempty"`
-	Tenant           string          `json:"-"`
+	DecisionID       string `json:"decisionID"`
+	ParentDecisionID string `json:"parentDecisionID,omitempty"`
+	Tenant           string `json:"-"`
+	// TenantID is the tenant's stable ID. Empty takes the call's tenant scope; a
+	// platform-scoped event with none is stored unattributed.
+	TenantID         string          `json:"-"`
 	Namespace        string          `json:"-"`
 	RunName          string          `json:"-"`
 	Agent            string          `json:"agent,omitempty"`
@@ -83,14 +86,14 @@ INSERT INTO routing_events (
 	workflow_step, provider, model, candidates, signals, confidence, is_shadow,
 	prompt_tokens, completion_tokens, cost_usd, aux_cost_usd, latency_ms, ttft_ms,
 	finish_reason, fallback_from, error_class, tool_calls, tool_errors,
-	tool_parse_errors, guardrail_blocked, safeguard_trip, turn_index, created_at
+	tool_parse_errors, guardrail_blocked, safeguard_trip, turn_index, created_at, tenant_id
 ) VALUES (
 	$1, NULLIF($2, ''), NULLIF($3, ''), $4, $5, NULLIF($6, ''), NULLIF($7, ''),
 	$8, $9, $10, $11, $12, $13, $14,
 	$15, $16, $17, $18, $19, $20, $21,
 	$22, $23, $24, $25, $26, $27,
 	$28, $29, $30, $31, $32,
-	$33, $34, $35, $36, $37
+	$33, $34, $35, $36, $37, NULLIF($38, '')
 )
 ON CONFLICT (decision_id) DO UPDATE SET
 	prompt_tokens = EXCLUDED.prompt_tokens,
@@ -113,14 +116,23 @@ func (s *Store) UpsertRoutingEvents(ctx context.Context, events []RoutingEvent) 
 	if len(events) == 0 {
 		return nil
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	err := s.scoped(ctx, func(tx dbtx, scope string) error {
+		return upsertRoutingEvents(ctx, tx, scope, events)
+	})
 	if err != nil {
 		return fmt.Errorf("storing routing events: %w", err)
 	}
-	defer func() { _ = tx.Rollback() }()
+	return nil
+}
+
+func upsertRoutingEvents(ctx context.Context, tx dbtx, scope string, events []RoutingEvent) error {
 	now := time.Now().UTC()
 	for i := range events {
 		e := &events[i]
+		tid, err := rowTenant(scope, e.TenantID)
+		if err != nil {
+			return err
+		}
 		if e.DecisionID == "" || e.Namespace == "" || e.RunName == "" || e.Provider == "" {
 			return fmt.Errorf("storing routing events: event %d lacks decision ID, namespace, run or provider", i)
 		}
@@ -143,24 +155,32 @@ func (s *Store) UpsertRoutingEvents(ctx context.Context, events []RoutingEvent) 
 			e.WorkflowStep, e.Provider, e.Model, candidates, signals, e.Confidence, e.IsShadow,
 			e.PromptTokens, e.CompletionTokens, e.CostUSD, e.AuxCostUSD, e.LatencyMS, ttft,
 			e.FinishReason, e.FallbackFrom, e.ErrorClass, e.ToolCalls, e.ToolErrors,
-			e.ToolParseErrors, e.GuardrailBlocked, e.SafeguardTrip, e.TurnIndex, created,
+			e.ToolParseErrors, e.GuardrailBlocked, e.SafeguardTrip, e.TurnIndex, created, tid,
 		); err != nil {
 			return fmt.Errorf("storing routing event %s: %w", e.DecisionID, err)
 		}
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("storing routing events: %w", err)
 	}
 	return nil
 }
 
 // PruneRoutingEvents deletes events older than cutoff and returns how many.
 func (s *Store) PruneRoutingEvents(ctx context.Context, cutoff time.Time) (int64, error) {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM routing_events WHERE created_at < $1`, cutoff)
+	var n int64
+	err := s.scoped(ctx, func(tx dbtx, scope string) error {
+		// Retention spans every tenant, so it is a platform-only operation.
+		if scope != PlatformScope {
+			return fmt.Errorf("%w: pruning needs the platform scope", ErrNoTenantScope)
+		}
+		res, err := tx.ExecContext(ctx, `DELETE FROM routing_events WHERE created_at < $1`, cutoff)
+		if err != nil {
+			return err
+		}
+		n, _ = res.RowsAffected()
+		return nil
+	})
 	if err != nil {
 		return 0, fmt.Errorf("pruning routing events: %w", err)
 	}
-	n, _ := res.RowsAffected()
 	return n, nil
 }
 
@@ -173,39 +193,42 @@ func (s *Store) RoutingEventsForRun(ctx context.Context, namespace, run string, 
 	if limit < 1 || limit > maxRunRoutingEvents {
 		limit = maxRunRoutingEvents
 	}
-	rows, err := s.db.QueryContext(ctx, `
+	out := []RoutingEvent{}
+	err := s.scoped(ctx, func(tx dbtx, scope string) error {
+		rows, err := tx.QueryContext(ctx, `
 		SELECT decision_id, COALESCE(parent_decision_id, ''), COALESCE(agent, ''), COALESCE(selector, ''),
 		       strategy, path, stage, stage_conf, provider, model, confidence,
 		       prompt_tokens, completion_tokens, cost_usd::float8, aux_cost_usd::float8,
 		       latency_ms, ttft_ms, finish_reason, fallback_from, error_class,
 		       tool_calls, tool_errors, tool_parse_errors, turn_index, created_at
 		FROM routing_events
-		WHERE namespace = $1 AND run_name = $2
+		WHERE namespace = $1 AND run_name = $2 AND ($4::text = '*' OR tenant_id = $4)
 		ORDER BY created_at, decision_id
-		LIMIT $3`, namespace, run, limit)
+		LIMIT $3`, namespace, run, limit, scope)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = rows.Close() }()
+		for rows.Next() {
+			e := RoutingEvent{Namespace: namespace, RunName: run}
+			var ttft sql.NullInt64
+			if err := rows.Scan(&e.DecisionID, &e.ParentDecisionID, &e.Agent, &e.Selector,
+				&e.Strategy, &e.Path, &e.Stage, &e.StageConf, &e.Provider, &e.Model, &e.Confidence,
+				&e.PromptTokens, &e.CompletionTokens, &e.CostUSD, &e.AuxCostUSD,
+				&e.LatencyMS, &ttft, &e.FinishReason, &e.FallbackFrom, &e.ErrorClass,
+				&e.ToolCalls, &e.ToolErrors, &e.ToolParseErrors, &e.TurnIndex, &e.CreatedAt); err != nil {
+				return fmt.Errorf("scanning routing event: %w", err)
+			}
+			if ttft.Valid {
+				v := int(ttft.Int64)
+				e.TTFTMS = &v
+			}
+			out = append(out, e)
+		}
+		return rows.Err()
+	})
 	if err != nil {
 		return nil, fmt.Errorf("querying routing events: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	out := []RoutingEvent{}
-	for rows.Next() {
-		e := RoutingEvent{Namespace: namespace, RunName: run}
-		var ttft sql.NullInt64
-		if err := rows.Scan(&e.DecisionID, &e.ParentDecisionID, &e.Agent, &e.Selector,
-			&e.Strategy, &e.Path, &e.Stage, &e.StageConf, &e.Provider, &e.Model, &e.Confidence,
-			&e.PromptTokens, &e.CompletionTokens, &e.CostUSD, &e.AuxCostUSD,
-			&e.LatencyMS, &ttft, &e.FinishReason, &e.FallbackFrom, &e.ErrorClass,
-			&e.ToolCalls, &e.ToolErrors, &e.ToolParseErrors, &e.TurnIndex, &e.CreatedAt); err != nil {
-			return nil, fmt.Errorf("scanning routing event: %w", err)
-		}
-		if ttft.Valid {
-			v := int(ttft.Int64)
-			e.TTFTMS = &v
-		}
-		out = append(out, e)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterating routing events: %w", err)
 	}
 	return out, nil
 }
@@ -225,26 +248,33 @@ type ModelCost struct {
 // given time. Unlike archived-run cost rows, which credit a whole run to its
 // last model, this attributes each call's own cost to the model that served it.
 func (s *Store) CostByModel(ctx context.Context, namespaces []string, since time.Time) ([]ModelCost, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	out := []ModelCost{}
+	err := s.scoped(ctx, func(tx dbtx, scope string) error {
+		rows, err := tx.QueryContext(ctx, `
 		SELECT provider, model, COUNT(*), COALESCE(SUM(cost_usd), 0)::float8, COALESCE(SUM(aux_cost_usd), 0)::float8
 		FROM routing_events
 		WHERE NOT is_shadow AND created_at >= $1
 		  AND (cardinality($2::text[]) = 0 OR namespace = ANY($2::text[]))
+		  AND ($3::text = '*' OR tenant_id = $3)
 		GROUP BY provider, model
-		ORDER BY SUM(cost_usd) DESC`, since, pgTextArray(namespaces))
+		ORDER BY SUM(cost_usd) DESC`, since, pgTextArray(namespaces), scope)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = rows.Close() }()
+		for rows.Next() {
+			var c ModelCost
+			if err := rows.Scan(&c.Provider, &c.Model, &c.Calls, &c.CostUSD, &c.AuxCostUSD); err != nil {
+				return fmt.Errorf("scanning model cost: %w", err)
+			}
+			out = append(out, c)
+		}
+		return rows.Err()
+	})
 	if err != nil {
 		return nil, fmt.Errorf("querying cost by model: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
-	out := []ModelCost{}
-	for rows.Next() {
-		var c ModelCost
-		if err := rows.Scan(&c.Provider, &c.Model, &c.Calls, &c.CostUSD, &c.AuxCostUSD); err != nil {
-			return nil, fmt.Errorf("scanning model cost: %w", err)
-		}
-		out = append(out, c)
-	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // pgTextArray renders ss as a Postgres text[] literal.
@@ -295,19 +325,22 @@ func failReasonClass(run *agentorcav1alpha1.AgentRun) string {
 // upsertRunOutcome records how a run ended. The turn count, selector and
 // tool-approval rejections come from rows already in the database, so the
 // archive path needs no extra plumbing.
-func upsertRunOutcome(ctx context.Context, tx *sql.Tx, run *agentorcav1alpha1.AgentRun, archived RunArchive) error {
+func upsertRunOutcome(ctx context.Context, tx dbtx, tenantID string, run *agentorcav1alpha1.AgentRun, archived RunArchive) error {
 	const q = `
 		INSERT INTO run_outcomes (
 			namespace, run_name, tenant, selector, phase, fail_reason_class, turns,
-			total_cost_usd, tool_approval_rejections, budget_exceeded, restart_count, archived_at
+			total_cost_usd, tool_approval_rejections, budget_exceeded, restart_count, archived_at, tenant_id
 		) VALUES (
 			$1, $2, NULLIF($3, ''),
-			(SELECT selector FROM routing_events WHERE namespace = $1 AND run_name = $2 AND selector IS NOT NULL LIMIT 1),
+			(SELECT selector FROM routing_events WHERE namespace = $1 AND run_name = $2 AND selector IS NOT NULL
+				AND tenant_id IS NOT DISTINCT FROM NULLIF($10, '') LIMIT 1),
 			$4, $5,
-			(SELECT COUNT(*) FROM routing_events WHERE namespace = $1 AND run_name = $2 AND NOT is_shadow),
+			(SELECT COUNT(*) FROM routing_events WHERE namespace = $1 AND run_name = $2 AND NOT is_shadow
+				AND tenant_id IS NOT DISTINCT FROM NULLIF($10, '')),
 			$6,
-			(SELECT COUNT(*) FROM approvals WHERE namespace = $1 AND run_name = $2 AND kind = 'tool' AND status = 'rejected'),
-			$7, $8, $9
+			(SELECT COUNT(*) FROM approvals WHERE namespace = $1 AND run_name = $2 AND kind = 'tool' AND status = 'rejected'
+				AND tenant_id IS NOT DISTINCT FROM NULLIF($10, '')),
+			$7, $8, $9, NULLIF($10, '')
 		)
 		ON CONFLICT (namespace, run_name) DO UPDATE SET
 			selector = EXCLUDED.selector,
@@ -323,7 +356,7 @@ func upsertRunOutcome(ctx context.Context, tx *sql.Tx, run *agentorcav1alpha1.Ag
 	exceeded := run.Status.Budget != nil && run.Status.Budget.State == agentorcav1alpha1.RunBudgetExceeded
 	if _, err := tx.ExecContext(ctx, q,
 		archived.Namespace, archived.Name, archived.Tenant,
-		archived.Phase, failReasonClass(run), cost, exceeded, archived.RestartCount, time.Now().UTC(),
+		archived.Phase, failReasonClass(run), cost, exceeded, archived.RestartCount, time.Now().UTC(), tenantID,
 	); err != nil {
 		return fmt.Errorf("recording outcome of run %s: %w", archived.ID, err)
 	}

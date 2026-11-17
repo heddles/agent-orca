@@ -98,7 +98,7 @@ func TestRAGEndToEnd(t *testing.T) {
 
 	chunkCfg := ChunkConfig{ChunkSize: 128, ChunkOverlap: 16}
 
-	result, err := IngestDocuments(ctx, docs, testQdrantAddr, testCollection, testDimensions, embedder, chunkCfg)
+	result, err := IngestDocuments(ctx, docs, testQdrantAddr, testCollection, testDimensions, embedder, chunkCfg, "tnt-test")
 	if err != nil {
 		t.Fatalf("IngestDocuments failed: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestRAGEndToEnd(t *testing.T) {
 				t.Fatalf("embedding query: %v", err)
 			}
 
-			results, err := qClient2.Search(ctx, testCollection, qVec[0], 3)
+			results, err := qClient2.Search(ctx, testCollection, "tnt-test", qVec[0], 3)
 			if err != nil {
 				t.Fatalf("search failed: %v", err)
 			}

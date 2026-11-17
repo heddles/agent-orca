@@ -41,14 +41,14 @@ func TestUpsertRoutingEvents_BindsEveryColumn(t *testing.T) {
 		FinishReason: "stop", ToolCalls: 2, ToolErrors: 1, ToolParseErrors: 1, TurnIndex: 4,
 		CreatedAt: time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC),
 	}
-	mock.ExpectBegin()
+	expectScopeBegin(mock)
 	mock.ExpectExec(`INSERT INTO routing_events`).
 		WithArgs("d-1", "d-0", "acme", "ns", "run", "coder", "balanced",
 			"hybrid", "", "rule:vision", "code", 0.85, 1, "",
 			"implement", "big", "anthropic/claude", []byte(`["big","cheap"]`), nil, 0.95, false,
 			1000, 200, 0.012, 0.001, 900, 120,
 			"stop", "", "", 2, 1,
-			1, false, "", 4, ev.CreatedAt).
+			1, false, "", 4, ev.CreatedAt, "").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
@@ -75,7 +75,7 @@ func TestUpsertRoutingEvents_IsIdempotentBySQL(t *testing.T) {
 
 func TestUpsertRoutingEvents_RejectsIncompleteEvents(t *testing.T) {
 	s, mock := costMock(t)
-	mock.ExpectBegin()
+	expectScopeBegin(mock)
 	mock.ExpectRollback()
 	err := s.UpsertRoutingEvents(context.Background(), []RoutingEvent{{DecisionID: "d", Namespace: "ns", RunName: "r"}})
 	if err == nil {
@@ -99,7 +99,9 @@ func TestUpsertRoutingEvents_EmptyBatchTouchesNothing(t *testing.T) {
 func TestPruneRoutingEvents(t *testing.T) {
 	s, mock := costMock(t)
 	cutoff := time.Date(2026, 9, 28, 0, 0, 0, 0, time.UTC)
+	expectScopeBegin(mock)
 	mock.ExpectExec(`DELETE FROM routing_events WHERE created_at < \$1`).WithArgs(cutoff).WillReturnResult(sqlmock.NewResult(0, 42))
+	mock.ExpectCommit()
 	n, err := s.PruneRoutingEvents(context.Background(), cutoff)
 	if err != nil || n != 42 {
 		t.Fatalf("pruned %d, %v; want 42", n, err)
@@ -112,11 +114,13 @@ func TestRoutingEventsForRun(t *testing.T) {
 		"prompt_tokens", "completion_tokens", "cost", "aux", "latency_ms", "ttft_ms", "finish_reason", "fallback_from", "error_class",
 		"tool_calls", "tool_errors", "tool_parse_errors", "turn_index", "created_at"}
 	at := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
-	mock.ExpectQuery(`FROM routing_events\s+WHERE namespace = \$1 AND run_name = \$2`).WithArgs("ns", "run", maxRunRoutingEvents).
+	expectScopeBegin(mock)
+	mock.ExpectQuery(`FROM routing_events\s+WHERE namespace = \$1 AND run_name = \$2`).WithArgs("ns", "run", maxRunRoutingEvents, "*").
 		WillReturnRows(sqlmock.NewRows(cols).
 			AddRow("d-1", "", "coder", "bal", "hybrid", "rule:weighted", "chat", 0.4, "cheap", "m", 0.5, 10, 5, 0.001, 0.0, 300, 80, "stop", "", "", 0, 0, 0, 1, at).
 			AddRow("d-2", "d-1", "coder", "bal", "hybrid", "fallback", "chat", 0.4, "big", "m2", 0.5, 0, 0, 0.0, 0.0, 50, nil, "", "cheap", "provider_error", 0, 0, 0, 2, at))
 
+	mock.ExpectCommit()
 	got, err := s.RoutingEventsForRun(context.Background(), "ns", "run", 0)
 	if err != nil {
 		t.Fatal(err)
@@ -167,11 +171,11 @@ func TestArchiveRunRecordsOutcome(t *testing.T) {
 			Budget: &agentorcav1alpha1.RunBudgetStatus{State: agentorcav1alpha1.RunBudgetExceeded},
 		},
 	}
-	mock.ExpectBegin()
+	expectScopeBegin(mock)
 	mock.ExpectExec(`INSERT INTO archived_runs`).WillReturnResult(sqlmock.NewResult(1, 1))
 	// namespace, run, tenant, phase, class, cost, budget_exceeded, restarts, archived_at
 	mock.ExpectExec(`INSERT INTO run_outcomes`).
-		WithArgs("ns", "r", "", "Failed", failClassBudget, 0.25, true, 2, sqlmock.AnyArg()).
+		WithArgs("ns", "r", "", "Failed", failClassBudget, 0.25, true, 2, sqlmock.AnyArg(), "").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 	if err := s.ArchiveRun(context.Background(), run, nil); err != nil {

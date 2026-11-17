@@ -35,6 +35,7 @@ import (
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
 	"github.com/heddles/agent-orca/internal/postgresql"
+	"github.com/heddles/agent-orca/internal/tenancy"
 )
 
 // Tool-call approvals (Tool.spec.sideEffect, GuardrailPolicy.spec.toolApproval).
@@ -168,6 +169,7 @@ func (s *Server) requestToolApproval(w http.ResponseWriter, r *http.Request, cal
 	}
 	stored, err := s.approvals.RequestApproval(r.Context(), postgresql.Approval{
 		Tenant:         run.Labels["agentorca.io/tenant"],
+		TenantID:       run.Labels[tenancy.LabelTenantID],
 		Namespace:      namespace,
 		RunName:        name,
 		Kind:           postgresql.ApprovalKindTool,

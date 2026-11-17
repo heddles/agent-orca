@@ -79,7 +79,11 @@ rules:
   # Manage Jobs for KnowledgeBase MCP ingestion
   - apiGroups: ["batch"]
     resources: ["jobs"]
-    verbs: ["get", "list", "watch", "create", "delete"]
+    verbs: ["get", "list", "watch", "create", "delete", "patch"]
+  # The tenant label backfill labels the PVCs controllers created earlier.
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "patch"]
   # Manage Services for KnowledgeBases (Qdrant headless service)
   - apiGroups: [""]
     resources: ["services"]

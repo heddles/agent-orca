@@ -39,7 +39,9 @@ var ErrInvalidFeedback = errors.New("invalid feedback")
 // Feedback is one person's thumbs up (1) or down (-1) on a run, or on one of
 // its routing decisions.
 type Feedback struct {
-	Tenant    string `json:"tenant,omitempty"`
+	Tenant string `json:"tenant,omitempty"`
+	// TenantID is the tenant's stable ID. Empty takes the call's tenant scope.
+	TenantID  string `json:"tenantId,omitempty"`
 	Namespace string `json:"namespace"`
 	RunName   string `json:"runName"`
 	// Agent is the Agent whose work was rated, so ratings build up per Agent.
@@ -85,8 +87,8 @@ func (f Feedback) Validate() error {
 const upsertFeedbackSQL = `
 INSERT INTO routing_feedback
 	(tenant, namespace, run_name, agent, deployment, workflow, workflow_step,
-	 decision_id, turn_index, rating, comment, user_id, source)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+	 decision_id, turn_index, rating, comment, user_id, source, tenant_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NULLIF($14, ''))
 ON CONFLICT (namespace, run_name, decision_id, user_id) DO UPDATE SET
 	rating = EXCLUDED.rating,
 	comment = EXCLUDED.comment,
@@ -104,9 +106,17 @@ func (s *Store) UpsertFeedback(ctx context.Context, f Feedback) error {
 	if f.TurnIndex != nil {
 		turn = *f.TurnIndex
 	}
-	if _, err := s.db.ExecContext(ctx, upsertFeedbackSQL,
-		f.Tenant, f.Namespace, f.RunName, f.Agent, f.Deployment, f.Workflow, f.WorkflowStep,
-		f.DecisionID, turn, f.Rating, f.Comment, f.UserID, f.Source); err != nil {
+	err := s.scoped(ctx, func(tx dbtx, scope string) error {
+		tid, err := rowTenant(scope, f.TenantID)
+		if err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, upsertFeedbackSQL,
+			f.Tenant, f.Namespace, f.RunName, f.Agent, f.Deployment, f.Workflow, f.WorkflowStep,
+			f.DecisionID, turn, f.Rating, f.Comment, f.UserID, f.Source, tid)
+		return err
+	})
+	if err != nil {
 		return fmt.Errorf("storing feedback: %w", err)
 	}
 	return nil
@@ -115,28 +125,35 @@ func (s *Store) UpsertFeedback(ctx context.Context, f Feedback) error {
 // FeedbackForRun returns the ratings on a run, oldest first. A non-empty user
 // limits them to that user's.
 func (s *Store) FeedbackForRun(ctx context.Context, namespace, run, user string) ([]Feedback, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT COALESCE(tenant, ''), agent, deployment, workflow, workflow_step, decision_id, turn_index, rating,
+	out := []Feedback{}
+	err := s.scoped(ctx, func(tx dbtx, scope string) error {
+		rows, err := tx.QueryContext(ctx, `
+		SELECT COALESCE(tenant, ''), COALESCE(tenant_id, ''), agent, deployment, workflow, workflow_step, decision_id, turn_index, rating,
 			comment, user_id, source, created_at, updated_at
 		FROM routing_feedback
 		WHERE namespace = $1 AND run_name = $2 AND ($3 = '' OR user_id = $3)
-		ORDER BY created_at, id`, namespace, run, user)
+		  AND ($4::text = '*' OR tenant_id = $4)
+		ORDER BY created_at, id`, namespace, run, user, scope)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = rows.Close() }()
+		for rows.Next() {
+			f := Feedback{Namespace: namespace, RunName: run}
+			var turn sql.NullInt64
+			if err := rows.Scan(&f.Tenant, &f.TenantID, &f.Agent, &f.Deployment, &f.Workflow, &f.WorkflowStep, &f.DecisionID, &turn, &f.Rating, &f.Comment, &f.UserID, &f.Source, &f.CreatedAt, &f.UpdatedAt); err != nil {
+				return fmt.Errorf("scanning feedback: %w", err)
+			}
+			if turn.Valid {
+				n := int(turn.Int64)
+				f.TurnIndex = &n
+			}
+			out = append(out, f)
+		}
+		return rows.Err()
+	})
 	if err != nil {
 		return nil, fmt.Errorf("querying feedback: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
-	out := []Feedback{}
-	for rows.Next() {
-		f := Feedback{Namespace: namespace, RunName: run}
-		var turn sql.NullInt64
-		if err := rows.Scan(&f.Tenant, &f.Agent, &f.Deployment, &f.Workflow, &f.WorkflowStep, &f.DecisionID, &turn, &f.Rating, &f.Comment, &f.UserID, &f.Source, &f.CreatedAt, &f.UpdatedAt); err != nil {
-			return nil, fmt.Errorf("scanning feedback: %w", err)
-		}
-		if turn.Valid {
-			n := int(turn.Int64)
-			f.TurnIndex = &n
-		}
-		out = append(out, f)
-	}
-	return out, rows.Err()
+	return out, nil
 }
