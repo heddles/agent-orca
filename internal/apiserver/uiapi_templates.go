@@ -118,7 +118,7 @@ func (s *UIServer) handleUseTemplate(w http.ResponseWriter, r *http.Request) {
 		copies = append(copies, u)
 	}
 	// Nothing is created unless every reference the copies make will resolve.
-	problems, err := s.unresolvedRefs(r, target, members, copies)
+	problems, missing, err := s.unresolvedRefs(r, target, members, copies)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -126,7 +126,15 @@ func (s *UIServer) handleUseTemplate(w http.ResponseWriter, r *http.Request) {
 	if len(problems) > 0 {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnprocessableEntity)
-		_ = json.NewEncoder(w).Encode(map[string]any{"errors": problems})
+		thing := "thing that is"
+		if len(missing) != 1 {
+			thing = "things that are"
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"message": fmt.Sprintf("This template needs %d %s not set up in workspace %s.", len(missing), thing, target),
+			"errors":  problems,
+			"missing": missing,
+		})
 		return
 	}
 

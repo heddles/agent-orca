@@ -954,9 +954,24 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [errors]
+                required: [message, errors, missing]
                 properties:
+                  message: { type: string, description: One plain sentence naming the workspace and how many things are missing. }
                   errors: { type: array, items: { type: string } }
+                  missing:
+                    type: array
+                    items:
+                      type: object
+                      required: [kind, name, namespace, alternatives, replaceKey]
+                      properties:
+                        kind: { type: string }
+                        name: { type: string }
+                        namespace: { type: string }
+                        alternatives:
+                          type: array
+                          items: { type: string }
+                          description: Sorted names of readable objects of that kind in the namespace; [] when none.
+                        replaceKey: { type: string, description: The exact key to send in replace. }
   /api/agents/{namespace}/{name}/publish:
     post:
       tags: [builder]

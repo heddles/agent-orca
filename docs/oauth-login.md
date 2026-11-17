@@ -127,7 +127,7 @@ see [Future RBAC design](#future-rbac-design).
 Browser  -> /oauth/login                -> picker of federated (login-capable) tenants
 Browser  -> /oauth/login?tenant=org-x   -> 302 to IdP (state carries tenant X)
 Browser <-> IdP login (Google/Keycloak/…)
-IdP      -> /oauth/callback?code=..&state=..  (state cookie checked; CSRF-safe)
+IdP      -> /oauth/callback?code=..&state=..  (state cookie + sealed login cookie checked)
 operator  * state -> tenant X -> read X's client_secret from its first allowed namespace
 operator  * POST code+secret to IdP -> id_token
 operator  * verify id_token (JWKS signature, iss, aud, exp, nonce) + email_verified
@@ -136,9 +136,38 @@ operator  * MintSessionForIdentity -> signed session JWT -> Set-Cookie: agentorc
 Browser  -> /api/* (cookie sent; requireAuth validates it -> 200)
 ```
 
-The `state` value (CSRF) carries the tenant name so the callback uses **that
+The pending login (tenant, nonce, PKCE verifier) lets the callback use **that
 tenant's** IdP and secret. NewProviderForTenant builds the `oidc.Provider` per
 tenant at login time.
+
+### Multiple operator replicas
+
+The pending login is not kept in server memory, so the callback can land on any
+replica. `/oauth/login` sets two `HttpOnly`, `SameSite=Lax` cookies (`Secure` per
+`--oidc-cookie-secure`), each valid for 5 minutes:
+
+- `agentorca_oidc_state`: the random `state` value sent to the IdP.
+- `agentorca_oidc_login`: the pending login (tenant, nonce, PKCE verifier,
+  state, expiry), encrypted and authenticated with AES-256-GCM. About 400 bytes,
+  well under the 4 KB cookie limit.
+
+The AES key is derived with HKDF-SHA256 (context `agent-orca/oidc-login-cookie/v1`)
+from the JWT signing key. Every replica loads that key from the
+`agentorca-jwt-signing-key` Secret, so no Helm value or database is needed. The
+signing key is only HKDF input; it is never used directly as a cipher key.
+
+The callback rejects a request when the sealed cookie fails to open (tamper,
+other key, expiry) or when its embedded `state` differs from the `state` the IdP
+returned. It clears both cookies once the sealed one has opened.
+
+**Replay.** Because the payload is stateless, a callback replayed within its
+5 minute lifetime is not rejected by the operator. It is limited by the IdP's
+single-use authorization code, which fails the second exchange.
+
+**Rotating the signing key** invalidates logins in flight (users retry). If an
+`ExternalAuth` has no signing key, the handler falls back to an in-process store
+and logs a warning at startup; login then works only on a single replica. The
+operator normally always has a key, so this is not expected in a deployed chart.
 
 ## Tenant config reference
 

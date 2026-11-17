@@ -64,8 +64,16 @@ tenant's, or platform-scoped and visible there). If not, nothing is created and
 the answer is
 
 ```
-422 {"errors": ["ModelSelector \"default\" does not exist in namespace team-a: ask an administrator to add it, or use one of its own (team-sel) by sending {\"replace\":{\"ModelSelector/default\":\"team-sel\"}}"]}
+422 {"message": "This template needs 1 thing that is not set up in workspace team-a.",
+      "errors": ["ModelSelector \"default\" does not exist in namespace team-a: ask an administrator to add it, or use one of its own (team-sel) by sending {\"replace\":{\"ModelSelector/default\":\"team-sel\"}}"],
+      "missing": [{"kind": "ModelSelector", "name": "default", "namespace": "team-a",
+                   "alternatives": ["team-sel"], "replaceKey": "ModelSelector/default"}]}
 ```
+
+`errors` has one plain-language message per missing reference. `missing` is the
+same as data for a picker: `alternatives` are the sorted names of readable
+objects of that kind in the namespace (`[]` when there are none) and
+`replaceKey` is the exact key to send in `replace`.
 
 To use a different object, add `replace` to the body, keyed `Kind/name`:
 `{"name": "my-agent", "replace": {"ModelSelector/default": "team-sel"}}`. It is

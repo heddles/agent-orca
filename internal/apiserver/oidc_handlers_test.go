@@ -106,19 +106,16 @@ func newHandler(auth *ExternalAuth, p *oidc.IDTokenPrincipal) *OIDCLoginHandler 
 		WithOIDCProviderFactory(factoryReturning(p, nil)))
 }
 
-// loginRedirect records the state cookie from a /oauth/login?tenant= flow.
-func loginRedirect(t *testing.T, h *OIDCLoginHandler, tenant string) string {
+// loginFlow runs /oauth/login?tenant= and returns the state and sealed
+// pending-login cookies the browser would carry to the callback.
+func loginFlow(t *testing.T, h *OIDCLoginHandler, tenant string) (state, sealed string) {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	path := "/oauth/login"
-	if tenant != "" {
-		path += "?tenant=" + tenant
-	}
-	h.handleLogin(rec, httptest.NewRequest("GET", path, nil))
+	h.handleLogin(rec, httptest.NewRequest("GET", "/oauth/login?tenant="+tenant, nil))
 	if rec.Code != http.StatusFound {
 		t.Fatalf("login status = %d, want 302", rec.Code)
 	}
-	return getCookie(rec, oidcStateCookie)
+	return getCookie(rec, oidcStateCookie), getCookie(rec, oidcLoginCookie)
 }
 
 func TestOIDCLogin_PickerListsLoginCapableTenants(t *testing.T) {
@@ -178,13 +175,16 @@ func TestOIDCLogin_LoginRedirectsToIdP(t *testing.T) {
 	auth := testAuth(t, key, loginTenant("github-oidc", "", ""))
 	h := newHandler(auth, &oidc.IDTokenPrincipal{Issuer: "https://idp.example.com"})
 
-	state := loginRedirect(t, h, "github-oidc")
-	if state == "" {
-		t.Fatal("expected state cookie after login redirect")
+	state, sealed := loginFlow(t, h, "github-oidc")
+	if state == "" || sealed == "" {
+		t.Fatal("expected state and sealed login cookies after login redirect")
 	}
-	st, ok := h.sessions.Take(state)
-	if !ok || st.tenant != "github-oidc" || st.nonce == "" || st.codeVerifier == "" {
-		t.Fatalf("stored login state not as expected: %+v ok=%v", st, ok)
+	if len(sealed) > 1024 {
+		t.Fatalf("sealed cookie is %d bytes, want well under 4 KB", len(sealed))
+	}
+	st, err := h.sealer.open(sealed, state)
+	if err != nil || st.Tenant != "github-oidc" || st.Nonce == "" || st.CodeVerifier == "" {
+		t.Fatalf("sealed login not as expected: %+v err=%v", st, err)
 	}
 }
 
@@ -215,10 +215,11 @@ func TestOIDCLogin_CallbackMintsVerifiableSession(t *testing.T) {
 	}
 	h := newHandler(auth, principal)
 
-	state := loginRedirect(t, h, "github-oidc")
+	state, sealed := loginFlow(t, h, "github-oidc")
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/oauth/callback?code=x&state="+state, nil)
 	req.AddCookie(&http.Cookie{Name: oidcStateCookie, Value: state})
+	req.AddCookie(&http.Cookie{Name: oidcLoginCookie, Value: sealed})
 	h.handleCallback(rec, req)
 	if rec.Code != http.StatusFound {
 		t.Fatalf("callback status = %d, want 302", rec.Code)
@@ -249,10 +250,11 @@ func TestOIDCLogin_Callback_RejectsUnverifiedEmail(t *testing.T) {
 		Claims: map[string]any{"email_verified": false, "repository_owner": "floppyfish14"},
 	}
 	h := newHandler(auth, principal)
-	state := loginRedirect(t, h, "github-oidc")
+	state, sealed := loginFlow(t, h, "github-oidc")
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/oauth/callback?code=x&state="+state, nil)
 	req.AddCookie(&http.Cookie{Name: oidcStateCookie, Value: state})
+	req.AddCookie(&http.Cookie{Name: oidcLoginCookie, Value: sealed})
 	h.handleCallback(rec, req)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401 for unverified email", rec.Code)
@@ -281,10 +283,11 @@ func TestOIDCLogin_Callback_GoogleStyle(t *testing.T) {
 		},
 	}
 	h := newHandler(auth, principal)
-	state := loginRedirect(t, h, "google-oidc")
+	state, sealed := loginFlow(t, h, "google-oidc")
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/oauth/callback?code=x&state="+state, nil)
 	req.AddCookie(&http.Cookie{Name: oidcStateCookie, Value: state})
+	req.AddCookie(&http.Cookie{Name: oidcLoginCookie, Value: sealed})
 	h.handleCallback(rec, req)
 	if rec.Code != http.StatusFound {
 		t.Fatalf("callback status = %d, want 302", rec.Code)
@@ -313,10 +316,11 @@ func TestOIDCLogin_Callback_ExchangeFailed(t *testing.T) {
 	h := NewOIDCLoginHandler(auth,
 		WithOIDCCookieSecure(false), WithOIDCRedirectURI("/"),
 		WithOIDCProviderFactory(factoryReturning(nil, errors.New("token exchange failed"))))
-	state := loginRedirect(t, h, "github-oidc")
+	state, sealed := loginFlow(t, h, "github-oidc")
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/oauth/callback?code=x&state="+state, nil)
 	req.AddCookie(&http.Cookie{Name: oidcStateCookie, Value: state})
+	req.AddCookie(&http.Cookie{Name: oidcLoginCookie, Value: sealed})
 	h.handleCallback(rec, req)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401 on exchange failure", rec.Code)

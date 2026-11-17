@@ -487,6 +487,18 @@ func TestUseTemplateChecksReferences(t *testing.T) {
 			t.Errorf("errors = %q", errs)
 		}
 		nothingCreated(t, f)
+		body := decode[struct {
+			Message string       `json:"message"`
+			Missing []missingRef `json:"missing"`
+		}](t, use(f, `{"name":"my-bot"}`))
+		want := missingRef{Kind: "ModelSelector", Name: builderSelector, Namespace: sharedNS, Alternatives: []string{}, ReplaceKey: "ModelSelector/default"}
+		if body.Message != "This template needs 1 thing that is not set up in workspace shared." ||
+			len(body.Missing) != 1 || body.Missing[0].Alternatives == nil || !slices.Equal(body.Missing[0].Alternatives, want.Alternatives) || body.Missing[0].ReplaceKey != want.ReplaceKey {
+			t.Errorf("body = %+v", body)
+		}
+		if raw := use(f, `{"name":"my-bot"}`).Body.String(); !strings.Contains(raw, `"alternatives":[]`) {
+			t.Errorf("alternatives must be [] not null: %s", raw)
+		}
 	})
 	t.Run("alternatives are named and replace satisfies", func(t *testing.T) {
 		other := &agentorcav1alpha1.ModelSelector{ObjectMeta: metav1.ObjectMeta{Name: "team-sel", Namespace: sharedNS, Labels: map[string]string{tenancy.LabelTenantID: isoA}}}
@@ -494,6 +506,9 @@ func TestUseTemplateChecksReferences(t *testing.T) {
 		errs := errorsOf(t, use(f, `{"name":"my-bot"}`))
 		if len(errs) != 1 || !strings.Contains(errs[0], "team-sel") {
 			t.Errorf("errors = %q", errs)
+		}
+		if raw := use(f, `{"name":"my-bot"}`).Body.String(); !strings.Contains(raw, `"alternatives":["team-sel"]`) || !strings.Contains(raw, `"replaceKey":"ModelSelector/default"`) {
+			t.Errorf("missing = %s", raw)
 		}
 		nothingCreated(t, f)
 		if rec := use(f, `{"name":"my-bot","replace":{"ModelSelector/default":"team-sel"}}`); rec.Code != http.StatusCreated {
@@ -516,6 +531,9 @@ func TestUseTemplateChecksReferences(t *testing.T) {
 		errs := errorsOf(t, use(f, `{"name":"my-bot"}`))
 		if len(errs) != 2 || !strings.Contains(strings.Join(errs, "|"), `Tool "shared-tool"`) {
 			t.Errorf("errors = %q", errs)
+		}
+		if raw := use(f, `{"name":"my-bot"}`).Body.String(); !strings.Contains(raw, "This template needs 2 things that are not set up in workspace shared.") {
+			t.Errorf("message = %s", raw)
 		}
 		nothingCreated(t, f)
 	})
