@@ -8,15 +8,17 @@ test.describe('App smoke tests', () => {
 
   test('sidebar shows resource tabs', async ({ page }) => {
     await page.goto('/')
-    await expect(page.getByRole('button', { name: /runs/i })).toBeVisible()
-    await expect(page.getByRole('button', { name: /deployments/i })).toBeVisible()
-    await expect(page.getByRole('button', { name: /workflows/i })).toBeVisible()
+    const nav = page.getByRole('navigation', { name: 'Main' })
+    for (const name of ['Home', 'Agents', 'Runs', 'Approvals', 'Build', 'Evaluate', 'Operate', 'Settings']) {
+      await expect(nav.getByRole('link', { name: new RegExp(`^${name}`) })).toBeVisible()
+    }
   })
 
-  test('clicking a tab switches the resource list', async ({ page }) => {
+  test('clicking Agents shows the agent lists at /agents', async ({ page }) => {
     await page.goto('/')
-    await page.getByRole('button', { name: /deployments/i }).click()
-    await expect(page.getByPlaceholder(/filter by name/i)).toBeVisible()
+    await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Agents' }).click()
+    await expect(page).toHaveURL(/\/agents$/)
+    await expect(page.getByPlaceholder(/filter by name/i).first()).toBeVisible()
   })
 })
 
@@ -28,8 +30,7 @@ test.describe('Deployments', () => {
     const deployments: { name: string }[] = await res.json()
     test.skip(deployments.length === 0, 'No deployments in cluster to test against')
 
-    await page.goto('/')
-    await page.getByRole('button', { name: /deployments/i }).click()
+    await page.goto('/agents')
 
     for (const dep of deployments) {
       await expect(page.getByText(dep.name)).toBeVisible({ timeout: 10_000 })
@@ -42,12 +43,12 @@ test.describe('Deployments', () => {
     test.skip(deployments.length === 0, 'No deployments in cluster to test against')
 
     const dep = deployments[0]
-    await page.goto('/')
-    await page.getByRole('button', { name: /deployments/i }).click()
-    // Wait for the sidebar item to appear, then click it
+    await page.goto('/agents')
+    // Wait for the list item to appear, then click it
     const sidebarItem = page.locator('aside').getByText(dep.name).first()
     await expect(sidebarItem).toBeVisible({ timeout: 15_000 })
     await sidebarItem.click()
+    await expect(page).toHaveURL(/\/agents\/published\//)
     // DeploymentView always renders a chat textarea
     await expect(page.getByPlaceholder('Send a message…')).toBeVisible({ timeout: 15_000 })
   })
@@ -58,14 +59,14 @@ test.describe('Runs', () => {
     const res = await request.get('/api/runs?namespace=default')
     const runs: { name: string }[] = await res.json()
 
-    await page.goto('/')
+    await page.goto('/runs')
 
     if (runs.length === 0) {
-      // Empty state or "no runs found" may appear after the list loads
-      await expect(page.getByText(/select a run|no runs found/i)).toBeVisible({ timeout: 15_000 })
+      // First-run empty state (or "no runs found" when history is on but empty)
+      await expect(page.getByText(/no runs yet|no runs found/i).first()).toBeVisible({ timeout: 15_000 })
     } else {
-      // The sidebar fetches runs async — wait for the first one to appear
-      await expect(page.locator('aside').getByText(runs[0].name)).toBeVisible({ timeout: 15_000 })
+      // The table fetches runs async — wait for the first one to appear
+      await expect(page.getByRole('button', { name: `View run ${runs[0].name}` })).toBeVisible({ timeout: 15_000 })
     }
   })
 
@@ -75,10 +76,10 @@ test.describe('Runs', () => {
     test.skip(runs.length === 0, 'No runs in cluster to test against')
 
     const run = runs[0]
-    await page.goto('/')
-    // Wait for the sidebar to populate, then click
-    const sidebarItem = page.locator('aside').getByText(run.name).first()
-    await sidebarItem.click({ timeout: 15_000 })
+    await page.goto('/runs')
+    // Wait for the table to populate, then open the run
+    await page.getByRole('button', { name: `View run ${run.name}` }).click({ timeout: 15_000 })
+    await expect(page).toHaveURL(new RegExp(`/runs/(live|history)/.*/${run.name}$`))
     // RunView detail header renders the spend chip inside <main>
     const main = page.locator('main')
     await expect(main.getByText(run.name)).toBeVisible({ timeout: 15_000 })
@@ -91,39 +92,44 @@ test.describe('Filter', () => {
     const deployments: { name: string }[] = await res.json()
     test.skip(deployments.length === 0, 'No deployments in cluster to test against')
 
-    await page.goto('/')
-    await page.getByRole('button', { name: /deployments/i }).click()
-    await expect(page.getByText(deployments[0].name)).toBeVisible({ timeout: 10_000 })
+    await page.goto('/agents')
+    await expect(page.getByText(deployments[0].name).first()).toBeVisible({ timeout: 10_000 })
 
-    const filter = page.getByPlaceholder(/filter by name/i)
+    // The first filter box belongs to the published agents list.
+    const filter = page.getByPlaceholder(/filter by name/i).first()
     await filter.fill('zzz-does-not-exist')
-    await expect(page.getByText(/no deployments match/i)).toBeVisible()
+    await expect(page.getByText(/no published agents match/i)).toBeVisible()
   })
 })
 
 test.describe('Navigation', () => {
-  test('switching tabs clears the main panel to empty state', async ({ page, request }) => {
+  test('moving to another section clears the open agent', async ({ page, request }) => {
     const res = await request.get('/api/deployments?namespace=default')
     const deployments: { name: string }[] = await res.json()
     test.skip(deployments.length === 0, 'No deployments in cluster to test against')
 
-    await page.goto('/')
-    await page.getByRole('button', { name: /deployments/i }).click()
+    await page.goto('/agents')
     await page.locator('aside').getByText(deployments[0].name).first().click()
 
-    // Switch to workflows tab — main panel should show the empty state
-    await page.getByRole('button', { name: /workflows/i }).click()
-    await expect(page.getByText(/select a workflow/i)).toBeVisible()
+    const nav = page.getByRole('navigation', { name: 'Main' })
+    await nav.getByRole('link', { name: 'Operate' }).click()
+    await page.getByRole('navigation', { name: 'Operate' }).getByRole('link', { name: 'Workflows' }).click()
+    await expect(page).toHaveURL(/\/operate\/workflows$/)
+    await expect(page.getByText(/choose a workflow/i)).toBeVisible()
   })
 
-  test('cost dashboard toggle works', async ({ page }) => {
-    await page.goto('/')
-    // Go to runs tab first since cost dashboard needs a resource context
-    await page.getByRole('button', { name: /runs/i }).click()
-    await page.getByTitle('Cost Dashboard').click()
-    await expect(page.getByText(/cost/i)).toBeVisible({ timeout: 10_000 })
-    await page.getByTitle('Cost Dashboard').click()
-    await expect(page.getByText(/select a run/i)).toBeVisible()
+  test('costs live under Operate and survive a reload', async ({ page }) => {
+    await page.goto('/operate/costs')
+    const costs = page.getByRole('navigation', { name: 'Operate' }).getByRole('link', { name: 'Costs' })
+    await expect(costs).toHaveAttribute('aria-current', 'page')
+    await page.reload()
+    await expect(page).toHaveURL(/\/operate\/costs$/)
+    await expect(costs).toHaveAttribute('aria-current', 'page')
+  })
+
+  test('an old ?tab= link is redirected to the new route', async ({ page }) => {
+    await page.goto('/?tab=approvals')
+    await expect(page).toHaveURL(/\/approvals$/)
   })
 })
 
@@ -151,22 +157,17 @@ test.describe('API health', () => {
 })
 
 test.describe('Home Dashboard', () => {
-  test('home tab shows system dashboard with cards', async ({ page }) => {
+  test('home shows the system dashboard with cards', async ({ page }) => {
     await page.goto('/')
-    await expect(page.getByRole('button', { name: 'Home' })).toBeVisible()
-    // Home is default, so dashboard should be visible
-    await expect(page.getByText('agent-orca')).toBeVisible()
+    await expect(page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Home' })).toBeVisible()
     await expect(page.getByText('AI Agent Orchestration Platform')).toBeVisible()
-    // Cards should be visible
-    await expect(page.getByText('Agents')).toBeVisible()
-    await expect(page.getByText('Agent Runs')).toBeVisible()
-    await expect(page.getByText('Deployments')).toBeVisible()
+    await expect(page.getByText('Runs', { exact: true }).first()).toBeVisible()
+    await expect(page.getByText('Published agents', { exact: true }).first()).toBeVisible()
   })
 
-  test('marketplace tab shows placeholder', async ({ page }) => {
-    await page.goto('/')
-    await page.getByRole('button', { name: 'Marketplace' }).click()
-    await expect(page.getByText('Marketplace')).toBeVisible()
-    await expect(page.getByText('Coming soon')).toBeVisible()
+  test('there is no Marketplace page', async ({ page }) => {
+    await page.goto('/marketplace')
+    await expect(page).toHaveURL(/\/$/)
+    await expect(page.getByText('Marketplace')).toHaveCount(0)
   })
 })

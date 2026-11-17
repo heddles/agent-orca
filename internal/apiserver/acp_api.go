@@ -270,6 +270,10 @@ type ACPAgentManifest struct {
 	Metadata           *ACPAgentMetadata `json:"metadata,omitempty"`
 	Status             *ACPAgentStatus   `json:"status,omitempty"`
 
+	// ExampleInputs are sample inputs the agent's owner published, shown as
+	// suggestions in the UI. Read from the agentorca.io/example-inputs annotation.
+	ExampleInputs []string `json:"example_inputs,omitempty"`
+
 	// InputSchema is a JSON Schema describing the expected input format
 	// (derived from the agent's configured tools + built-in tools).
 	InputSchema map[string]any `json:"input_schema,omitempty"`
@@ -552,7 +556,8 @@ func (s *ACPServer) writeAgentManifest(w http.ResponseWriter, r *http.Request, a
 	manifest := ACPAgentManifest{
 		Name:               agent.Name,
 		Namespace:          namespace,
-		Description:        agent.Spec.SystemPrompt,
+		Description:        agentDescription(agent),
+		ExampleInputs:      agentExampleInputs(agent),
 		InputContentTypes:  []string{"text/plain", "application/json"},
 		OutputContentTypes: []string{"text/plain", "application/json"},
 	}
@@ -569,6 +574,10 @@ func (s *ACPServer) writeAgentManifest(w http.ResponseWriter, r *http.Request, a
 
 	// Build input/output schemas from the agent's tools.
 	manifest.InputSchema = buildInputSchema(manifest.AllowedTools)
+	if custom := agentInputSchemaOverride(agent); custom != nil {
+		custom["tool_names"] = manifest.InputSchema["tool_names"]
+		manifest.InputSchema = custom
+	}
 	manifest.OutputSchema = buildOutputSchema()
 
 	jsonResponse(w, manifest)
@@ -583,6 +592,9 @@ type ACPAgentRunRequest struct {
 // handleAgentRun creates a new AgentRun for the given agent, validating input
 // against the agent's manifest schema. This is a thin, UX-friendly wrapper
 // around the ACP POST /runs flow.
+//
+// tenant may be nil (a UI session with no tenant identity); the run is then
+// created without tenant labels, as the other UI writes are.
 func (s *ACPServer) handleAgentRun(w http.ResponseWriter, r *http.Request, tenant *TenantIdentity, agent *agentorcav1alpha1.Agent) {
 	if !requireRunnerACP(w, r) {
 		return
@@ -638,14 +650,23 @@ func (s *ACPServer) handleAgentRun(w http.ResponseWriter, r *http.Request, tenan
 			Namespace:    agent.Namespace,
 			Labels: map[string]string{
 				security.LabelManagedBy: "agent-orca",
-				"agentorca.io/tenant":   tenant.TenantName,
-				tenancy.LabelTenantID:   tenant.TenantID,
 			},
 		},
 		Spec: agentorcav1alpha1.AgentRunSpec{
 			AgentRef: agent.Name,
 			Input:    inputText,
 		},
+	}
+	tenantName := ""
+	if tenant != nil {
+		tenantName = tenant.TenantName
+		run.Labels["agentorca.io/tenant"] = tenant.TenantName
+		run.Labels[tenancy.LabelTenantID] = tenant.TenantID
+		if tenant.UserID != "" {
+			// An annotation, not a label: user IDs are often e-mail addresses,
+			// which are not valid label values.
+			run.Annotations = map[string]string{AnnotationCreatedBy: tenant.UserID}
+		}
 	}
 	if sessionID != "" {
 		run.Labels["agentorca.io/session-id"] = sessionID
@@ -659,7 +680,7 @@ func (s *ACPServer) handleAgentRun(w http.ResponseWriter, r *http.Request, tenan
 		return
 	}
 
-	slog.Info("ACP agent run created", "run", run.Name, "agent", agent.Name, "tenant", tenant.TenantName)
+	slog.Info("ACP agent run created", "run", run.Name, "agent", agent.Name, "tenant", tenantName)
 
 	// Advance the session checkpoint so the next ACP turn chains context.
 	s.updateSessionCheckpoint(r.Context(), sessionID, run.Name)

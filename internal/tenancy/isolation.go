@@ -233,17 +233,22 @@ type Caller struct {
 // CheckAccess decides what a caller may do with obj. Both conditions must
 // hold: the object belongs to the caller's tenant (or is platform-shared), and
 // its namespace is one the caller may use. Cluster-scoped objects have no
-// namespace to check.
+// namespace to check. The one exception to the namespace rule: an object with
+// scope=platform in a platform catalog namespace (SetPlatformNamespaces) is
+// readable by every tenant.
 //
 // An object with no tenant-id label has no recorded owner. In enforce mode it
 // is hidden. In audit mode the pre-ID rules apply (the namespace check, plus the
 // display name label when present) and the gap is logged and counted.
 func CheckAccess(c Caller, obj client.Object, kind string) Access {
 	ns := obj.GetNamespace()
+	id, platform := TenantOf(obj)
 	if ns != "" && !slices.Contains(c.Namespaces, ns) {
+		if platform && IsPlatformNamespace(ns) {
+			return AccessPlatform
+		}
 		return AccessNone
 	}
-	id, platform := TenantOf(obj)
 	switch {
 	case platform:
 		return AccessPlatform

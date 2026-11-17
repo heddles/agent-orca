@@ -168,7 +168,7 @@ func TestRequestToolApprovalOpensAnApprovalFromThePolicy(t *testing.T) {
 		t.Fatalf("state = %+v, want a pending approval", st)
 	}
 	a := store.rows[0]
-	if a.Kind != postgresql.ApprovalKindTool || a.SourceKey != "uid-1/0123456789abcdef" || a.Namespace != "team-a" || a.RunName != "run-1" { //nolint:goconst
+	if a.Kind != postgresql.ApprovalKindTool || a.SourceKey != "uid-1/0123456789abcdef" || a.Namespace != insightsNS || a.RunName != "run-1" {
 		t.Errorf("approval = %+v", a)
 	}
 	if len(a.ApproverGroups) != 1 || a.ApproverGroups[0] != "release-managers" {

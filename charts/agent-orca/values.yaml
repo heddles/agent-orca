@@ -44,6 +44,13 @@ operator:
   # switch. In enforce mode objects without agentorca.io/tenant-id are hidden
   # from the APIs, so let the startup backfill label existing objects first.
   tenantIsolationMode: audit
+  # Platform catalog namespaces, PLATFORM_NAMESPACES: where the platform team
+  # keeps shared objects such as agent templates. In them, objects labelled
+  # agentorca.io/scope=platform are readable by every tenant, whatever its
+  # allowed namespaces; everything else there stays hidden from tenants that do
+  # not claim the namespace, and platform objects stay read only. Empty means
+  # the release namespace.
+  platformNamespaces: []
   # Prefix every Redis key of a run with "t:<tenant ID>:" (AGENTORCA_STATE_TENANT_PREFIX).
   # On by default; the operator, the UI/external/ACP APIs and the model-router
   # all follow this one setting. Reads fall back to the old unprefixed key, so

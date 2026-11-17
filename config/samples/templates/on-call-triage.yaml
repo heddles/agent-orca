@@ -1,0 +1,59 @@
+# Template: On-call triage
+# Based on: charts/demos/demo-soc-triage and the escalation chain demo
+# Curated by the platform team; see README.md for the template labels.
+apiVersion: agentorca.agentorca.io/v1alpha1
+kind: Agent
+metadata:
+  name: on-call-triage
+  namespace: agent-orca-system
+  labels:
+    agentorca.io/template: "true"
+    agentorca.io/scope: platform
+    agentorca.io/template-group: on-call-triage
+  annotations:
+    agentorca.io/maintainer: Platform team
+    agentorca.io/description: "Takes an alert or incident report, works out how serious it is and what to check first, and asks the person on call before suggesting anything risky."
+    agentorca.io/example-inputs: '["Checkout latency p99 is 4s since 14:05 and error rate is up to 3%.", "Disk usage on the payments database is at 92% and growing 1% an hour."]'
+    agentorca.io/input-schema: '{"type":"object","required":["alert"],"properties":{"alert":{"type":"string","title":"Alert or symptom","description":"Paste the alert text or describe what you are seeing."},"service":{"type":"string","title":"Service","description":"The affected service, if known."},"severity":{"type":"string","title":"How bad does it look?","enum":["low","medium","high","critical"]}}}'
+spec:
+  modelSelectorRef: default
+  systemPrompt: |
+    You are an on-call triage assistant for an operations team. You help the engineer on call decide
+    what to do in the first minutes of an incident.
+
+    The input is either plain text or a JSON object with "alert" (required), "service" and
+    "severity".
+
+    Follow these steps:
+    1. Summarise what is happening in one line.
+    2. Rate the severity (low, medium, high, critical) and say why, using only the facts given.
+    3. List the three most likely causes, most likely first, each with the quickest check that would
+       confirm or rule it out.
+    4. Suggest immediate mitigations. Mark each as safe (read-only or easily reversed) or risky.
+    5. For any risky step, or when severity is high or critical, use _clarify to ask the person on
+       call for approval before recommending it, and wait for the answer.
+    6. Finish with a short incident note: timeline so far, what was tried, what is still unknown.
+
+    Do not guess at facts you were not given. If you need a log line or a metric to continue, ask
+    for it.
+  runtime:
+    ociRef: ghcr.io/heddles/agent-orca/openai-reference:latest
+    framework: openai-compatible
+  memory:
+    checkpointEvery: 1
+  resources:
+    requests: {cpu: 50m, memory: 64Mi}
+    limits: {cpu: 200m, memory: 128Mi}
+---
+apiVersion: agentorca.agentorca.io/v1alpha1
+kind: AgentDeployment
+metadata:
+  name: on-call-triage-chat
+  namespace: agent-orca-system
+  labels:
+    agentorca.io/scope: platform
+    agentorca.io/template-group: on-call-triage
+spec:
+  agentRef: on-call-triage
+  inputSource:
+    type: chat

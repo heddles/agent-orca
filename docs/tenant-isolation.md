@@ -56,11 +56,20 @@ To check, run `SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = curre
 
 Tokens minted before tenant IDs existed have no `tid` claim. By default (`operator.allowLegacyTenantTokens: true`, `ALLOW_LEGACY_TENANT_TOKENS`) they are accepted and mapped to a tenant by name. This is a one-release bridge. A legacy token of a tenant with no ID gets no PostgreSQL scope, so it cannot read tenant data. Set the flag to `false` once existing sessions have rolled over.
 
+## Platform catalog namespaces
+
+Normally an object is visible to a tenant only when its namespace is one the tenant may use. That would make shared objects, such as agent templates, visible to the one tenant that claims their namespace. Platform catalog namespaces fix this. In a namespace listed in `operator.platformNamespaces` (`PLATFORM_NAMESPACES`, default the operator's own namespace), an object labelled `agentorca.io/scope=platform` is readable by every tenant, whatever its allowed namespaces.
+
+- Everything else in a platform catalog namespace stays hidden from tenants that do not claim it. A tenant-labelled object there is not listed and a get returns 404.
+- Platform objects are read only for tenants. The UI API refuses to run a template agent (`agentorca.io/template: "true"`) with a 409, so no tenant starts runs inside the platform namespace. Using a template copies it into the tenant's own workspace.
+- The UI and ACP lists include the platform-scoped objects of these namespaces next to the tenant's own.
+
 ## Helm values
 
 | Value | Default | Effect |
 |---|---|---|
 | `operator.tenantIsolationMode` | `audit` | `audit` or `enforce` (see above) |
+| `operator.platformNamespaces` | `[]` (the release namespace) | Platform catalog namespaces (see above) |
 | `operator.stateTenantPrefix` | `true` | Prefix Redis keys with the tenant ID |
 | `operator.allowLegacyTenantTokens` | `true` | Accept tokens with no `tid` claim |
 | `operator.tenantAdminGroup` | `""` | Group whose members may pin the ID of a deleted `TenantConfig`, which restores that tenant's data |

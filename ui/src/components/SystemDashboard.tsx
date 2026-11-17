@@ -182,7 +182,7 @@ export function SystemDashboard({ navigateToTab }: Props) {
             onClick={() => navigateToTab('agents')}
           />
           <ResourceCard
-            title="Agent Runs"
+            title="Runs"
             icon={ICON.runs}
             total={stats.runs.total}
             statuses={[
@@ -194,7 +194,7 @@ export function SystemDashboard({ navigateToTab }: Props) {
             onClick={() => navigateToTab('runs')}
           />
           <ResourceCard
-            title="Deployments"
+            title="Published agents"
             icon={ICON.deployment}
             total={stats.deployments.total}
             statuses={[
@@ -216,7 +216,7 @@ export function SystemDashboard({ navigateToTab }: Props) {
             onClick={() => navigateToTab('workflows')}
           />
           <ResourceCard
-            title="MCP Servers"
+            title="Connections: servers"
             icon={ICON.mcpserver}
             total={stats.mcpservers.total}
             statuses={[
@@ -226,7 +226,7 @@ export function SystemDashboard({ navigateToTab }: Props) {
             onClick={() => navigateToTab('mcpservers')}
           />
           <ResourceCard
-            title="Knowledge Bases"
+            title="Knowledge"
             icon={ICON.knowledgebase}
             total={stats.knowledgebases.total}
             statuses={[
@@ -236,7 +236,7 @@ export function SystemDashboard({ navigateToTab }: Props) {
             onClick={() => navigateToTab('knowledgebases')}
           />
           <ResourceCard
-            title="Tools"
+            title="Connections: tools"
             icon={ICON.tool}
             total={stats.tools.total}
             statuses={[
@@ -246,7 +246,7 @@ export function SystemDashboard({ navigateToTab }: Props) {
             onClick={() => navigateToTab('tools')}
           />
           <ResourceCard
-            title="Model Providers"
+            title="Providers"
             icon={ICON.modelprovider}
             total={stats.modelproviders.total}
             statuses={[
@@ -256,7 +256,7 @@ export function SystemDashboard({ navigateToTab }: Props) {
             onClick={() => navigateToTab('modelproviders')}
           />
           <ResourceCard
-            title="Model Selectors"
+            title="Model selection"
             icon={ICON.modelselector}
             total={stats.modelselectors.total}
             statuses={[]}

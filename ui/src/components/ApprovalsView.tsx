@@ -15,6 +15,11 @@ type View = 'pending' | 'recent'
 interface Props {
   /** Open the run an approval belongs to. */
   onNavigateToRun?: (runName: string, namespace: string) => void
+  /** Show only the pending requests, with no heading or empty state, for use
+   *  inside another page (Home). */
+  embedded?: boolean
+  /** Called with how many requests are pending after each refresh. */
+  onPendingChange?: (count: number) => void
 }
 
 const STATUS_VARIANT: Record<Approval['status'], 'warning' | 'success' | 'error' | 'neutral'> = {
@@ -25,7 +30,7 @@ const STATUS_VARIANT: Record<Approval['status'], 'warning' | 'success' | 'error'
   withdrawn: 'neutral',
 }
 
-export function ApprovalsView({ onNavigateToRun }: Props) {
+export function ApprovalsView({ onNavigateToRun, embedded = false, onPendingChange }: Props) {
   const [view, setView] = useState<View>('pending')
   const [items, setItems] = useState<Approval[]>([])
   const [error, setError] = useState<string | null>(null)
@@ -34,7 +39,9 @@ export function ApprovalsView({ onNavigateToRun }: Props) {
 
   const load = useCallback(async () => {
     try {
-      setItems(await listApprovals(view === 'pending' ? 'pending' : ''))
+      const list = await listApprovals(view === 'pending' ? 'pending' : '')
+      setItems(list)
+      if (view === 'pending') onPendingChange?.(list.length)
       setError(null)
       setNotConfigured(false)
     } catch (e: unknown) {
@@ -44,7 +51,7 @@ export function ApprovalsView({ onNavigateToRun }: Props) {
     } finally {
       setLoaded(true)
     }
-  }, [view])
+  }, [view, onPendingChange])
 
   useEffect(() => {
     void load()
@@ -52,6 +59,7 @@ export function ApprovalsView({ onNavigateToRun }: Props) {
     return () => clearInterval(id)
   }, [load])
 
+  if (notConfigured && embedded) return null
   if (notConfigured) {
     return (
       <div style={s.empty}>
@@ -65,8 +73,8 @@ export function ApprovalsView({ onNavigateToRun }: Props) {
   }
 
   return (
-    <div style={s.root}>
-      <div style={s.header}>
+    <div style={embedded ? { ...s.root, padding: 0, maxWidth: 'none' } : s.root}>
+      {!embedded && <div style={s.header}>
         <div>
           <h2 style={s.title}>Approvals</h2>
           <p style={s.subtitle}>
@@ -79,7 +87,7 @@ export function ApprovalsView({ onNavigateToRun }: Props) {
           active={view}
           onChange={(k) => setView(k as View)}
         />
-      </div>
+      </div>}
 
       {error && (
         <div role="alert" style={s.error}>
@@ -87,7 +95,7 @@ export function ApprovalsView({ onNavigateToRun }: Props) {
         </div>
       )}
 
-      {loaded && items.length === 0 && !error && (
+      {loaded && items.length === 0 && !error && !embedded && (
         <div style={s.empty}>
           <Icon icon={ICON.approval} size={36} ariaHidden style={{ opacity: 0.25 }} />
           <div style={s.emptyTitle}>{view === 'pending' ? 'Nothing waiting for a decision' : 'No approvals yet'}</div>
