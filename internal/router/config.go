@@ -35,6 +35,10 @@ type Config struct {
 	RunName string
 	// RunNamespace is the namespace of the AgentRun.
 	RunNamespace string
+	// TenantID is the tenant ID of the run (agentorca.io/tenant-id label). Every
+	// state-store key the router touches is prefixed with it; empty keeps the old
+	// unprefixed keys.
+	TenantID string `json:"tenantID,omitempty"`
 	// AgentSAName is the expected ServiceAccount name; validated during JWT authentication.
 	AgentSAName string
 

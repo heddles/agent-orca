@@ -32,10 +32,10 @@ var uuidRe = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4
 // chunk re-embedded on every run).
 func TestPointIDIsCanonicalUUID(t *testing.T) {
 	for _, id := range []string{
-		pointID("url/http://example.com/doc.pdf", 0),
-		pointID("url/http://example.com/doc.pdf", 1),
-		pointID("mcp/demo/item-42", 7),
-		pointID("", 0),
+		pointID("tnt-a", "url/http://example.com/doc.pdf", 0),
+		pointID("tnt-a", "url/http://example.com/doc.pdf", 1),
+		pointID("tnt-a", "mcp/demo/item-42", 7),
+		pointID("tnt-a", "", 0),
 	} {
 		if !uuidRe.MatchString(id) {
 			t.Errorf("pointID %q is not a canonical hyphenated UUID", id)
@@ -43,12 +43,12 @@ func TestPointIDIsCanonicalUUID(t *testing.T) {
 	}
 
 	// Deterministic and injective over (docID, chunkIndex).
-	id1 := pointID("d", 1)
-	id2 := pointID("d", 1)
+	id1 := pointID("tnt-a", "d", 1)
+	id2 := pointID("tnt-a", "d", 1)
 	if id1 != id2 {
 		t.Error("pointID not deterministic")
 	}
-	if id1 == pointID("d", 2) || pointID("a", 1) == pointID("b", 1) {
+	if id1 == pointID("tnt-a", "d", 2) || pointID("tnt-a", "a", 1) == pointID("tnt-a", "b", 1) {
 		t.Error("pointID collides across (docID, chunkIndex)")
 	}
 }
@@ -64,13 +64,13 @@ func TestPendingChunks(t *testing.T) {
 	}
 
 	existing := map[string]string{
-		pointID("doc-a", 0): contentHash("alpha"),   // done — skip
-		pointID("doc-a", 1): contentHash("CHANGED"), // content changed — re-embed
-		pointID("doc-a", 2): "",                     // pre-hashing point — re-embed
+		pointID("tnt-a", "doc-a", 0): contentHash("alpha"),   // done — skip
+		pointID("tnt-a", "doc-a", 1): contentHash("CHANGED"), // content changed — re-embed
+		pointID("tnt-a", "doc-a", 2): "",                     // pre-hashing point — re-embed
 		// chunk 3 (if it existed) would be missing entirely — re-embed
 	}
 
-	todo := pendingChunks(chunks, existing)
+	todo := pendingChunks("tnt-a", chunks, existing)
 	if len(todo) != 2 {
 		t.Fatalf("expected 2 pending chunks, got %d", len(todo))
 	}
@@ -85,10 +85,10 @@ func TestPendingChunksAllDone(t *testing.T) {
 		{Index: 1, DocID: "doc-a", Text: "beta"},
 	}
 	existing := map[string]string{
-		pointID("doc-a", 0): contentHash("alpha"),
-		pointID("doc-a", 1): contentHash("beta"),
+		pointID("tnt-a", "doc-a", 0): contentHash("alpha"),
+		pointID("tnt-a", "doc-a", 1): contentHash("beta"),
 	}
-	if todo := pendingChunks(chunks, existing); len(todo) != 0 {
+	if todo := pendingChunks("tnt-a", chunks, existing); len(todo) != 0 {
 		t.Errorf("expected all chunks skipped, got %d pending", len(todo))
 	}
 }

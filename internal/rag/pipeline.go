@@ -50,9 +50,13 @@ func IngestDocuments(
 	dimensions uint64,
 	embedder *EmbeddingClient,
 	chunkCfg ChunkConfig,
+	tenantID string,
 ) (*IngestResult, error) {
 	if len(docs) == 0 {
 		return &IngestResult{}, nil
+	}
+	if tenantID == "" {
+		return nil, ErrTenantRequired
 	}
 
 	// Connect to Qdrant.
@@ -87,13 +91,13 @@ func IngestDocuments(
 		// instead of re-burning the provider's quota from scratch.
 		pointIDs := make([]string, len(chunks))
 		for i, c := range chunks {
-			pointIDs[i] = pointID(c.DocID, c.Index)
+			pointIDs[i] = pointID(tenantID, c.DocID, c.Index)
 		}
-		existing, err := qClient.ExistingPoints(ctx, collection, pointIDs)
+		existing, err := qClient.ExistingPoints(ctx, collection, tenantID, pointIDs)
 		if err != nil {
 			return nil, fmt.Errorf("document %q: checking existing chunks: %w", doc.ID, err)
 		}
-		todo := pendingChunks(chunks, existing)
+		todo := pendingChunks(tenantID, chunks, existing)
 		if len(todo) == 0 {
 			slog.Info("skipping document, all chunks already ingested",
 				"id", doc.ID, "chunks", len(chunks))
@@ -137,14 +141,14 @@ func IngestDocuments(
 			// Set after metadata so source metadata can't clobber the resume hash.
 			payload["content_hash"] = contentHash(chunk.Text)
 			points[i] = Point{
-				ID:      pointID(chunk.DocID, chunk.Index),
+				ID:      pointID(tenantID, chunk.DocID, chunk.Index),
 				Vector:  vectors[i],
 				Payload: payload,
 			}
 		}
 
 		// Upsert this document's points.
-		if err := qClient.Upsert(ctx, collection, points); err != nil {
+		if err := qClient.Upsert(ctx, collection, tenantID, points); err != nil {
 			return nil, fmt.Errorf("document %q: upserting: %w", doc.ID, err)
 		}
 		totalChunks += len(chunks)
@@ -165,15 +169,29 @@ func IngestDocuments(
 // pointID generates a deterministic per-chunk point ID, formatted as a
 // canonical hyphenated UUID (8-4-4-4-12) from 16 sha256 bytes.
 //
+// The tenant ID is part of the hash input, so two tenants that ingest the same
+// document ID into the same collection get different point IDs and one can
+// never overwrite the other's point through an upsert (the payload filter only
+// protects reads). The tenant ID is length-prefixed so no (tenant, doc) pair
+// can collide with another by shifting the separator.
+//
 // The canonical form is load-bearing: Qdrant stores point keys as UUID values
 // and returns them in hyphenated form on retrieval, so upserts and
-// ExistingPoints lookups round-trip exactly. (A bare 32-hex string parses via
-// Qdrant's simple-format UUID input but comes back hyphenated, which would
-// silently break the resume lookup. Pre-existing points written with the old
-// un-hyphenated IDs hold the same UUID bytes and remain reachable.)
-func pointID(docID string, chunkIndex int) string {
-	h := sha256.Sum256(fmt.Appendf(nil, "%s:%d", docID, chunkIndex))
+// ExistingPoints lookups round-trip exactly.
+func pointID(tenantID, docID string, chunkIndex int) string {
+	h := sha256.Sum256(fmt.Appendf(nil, "v2:%d:%s:%s:%d", len(tenantID), tenantID, docID, chunkIndex))
 	return formatUUID(h[:16])
+}
+
+// CollectionNameFor is the default Qdrant collection for a KnowledgeBase. The
+// tenant ID is part of the name so same-named KnowledgeBases of different
+// tenants never share a collection. An empty tenant ID (an unlabelled object
+// during audit-mode rollout) falls back to the bare name.
+func CollectionNameFor(tenantID, kbName string) string {
+	if tenantID == "" {
+		return kbName
+	}
+	return tenantID + "-" + kbName
 }
 
 // formatUUID renders 16 bytes as a canonical hyphenated UUID string
@@ -195,10 +213,10 @@ func contentHash(text string) string {
 // re-embedded and upserted in place). Points predating content hashing store
 // an empty hash and are conservatively re-embedded once, after which resume
 // works fully.
-func pendingChunks(chunks []Chunk, existing map[string]string) []Chunk {
+func pendingChunks(tenantID string, chunks []Chunk, existing map[string]string) []Chunk {
 	todo := make([]Chunk, 0, len(chunks))
 	for _, c := range chunks {
-		if h, ok := existing[pointID(c.DocID, c.Index)]; ok && h == contentHash(c.Text) {
+		if h, ok := existing[pointID(tenantID, c.DocID, c.Index)]; ok && h == contentHash(c.Text) {
 			continue
 		}
 		todo = append(todo, c)

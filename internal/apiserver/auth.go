@@ -28,6 +28,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -44,6 +45,7 @@ import (
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
 	"github.com/heddles/agent-orca/internal/security/oidc"
+	"github.com/heddles/agent-orca/internal/tenancy"
 )
 
 const (
@@ -62,6 +64,11 @@ const (
 
 // TenantIdentity is the resolved identity of an authenticated external API caller.
 type TenantIdentity struct {
+	// TenantID is the tenant's stable, never reused identifier ("tnt_" plus a
+	// UUIDv7), the "tid" claim. Authorization keys on it; TenantName is a label an
+	// operator can reuse. Empty only for K8s ServiceAccount callers and for
+	// legacy tokens of a tenant not yet registered.
+	TenantID string
 	// TenantName is the TenantConfig CR name.
 	TenantName string
 	// Namespace is the tenant's primary (first) authorized namespace. Kept as a
@@ -134,6 +141,14 @@ type ExternalAuth struct {
 
 	// rateLimiter enforces per-tenant request rate limits on token submission.
 	rateLimiter *RateLimiter
+
+	// tidMu protects tenantRegistry and tidCache; see tenant_resolve.go.
+	tidMu          sync.Mutex
+	tenantRegistry tenancy.Registry
+	tidCache       map[string]tenantCacheEntry
+	// rejectLegacyTokens refuses tokens without a tid claim. Inverted so the
+	// zero value keeps the one-release bridge open.
+	rejectLegacyTokens bool
 }
 
 const (
@@ -268,6 +283,7 @@ func (a *ExternalAuth) RefreshTenants(ctx context.Context) error {
 	// Reset OIDC verifiers so they are re-created with potentially updated config.
 	a.oidcVerifiers = make(map[string]*gooidc.IDTokenVerifier)
 	a.mu.Unlock()
+	a.resetTenantCache()
 
 	slog.Info("Refreshed tenant cache", "count", len(cache))
 	return nil
@@ -448,6 +464,9 @@ func (a *ExternalAuth) HandleTokenRequest(w http.ResponseWriter, r *http.Request
 		"namespaces":     tc.Spec.AllowedNamespaces,
 		"allowed_agents": tc.Spec.AllowedAgents,
 	}
+	if tc.Status.TenantID != "" {
+		claims["tid"] = tc.Status.TenantID
+	}
 	signed, err := a.MintSessionJWT(claims)
 	if err != nil {
 		slog.Error("failed to sign JWT", "err", err)
@@ -487,7 +506,7 @@ func (a *ExternalAuth) MintSessionForIdentity(ident *TenantIdentity) (string, er
 		return "", errors.New("oidc: nil identity")
 	}
 	now := time.Now()
-	return a.MintSessionJWT(jwt.MapClaims{
+	claims := jwt.MapClaims{
 		"iss":            jwtIssuer,
 		"sub":            ident.UserID,
 		"aud":            ExternalAPITokenAudience,
@@ -500,7 +519,11 @@ func (a *ExternalAuth) MintSessionForIdentity(ident *TenantIdentity) (string, er
 		"userid":         ident.UserID,
 		"groups":         ident.Groups,
 		"roles":          ident.Roles,
-	})
+	}
+	if ident.TenantID != "" {
+		claims["tid"] = ident.TenantID
+	}
+	return a.MintSessionJWT(claims)
 }
 
 // validateIssuedToken verifies an agent-orca-issued JWT.
@@ -553,7 +576,35 @@ func (a *ExternalAuth) validateIssuedToken(tokenString string) (*TenantIdentity,
 	groups := claimStringSlice(claims["groups"])
 	roles := claimStringSlice(claims["roles"])
 
+	// A recreated tenant reuses the name but not the ID, so the tid claim is what
+	// ends the old tenant's sessions.
+	tid, _ := claims["tid"].(string)
+	if err := a.checkTenant(tid, tenant); err != nil {
+		return nil, err
+	}
+	tc := a.tenantConfigFor(tenant)
+	if tid == "" && tc != nil {
+		tid = tc.Status.TenantID // legacy token: report the tenant's current ID
+	}
+	// Namespaces and allowed agents come from the live TenantConfig of the
+	// token's tenant, so a change to the TenantConfig reaches tokens already
+	// issued instead of waiting for them to expire. The claims remain only as the
+	// fallback for legacy tokens that carry no tid.
+	if claimTID, _ := claims["tid"].(string); claimTID != "" {
+		live := a.tenantConfigByID(claimTID)
+		if live == nil {
+			return nil, errTenantInactive
+		}
+		tc = live
+		namespaces = slices.Clone(live.Spec.AllowedNamespaces)
+		allowedAgents = slices.Clone(live.Spec.AllowedAgents)
+		if !slices.Contains(namespaces, namespace) {
+			namespace = firstNamespace(namespaces)
+		}
+	}
+
 	return attachQuotaFields(&TenantIdentity{
+		TenantID:      tid,
 		TenantName:    tenant,
 		Namespace:     namespace,
 		Namespaces:    namespaces,
@@ -561,7 +612,7 @@ func (a *ExternalAuth) validateIssuedToken(tokenString string) (*TenantIdentity,
 		UserID:        userID,
 		Groups:        groups,
 		Roles:         roles,
-	}, a.tenantConfigFor(tenant)), nil
+	}, tc), nil
 }
 
 // claimStringSlice normalizes a JWT claim that may be a []any, []string, or a
@@ -654,7 +705,13 @@ func (a *ExternalAuth) validateFederatedToken(ctx context.Context, tokenString s
 		return nil, fmt.Errorf("OIDC token verification failed: %w", err)
 	}
 
+	// The IdP token cannot carry our tid; the matched TenantConfig supplies it.
+	if err := a.checkTenant(matchedTC.Status.TenantID, matchedTC.Name); err != nil {
+		return nil, err
+	}
+
 	return attachQuotaFields(&TenantIdentity{
+		TenantID:      matchedTC.Status.TenantID,
 		TenantName:    matchedTC.Name,
 		Namespace:     firstNamespace(matchedTC.Spec.AllowedNamespaces),
 		Namespaces:    matchedTC.Spec.AllowedNamespaces,
@@ -835,9 +892,69 @@ func (a *ExternalAuth) validateK8sToken(ctx context.Context, token string) (*Ten
 		return nil, fmt.Errorf("unexpected SA username format: %q", result.Status.User.Username)
 	}
 
+	tc, err := a.resolveServiceAccountTenant(parts[2], parts[3])
+	if err != nil {
+		return nil, err
+	}
+	tid := tenancy.TenantIDOf(tc)
+	if tid == "" {
+		// A service account has no legacy token to fall back on: without an ID
+		// its requests could not be scoped to a tenant.
+		return nil, fmt.Errorf("service account %s/%s: tenant %q has no ID yet", parts[2], parts[3], tc.Name)
+	}
+	if err := a.checkTenant(tid, tc.Name); err != nil {
+		return nil, err
+	}
 	return &TenantIdentity{
-		TenantName:    parts[3], // SA name as tenant identifier
+		TenantID:      tid,
+		TenantName:    tc.Name,
 		Namespace:     parts[2],
-		AllowedAgents: nil, // no restriction for in-cluster callers
+		Namespaces:    []string{parts[2]},
+		AllowedAgents: slices.Clone(tc.Spec.AllowedAgents),
 	}, nil
+}
+
+// resolveServiceAccountTenant maps a ServiceAccount to its tenant. A
+// ServiceAccount belongs to the tenant whose spec.allowedNamespaces lists the
+// ServiceAccount's namespace. When several tenants share that namespace, the
+// one named like the ServiceAccount wins. A ServiceAccount in a namespace no
+// tenant claims, or in a shared namespace and named like none of its tenants,
+// is rejected: without a tenant it has no ID to scope its requests by. The
+// resulting identity is limited to the ServiceAccount's own namespace.
+func (a *ExternalAuth) resolveServiceAccountTenant(namespace, saName string) (*agentorcav1alpha1.TenantConfig, error) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	var claimants []*agentorcav1alpha1.TenantConfig
+	for _, tc := range a.tenantByName {
+		if tc.DeletionTimestamp.IsZero() && slices.Contains(tc.Spec.AllowedNamespaces, namespace) {
+			claimants = append(claimants, tc)
+		}
+	}
+	switch len(claimants) {
+	case 0:
+		return nil, fmt.Errorf("service account %s/%s: no TenantConfig claims namespace %q", namespace, saName, namespace)
+	case 1:
+		return claimants[0], nil
+	}
+	for _, tc := range claimants {
+		if tc.Name == saName {
+			return tc, nil
+		}
+	}
+	return nil, fmt.Errorf("service account %s/%s: namespace %q is shared by several tenants and the service account is named like none of them", namespace, saName, namespace)
+}
+
+// tenantConfigByID returns the live TenantConfig with the given tenant ID.
+func (a *ExternalAuth) tenantConfigByID(id string) *agentorcav1alpha1.TenantConfig {
+	if a == nil || id == "" {
+		return nil
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	for _, tc := range a.tenantByName {
+		if tc.DeletionTimestamp.IsZero() && tenancy.TenantIDOf(tc) == id {
+			return tc
+		}
+	}
+	return nil
 }

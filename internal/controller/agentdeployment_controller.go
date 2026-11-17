@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -51,6 +52,7 @@ import (
 	"github.com/heddles/agent-orca/internal/router"
 	"github.com/heddles/agent-orca/internal/security"
 	"github.com/heddles/agent-orca/internal/state"
+	"github.com/heddles/agent-orca/internal/tenancy"
 )
 
 // AgentDeploymentReconciler reconciles an AgentDeployment object.
@@ -137,6 +139,15 @@ func (r *AgentDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		deployment.Status.Message = fmt.Sprintf("Agent %s not found", deployment.Spec.AgentRef)
 		_ = r.Status().Patch(ctx, &deployment, client.MergeFrom(statusBase))
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	}
+
+	if denied, err := tenancy.EnforceRefs(ctx, r.Client, &deployment, &agent); err != nil {
+		return ctrl.Result{}, err
+	} else if denied != "" {
+		deployment.Status.Phase = agentorcav1alpha1.AgentDeploymentPhaseFailed
+		deployment.Status.Message = denied
+		_ = r.Status().Patch(ctx, &deployment, client.MergeFrom(statusBase))
+		return ctrl.Result{}, nil
 	}
 
 	// Deployment and warm-pool pods are plain agent pods. Running a sandboxed
@@ -375,12 +386,13 @@ func (r *AgentDeploymentReconciler) reconcileDeployment(
 		CloudProvider:      r.CloudProvider,
 	})
 
+	tenancy.InheritLabels(agentDeploy, pod)
 	if isNew {
 		k8sDeploy = appsv1.Deployment{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      deploymentName,
 				Namespace: namespace,
-				Labels:    labels,
+				Labels:    tenancyLabels(agentDeploy, labels),
 				OwnerReferences: []metav1.OwnerReference{
 					*metav1.NewControllerRef(agentDeploy, agentorcav1alpha1.GroupVersion.WithKind("AgentDeployment")),
 				},
@@ -866,6 +878,7 @@ func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig( //nolint:gocycl
 	cfg := &router.Config{
 		RunName:                    deploy.Name,
 		RunNamespace:               deploy.Namespace,
+		TenantID:                   stateTenantID(deploy),
 		AgentSAName:                saName,
 		DeploymentName:             deploy.Name,
 		AgentName:                  agent.Name,
@@ -1052,7 +1065,7 @@ func (r *AgentDeploymentReconciler) ensureDeploymentRouterConfigMap(
 			podbuilder.RouterConfigKey: string(data),
 		},
 	}
-	if err := ctrl.SetControllerReference(deploy, cm, r.Scheme); err != nil {
+	if err := tenancy.SetControllerReference(deploy, cm, r.Scheme); err != nil {
 		return "", fmt.Errorf("setting configmap owner ref: %w", err)
 	}
 
@@ -1111,7 +1124,7 @@ func (r *AgentDeploymentReconciler) ensureDeploymentTokenSecret(
 			"OPENAI_API_KEY":  result.Status.Token,
 		},
 	}
-	if err := ctrl.SetControllerReference(deploy, secret, r.Scheme); err != nil {
+	if err := tenancy.SetControllerReference(deploy, secret, r.Scheme); err != nil {
 		return "", fmt.Errorf("setting secret owner ref: %w", err)
 	}
 	if err := r.Create(ctx, secret); err != nil && !apierrors.IsAlreadyExists(err) {
@@ -1474,7 +1487,7 @@ func (r *AgentDeploymentReconciler) reconcileWarmPool(
 			return fmt.Errorf("creating warm pod token secret: %w", err)
 		}
 		pod := r.buildWarmPod(deploy, agent, saName, warmTokenName, routerConfigHash, routerCfg.Strategy, providerVolumes, providerMounts, toolSecretVolumes, toolSecretMounts, mcpBinVolumes, mcpBinMounts)
-		if err := ctrl.SetControllerReference(deploy, pod, r.Scheme); err != nil {
+		if err := tenancy.SetControllerReference(deploy, pod, r.Scheme); err != nil {
 			return fmt.Errorf("setting warm pod owner ref: %w", err)
 		}
 		if err := r.Create(ctx, pod); err != nil {
@@ -1495,7 +1508,7 @@ func (r *AgentDeploymentReconciler) ensureWarmPoolRBAC(
 	saName string,
 ) error {
 	role := security.BuildDeploymentRole(deploy.Name, deploy.Namespace)
-	if err := ctrl.SetControllerReference(deploy, role, r.Scheme); err != nil {
+	if err := tenancy.SetControllerReference(deploy, role, r.Scheme); err != nil {
 		return err
 	}
 	if err := r.Create(ctx, role); err != nil && !apierrors.IsAlreadyExists(err) {
@@ -1503,7 +1516,7 @@ func (r *AgentDeploymentReconciler) ensureWarmPoolRBAC(
 	}
 
 	rb := security.BuildDeploymentRoleBinding(deploy.Name, saName, deploy.Namespace)
-	if err := ctrl.SetControllerReference(deploy, rb, r.Scheme); err != nil {
+	if err := tenancy.SetControllerReference(deploy, rb, r.Scheme); err != nil {
 		return err
 	}
 	if err := r.Create(ctx, rb); err != nil && !apierrors.IsAlreadyExists(err) {
@@ -1564,7 +1577,7 @@ func (r *AgentDeploymentReconciler) ensureWarmRouterConfigMap(
 			podbuilder.RouterConfigKey: string(data),
 		},
 	}
-	if err := ctrl.SetControllerReference(deploy, cm, r.Scheme); err != nil {
+	if err := tenancy.SetControllerReference(deploy, cm, r.Scheme); err != nil {
 		return err
 	}
 
@@ -1720,7 +1733,7 @@ func (r *AgentDeploymentReconciler) createWarmPodTokenSecret(
 			"OPENAI_API_KEY":  result.Status.Token,
 		},
 	}
-	if err := ctrl.SetControllerReference(deploy, secret, r.Scheme); err != nil {
+	if err := tenancy.SetControllerReference(deploy, secret, r.Scheme); err != nil {
 		return "", err
 	}
 	if err := r.Create(ctx, secret); err != nil {
@@ -1903,4 +1916,12 @@ func firstConditionMessage(conditions []metav1.Condition) string {
 		}
 	}
 	return ""
+}
+
+// tenancyLabels returns labels plus the owner's tenant ownership, without
+// modifying labels.
+func tenancyLabels(owner metav1.Object, labels map[string]string) map[string]string {
+	probe := &metav1.ObjectMeta{Labels: maps.Clone(labels)}
+	tenancy.InheritLabels(owner, probe)
+	return probe.Labels
 }

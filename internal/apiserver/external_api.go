@@ -37,6 +37,7 @@ import (
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
 	"github.com/heddles/agent-orca/internal/security"
 	"github.com/heddles/agent-orca/internal/state"
+	"github.com/heddles/agent-orca/internal/tenancy"
 )
 
 // ExternalAPIServer handles the external-facing REST API for enterprise integrations.
@@ -369,6 +370,7 @@ func (s *ExternalAPIServer) createTask(w http.ResponseWriter, r *http.Request) {
 				security.LabelManagedBy:      security.ManagedByValue,
 				"agentorca.io/external-task": "true",
 				"agentorca.io/tenant":        tenant.TenantName,
+				tenancy.LabelTenantID:        tenant.TenantID,
 			},
 		},
 		Spec: agentorcav1alpha1.AgentRunSpec{
@@ -458,7 +460,7 @@ func (s *ExternalAPIServer) getTask(w http.ResponseWriter, r *http.Request, task
 	}
 
 	// Verify the run belongs to this tenant.
-	if run.Labels["agentorca.io/tenant"] != tenant.TenantName {
+	if !runVisibleTo(tenant, run) {
 		http.Error(w, `{"error":"task not found"}`, http.StatusNotFound)
 		return
 	}
@@ -478,7 +480,6 @@ func (s *ExternalAPIServer) listTasks(w http.ResponseWriter, r *http.Request) {
 
 	labels := client.MatchingLabels{
 		"agentorca.io/external-task": "true",
-		"agentorca.io/tenant":        tenant.TenantName,
 	}
 
 	runList, err := listRunsInNamespaces(r.Context(), s.crdClient, tenant, labels)
@@ -524,7 +525,7 @@ func (s *ExternalAPIServer) streamTask(w http.ResponseWriter, r *http.Request, t
 		return
 	}
 
-	if run.Labels["agentorca.io/tenant"] != tenant.TenantName {
+	if !runVisibleTo(tenant, run) {
 		http.Error(w, `{"error":"task not found"}`, http.StatusNotFound)
 		return
 	}
@@ -559,7 +560,7 @@ func (s *ExternalAPIServer) streamTask(w http.ResponseWriter, r *http.Request, t
 	// run.Namespace) — so a run created in a non-primary allowed namespace streams
 	// from the correct key.
 	streamKey := fmt.Sprintf("tokens:%s:%s", run.Namespace, taskID)
-	tokenCh, err := s.store.TailTokens(r.Context(), streamKey)
+	tokenCh, err := runState(s.store, run).TailTokens(r.Context(), streamKey)
 	if err != nil {
 		_, _ = fmt.Fprintf(w, "event: error\ndata: %s\n\n", mustJSON(map[string]string{
 			"error": "failed to subscribe to token stream",
@@ -625,7 +626,7 @@ func (s *ExternalAPIServer) answerTask(w http.ResponseWriter, r *http.Request, t
 		return
 	}
 
-	if run.Labels["agentorca.io/tenant"] != tenant.TenantName {
+	if !runVisibleTo(tenant, run) {
 		http.Error(w, `{"error":"task not found"}`, http.StatusNotFound)
 		return
 	}
@@ -638,7 +639,7 @@ func (s *ExternalAPIServer) answerTask(w http.ResponseWriter, r *http.Request, t
 	// Store the answer in the state store for the model-router to pick up.
 	if s.hasStore && s.store != nil {
 		answerKey := fmt.Sprintf("answer:%s:%s", run.Namespace, taskID)
-		if err := s.store.SaveAnswer(r.Context(), answerKey, req.Answer, 24*time.Hour); err != nil {
+		if err := runState(s.store, run).SaveAnswer(r.Context(), answerKey, req.Answer, 24*time.Hour); err != nil {
 			slog.Warn("failed to save answer to state store", "task", taskID, "err", err)
 		}
 	}
@@ -670,7 +671,7 @@ func (s *ExternalAPIServer) cancelTask(w http.ResponseWriter, r *http.Request, t
 		return
 	}
 
-	if run.Labels["agentorca.io/tenant"] != tenant.TenantName {
+	if !runVisibleTo(tenant, run) {
 		http.Error(w, `{"error":"task not found"}`, http.StatusNotFound)
 		return
 	}
@@ -697,7 +698,7 @@ func (s *ExternalAPIServer) cancelTask(w http.ResponseWriter, r *http.Request, t
 	// Signal cancellation via Redis so the model-router sidecar aborts in-flight
 	// LLM requests within ~1 second, rather than waiting for the next call.
 	if s.store != nil {
-		_ = s.store.SignalCancel(r.Context(), run.Namespace, run.Name)
+		_ = runState(s.store, run).SignalCancel(r.Context(), run.Namespace, run.Name)
 	}
 
 	slog.Info("Task cancelled", "task", taskID, "tenant", tenant.TenantName)

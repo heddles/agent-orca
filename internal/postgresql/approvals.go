@@ -64,8 +64,11 @@ var ErrApprovalNotPending = errors.New("approval is no longer pending")
 
 // Approval is a request for a decision (table approvals, migration 0002).
 type Approval struct {
-	ID             string          `json:"id"`
-	Tenant         string          `json:"tenant,omitempty"`
+	ID     string `json:"id"`
+	Tenant string `json:"tenant,omitempty"`
+	// TenantID is the tenant's stable ID. On a request, empty takes the call's
+	// tenant scope; a platform-scoped request with none is stored unattributed.
+	TenantID       string          `json:"tenantId,omitempty"`
 	Namespace      string          `json:"namespace"`
 	RunName        string          `json:"runName"`
 	Kind           string          `json:"kind"`
@@ -85,7 +88,7 @@ type Approval struct {
 	Created bool `json:"-"`
 }
 
-const approvalColumns = `id, COALESCE(tenant, ''), namespace, run_name, kind, source_key, summary, details,
+const approvalColumns = `id, COALESCE(tenant, ''), COALESCE(tenant_id, ''), namespace, run_name, kind, source_key, summary, details,
 	approver_groups, status, requested_at, expires_at, COALESCE(decided_by, ''), decided_at,
 	COALESCE(reason, ''), applied_at`
 
@@ -93,7 +96,7 @@ func scanApproval(row interface{ Scan(...any) error }) (Approval, error) {
 	var a Approval
 	var details, groups []byte
 	var decidedAt, appliedAt sql.NullTime
-	err := row.Scan(&a.ID, &a.Tenant, &a.Namespace, &a.RunName, &a.Kind, &a.SourceKey, &a.Summary, &details,
+	err := row.Scan(&a.ID, &a.Tenant, &a.TenantID, &a.Namespace, &a.RunName, &a.Kind, &a.SourceKey, &a.Summary, &details,
 		&groups, &a.Status, &a.RequestedAt, &a.ExpiresAt, &a.DecidedBy, &decidedAt, &a.Reason, &appliedAt)
 	if err != nil {
 		return a, err
@@ -132,17 +135,25 @@ func (s *Store) RequestApproval(ctx context.Context, a Approval) (Approval, erro
 	if a.DecidedAt != nil {
 		decidedAt = *a.DecidedAt
 	}
-	row := s.db.QueryRowContext(ctx, `
+	var stored Approval
+	err = s.scoped(ctx, func(tx dbtx, scope string) error {
+		tid, err := rowTenant(scope, a.TenantID)
+		if err != nil {
+			return err
+		}
+		row := tx.QueryRowContext(ctx, `
 INSERT INTO approvals (id, tenant, namespace, run_name, kind, source_key, summary, details,
-	approver_groups, status, expires_at, decided_by, decided_at, reason)
-VALUES ($1, NULLIF($2, ''), $3, $4, $5, $6, $7, $8, $9, $10, $11, NULLIF($12, ''), $13, NULLIF($14, ''))
+	approver_groups, status, expires_at, decided_by, decided_at, reason, tenant_id)
+VALUES ($1, NULLIF($2, ''), $3, $4, $5, $6, $7, $8, $9, $10, $11, NULLIF($12, ''), $13, NULLIF($14, ''), NULLIF($15, ''))
 ON CONFLICT (kind, source_key) DO UPDATE SET details = EXCLUDED.details
 RETURNING `+approvalColumns+`, (xmax = 0)`,
-		a.ID, a.Tenant, a.Namespace, a.RunName, a.Kind, a.SourceKey, a.Summary, []byte(a.Details),
-		groups, a.Status, a.ExpiresAt, a.DecidedBy, decidedAt, a.Reason)
-	var created bool
-	stored, err := scanApproval(rowWithExtra{row, &created})
-	stored.Created = created
+			a.ID, a.Tenant, a.Namespace, a.RunName, a.Kind, a.SourceKey, a.Summary, []byte(a.Details),
+			groups, a.Status, a.ExpiresAt, a.DecidedBy, decidedAt, a.Reason, tid)
+		var created bool
+		stored, err = scanApproval(rowWithExtra{row, &created})
+		stored.Created = created
+		return err
+	})
 	return stored, err
 }
 
@@ -158,6 +169,9 @@ func (r rowWithExtra) Scan(dest ...any) error {
 
 // ApprovalQuery filters ListApprovals. Empty fields match everything.
 type ApprovalQuery struct {
+	// TenantID narrows a platform-scoped query to one tenant. A tenant-scoped call
+	// is always limited to its own tenant, whatever this says.
+	TenantID string
 	// Namespaces scopes the query to a tenant's namespaces.
 	Namespaces []string
 	Namespace  string
@@ -168,11 +182,24 @@ type ApprovalQuery struct {
 
 // ListApprovals returns approvals, newest first.
 func (s *Store) ListApprovals(ctx context.Context, q ApprovalQuery) ([]Approval, error) {
+	var out []Approval
+	err := s.scoped(ctx, func(tx dbtx, scope string) error {
+		var err error
+		out, err = listApprovals(ctx, tx, scope, q)
+		return err
+	})
+	return out, err
+}
+
+func listApprovals(ctx context.Context, tx dbtx, scope string, q ApprovalQuery) ([]Approval, error) {
 	var where []string
 	var args []any
 	arg := func(v any) string {
 		args = append(args, v)
 		return fmt.Sprintf("$%d", len(args))
+	}
+	if cond, ok := tenantFilter(scope, q.TenantID, arg); ok {
+		where = append(where, cond)
 	}
 	if len(q.Namespaces) > 0 {
 		placeholders := make([]string, len(q.Namespaces))
@@ -199,7 +226,7 @@ func (s *Store) ListApprovals(ctx context.Context, q ApprovalQuery) ([]Approval,
 		query += " WHERE " + strings.Join(where, " AND ")
 	}
 	query += " ORDER BY requested_at DESC LIMIT " + arg(limit)
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("listing approvals: %w", err)
 	}
@@ -217,7 +244,14 @@ func (s *Store) ListApprovals(ctx context.Context, q ApprovalQuery) ([]Approval,
 
 // GetApproval returns one approval, or sql.ErrNoRows.
 func (s *Store) GetApproval(ctx context.Context, id string) (Approval, error) {
-	return scanApproval(s.db.QueryRowContext(ctx, "SELECT "+approvalColumns+" FROM approvals WHERE id = $1", id))
+	var a Approval
+	err := s.scoped(ctx, func(tx dbtx, scope string) error {
+		var err error
+		a, err = scanApproval(tx.QueryRowContext(ctx,
+			"SELECT "+approvalColumns+" FROM approvals WHERE id = $1 AND ($2::text = '*' OR tenant_id = $2)", id, scope))
+		return err
+	})
+	return a, err
 }
 
 // DecideApproval records a decision on a pending approval. It fails with
@@ -229,10 +263,15 @@ func (s *Store) DecideApproval(ctx context.Context, id, status, by, reason strin
 	default:
 		return Approval{}, fmt.Errorf("invalid decision %q", status)
 	}
-	a, err := scanApproval(s.db.QueryRowContext(ctx, `
+	var a Approval
+	err := s.scoped(ctx, func(tx dbtx, scope string) error {
+		var err error
+		a, err = scanApproval(tx.QueryRowContext(ctx, `
 UPDATE approvals SET status = $2, decided_by = NULLIF($3, ''), decided_at = NOW(), reason = NULLIF($4, '')
-WHERE id = $1 AND status = 'pending'
-RETURNING `+approvalColumns, id, status, by, reason))
+WHERE id = $1 AND status = 'pending' AND ($5::text = '*' OR tenant_id = $5)
+RETURNING `+approvalColumns, id, status, by, reason, scope))
+		return err
+	})
 	if errors.Is(err, sql.ErrNoRows) {
 		return a, ErrApprovalNotPending
 	}
@@ -241,25 +280,31 @@ RETURNING `+approvalColumns, id, status, by, reason))
 
 // MarkApprovalApplied records that a decision reached its source.
 func (s *Store) MarkApprovalApplied(ctx context.Context, id string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE approvals SET applied_at = NOW() WHERE id = $1 AND applied_at IS NULL`, id)
-	return err
+	return s.scoped(ctx, func(tx dbtx, scope string) error {
+		_, err := tx.ExecContext(ctx, `UPDATE approvals SET applied_at = NOW() WHERE id = $1 AND applied_at IS NULL AND ($2::text = '*' OR tenant_id = $2)`, id, scope)
+		return err
+	})
 }
 
 // WithdrawRunApprovals withdraws a run's pending approvals when it ends.
 func (s *Store) WithdrawRunApprovals(ctx context.Context, namespace, runName string) error {
-	_, err := s.db.ExecContext(ctx, `
+	return s.scoped(ctx, func(tx dbtx, scope string) error {
+		_, err := tx.ExecContext(ctx, `
 UPDATE approvals SET status = 'withdrawn', decided_at = NOW(), reason = 'the run ended'
-WHERE namespace = $1 AND run_name = $2 AND status = 'pending'`, namespace, runName)
-	return err
+WHERE namespace = $1 AND run_name = $2 AND status = 'pending' AND ($3::text = '*' OR tenant_id = $3)`, namespace, runName, scope)
+		return err
+	})
 }
 
 // WithdrawBySourcePrefix withdraws the pending approvals of one kind whose source
 // key starts with prefix (a workflow's approval steps, when it ends).
 func (s *Store) WithdrawBySourcePrefix(ctx context.Context, kind, prefix, reason string) error {
-	_, err := s.db.ExecContext(ctx, `
+	return s.scoped(ctx, func(tx dbtx, scope string) error {
+		_, err := tx.ExecContext(ctx, `
 UPDATE approvals SET status = 'withdrawn', decided_at = NOW(), reason = $3
-WHERE kind = $1 AND starts_with(source_key, $2) AND status = 'pending'`, kind, prefix, reason)
-	return err
+WHERE kind = $1 AND starts_with(source_key, $2) AND status = 'pending' AND ($4::text = '*' OR tenant_id = $4)`, kind, prefix, reason, scope)
+		return err
+	})
 }
 
 func nonNil(s []string) []string {

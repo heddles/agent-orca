@@ -23,12 +23,12 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	"github.com/heddles/agent-orca/internal/podbuilder"
 	"github.com/heddles/agent-orca/internal/security"
+	"github.com/heddles/agent-orca/internal/tenancy"
 )
 
 // redisSecretName returns the Redis password Secret name for a resource prefix
@@ -65,7 +65,7 @@ func ensureRedisPasswordSecret(
 		secret.Labels[security.LabelManagedBy] = security.ManagedByValue
 		secret.Type = corev1.SecretTypeOpaque
 		secret.Data = map[string][]byte{podbuilder.RedisSecretKey: []byte(password)}
-		return ctrl.SetControllerReference(owner, secret, scheme)
+		return tenancy.SetControllerReference(owner, secret, scheme)
 	}); err != nil {
 		return fmt.Errorf("ensuring redis password secret: %w", err)
 	}

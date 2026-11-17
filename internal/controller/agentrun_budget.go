@@ -33,6 +33,7 @@ import (
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
 	"github.com/heddles/agent-orca/internal/postgresql"
 	"github.com/heddles/agent-orca/internal/router"
+	"github.com/heddles/agent-orca/internal/tenancy"
 )
 
 // Run budgets (AgentRun.spec.budget). The model-router counts the run's spend
@@ -138,6 +139,7 @@ func (r *AgentRunReconciler) handleBudgetExceeded(ctx context.Context, run *agen
 	}
 	stored, err := r.Approvals.RequestApproval(ctx, postgresql.Approval{
 		Tenant:         run.Labels["agentorca.io/tenant"],
+		TenantID:       run.Labels[tenancy.LabelTenantID],
 		Namespace:      run.Namespace,
 		RunName:        run.Name,
 		Kind:           postgresql.ApprovalKindBudget,

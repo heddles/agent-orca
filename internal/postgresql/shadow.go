@@ -43,8 +43,10 @@ const (
 
 // ShadowResult is one counterfactual call and the judge's verdict on it.
 type ShadowResult struct {
-	DecisionID   string `json:"decisionId"`
-	Tenant       string `json:"tenant,omitempty"`
+	DecisionID string `json:"decisionId"`
+	Tenant     string `json:"tenant,omitempty"`
+	// TenantID is the tenant's stable ID. Empty takes the call's tenant scope.
+	TenantID     string `json:"tenantId,omitempty"`
 	Namespace    string `json:"namespace"`
 	Benchmark    string `json:"benchmark"`
 	Stage        string `json:"stage,omitempty"`
@@ -105,9 +107,9 @@ INSERT INTO shadow_results
 	(decision_id, tenant, namespace, agent, source_kind, source_name, benchmark, selector, selector_generation,
 	 stage, sy_label, workflow_step, served_provider, shadow_provider, winner, inconsistent, judge_confidence, judge_provider, dimensions,
 	 judge_reason, shadow_prompt_tokens, shadow_completion_tokens, shadow_cost_usd, judge_cost_usd,
-	 shadow_latency_ms, shadow_tool_calls, shadow_error, transcript, created_at)
+	 shadow_latency_ms, shadow_tool_calls, shadow_error, transcript, created_at, tenant_id)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22,
-	$23, $24, $25, $26, $27, $28, $29)
+	$23, $24, $25, $26, $27, $28, $29, NULLIF($30, ''))
 ON CONFLICT (decision_id, shadow_provider) DO UPDATE SET
 	winner = EXCLUDED.winner,
 	inconsistent = EXCLUDED.inconsistent,
@@ -141,12 +143,20 @@ func (s *Store) UpsertShadowResult(ctx context.Context, r ShadowResult) error {
 	if len(r.Transcript) > 0 {
 		transcript = []byte(r.Transcript)
 	}
-	if _, err := s.db.ExecContext(ctx, upsertShadowResultSQL,
-		r.DecisionID, r.Tenant, r.Namespace, r.Agent, r.SourceKind, r.SourceName, r.Benchmark, r.Selector,
-		r.SelectorGeneration, r.Stage, r.SYLabel, r.WorkflowStep, r.ServedProvider, r.ShadowProvider, r.Winner, r.Inconsistent, r.JudgeConfidence,
-		r.JudgeProvider, dims, r.JudgeReason, r.ShadowPromptTokens, r.ShadowCompletionTokens, r.ShadowCostUSD,
-		r.JudgeCostUSD, r.ShadowLatencyMS, r.ShadowToolCalls, r.ShadowError, transcript, created,
-	); err != nil {
+	err := s.scoped(ctx, func(tx dbtx, scope string) error {
+		tid, err := rowTenant(scope, r.TenantID)
+		if err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, upsertShadowResultSQL,
+			r.DecisionID, r.Tenant, r.Namespace, r.Agent, r.SourceKind, r.SourceName, r.Benchmark, r.Selector,
+			r.SelectorGeneration, r.Stage, r.SYLabel, r.WorkflowStep, r.ServedProvider, r.ShadowProvider, r.Winner, r.Inconsistent, r.JudgeConfidence,
+			r.JudgeProvider, dims, r.JudgeReason, r.ShadowPromptTokens, r.ShadowCompletionTokens, r.ShadowCostUSD,
+			r.JudgeCostUSD, r.ShadowLatencyMS, r.ShadowToolCalls, r.ShadowError, transcript, created, tid,
+		)
+		return err
+	})
+	if err != nil {
 		return fmt.Errorf("storing shadow result %s: %w", r.DecisionID, err)
 	}
 	return nil
@@ -166,15 +176,17 @@ func (s ShadowSpend) Total() float64 { return s.SettledUSD + s.LeasedUSD }
 const shadowSpendSQL = `
 SELECT
 	COALESCE((SELECT SUM(shadow_cost_usd + judge_cost_usd) FROM shadow_results
-		WHERE namespace = $1 AND benchmark = $2 AND created_at >= $3), 0),
+		WHERE namespace = $1 AND benchmark = $2 AND created_at >= $3 AND ($5::text = '*' OR tenant_id = $5)), 0),
 	COALESCE((SELECT SUM(amount_usd) FROM shadow_leases
-		WHERE namespace = $1 AND benchmark = $2 AND expires_at > $4), 0)`
+		WHERE namespace = $1 AND benchmark = $2 AND expires_at > $4 AND ($5::text = '*' OR tenant_id = $5)), 0)`
 
 // ShadowSpendSince returns what a benchmark has spent since the given time and
 // what its live leases hold at now.
 func (s *Store) ShadowSpendSince(ctx context.Context, namespace, benchmark string, since, now time.Time) (ShadowSpend, error) {
 	var out ShadowSpend
-	err := s.db.QueryRowContext(ctx, shadowSpendSQL, namespace, benchmark, since, now).Scan(&out.SettledUSD, &out.LeasedUSD)
+	err := s.scoped(ctx, func(tx dbtx, scope string) error {
+		return tx.QueryRowContext(ctx, shadowSpendSQL, namespace, benchmark, since, now, scope).Scan(&out.SettledUSD, &out.LeasedUSD)
+	})
 	if err != nil {
 		return ShadowSpend{}, fmt.Errorf("reading shadow spend: %w", err)
 	}
@@ -183,6 +195,8 @@ func (s *Store) ShadowSpendSince(ctx context.Context, namespace, benchmark strin
 
 // LeaseRequest asks to reserve budget for one shadow call.
 type LeaseRequest struct {
+	// TenantID owns the lease. Empty takes the call's tenant scope.
+	TenantID  string
 	Namespace string
 	Benchmark string
 	// Agent is the Agent whose call is sampled; SourceKind and SourceName say
@@ -216,18 +230,32 @@ func (s *Store) TakeShadowLease(ctx context.Context, req LeaseRequest) (int64, e
 	if req.Namespace == "" || req.Benchmark == "" || req.AmountUSD < 0 || req.Agent == "" || req.SourceName == "" || !validSourceKind(req.SourceKind) {
 		return 0, fmt.Errorf("%w: namespace, benchmark, agent, source and a non-negative amount are required", ErrInvalidShadowResult)
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	var id int64
+	err := s.scoped(ctx, func(tx dbtx, scope string) error {
+		var err error
+		id, err = s.takeShadowLease(ctx, tx, scope, req)
+		return err
+	})
 	if err != nil {
+		if errors.Is(err, ErrLeaseDenied) {
+			return 0, err
+		}
 		return 0, fmt.Errorf("taking shadow lease: %w", err)
 	}
-	defer func() { _ = tx.Rollback() }()
+	return id, nil
+}
 
+func (s *Store) takeShadowLease(ctx context.Context, tx dbtx, scope string, req LeaseRequest) (int64, error) {
+	tid, err := rowTenant(scope, req.TenantID)
+	if err != nil {
+		return 0, err
+	}
 	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, req.Namespace+"/"+req.Benchmark); err != nil {
 		return 0, fmt.Errorf("locking shadow budget: %w", err)
 	}
 	var day, leased, run float64
 	var calls int
-	if err := tx.QueryRowContext(ctx, shadowSpendSQL, req.Namespace, req.Benchmark, req.DayStart, req.Now).Scan(&day, &leased); err != nil {
+	if err := tx.QueryRowContext(ctx, shadowSpendSQL, req.Namespace, req.Benchmark, req.DayStart, req.Now, scope).Scan(&day, &leased); err != nil {
 		return 0, fmt.Errorf("reading shadow spend: %w", err)
 	}
 	if day+leased+req.AmountUSD > req.PerDayUSD {
@@ -239,7 +267,7 @@ func (s *Store) TakeShadowLease(ctx context.Context, req LeaseRequest) (int64, e
 		if req.SourceKind == SourceKindDeployment {
 			since = req.DayStart
 		}
-		if err := tx.QueryRowContext(ctx, shadowSourceSpendSQL, req.Namespace, req.Benchmark, req.SourceKind, req.SourceName, req.Now, since).Scan(&run); err != nil {
+		if err := tx.QueryRowContext(ctx, shadowSourceSpendSQL, req.Namespace, req.Benchmark, req.SourceKind, req.SourceName, req.Now, since, scope).Scan(&run); err != nil {
 			return 0, fmt.Errorf("reading shadow source spend: %w", err)
 		}
 		if run+req.AmountUSD > req.PerRunUSD {
@@ -247,7 +275,7 @@ func (s *Store) TakeShadowLease(ctx context.Context, req LeaseRequest) (int64, e
 		}
 	}
 	if req.MaxPerHour > 0 {
-		if err := tx.QueryRowContext(ctx, shadowAgentCallsSQL, req.Namespace, req.Benchmark, req.Agent, req.Now.Add(-time.Hour), req.Now).Scan(&calls); err != nil {
+		if err := tx.QueryRowContext(ctx, shadowAgentCallsSQL, req.Namespace, req.Benchmark, req.Agent, req.Now.Add(-time.Hour), req.Now, scope).Scan(&calls); err != nil {
 			return 0, fmt.Errorf("reading shadow agent calls: %w", err)
 		}
 		if calls >= req.MaxPerHour {
@@ -256,14 +284,11 @@ func (s *Store) TakeShadowLease(ctx context.Context, req LeaseRequest) (int64, e
 	}
 	var id int64
 	err = tx.QueryRowContext(ctx,
-		`INSERT INTO shadow_leases (namespace, benchmark, agent, source_kind, source_name, amount_usd, expires_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
-		req.Namespace, req.Benchmark, req.Agent, req.SourceKind, req.SourceName, req.AmountUSD, req.Now.Add(req.TTL)).Scan(&id)
+		`INSERT INTO shadow_leases (namespace, benchmark, agent, source_kind, source_name, amount_usd, expires_at, tenant_id)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, NULLIF($8, '')) RETURNING id`,
+		req.Namespace, req.Benchmark, req.Agent, req.SourceKind, req.SourceName, req.AmountUSD, req.Now.Add(req.TTL), tid).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("recording shadow lease: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("taking shadow lease: %w", err)
 	}
 	return id, nil
 }
@@ -273,23 +298,27 @@ func (s *Store) TakeShadowLease(ctx context.Context, req LeaseRequest) (int64, e
 const shadowSourceSpendSQL = `
 SELECT
 	COALESCE((SELECT SUM(shadow_cost_usd + judge_cost_usd) FROM shadow_results
-		WHERE namespace = $1 AND benchmark = $2 AND source_kind = $3 AND source_name = $4 AND created_at >= $6), 0) +
+		WHERE namespace = $1 AND benchmark = $2 AND source_kind = $3 AND source_name = $4 AND created_at >= $6 AND ($7::text = '*' OR tenant_id = $7)), 0) +
 	COALESCE((SELECT SUM(amount_usd) FROM shadow_leases
-		WHERE namespace = $1 AND benchmark = $2 AND source_kind = $3 AND source_name = $4 AND expires_at > $5), 0)`
+		WHERE namespace = $1 AND benchmark = $2 AND source_kind = $3 AND source_name = $4 AND expires_at > $5 AND ($7::text = '*' OR tenant_id = $7)), 0)`
 
 // shadowAgentCallsSQL counts the calls sampled for an Agent since $4, settled or
 // still leased.
 const shadowAgentCallsSQL = `
 SELECT
 	(SELECT COUNT(*) FROM (SELECT DISTINCT decision_id FROM shadow_results
-		WHERE namespace = $1 AND benchmark = $2 AND agent = $3 AND created_at >= $4) d) +
+		WHERE namespace = $1 AND benchmark = $2 AND agent = $3 AND created_at >= $4 AND ($6::text = '*' OR tenant_id = $6)) d) +
 	(SELECT COUNT(*) FROM shadow_leases
-		WHERE namespace = $1 AND benchmark = $2 AND agent = $3 AND expires_at > $5)`
+		WHERE namespace = $1 AND benchmark = $2 AND agent = $3 AND expires_at > $5 AND ($6::text = '*' OR tenant_id = $6))`
 
 // ReleaseShadowLease deletes a lease once its result is recorded, or the call
 // was not made. Releasing an unknown lease is not an error.
 func (s *Store) ReleaseShadowLease(ctx context.Context, id int64) error {
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM shadow_leases WHERE id = $1`, id); err != nil {
+	err := s.scoped(ctx, func(tx dbtx, scope string) error {
+		_, err := tx.ExecContext(ctx, `DELETE FROM shadow_leases WHERE id = $1 AND ($2::text = '*' OR tenant_id = $2)`, id, scope)
+		return err
+	})
+	if err != nil {
 		return fmt.Errorf("releasing shadow lease: %w", err)
 	}
 	return nil
@@ -309,7 +338,9 @@ type ShadowTally struct {
 // ShadowTallies counts a benchmark's results since the given time by Agent and
 // stage.
 func (s *Store) ShadowTallies(ctx context.Context, namespace, benchmark string, since time.Time) ([]ShadowTally, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	var out []ShadowTally
+	err := s.scoped(ctx, func(tx dbtx, scope string) error {
+		rows, err := tx.QueryContext(ctx, `
 SELECT agent, stage,
 	COUNT(*) FILTER (WHERE winner = 'served'),
 	COUNT(*) FILTER (WHERE winner = 'shadow'),
@@ -317,21 +348,22 @@ SELECT agent, stage,
 	COUNT(*) FILTER (WHERE winner = 'invalid'),
 	COUNT(*) FILTER (WHERE inconsistent)
 FROM shadow_results
-WHERE namespace = $1 AND benchmark = $2 AND created_at >= $3
-GROUP BY agent, stage ORDER BY agent, stage`, namespace, benchmark, since)
-	if err != nil {
-		return nil, fmt.Errorf("reading shadow tallies: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	var out []ShadowTally
-	for rows.Next() {
-		var t ShadowTally
-		if err := rows.Scan(&t.Agent, &t.Category, &t.Served, &t.Shadow, &t.Ties, &t.Invalid, &t.Inconsistent); err != nil {
-			return nil, fmt.Errorf("reading shadow tallies: %w", err)
+WHERE namespace = $1 AND benchmark = $2 AND created_at >= $3 AND ($4::text = '*' OR tenant_id = $4)
+GROUP BY agent, stage ORDER BY agent, stage`, namespace, benchmark, since, scope)
+		if err != nil {
+			return err
 		}
-		out = append(out, t)
-	}
-	if err := rows.Err(); err != nil {
+		defer func() { _ = rows.Close() }()
+		for rows.Next() {
+			var t ShadowTally
+			if err := rows.Scan(&t.Agent, &t.Category, &t.Served, &t.Shadow, &t.Ties, &t.Invalid, &t.Inconsistent); err != nil {
+				return err
+			}
+			out = append(out, t)
+		}
+		return rows.Err()
+	})
+	if err != nil {
 		return nil, fmt.Errorf("reading shadow tallies: %w", err)
 	}
 	return out, nil

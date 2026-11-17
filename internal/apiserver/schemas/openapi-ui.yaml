@@ -172,6 +172,36 @@ components:
         reason: { type: string }
         confidence: { type: string }
         timestamp: { type: string, format: date-time, nullable: true }
+    CurrentUser:
+      type: object
+      required: [userId, groups, tenant, workspaces, roles]
+      properties:
+        userId:
+          type: string
+          description: The IdP subject or email of the signed-in user. Empty for tenant-level (client credentials) callers.
+        groups: { type: array, items: { type: string } }
+        tenant:
+          type: object
+          nullable: true
+          description: The caller's tenant. Null for a service-account session, which has no tenant.
+          required: [id, name]
+          properties:
+            id: { type: string, description: 'Stable tenant ID ("tnt_" plus a UUIDv7). Authorization keys on this.' }
+            name: { type: string, description: Display name; an operator can reuse it. }
+        workspaces:
+          type: array
+          description: The namespaces the caller may use.
+          items:
+            type: object
+            required: [name, namespace, primary]
+            properties:
+              name: { type: string }
+              namespace: { type: string }
+              primary: { type: boolean, description: The first allowed namespace, where new resources are created. }
+        roles:
+          type: array
+          items: { type: string }
+          description: Roles inside the tenant. Always empty until roles are introduced.
     ResourceKind:
       type: string
       enum: [agents, tools, mcpservers, modelproviders, knowledgebases, modelselectors, agentdeployments, agentworkflows]
@@ -379,6 +409,19 @@ paths:
           description: OpenAPI JSON
           content:
             application/json: { schema: { type: object } }
+  /api/me:
+    get:
+      tags: [identity]
+      summary: Who the caller is
+      description: >
+        Returns the signed-in user, groups, tenant (name and ID), the namespaces
+        the user may use (as workspaces) and roles inside the tenant.
+      responses:
+        '200':
+          description: current user
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CurrentUser' }
   /api/runs:
     get:
       tags: [runs]

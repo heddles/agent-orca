@@ -35,6 +35,7 @@ import (
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
 	"github.com/heddles/agent-orca/internal/postgresql"
 	"github.com/heddles/agent-orca/internal/routingbench"
+	"github.com/heddles/agent-orca/internal/tenancy"
 )
 
 // Conditions of a RoutingRecommendation that a person has acted on.
@@ -232,7 +233,7 @@ func (r *RoutingRecommendationReconciler) request(ctx context.Context, rec *agen
 		return postgresql.Approval{}, fmt.Errorf("encoding the approval: %w", err)
 	}
 	stored, err := r.Approvals.RequestApproval(ctx, postgresql.Approval{
-		Tenant: sel.Labels["agentorca.io/tenant"], Namespace: rec.Namespace,
+		Tenant: sel.Labels["agentorca.io/tenant"], TenantID: sel.Labels[tenancy.LabelTenantID], Namespace: rec.Namespace,
 		Kind: kind, SourceKey: fmt.Sprintf("%s/%s", rec.UID, suffix),
 		Summary:        fmt.Sprintf("%s routing change for %s: %s", what, sel.Name, rec.Spec.Summary),
 		Details:        details,

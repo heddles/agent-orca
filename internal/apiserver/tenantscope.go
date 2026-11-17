@@ -25,6 +25,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
+	"github.com/heddles/agent-orca/internal/tenancy"
 )
 
 // This file centralizes multi-namespace tenant authorization: a tenant is
@@ -92,7 +93,10 @@ func listCRDsMultiNamespace(ctx context.Context, cl client.Client, listType clie
 		}
 		all = append(all, items...)
 	}
-	return meta.SetList(listType, all)
+	if err := meta.SetList(listType, all); err != nil {
+		return err
+	}
+	return filterReadable(ctx, listType)
 }
 
 // listAgentsInNamespaces lists Agent CRDs across all of the tenant's authorized
@@ -108,7 +112,11 @@ func listAgentsInNamespaces(ctx context.Context, cl client.Client, t *TenantIden
 		if err := cl.List(ctx, &l, client.InNamespace(n)); err != nil {
 			return agentorcav1alpha1.AgentList{}, err
 		}
-		all.Items = append(all.Items, l.Items...)
+		for i := range l.Items {
+			if tenancy.CheckAccess(callerOf(t), &l.Items[i], "Agent") != tenancy.AccessNone {
+				all.Items = append(all.Items, l.Items[i])
+			}
+		}
 	}
 	return all, nil
 }
@@ -126,7 +134,11 @@ func listRunsInNamespaces(ctx context.Context, cl client.Client, t *TenantIdenti
 		if err := cl.List(ctx, &l, append([]client.ListOption{client.InNamespace(n)}, extra...)...); err != nil {
 			return agentorcav1alpha1.AgentRunList{}, err
 		}
-		all.Items = append(all.Items, l.Items...)
+		for i := range l.Items {
+			if runVisibleTo(t, &l.Items[i]) {
+				all.Items = append(all.Items, l.Items[i])
+			}
+		}
 	}
 	return all, nil
 }
@@ -147,7 +159,7 @@ func findAgentInNamespaces(ctx context.Context, cl client.Client, t *TenantIdent
 
 // findRunInNamespaces returns the AgentRun named runID in any authorized namespace.
 func findRunInNamespaces(ctx context.Context, cl client.Client, t *TenantIdentity, runID string) (*agentorcav1alpha1.AgentRun, error) {
-	list, err := listRunsInNamespaces(ctx, cl, t, client.MatchingLabels{"agentorca.io/tenant": t.TenantName})
+	list, err := listRunsInNamespaces(ctx, cl, t)
 	if err != nil {
 		return nil, err
 	}

@@ -88,7 +88,7 @@ func (s *UIServer) handleListApprovals(w http.ResponseWriter, r *http.Request) {
 	} else if ns != "" {
 		q.Namespace = ns
 	}
-	list, err := store.ListApprovals(r.Context(), q)
+	list, err := store.ListApprovals(pgScope(r.Context()), q)
 	if err != nil {
 		slog.Error("listing approvals", "err", err)
 		http.Error(w, "listing approvals failed", http.StatusInternalServerError)
@@ -126,7 +126,7 @@ func (s *UIServer) handleApproval(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&body)
 	}
 
-	a, err := store.GetApproval(r.Context(), id)
+	a, err := store.GetApproval(pgScope(r.Context()), id)
 	if errors.Is(err, sql.ErrNoRows) {
 		http.NotFound(w, r)
 		return
@@ -149,7 +149,7 @@ func (s *UIServer) handleApproval(w http.ResponseWriter, r *http.Request) {
 	if action == "reject" {
 		status = postgresql.ApprovalRejected
 	}
-	decided, err := store.DecideApproval(r.Context(), id, status, tenant.UserID, strings.TrimSpace(body.Reason))
+	decided, err := store.DecideApproval(pgScope(r.Context()), id, status, tenant.UserID, strings.TrimSpace(body.Reason))
 	if errors.Is(err, postgresql.ErrApprovalNotPending) {
 		http.Error(w, "the approval is no longer pending", http.StatusConflict)
 		return

@@ -27,6 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/heddles/agent-orca/internal/security"
+	"github.com/heddles/agent-orca/internal/tenancy"
 )
 
 const (
@@ -70,7 +71,8 @@ func ensureHindsightKeySecret(ctx context.Context, c client.Client, namespace, a
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      hindsightKeySecretName,
 				Namespace: namespace,
-				Labels:    map[string]string{security.LabelManagedBy: security.ManagedByValue},
+				// One Secret per namespace serves every tenant there, so it is platform-owned.
+				Labels: map[string]string{security.LabelManagedBy: security.ManagedByValue, tenancy.LabelScope: tenancy.ScopePlatform},
 			},
 			Data: map[string][]byte{hindsightKeySecretKey: []byte(apiKey)},
 		}
@@ -81,9 +83,13 @@ func ensureHindsightKeySecret(ctx context.Context, c client.Client, namespace, a
 	case err != nil:
 		return fmt.Errorf("getting hindsight key secret in %s: %w", namespace, err)
 	}
-	if string(existing.Data[hindsightKeySecretKey]) == apiKey {
+	if string(existing.Data[hindsightKeySecretKey]) == apiKey && existing.Labels[tenancy.LabelScope] == tenancy.ScopePlatform {
 		return nil
 	}
+	if existing.Labels == nil {
+		existing.Labels = map[string]string{}
+	}
+	existing.Labels[tenancy.LabelScope] = tenancy.ScopePlatform
 	if existing.Data == nil {
 		existing.Data = map[string][]byte{}
 	}

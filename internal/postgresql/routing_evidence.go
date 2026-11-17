@@ -34,17 +34,28 @@ func stageCategory(stage string) string { return "stage:" + stage }
 // routing_events is left out, since its cost is no longer known.
 func (s *Store) LoadObservations(ctx context.Context, q routingbench.Query) (routingbench.Observations, error) {
 	var ev routingbench.Observations
+	err := s.scoped(ctx, func(tx dbtx, scope string) error {
+		var err error
+		ev, err = loadObservations(ctx, tx, scope, q)
+		return err
+	})
+	return ev, err
+}
+
+func loadObservations(ctx context.Context, tx dbtx, scope string, q routingbench.Query) (routingbench.Observations, error) {
+	var ev routingbench.Observations
 	agents := pgTextArray(q.Agents)
 
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := tx.QueryContext(ctx, `
 		SELECT r.agent, r.stage, r.served_provider, r.shadow_provider, r.winner, r.inconsistent,
 		       e.cost_usd::float8, r.shadow_cost_usd::float8, e.algorithm, e.confidence
 		FROM shadow_results r
 		JOIN routing_events e ON e.decision_id = r.decision_id
 		WHERE r.namespace = $1 AND r.agent = ANY($2::text[])
 		  AND r.created_at >= $3 AND r.created_at <= $4
+		  AND ($5::text = '*' OR (r.tenant_id = $5 AND e.tenant_id = $5))
 		  AND r.winner <> 'invalid' AND r.shadow_error = '' AND r.stage <> ''
-		ORDER BY r.created_at, r.id`, q.Namespace, agents, q.Since, q.Now)
+		ORDER BY r.created_at, r.id`, q.Namespace, agents, q.Since, q.Now, scope)
 	if err != nil {
 		return ev, fmt.Errorf("loading shadow samples: %w", err)
 	}
@@ -63,13 +74,14 @@ func (s *Store) LoadObservations(ctx context.Context, q routingbench.Query) (rou
 		return ev, fmt.Errorf("loading shadow samples: %w", err)
 	}
 
-	rows, err = s.db.QueryContext(ctx, `
+	rows, err = tx.QueryContext(ctx, `
 		SELECT agent, stage, provider, COUNT(*)
 		FROM routing_events
 		WHERE NOT is_shadow AND namespace = $1 AND agent = ANY($2::text[])
 		  AND created_at >= $3 AND created_at <= $4
+		  AND ($5::text = '*' OR tenant_id = $5)
 		  AND error_class = '' AND fallback_from = '' AND stage <> ''
-		GROUP BY agent, stage, provider`, q.Namespace, agents, q.Since, q.Now)
+		GROUP BY agent, stage, provider`, q.Namespace, agents, q.Since, q.Now, scope)
 	if err != nil {
 		return ev, fmt.Errorf("loading routed volumes: %w", err)
 	}
@@ -87,13 +99,13 @@ func (s *Store) LoadObservations(ctx context.Context, q routingbench.Query) (rou
 		return ev, fmt.Errorf("loading routed volumes: %w", err)
 	}
 
-	rows, err = s.db.QueryContext(ctx, `
+	rows, err = tx.QueryContext(ctx, `
 		SELECT COALESCE(selector, ''), provider, COUNT(*), COUNT(*) FILTER (WHERE error_class <> '')
 		FROM routing_events
 		WHERE NOT is_shadow AND namespace = $1 AND agent = ANY($2::text[])
-		  AND created_at >= $3 AND created_at <= $4
+		  AND created_at >= $3 AND created_at <= $4 AND ($5::text = '*' OR tenant_id = $5)
 		GROUP BY selector, provider
-		ORDER BY selector, provider`, q.Namespace, agents, q.Since, q.Now)
+		ORDER BY selector, provider`, q.Namespace, agents, q.Since, q.Now, scope)
 	if err != nil {
 		return ev, fmt.Errorf("loading provider outcomes: %w", err)
 	}
@@ -109,13 +121,14 @@ func (s *Store) LoadObservations(ctx context.Context, q routingbench.Query) (rou
 		return ev, fmt.Errorf("loading provider outcomes: %w", err)
 	}
 
-	rows, err = s.db.QueryContext(ctx, `
+	rows, err = tx.QueryContext(ctx, `
 		SELECT f.agent, e.stage, COUNT(*) FILTER (WHERE f.rating = 1), COUNT(*) FILTER (WHERE f.rating = -1)
 		FROM routing_feedback f
 		JOIN routing_events e ON e.decision_id = f.decision_id
 		WHERE f.namespace = $1 AND f.agent = ANY($2::text[]) AND f.decision_id <> ''
 		  AND f.created_at >= $3 AND f.created_at <= $4 AND e.stage <> ''
-		GROUP BY f.agent, e.stage`, q.Namespace, agents, q.Since, q.Now)
+		  AND ($5::text = '*' OR (f.tenant_id = $5 AND e.tenant_id = $5))
+		GROUP BY f.agent, e.stage`, q.Namespace, agents, q.Since, q.Now, scope)
 	if err != nil {
 		return ev, fmt.Errorf("loading ratings: %w", err)
 	}

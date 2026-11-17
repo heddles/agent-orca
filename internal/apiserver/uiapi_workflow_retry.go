@@ -28,7 +28,7 @@ func (s *UIServer) handleRetryWorkflowStep(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	var wf agentorcav1alpha1.AgentWorkflow
-	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: name, Namespace: ns}, &wf); err != nil {
+	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: name, Namespace: ns}, &wf); err != nil || !canWrite(r.Context(), &wf, "AgentWorkflow") {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}

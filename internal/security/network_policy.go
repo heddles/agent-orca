@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
+	"github.com/heddles/agent-orca/internal/tenancy"
 )
 
 const (
@@ -48,6 +49,28 @@ const (
 	LabelComponentAgent = "agent"
 	// LabelComponentRouter is the LabelComponent value for the router pod in split-pod topology.
 	LabelComponentRouter = "router"
+
+	// LabelTenantID selects a tenant's pods. It is stamped on every pod a
+	// controller creates for a tenant, and on the tenant's MCP server, tool and
+	// sandbox workloads.
+	LabelTenantID = tenancy.LabelTenantID
+	// LabelScope marks workloads every tenant may reach (the operator, Redis,
+	// Hindsight, shared MCP servers): agentorca.io/scope=platform.
+	LabelScope = "agentorca.io/scope"
+	// ScopePlatform is the LabelScope value of platform services.
+	ScopePlatform = "platform"
+	// LabelComponentMCPServer, LabelComponentTool and LabelComponentSandbox are
+	// the LabelComponent values of a tenant's reachable workloads.
+	LabelComponentMCPServer = "mcp-server"
+	LabelComponentTool      = "tool"
+	LabelComponentSandbox   = "sandbox"
+
+	// LabelPolicyKind marks policies that belong to a tenant, not a run, so the
+	// TenantConfig reconciler can list them and remove the ones it no longer owes.
+	LabelPolicyKind = "agentorca.io/policy"
+	// PolicyKindTenantWorkloadIngress is the LabelPolicyKind value of
+	// BuildTenantWorkloadIngressPolicy.
+	PolicyKindTenantWorkloadIngress = "tenant-workload-ingress"
 
 	// maxLabelValueLen is the maximum length of a Kubernetes label value.
 	maxLabelValueLen = 63
@@ -81,7 +104,9 @@ func BuildNetworkPolicy(
 	stateRedisEnabled bool,
 	hindsightURL string,
 	operatorNamespace string,
+	opts ...PolicyOption,
 ) *networkingv1.NetworkPolicy {
+	o := newPolicyOptions(opts)
 	name := networkPolicyName(run.Name)
 
 	// Build egress rules.
@@ -96,30 +121,24 @@ func BuildNetworkPolicy(
 
 	// Allow egress to tool-specific endpoints.
 	for _, rule := range toolEgressRules {
-		port := intstr.FromInt32(rule.Port)
-		proto := corev1Protocol(rule.Protocol)
-		egressRules = append(egressRules, networkingv1.NetworkPolicyEgressRule{
-			Ports: []networkingv1.NetworkPolicyPort{
-				{Port: &port, Protocol: &proto},
-			},
-		})
+		egressRules = append(egressRules, toolEgressRule(rule, runTenantID(run)))
 	}
 
 	// Allow egress to Redis on port 6379 for token streaming and state checkpointing.
 	if stateRedisEnabled {
-		egressRules = append(egressRules, egressToPort(6379))
+		egressRules = append(egressRules, redisEgressRule(operatorNamespace, o.redisURL))
 	}
 
 	// Always allow egress to the operator's internal API on port 8082.
 	// The model-router sidecar requires this for built-in operations on every run:
 	// _clarify (WaitingForInput), loop-detected, handoff, RAG search/ingest.
-	egressRules = append(egressRules, egressToPort(8082))
+	egressRules = append(egressRules, operatorAPIEgressRule(operatorNamespace))
 
 	// Allow egress to hindsight memory service (self-hosted POC).
 	// The model-router calls hindsight directly for retain/recall on every LLM turn.
 	// Port is derived from the configured URL (scheme default or explicit port).
 	hindsightPort := hindsightPortFromURL(hindsightURL, 8888)
-	egressRules = append(egressRules, egressToPort(hindsightPort))
+	egressRules = append(egressRules, hindsightEgressRule(hindsightURL, hindsightPort))
 
 	// If a hindsight URL is configured, resolve its hostname to IPs and add
 	// ipBlock egress rules so agent-orca pods can reach hindsight even when
@@ -133,8 +152,10 @@ func BuildNetworkPolicy(
 		egressToPortProto(53, "UDP"),
 		egressToPortProto(53, "TCP"),
 	)
+	// The tenant's own MCP servers, tools and sandboxes, plus platform services.
+	egressRules = append(egressRules, tenantEgressRules(runTenantID(run))...)
 
-	return &networkingv1.NetworkPolicy{
+	return withTenantLabel(&networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
@@ -161,7 +182,7 @@ func BuildNetworkPolicy(
 			Ingress: []networkingv1.NetworkPolicyIngressRule{metricsIngressFromScraper(operatorNamespace)},
 			Egress:  egressRules,
 		},
-	}
+	}, runTenantID(run))
 }
 
 // BuildRouterPodNetworkPolicy constructs the NetworkPolicy for the router pod in split-pod
@@ -178,7 +199,9 @@ func BuildRouterPodNetworkPolicy(
 	stateRedisEnabled bool,
 	hindsightURL string,
 	operatorNamespace string,
+	opts ...PolicyOption,
 ) *networkingv1.NetworkPolicy {
+	o := newPolicyOptions(opts)
 	name := "agentorca-router-" + run.Name
 	safeRunName := SafeLabelValue(run.Name)
 
@@ -186,23 +209,19 @@ func BuildRouterPodNetworkPolicy(
 	var egressRules []networkingv1.NetworkPolicyEgressRule
 	egressRules = append(egressRules, egressToPort(443), egressToPort(6443))
 	for _, rule := range toolEgressRules {
-		port := intstr.FromInt32(rule.Port)
-		proto := corev1Protocol(rule.Protocol)
-		egressRules = append(egressRules, networkingv1.NetworkPolicyEgressRule{
-			Ports: []networkingv1.NetworkPolicyPort{{Port: &port, Protocol: &proto}},
-		})
+		egressRules = append(egressRules, toolEgressRule(rule, runTenantID(run)))
 	}
 	if stateRedisEnabled {
-		egressRules = append(egressRules, egressToPort(6379))
+		egressRules = append(egressRules, redisEgressRule(operatorNamespace, o.redisURL))
 	}
-	egressRules = append(egressRules, egressToPort(8082))
+	egressRules = append(egressRules, operatorAPIEgressRule(operatorNamespace))
 	egressRules = append(egressRules, egressToPortProto(53, "UDP"), egressToPortProto(53, "TCP"))
 
 	// Allow egress to hindsight memory service (self-hosted POC).
 	// The model-router calls hindsight directly for retain/recall on every LLM turn.
 	// Port is derived from the configured URL (scheme default or explicit port).
 	hindsightPort := hindsightPortFromURL(hindsightURL, 8888)
-	egressRules = append(egressRules, egressToPort(hindsightPort))
+	egressRules = append(egressRules, hindsightEgressRule(hindsightURL, hindsightPort))
 
 	// If a hindsight URL is configured, resolve its hostname to IPs and add
 	// ipBlock egress rules so agent-orca pods can reach hindsight even when
@@ -211,15 +230,17 @@ func BuildRouterPodNetworkPolicy(
 		egressRules = append(egressRules, egressToCIDR(cidr))
 	}
 
+	egressRules = append(egressRules, tenantEgressRules(runTenantID(run))...)
+
 	// Ingress from the agent pod (same run, component=agent) on router ports.
 	port8080 := intstr.FromInt32(8080)
 	port8082 := intstr.FromInt32(8082)
 	protoTCP := corev1Protocol("TCP")
 	agentPeerSelector := &metav1.LabelSelector{
-		MatchLabels: map[string]string{
+		MatchLabels: withTenantSelector(map[string]string{
 			LabelAgentRunName: safeRunName,
 			LabelComponent:    LabelComponentAgent,
-		},
+		}, runTenantID(run)),
 	}
 	ingressFromAgent := networkingv1.NetworkPolicyIngressRule{
 		Ports: []networkingv1.NetworkPolicyPort{
@@ -231,7 +252,7 @@ func BuildRouterPodNetworkPolicy(
 		},
 	}
 
-	return &networkingv1.NetworkPolicy{
+	return withTenantLabel(&networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
@@ -254,7 +275,7 @@ func BuildRouterPodNetworkPolicy(
 			Ingress: []networkingv1.NetworkPolicyIngressRule{ingressFromAgent, metricsIngressFromScraper(operatorNamespace)},
 			Egress:  egressRules,
 		},
-	}
+	}, runTenantID(run))
 }
 
 // BuildAgentPodNetworkPolicy constructs the NetworkPolicy for the agent pod in split-pod
@@ -274,10 +295,10 @@ func BuildAgentPodNetworkPolicy(
 	port8082 := intstr.FromInt32(8082)
 	protoTCP := corev1Protocol("TCP")
 	routerPeerSelector := &metav1.LabelSelector{
-		MatchLabels: map[string]string{
+		MatchLabels: withTenantSelector(map[string]string{
 			LabelAgentRunName: safeRunName,
 			LabelComponent:    LabelComponentRouter,
-		},
+		}, runTenantID(run)),
 	}
 	egressToRouter := networkingv1.NetworkPolicyEgressRule{
 		Ports: []networkingv1.NetworkPolicyPort{
@@ -289,7 +310,7 @@ func BuildAgentPodNetworkPolicy(
 		},
 	}
 
-	return &networkingv1.NetworkPolicy{
+	return withTenantLabel(&networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
@@ -317,6 +338,110 @@ func BuildAgentPodNetworkPolicy(
 				egressToPortProto(53, "UDP"),
 				egressToPortProto(53, "TCP"),
 			},
+		},
+	}, runTenantID(run))
+}
+
+// withTenantSelector adds the tenant ID to a peer selector's labels when the run
+// has one, so a peer pod of another tenant never matches.
+func withTenantSelector(labels map[string]string, tenantID string) map[string]string {
+	if tenantID != "" {
+		labels[LabelTenantID] = tenantID
+	}
+	return labels
+}
+
+// tenantWorkloadComponents are the components of a tenant's workloads a run may
+// reach.
+var tenantWorkloadComponents = []string{LabelComponentMCPServer, LabelComponentTool, LabelComponentSandbox}
+
+// runTenantID is the tenant ID on the run, or "" while the run is unlabelled.
+func runTenantID(run *agentorcav1alpha1.AgentRun) string {
+	return run.Labels[LabelTenantID]
+}
+
+// tenantPeers are the in-cluster pods a tenant's run may open connections to:
+// its own tenant's MCP servers, tools and sandboxes (any namespace, since a
+// tenant can own several), and platform services. Other tenants' workloads are
+// not selected, so with a default-deny egress baseline they are unreachable.
+func tenantPeers(tenantID string) []networkingv1.NetworkPolicyPeer {
+	allNamespaces := &metav1.LabelSelector{} // every namespace
+	return []networkingv1.NetworkPolicyPeer{
+		{
+			NamespaceSelector: allNamespaces,
+			PodSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{LabelTenantID: tenantID},
+				MatchExpressions: []metav1.LabelSelectorRequirement{{
+					Key: LabelComponent, Operator: metav1.LabelSelectorOpIn, Values: tenantWorkloadComponents,
+				}},
+			},
+		},
+		{
+			NamespaceSelector: allNamespaces,
+			PodSelector:       &metav1.LabelSelector{MatchLabels: map[string]string{LabelScope: ScopePlatform}},
+		},
+	}
+}
+
+// tenantEgressRules is the egress rule that opens tenantPeers, or nil for a run
+// with no tenant ID (it keeps only its port-based rules).
+func tenantEgressRules(tenantID string) []networkingv1.NetworkPolicyEgressRule {
+	if tenantID == "" {
+		return nil
+	}
+	return []networkingv1.NetworkPolicyEgressRule{{To: tenantPeers(tenantID)}}
+}
+
+// withTenantLabel stamps the tenant ID on a policy's own labels so policies can
+// be listed per tenant.
+func withTenantLabel(np *networkingv1.NetworkPolicy, tenantID string) *networkingv1.NetworkPolicy {
+	if tenantID != "" {
+		np.Labels[LabelTenantID] = tenantID
+	}
+	return np
+}
+
+// BuildTenantWorkloadIngressPolicy is the other half of tenant network
+// isolation: it admits connections to a tenant's MCP server, tool and sandbox
+// pods only from the same tenant's pods, platform services and the operator's
+// namespace. The TenantConfig reconciler creates one per namespace the tenant
+// claims and removes it when the namespace is released or the tenant deleted. It selects by
+// agentorca.io/tenant-id, so another tenant's agent pods (even in a shared
+// namespace) cannot reach these workloads. Policies are additive, so it narrows
+// nothing for pods it does not select.
+func BuildTenantWorkloadIngressPolicy(tenantID, namespace, operatorNamespace string) *networkingv1.NetworkPolicy {
+	from := []networkingv1.NetworkPolicyPeer{
+		{
+			NamespaceSelector: &metav1.LabelSelector{},
+			PodSelector:       &metav1.LabelSelector{MatchLabels: map[string]string{LabelTenantID: tenantID}},
+		},
+		{
+			NamespaceSelector: &metav1.LabelSelector{},
+			PodSelector:       &metav1.LabelSelector{MatchLabels: map[string]string{LabelScope: ScopePlatform}},
+		},
+	}
+	if operatorNamespace != "" {
+		from = append(from, networkingv1.NetworkPolicyPeer{NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": operatorNamespace}}})
+	}
+	return &networkingv1.NetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "agentorca-tenant-" + SafeLabelValue(tenantID),
+			Namespace: namespace,
+			Labels: map[string]string{
+				LabelManagedBy:  ManagedByValue,
+				LabelTenantID:   tenantID,
+				LabelPolicyKind: PolicyKindTenantWorkloadIngress,
+			},
+		},
+		Spec: networkingv1.NetworkPolicySpec{
+			PodSelector: metav1.LabelSelector{
+				MatchLabels: map[string]string{LabelTenantID: tenantID},
+				MatchExpressions: []metav1.LabelSelectorRequirement{{
+					Key: LabelComponent, Operator: metav1.LabelSelectorOpIn, Values: tenantWorkloadComponents,
+				}},
+			},
+			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
+			Ingress:     []networkingv1.NetworkPolicyIngressRule{{From: from}},
 		},
 	}
 }
@@ -471,7 +596,7 @@ func BuildRouterSandboxIngressPolicy(
 	port8080 := intstr.FromInt32(8080)
 	port8082 := intstr.FromInt32(8082)
 	protoTCP := corev1Protocol("TCP")
-	return &networkingv1.NetworkPolicy{
+	return withTenantLabel(&networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "agentorca-router-" + run.Name + "-sandbox",
 			Namespace: namespace,
@@ -501,5 +626,5 @@ func BuildRouterSandboxIngressPolicy(
 				}},
 			}},
 		},
-	}
+	}, runTenantID(run))
 }

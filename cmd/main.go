@@ -60,6 +60,7 @@ import (
 	"github.com/heddles/agent-orca/internal/postgresql"
 	"github.com/heddles/agent-orca/internal/security"
 	"github.com/heddles/agent-orca/internal/state"
+	"github.com/heddles/agent-orca/internal/tenancy"
 	agentwebhook "github.com/heddles/agent-orca/internal/webhook"
 	// +kubebuilder:scaffold:imports
 )
@@ -382,6 +383,18 @@ func main() {
 			setupLog.Error(err, "Failed to apply PostgreSQL migration")
 		}
 	}
+	// The tenant registry lives in Postgres. Without it tenant IDs are still
+	// assigned and mirrored to TenantConfig status, but nothing records their
+	// lifecycle, so a deleted tenant's sessions are only stopped by the cache.
+	// Assign the interface only when there is a store: a nil *Store in an
+	// interface would not compare equal to nil.
+	var tenantRegistry tenancy.Registry
+	if pgStore != nil {
+		tenantRegistry = pgStore
+	} else {
+		setupLog.Info("WARNING: tenant registry disabled (POSTGRES_DSN not set); " +
+			"tenant IDs are not tracked across TenantConfig deletion")
+	}
 
 	// ── Alerting subsystem (optional) ────────────────────────────────────────
 	// Configured via ALERT_WEBHOOK_URL (comma-separated) and ALERT_HMAC_SECRET.
@@ -407,7 +420,7 @@ func main() {
 	}
 	benchmarks := &controller.RoutingBenchmarkReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}
 	if pgStore != nil {
-		benchmarks.Results = pgStore
+		benchmarks.Results = pgStore.AsPlatform()
 	}
 	if err := benchmarks.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "RoutingBenchmark")
@@ -417,7 +430,7 @@ func main() {
 		Client: mgr.GetClient(), Scheme: mgr.GetScheme(), Disabled: !routingRecommendations,
 	}
 	if pgStore != nil {
-		evaluation.Source = pgStore
+		evaluation.Source = pgStore.AsPlatform()
 	}
 	if err := evaluation.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "RoutingEvaluation")
@@ -471,7 +484,7 @@ func main() {
 	// Egress approvals need the PostgreSQL store; without it they stay off.
 	var approvals controller.ApprovalStore
 	if pgStore != nil {
-		approvals = pgStore
+		approvals = pgStore.AsPlatform()
 	}
 	var approvalNotifier controller.ApprovalNotifier
 	var completionNotifier controller.TextNotifier
@@ -508,7 +521,7 @@ func main() {
 		RedisPassword:              redisPassword,
 		StateStore:                 stateStore,
 		CloudProvider:              cloudProvider,
-		PostgresStore:              pgStore,
+		PostgresStore:              pgStore.AsPlatform(),
 		TokenReviewerClusterRole:   os.Getenv("TOKEN_REVIEWER_CLUSTER_ROLE"),
 		OperatorAPIURL:             os.Getenv("OPERATOR_API_URL"),
 		LLMRequestTimeout:          llmReqTimeout,
@@ -571,6 +584,33 @@ func main() {
 		setupLog.Error(err, "Failed to set up SandboxClass webhook")
 		os.Exit(1)
 	}
+	var tenantAdminGroups []string
+	if g := strings.TrimSpace(os.Getenv("TENANT_ADMIN_GROUP")); g != "" {
+		tenantAdminGroups = []string{g}
+	} else {
+		setupLog.Info("TENANT_ADMIN_GROUP is not set: nobody may restore a deleted tenant ID")
+	}
+	if err := agentwebhook.SetupTenantConfigWebhook(mgr, tenantRegistry, tenantAdminGroups); err != nil {
+		setupLog.Error(err, "Failed to set up TenantConfig webhook")
+		os.Exit(1)
+	}
+	// Tenant label and reference rules. In audit mode (the default) violations
+	// are logged, counted and allowed; TENANT_ISOLATION_MODE=enforce denies them.
+	if err := tenancy.SetModeFromEnv(); err != nil {
+		setupLog.Error(err, "Invalid "+tenancy.ModeEnvVar+"; using audit")
+	}
+	setupLog.Info("Tenant isolation", "mode", string(tenancy.CurrentMode()))
+	if err := agentwebhook.SetupTenantIsolationWebhooks(mgr, tenantAdminGroups, os.Getenv("POD_NAMESPACE")); err != nil {
+		setupLog.Error(err, "Failed to set up tenant isolation webhooks")
+		os.Exit(1)
+	}
+	// Label objects that predate tenant IDs once the cache is up.
+	if err := mgr.Add(&controller.TenantBackfill{
+		Client: controller.NewBackfillClient(mgr.GetClient(), mgr.GetAPIReader()),
+	}); err != nil {
+		setupLog.Error(err, "Failed to add tenant label backfill")
+		os.Exit(1)
+	}
 	// +kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
@@ -626,12 +666,41 @@ func main() {
 		if approvalNotifier != nil {
 			notifier = approvalNotifier
 		}
-		internalAPI.WithApprovals(pgStore, notifier)
+		internalAPI.WithApprovals(pgStore.AsPlatform(), notifier)
 		// Routing telemetry: one row per LLM call, posted by each run's router.
-		internalAPI.WithRoutingStore(pgStore)
-		internalAPI.WithShadowStore(pgStore)
+		internalAPI.WithRoutingStore(pgStore.AsPlatform())
+		internalAPI.WithShadowStore(pgStore.AsPlatform())
+		// Rows archived before tenant IDs existed are attributed by the namespace
+		// binding of their TenantConfig (migration 0009 already used the registry).
+		// Unattributable rows are logged and stay visible to the platform only.
 		if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
-			return pgStore.RunRoutingEventsRetention(ctx, routingEventsRetention, postgresql.RoutingEventsRetentionInterval)
+			var tcs agentorcav1alpha1.TenantConfigList
+			if err := mgr.GetClient().List(ctx, &tcs); err != nil {
+				setupLog.Error(err, "Tenant ID backfill skipped: cannot list TenantConfigs")
+				return nil
+			}
+			owner := map[string]string{}
+			for i := range tcs.Items {
+				id := tcs.Items[i].Status.TenantID
+				for _, ns := range tcs.Items[i].Spec.AllowedNamespaces {
+					if prev, seen := owner[ns]; seen && prev != id {
+						id = "" // shared namespace: no single owner
+					}
+					owner[ns] = id
+				}
+			}
+			resolve := func(ns string) string { return owner[ns] }
+			if _, err := pgStore.BackfillTenantIDs(postgresql.WithPlatform(ctx), resolve); err != nil {
+				setupLog.Error(err, "Tenant ID backfill failed")
+			}
+			return nil
+		})); err != nil {
+			setupLog.Error(err, "Unable to schedule the tenant ID backfill")
+			os.Exit(1)
+		}
+		if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
+			return pgStore.AsPlatform().RunRoutingEventsRetention(
+				ctx, routingEventsRetention, postgresql.RoutingEventsRetentionInterval)
 		})); err != nil {
 			setupLog.Error(err, "Unable to schedule routing telemetry retention")
 			os.Exit(1)
@@ -676,15 +745,23 @@ func main() {
 		setupLog.Error(err, "Failed to create external auth")
 		os.Exit(1)
 	}
+	externalAuth.SetTenantRegistry(tenantRegistry)
+	// Tokens minted before tenant IDs existed carry no tid. Map them by name for
+	// one release; ALLOW_LEGACY_TENANT_TOKENS=false turns that off.
+	if v, perr := strconv.ParseBool(os.Getenv("ALLOW_LEGACY_TENANT_TOKENS")); perr == nil {
+		externalAuth.SetAllowLegacyTokens(v)
+	}
 	// Initial tenant cache load.
 	if refreshErr := externalAuth.RefreshTenants(ctx); refreshErr != nil {
 		setupLog.Info("No TenantConfigs found (will refresh on reconcile)", "err", refreshErr)
 	}
 
 	if err := (&controller.TenantConfigReconciler{
-		Client:    mgr.GetClient(),
-		Scheme:    mgr.GetScheme(),
-		Refresher: externalAuth,
+		Client:            mgr.GetClient(),
+		Scheme:            mgr.GetScheme(),
+		Refresher:         externalAuth,
+		Registry:          tenantRegistry,
+		OperatorNamespace: os.Getenv("POD_NAMESPACE"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "TenantConfig")
 		os.Exit(1)

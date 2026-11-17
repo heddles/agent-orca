@@ -46,6 +46,7 @@ import (
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
 	"github.com/heddles/agent-orca/internal/rag"
+	"github.com/heddles/agent-orca/internal/tenancy"
 )
 
 const (
@@ -101,10 +102,7 @@ func (r *KnowledgeBaseReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	// Resolve collection name.
-	collectionName := kb.Spec.VectorStore.CollectionName
-	if collectionName == "" {
-		collectionName = kb.Name
-	}
+	collectionName := resolveCollectionName(&kb)
 
 	// Snapshot for patch — avoids optimistic concurrency conflicts on status updates
 	// that happen across multiple early-return paths in this reconcile.
@@ -156,7 +154,7 @@ func (r *KnowledgeBaseReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	// Ensure the Qdrant collection exists with the actual model dimension.
-	if err := r.ensureCollection(ctx, qdrantURL, collectionName, uint64(kb.Status.EmbeddingDimensions)); err != nil {
+	if err := r.ensureCollection(ctx, qdrantURL, collectionName, kb.Labels[tenancy.LabelTenantID], uint64(kb.Status.EmbeddingDimensions)); err != nil {
 		logger.Error(err, "ensuring Qdrant collection")
 		r.patchKBStatus(ctx, &kb, statusBase, fmt.Sprintf("ensuring Qdrant collection: %s", sanitizeKBError(err.Error())))
 		return ctrl.Result{}, err
@@ -191,7 +189,7 @@ func (r *KnowledgeBaseReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// Query Qdrant for the authoritative counts. This is the single source
 	// of truth — it reflects all writes from both the controller pipeline
 	// (ConfigMap/URL) and MCP ingestion Jobs.
-	if stats, err := r.collectionStats(ctx, qdrantURL, collectionName); err != nil {
+	if stats, err := r.collectionStats(ctx, qdrantURL, collectionName, kb.Labels[tenancy.LabelTenantID]); err != nil {
 		logger.Error(err, "querying Qdrant collection stats")
 	} else {
 		kb.Status.ChunkCount = int(stats.PointCount)
@@ -342,7 +340,7 @@ func (r *KnowledgeBaseReconciler) ensureQdrant(ctx context.Context, namespace st
 			},
 		},
 	}
-	if err := ctrl.SetControllerReference(kb, svc, r.Scheme); err != nil {
+	if err := tenancy.SetControllerReference(kb, svc, r.Scheme); err != nil {
 		return "", nil, fmt.Errorf("setting owner ref on Qdrant Service: %w", err)
 	}
 	if err := r.Create(ctx, svc); err != nil && !apierrors.IsAlreadyExists(err) {
@@ -379,7 +377,7 @@ func (r *KnowledgeBaseReconciler) ensureQdrant(ctx context.Context, namespace st
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      resourceName,
 			Namespace: namespace,
-			Labels:    podLabels,
+			Labels:    tenancyLabels(kb, podLabels),
 		},
 		Spec: appsv1.StatefulSetSpec{
 			ServiceName: resourceName,
@@ -389,7 +387,8 @@ func (r *KnowledgeBaseReconciler) ensureQdrant(ctx context.Context, namespace st
 			},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels: podLabels,
+					// The selector stays podLabels; the tenant label is extra.
+					Labels: tenancyLabels(kb, podLabels),
 				},
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{
@@ -445,7 +444,7 @@ func (r *KnowledgeBaseReconciler) ensureQdrant(ctx context.Context, namespace st
 			},
 		},
 	}
-	if err := ctrl.SetControllerReference(kb, sts, r.Scheme); err != nil {
+	if err := tenancy.SetControllerReference(kb, sts, r.Scheme); err != nil {
 		return "", nil, fmt.Errorf("setting owner ref on Qdrant StatefulSet: %w", err)
 	}
 	if err := r.Create(ctx, sts); err != nil && !apierrors.IsAlreadyExists(err) {
@@ -708,25 +707,59 @@ func qdrantResourceName(kbName string) string {
 }
 
 // ensureCollection creates a Qdrant collection if it doesn't exist.
-func (r *KnowledgeBaseReconciler) ensureCollection(ctx context.Context, qdrantURL, collectionName string, dimensions uint64) error {
+func (r *KnowledgeBaseReconciler) ensureCollection(ctx context.Context, qdrantURL, collectionName, tenantID string, dimensions uint64) error {
 	qClient, err := rag.NewQdrantClient(qdrantURL)
 	if err != nil {
 		return fmt.Errorf("connecting to qdrant: %w", err)
 	}
 	defer func() { _ = qClient.Close() }()
 
-	return qClient.EnsureCollection(ctx, collectionName, dimensions)
+	if err := qClient.EnsureCollection(ctx, collectionName, dimensions); err != nil {
+		return err
+	}
+	// Points ingested before tenant IDs existed get the owner's ID; ones that
+	// already carry a tenant are untouched.
+	if tenantID != "" {
+		if err := qClient.BackfillTenant(ctx, collectionName, tenantID); err != nil {
+			return err
+		}
+		// Re-key points from the pre-tenant ID scheme to tenant-derived IDs, so
+		// another tenant's upsert can never land on them. Needs no re-embedding.
+		moved, err := qClient.MigrateLegacyPointIDs(ctx, collectionName, tenantID)
+		if err != nil {
+			return err
+		}
+		if moved > 0 {
+			log.FromContext(ctx).Info("migrated Qdrant point IDs to tenant-derived IDs", "collection", collectionName, "points", moved)
+		}
+	}
+	return nil
+}
+
+// resolveCollectionName picks the Qdrant collection for a KnowledgeBase: an
+// explicit spec name wins, then the collection already recorded in status (so
+// existing KnowledgeBases keep their data in place; a bare-name collection is
+// still protected by the tenant payload filter and tenant-derived point IDs),
+// and otherwise a new name that includes the tenant ID.
+func resolveCollectionName(kb *agentorcav1alpha1.KnowledgeBase) string {
+	if n := kb.Spec.VectorStore.CollectionName; n != "" {
+		return n
+	}
+	if n := kb.Status.CollectionName; n != "" {
+		return n
+	}
+	return rag.CollectionNameFor(kb.Labels[tenancy.LabelTenantID], kb.Name)
 }
 
 // collectionStats returns point count and unique document count from Qdrant.
-func (r *KnowledgeBaseReconciler) collectionStats(ctx context.Context, qdrantURL, collectionName string) (*rag.CollectionStats, error) {
+func (r *KnowledgeBaseReconciler) collectionStats(ctx context.Context, qdrantURL, collectionName, tenantID string) (*rag.CollectionStats, error) {
 	qClient, err := rag.NewQdrantClient(qdrantURL)
 	if err != nil {
 		return nil, fmt.Errorf("connecting to qdrant: %w", err)
 	}
 	defer func() { _ = qClient.Close() }()
 
-	return qClient.CollectionStats(ctx, collectionName)
+	return qClient.CollectionStats(ctx, collectionName, tenantID)
 }
 
 // estimateStoragePercent estimates the percentage of PVC storage used by Qdrant

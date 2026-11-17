@@ -34,6 +34,7 @@ import (
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
 	"github.com/heddles/agent-orca/internal/postgresql"
+	"github.com/heddles/agent-orca/internal/tenancy"
 )
 
 // Egress approvals. When a sandbox's policy denies a connection to a host it
@@ -225,6 +226,7 @@ func (r *AgentRunReconciler) recordEgressDraft(ctx context.Context, run *agentor
 	details, _ := json.Marshal(req)
 	a := postgresql.Approval{
 		Tenant:         run.Labels["agentorca.io/tenant"],
+		TenantID:       run.Labels[tenancy.LabelTenantID],
 		Namespace:      run.Namespace,
 		RunName:        run.Name,
 		Kind:           postgresql.ApprovalKindEgress,

@@ -18,6 +18,7 @@ package checkpoint
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -51,7 +52,9 @@ func (m *memKV) ListKV(_ context.Context, scope string) ([]string, error) {
 	var keys []string //nolint:prealloc
 
 	for k := range m.data {
-		keys = append(keys, k)
+		if key, ok := strings.CutPrefix(k, scope+"/"); ok {
+			keys = append(keys, key)
+		}
 	}
 	return keys, nil
 }
@@ -168,5 +171,35 @@ func TestRedisStoreDeleteAndList(t *testing.T) {
 	ids, _ := s.List(context.Background())
 	if len(ids) != 2 {
 		t.Fatalf("expected 2 sessions after delete, got %d (%v)", len(ids), ids)
+	}
+}
+
+func TestRedisStoreForTenantIsolatesSessionIDs(t *testing.T) {
+	ctx := context.Background()
+	base := NewRedisStore(newMemKV())
+	a, b := base.ForTenant("tnt-a"), base.ForTenant("tnt-b")
+
+	if _, err := a.Save(ctx, &agentorcav1alpha1.Checkpoint{SessionID: "s1", LastRunRef: "run-a"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := b.Load(ctx, "s1"); err != nil || got != nil {
+		t.Errorf("tenant B loaded tenant A's session: %+v, %v", got, err)
+	}
+	if got, err := a.Load(ctx, "s1"); err != nil || got == nil || got.LastRunRef != "run-a" {
+		t.Errorf("tenant A lost its session: %+v, %v", got, err)
+	}
+	if ids, _ := b.List(ctx); len(ids) != 0 {
+		t.Errorf("tenant B lists %v", ids)
+	}
+	// A session saved before the upgrade is read through the view, and the next
+	// save moves it under the tenant's scope.
+	if _, err := base.Save(ctx, &agentorcav1alpha1.Checkpoint{SessionID: "old", LastRunRef: "run-old"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := a.Load(ctx, "old"); got == nil || got.LastRunRef != "run-old" {
+		t.Errorf("old session not read through the view: %+v", got)
+	}
+	if base.ForTenant("") != base {
+		t.Error("an empty tenant ID must return the store itself")
 	}
 }

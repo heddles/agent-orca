@@ -56,10 +56,12 @@ func TestUpsertShadowResult_StoresNullTranscriptWhenAbsent(t *testing.T) {
 	s, mock := costMock(t)
 	r := goodResult()
 	r.CreatedAt = time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	expectScopeBegin(mock)
 	mock.ExpectExec(`INSERT INTO shadow_results`).
 		WithArgs("d-1", "", "ns", "coder", "AgentRun", "run", "bench", "", int64(0), "", "", "", "strong", "weak", "tie", false, 0.0, "", nil,
-			"", 0, 0, 0.0, 0.0, 0, 0, "", nil, r.CreatedAt).
+			"", 0, 0, 0.0, 0.0, 0, 0, "", nil, r.CreatedAt, "").
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
 	if err := s.UpsertShadowResult(context.Background(), r); err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +91,7 @@ func leaseReq(amount float64) LeaseRequest {
 }
 
 func expectSpend(mock sqlmock.Sqlmock, settled, leased float64) {
-	mock.ExpectBegin()
+	expectScopeBegin(mock)
 	mock.ExpectExec(`pg_advisory_xact_lock`).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`FROM shadow_results`).
 		WillReturnRows(sqlmock.NewRows([]string{"day", "leased"}).AddRow(settled, leased))
@@ -142,7 +144,7 @@ func TestTakeShadowLease_DeploymentRunCapCountsTheDay(t *testing.T) {
 	// The cap query for a deployment is bounded by the start of the UTC day;
 	// a run's is not, so it counts everything the run ever spent.
 	mock.ExpectQuery(`FROM shadow_results`).
-		WithArgs("ns", "bench", "AgentDeployment", "assistant", req.Now, req.DayStart).
+		WithArgs("ns", "bench", "AgentDeployment", "assistant", req.Now, req.DayStart, "*").
 		WillReturnRows(sqlmock.NewRows([]string{"run"}).AddRow(0.10))
 	mock.ExpectRollback()
 	if _, err := s.TakeShadowLease(context.Background(), req); !errors.Is(err, ErrLeaseDenied) {
@@ -169,7 +171,7 @@ func TestTakeShadowLease_HourlyCapIsPerAgent(t *testing.T) {
 			// Counted by Agent, over the hour before now, however many runs or
 			// deployments the samples came from.
 			mock.ExpectQuery(`FROM shadow_results`).
-				WithArgs("ns", "bench", "coder", req.Now.Add(-time.Hour), req.Now).
+				WithArgs("ns", "bench", "coder", req.Now.Add(-time.Hour), req.Now, "*").
 				WillReturnRows(sqlmock.NewRows([]string{"calls"}).AddRow(tc.calls))
 			if tc.deny {
 				mock.ExpectRollback()
@@ -202,9 +204,11 @@ func TestTakeShadowLease_RequiresAnAgentAndSource(t *testing.T) {
 
 func TestShadowTallies(t *testing.T) {
 	s, mock := costMock(t)
-	mock.ExpectQuery(`FROM shadow_results`).WithArgs("ns", "bench", sqlmock.AnyArg()).
+	expectScopeBegin(mock)
+	mock.ExpectQuery(`FROM shadow_results`).WithArgs("ns", "bench", sqlmock.AnyArg(), "*").
 		WillReturnRows(sqlmock.NewRows([]string{"agent", "stage", "served", "shadow", "tie", "invalid", "inconsistent"}).
 			AddRow("coder", "chat", 3, 1, 2, 1, 2))
+	mock.ExpectCommit()
 	got, err := s.ShadowTallies(context.Background(), "ns", "bench", time.Now())
 	if err != nil || len(got) != 1 || got[0].Agent != "coder" || got[0].Category != "chat" || got[0].Ties != 2 || got[0].Inconsistent != 2 {
 		t.Fatalf("tallies = %+v, %v", got, err)

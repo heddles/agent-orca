@@ -4774,9 +4774,22 @@ func (r *Router) ensureHindsightBank(ctx context.Context) (string, error) {
 	return bankID, nil
 }
 
-// hindsightBankID expands the configured bank template (default
-// "{namespace}--{agent-name}": one bank per Agent, scoped by tenant namespace).
+// hindsightBankID is the run's memory bank: the tenant's ID, then the expanded
+// bank template. Every tenant gets its own banks, so a namespace two tenants
+// share, or a tenant name an operator reuses, never shares memories. A run with
+// no tenant ID (labels not stamped, or tenant key prefixes off) keeps the
+// unprefixed bank.
 func (r *Router) hindsightBankID() string {
+	if r.cfg.TenantID == "" {
+		return r.legacyHindsightBankID()
+	}
+	return r.cfg.TenantID + "--" + r.legacyHindsightBankID()
+}
+
+// legacyHindsightBankID expands the configured bank template (default
+// "{namespace}--{agent-name}": one bank per Agent, scoped by namespace). It is
+// the bank name before banks were scoped by tenant.
+func (r *Router) legacyHindsightBankID() string {
 	tmpl := r.cfg.Hindsight.BankIDTemplate
 	if tmpl == "" {
 		tmpl = "{namespace}--{agent-name}"
@@ -4790,12 +4803,25 @@ func (r *Router) hindsightBankID() string {
 }
 
 // hindsightRecall queries hindsight for relevant memories before an LLM call.
+//
+// With a tenant ID it reads the tenant's bank first and, only when that has
+// nothing yet, the pre-tenant bank, so memories retained before the upgrade stay
+// available. Retains always go to the tenant's bank.
 func (r *Router) hindsightRecall(ctx context.Context, query string) (string, error) {
+	out, err := r.hindsightRecallBank(ctx, r.hindsightBankID(), query)
+	if r.cfg.TenantID == "" || (err == nil && out != "") {
+		return out, err
+	}
+	if legacy, lerr := r.hindsightRecallBank(ctx, r.legacyHindsightBankID(), query); lerr == nil && legacy != "" {
+		return legacy, nil
+	}
+	return out, err
+}
+
+func (r *Router) hindsightRecallBank(ctx context.Context, bankID, query string) (string, error) {
 	if !r.cfg.Hindsight.Enabled || r.cfg.Hindsight.URL == "" {
 		return "", errors.New("hindsight is disabled or the URL is empty")
 	}
-
-	bankID := r.hindsightBankID()
 
 	client := newHindsightClient(r.cfg.Hindsight)
 

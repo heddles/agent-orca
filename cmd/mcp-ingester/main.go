@@ -80,6 +80,8 @@ type IngestConfig struct {
 	// Qdrant destination.
 	QdrantURL      string `json:"qdrantURL"`
 	CollectionName string `json:"collectionName"`
+	// TenantID is stamped on every point; ingestion refuses to run without it.
+	TenantID string `json:"tenantID"`
 
 	// SourceType selects the ingestion workflow: "mcp" (default when empty) or
 	// "static" (ConfigMaps, URLs, and/or S3 declared in the KnowledgeBase spec).
@@ -172,7 +174,7 @@ func run(ctx context.Context) error {
 		chunkCfg = rag.DefaultChunkConfig()
 	}
 
-	result, err := rag.IngestDocuments(ctx, docs, cfg.QdrantURL, cfg.CollectionName, uint64(cfg.EmbeddingDims), embedder, chunkCfg) //nolint:lll
+	result, err := rag.IngestDocuments(ctx, docs, cfg.QdrantURL, cfg.CollectionName, uint64(cfg.EmbeddingDims), embedder, chunkCfg, cfg.TenantID) //nolint:lll
 	if err != nil {
 		if errors.Is(err, rag.ErrDailyQuotaExhausted) {
 			// Final log line: the controller reads the pod termination message

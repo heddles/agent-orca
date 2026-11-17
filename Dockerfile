@@ -39,6 +39,7 @@ COPY internal/routingbench/ internal/routingbench/
 COPY internal/security/ internal/security/
 COPY internal/shellsandbox/ internal/shellsandbox/
 COPY internal/state/ internal/state/
+COPY internal/tenancy/ internal/tenancy/
 COPY internal/webhook/ internal/webhook/
 COPY third_party/switchyard/bindings/go/ third_party/switchyard/bindings/go/
 # END generated go-deps

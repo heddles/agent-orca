@@ -36,7 +36,7 @@ func costMock(t *testing.T) (*Store, sqlmock.Sqlmock) {
 		t.Fatalf("sqlmock: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	return &Store{db: db}, mock
+	return &Store{db: db, defaultScope: PlatformScope}, mock
 }
 
 var costCols = []string{"name", "namespace", "agent_ref", "phase", "spend_usd", "cost_capture", "model", "when"}
@@ -45,11 +45,13 @@ var costCols = []string{"name", "namespace", "agent_ref", "phase", "spend_usd", 
 func TestQueryCostRows_ReturnsArchivedRuns(t *testing.T) {
 	s, mock := costMock(t)
 	done := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	expectScopeBegin(mock)
 	mock.ExpectQuery(`SELECT name, namespace, agent_ref, phase.*FROM archived_runs`).
 		WithArgs(maxCostRows).
 		WillReturnRows(sqlmock.NewRows(costCols).
 			AddRow("a", "ns", "agent-1", "Succeeded", "0.5", "complete", "gpt-4o", done).
 			AddRow("b", "ns", "agent-1", "Failed", "", "incomplete", "", done))
+	mock.ExpectCommit()
 
 	rows, err := s.QueryCostRows(context.Background(), CostQuery{})
 	if err != nil {
@@ -72,9 +74,11 @@ func TestQueryCostRows_ReturnsArchivedRuns(t *testing.T) {
 func TestQueryCostRows_BindsFilters(t *testing.T) {
 	s, mock := costMock(t)
 	since := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	expectScopeBegin(mock)
 	mock.ExpectQuery(`namespace IN \(\$1, \$2\).*labels ->> 'agentorca.io/deployment' = \$3.*name = \$4.*>= \$5.*LIMIT \$6`).
 		WithArgs("a", "b", "chat", "run-1", since, maxCostRows).
 		WillReturnRows(sqlmock.NewRows(costCols))
+	mock.ExpectCommit()
 
 	rows, err := s.QueryCostRows(context.Background(), CostQuery{
 		Namespaces: []string{"a", "b"}, Deployment: "chat", Run: "run-1", Since: &since,
@@ -92,7 +96,9 @@ func TestQueryCostRows_BindsFilters(t *testing.T) {
 
 func TestQueryCostRows_QueryErrorIsReturned(t *testing.T) {
 	s, mock := costMock(t)
+	expectScopeBegin(mock)
 	mock.ExpectQuery(`FROM archived_runs`).WillReturnError(context.DeadlineExceeded)
+	mock.ExpectRollback()
 	if _, err := s.QueryCostRows(context.Background(), CostQuery{}); err == nil {
 		t.Fatal("expected the query error to be returned")
 	}
@@ -123,9 +129,9 @@ func TestArchiveRunBindsCostCapture(t *testing.T) {
 			for i := range args {
 				args[i] = sqlmock.AnyArg()
 			}
-			mock.ExpectBegin()
+			expectScopeBegin(mock)
 			mock.ExpectExec(`INSERT INTO archived_runs`).
-				WithArgs(append(args, tc.want)...).
+				WithArgs(append(args, tc.want, "")...).
 				WillReturnResult(sqlmock.NewResult(1, 1))
 			mock.ExpectExec(`INSERT INTO run_outcomes`).WillReturnResult(sqlmock.NewResult(1, 1))
 			mock.ExpectCommit()

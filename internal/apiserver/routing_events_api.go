@@ -100,7 +100,7 @@ func (s *Server) recordRoutingEvents(w http.ResponseWriter, r *http.Request, cal
 	now := time.Now().UTC()
 	for i := range req.Events {
 		e := &req.Events[i]
-		e.Namespace, e.RunName, e.Tenant = namespace, name, tenant
+		e.Namespace, e.RunName, e.Tenant, e.TenantID = namespace, name, tenant, src.TenantID
 		if e.CreatedAt.IsZero() {
 			e.CreatedAt = now
 		}

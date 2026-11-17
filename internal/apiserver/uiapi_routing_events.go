@@ -63,7 +63,7 @@ func (s *UIServer) handleRunRoutingEvents(w http.ResponseWriter, r *http.Request
 		return
 	}
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	events, err := src.RoutingEventsForRun(r.Context(), ns, runName, limit)
+	events, err := src.RoutingEventsForRun(pgScope(r.Context()), ns, runName, limit)
 	if err != nil {
 		slog.Error("loading routing events", "run", runName, "ns", ns, "err", err)
 		http.Error(w, "loading routing events", http.StatusInternalServerError)

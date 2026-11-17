@@ -588,6 +588,8 @@ Status reports `ready`, `discovering`, `toolCount` and conditions.
 
 **Purpose:** Enterprise authentication and authorization for the ACP API and External Task API. It sets which agents and namespaces a tenant can see and use.
 
+Each tenant also gets a generated ID (`status.tenantID`) that isolates its objects and data. See [Tenant isolation](tenant-isolation.md).
+
 | Field | Description |
 |---|---|
 | `authMode` | `issued` (OAuth2 client credentials) or `federated` (OIDC) |

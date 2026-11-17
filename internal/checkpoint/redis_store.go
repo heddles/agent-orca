@@ -133,3 +133,46 @@ func (s *RedisStore) List(ctx context.Context) ([]string, error) {
 	}
 	return s.kv.ListKV(ctx, sessionScope)
 }
+
+// ForTenant returns a view of the store whose session checkpoints live under the
+// tenant's "t:{tid}:" scope, so a session ID one tenant chooses can never read
+// or overwrite another tenant's. Reads fall back to the old unprefixed scope
+// and writes always go to the new one, so existing sessions keep working and
+// move on their next save. An empty tenant ID returns the store unchanged.
+func (s *RedisStore) ForTenant(tenantID string) *RedisStore {
+	if s == nil || s.kv == nil || tenantID == "" {
+		return s
+	}
+	return &RedisStore{kv: tenantKV{inner: s.kv, prefix: "t:" + tenantID + ":"}}
+}
+
+// tenantKV prefixes the scope of every key (see RedisStore.ForTenant).
+type tenantKV struct {
+	inner  kvStore
+	prefix string
+}
+
+func (t tenantKV) SaveKV(ctx context.Context, scope, key string, v []byte, ttl time.Duration) error {
+	return t.inner.SaveKV(ctx, t.prefix+scope, key, v, ttl)
+}
+
+func (t tenantKV) LoadKV(ctx context.Context, scope, key string) ([]byte, error) {
+	v, err := t.inner.LoadKV(ctx, t.prefix+scope, key)
+	if err != nil || v != nil {
+		return v, err
+	}
+	return t.inner.LoadKV(ctx, scope, key)
+}
+
+func (t tenantKV) DeleteKV(ctx context.Context, scope, key string) error {
+	if err := t.inner.DeleteKV(ctx, t.prefix+scope, key); err != nil {
+		return err
+	}
+	return t.inner.DeleteKV(ctx, scope, key)
+}
+
+// ListKV lists the tenant's sessions only. Old unprefixed sessions are not
+// listed, because there is no way to tell whose they are.
+func (t tenantKV) ListKV(ctx context.Context, scope string) ([]string, error) {
+	return t.inner.ListKV(ctx, t.prefix+scope)
+}

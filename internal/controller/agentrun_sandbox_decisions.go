@@ -92,7 +92,7 @@ func (r *AgentRunReconciler) recordSandboxDecisions(ctx context.Context, run *ag
 		if err != nil {
 			continue
 		}
-		if err := r.StateStore.SaveTraceEvent(ctx, key, string(ev)); err != nil {
+		if err := r.stateFor(run).SaveTraceEvent(ctx, key, string(ev)); err != nil {
 			logger.Error(err, "recording a sandbox decision in the trace", "sandbox", sb.Name)
 			break
 		}

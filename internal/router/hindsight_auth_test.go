@@ -189,6 +189,11 @@ func TestHindsightBankID(t *testing.T) {
 			Config{RunNamespace: "ns", AgentName: "a", RunName: "r",
 				Hindsight: HindsightConfig{BankIDTemplate: "{namespace}-{agentName}-{runName}"}},
 			"ns-a-r"},
+		{"a tenant ID prefixes the bank",
+			Config{TenantID: "tnt-a", RunNamespace: "team-a", AgentName: "coder"}, "tnt-a--team-a--coder"},
+		{"the prefix also wraps a custom template",
+			Config{TenantID: "tnt-b", RunNamespace: "ns", AgentName: "a", Hindsight: HindsightConfig{BankIDTemplate: "{namespace}-{agentName}"}},
+			"tnt-b--ns-a"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

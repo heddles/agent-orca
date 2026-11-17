@@ -92,7 +92,7 @@ func (r *AgentRunReconciler) recordHarnessEvents(ctx context.Context, run *agent
 		if err != nil {
 			continue
 		}
-		if err := r.StateStore.SaveTraceEvent(ctx, key, string(ev)); err != nil {
+		if err := r.stateFor(run).SaveTraceEvent(ctx, key, string(ev)); err != nil {
 			logger.Error(err, "recording a harness event in the trace", "sandbox", sb.Name)
 			return // retry from the same line next poll
 		}

@@ -24,6 +24,7 @@ import (
 	"time"
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
+	"github.com/heddles/agent-orca/internal/tenancy"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -110,6 +111,16 @@ func (rl *RateLimiter) Allow(tenant string, requestsPerMinute int) (time.Duratio
 	return 0, true
 }
 
+// quotaKey names a tenant's rate-limit bucket: its ID, so two tenants that
+// reuse a name never share a bucket. Tenants without an ID (legacy tokens) fall
+// back to the name, kept apart from IDs by the prefix.
+func quotaKey(t *TenantIdentity) string {
+	if t.TenantID != "" {
+		return t.TenantID
+	}
+	return "name:" + t.TenantName
+}
+
 // enforceQuotas checks the three tenant-level admission controls before a task
 // is actually created:
 //   - requestsPerMinute: per-tenant token-bucket rate limit (429)
@@ -130,7 +141,7 @@ func enforceQuotas(
 
 	// 1. Per-tenant request rate limit (token bucket, in memory).
 	if tenant.RateLimitRPM > 0 && rl != nil {
-		if wait, ok := rl.Allow(tenant.TenantName, tenant.RateLimitRPM); !ok {
+		if wait, ok := rl.Allow(quotaKey(tenant), tenant.RateLimitRPM); !ok {
 			return &QuotaError{
 				Code:       429,
 				Message:    fmt.Sprintf("rate limit exceeded for tenant %q (max %d/min)", tenant.TenantName, tenant.RateLimitRPM),
@@ -141,7 +152,7 @@ func enforceQuotas(
 
 	// 2. Concurrent-run cap (external-task runs only).
 	if tenant.ConcurrentRuns > 0 && kube != nil {
-		running, err := countActiveExternalRuns(ctx, kube, tenantNamespaces(tenant))
+		running, err := countActiveExternalRuns(ctx, kube, tenantNamespaces(tenant), tenant.TenantID)
 		if err != nil {
 			// Don't block the tenant on a transient K8s error — log via caller; fail closed
 			// only matters if we wanted to deny. We deny on uncertainty to avoid budget blowout.
@@ -157,7 +168,7 @@ func enforceQuotas(
 
 	// 3. Daily budget cap.
 	if tenant.BudgetPerDayUSD != "" && tenant.BudgetPerDayUSD != "0" && kube != nil {
-		used, err := sumTodayTenantSpend(ctx, kube, tenant.TenantName)
+		used, err := sumTodayTenantSpend(ctx, kube, tenant.TenantName, tenant.TenantID)
 		if err != nil {
 			return &QuotaError{Code: 500, Message: fmt.Sprintf("checking budget: %s", err)}
 		}
@@ -176,7 +187,7 @@ func enforceQuotas(
 // countActiveExternalRuns counts AgentRuns in any of the tenant's authorized
 // namespaces that are active (holding a concurrent-run slot), selected by the
 // external-task label.
-func countActiveExternalRuns(ctx context.Context, kube client.Client, namespaces []string) (int, error) {
+func countActiveExternalRuns(ctx context.Context, kube client.Client, namespaces []string, tenantID string) (int, error) {
 	if len(namespaces) == 0 {
 		return 0, fmt.Errorf("tenant has no authorized namespaces")
 	}
@@ -193,6 +204,11 @@ func countActiveExternalRuns(ctx context.Context, kube client.Client, namespaces
 	}
 	n := 0
 	for i := range list.Items {
+		// Two tenants can share a namespace: a run labelled for another tenant
+		// does not hold this tenant's slot. Unlabelled runs still count.
+		if owner := list.Items[i].Labels[tenancy.LabelTenantID]; tenantID != "" && owner != "" && owner != tenantID {
+			continue
+		}
 		if activePhases[list.Items[i].Status.Phase] {
 			n++
 		}
@@ -203,11 +219,15 @@ func countActiveExternalRuns(ctx context.Context, kube client.Client, namespaces
 // sumTodayTenantSpend sums status.spendUSD across all AgentRuns belonging to a
 // tenant (by label) that were created today. Runs still in-flight contribute
 // their last-reported status.spendUSD; runs with no spend field contribute 0.
-func sumTodayTenantSpend(ctx context.Context, kube client.Client, tenantName string) (float64, error) {
+func sumTodayTenantSpend(ctx context.Context, kube client.Client, tenantName, tenantID string) (float64, error) {
+	// Select by the stable ID when there is one: a same-name tenant recreated
+	// later must not inherit this one's spend.
+	selector := client.MatchingLabels{"agentorca.io/tenant": tenantName}
+	if tenantID != "" {
+		selector = client.MatchingLabels{tenancy.LabelTenantID: tenantID}
+	}
 	var list agentorcav1alpha1.AgentRunList
-	if err := kube.List(ctx, &list,
-		client.MatchingLabels{"agentorca.io/tenant": tenantName},
-	); err != nil {
+	if err := kube.List(ctx, &list, selector); err != nil {
 		return 0, err
 	}
 	today := time.Now().UTC().Truncate(24 * time.Hour)

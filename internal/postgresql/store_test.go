@@ -47,6 +47,7 @@ func TestQueryHistoryBindsLimitOffsetArgs(t *testing.T) {
 	completed := start.Add(5 * time.Minute)
 
 	// No-filter query: count (0 args) then data (LIMIT $1 OFFSET $2 with 2 args).
+	expectScopeBegin(mock)
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM archived_runs")).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 	mock.ExpectQuery(`LIMIT \$1 OFFSET \$2`).
@@ -58,7 +59,8 @@ func TestQueryHistoryBindsLimitOffsetArgs(t *testing.T) {
 		}).AddRow("run-1", "default", "my-agent", "Succeeded", "0.0123",
 			start, completed, "acme", 42, 200000))
 
-	s := &Store{db: db}
+	mock.ExpectCommit()
+	s := &Store{db: db, defaultScope: PlatformScope}
 	page, err := s.QueryHistory(context.Background(), HistoryQuery{Limit: 50, Offset: 0})
 	if err != nil {
 		t.Fatalf("QueryHistory failed: %v (args were not bound to the statement)", err)
@@ -94,6 +96,7 @@ func TestQueryHistoryEmptyReturnsNonNullRuns(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
+	expectScopeBegin(mock)
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM archived_runs")).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 	mock.ExpectQuery(`LIMIT \$1 OFFSET \$2`).
@@ -104,7 +107,8 @@ func TestQueryHistoryEmptyReturnsNonNullRuns(t *testing.T) {
 			"context_used_tokens", "max_context_tokens",
 		})) // no rows added
 
-	s := &Store{db: db}
+	mock.ExpectCommit()
+	s := &Store{db: db, defaultScope: PlatformScope}
 	page, err := s.QueryHistory(context.Background(), HistoryQuery{Limit: 50, Offset: 0})
 	if err != nil {
 		t.Fatalf("QueryHistory failed: %v", err)
@@ -133,6 +137,7 @@ func TestQueryHistoryFilteredBindsArgs(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	// phase filter → $1, agent_ref filter → $2, then LIMIT $3 OFFSET $4.
+	expectScopeBegin(mock)
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM archived_runs")).
 		WithArgs("Succeeded", "my-agent").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
@@ -144,7 +149,8 @@ func TestQueryHistoryFilteredBindsArgs(t *testing.T) {
 			"context_used_tokens", "max_context_tokens",
 		}))
 
-	s := &Store{db: db}
+	mock.ExpectCommit()
+	s := &Store{db: db, defaultScope: PlatformScope}
 	page, err := s.QueryHistory(context.Background(), HistoryQuery{
 		Limit: 25, Offset: 0, Phase: "Succeeded", AgentRef: "my-agent",
 	})
@@ -181,7 +187,7 @@ func TestArchiveRunWritesTraceEvents(t *testing.T) {
 	traceEvents := json.RawMessage(`[{"id":0,"event":{"type":"token","content":"hi"},"ts":"2026-01-01T00:00:00Z"}]`)
 
 	// Expect the INSERT with trace_events ($23) bound before created_at ($24/$25).
-	mock.ExpectBegin()
+	expectScopeBegin(mock)
 	mock.ExpectExec(`INSERT INTO archived_runs`).
 		WithArgs(
 			"default/test-run", "test-run", "default", sqlmock.AnyArg(),
@@ -190,12 +196,12 @@ func TestArchiveRunWritesTraceEvents(t *testing.T) {
 			0, sqlmock.AnyArg(), sqlmock.AnyArg(),
 			0, 0, "",
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
-			sqlmock.AnyArg(), sqlmock.AnyArg(), "",
+			sqlmock.AnyArg(), sqlmock.AnyArg(), "", "",
 		).WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(`INSERT INTO run_outcomes`).WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
-	s := &Store{db: db}
+	s := &Store{db: db, defaultScope: PlatformScope}
 	if err := s.ArchiveRun(context.Background(), run, traceEvents); err != nil {
 		t.Fatalf("ArchiveRun failed: %v", err)
 	}
@@ -224,7 +230,7 @@ func TestArchiveRunNilTraceEventsPreservesColumn(t *testing.T) {
 
 	// All args as AnyArg — the focus here is that the Exec succeeds with nil
 	// traceEventsJSON (the CASE in the UPSERT SQL handles the preservation).
-	mock.ExpectBegin()
+	expectScopeBegin(mock)
 	mock.ExpectExec(`INSERT INTO archived_runs`).
 		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
@@ -232,12 +238,12 @@ func TestArchiveRunNilTraceEventsPreservesColumn(t *testing.T) {
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
-			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), "").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(`INSERT INTO run_outcomes`).WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
-	s := &Store{db: db}
+	s := &Store{db: db, defaultScope: PlatformScope}
 	if err := s.ArchiveRun(context.Background(), run, nil); err != nil {
 		t.Fatalf("ArchiveRun with nil traceEventsJSON failed: %v", err)
 	}
@@ -257,22 +263,24 @@ func TestGetRunScansTraceEvents(t *testing.T) {
 
 	traceJSON := []byte(`[{"id":0,"event":{"type":"token","content":"hi"},"ts":"2026-01-01T00:00:00Z"}]`)
 
+	expectScopeBegin(mock)
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, name, namespace, labels, agent_ref, input, parent_run_ref,")).
-		WithArgs("default/my-run").
+		WithArgs("default/my-run", "*").
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id", "name", "namespace", "labels", "agent_ref", "input", "parent_run_ref",
 			"prior_run_ref", "timeout_sec", "phase", "pod_name", "spend_usd", "output", "raw_output",
 			"restart_count", "start_time", "completion_time", "context_used_tokens", "max_context_tokens",
-			"tenant", "routing_decisions", "child_run_refs", "trace_events", "created_at", "updated_at",
+			"tenant", "routing_decisions", "child_run_refs", "trace_events", "created_at", "updated_at", "tenant_id",
 		}).AddRow(
 			"default/my-run", "my-run", "default", []byte(`{}`),
 			"agent", "input", "", "", nil,
 			"Succeeded", "pod-1", "0.00", "out", "",
 			0, nil, nil, 0, 0,
-			"", nil, nil, traceJSON, time.Now(), time.Now(),
+			"", nil, nil, traceJSON, time.Now(), time.Now(), "",
 		))
+	mock.ExpectCommit()
 
-	s := &Store{db: db}
+	s := &Store{db: db, defaultScope: PlatformScope}
 	archive, err := s.GetRun(context.Background(), "default", "my-run")
 	if err != nil || archive == nil {
 		t.Fatalf("GetRun: err=%v, archive=%v", err, archive)

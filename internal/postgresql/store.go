@@ -34,6 +34,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
+	"github.com/heddles/agent-orca/internal/tenancy"
 	_ "github.com/jackc/pgx/v5/stdlib" // pgx as database/sql driver
 )
 
@@ -69,6 +70,9 @@ type RunArchive struct {
 	MaxContextTokens  int        `db:"max_context_tokens"`
 	// Tenant attribution (from agentorca.io/tenant label, empty if unattributed).
 	Tenant string `db:"tenant"`
+	// TenantID is the tenant's stable ID, from the run's agentorca.io/tenant-id
+	// label; empty when the run is unattributed.
+	TenantID string `db:"tenant_id"`
 	// Routing decisions and child refs (JSON-serialised).
 	RoutingDecisionsJSON []byte `db:"routing_decisions"`
 	ChildRunRefsJSON     []byte `db:"child_run_refs"`
@@ -84,6 +88,9 @@ type RunArchive struct {
 
 // HistoryQuery holds filter/sort/pagination parameters for run history lookups.
 type HistoryQuery struct {
+	// TenantID narrows a platform-scoped query to one tenant. A tenant-scoped
+	// call is always limited to its own tenant.
+	TenantID string
 	// Limit caps the number of results (default 50, clamped to [1, 200]).
 	Limit int
 	// Offset is the number of rows to skip (for pagination).
@@ -127,6 +134,9 @@ type HistoryPage struct {
 // Store is the PostgreSQL archival store.
 type Store struct {
 	db *sql.DB
+	// defaultScope is the scope of calls whose context carries none; empty
+	// unless the store was made by AsPlatform.
+	defaultScope string
 }
 
 // NewStore creates a new PostgreSQL store from a connection DSN.
@@ -190,10 +200,10 @@ func (s *Store) ArchiveRun(ctx context.Context, run *agentorcav1alpha1.AgentRun,
 			raw_output, restart_count, start_time, completion_time,
 			context_used_tokens, max_context_tokens, tenant,
 			routing_decisions, child_run_refs, trace_events, created_at, updated_at,
-			cost_capture
+			cost_capture, tenant_id
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-			$15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26
+			$15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, NULLIF($27, '')
 		)
 		ON CONFLICT (id) DO UPDATE SET
 			phase = EXCLUDED.phase,
@@ -215,12 +225,23 @@ func (s *Store) ArchiveRun(ctx context.Context, run *agentorcav1alpha1.AgentRun,
 	now := time.Now().UTC()
 	// The archive row and the run's outcome land together: an outcome without
 	// its run (or the reverse) would skew the routing analysis that joins them.
-	tx, err := s.db.BeginTx(ctx, nil)
+	err := s.scoped(ctx, func(tx dbtx, scope string) error {
+		tid, err := rowTenant(scope, archived.TenantID)
+		if err != nil {
+			return err
+		}
+		archived.TenantID = tid
+		return archiveRun(ctx, tx, q, run, archived, labelsJSON, now)
+	})
 	if err != nil {
 		return fmt.Errorf("archiving run %s: %w", archived.ID, err)
 	}
-	defer func() { _ = tx.Rollback() }()
-	_, err = tx.ExecContext(ctx, q,
+	slog.Debug("archived run to PostgreSQL", "run", archived.ID, "phase", archived.Phase)
+	return nil
+}
+
+func archiveRun(ctx context.Context, tx dbtx, q string, run *agentorcav1alpha1.AgentRun, archived RunArchive, labelsJSON []byte, now time.Time) error {
+	_, err := tx.ExecContext(ctx, q,
 		archived.ID, archived.Name, archived.Namespace, labelsJSON,
 		archived.AgentRef, archived.Input, archived.ParentRunRef,
 		archived.PriorRunRef, archived.TimeoutSec, archived.Phase,
@@ -228,23 +249,26 @@ func (s *Store) ArchiveRun(ctx context.Context, run *agentorcav1alpha1.AgentRun,
 		archived.RestartCount, archived.StartTime, archived.CompletionTime,
 		archived.ContextUsedTokens, archived.MaxContextTokens, archived.Tenant,
 		archived.RoutingDecisionsJSON, archived.ChildRunRefsJSON,
-		archived.TraceEventsJSON, now, now, archived.CostCapture,
+		archived.TraceEventsJSON, now, now, archived.CostCapture, archived.TenantID,
 	)
 	if err != nil {
-		return fmt.Errorf("archiving run %s: %w", archived.ID, err)
-	}
-	if err := upsertRunOutcome(ctx, tx, run, archived); err != nil {
 		return err
 	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("archiving run %s: %w", archived.ID, err)
-	}
-	slog.Debug("archived run to PostgreSQL", "run", archived.ID, "phase", archived.Phase)
-	return nil
+	return upsertRunOutcome(ctx, tx, archived.TenantID, run, archived)
 }
 
 // QueryHistory returns a paginated, filtered list of archived runs.
 func (s *Store) QueryHistory(ctx context.Context, q HistoryQuery) (*HistoryPage, error) {
+	var page *HistoryPage
+	err := s.scoped(ctx, func(tx dbtx, scope string) error {
+		var err error
+		page, err = queryHistory(ctx, tx, scope, q)
+		return err
+	})
+	return page, err
+}
+
+func queryHistory(ctx context.Context, tx dbtx, scope string, q HistoryQuery) (*HistoryPage, error) {
 	// Clamp limit.
 	limit := q.Limit
 	if limit < 1 {
@@ -265,6 +289,11 @@ func (s *Store) QueryHistory(ctx context.Context, q HistoryQuery) (*HistoryPage,
 	add := func(cond string, val any) {
 		where = append(where, fmt.Sprintf("(%s)", cond))
 		args = append(args, val)
+		paramN++
+	}
+	if tid, ok := tenantArg(scope, q.TenantID); ok {
+		where = append(where, fmt.Sprintf("tenant_id = $%d", paramN))
+		args = append(args, tid)
 		paramN++
 	}
 
@@ -298,7 +327,7 @@ func (s *Store) QueryHistory(ctx context.Context, q HistoryQuery) (*HistoryPage,
 
 	// Total count (ignoring LIMIT/OFFSET).
 	countQ := fmt.Sprintf("SELECT COUNT(*) FROM archived_runs %s", whereClause)
-	if err := s.db.QueryRowContext(ctx, countQ, args...).Scan(&count); err != nil {
+	if err := tx.QueryRowContext(ctx, countQ, args...).Scan(&count); err != nil {
 		return nil, fmt.Errorf("counting archived runs: %w", err)
 	}
 
@@ -312,7 +341,7 @@ func (s *Store) QueryHistory(ctx context.Context, q HistoryQuery) (*HistoryPage,
 	`, whereClause, paramN, paramN+1)
 	args = append(args, limit, offset)
 
-	rows, err := s.db.QueryContext(ctx, dataQ, args...)
+	rows, err := tx.QueryContext(ctx, dataQ, args...)
 	if err != nil {
 		return nil, fmt.Errorf("querying archived runs: %w", err)
 	}
@@ -347,6 +376,9 @@ func (s *Store) QueryHistory(ctx context.Context, q HistoryQuery) (*HistoryPage,
 
 // CostQuery filters the archived runs that feed the cost dashboard.
 type CostQuery struct {
+	// TenantID narrows a platform-scoped query to one tenant. A tenant-scoped
+	// call is always limited to its own tenant.
+	TenantID string
 	// Namespaces restricts results to these namespaces. Empty = all.
 	Namespaces []string
 	// Deployment restricts to runs labelled agentorca.io/deployment=<name>.
@@ -379,11 +411,26 @@ const maxCostRows = 100000
 // QueryCostRows returns the archived runs matching q, newest first, in the
 // narrow shape cost aggregation needs (no output, input or trace payloads).
 func (s *Store) QueryCostRows(ctx context.Context, q CostQuery) ([]CostRow, error) {
+	var out []CostRow
+	err := s.scoped(ctx, func(tx dbtx, scope string) error {
+		var err error
+		out, err = queryCostRows(ctx, tx, scope, q)
+		return err
+	})
+	return out, err
+}
+
+func queryCostRows(ctx context.Context, tx dbtx, scope string, q CostQuery) ([]CostRow, error) {
 	var (
 		where  []string
 		args   []any
 		paramN = 1
 	)
+	if tid, ok := tenantArg(scope, q.TenantID); ok {
+		where = append(where, fmt.Sprintf("tenant_id = $%d", paramN))
+		args = append(args, tid)
+		paramN++
+	}
 	if len(q.Namespaces) > 0 {
 		ph := make([]string, len(q.Namespaces))
 		for i, n := range q.Namespaces {
@@ -423,7 +470,7 @@ func (s *Store) QueryCostRows(ctx context.Context, q CostQuery) ([]CostRow, erro
 	`, whereClause, paramN)
 	args = append(args, maxCostRows)
 
-	rows, err := s.db.QueryContext(ctx, dataQ, args...)
+	rows, err := tx.QueryContext(ctx, dataQ, args...)
 	if err != nil {
 		return nil, fmt.Errorf("querying archived run costs: %w", err)
 	}
@@ -450,19 +497,24 @@ func (s *Store) GetRun(ctx context.Context, namespace, name string) (*RunArchive
 	const q = `SELECT id, name, namespace, labels, agent_ref, input, parent_run_ref,
 		prior_run_ref, timeout_sec, phase, pod_name, spend_usd, output, raw_output,
 		restart_count, start_time, completion_time, context_used_tokens, max_context_tokens,
-		tenant, routing_decisions, child_run_refs, trace_events, created_at, updated_at
-		FROM archived_runs WHERE id = $1`
+		tenant, routing_decisions, child_run_refs, trace_events, created_at, updated_at,
+		COALESCE(tenant_id, '')
+		FROM archived_runs WHERE id = $1 AND ($2::text = '*' OR tenant_id = $2)`
 	id := fmt.Sprintf("%s/%s", namespace, name)
 	var r RunArchive
 	var labelsJSON []byte
-	if err := s.db.QueryRowContext(ctx, q, id).Scan(
-		&r.ID, &r.Name, &r.Namespace, &labelsJSON,
-		&r.AgentRef, &r.Input, &r.ParentRunRef, &r.PriorRunRef,
-		&r.TimeoutSec, &r.Phase, &r.PodName, &r.SpendUSD, &r.Output, &r.RawOutput,
-		&r.RestartCount, &r.StartTime, &r.CompletionTime,
-		&r.ContextUsedTokens, &r.MaxContextTokens, &r.Tenant,
-		&r.RoutingDecisionsJSON, &r.ChildRunRefsJSON, &r.TraceEventsJSON, &r.CreatedAt, &r.UpdatedAt,
-	); err != nil {
+	err := s.scoped(ctx, func(tx dbtx, scope string) error {
+		return tx.QueryRowContext(ctx, q, id, scope).Scan(
+			&r.ID, &r.Name, &r.Namespace, &labelsJSON,
+			&r.AgentRef, &r.Input, &r.ParentRunRef, &r.PriorRunRef,
+			&r.TimeoutSec, &r.Phase, &r.PodName, &r.SpendUSD, &r.Output, &r.RawOutput,
+			&r.RestartCount, &r.StartTime, &r.CompletionTime,
+			&r.ContextUsedTokens, &r.MaxContextTokens, &r.Tenant,
+			&r.RoutingDecisionsJSON, &r.ChildRunRefsJSON, &r.TraceEventsJSON, &r.CreatedAt, &r.UpdatedAt,
+			&r.TenantID,
+		)
+	})
+	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -499,6 +551,7 @@ func fromAgentRun(run *agentorcav1alpha1.AgentRun) RunArchive {
 		RawOutput:         run.Status.RawOutput,
 		RestartCount:      run.Status.RestartCount,
 		Tenant:            run.Labels["agentorca.io/tenant"],
+		TenantID:          run.Labels[tenancy.LabelTenantID],
 		ContextUsedTokens: run.Status.ContextUsedTokens,
 		MaxContextTokens:  run.Status.MaxContextTokens,
 		Labels:            run.Labels,
