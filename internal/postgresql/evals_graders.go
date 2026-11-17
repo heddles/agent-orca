@@ -98,6 +98,48 @@ type EvalGrade struct {
 	Pass      bool    `json:"pass"`
 	NotGraded bool    `json:"notGraded,omitempty"`
 	Detail    string  `json:"detail"`
+	// Status is GradeOK (the default), GradeError (the grader could not run),
+	// GradeInvalid (an unusable judge reply) or GradePendingReview (a human has
+	// not labelled it). Only an ok grade counts towards a case.
+	Status string `json:"status,omitempty"`
+	// JudgeCostUSD is what the judge call cost, counted in the experiment's spend.
+	JudgeCostUSD float64 `json:"judgeCostUsd,omitempty"`
+	// GradedBy is who labelled a human grade.
+	GradedBy string `json:"gradedBy,omitempty"`
+	// Inconsistent marks a pairwise grade whose two orderings disagreed.
+	Inconsistent bool `json:"inconsistent,omitempty"`
+}
+
+// Grade statuses (eval_grades.status).
+const (
+	GradeOK            = graders.StatusOK
+	GradeError         = graders.StatusError
+	GradeInvalid       = graders.StatusInvalid
+	GradePendingReview = graders.StatusPendingReview
+)
+
+// status returns the grade's status, ok when unset.
+func (g EvalGrade) status() string {
+	if g.Status == "" {
+		return GradeOK
+	}
+	return g.Status
+}
+
+// Validate reports why a grade cannot be stored.
+func (g EvalGrade) Validate() error {
+	switch g.status() {
+	case GradeOK, GradeError, GradeInvalid, GradePendingReview:
+	default:
+		return fmt.Errorf("%w: unknown grade status %q", ErrInvalidEval, g.Status)
+	}
+	if math.IsNaN(g.Score) || g.Score < 0 || g.Score > 1 {
+		return fmt.Errorf("%w: a grade's score must be between 0 and 1", ErrInvalidEval)
+	}
+	if math.IsNaN(g.JudgeCostUSD) || math.IsInf(g.JudgeCostUSD, 0) || g.JudgeCostUSD < 0 || g.JudgeCostUSD >= 1e6 {
+		return fmt.Errorf("%w: a grade's judge cost must be between 0 and 1000000", ErrInvalidEval)
+	}
+	return nil
 }
 
 // EvalResult is one graded output.
@@ -326,11 +368,7 @@ func (s *Store) SaveEvalResult(ctx context.Context, datasetID int64, r EvalResul
 		}
 		r.Grades = make([]EvalGrade, 0, len(grades))
 		for _, g := range grades {
-			err := tx.QueryRowContext(ctx, `
-			INSERT INTO eval_grades (tenant_id, result_id, grader_id, score, pass, not_graded, rationale)
-			SELECT $1, $2, id, $4, $5, $6, $7 FROM eval_graders WHERE id = $3 AND dataset_id = $8 AND tenant_id = $1
-			RETURNING id`,
-				tenant, r.ID, g.GraderID, g.Score, g.Pass, g.NotGraded, g.Detail, datasetID).Scan(&g.ID)
+			err := insertGrade(ctx, tx, tenant, datasetID, r.ID, &g)
 			if errors.Is(err, sql.ErrNoRows) {
 				return fmt.Errorf("%w: a grader changed while grading; grade again", ErrInvalidEval)
 			}
@@ -345,6 +383,24 @@ func (s *Store) SaveEvalResult(ctx context.Context, datasetID int64, r EvalResul
 		return EvalResult{}, wrapEval("saving the result", err)
 	}
 	return r, nil
+}
+
+// insertGrade stores one grade of a result under the tenant of its parents,
+// naming a grader of the dataset. sql.ErrNoRows means the grader is not one.
+func insertGrade(ctx context.Context, tx dbtx, tenant string, datasetID, resultID int64, g *EvalGrade) error {
+	if err := g.Validate(); err != nil {
+		return err
+	}
+	g.Status = g.status()
+	detail := g.Detail
+	if len(detail) > 4096 {
+		detail = strings.ToValidUTF8(detail[:4096], "")
+	}
+	return tx.QueryRowContext(ctx, `
+		INSERT INTO eval_grades (tenant_id, result_id, grader_id, score, pass, not_graded, rationale, status, judge_cost_usd, graded_by, inconsistent)
+		SELECT $1, $2, id, $4, $5, $6, $7, $8, $9, $10, $11 FROM eval_graders WHERE id = $3 AND dataset_id = $12 AND tenant_id = $1
+		RETURNING id`,
+		tenant, resultID, g.GraderID, g.Score, g.Pass, g.NotGraded, detail, g.Status, g.JudgeCostUSD, g.GradedBy, g.Inconsistent, datasetID).Scan(&g.ID)
 }
 
 const evalResultCols = `r.id, r.tenant_id, r.dataset_id, r.case_id, r.arm, r.output, r.tool_calls,
@@ -390,7 +446,8 @@ func loadGrades(ctx context.Context, tx dbtx, scope string, results []EvalResult
 	}
 	idsJSON, _ := json.Marshal(ids)
 	rows, err := tx.QueryContext(ctx, `
-		SELECT e.id, e.result_id, e.grader_id, g.name, g.kind, e.score, e.pass, e.not_graded, e.rationale
+		SELECT e.id, e.result_id, e.grader_id, g.name, g.kind, e.score, e.pass, e.not_graded, e.rationale,
+		       e.status, e.judge_cost_usd::float8, e.graded_by, e.inconsistent
 		FROM eval_grades e JOIN eval_graders g ON g.id = e.grader_id AND g.tenant_id = e.tenant_id
 		WHERE e.result_id IN (SELECT jsonb_array_elements_text($1::jsonb)::bigint)
 		  AND ($2::text = '*' OR e.tenant_id = $2)
@@ -402,7 +459,8 @@ func loadGrades(ctx context.Context, tx dbtx, scope string, results []EvalResult
 	for rows.Next() {
 		var g EvalGrade
 		var resultID int64
-		if err := rows.Scan(&g.ID, &resultID, &g.GraderID, &g.Grader, &g.Kind, &g.Score, &g.Pass, &g.NotGraded, &g.Detail); err != nil {
+		if err := rows.Scan(&g.ID, &resultID, &g.GraderID, &g.Grader, &g.Kind, &g.Score, &g.Pass, &g.NotGraded, &g.Detail,
+			&g.Status, &g.JudgeCostUSD, &g.GradedBy, &g.Inconsistent); err != nil {
 			return err
 		}
 		if r := index[resultID]; r != nil {

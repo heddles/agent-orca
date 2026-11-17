@@ -246,6 +246,11 @@ func (r *Runner) prepare(ctx context.Context, e postgresql.EvalExperiment, lim t
 	for i, a := range resolved {
 		arms[i] = a.Arm
 	}
+	checked := e
+	checked.Arms = arms
+	if err := r.checkJudges(ctx, checked, lim); err != nil {
+		return nil, err
+	}
 	if err := r.materialise(ctx, e, lim.Name, resolved); err != nil {
 		return nil, err
 	}

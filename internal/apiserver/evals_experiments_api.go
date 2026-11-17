@@ -39,6 +39,8 @@ import (
 //	GET  /api/evals/experiments/{id}                viewer
 //	GET  /api/evals/experiments/{id}/results        viewer (paged)
 //	POST /api/evals/experiments/{id}/cancel         builder, audited
+//	GET  /api/evals/experiments/{id}/review         viewer (the blind review queue, evals_review_api.go)
+//	POST /api/evals/experiments/{id}/review/close   builder, audited
 //
 // An experiment is tenant data in PostgreSQL, scoped by the store like datasets.
 // The operator's experiment runner (internal/evals/runner) does the running; the
@@ -101,6 +103,9 @@ type experimentView struct {
 	// ResultsTotal is the number of results the experiment will have when it ends
 	// without stopping early: cases times arms times repeats.
 	ResultsTotal int `json:"resultsTotal"`
+	// Warnings are cautions about a new experiment, given when it is created: a
+	// judge that is also an arm favours its own output.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 func experimentViewOf(e postgresql.EvalExperiment) experimentView {
@@ -136,11 +141,11 @@ func (s *UIServer) handleEvalExperiments(w http.ResponseWriter, r *http.Request)
 	}
 }
 
-// handleEvalExperiment serves /api/evals/experiments/{id}[/results|/cancel].
+// handleEvalExperiment serves /api/evals/experiments/{id}[/results|/cancel|/review|/review/close].
 func (s *UIServer) handleEvalExperiment(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/evals/experiments/"), "/"), "/")
 	id, ok := parseEvalID(parts[0])
-	if !ok || len(parts) > 2 {
+	if !ok || len(parts) > 3 {
 		http.NotFound(w, r)
 		return
 	}
@@ -151,11 +156,19 @@ func (s *UIServer) handleEvalExperiment(w http.ResponseWriter, r *http.Request) 
 		s.listEvalExperimentResults(w, r, id)
 	case len(parts) == 2 && parts[1] == segCancel && r.Method == http.MethodPost:
 		s.cancelEvalExperiment(w, r, id)
-	case len(parts) == 2 && parts[1] != segResults && parts[1] != segCancel:
+	case len(parts) == 2 && parts[1] == segReview && r.Method == http.MethodGet:
+		s.listEvalReviews(w, r, id)
+	case len(parts) == 3 && parts[1] == segReview && parts[2] == segClose && r.Method == http.MethodPost:
+		s.closeEvalReview(w, r, id)
+	case len(parts) == 2 && !isExperimentSeg(parts[1]), len(parts) == 3 && (parts[1] != segReview || parts[2] != segClose):
 		http.NotFound(w, r)
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+func isExperimentSeg(seg string) bool {
+	return seg == segResults || seg == segCancel || seg == segReview
 }
 
 type experimentRequest struct {
@@ -231,6 +244,10 @@ func (s *UIServer) createEvalExperiment(w http.ResponseWriter, r *http.Request) 
 	if !s.checkExperimentArms(w, r, e, tenantID) {
 		return
 	}
+	warnings, ok := s.checkExperimentJudges(w, r, e, graders)
+	if !ok {
+		return
+	}
 	created, err := store.CreateEvalExperiment(ctx, e, s.evalLimits)
 	if err != nil {
 		evalFail(w, "creating the experiment", err)
@@ -238,9 +255,11 @@ func (s *UIServer) createEvalExperiment(w http.ResponseWriter, r *http.Request) 
 	}
 	s.experimentAudit(w, r, postgresql.AuditCreate, created, fmt.Sprintf("queued experiment on dataset %s v%d: %d arms, %d repeats, budget $%.2f",
 		d.Name, created.DatasetVersion, len(created.Arms), created.Repeats, created.BudgetUSD))
+	view := experimentViewOf(created)
+	view.Warnings = warnings
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(experimentViewOf(created))
+	_ = json.NewEncoder(w).Encode(view)
 }
 
 // checkExperimentArms resolves every arm (its revision or the live agent) and

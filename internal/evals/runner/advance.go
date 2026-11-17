@@ -19,6 +19,7 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -31,6 +32,7 @@ import (
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
 	"github.com/heddles/agent-orca/internal/evals/compare"
+	"github.com/heddles/agent-orca/internal/evals/graders"
 	"github.com/heddles/agent-orca/internal/postgresql"
 	"github.com/heddles/agent-orca/internal/tenancy"
 )
@@ -58,8 +60,22 @@ type state struct {
 	done    map[slot]string
 	runs    map[slot][]*agentorcav1alpha1.AgentRun
 	graders []postgresql.EvalGrader
-	// spent is what the experiment has spent, the recorded results included.
+	// spent is what the experiment has spent, the recorded results and the
+	// judge's calls included.
 	spent float64
+	// unrecorded is the cost of the run being graded, not in spent until it is recorded.
+	unrecorded float64
+	// lim is the tenant's limits. With dailyLimited, dailyLeft is what is left of
+	// its daily budget for the judge this tick (it can go below zero: the last
+	// call may overshoot, the next is refused).
+	lim          tenantLimits
+	dailyLimited bool
+	dailyLeft    float64
+	judges       map[int64]judgeEntry
+	// traces holds the archived trace of each finished run; deferred the slots
+	// whose trace is not archived yet and are recorded on a later tick.
+	traces   map[slot]runTrace
+	deferred map[slot]bool
 }
 
 func isTerminal(run *agentorcav1alpha1.AgentRun) bool {
@@ -107,7 +123,8 @@ func (r *Runner) observe(ctx context.Context, e postgresql.EvalExperiment) (*sta
 		return nil, err
 	}
 	st := &state{e: e, cases: cases, caseBy: map[int64]postgresql.EvalCase{}, done: map[slot]string{},
-		runs: map[slot][]*agentorcav1alpha1.AgentRun{}, graders: gs, spent: e.SpentUSD}
+		runs: map[slot][]*agentorcav1alpha1.AgentRun{}, graders: gs, spent: e.SpentUSD,
+		judges: map[int64]judgeEntry{}, traces: map[slot]runTrace{}, deferred: map[slot]bool{}}
 	for _, c := range cases {
 		st.caseBy[c.ID] = c
 	}
@@ -159,6 +176,10 @@ func (r *Runner) advance(ctx context.Context, e postgresql.EvalExperiment, lim t
 	}
 	st, err := r.observe(ctx, e)
 	if err != nil {
+		return err
+	}
+	st.lim = lim
+	if err := r.openJudgeBudget(ctx, st); err != nil {
 		return err
 	}
 	inflight, committed, err := r.ingest(ctx, st, false)
@@ -218,6 +239,17 @@ func (r *Runner) ingest(ctx context.Context, st *state, cancelling bool) (inflig
 			committed += runCapOf(run)
 		default:
 			phase, reason := phaseOf(run)
+			if phase == phaseSucceeded {
+				wait, err := r.loadTrace(ctx, st, s, run, cancelling)
+				if err != nil {
+					return 0, 0, err
+				}
+				if wait {
+					inflight++
+					committed += runCapOf(run)
+					continue
+				}
+			}
 			if phase == phaseFailed && platformFailure(reason) {
 				if cancelling || attemptOf(run) >= 1 {
 					phase = phaseSkipped
@@ -302,16 +334,70 @@ func (r *Runner) record(ctx context.Context, st *state, s slot, run *agentorcav1
 	}
 	var grades []postgresql.EvalGrade
 	if phase == phaseSucceeded {
-		grades, res.CasePass = gradeResult(st.graders, c, res)
+		tr := st.traces[s]
+		if tr.ToolCalls != nil {
+			res.ToolCalls = tr.ToolCalls
+		}
+		st.unrecorded = res.CostUSD
+		grades, res.CasePass = r.gradeRun(ctx, st, c, res, tr)
+		st.unrecorded = 0
 	}
 	recorded, err := r.store.RecordEvalRunResult(ctx, st.e.ID, res, grades)
 	if err != nil {
 		return err
 	}
 	st.done[s] = phase
+	delete(st.deferred, s)
 	if recorded {
-		st.spent += res.CostUSD
+		judgeCost := judgeCostOf(grades)
+		st.spent += res.CostUSD + judgeCost
+		if st.dailyLimited {
+			st.dailyLeft -= judgeCost
+		}
 	}
+	return nil
+}
+
+// loadTrace reads a finished run's trace into the state. It reports whether the
+// run must wait for a later tick because its trace is not archived yet and a
+// grader needs it; once the grace is over, or when cancelling, the run is graded
+// without it.
+func (r *Runner) loadTrace(ctx context.Context, st *state, s slot, run *agentorcav1alpha1.AgentRun, cancelling bool) (wait bool, err error) {
+	if _, ok := st.traces[s]; ok {
+		return false, nil
+	}
+	tr, err := r.traceOf(ctx, run)
+	if err != nil {
+		return false, err
+	}
+	if !tr.Known && needsTrace(st.graders) && !cancelling && !r.traceExpired(run) {
+		st.deferred[s] = true
+		return true, nil
+	}
+	st.traces[s] = tr
+	return false, nil
+}
+
+// openJudgeBudget works out what the judge may spend today: what is left of the
+// tenant's daily budget, once the tenant's runs and judge calls so far are taken
+// off. It does nothing when the dataset has no llm grader or the tenant has no
+// daily budget.
+func (r *Runner) openJudgeBudget(ctx context.Context, st *state) error {
+	if st.lim.DailyUSD <= 0 {
+		return nil
+	}
+	judged := false
+	for _, g := range st.graders {
+		judged = judged || g.Kind == graders.KindLLM
+	}
+	if !judged {
+		return nil
+	}
+	used, err := r.todaySpend(ctx, st.e.TenantID)
+	if err != nil {
+		return err
+	}
+	st.dailyLimited, st.dailyLeft = true, st.lim.DailyUSD-used
 	return nil
 }
 
@@ -358,6 +444,9 @@ func (r *Runner) start(ctx context.Context, st *state, lim tenantLimits, all []s
 	}
 	for _, s := range all {
 		if _, ok := st.done[s]; ok {
+			continue
+		}
+		if st.deferred[s] {
 			continue
 		}
 		run := st.latest(s)
@@ -455,6 +544,24 @@ type Summary struct {
 	// when there was nothing to compare.
 	Comparison      *compare.Summary `json:"comparison,omitempty"`
 	ComparisonError string           `json:"comparisonError,omitempty"`
+	// Graders is how each grader's grades came out: counted, passed, not graded,
+	// invalid judge replies, errors and results still waiting for a human. Results
+	// pending review are left out of the comparison, never counted as passes.
+	Graders []postgresql.EvalGraderStat `json:"graders,omitempty"`
+	// JudgeSpentUSD is what the judge's grades cost, part of SpentUsd with the
+	// judge's canary check.
+	JudgeSpentUSD float64 `json:"judgeSpentUsd,omitempty"`
+	// ReviewPending is the review items still waiting for a label.
+	ReviewPending int `json:"reviewPending,omitempty"`
+}
+
+// stoppedByOf reads StoppedBy back from a stored summary.
+func stoppedByOf(raw json.RawMessage) string {
+	var s struct {
+		StoppedBy string `json:"stoppedBy"`
+	}
+	_ = json.Unmarshal(raw, &s)
+	return s.StoppedBy
 }
 
 func (r *Runner) summarise(ctx context.Context, e postgresql.EvalExperiment, spent float64, stoppedBy string) ([]byte, error) {
@@ -468,6 +575,15 @@ func (r *Runner) summarise(ctx context.Context, e postgresql.EvalExperiment, spe
 			sum.Skipped++
 		}
 	}
+	stats, err := r.store.EvalGraderStats(ctx, e.ID)
+	if err != nil {
+		return nil, err
+	}
+	sum.Graders = stats
+	for _, st := range stats {
+		sum.JudgeSpentUSD += st.JudgeCostUSD
+		sum.ReviewPending += st.Pending
+	}
 	if len(e.Arms) > 0 {
 		cmp, err := compare.Summarize(rows, e.Arms[0].Label, compare.Options{Seed: uint64(e.ID)})
 		if err != nil {
@@ -479,13 +595,29 @@ func (r *Runner) summarise(ctx context.Context, e postgresql.EvalExperiment, spe
 	return json.Marshal(sum)
 }
 
-// complete ends the experiment as complete, with its summary.
+// complete ends the experiment's runs: it grades the pairwise comparisons, opens
+// the review stage when a human grader has anything to review, and ends the
+// experiment as complete, with its summary, or leaves it awaiting review.
 func (r *Runner) complete(ctx context.Context, st *state, stoppedBy string) error {
+	if err := r.gradePairs(ctx, st); err != nil {
+		return err
+	}
+	pending, err := r.store.PrepareEvalReview(ctx, st.e.ID)
+	if err != nil {
+		return err
+	}
 	sum, err := r.summarise(ctx, st.e, st.spent, stoppedBy)
 	if err != nil {
 		return err
 	}
 	r.cleanup(ctx, st.e)
+	if pending > 0 {
+		err := r.store.AwaitEvalReview(ctx, st.e.ID, sum)
+		if errors.Is(err, postgresql.ErrExperimentFinished) {
+			return nil
+		}
+		return err
+	}
 	return r.finish(ctx, st.e, postgresql.ExperimentComplete, sum, "")
 }
 

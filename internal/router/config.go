@@ -257,6 +257,10 @@ type ProviderConfig struct {
 	LiteLLMModel string
 	// APIKeyFile is the path to the mounted secret file containing the API key.
 	APIKeyFile string
+	// APIKey is the key itself, for a caller that has read it from the Secret
+	// (the operator's evaluation judge). It wins over APIKeyFile and is never
+	// part of a generated config.
+	APIKey string `json:"-"`
 	// Weight is used for weighted random selection.
 	Weight int
 	// Capabilities tags for this model.

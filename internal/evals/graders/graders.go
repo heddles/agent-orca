@@ -57,12 +57,17 @@ const (
 	KindToolNotCalled = "tool_not_called"
 	KindMaxCost       = "max_cost"
 	KindMaxLatency    = "max_latency"
+	// KindLLM and KindHuman are not run by Grade: a model judge and a human
+	// reviewer grade in the experiment runner. They are kinds here so their
+	// config is checked and stored like any other.
+	KindLLM   = "llm"
+	KindHuman = "human"
 )
 
 // Kinds lists every kind, in documentation order.
 var Kinds = []string{
 	KindExact, KindContains, KindNotContains, KindRegex, KindJSONSchema, KindJSONField,
-	KindToolCalled, KindToolNotCalled, KindMaxCost, KindMaxLatency,
+	KindToolCalled, KindToolNotCalled, KindMaxCost, KindMaxLatency, KindLLM, KindHuman,
 }
 
 // Limits.
@@ -291,6 +296,10 @@ func parseTraceConfig(s Spec) (any, error) {
 			return nil, configErr("ms must be above zero")
 		}
 		return c, nil
+	case KindLLM:
+		return ParseLLM(s.Config)
+	case KindHuman:
+		return ParseHuman(s.Config)
 	default:
 		return nil, configErr("unknown kind %q (one of %s)", s.Kind, strings.Join(Kinds, ", "))
 	}
@@ -321,6 +330,10 @@ func Grade(s Spec, in Input) Result {
 		return gradeCost(c, in)
 	case latencyConfig:
 		return gradeLatency(c, in)
+	case LLMConfig:
+		return Result{NotGraded: true, Detail: "an llm grader grades in an experiment, by the judge"}
+	case HumanConfig:
+		return Result{NotGraded: true, Detail: "a human grader grades in an experiment's review queue"}
 	}
 	return fail("unknown grader")
 }

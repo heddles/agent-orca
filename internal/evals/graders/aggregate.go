@@ -57,3 +57,25 @@ func CasePass(gs []Graded) bool {
 	}
 	return weights == 0 || sum/weights >= CasePassMean
 }
+
+// Grade statuses, as stored in eval_grades.status.
+const (
+	StatusOK            = "ok"
+	StatusError         = "error"
+	StatusInvalid       = "invalid"
+	StatusPendingReview = "pending_review"
+)
+
+// GradedFor adapts a stored grade to the case rule. A grade that is ok counts as
+// it is. One that is pending review is not graded yet: it fails a required
+// grader and is left out of the mean of the others. An error or an invalid judge
+// reply counts as a failure with score 0, never as a pass.
+func GradedFor(status string, res Result, weight float64, required bool) Graded {
+	switch status {
+	case StatusPendingReview:
+		res = Result{NotGraded: true, Detail: res.Detail}
+	case StatusError, StatusInvalid:
+		res = Result{Detail: res.Detail}
+	}
+	return Graded{Result: res, Weight: weight, Required: required}
+}

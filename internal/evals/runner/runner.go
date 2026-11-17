@@ -43,13 +43,13 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
 	"github.com/heddles/agent-orca/internal/evals/compare"
-	"github.com/heddles/agent-orca/internal/evals/graders"
 	"github.com/heddles/agent-orca/internal/postgresql"
 	"github.com/heddles/agent-orca/internal/tenancy"
 )
@@ -86,6 +86,17 @@ type Store interface {
 	FinishEvalExperiment(ctx context.Context, id int64, status string, summary json.RawMessage, errText string) error
 	EvalSummaryRows(ctx context.Context, id int64) ([]compare.Row, error)
 	ListEvalGraders(ctx context.Context, datasetID int64) ([]postgresql.EvalGrader, error)
+	// GetRun reads an archived run: the trace the tool graders read.
+	GetRun(ctx context.Context, namespace, name string) (*postgresql.RunArchive, error)
+	// The judge's and the review stage's calls.
+	ListEvalExperimentResults(ctx context.Context, id int64, q postgresql.EvalExperimentResultQuery) ([]postgresql.EvalResult, error)
+	SaveEvalGrades(ctx context.Context, experimentID, resultID int64, grades []postgresql.EvalGrade) error
+	AddEvalSpend(ctx context.Context, experimentID int64, usd float64) error
+	EvalJudgeSpendSince(ctx context.Context, since time.Time) (float64, error)
+	EvalGraderStats(ctx context.Context, experimentID int64) ([]postgresql.EvalGraderStat, error)
+	PrepareEvalReview(ctx context.Context, experimentID int64) (int, error)
+	AwaitEvalReview(ctx context.Context, id int64, summary json.RawMessage) error
+	PendingEvalReviews(ctx context.Context, experimentID int64) (int, error)
 	GetRevision(ctx context.Context, q postgresql.RevisionQuery, n int) (postgresql.Revision, error)
 }
 
@@ -107,6 +118,9 @@ type Config struct {
 	Limiter Limiter
 	// Now is the clock. Default time.Now.
 	Now func() time.Time
+	// Judges finds the model an llm grader names. Nil means no judge: an
+	// experiment whose dataset has an llm grader fails to start.
+	Judges JudgeResolver
 }
 
 // Runner runs experiments.
@@ -115,6 +129,9 @@ type Runner struct {
 	kube  client.Client
 	cfg   Config
 	log   *slog.Logger
+	// canaryOK remembers the judges that passed their canary check, by
+	// experiment and grader, so a retried start does not pay for it twice.
+	canaryOK sync.Map
 }
 
 // New returns a runner. kube is the operator's client (the cache is fine).
@@ -194,6 +211,9 @@ func (r *Runner) processSafely(ctx context.Context, e postgresql.EvalExperiment,
 
 // process advances one experiment by one step. ctx carries the experiment's tenant scope.
 func (r *Runner) process(ctx context.Context, e postgresql.EvalExperiment, lim tenantLimits) error {
+	if e.Status == postgresql.ExperimentReview {
+		return r.reviewTick(ctx, e)
+	}
 	if e.CancelRequested {
 		return r.cancel(ctx, e)
 	}
@@ -370,24 +390,6 @@ func (r *Runner) Sweep(ctx context.Context) error {
 		}
 	}
 	return errors.Join(errs...)
-}
-
-// ── grading ─────────────────────────────────────────────────────────────────
-
-// gradeResult runs the dataset's deterministic graders over an output.
-func gradeResult(gs []postgresql.EvalGrader, c postgresql.EvalCase, res postgresql.EvalResult) ([]postgresql.EvalGrade, bool) {
-	in := graders.Input{
-		Output: res.Output, Reference: c.Reference,
-		Trace: graders.Trace{ToolCalls: res.ToolCalls, CostUSD: res.CostUSD, LatencyMs: res.LatencyMs},
-	}
-	grades := make([]postgresql.EvalGrade, 0, len(gs))
-	graded := make([]graders.Graded, 0, len(gs))
-	for _, g := range gs {
-		out := graders.Grade(g.Spec(), in)
-		grades = append(grades, postgresql.EvalGrade{GraderID: g.ID, Score: out.Score, Pass: out.Pass, NotGraded: out.NotGraded, Detail: out.Detail})
-		graded = append(graded, graders.Graded{Result: out, Weight: g.Weight, Required: g.Required})
-	}
-	return grades, len(gs) > 0 && graders.CasePass(graded)
 }
 
 func trimOutput(s string) string {

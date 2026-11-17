@@ -421,12 +421,68 @@ components:
         cases: { type: integer }
         resultsDone: { type: integer }
         resultsTotal: { type: integer }
-        summary: { type: object, description: stoppedBy, partial, results, skipped, spentUsd and the paired comparison }
+        summary: { type: object, description: 'stoppedBy, partial, results, skipped, spentUsd, the paired comparison, graders (per grader: graded, passed, notGraded, invalid, errors, pendingReview, inconsistent, judgeCostUsd), judgeSpentUsd and reviewPending' }
+        warnings: { type: array, items: { type: string }, description: 'On create only: cautions, such as a judge that is also an arm.' }
         error: { type: string }
         createdBy: { type: string }
         createdAt: { type: string, format: date-time }
         startedAt: { type: string, format: date-time }
         finishedAt: { type: string, format: date-time }
+    EvalReviewItem:
+      type: object
+      description: >
+        One thing for a person to grade. It is blind: nothing names the arm, the
+        repeat, the run, its cost or its tools, and its ID is the assignment's.
+      required: [id, experimentId, caseId, grader, scale, input, output, status]
+      properties:
+        id: { type: integer, format: int64 }
+        experimentId: { type: integer, format: int64 }
+        caseId: { type: integer, format: int64 }
+        grader: { type: string }
+        scale: { type: string, enum: [passfail, 1to5] }
+        instructions: { type: string }
+        passAt: { type: number }
+        input: { type: string }
+        reference: { type: string }
+        output: { type: string }
+        status: { type: string, enum: [pending, done, closed] }
+        reviewer: { type: string }
+        labelledAt: { type: string, format: date-time }
+        score: { type: number }
+        pass: { type: boolean }
+        comment: { type: string }
+    EvalReviewLabel:
+      type: object
+      description: Pass for a passfail grader, stars for a 1to5 one.
+      properties:
+        pass: { type: boolean }
+        stars: { type: integer, minimum: 1, maximum: 5 }
+        comment: { type: string, maxLength: 2048 }
+    EvalCalibration:
+      type: object
+      required: [llmGrader, humanGrader, minPairs, tooFewPairs, report]
+      properties:
+        llmGrader: { type: string }
+        humanGrader: { type: string }
+        minPairs: { type: integer, description: 'The fewest results graded by both for a report (20).' }
+        tooFewPairs: { type: boolean }
+        report:
+          type: object
+          properties:
+            pairs: { type: integer }
+            agreement: { type: number, description: Share of results the judge and the human agree on. }
+            kappa: { type: number, description: Cohen's kappa. }
+            kappaDefined: { type: boolean, description: False when one side gave the same verdict throughout. }
+            trustworthy: { type: boolean, description: 'False under kappa 0.4: the judge cannot be part of a gate unless an admin accepts it.' }
+            confusion:
+              type: object
+              properties:
+                bothPass: { type: integer }
+                bothFail: { type: integer }
+                llmPassHumanFail: { type: integer }
+                llmFailHumanPass: { type: integer }
+            disagreements: { type: array, items: { type: object } }
+            disagreementsCut: { type: boolean }
     EvalDataset:
       type: object
       description: >
@@ -529,7 +585,7 @@ components:
       properties:
         kind:
           type: string
-          enum: [exact, contains, not_contains, regex, json_schema, json_field_equals, tool_called, tool_not_called, max_cost, max_latency]
+          enum: [exact, contains, not_contains, regex, json_schema, json_field_equals, tool_called, tool_not_called, max_cost, max_latency, llm, human]
         config:
           type: object
           description: >
@@ -537,7 +593,14 @@ components:
             contains and not_contains {value, caseInsensitive?}; regex {pattern, mustMatch?}
             (RE2, at most 1 KiB); json_schema {schema} (at most 64 KiB, no remote $ref);
             json_field_equals {path, value}; tool_called and tool_not_called {tool};
-            max_cost {usd}; max_latency {ms}.
+            max_cost {usd}; max_latency {ms}. llm {providerRef, rubric (at most 4000
+            characters), mode?: rubric (default), reference or pairwise, passAt? (default 0.7),
+            maxTokens? (16 to 2048, default 512), judgeRepeats? (1 to 3, median)}: a
+            ModelProvider of the workspace or the platform catalog judges, in an experiment
+            only. human {scale?: passfail (default) or 1to5, instructions?, passAt? (default
+            0.75), sample? (cases to review, 0 for all)}: a person labels, in an experiment's
+            review queue only. Neither grades a result sent to the grade endpoint; they
+            come back not graded.
           additionalProperties: true
         weight: { type: number, minimum: 0, exclusiveMinimum: true, default: 1 }
         required: { type: boolean, default: false, description: A failing required grader fails the case. }
@@ -574,7 +637,17 @@ components:
         score: { type: number, minimum: 0, maximum: 1 }
         pass: { type: boolean }
         notGraded: { type: boolean, description: The grader needed a reference the case lacks. It is not a pass. }
-        detail: { type: string, description: Why, in at most 1 KiB; never the output. }
+        detail: { type: string, description: 'Why, in at most 1 KiB (4 KiB for a judge or a reviewer); never the output. Plain text: show it escaped, never as Markdown.' }
+        status:
+          type: string
+          enum: [ok, error, invalid, pending_review]
+          description: >
+            ok counts. error: the grader could not run (no trace, no judge, no budget);
+            invalid: a judge reply that was not usable, counted as failed; pending_review:
+            waiting for a human, left out of the comparison and never a pass.
+        judgeCostUsd: { type: number, description: What the judge call cost, part of the experiment's spend. }
+        gradedBy: { type: string, description: Who labelled a human grade. }
+        inconsistent: { type: boolean, description: A pairwise judge whose two orderings disagreed; the grade is a tie. }
     EvalResult:
       type: object
       required: [id, datasetId, output, toolCalls, costUsd, latencyMs, casePass, createdBy, createdAt, grades]
@@ -1597,6 +1670,118 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { description: The experiment has ended }
+  /api/evals/experiments/{id}/review:
+    get:
+      tags: [evals]
+      summary: The blind review queue of an experiment
+      description: >
+        Needs the viewer role. The items a human grader asks a person to label,
+        in a random order, with the experiment's status and counts. An item shows
+        the case, the output and the grader's instructions, never the arm.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: integer } }
+        - { in: query, name: status, schema: { type: string, enum: [pending, done, closed] } }
+        - { in: query, name: limit, schema: { type: integer, minimum: 1, maximum: 50, default: 20 } }
+      responses:
+        '200':
+          description: the queue
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, progress, items]
+                properties:
+                  status: { type: string }
+                  progress:
+                    type: object
+                    properties:
+                      pending: { type: integer }
+                      done: { type: integer }
+                      closed: { type: integer }
+                  items: { type: array, items: { $ref: '#/components/schemas/EvalReviewItem' } }
+        '400': { description: A bad status or limit }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { description: Experiments need the PostgreSQL store and operator.evals.enabled }
+  /api/evals/experiments/{id}/review/close:
+    post:
+      tags: [evals]
+      summary: Close an experiment's review
+      description: >
+        Needs the builder role. Audited. Closes every item still pending; their
+        grades stay pending_review, so those results are left out of the comparison,
+        never counted as passes. The runner then ends the experiment. 409 unless the
+        experiment is awaiting_review.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: integer } }
+      responses:
+        '200':
+          description: how many items were closed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  closed: { type: integer }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: The experiment is not awaiting review }
+  /api/evals/review/{id}:
+    parameters:
+      - { in: path, name: id, required: true, schema: { type: integer, format: int64 } }
+    get:
+      tags: [evals]
+      summary: Get a review item
+      description: Needs the viewer role. The ID is the assignment's, from the queue.
+      responses:
+        '200':
+          description: the item
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/EvalReviewItem' } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      tags: [evals]
+      summary: Label a review item
+      description: >
+        Needs the runner role. Audited by the grader's name and the experiment's ID,
+        never the output or the comment. One label per item: the pending grade becomes
+        an ok grade graded by the caller and the result's case verdict is worked out
+        again. 403 for the person who started the experiment when
+        operator.evals.requireIndependentReview is on.
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: '#/components/schemas/EvalReviewLabel' } }
+      responses:
+        '200':
+          description: the labelled item
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/EvalReviewItem' } }
+        '400': { description: The label does not fit the grader's scale }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: The item was labelled or closed already }
+  /api/evals/datasets/{id}/calibration:
+    get:
+      tags: [evals]
+      summary: Calibrate an llm grader against a human grader
+      description: >
+        Needs the viewer role. Over the results both graded (both grades ok): the share
+        they agree on, Cohen's kappa, the confusion table and the disagreements. Under
+        20 such results tooFewPairs is true. A kappa under 0.4 marks the judge not
+        trustworthy.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: integer } }
+        - { in: query, name: llm, required: true, schema: { type: string }, description: The name of an llm grader of the dataset. }
+        - { in: query, name: human, required: true, schema: { type: string }, description: The name of a human grader of the dataset. }
+        - { in: query, name: experimentId, schema: { type: integer }, description: Limit to one experiment. }
+      responses:
+        '200':
+          description: the calibration
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/EvalCalibration' } }
+        '400': { description: A missing grader name or a bad experimentId }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { description: Evaluations need the PostgreSQL store }
   /api/evals/datasets/{id}:
     parameters:
       - { in: path, name: id, required: true, schema: { type: integer, format: int64 } }

@@ -1,6 +1,6 @@
 # Evaluation datasets
 
-A dataset is a named set of **cases** (an input, an optional reference answer, tags) that belongs to one workspace. Datasets are the first piece of the evaluation work in the evaluations proposal (`docs/proposals/evaluations.md`, not merged yet); experiments are described below; the judge and the publish gate come later. This page covers what exists now: datasets, cases, "add to dataset" from a run, redaction, and deterministic graders.
+A dataset is a named set of **cases** (an input, an optional reference answer, tags) that belongs to one workspace. Datasets are the first piece of the evaluation work in the evaluations proposal (`docs/proposals/evaluations.md`, not merged yet); experiments, the LLM judge and human review are described below; the publish gate and the screens come later. This page covers what exists now: datasets, cases, "add to dataset" from a run, redaction, deterministic graders, experiments, the judge and review.
 
 Datasets live in PostgreSQL, in the tables `eval_datasets` and `eval_cases` (migration `0013`). They carry `tenant_id` with row-level security like every other tenant table (see [tenant isolation](tenant-isolation.md)). They are not CRDs and have no GitOps form; the API is the interface. **Without the PostgreSQL store every endpoint answers 503** with `evaluations need the PostgreSQL store`. A caller with no tenant ID (authentication off) cannot create datasets: a dataset always belongs to a tenant.
 
@@ -10,7 +10,9 @@ Datasets live in PostgreSQL, in the tables `eval_datasets` and `eval_cases` (mig
 |---|---|
 | List and read datasets and cases | `viewer` |
 | Create, change, delete datasets; add, edit, remove cases; add a run to a dataset; create, replace, delete graders | `builder` |
-| Grade a supplied result | `runner` |
+| Grade a supplied result; label an item in a review queue | `runner` |
+| Read a review queue, a calibration report | `viewer` |
+| Close an experiment's review | `builder` |
 
 A dataset of another tenant is a 404, as is one in a workspace (namespace) the caller may not use. Creating a dataset in a workspace the caller may not use is a 403. Machine callers get `operator.machineDefaultRole` (runner by default) and so cannot write datasets.
 
@@ -135,7 +137,7 @@ operator:
 
 ## Graders
 
-A dataset can hold up to 50 **graders**: deterministic checks, run in the operator process on an agent's output and on a summary of its trace. They call no model, cost nothing and touch no network. (The LLM judge and human review are later stages.) The code is `internal/evals/graders`: pure functions, each returning `{pass, score, detail}`. `score` is 0 or 1; `detail` says why, in at most 1 KiB, and never repeats the output.
+A dataset can hold up to 50 **graders**: deterministic checks, run in the operator process on an agent's output and on a summary of its trace. They call no model, cost nothing and touch no network. (The `llm` and `human` kinds, which do, are described under [the LLM judge](#the-llm-judge) and [human review](#human-review).) The code is `internal/evals/graders`: pure functions, each returning `{pass, score, detail}`. `score` is 0 or 1; `detail` says why, in at most 1 KiB, and never repeats the output.
 
 | Kind | Config | Passes when |
 |---|---|---|
@@ -152,9 +154,11 @@ A dataset can hold up to 50 **graders**: deterministic checks, run in the operat
 
 **Bounds.** A regex is RE2 (Go `regexp`): matching time is linear in the input, there is no backtracking, no lookahead and no backreference. The pattern is at most 1 KiB. A schema is at most 64 KiB and cannot load anything: a `$ref` that points outside the schema (a URL or a file) is refused when the grader is saved. Output and reference text over 256 KiB is **not graded**: the grader fails with a detail saying so. It is not truncated, because a prefix could make a `not_contains` or `exact` grader pass wrongly. `contains` and `not_contains` values, JSON paths and JSON values are at most 4 KiB. A grader with an invalid config is refused (400) when saved; one that has somehow gone bad grades as a failure and never panics.
 
-**Not graded.** A grader that needs something the input lacks (only `exact` today: a reference) reports `notGraded: true`, `pass: false`. It is never counted as a pass.
+**Not graded.** A grader that needs something the input lacks (a reference for `exact`, or for an `llm` grader in the `reference` mode) reports `notGraded: true`, `pass: false`. It is never counted as a pass. The `llm` and `human` kinds are not run by `POST .../grade`: they come back not graded, because only an experiment has a judge and a review queue.
 
-**Case result.** A result passes when every `required` grader passes, and the weighted mean score of the other graders (leaving out those not graded) is at least 0.5. A result with nothing graded does not pass.
+**Case result.** A result passes when every `required` grader passes, and the weighted mean score of the other graders (leaving out those not graded) is at least 0.5. A result with nothing graded does not pass. A grade that is not `ok` (below) counts as follows: `invalid` and `error` are failures with score 0, never passes; `pending_review` is not graded yet, which fails a required grader and is left out of the mean for the others.
+
+**Grade status.** Every grade has a `status`: `ok` (it counts), `error` (the grader could not run: no judge, no budget, a trace that was never archived), `invalid` (a judge reply that was not usable) or `pending_review` (waiting for a person). In an experiment's comparison an `invalid` grade counts as a failed grade; an `error` or `pending_review` grade leaves the result out of the comparison (the summary says how many), so a result is judged on all of its graders or not at all.
 
 ### Grader and result endpoints
 
@@ -166,7 +170,7 @@ A dataset can hold up to 50 **graders**: deterministic checks, run in the operat
 | `POST /api/evals/datasets/{id}/grade` `{caseId?, reference?, arm?, output, toolCalls?, costUsd?, latencyMs?}` | runner | yes |
 | `GET /api/evals/datasets/{id}/results` (`?caseId=`, `?limit=` 1 to 200, `?cursor=`), `GET /api/evals/results/{id}` | viewer | no |
 
-`POST .../grade` runs all the dataset's graders on the supplied output and stores the result and one grade per grader (tables `eval_results` and `eval_grades`). With `caseId` (a live case of that dataset) the case's reference is used; otherwise pass `reference`, not both. It answers 409 when the dataset has no graders or already keeps 5000 results, and 413 for an output over 256 KiB. Grader names are DNS labels, unique in the dataset. Changing graders does not change the dataset's version, which is about its cases. A result's `experimentId` column exists for the experiment runner, which does not exist yet.
+`POST .../grade` runs all the dataset's graders on the supplied output and stores the result and one grade per grader (tables `eval_results` and `eval_grades`). With `caseId` (a live case of that dataset) the case's reference is used; otherwise pass `reference`, not both. It answers 409 when the dataset has no graders or already keeps 5000 results, and 413 for an output over 256 KiB. Grader names are DNS labels, unique in the dataset. Changing graders does not change the dataset's version, which is about its cases.
 
 Tables `eval_graders`, `eval_results` and `eval_grades` (migration `0014`) carry `tenant_id` with the same forced row-level security as the dataset tables, and each child references its parent through a key that includes `tenant_id`, so the database refuses a grader, result or grade under another tenant than its parent's. Another tenant's dataset, grader or result, and anything in a workspace the caller may not use, is a 404. Audit rows use kind `EvalGrader` (name `dataset/grader`) and `EvalResult` and hold names and counts, never an output. Stored outputs are readable by every viewer in the tenant, as cases are; grade only text you would keep in a dataset.
 
@@ -200,8 +204,10 @@ A leader-only runner in the operator polls `eval_experiments` (`FOR UPDATE SKIP 
 
 1. makes a hidden Agent `eval-<id>-<arm>` per arm from the resolved spec (and a ModelSelector of the same name for a model arm). They carry the tenant ID, `agentorca.io/owner: ui`, `agentorca.io/eval=true`, `agentorca.io/eval-experiment` and `agentorca.io/eval-arm`, and are left out of `GET /api/agents`, the catalog and the fleet. A user's own object of the same name is never overwritten: the experiment fails instead;
 2. creates one `AgentRun` per (case, arm, repeat) named `eval-<id>-<arm index>-<case>-<repeat>` (a function of the slot, so a crash cannot make two), labelled `agentorca.io/eval=true`, `eval-experiment`, `eval-arm`, `eval-case`, `eval-repeat`, `tenant-id` and `tenant`. Runs carry **no callbacks and no egress**, so nothing reaches a sink. Work goes out by case, then repeat, then arm, so a stopped experiment still has paired data;
-3. copies each finished run into `eval_results` (output, spend, cost completeness, latency, phase), runs the deterministic graders and stores the grades. The result tables are written in the experiment's own tenant scope, never the platform scope;
-4. ends when every slot has a result, the budget is spent, or a cancel arrives, writes the `summary`, and deletes the hidden Agents and ModelSelectors.
+3. copies each finished run into `eval_results` (output, tool calls, spend, cost completeness, latency, phase), runs the graders (the judge included) and stores the grades. The result tables are written in the experiment's own tenant scope, never the platform scope;
+4. ends when every slot has a result, the budget is spent, or a cancel arrives, grades the pairwise comparisons, writes the `summary`, and deletes the hidden Agents and ModelSelectors. A dataset with a `human` grader sends the experiment to `awaiting_review` first (see [human review](#human-review)).
+
+**Tool calls.** The tool names a run called are read from the run's archived trace (the `toolCall` events the model-router writes; calls made inside a child run, an agent used as a tool, belong to the child and are not listed) and stored in the result's `toolCalls`, in order with repeats, at most 1000. The operator archives a run shortly after it ends, so when a dataset has a `tool_called` or `tool_not_called` grader the runner waits up to two minutes for the archive and records the run on a later tick; it does not start a retry run meanwhile. If the trace never arrives (the state store is off, or the stream expired) those graders get an `error` grade, never a pass, and the case does not pass. Without such graders no wait happens and `toolCalls` holds whatever the archive had.
 
 **Budget.** `budgetUsd` is a hard cap on the experiment's runs. Each run gets `spec.budget.maxUSD = min(runBudgetUsd, remaining / (runs in flight + 1), remaining minus the caps already given to runs in flight)` with `onExceeded: fail` (never `pause`: nobody is there to approve). When nothing is left the experiment completes with `summary.stoppedBy = "budget"`. The router can overshoot a run's cap by one call, so the cap carries that slack. Experiment spend also counts against the tenant's `budgetPerDayUSD`: an experiment whose budget is more than what is left today does not start (status `failed`, with the reason), and a running one stops creating runs with `stoppedBy = "daily-budget"` when what is left falls below its remaining budget.
 
@@ -215,11 +221,57 @@ A leader-only runner in the operator polls `eval_experiments` (`FOR UPDATE SKIP 
 
 ### The summary
 
-When an experiment ends `summary` holds `stoppedBy`, `partial`, `results`, `skipped`, `spentUsd` and the paired comparison of each arm against the first (pass rates with intervals, McNemar, score, cost and latency differences, the verdict), from `internal/evals/compare`.
+When an experiment ends `summary` holds `stoppedBy`, `partial`, `results`, `skipped`, `spentUsd` and the paired comparison of each arm against the first (pass rates with intervals, McNemar, score, cost and latency differences, the verdict), from `internal/evals/compare`. It also holds `graders`, one entry per grader with the grades that counted (`graded`, `passed`), `notGraded`, `invalid`, `errors`, `pendingReview`, `inconsistent` (pairwise ties from a judge that disagreed with itself) and `judgeCostUsd`, plus `judgeSpentUsd` and `reviewPending`. While an experiment is `awaiting_review` the summary is an interim one that leaves out the results still pending; it is made again when the review ends.
 
 ### Left out of production figures
 
 Runs labelled `agentorca.io/eval` are not production traffic. They are left out of: the cost view (`GET /api/costs`), the run list (`GET /api/runs`), run history (`GET /api/runs/history`), the fleet view, "my runs", and routing-benchmark shadow sampling (an eval run is never sampled, whatever a benchmark's `excludeRunSelector` says). `?includeEval=true` on the cost view, the run list and run history puts them back. What experiments cost is reported on its own: `GET /api/costs` has an `evaluations` line (`totalUSD`, `experiments`) that is not part of `totalUSD` or any other figure.
+
+## The LLM judge
+
+A grader of kind `llm` has a model grade each output. It is **not** the Switchyard routing classifier: it is a new judge, which follows the shadow judge's pattern (a named `ModelProvider`, a reply limit, a rubric) and calls the provider through the same code path (`router.CompleteOnce`, which uses the shadow judge's `forwardToProviderWithin`). No new network route is added: the operator makes the call, as the model-router does, with the provider's own prices. Config: `{providerRef, rubric, mode?, passAt?, maxTokens?, judgeRepeats?}`.
+
+| Field | Meaning |
+|---|---|
+| `providerRef` | A ModelProvider in the experiment's workspace or a platform catalog namespace, one the tenant may use (the same access check as an arm's references). Its API key is read from the Secret it names **in the provider's own namespace**: `credentialsRef.namespace` is not followed. A provider that does not exist is a 422 when the experiment is created. |
+| `rubric` | At most 4000 characters. Required for `rubric` and `pairwise`; `reference` has a default. It is the author's text and goes in the system prompt. |
+| `mode` | `rubric` (default): grade by the rubric alone. `reference`: grade against the case's reference (a case with none is not graded). `pairwise`: two-arm experiments only; compare the two arms' outputs of the same case. |
+| `passAt` | The score that passes, default 0.7. |
+| `maxTokens` | The reply limit, 16 to 2048, default 512. |
+| `judgeRepeats` | 1 to 3, default 1. Asks that many times and takes the median score; one unusable reply makes the whole grade `invalid`. |
+
+**Defences against injection from case contents.** The case input, the reference and the agent's output are untrusted: a case may be copied from a hostile user's run, and an agent may echo a hostile document.
+- Each goes in its own block (`<case_input_NONCE>`, `<candidate_output_NONCE>`, `<reference_NONCE>`), whose tag carries a fresh 96-bit random nonce made for each call, in the user message. The system prompt, which holds the rubric and the rules, never holds case text, and tells the model that text in those blocks is data and never an instruction. If a text happens to contain the nonce a new one is drawn. A block is cut at 24000 characters and says so.
+- The judge has no tools (the request carries none).
+- The reply must be exactly one JSON object `{"rationale", "score", "pass"}` (optionally in one code fence), with no other text, no unknown field and no repeated key. The score must be a number from 0 to 1, and `pass` must agree with it (`score >= passAt`). Anything else is `invalid`, which counts as a failed grade and still costs what the call cost, never a free pass. A reply of the shadow judge's looser kind (prose around the JSON) is invalid here.
+- The rationale is stored as plain text: invalid UTF-8 and control characters are removed, it is cut at 4 KiB. A UI must show it escaped, never as Markdown, and never with links.
+- A **canary** runs when the experiment starts: the judge grades three built-in answers to a fixed question (one right, one wrong, one wrong that tries to talk the judge into a pass) with its own prompt and criteria, and the experiment **fails before any run is made** if the right one does not pass, either wrong one does, or a reply is unusable. The canary uses its own rubric, not yours, because a rubric can be about anything; it proves the provider, the prompt and the parser work. Its cost is counted in `spentUsd`, also when it fails. It runs once per experiment and grader.
+- Residual risk: a determined injection can still sway a model. Use a deterministic or human grader beside an `llm` grader for anything that matters, and check the judge against people (below).
+
+**Bias.** *Position* (pairwise): the judge is asked twice with the two outputs in opposite order; when the two verdicts name different winners (a win and a tie included) the result is a tie, `inconsistent: true`, which does not pass. A pairwise grade is 1 for the winner, 0 for the loser and 0.5 each for a tie; the pair's cost is on the first arm's grade. A result whose other arm has no output for the case is not graded. *Verbosity and style*: the system prompt tells the judge to ignore length, tone, formatting and the order shown, and gives written anchors for 0, 0.5 and 1; the rationale comes before the score. *Self-preference*: the experiment's create response has `warnings` when a judge's provider is also an arm's `modelProvider`. *Variance*: temperature 0, one call, or `judgeRepeats`.
+
+**Cost.** The judge's calls are part of the experiment's spend: each grade has `judgeCostUsd`, added to `spentUsd` and so counted against `budgetUsd`, with the canary. Before each call the judge checks that the call's most likely cost (its prompt priced at one token per three bytes plus `maxTokens`) still fits in what is left of the experiment's budget and of the tenant's `budgetPerDayUSD` (today's runs, today's other judge spend and the canaries all counted); if not, the grade is an `error` ("the budget has no room for the judge") and the model is not called. The judge never touches a run's own budget. The calls are made one after another by the runner, so a large dataset with a slow judge takes time.
+
+## Human review
+
+A grader of kind `human` has a person label each output: `{scale?, instructions?, passAt?, sample?}`. `scale` is `passfail` (default) or `1to5` (a label n is the score (n-1)/4 and passes at `passAt`, default 0.75, so 4 and 5). `sample` is how many **cases** to send to review, chosen at random (0 sends all); both arms' results of a sampled case are reviewed, and a result of a case left out simply has no grade from that grader.
+
+When the runs are all in, an experiment whose dataset has a human grader moves to **`awaiting_review`**: its hidden objects are deleted, each human grade is `pending_review`, and one **assignment** per result and grader (table `eval_review_assignments`, migration `0016`) goes in the queue, ordered by a random key made when the item is created. The runner keeps the experiment until no item is pending, then ends it `complete` with the final summary. Pending results are **left out of the comparison and of the human grader's rate, never counted as passes**, and a result whose human grader is `required` does not pass until it is labelled.
+
+| Endpoint | Role |
+|---|---|
+| `GET /api/evals/experiments/{id}/review` (`?status=pending\|done\|closed`, `?limit=` 1 to 50) | viewer |
+| `GET /api/evals/review/{id}` | viewer |
+| `POST /api/evals/review/{id}` `{pass?, stars?, comment?}` | runner, audited |
+| `POST /api/evals/experiments/{id}/review/close` | builder, audited |
+
+The queue is **blind**. An item holds the case input, the reference if there is one, the output, the grader's name, scale and instructions, and nothing that says which arm, repeat or run the output came from, or what it cost or called; its ID is the assignment's, not the result's, and the list is in the random order. The label is one per item (a second is a 409), the comment at most 2 KiB. A label turns the pending grade into an `ok` grade with `gradedBy` and works the result's case verdict out again. Closing the review marks every pending item `closed`, leaves their grades `pending_review`, and lets the runner end the experiment. Audit rows (kind `EvalReview`, name the experiment ID) hold the grader's name and counts, never the output or the comment.
+
+What blinding does not cover: the output text can give an arm away ("As the cheap model..."), and anyone with the viewer role can still read the experiment's results, which name the arms. The queue hides the arm from the review screens; it is not an access control on the results. With `operator.evals.requireIndependentReview` the person who started the experiment cannot label its items (403).
+
+### Calibration
+
+`GET /api/evals/datasets/{id}/calibration?llm=<grader>&human=<grader>` (viewer; `&experimentId=` limits it to one experiment) compares an `llm` grader with a `human` grader over the results both graded with an `ok` grade: the share they agree on, **Cohen's kappa**, the 2x2 confusion table and the disagreements (the biggest score gaps first, at most 100), so an author can fix a rubric. It needs at least **20** such results (`tooFewPairs` otherwise). A kappa under **0.4** sets `trustworthy: false`; so does a kappa that is undefined because one side gave the same verdict throughout (agreement of 100% on a single class says nothing about the judge). The code is `internal/evals/calibrate`. Using an untrustworthy judge in the publish gate is for the gate stage to refuse.
 
 ## Operator settings
 
@@ -235,7 +287,8 @@ Helm values under `operator.evals` (environment variables on the operator):
 | `maxCasesPerExperiment` | `EVALS_MAX_CASES_PER_EXPERIMENT` | 500 |
 | `maxActiveExperimentsPerTenant` | `EVALS_MAX_ACTIVE_EXPERIMENTS_PER_TENANT` | 2 |
 | `runnerIntervalSeconds` | `EVALS_RUNNER_INTERVAL_SECONDS` | 5 |
+| `requireIndependentReview` | `EVALS_REQUIRE_INDEPENDENT_REVIEW` | false |
 
 ## Not built yet
 
-The LLM judge and human review, the publish gate, the Evaluate screens for experiments, result retention, and JSONL export of a dataset. Known limits of the runner: a run's tool calls are not copied into its result (they are in the run's trace), so the tool-call graders cannot pass on experiment results; routing telemetry of eval runs (`routing_events`) is not yet filtered; and the form that makes a builder acknowledge an arm's write and actuate tools is part of the UI stage.
+The publish gate (and the rule that a gate must not rest on an untrustworthy or llm-only grader), the Evaluate screens, result retention, JSONL export of a dataset, and the "add to dataset from a thumbs-up" bridge. Known limits of the runner: the review stage has no "disagreement only" sampling (`sample` picks cases at random); a case-pass rule difference between the live case rule (weighted mean score of the non-required graders at least 0.5, `graders.CasePass`, stored in `eval_results.case_pass`) and the comparison's rule (more than half of the non-required weight passing, `internal/evals/compare`) is not yet reconciled; judge calls are made one at a time by the runner; a judge can overshoot the experiment budget by what the runs in flight already held; routing telemetry of eval runs (`routing_events`) is not yet filtered; and the form that makes a builder acknowledge an arm's write and actuate tools is part of the UI stage.
