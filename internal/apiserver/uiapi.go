@@ -22,7 +22,6 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"slices"
@@ -92,6 +91,10 @@ type UIServer struct {
 	routingReader routingEventReader
 	// feedback overrides pgStore for routing feedback (tests).
 	feedback feedbackStore
+	// audit overrides the audit store (tests); nil means pgStore.
+	audit auditStore
+	// auditUnavailable logs once that there is no PostgreSQL store to audit into.
+	auditUnavailable sync.Once
 	// routerMetricsURLFor builds a model-router metrics URL from a pod IP (tests);
 	// nil means http://<ip>:9091/metrics.
 	routerMetricsURLFor func(podIP string) string
@@ -193,6 +196,7 @@ func (s *UIServer) Handler() http.Handler {
 	mux.HandleFunc("/api/routing/benchmarks", s.handleListBenchmarks)
 	mux.HandleFunc("/api/approvals", s.handleListApprovals)
 	mux.HandleFunc("/api/approvals/", s.handleApproval)
+	mux.HandleFunc("/api/audit", s.handleAudit)
 	mux.HandleFunc("/api/resources", s.handleResourceCollection)
 	mux.HandleFunc("/api/resources/", s.handleResource)
 	mux.HandleFunc("/api/openapi.json", s.handleUIOpenAPI)
@@ -223,6 +227,9 @@ func (s *UIServer) requireAuth(next http.Handler) http.Handler {
 		if s.oidcLogin != nil {
 			if identity, ok := s.oidcLogin.verifySession(r); ok {
 				ctx := context.WithValue(r.Context(), tenantIdentityKey, identity)
+				if !requireViewer(w, r.WithContext(ctx)) {
+					return
+				}
 				next.ServeHTTP(w, r.WithContext(ctx))
 				return
 			}
@@ -244,6 +251,9 @@ func (s *UIServer) requireAuth(next http.Handler) http.Handler {
 		if s.externalAuth != nil {
 			if identity, err := s.externalAuth.ValidateToken(r.Context(), token); err == nil && identity != nil {
 				ctx := context.WithValue(r.Context(), tenantIdentityKey, identity)
+				if !requireViewer(w, r.WithContext(ctx)) {
+					return
+				}
 				next.ServeHTTP(w, r.WithContext(ctx))
 				return
 			}
@@ -653,6 +663,9 @@ func (s *UIServer) handleStream(w http.ResponseWriter, r *http.Request, ns, runN
 }
 
 func (s *UIServer) handleStopRun(w http.ResponseWriter, r *http.Request, ns, runName string) {
+	if !requireRole(w, r, tenancy.RoleRunner) {
+		return
+	}
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -678,10 +691,15 @@ func (s *UIServer) handleStopRun(w http.ResponseWriter, r *http.Request, ns, run
 	if s.store != nil {
 		_ = runState(s.store, &run).SignalCancel(r.Context(), ns, runName)
 	}
+	s.recordAudit(w, r, auditEventFor(postgresql.AuditCancel, "AgentRun", ns, runName, run.ResourceVersion,
+		fmt.Sprintf("cancelled AgentRun %s/%s", ns, runName)))
 	jsonResponse(w, map[string]string{"status": "cancelled"})
 }
 
 func (s *UIServer) handleAnswerRun(w http.ResponseWriter, r *http.Request, ns, runName string) {
+	if !requireRole(w, r, tenancy.RoleRunner) {
+		return
+	}
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -825,6 +843,9 @@ func (s *UIServer) handleListAgents(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *UIServer) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
+	if !requireRole(w, r, tenancy.RoleBuilder) {
+		return
+	}
 	var req struct {
 		Name             string   `json:"name"`
 		Namespace        string   `json:"namespace"`
@@ -871,10 +892,13 @@ func (s *UIServer) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	stampOwner(r.Context(), agent)
+	stampUI(r, agent)
 	if err := s.crdClient.Create(r.Context(), agent); err != nil {
 		http.Error(w, fmt.Sprintf("creating agent: %v", err), http.StatusInternalServerError)
 		return
 	}
+	s.recordAudit(w, r, auditEventFor(postgresql.AuditCreate, "Agent", agent.Namespace, agent.Name, agent.ResourceVersion,
+		fmt.Sprintf("created Agent %s/%s", agent.Namespace, agent.Name)))
 
 	replicas := int32(1)
 	deployment := &agentorcav1alpha1.AgentDeployment{
@@ -891,7 +915,11 @@ func (s *UIServer) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 	stampOwner(r.Context(), deployment)
-	if err := s.crdClient.Create(r.Context(), deployment); err != nil {
+	stampUI(r, deployment)
+	if err := s.crdClient.Create(r.Context(), deployment); err == nil {
+		s.recordAudit(w, r, auditEventFor(postgresql.AuditCreate, "AgentDeployment", deployment.Namespace, deployment.Name, deployment.ResourceVersion,
+			fmt.Sprintf("created AgentDeployment %s/%s", deployment.Namespace, deployment.Name)))
+	} else {
 		w.WriteHeader(http.StatusCreated)
 		jsonResponse(w, map[string]any{
 			"name":            agent.Name,
@@ -1686,6 +1714,9 @@ func (s *UIServer) handleDeployment(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *UIServer) handleExecute(w http.ResponseWriter, r *http.Request, namespace, deploymentName string) {
+	if !requireRole(w, r, tenancy.RoleRunner) {
+		return
+	}
 	var req struct {
 		Input     string `json:"input"`
 		SessionID string `json:"sessionId,omitempty"`
@@ -1839,6 +1870,9 @@ func (s *UIServer) handleChatHistory(w http.ResponseWriter, r *http.Request, nam
 }
 
 func (s *UIServer) handleSaveResponse(w http.ResponseWriter, r *http.Request, namespace, deploymentName string) { //nolint:unparam
+	if !requireRole(w, r, tenancy.RoleRunner) {
+		return
+	}
 	if !s.ownedDeployment(w, r, namespace, deploymentName) {
 		return
 	}
@@ -1985,15 +2019,25 @@ func (s *UIServer) handleGetDeployment(w http.ResponseWriter, r *http.Request, n
 }
 
 func (s *UIServer) handleDeleteDeployment(w http.ResponseWriter, r *http.Request, namespace, deploymentName string) {
+	if !requireRole(w, r, tenancy.RoleBuilder) {
+		return
+	}
 	var deployment agentorcav1alpha1.AgentDeployment
 	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: deploymentName, Namespace: namespace}, &deployment); err != nil || !canWrite(r.Context(), &deployment, "AgentDeployment") {
 		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	if tenancy.OwnerOf(&deployment) != tenancy.OwnerUI {
+		jsonError(w, fmt.Sprintf("AgentDeployment %s/%s is not owned by the UI (%s is %q), so the UI cannot delete it",
+			namespace, deploymentName, tenancy.AnnotationOwner, tenancy.OwnerOf(&deployment)), http.StatusForbidden)
 		return
 	}
 	if err := s.crdClient.Delete(r.Context(), &deployment); err != nil {
 		http.Error(w, fmt.Sprintf("deleting deployment: %v", err), http.StatusInternalServerError)
 		return
 	}
+	s.recordAudit(w, r, auditEventFor(postgresql.AuditDelete, "AgentDeployment", namespace, deploymentName, deployment.ResourceVersion,
+		fmt.Sprintf("deleted AgentDeployment %s/%s", namespace, deploymentName)))
 	jsonResponse(w, map[string]string{"status": "ok"})
 }
 
@@ -2482,55 +2526,6 @@ func (s *UIServer) listResource(w http.ResponseWriter, r *http.Request, info crd
 	jsonResponse(w, info.listType)
 }
 
-// createResource handles POST /api/resources/{kind} — creates a new CRD from
-// the request body. The body is expected to be the full CRD JSON (including
-// metadata.name and metadata.namespace). The managed-by label is applied
-// automatically. Validating webhooks fire on Create, preserving admission control.
-func (s *UIServer) createResource(w http.ResponseWriter, r *http.Request, info crdKindInfo) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, 2<<20)) // 2 MB cap
-	if err != nil {
-		http.Error(w, "reading body: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-	obj := info.newObj()
-	if err := json.Unmarshal(body, obj); err != nil {
-		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	// Apply managed-by label so the resource is tracked as user-created via the UI.
-	labels := obj.GetLabels()
-	if labels == nil {
-		labels = make(map[string]string)
-	}
-	if _, exists := labels["app.kubernetes.io/managed-by"]; !exists {
-		labels["app.kubernetes.io/managed-by"] = security.ManagedByValue
-		obj.SetLabels(labels)
-	}
-	// Enforce tenant scoping: when a tenant identity is present, force the
-	// namespace to the tenant's namespace (don't trust the body).
-	// Ownership comes from the caller's tenant, never from the body: drop any
-	// tenant-id or platform-scope label the body carries, then stamp our own.
-	tenancy.StripOwnership(obj)
-	if tenant, ok := TenantFromContext(r.Context()); ok && tenant != nil {
-		if tenant.Namespace != "" {
-			obj.SetNamespace(tenant.Namespace)
-		}
-		if tenant.TenantID == "" {
-			http.Error(w, `{"error":"tenant has no ID yet"}`, http.StatusForbidden)
-			return
-		}
-		tenancy.Stamp(obj, tenant.TenantID)
-	}
-
-	if err := s.crdClient.Create(r.Context(), obj); err != nil {
-		http.Error(w, "creating resource: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.WriteHeader(http.StatusCreated)
-	jsonResponse(w, obj)
-}
-
 // getResource fetches a single CRD by name, returning spec + metadata (status included read-only).
 func (s *UIServer) getResource(w http.ResponseWriter, r *http.Request, info crdKindInfo, ns, name string) {
 	obj := info.newObj()
@@ -2547,97 +2542,6 @@ func (s *UIServer) getResource(w http.ResponseWriter, r *http.Request, info crdK
 		return
 	}
 	jsonResponse(w, obj)
-}
-
-// updateResource applies a PUT (full spec replacement). Status is stripped from
-// the incoming object to enforce controller-managed immutability. The validating
-// webhook fires on Update, preserving admission control (image allowlist, etc.).
-func (s *UIServer) updateResource(w http.ResponseWriter, r *http.Request, info crdKindInfo, ns, name string) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, 2<<20)) // 2 MB cap
-	if err != nil {
-		http.Error(w, "reading body: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	obj := info.newObj()
-	if err := json.Unmarshal(body, obj); err != nil {
-		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	// Enforce name/namespace from URL path — never trust the body.
-	obj.SetName(name)
-	obj.SetNamespace(ns)
-
-	// The object must exist, belong to the caller's tenant and sit in one of the
-	// caller's namespaces; anything else is not found. Platform-shared objects
-	// are read-only here.
-	existing := info.newObj()
-	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: name, Namespace: ns}, existing); err != nil {
-		code := http.StatusInternalServerError
-		if k8serrors.IsNotFound(err) {
-			code = http.StatusNotFound
-		}
-		http.Error(w, err.Error(), code)
-		return
-	}
-	if !s.authorizeWrite(w, r, existing, info.gvk) {
-		return
-	}
-	// Ownership is fixed by the stored object, not the body.
-	tenancy.StripOwnership(obj)
-	if tid, _ := tenancy.TenantOf(existing); tid != "" {
-		tenancy.Stamp(obj, tid)
-	} else if t, ok := TenantFromContext(r.Context()); ok && t != nil {
-		tenancy.Stamp(obj, t.TenantID)
-	}
-
-	if accessor, ok := obj.(metav1.Object); ok {
-		// Set the managed-by label so we never accidentally create unmodified resources.
-		labels := accessor.GetLabels()
-		if labels == nil {
-			labels = make(map[string]string)
-		}
-		if _, exists := labels["app.kubernetes.io/managed-by"]; !exists {
-			labels["app.kubernetes.io/managed-by"] = security.ManagedByValue
-			accessor.SetLabels(labels)
-		}
-	}
-
-	if err := s.crdClient.Update(r.Context(), obj); err != nil {
-		http.Error(w, "updating resource: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	jsonResponse(w, obj)
-}
-
-// deleteResource deletes a CRD. Checks the agentorca.io/managed-by label to
-// prevent deletion of resources not created by agent-orca.
-func (s *UIServer) deleteResource(w http.ResponseWriter, r *http.Request, info crdKindInfo, ns, name string) {
-	obj := info.newObj()
-	obj.SetName(name)
-	obj.SetNamespace(ns)
-	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: name, Namespace: ns}, obj); err != nil {
-		code := http.StatusInternalServerError
-		if k8serrors.IsNotFound(err) {
-			code = http.StatusNotFound
-		}
-		http.Error(w, err.Error(), code)
-		return
-	}
-	if !s.authorizeWrite(w, r, obj, info.gvk) {
-		return
-	}
-	// Managed-by guard: only allow deletion of agent-orca-managed resources.
-	if !isManagedByAgentOrca(obj) {
-		http.Error(w, `{"error":"resource is not managed by agent-orca"}`, http.StatusForbidden)
-		return
-	}
-	if err := s.crdClient.Delete(r.Context(), obj); err != nil {
-		http.Error(w, "deleting resource: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	jsonResponse(w, map[string]string{"status": "deleted"})
 }
 
 // ownedDeployment reports whether the caller may use the deployment, answering
@@ -2674,20 +2578,6 @@ func (s *UIServer) authorizeWrite(w http.ResponseWriter, r *http.Request, obj cl
 		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
 	}
 	return false
-}
-
-// isManagedByAgentOrca returns true if the object is managed by agent-orca.
-// Resources are considered managed if they carry any of:
-//   - app.kubernetes.io/managed-by: agent-orca (controllers, system-created AgentRuns)
-//   - agentorca.io/managed-by: agent-orca (some controllers use this variant)
-//   - agentorca.io/source (chat-created runs via the UI API)
-//   - agentorca.io/deployment (runs belonging to a deployment)
-func isManagedByAgentOrca(obj client.Object) bool {
-	labels := obj.GetLabels()
-	return labels["app.kubernetes.io/managed-by"] == security.ManagedByValue ||
-		labels["agentorca.io/managed-by"] == security.ManagedByValue ||
-		labels["agentorca.io/source"] != "" ||
-		labels["agentorca.io/deployment"] != ""
 }
 
 // ── OpenAPI ─────────────────────────────────────────────────────────────────

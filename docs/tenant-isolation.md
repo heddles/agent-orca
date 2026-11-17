@@ -65,3 +65,58 @@ Tokens minted before tenant IDs existed have no `tid` claim. By default (`operat
 | `operator.allowLegacyTenantTokens` | `true` | Accept tokens with no `tid` claim |
 | `operator.tenantAdminGroup` | `""` | Group whose members may pin the ID of a deleted `TenantConfig`, which restores that tenant's data |
 | `database.dsn`, `database.passwordSecret` | see `values.yaml` | PostgreSQL connection. The role must not bypass RLS |
+
+## Roles inside a tenant
+
+`TenantConfig.spec.roles` maps OIDC groups to `viewer`, `runner`, `builder` and
+`admin`. Roles are cumulative (admin includes builder includes runner includes
+viewer) and are resolved on every request from the caller's groups and the live
+TenantConfig, so a change reaches sessions already issued. `defaultRole` gives a
+role to users in none of the listed groups.
+
+```yaml
+spec:
+  roles:
+    viewer: [everyone]
+    builder: [devs]
+    admin: [platform]
+    defaultRole: viewer
+```
+
+**When `spec.roles` is unset every signed-in user is a `runner`**, which is what
+tenants could do before roles existed. Once it is set, a user in none of the
+groups and with no `defaultRole` has no access (`/api/me` still answers, with
+empty roles). Callers with no user behind them (ServiceAccount tokens, issued
+client-credentials tokens) get `operator.machineDefaultRole` (default `runner`).
+A request with no identity (authentication disabled) is not subject to roles.
+Federated bearer tokens are mapped like an interactive login, through
+`spec.federated.claimMappings` (defaults `sub` and `groups`); a token with no user
+claim is a machine caller. Reading your own tenant at `GET /admin/tenants/{name}`
+with a federated token needs the admin role.
+
+| Role | May |
+|---|---|
+| viewer | read everything in the tenant |
+| runner | start, cancel and chat with runs, answer clarifications, send feedback |
+| builder | create, update and delete resources in `/api/resources`, `/api/agents`, deployments; ask for a routing recommendation action |
+| admin | write ModelProvider, ModelSelector, MCPServer and Tool; decide approvals; read `/api/audit` |
+
+Approval decisions are admin, not builder: an approval is the control on what a
+builder's agents may do, so the people who write agents should not also be the
+ones who release them. A tenant that wants builders to approve can put the same
+group in both lists.
+
+## Ownership, writes and audit
+
+Objects created through the UI API carry `agentorca.io/owner: ui`; the UI updates
+and deletes only those. Updates are server-side apply (field manager
+`agent-orca-ui`) and need `metadata.resourceVersion`: a stale one is a 409 that
+names the current version. Each write sets `agentorca.io/last-modified-by` and
+`-at` and adds a row to `audit_events` (row-level security like the other tenant
+tables). If the audit row cannot be written after three tries the write still
+succeeds, since it cannot be undone and a retried request would apply it twice;
+the response carries `X-Audit-Status: failed`, the event is logged in full and
+`agentorca_audit_write_failures_total` counts it. At startup the leader converts
+objects the old UI API made (label `app.kubernetes.io/managed-by: agent-orca`, no
+controller owner) to the annotation; ambiguous ones (workflows, Git-tracked,
+platform-shared) are logged and left alone.

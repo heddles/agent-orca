@@ -584,6 +584,9 @@ type ACPAgentRunRequest struct {
 // against the agent's manifest schema. This is a thin, UX-friendly wrapper
 // around the ACP POST /runs flow.
 func (s *ACPServer) handleAgentRun(w http.ResponseWriter, r *http.Request, tenant *TenantIdentity, agent *agentorcav1alpha1.Agent) {
+	if !requireRunnerACP(w, r) {
+		return
+	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {
 		writeACPError(w, "invalid_input", "reading body", http.StatusBadRequest)
@@ -820,6 +823,9 @@ func (s *ACPServer) updateSessionCheckpoint(ctx context.Context, sessionID, runN
 
 // handleCreateRun creates and starts a new agent run.
 func (s *ACPServer) handleCreateRun(w http.ResponseWriter, r *http.Request) {
+	if !requireRunnerACP(w, r) {
+		return
+	}
 	tenant, ok := TenantFromContext(r.Context())
 	if !ok {
 		writeACPError(w, "unauthorized", "no tenant identity", http.StatusUnauthorized)
@@ -1013,6 +1019,9 @@ func (s *ACPServer) handleRunByID(w http.ResponseWriter, r *http.Request) {
 
 // handleCancelRun handles POST /runs/{run_id}/cancel.
 func (s *ACPServer) handleCancelRun(w http.ResponseWriter, r *http.Request, tenant *TenantIdentity, runID string) {
+	if !requireRunnerACP(w, r) {
+		return
+	}
 	// Resolve the run across the tenant's authorized namespaces. findRunInNamespaces
 	// also enforces tenant ownership via the agentorca.io/tenant label.
 	run, err := findRunInNamespaces(r.Context(), s.crdClient, tenant, runID)
@@ -1393,6 +1402,9 @@ func (s *ACPServer) streamACPRun(w http.ResponseWriter, r *http.Request, run *ag
 // injects the human's answer at startup. The original run is marked Succeeded so
 // the bridge can follow the continuation.
 func (s *ACPServer) resumeACPRun(w http.ResponseWriter, r *http.Request, run *agentorcav1alpha1.AgentRun) {
+	if !requireRunnerACP(w, r) {
+		return
+	}
 	if r.Method != http.MethodPost {
 		writeACPError(w, "invalid_input", "POST required", http.StatusMethodNotAllowed)
 		return

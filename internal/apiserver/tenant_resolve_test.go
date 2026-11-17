@@ -64,7 +64,7 @@ func rec(id, name string, state tenancy.State) tenancy.Record {
 // issuedToken mints a session token the way the OIDC callback does.
 func issuedToken(t *testing.T, a *ExternalAuth, tid string) string {
 	t.Helper()
-	tok, err := a.MintSessionForIdentity(&TenantIdentity{
+	tok, err := a.MintSessionForIdentity(&TenantIdentity{Roles: testAdminRoles,
 		TenantID: tid, TenantName: "acme", Namespace: "default", Namespaces: []string{"default"}, UserID: "ada",
 	})
 	if err != nil {
@@ -126,7 +126,7 @@ func TestIssuedTokenFromBeforeSameNameRecreateIsRejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new session rejected: %v", err)
 	}
-	if ident.TenantID != tidNew || ident.TenantName != "acme" {
+	if ident.TenantID != tidNew || ident.TenantName != "acme" { //nolint:goconst
 		t.Errorf("identity = %+v", ident)
 	}
 }

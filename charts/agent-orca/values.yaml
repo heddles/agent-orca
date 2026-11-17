@@ -31,6 +31,12 @@ operator:
   # claim), mapping them by tenant name. A one-release bridge: set false once
   # existing sessions have rolled over.
   allowLegacyTenantTokens: true
+  # The role (viewer, runner, builder or admin) of a caller with no user behind
+  # it: a ServiceAccount token or an issued client-credentials token. Such a
+  # caller has no OIDC groups to map through a TenantConfig's spec.roles, so it
+  # gets this role in its own tenant. Default runner, which is what every
+  # caller could do before roles existed.
+  machineDefaultRole: runner
   # Tenant isolation mode, TENANT_ISOLATION_MODE. "audit" (default) logs and
   # counts label and cross-tenant reference violations
   # (agentorca_tenant_isolation_violations_total) and lets them through.
@@ -388,6 +394,9 @@ metrics:
 # Hindsight memory system integration (self-hosted POC)
 hindsight:
   enabled: true
+  # Hindsight is deployed by its own chart, not this one. Give its pods the label
+  # agentorca.io/scope=platform (its chart's podLabels value) so the tenant
+  # NetworkPolicies, which select platform peers by that label, let runs reach it.
   # url is the hindsight API endpoint. When set, the operator resolves the
   # hostname to IP(s) and injects ipBlock egress rules into the per-run
   # NetworkPolicies so agent-orca pods can reach hindsight even when the

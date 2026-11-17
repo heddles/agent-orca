@@ -21,12 +21,14 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"slices"
 	"strings"
 
 	"github.com/heddles/agent-orca/internal/postgresql"
+	"github.com/heddles/agent-orca/internal/tenancy"
 )
 
 // Approvals API (G2): list approval requests and decide them.
@@ -99,6 +101,9 @@ func (s *UIServer) handleListApprovals(w http.ResponseWriter, r *http.Request) {
 
 // handleApproval serves POST /api/approvals/{id}/approve|reject.
 func (s *UIServer) handleApproval(w http.ResponseWriter, r *http.Request) {
+	if !requireRole(w, r, tenancy.RoleAdmin) {
+		return
+	}
 	rest := strings.TrimPrefix(r.URL.Path, "/api/approvals/")
 	id, action, ok := strings.Cut(rest, "/")
 	if !ok || id == "" || (action != "approve" && action != "reject") {
@@ -160,5 +165,11 @@ func (s *UIServer) handleApproval(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	slog.Info("approval decided", "id", id, "status", status, "by", tenant.UserID, "namespace", a.Namespace, "run", a.RunName)
+	verb := postgresql.AuditApprove
+	if status == postgresql.ApprovalRejected {
+		verb = postgresql.AuditReject
+	}
+	s.recordAudit(w, r, auditEventFor(verb, "Approval", a.Namespace, id, "",
+		fmt.Sprintf("%s approval %s (%s) for run %q", verb, id, a.Kind, a.RunName)))
 	jsonResponse(w, decided)
 }

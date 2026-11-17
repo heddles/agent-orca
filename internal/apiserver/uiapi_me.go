@@ -24,7 +24,9 @@ type meResponse struct {
 	Groups     []string      `json:"groups"`
 	Tenant     *meTenant     `json:"tenant"`
 	Workspaces []meWorkspace `json:"workspaces"`
-	// Roles is empty until roles inside a tenant exist.
+	// Roles are the caller's roles inside the tenant, cumulative and lowest first
+	// (an admin lists viewer, runner, builder and admin). Empty means the
+	// tenant's spec.roles give the caller no access.
 	Roles []string `json:"roles"`
 }
 
@@ -43,6 +45,9 @@ func (s *UIServer) handleMe(w http.ResponseWriter, r *http.Request) {
 		out.Tenant = &meTenant{ID: t.TenantID, Name: t.TenantName}
 		if t.Groups != nil {
 			out.Groups = t.Groups
+		}
+		if t.Roles != nil {
+			out.Roles = t.Roles
 		}
 		for i, ns := range tenantNamespaces(t) {
 			out.Workspaces = append(out.Workspaces, meWorkspace{Name: ns, Namespace: ns, Primary: i == 0})

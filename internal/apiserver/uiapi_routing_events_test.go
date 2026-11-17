@@ -67,7 +67,7 @@ func TestRunRoutingEvents_ReturnsTheRunsHistory(t *testing.T) {
 	if len(body.Events) != 2 || body.Events[1].ParentDecisionID != "d-1" {
 		t.Errorf("events = %+v", body.Events)
 	}
-	if reader.gotNS != "team-a" || reader.gotRun != "run-1" || reader.gotLimit != 500 {
+	if reader.gotNS != "team-a" || reader.gotRun != "run-1" || reader.gotLimit != 500 { //nolint:goconst
 		t.Errorf("queried %q/%q limit %d", reader.gotNS, reader.gotRun, reader.gotLimit)
 	}
 }
@@ -75,7 +75,7 @@ func TestRunRoutingEvents_ReturnsTheRunsHistory(t *testing.T) {
 func TestRunRoutingEvents_TenantsSeeOnlyTheirNamespaces(t *testing.T) {
 	reader := &fakeRoutingReader{}
 	s := &UIServer{routingReader: reader}
-	ctx := context.WithValue(context.Background(), tenantIdentityKey, &TenantIdentity{TenantName: "acme", Namespaces: []string{"team-a"}})
+	ctx := context.WithValue(context.Background(), tenantIdentityKey, &TenantIdentity{Roles: testAdminRoles, TenantName: "acme", Namespaces: []string{"team-a"}})
 
 	if rec := getRunRoutingEvents(s, ctx, "/api/runs/team-b/run-1/routing-events"); rec.Code != http.StatusForbidden {
 		t.Errorf("other namespace: status = %d, want 403", rec.Code)

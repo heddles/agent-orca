@@ -33,6 +33,8 @@ tags:
     description: Agent CRD listing and creation
   - name: modelselectors
     description: ModelSelector listing
+  - name: audit
+    description: Audit trail of changes (admin)
 components:
   securitySchemes:
     BearerAuth:
@@ -200,8 +202,34 @@ components:
               primary: { type: boolean, description: The first allowed namespace, where new resources are created. }
         roles:
           type: array
-          items: { type: string }
-          description: Roles inside the tenant. Always empty until roles are introduced.
+          description: >
+            Roles inside the tenant, cumulative and lowest first: an admin lists
+            viewer, runner, builder and admin. Empty when the tenant's spec.roles
+            give the caller no access. Without spec.roles every signed-in user is a
+            runner; service-account and client-credentials callers get
+            operator.machineDefaultRole.
+          items: { type: string, enum: [viewer, runner, builder, admin] }
+    AuditEvent:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        tenantId: { type: string }
+        userId: { type: string }
+        action: { type: string }
+        kind: { type: string }
+        namespace: { type: string }
+        name: { type: string }
+        resourceVersion: { type: string }
+        summary: { type: string }
+        createdAt: { type: string, format: date-time }
+    AuditPage:
+      type: object
+      required: [events]
+      properties:
+        events:
+          type: array
+          items: { $ref: '#/components/schemas/AuditEvent' }
+        nextCursor: { type: string, description: Pass as cursor for the next page; absent on the last. }
     ResourceKind:
       type: string
       enum: [agents, tools, mcpservers, modelproviders, knowledgebases, modelselectors, agentdeployments, agentworkflows]
@@ -326,6 +354,14 @@ paths:
     post:
       tags: [resources]
       summary: Create a new CRD of the given kind
+      description: >
+        Needs the builder role, or admin for tools, mcpservers, modelproviders and
+        modelselectors. The object is applied server-side as field manager
+        agent-orca-ui and annotated agentorca.io/owner=ui, last-modified-by and
+        last-modified-at; any owner annotation in the body is dropped, and
+        app.kubernetes.io/managed-by is not touched. Status is ignored. Every
+        write adds a row to the audit trail; if that row cannot be written the
+        write still succeeds and the response carries X-Audit-Status: failed.
       parameters:
         - in: path
           name: kind
@@ -338,6 +374,8 @@ paths:
       responses:
         '201': { description: resource created }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
   /api/resources/{kind}/{namespace}/{name}:
     get:
       tags: [resources]
@@ -360,7 +398,13 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
     put:
       tags: [resources]
-      summary: Update a CRD's spec (status is always read-only / controller-managed)
+      summary: Update a UI-owned CRD (status is always read-only / controller-managed)
+      description: >
+        Needs the builder role (admin for tools, mcpservers, modelproviders and
+        modelselectors). The body must carry metadata.resourceVersion as read. A
+        stale version is a 409 whose body names currentResourceVersion. An object
+        without agentorca.io/owner=ui (made by Git or by hand) is a 409 too.
+        Applied server-side as field manager agent-orca-ui; admission webhooks run.
       parameters:
         - in: path
           name: kind
@@ -380,9 +424,18 @@ paths:
           application/json: { schema: { type: object } }
       responses:
         '200': { description: updated resource }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/ResourceConflict' }
+        '428': { description: metadata.resourceVersion is missing from the body }
     delete:
       tags: [resources]
-      summary: Delete a CRD (only resources managed by agent-orca)
+      summary: Delete a CRD (only objects owned by the UI)
+      description: >
+        Needs the builder role (admin for tools, mcpservers, modelproviders and
+        modelselectors). Only objects with agentorca.io/owner=ui can be deleted;
+        any other is a 403.
       parameters:
         - in: path
           name: kind
@@ -399,6 +452,30 @@ paths:
       responses:
         '200': { description: { status: "deleted" } }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/audit:
+    get:
+      tags: [audit]
+      summary: The tenant's audit trail (admin only)
+      description: >
+        Changes made through the UI API and approval decisions, newest first,
+        scoped to the caller's tenant and namespaces.
+      parameters:
+        - { in: query, name: kind, schema: { type: string } }
+        - { in: query, name: namespace, schema: { type: string } }
+        - { in: query, name: name, schema: { type: string } }
+        - { in: query, name: user, schema: { type: string } }
+        - { in: query, name: action, schema: { type: string, enum: [create, update, delete, cancel, request, approve, reject] } }
+        - { in: query, name: limit, schema: { type: integer, minimum: 1, maximum: 500, default: 100 } }
+        - { in: query, name: cursor, description: nextCursor of the previous page, schema: { type: string } }
+      responses:
+        '200':
+          description: a page of events
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/AuditPage' } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { description: The audit trail needs the PostgreSQL store }
   /api/openapi.json:
     get:
       tags: [health]
@@ -448,6 +525,7 @@ paths:
       summary: Cancel a pending/running/waiting run
       responses:
         '200': { description: { status: "cancelled" } }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
   /api/runs/{namespace}/{name}/answer:
     post:
@@ -463,6 +541,7 @@ paths:
                 answer: { type: string }
       responses:
         '200': { description: { status: "ok", runName: "string" } }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
   /api/runs/{namespace}/{name}/stream:
     get:
@@ -497,6 +576,17 @@ responseComponents:
   Forbidden:
     description: Forbidden
     content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+  ResourceConflict:
+    description: >
+      The object is not owned by the UI, or metadata.resourceVersion is stale.
+      The body carries error and currentResourceVersion.
+    content:
+      application/json:
+        schema:
+          type: object
+          properties:
+            error: { type: string }
+            currentResourceVersion: { type: string }
   Conflict:
     description: Conflict
     content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }

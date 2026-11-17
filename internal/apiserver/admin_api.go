@@ -168,15 +168,6 @@ func (s *ExternalAPIServer) requireSAOrSelfTenant(name string, capability adminC
 		//    resolves a federated id_token to a TenantIdentity whose TenantName is
 		//    the matched TenantConfig name.
 		if ident, err := s.auth.ValidateToken(r.Context(), token); err == nil && ident != nil {
-			// TODO(per-tenant-RBAC): once IdP groups are mapped to roles, gate the
-			//   additional selfTenantAdminOps (e.g. rotate-secret) on
-			//   capability.role and ident.Roles here; deny with 404 when the role is
-			//   absent. Today capability.role is always empty, so any valid id_token
-			//   for the caller's own tenant is admitted.
-			if capability.role != "" && !identityHasRole(ident, capability.role) {
-				writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
-				return
-			}
 			// The name alone does not identify a tenant (a recreated TenantConfig
 			// reuses it), so the token's tenant ID must also be the named
 			// TenantConfig's.
@@ -184,6 +175,12 @@ func (s *ExternalAPIServer) requireSAOrSelfTenant(name string, capability adminC
 				(tc != nil && ident.TenantID != "" && tenancy.TenantIDOf(tc) != "" && tenancy.TenantIDOf(tc) != ident.TenantID) {
 				// Valid token, different tenant → 404 (do not reveal existence).
 				writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+				return
+			}
+			// The caller's own tenant: it must also hold the capability's role
+			// (spec.roles), so a plain runner cannot read the tenant config.
+			if capability.role != "" && !identityHasRole(ident, capability.role) {
+				writeJSON(w, http.StatusForbidden, map[string]string{"error": "this needs the " + capability.role + " role in your tenant"})
 				return
 			}
 			r = r.WithContext(withAdminIdentity(r.Context(), adminIdentity{

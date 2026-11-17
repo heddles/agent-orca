@@ -611,6 +611,14 @@ func main() {
 		setupLog.Error(err, "Failed to add tenant label backfill")
 		os.Exit(1)
 	}
+	// Convert the objects the old UI API created (app.kubernetes.io/managed-by
+	// label, no controller owner) to the agentorca.io/owner: ui annotation.
+	if err := mgr.Add(&controller.UIOwnerMigration{
+		Client: controller.NewBackfillClient(mgr.GetClient(), mgr.GetAPIReader()),
+	}); err != nil {
+		setupLog.Error(err, "Failed to add UI ownership migration")
+		os.Exit(1)
+	}
 	// +kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
@@ -746,6 +754,14 @@ func main() {
 		os.Exit(1)
 	}
 	externalAuth.SetTenantRegistry(tenantRegistry)
+	// The role of callers with no user behind them (service accounts, client
+	// credentials). MACHINE_DEFAULT_ROLE, chart value operator.machineDefaultRole.
+	if v := strings.TrimSpace(os.Getenv("MACHINE_DEFAULT_ROLE")); v != "" {
+		if rerr := externalAuth.SetMachineDefaultRole(v); rerr != nil {
+			setupLog.Error(rerr, "Invalid MACHINE_DEFAULT_ROLE")
+			os.Exit(1)
+		}
+	}
 	// Tokens minted before tenant IDs existed carry no tid. Map them by name for
 	// one release; ALLOW_LEGACY_TENANT_TOKENS=false turns that off.
 	if v, perr := strconv.ParseBool(os.Getenv("ALLOW_LEGACY_TENANT_TOKENS")); perr == nil {

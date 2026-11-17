@@ -8,6 +8,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
+
+	"github.com/heddles/agent-orca/internal/tenancy"
 )
 
 // parseWorkflowRetryPath reads /api/workflows/{namespace}/{name}/steps/{step}/retry.
@@ -23,6 +25,9 @@ func parseWorkflowRetryPath(path string) (ns, name, step string, ok bool) {
 // setting agentorca.io/retry-step. The operator does the reset, so a workflow
 // that already ended is revived the same way as one still running.
 func (s *UIServer) handleRetryWorkflowStep(w http.ResponseWriter, r *http.Request, ns, name, step string) {
+	if !requireRole(w, r, tenancy.RoleRunner) {
+		return
+	}
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return

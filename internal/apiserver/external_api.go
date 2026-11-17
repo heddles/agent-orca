@@ -194,7 +194,7 @@ type adminCapability struct {
 // POST .../rotate-secret, and any cross-tenant target) fall through to
 // requireAdminAuth and stay SA-only.
 var selfTenantAdminOps = []adminCapability{
-	{method: http.MethodGet, pathPrefix: "/admin/tenants/"}, // read own tenant config
+	{method: http.MethodGet, pathPrefix: "/admin/tenants/", role: "admin"}, // read own tenant config
 }
 
 // selfTenantOp maps an admin (method, path) to the tenant name plus the matched
@@ -306,6 +306,9 @@ func (s *ExternalAPIServer) handleTaskByID(w http.ResponseWriter, r *http.Reques
 
 // createTask handles POST /v1/tasks.
 func (s *ExternalAPIServer) createTask(w http.ResponseWriter, r *http.Request) {
+	if !requireRole(w, r, tenancy.RoleRunner) {
+		return
+	}
 	tenant, ok := TenantFromContext(r.Context())
 	if !ok {
 		http.Error(w, `{"error":"no tenant identity"}`, http.StatusUnauthorized)
@@ -600,6 +603,9 @@ func (s *ExternalAPIServer) streamTask(w http.ResponseWriter, r *http.Request, t
 
 // answerTask handles POST /v1/tasks/{id}/answer for clarification responses.
 func (s *ExternalAPIServer) answerTask(w http.ResponseWriter, r *http.Request, taskID string) {
+	if !requireRole(w, r, tenancy.RoleRunner) {
+		return
+	}
 	tenant, ok := TenantFromContext(r.Context())
 	if !ok {
 		http.Error(w, `{"error":"no tenant identity"}`, http.StatusUnauthorized)
@@ -659,6 +665,9 @@ func (s *ExternalAPIServer) answerTask(w http.ResponseWriter, r *http.Request, t
 
 // cancelTask handles DELETE /v1/tasks/{id}.
 func (s *ExternalAPIServer) cancelTask(w http.ResponseWriter, r *http.Request, taskID string) {
+	if !requireRole(w, r, tenancy.RoleRunner) {
+		return
+	}
 	tenant, ok := TenantFromContext(r.Context())
 	if !ok {
 		http.Error(w, `{"error":"no tenant identity"}`, http.StatusUnauthorized)

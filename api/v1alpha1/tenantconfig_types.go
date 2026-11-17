@@ -70,6 +70,44 @@ type TenantConfigSpec struct {
 	// Enforced across all runs in the allowed namespaces attributed to this tenant.
 	// +optional
 	BudgetPerDayUSD string `json:"budgetPerDayUSD,omitempty"`
+
+	// Roles maps OIDC groups to roles inside this tenant. A signed-in user gets
+	// the highest role any of their groups maps to, plus every role below it
+	// (admin includes builder, builder includes runner, runner includes viewer).
+	// Omit it and every signed-in user is a runner, which is how tenants behaved
+	// before roles existed. Once it is set, a user in none of the listed groups
+	// gets defaultRole, or no access at all when that is unset.
+	// +optional
+	Roles *TenantRoles `json:"roles,omitempty"`
+}
+
+// TenantRoles maps OIDC groups to the roles of the UI API, ACP and External
+// Task API inside one tenant.
+//
+//   - viewer: read.
+//   - runner: viewer, plus start, cancel and chat with runs, answer
+//     clarifications and send feedback.
+//   - builder: runner, plus create, update and delete resources.
+//   - admin: builder, plus model providers, model selectors, MCP servers, tools
+//     and approval decisions, and the audit log.
+type TenantRoles struct {
+	// Viewer lists the groups that get the viewer role.
+	// +optional
+	Viewer []string `json:"viewer,omitempty"`
+	// Runner lists the groups that get the runner role.
+	// +optional
+	Runner []string `json:"runner,omitempty"`
+	// Builder lists the groups that get the builder role.
+	// +optional
+	Builder []string `json:"builder,omitempty"`
+	// Admin lists the groups that get the admin role.
+	// +optional
+	Admin []string `json:"admin,omitempty"`
+	// DefaultRole is the role of a signed-in user who is in none of the groups
+	// above. Unset means such a user has no access.
+	// +optional
+	// +kubebuilder:validation:Enum=viewer;runner;builder;admin
+	DefaultRole string `json:"defaultRole,omitempty"`
 }
 
 // IssuedAuthConfig configures agent-orca as the OAuth2 token issuer.

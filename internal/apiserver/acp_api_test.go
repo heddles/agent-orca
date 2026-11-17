@@ -88,7 +88,7 @@ func (s *ACPServer) withTenant(tenant *TenantIdentity) http.Handler {
 }
 
 func testTenant() *TenantIdentity {
-	return &TenantIdentity{
+	return &TenantIdentity{Roles: testAdminRoles,
 		TenantName:    "acme",
 		Namespace:     "tenant-acme",
 		AllowedAgents: nil, // nil means all agents allowed
@@ -195,7 +195,7 @@ func TestHandleAgentManifestNotAllowed(t *testing.T) {
 	}
 	s := newACPServer(t, agent)
 	// Tenant with allowed agents that don't include bot-a
-	tenant := &TenantIdentity{
+	tenant := &TenantIdentity{Roles: testAdminRoles,
 		TenantName:    "acme",
 		Namespace:     "tenant-acme",
 		AllowedAgents: []string{"bot-b"},
@@ -305,7 +305,7 @@ func TestHandleAgentRunNotAllowed(t *testing.T) {
 		Spec:       agentorcav1alpha1.AgentSpec{SystemPrompt: "hello"},
 	}
 	s := newACPServer(t, agent)
-	tenant := &TenantIdentity{
+	tenant := &TenantIdentity{Roles: testAdminRoles,
 		TenantName:    "acme",
 		Namespace:     "tenant-acme",
 		AllowedAgents: []string{"bot-b"},
@@ -631,19 +631,19 @@ func TestBuildOutputSchema(t *testing.T) {
 
 func TestTenantCanAccessAgent(t *testing.T) {
 	// Nil AllowedAgents means all allowed
-	tenant := &TenantIdentity{AllowedAgents: nil}
+	tenant := &TenantIdentity{Roles: testAdminRoles, AllowedAgents: nil}
 	if !tenantCanAccessAgent(tenant, "any-agent") {
 		t.Fatal("expected all agents allowed when AllowedAgents is nil")
 	}
 
 	// Empty AllowedAgents means all allowed
-	tenant = &TenantIdentity{AllowedAgents: []string{}}
+	tenant = &TenantIdentity{Roles: testAdminRoles, AllowedAgents: []string{}}
 	if !tenantCanAccessAgent(tenant, "any-agent") {
 		t.Fatal("expected all agents allowed when AllowedAgents is empty")
 	}
 
 	// Specific allowed list
-	tenant = &TenantIdentity{AllowedAgents: []string{"bot-a", "bot-b"}}
+	tenant = &TenantIdentity{Roles: testAdminRoles, AllowedAgents: []string{"bot-a", "bot-b"}}
 	if !tenantCanAccessAgent(tenant, "bot-a") {
 		t.Fatal("expected bot-a to be allowed")
 	}
@@ -922,7 +922,7 @@ func TestHandleAgentManifest_MultiNamespaceResolvesAgentNamespace(t *testing.T) 
 		Spec:       agentorcav1alpha1.AgentSpec{SystemPrompt: "hi"},
 	}
 	s := newACPServer(t, agent)
-	tenant := &TenantIdentity{
+	tenant := &TenantIdentity{Roles: testAdminRoles,
 		TenantName:    "acme",
 		Namespace:     "tenant-acme",                       // primary; the agent is NOT here
 		Namespaces:    []string{"tenant-acme", "red-team"}, // authorized set
@@ -954,7 +954,7 @@ func TestHandleAgentManifest_AgentNotInAuthorizedNamespace(t *testing.T) {
 		Spec:       agentorcav1alpha1.AgentSpec{SystemPrompt: "hi"},
 	}
 	s := newACPServer(t, agent)
-	tenant := &TenantIdentity{
+	tenant := &TenantIdentity{Roles: testAdminRoles,
 		TenantName:    "acme",
 		Namespace:     "tenant-acme",
 		Namespaces:    []string{"tenant-acme"},

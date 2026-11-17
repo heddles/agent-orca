@@ -105,7 +105,7 @@ func decodeRecs(t *testing.T, rec *httptest.ResponseRecorder) []recommendationVi
 	return body.Recommendations
 }
 
-var insightsTenant = &TenantIdentity{TenantName: shadowTenant, Namespaces: []string{insightsNS}, UserID: "ada"}
+var insightsTenant = &TenantIdentity{Roles: testAdminRoles, TenantName: shadowTenant, Namespaces: []string{insightsNS}, UserID: "ada"}
 
 func TestRecommendations_AProposalCanBeAskedAboutOnlyWhereApplyingIsAllowed(t *testing.T) {
 	for name, tc := range map[string]struct {
@@ -199,7 +199,7 @@ func TestBenchmarks_ListShowsStatusAndWarnings(t *testing.T) {
 		len(b.Agents) != 1 || len(b.Categories) != 1 || b.Categories[0].Ties != 6 || len(b.Warnings) != 1 || !strings.Contains(b.Warnings[0], "JudgeIsArm") {
 		t.Errorf("benchmark = %+v", b)
 	}
-	other := &TenantIdentity{TenantName: "globex", Namespaces: []string{"team-z"}, UserID: "bob"}
+	other := &TenantIdentity{Roles: testAdminRoles, TenantName: "globex", Namespaces: []string{"team-z"}, UserID: "bob"}
 	rec = insightsGet(s.handleListBenchmarks, "/api/routing/benchmarks", other)
 	if strings.Contains(rec.Body.String(), `"bench"`) {
 		t.Errorf("another tenant saw the benchmark: %s", rec.Body)
@@ -228,7 +228,7 @@ func TestRecommendationAction_SetsTheActionAndWhoAskedWithoutChangingAnythingEls
 	if err := s.crdClient.Get(context.Background(), client.ObjectKey{Namespace: insightsNS, Name: "rec"}, &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Spec.Action != agentorcav1alpha1.RecommendationActionRequestApply || got.Annotations[annotationActionRequestedBy] != "ada" || got.Spec.Patch != insightsPatch {
+	if got.Spec.Action != agentorcav1alpha1.RecommendationActionRequestApply || got.Annotations[annotationActionRequestedBy] != "ada" || got.Spec.Patch != insightsPatch { //nolint:goconst
 		t.Errorf("recommendation = %+v / %v", got.Spec, got.Annotations)
 	}
 }
@@ -244,7 +244,7 @@ func TestRecommendationAction_Rejections(t *testing.T) {
 		want       int
 	}{
 		"not signed in":            {"/api/routing/recommendations/team-a/proposed/action", `{"action":"requestApply"}`, nil, http.StatusForbidden},
-		"no user id":               {"/api/routing/recommendations/team-a/proposed/action", `{"action":"requestApply"}`, &TenantIdentity{Namespaces: []string{insightsNS}}, http.StatusForbidden},
+		"no user id":               {"/api/routing/recommendations/team-a/proposed/action", `{"action":"requestApply"}`, &TenantIdentity{Roles: testAdminRoles, Namespaces: []string{insightsNS}}, http.StatusForbidden},
 		"another namespace":        {"/api/routing/recommendations/team-b/foreign/action", `{"action":"requestApply"}`, insightsTenant, http.StatusForbidden},
 		"unknown action":           {"/api/routing/recommendations/team-a/proposed/action", `{"action":"applyNow"}`, insightsTenant, http.StatusBadRequest},
 		"not json":                 {"/api/routing/recommendations/team-a/proposed/action", `please`, insightsTenant, http.StatusBadRequest},
