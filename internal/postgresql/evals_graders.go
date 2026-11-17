@@ -117,6 +117,20 @@ type EvalResult struct {
 	CreatedBy string      `json:"createdBy"`
 	CreatedAt time.Time   `json:"createdAt"`
 	Grades    []EvalGrade `json:"grades"`
+
+	// The fields below are set on a result an experiment's runner wrote
+	// (migration 0015) and are empty on a free-standing result.
+	ExperimentID *int64 `json:"experimentId,omitempty"`
+	Repeat       int    `json:"repeat,omitempty"`
+	// RunNamespace and RunName name the AgentRun the output came from.
+	RunNamespace string `json:"runNamespace,omitempty"`
+	RunName      string `json:"runName,omitempty"`
+	// Phase is the run's outcome: Succeeded, Failed, TimedOut, Cancelled or Skipped.
+	Phase string `json:"phase,omitempty"`
+	// CostIncomplete is true when the run's cost could not be fully captured, so
+	// CostUSD is a floor.
+	CostIncomplete bool   `json:"costIncomplete,omitempty"`
+	Error          string `json:"error,omitempty"`
 }
 
 // Validate reports why r cannot be stored.
@@ -282,7 +296,7 @@ func (s *Store) SaveEvalResult(ctx context.Context, datasetID int64, r EvalResul
 			return err
 		}
 		var n int
-		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM eval_results WHERE dataset_id = $1 AND tenant_id = $2`,
+		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM eval_results WHERE dataset_id = $1 AND tenant_id = $2 AND experiment_id IS NULL`,
 			datasetID, tenant).Scan(&n); err != nil {
 			return err
 		}
@@ -334,16 +348,21 @@ func (s *Store) SaveEvalResult(ctx context.Context, datasetID int64, r EvalResul
 }
 
 const evalResultCols = `r.id, r.tenant_id, r.dataset_id, r.case_id, r.arm, r.output, r.tool_calls,
-	r.cost_usd::float8, r.latency_ms, r.case_pass, r.created_by, r.created_at`
+	r.cost_usd::float8, r.latency_ms, r.case_pass, r.created_by, r.created_at,
+	r.experiment_id, r.repeat, r.run_namespace, r.run_name, r.phase, NOT r.cost_complete, r.error`
 
 func scanEvalResult(row interface{ Scan(...any) error }) (EvalResult, error) {
 	var r EvalResult
-	var caseID sql.NullInt64
+	var caseID, experimentID sql.NullInt64
 	var calls []byte
 	err := row.Scan(&r.ID, &r.TenantID, &r.DatasetID, &caseID, &r.Arm, &r.Output, &calls,
-		&r.CostUSD, &r.LatencyMs, &r.CasePass, &r.CreatedBy, &r.CreatedAt)
+		&r.CostUSD, &r.LatencyMs, &r.CasePass, &r.CreatedBy, &r.CreatedAt,
+		&experimentID, &r.Repeat, &r.RunNamespace, &r.RunName, &r.Phase, &r.CostIncomplete, &r.Error)
 	if err != nil {
 		return r, err
+	}
+	if experimentID.Valid {
+		r.ExperimentID = &experimentID.Int64
 	}
 	if caseID.Valid {
 		r.CaseID = &caseID.Int64
@@ -421,7 +440,8 @@ type EvalResultQuery struct {
 	CaseID int64
 }
 
-// ListEvalResults returns a dataset's results in ID order, with their grades.
+// ListEvalResults returns a dataset's free-standing results in ID order, with
+// their grades. An experiment's results are listed by ListEvalExperimentResults.
 func (s *Store) ListEvalResults(ctx context.Context, datasetID int64, q EvalResultQuery) ([]EvalResult, error) {
 	limit := q.Limit
 	if limit <= 0 {
@@ -437,7 +457,7 @@ func (s *Store) ListEvalResults(ctx context.Context, datasetID int64, q EvalResu
 		}
 		rows, err := tx.QueryContext(ctx,
 			`SELECT `+evalResultCols+` FROM eval_results r
-			 WHERE r.dataset_id = $1 AND r.id > $2 AND ($3::bigint = 0 OR r.case_id = $3) AND ($4::text = '*' OR r.tenant_id = $4)
+			 WHERE r.dataset_id = $1 AND r.experiment_id IS NULL AND r.id > $2 AND ($3::bigint = 0 OR r.case_id = $3) AND ($4::text = '*' OR r.tenant_id = $4)
 			 ORDER BY r.id LIMIT $5`, datasetID, q.After, q.CaseID, scope, limit)
 		if err != nil {
 			return err

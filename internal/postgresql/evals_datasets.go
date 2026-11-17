@@ -726,7 +726,7 @@ func notFound(err error) error {
 // wrapEval adds context to an error but keeps the package's sentinel errors
 // reachable with errors.Is, and does not prefix them (their text is for callers).
 func wrapEval(what string, err error) error {
-	for _, sentinel := range []error{ErrEvalNotFound, ErrEvalExists, ErrDatasetFull, ErrInvalidEval, ErrNoTenantScope} {
+	for _, sentinel := range []error{ErrEvalNotFound, ErrEvalExists, ErrDatasetFull, ErrInvalidEval, ErrNoTenantScope, ErrTooManyExperiments, ErrExperimentFinished} {
 		if errors.Is(err, sentinel) {
 			return err
 		}
