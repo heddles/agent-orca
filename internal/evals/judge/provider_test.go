@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -23,13 +24,11 @@ const (
 	otherTnt = "tnt_01935c7e-0000-7000-8000-00000000000b"
 )
 
-func providerObj(ns, name, tenant string, labels map[string]string) *agentorcav1alpha1.ModelProvider {
+func providerObj(ns, tenant string, labels map[string]string) *agentorcav1alpha1.ModelProvider {
 	l := map[string]string{tenancy.LabelTenantID: tenant}
-	for k, v := range labels {
-		l[k] = v
-	}
+	maps.Copy(l, labels)
 	return &agentorcav1alpha1.ModelProvider{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Labels: l},
+		ObjectMeta: metav1.ObjectMeta{Name: "judge", Namespace: ns, Labels: l},
 		Spec: agentorcav1alpha1.ModelProviderSpec{
 			LiteLLMModel:   "openai/judge-model",
 			CredentialsRef: agentorcav1alpha1.SecretKeyRef{Name: "judge-key", Key: "api-key", Namespace: "elsewhere"},
@@ -48,7 +47,7 @@ func TestRouterProviderCallsTheProviderPathAndPricesTheUsage(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	mp := providerObj("team-a", "judge", tnt, nil)
+	mp := providerObj("team-a", tnt, nil)
 	mp.Spec.BaseURL = srv.URL
 	p := RouterProvider{Config: ProviderConfigFrom(mp, "sk-test")}
 	rep, err := p.Complete(context.Background(), Request{System: "sys", User: "usr", MaxTokens: 64})
@@ -77,7 +76,7 @@ func TestRouterProviderSurfacesProviderErrors(t *testing.T) {
 		http.Error(w, `{"error":"bad key"}`, http.StatusUnauthorized)
 	}))
 	defer srv.Close()
-	mp := providerObj("team-a", "judge", tnt, nil)
+	mp := providerObj("team-a", tnt, nil)
 	mp.Spec.BaseURL = srv.URL
 	if _, err := (RouterProvider{Config: ProviderConfigFrom(mp, "k")}).Complete(context.Background(), Request{System: "s", User: "u", MaxTokens: 16}); err == nil {
 		t.Error("a 401 was not an error")
@@ -99,7 +98,7 @@ func secretIn(ns, key, value string) *corev1.Secret {
 }
 
 func TestResolverReadsTheKeyFromTheProvidersOwnNamespace(t *testing.T) {
-	r := resolverFor(t, providerObj("team-a", "judge", tnt, nil), secretIn("team-a", "api-key", "sk-a"), secretIn("elsewhere", "api-key", "sk-elsewhere"))
+	r := resolverFor(t, providerObj("team-a", tnt, nil), secretIn("team-a", "api-key", "sk-a"), secretIn("elsewhere", "api-key", "sk-elsewhere"))
 	caller := tenancy.Caller{TenantID: tnt, Namespaces: []string{"team-a"}}
 	p, err := r.Resolve(context.Background(), caller, "team-a", "judge")
 	if err != nil {
@@ -114,11 +113,11 @@ func TestResolverReadsTheKeyFromTheProvidersOwnNamespace(t *testing.T) {
 func TestResolverRefusesWhatTheTenantMayNotUse(t *testing.T) {
 	caller := tenancy.Caller{TenantID: tnt, Namespaces: []string{"team-a"}}
 	cases := map[string]KubeResolver{
-		"another tenant's provider in the namespace": resolverFor(t, providerObj("team-a", "judge", otherTnt, nil), secretIn("team-a", "api-key", "k")),
-		"a provider in another namespace":            resolverFor(t, providerObj("team-b", "judge", tnt, nil), secretIn("team-b", "api-key", "k")),
+		"another tenant's provider in the namespace": resolverFor(t, providerObj("team-a", otherTnt, nil), secretIn("team-a", "api-key", "k")),
+		"a provider in another namespace":            resolverFor(t, providerObj("team-b", tnt, nil), secretIn("team-b", "api-key", "k")),
 		"no provider":                                resolverFor(t),
-		"no secret":                                  resolverFor(t, providerObj("team-a", "judge", tnt, nil)),
-		"a secret without the key":                   resolverFor(t, providerObj("team-a", "judge", tnt, nil), secretIn("team-a", "other", "k")),
+		"no secret":                                  resolverFor(t, providerObj("team-a", tnt, nil)),
+		"a secret without the key":                   resolverFor(t, providerObj("team-a", tnt, nil), secretIn("team-a", "other", "k")),
 	}
 	for name, r := range cases {
 		if _, err := r.Resolve(context.Background(), caller, "team-a", "judge"); err == nil {
@@ -132,7 +131,7 @@ func TestResolverRefusesWhatTheTenantMayNotUse(t *testing.T) {
 func TestResolverFindsAPlatformProvider(t *testing.T) {
 	tenancy.SetPlatformNamespaces([]string{"platform"})
 	t.Cleanup(func() { tenancy.SetPlatformNamespaces(nil) })
-	shared := providerObj("platform", "judge", "", map[string]string{tenancy.LabelScope: tenancy.ScopePlatform})
+	shared := providerObj("platform", "", map[string]string{tenancy.LabelScope: tenancy.ScopePlatform})
 	delete(shared.Labels, tenancy.LabelTenantID)
 	r := resolverFor(t, shared, secretIn("platform", "api-key", "sk-platform"))
 	caller := tenancy.Caller{TenantID: tnt, Namespaces: []string{"team-a"}}
@@ -141,7 +140,7 @@ func TestResolverFindsAPlatformProvider(t *testing.T) {
 		t.Fatalf("platform provider = %v, %v", p, err)
 	}
 	// A provider in the platform namespace that is not shared stays hidden.
-	hidden := providerObj("platform", "judge", otherTnt, nil)
+	hidden := providerObj("platform", otherTnt, nil)
 	if _, err := resolverFor(t, hidden, secretIn("platform", "api-key", "k")).Resolve(context.Background(), caller, "team-a", "judge"); err == nil {
 		t.Error("an unshared platform provider resolved")
 	}

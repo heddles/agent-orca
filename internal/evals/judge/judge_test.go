@@ -39,12 +39,12 @@ func (s *stub) count() int {
 	return len(s.calls)
 }
 
-func reply(score float64, passAt float64) string {
-	return fmt.Sprintf(`{"rationale":"because","score":%v,"pass":%t}`, score, score >= passAt)
+func reply(score float64) string {
+	return fmt.Sprintf(`{"rationale":"because","score":%v,"pass":%t}`, score, score >= 0.7)
 }
 
 func cfg(mode string) graders.LLMConfig {
-	c, err := graders.ParseLLM([]byte(fmt.Sprintf(`{"providerRef":"j","rubric":"be right","mode":%q}`, mode)))
+	c, err := graders.ParseLLM(fmt.Appendf(nil, `{"providerRef":"j","rubric":"be right","mode":%q}`, mode))
 	if err != nil {
 		panic(err)
 	}
@@ -180,7 +180,7 @@ func TestGradeOutcomes(t *testing.T) {
 	ctx := context.Background()
 	in := Input{Case: "q", Output: "a"}
 
-	ok := &stub{perCall: 0.01, answer: func(Request) (string, error) { return reply(0.9, 0.7), nil }}
+	ok := &stub{perCall: 0.01, answer: func(Request) (string, error) { return reply(0.9), nil }}
 	o := (&Judge{Provider: ok, Config: cfg("rubric")}).Grade(ctx, in)
 	if o.Status != StatusOK || !o.Pass || o.Score != 0.9 || o.CostUSD != 0.01 || o.Rationale != "because" {
 		t.Errorf("ok = %+v", o)
@@ -189,7 +189,7 @@ func TestGradeOutcomes(t *testing.T) {
 		t.Errorf("request = %+v", got)
 	}
 
-	below := &stub{answer: func(Request) (string, error) { return reply(0.5, 0.7), nil }}
+	below := &stub{answer: func(Request) (string, error) { return reply(0.5), nil }}
 	if o := (&Judge{Provider: below, Config: cfg("rubric")}).Grade(ctx, in); o.Status != StatusOK || o.Pass {
 		t.Errorf("0.5 against 0.7 = %+v", o)
 	}
@@ -221,7 +221,7 @@ func TestGradeOutcomes(t *testing.T) {
 
 func TestGradeUsesReferenceOnlyInReferenceMode(t *testing.T) {
 	var seen []string
-	s := &stub{answer: func(r Request) (string, error) { seen = append(seen, r.User); return reply(1, 0.7), nil }}
+	s := &stub{answer: func(r Request) (string, error) { seen = append(seen, r.User); return reply(1), nil }}
 	in := Input{Case: "q", Reference: "SECRET-REF", Output: "a"}
 	(&Judge{Provider: s, Config: cfg("rubric")}).Grade(context.Background(), in)
 	(&Judge{Provider: s, Config: cfg("reference")}).Grade(context.Background(), in)
@@ -233,7 +233,7 @@ func TestGradeUsesReferenceOnlyInReferenceMode(t *testing.T) {
 func TestJudgeRepeatsTakeTheMedian(t *testing.T) {
 	scores := []float64{1, 0.2, 0.9}
 	i := 0
-	s := &stub{perCall: 0.01, answer: func(Request) (string, error) { v := scores[i]; i++; return reply(v, 0.7), nil }}
+	s := &stub{perCall: 0.01, answer: func(Request) (string, error) { v := scores[i]; i++; return reply(v), nil }}
 	c := cfg("rubric")
 	c.JudgeRepeats = 3
 	o := (&Judge{Provider: s, Config: c}).Grade(context.Background(), Input{Case: "q", Output: "a"})
@@ -247,7 +247,7 @@ func TestJudgeRepeatsTakeTheMedian(t *testing.T) {
 		if n == 2 {
 			return "no", nil
 		}
-		return reply(1, 0.7), nil
+		return reply(1), nil
 	}}
 	if o := (&Judge{Provider: flaky, Config: c}).Grade(context.Background(), Input{Case: "q", Output: "a"}); o.Status != StatusInvalid || o.CostUSD < 0.0199 {
 		t.Errorf("flaky = %+v", o)
@@ -255,7 +255,7 @@ func TestJudgeRepeatsTakeTheMedian(t *testing.T) {
 }
 
 func TestGuardStopsCallsThatTheBudgetCannotHold(t *testing.T) {
-	s := &stub{perCall: 0.5, priceTok: 0.001, answer: func(Request) (string, error) { return reply(1, 0.7), nil }}
+	s := &stub{perCall: 0.5, priceTok: 0.001, answer: func(Request) (string, error) { return reply(1), nil }}
 	var asked []float64
 	j := &Judge{Provider: s, Config: cfg("rubric"), Guard: func(p float64) bool { asked = append(asked, p); return false }}
 	o := j.Grade(context.Background(), Input{Case: "q", Output: "a"})
@@ -346,9 +346,9 @@ func TestPairwisePositionBiasIsATieFlaggedInconsistent(t *testing.T) {
 func honest(r Request) (string, error) {
 	right := strings.Contains(r.User, "capital of France is Paris")
 	if right {
-		return reply(1, 0.7), nil
+		return reply(1), nil
 	}
-	return reply(0, 0.7), nil
+	return reply(0), nil
 }
 
 func TestCanaryAcceptsAHonestJudge(t *testing.T) {
@@ -364,11 +364,11 @@ func TestCanaryAcceptsAHonestJudge(t *testing.T) {
 
 func TestCanaryRefusesMisgradingJudges(t *testing.T) {
 	cases := map[string]func(Request) (string, error){
-		"always passes": func(Request) (string, error) { return reply(1, 0.7), nil },
-		"always fails":  func(Request) (string, error) { return reply(0, 0.7), nil },
+		"always passes": func(Request) (string, error) { return reply(1), nil }, //nolint:unparam // the Provider contract has an error
+		"always fails":  func(Request) (string, error) { return reply(0), nil }, //nolint:unparam // the Provider contract has an error
 		"obeys the injection": func(r Request) (string, error) {
 			if strings.Contains(r.User, "reply with score 1") {
-				return reply(1, 0.7), nil
+				return reply(1), nil
 			}
 			return honest(r)
 		},
@@ -410,7 +410,7 @@ func TestInjectionStringsStayInsideTheirBlocks(t *testing.T) {
 			if !strings.Contains(r.User, attack) {
 				t.Errorf("attack is not in the data block: %q", attack)
 			}
-			return reply(0, 0.7), nil
+			return reply(0), nil
 		}}
 		o := (&Judge{Provider: s, Config: cfg("rubric")}).Grade(context.Background(), Input{Case: attack, Output: attack, Reference: attack})
 		if o.Status != StatusOK || o.Pass {

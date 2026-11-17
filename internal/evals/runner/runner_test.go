@@ -307,7 +307,7 @@ func (f *fakeStore) EvalGraderStats(ctx context.Context, id int64) ([]postgresql
 			st.JudgeCostUSD += g.JudgeCostUSD
 		}
 	}
-	var out []postgresql.EvalGraderStat
+	out := make([]postgresql.EvalGraderStat, 0, len(byID))
 	for _, st := range byID {
 		out = append(out, *st)
 	}
@@ -537,7 +537,7 @@ func TestExperimentRunsToCompletion(t *testing.T) {
 		t.Fatalf("summary = %s, %v", exp.Summary, err)
 	}
 	res := e.store.results[1][slot{101, "base", 0}]
-	if res.Phase != "Succeeded" || res.Output != "all ok" || res.LatencyMs != 2000 || !res.CasePass || res.RunName == "" {
+	if res.Phase != phaseSucceeded || res.Output != "all ok" || res.LatencyMs != 2000 || !res.CasePass || res.RunName == "" {
 		t.Errorf("result = %+v", res)
 	}
 	if g := e.store.grades[1][slot{101, "base", 0}]; len(g) != 1 || !g[0].Pass {

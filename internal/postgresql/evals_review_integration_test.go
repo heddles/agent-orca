@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/heddles/agent-orca/internal/evals/graders"
 )
 
 const (
@@ -84,77 +86,9 @@ func TestEvalReviewFlowAgainstPostgres(t *testing.T) {
 	if got, _ := s.GetEvalExperiment(ctx, f.e.ID); got.Status != ExperimentReview {
 		t.Fatalf("status = %s", got.Status)
 	}
-
-	// The queue is blind: no arm, no run, no cost anywhere in an item.
-	items, err := s.ListEvalReviews(ctx, f.e.ID, EvalReviewQuery{Status: ReviewPending})
-	if err != nil || len(items) != 4 {
-		t.Fatalf("queue = %d, %v", len(items), err)
-	}
-	raw, _ := json.Marshal(items)
-	for _, leak := range []string{`"arm"`, `"base"`, `"cand"`, `"repeat"`, `"runName"`, `"costUsd"`, `"toolCalls"`, `"resultId"`, "from base", "from cand"} {
-		if strings.Contains(strings.ReplaceAll(string(raw), "answer from", "answer"), leak) {
-			t.Errorf("a review item shows %s: %s", leak, raw)
-		}
-	}
-	if items[0].Scale != "passfail" || items[0].Instructions != "is it right?" || items[0].Input == "" {
-		t.Errorf("item = %+v", items[0])
-	}
-
-	// A label: the grade becomes ok and graded by the reviewer; the result's verdict follows.
-	yes, no := true, false
-	done, err := s.SubmitEvalReview(ctx, items[0].ID, EvalReviewLabel{Pass: &yes, Comment: "good"}, "rita")
-	if err != nil || done.Status != ReviewDone || done.Pass == nil || !*done.Pass || done.Reviewer != "rita" {
-		t.Fatalf("submit = %+v, %v", done, err)
-	}
-	if _, err := s.SubmitEvalReview(ctx, items[0].ID, EvalReviewLabel{Pass: &no}, "sam"); !errors.Is(err, ErrReviewClosed) {
-		t.Errorf("a second label: %v", err)
-	}
-	if _, err := s.SubmitEvalReview(ctx, items[1].ID, EvalReviewLabel{Stars: 3}, "rita"); !errors.Is(err, ErrInvalidEval) {
-		t.Errorf("stars on a passfail scale: %v", err)
-	}
-	if _, err := s.SubmitEvalReview(ctx, items[1].ID, EvalReviewLabel{Pass: &no, Comment: strings.Repeat("x", MaxReviewComment+1)}, "rita"); !errors.Is(err, ErrInvalidEval) {
-		t.Errorf("a long comment: %v", err)
-	}
-	if _, err := s.SubmitEvalReview(ctx, items[1].ID, EvalReviewLabel{Pass: &no}, ""); !errors.Is(err, ErrInvalidEval) {
-		t.Errorf("no reviewer: %v", err)
-	}
-	if _, err := s.SubmitEvalReview(ctx, items[1].ID, EvalReviewLabel{Pass: &no}, "rita"); err != nil {
-		t.Fatal(err)
-	}
-	progress, _ := s.EvalReviewProgressOf(ctx, f.e.ID)
-	if progress != (EvalReviewProgress{Pending: 2, Done: 2}) {
-		t.Errorf("progress = %+v", progress)
-	}
-
-	// The results show the labels; a result whose required human grade failed is not a case pass.
-	results, err := s.ListEvalExperimentResults(ctx, f.e.ID, EvalExperimentResultQuery{})
-	if err != nil || len(results) != 4 {
-		t.Fatal(len(results), err)
-	}
-	var passed, failed, pendingCases int
-	for _, r := range results {
-		for _, g := range r.Grades {
-			if g.Kind == "human" && g.Status == GradePendingReview {
-				pendingCases++
-				if r.CasePass {
-					t.Errorf("result %d passes with a required grade pending", r.ID)
-				}
-			}
-			if g.Kind == "human" && g.Status == GradeOK {
-				if g.GradedBy != "rita" {
-					t.Errorf("graded by %q", g.GradedBy)
-				}
-				if r.CasePass {
-					passed++
-				} else {
-					failed++
-				}
-			}
-		}
-	}
-	if passed != 1 || failed != 1 || pendingCases != 2 {
-		t.Errorf("passed %d failed %d pending %d", passed, failed, pendingCases)
-	}
+	items := checkBlindQueue(t, s, ctx, f)
+	checkLabels(t, s, ctx, f, items)
+	checkLabelledResults(t, s, ctx, f)
 
 	// Closing leaves the other two grades pending_review, never a pass.
 	if n, err := s.CloseEvalReview(ctx, f.e.ID); err != nil || n != 2 {
@@ -181,6 +115,92 @@ func TestEvalReviewFlowAgainstPostgres(t *testing.T) {
 	}
 	if _, err := s.CloseEvalReview(ctx, f.e.ID); !errors.Is(err, ErrExperimentFinished) {
 		t.Errorf("close of an ended experiment: %v", err)
+	}
+}
+
+// checkBlindQueue reads the queue and checks nothing in it names an arm.
+func checkBlindQueue(t *testing.T, s *Store, ctx context.Context, f reviewFixture) []EvalReviewItem {
+	t.Helper()
+	items, err := s.ListEvalReviews(ctx, f.e.ID, EvalReviewQuery{Status: ReviewPending})
+	if err != nil || len(items) != 4 {
+		t.Fatalf("queue = %d, %v", len(items), err)
+	}
+	raw, _ := json.Marshal(items)
+	text := strings.ReplaceAll(string(raw), "answer from", "answer")
+	for _, leak := range []string{`"arm"`, `"base"`, `"cand"`, `"repeat"`, `"runName"`, `"costUsd"`, `"toolCalls"`, `"resultId"`, "from base", "from cand"} {
+		if strings.Contains(text, leak) {
+			t.Errorf("a review item shows %s: %s", leak, raw)
+		}
+	}
+	if items[0].Scale != "passfail" || items[0].Instructions != "is it right?" || items[0].Input == "" {
+		t.Errorf("item = %+v", items[0])
+	}
+	return items
+}
+
+// checkLabels labels two items and the refusals around labelling.
+func checkLabels(t *testing.T, s *Store, ctx context.Context, f reviewFixture, items []EvalReviewItem) {
+	t.Helper()
+	yes, no := true, false
+	done, err := s.SubmitEvalReview(ctx, items[0].ID, EvalReviewLabel{Pass: &yes, Comment: "good"}, "rita")
+	if err != nil || done.Status != ReviewDone || done.Pass == nil || !*done.Pass || done.Reviewer != "rita" {
+		t.Fatalf("submit = %+v, %v", done, err)
+	}
+	if _, err := s.SubmitEvalReview(ctx, items[0].ID, EvalReviewLabel{Pass: &no}, "sam"); !errors.Is(err, ErrReviewClosed) {
+		t.Errorf("a second label: %v", err)
+	}
+	if _, err := s.SubmitEvalReview(ctx, items[1].ID, EvalReviewLabel{Stars: 3}, "rita"); !errors.Is(err, ErrInvalidEval) {
+		t.Errorf("stars on a passfail scale: %v", err)
+	}
+	if _, err := s.SubmitEvalReview(ctx, items[1].ID, EvalReviewLabel{Pass: &no, Comment: strings.Repeat("x", MaxReviewComment+1)}, "rita"); !errors.Is(err, ErrInvalidEval) {
+		t.Errorf("a long comment: %v", err)
+	}
+	if _, err := s.SubmitEvalReview(ctx, items[1].ID, EvalReviewLabel{Pass: &no}, ""); !errors.Is(err, ErrInvalidEval) {
+		t.Errorf("no reviewer: %v", err)
+	}
+	if _, err := s.SubmitEvalReview(ctx, items[1].ID, EvalReviewLabel{Pass: &no}, "rita"); err != nil {
+		t.Fatal(err)
+	}
+	progress, _ := s.EvalReviewProgressOf(ctx, f.e.ID)
+	if progress != (EvalReviewProgress{Pending: 2, Done: 2}) {
+		t.Errorf("progress = %+v", progress)
+	}
+}
+
+// checkLabelledResults checks the labels reached the results: a result whose
+// required human grade failed is not a case pass, one still pending is not either.
+func checkLabelledResults(t *testing.T, s *Store, ctx context.Context, f reviewFixture) {
+	t.Helper()
+	results, err := s.ListEvalExperimentResults(ctx, f.e.ID, EvalExperimentResultQuery{})
+	if err != nil || len(results) != 4 {
+		t.Fatal(len(results), err)
+	}
+	var passed, failed, pendingCases int
+	for _, r := range results {
+		for _, g := range r.Grades {
+			if g.Kind != graders.KindHuman {
+				continue
+			}
+			switch g.Status {
+			case GradePendingReview:
+				pendingCases++
+				if r.CasePass {
+					t.Errorf("result %d passes with a required grade pending", r.ID)
+				}
+			case GradeOK:
+				if g.GradedBy != "rita" {
+					t.Errorf("graded by %q", g.GradedBy)
+				}
+				if r.CasePass {
+					passed++
+				} else {
+					failed++
+				}
+			}
+		}
+	}
+	if passed != 1 || failed != 1 || pendingCases != 2 {
+		t.Errorf("passed %d failed %d pending %d", passed, failed, pendingCases)
 	}
 }
 

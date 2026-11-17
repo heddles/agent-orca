@@ -62,8 +62,7 @@ const (
 // text around a verdict is where an injected second verdict hides.
 func unwrap(reply string) ([]byte, error) {
 	s := strings.TrimSpace(reply)
-	if strings.HasPrefix(s, "```") {
-		body := strings.TrimPrefix(s, "```")
+	if body, ok := strings.CutPrefix(s, "```"); ok {
 		nl := strings.IndexByte(body, '\n')
 		if nl < 0 || strings.TrimSpace(body[:nl]) != "" && !strings.EqualFold(strings.TrimSpace(body[:nl]), "json") {
 			return nil, invalid("the reply is not a JSON object")

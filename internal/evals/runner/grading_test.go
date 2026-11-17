@@ -20,7 +20,7 @@ import (
 // ── tool calls ──────────────────────────────────────────────────────────────
 
 func traceJSON(events ...string) []byte {
-	var parts []string
+	parts := make([]string, 0, len(events))
 	for i, ev := range events {
 		parts = append(parts, fmt.Sprintf(`{"id":%d,"event":%s,"ts":"2026-11-01T12:00:00Z"}`, i, ev))
 	}
@@ -88,7 +88,7 @@ func TestToolGradersPassAndFailOnTheArchivedTrace(t *testing.T) {
 		}
 		e.store.archives[ns+"/"+run.Name] = archive(run.Name, trace)
 	}
-	e.finishRuns("Succeeded", "done", "0.01", "")
+	e.finishRuns(phaseSucceeded, "done", "0.01", "")
 	e.tick()
 	if exp := e.store.exp(1); exp.Status != postgresql.ExperimentComplete {
 		t.Fatalf("status = %s", exp.Status)
@@ -113,7 +113,7 @@ func TestTraceNotArchivedYetIsWaitedForThenGradedAsAnError(t *testing.T) {
 	e.store.graders = toolGraders()
 	e.store.add(oneArm(1))
 	e.tick()
-	e.finishRuns("Succeeded", "done", "0.01", "")
+	e.finishRuns(phaseSucceeded, "done", "0.01", "")
 
 	e.tick() // nothing is archived: nothing is recorded, and no retry run is made
 	if got := len(e.store.results[1]); got != 0 {
@@ -168,7 +168,7 @@ func TestToolCallsAreCopiedWithoutToolGraders(t *testing.T) {
 	for _, run := range e.runs() {
 		e.store.archives[ns+"/"+run.Name] = archive(run.Name, traceJSON(toolEvent("lookup")))
 	}
-	e.finishRuns("Succeeded", "ok", "0.01", "")
+	e.finishRuns(phaseSucceeded, "ok", "0.01", "")
 	e.tick()
 	if got := e.store.results[1][slot{101, "base", 0}].ToolCalls; strings.Join(got, ",") != "lookup" {
 		t.Errorf("tool calls = %v", got)
@@ -178,7 +178,7 @@ func TestToolCallsAreCopiedWithoutToolGraders(t *testing.T) {
 	e2.store.graders = []postgresql.EvalGrader{containsGrader()}
 	e2.store.add(oneArm(2))
 	e2.tick()
-	e2.finishRuns("Succeeded", "ok", "0.01", "")
+	e2.finishRuns(phaseSucceeded, "ok", "0.01", "")
 	e2.tick()
 	if exp := e2.store.exp(2); exp.Status != postgresql.ExperimentComplete {
 		t.Errorf("status = %s", exp.Status)
@@ -254,8 +254,8 @@ func honestJudge(per float64) *judgeStub {
 // runToEnd finishes the runs and ticks until the experiment leaves running.
 func (e *env) runToEnd(output, spend string) {
 	e.t.Helper()
-	for i := 0; i < 10; i++ {
-		e.finishRuns("Succeeded", output, spend, "")
+	for range 10 {
+		e.finishRuns(phaseSucceeded, output, spend, "")
 		e.tick()
 		if e.store.exp(1).Status != postgresql.ExperimentRunning {
 			return
@@ -264,13 +264,14 @@ func (e *env) runToEnd(output, spend string) {
 	e.t.Fatalf("the experiment is still running: %+v", e.store.exp(1))
 }
 
-func llmGrader(id int64, mode string, required bool) postgresql.EvalGrader {
+func llmGrader(mode string, required bool) postgresql.EvalGrader {
+	const id = 31
 	return postgresql.EvalGrader{ID: id, DatasetID: 7, Name: fmt.Sprintf("judge-%d", id), Kind: "llm", Weight: 1, Required: required,
-		Config: []byte(fmt.Sprintf(`{"providerRef":"judge","rubric":"the answer is right","mode":%q}`, mode))}
+		Config: fmt.Appendf(nil, `{"providerRef":"judge","rubric":"the answer is right","mode":%q}`, mode)}
 }
 
-func newJudgeEnv(t *testing.T, o opts, p judge.Provider) (*env, *stubResolver) {
-	e := newEnv(t, o)
+func newJudgeEnv(t *testing.T, p judge.Provider) (*env, *stubResolver) {
+	e := newEnv(t, opts{})
 	res := &stubResolver{providers: map[string]judge.Provider{"judge": p}}
 	e.r.cfg.Judges = res
 	return e, res
@@ -278,8 +279,8 @@ func newJudgeEnv(t *testing.T, o opts, p judge.Provider) (*env, *stubResolver) {
 
 func TestLLMGraderGradesRunsAndItsCostIsInTheExperimentSpend(t *testing.T) {
 	p := honestJudge(0.01)
-	e, res := newJudgeEnv(t, opts{}, p)
-	e.store.graders = []postgresql.EvalGrader{llmGrader(31, "rubric", true)}
+	e, res := newJudgeEnv(t, p)
+	e.store.graders = []postgresql.EvalGrader{llmGrader("rubric", true)}
 	e.store.add(oneArm(1))
 	e.tick() // starts: the canary runs
 	if p.count() != 3 {
@@ -325,11 +326,11 @@ func TestInvalidJudgeRepliesFailTheCaseAndCostMoney(t *testing.T) {
 		canaryDone = true
 		return "I would give it a 9 out of 10", nil
 	}
-	e, _ := newJudgeEnv(t, opts{}, p)
-	e.store.graders = []postgresql.EvalGrader{llmGrader(31, "rubric", true), containsGrader()}
+	e, _ := newJudgeEnv(t, p)
+	e.store.graders = []postgresql.EvalGrader{llmGrader("rubric", true), containsGrader()}
 	e.store.add(oneArm(1))
 	e.tick()
-	e.finishRuns("Succeeded", "all ok", "0.05", "")
+	e.finishRuns(phaseSucceeded, "all ok", "0.05", "")
 	e.tick()
 	if !canaryDone || e.store.exp(1).Status != postgresql.ExperimentComplete {
 		t.Fatalf("status = %s", e.store.exp(1).Status)
@@ -349,8 +350,8 @@ func TestInvalidJudgeRepliesFailTheCaseAndCostMoney(t *testing.T) {
 func TestBudgetStopsTheJudgeNotJustTheRuns(t *testing.T) {
 	p := honestJudge(0.04)
 	p.setCost(0.04)
-	e, _ := newJudgeEnv(t, opts{}, p)
-	e.store.graders = []postgresql.EvalGrader{llmGrader(31, "rubric", false), containsGrader()}
+	e, _ := newJudgeEnv(t, p)
+	e.store.graders = []postgresql.EvalGrader{llmGrader("rubric", false), containsGrader()}
 	x := oneArm(1)
 	x.BudgetUSD = 0.5
 	e.store.add(x)
@@ -387,13 +388,13 @@ func TestBudgetStopsTheJudgeNotJustTheRuns(t *testing.T) {
 
 func TestTenantDailyBudgetBoundsTheJudge(t *testing.T) {
 	p := honestJudge(0)
-	e, _ := newJudgeEnv(t, opts{}, p)
+	e, _ := newJudgeEnv(t, p)
 	tc := agentorcav1alpha1.TenantConfig{ObjectMeta: metav1.ObjectMeta{Name: "acme"}, Spec: agentorcav1alpha1.TenantConfigSpec{TenantID: tenant, BudgetPerDayUSD: "5"}}
 	_ = e.kube.Delete(context.Background(), &agentorcav1alpha1.TenantConfig{ObjectMeta: metav1.ObjectMeta{Name: "acme"}})
 	if err := e.kube.Create(context.Background(), &tc); err != nil {
 		t.Fatal(err)
 	}
-	e.store.graders = []postgresql.EvalGrader{llmGrader(31, "rubric", false), containsGrader()}
+	e.store.graders = []postgresql.EvalGrader{llmGrader("rubric", false), containsGrader()}
 	x := oneArm(1)
 	x.BudgetUSD = 3
 	e.store.add(x)
@@ -444,7 +445,7 @@ func TestJudgeFailsTheExperimentBeforeAnyRun(t *testing.T) {
 		case c.resolver != nil:
 			e.r.cfg.Judges = c.resolver
 		}
-		e.store.graders = []postgresql.EvalGrader{llmGrader(31, "rubric", false)}
+		e.store.graders = []postgresql.EvalGrader{llmGrader("rubric", false)}
 		e.store.add(oneArm(1))
 		e.tick()
 		exp := e.store.exp(1)
@@ -462,8 +463,8 @@ func TestJudgeFailsTheExperimentBeforeAnyRun(t *testing.T) {
 
 func TestCanaryIsPaidOncePerExperiment(t *testing.T) {
 	p := honestJudge(0.01)
-	e, _ := newJudgeEnv(t, opts{}, p)
-	e.store.graders = []postgresql.EvalGrader{llmGrader(31, "rubric", false)}
+	e, _ := newJudgeEnv(t, p)
+	e.store.graders = []postgresql.EvalGrader{llmGrader("rubric", false)}
 	e.store.add(oneArm(1))
 	e.tick()
 	n := p.count()
@@ -476,12 +477,12 @@ func TestCanaryIsPaidOncePerExperiment(t *testing.T) {
 
 func TestReferenceModeOnACaseWithoutAReferenceIsNotGraded(t *testing.T) {
 	p := honestJudge(0.01)
-	e, _ := newJudgeEnv(t, opts{}, p)
+	e, _ := newJudgeEnv(t, p)
 	e.store.cases[1].Reference = ""
-	e.store.graders = []postgresql.EvalGrader{llmGrader(31, "reference", false), containsGrader()}
+	e.store.graders = []postgresql.EvalGrader{llmGrader("reference", false), containsGrader()}
 	e.store.add(oneArm(1))
 	e.tick()
-	e.finishRuns("Succeeded", "all ok GOOD", "0.01", "")
+	e.finishRuns(phaseSucceeded, "all ok GOOD", "0.01", "")
 	e.tick()
 	for s, grades := range e.store.grades[1] {
 		for _, g := range grades {
@@ -507,7 +508,7 @@ func outputsByArm(e *env, base, cand string) {
 		if run.Labels[tenancy.LabelEvalArm] == "cand" {
 			out = cand
 		}
-		run.Status.Phase, run.Status.Output, run.Status.SpendUSD = "Succeeded", out, "0.01"
+		run.Status.Phase, run.Status.Output, run.Status.SpendUSD = phaseSucceeded, out, "0.01"
 		now := metav1.NewTime(e.now)
 		run.Status.StartTime, run.Status.CompletionTime = &now, &now
 		if err := e.kube.Update(context.Background(), &run); err != nil {
@@ -518,8 +519,8 @@ func outputsByArm(e *env, base, cand string) {
 
 func TestPairwiseGradesBothArmsAfterTheRunsAreIn(t *testing.T) {
 	p := honestJudge(0.01)
-	e, _ := newJudgeEnv(t, opts{}, p)
-	e.store.graders = []postgresql.EvalGrader{llmGrader(31, "pairwise", false)}
+	e, _ := newJudgeEnv(t, p)
+	e.store.graders = []postgresql.EvalGrader{llmGrader("pairwise", false)}
 	e.store.add(oneArm(1))
 	e.tick()
 	before := p.count()
@@ -557,8 +558,8 @@ func TestPairwisePositionBiasIsAnInconsistentTie(t *testing.T) {
 		}
 		return canary.answer(r)
 	}
-	e, _ := newJudgeEnv(t, opts{}, p)
-	e.store.graders = []postgresql.EvalGrader{llmGrader(31, "pairwise", false)}
+	e, _ := newJudgeEnv(t, p)
+	e.store.graders = []postgresql.EvalGrader{llmGrader("pairwise", false)}
 	e.store.add(oneArm(1))
 	e.tick()
 	outputsByArm(e, "one", "two")
@@ -574,8 +575,8 @@ func TestPairwisePositionBiasIsAnInconsistentTie(t *testing.T) {
 }
 
 func TestPairwiseNeedsExactlyTwoArms(t *testing.T) {
-	e, _ := newJudgeEnv(t, opts{}, honestJudge(0))
-	e.store.graders = []postgresql.EvalGrader{llmGrader(31, "pairwise", false)}
+	e, _ := newJudgeEnv(t, honestJudge(0))
+	e.store.graders = []postgresql.EvalGrader{llmGrader("pairwise", false)}
 	x := oneArm(1)
 	x.Arms = append(x.Arms, postgresql.EvalArm{Label: "third", Agent: "support"})
 	e.store.add(x)
@@ -586,15 +587,15 @@ func TestPairwiseNeedsExactlyTwoArms(t *testing.T) {
 }
 
 func TestPairwiseSkipsAResultWhoseOtherArmFailed(t *testing.T) {
-	e, _ := newJudgeEnv(t, opts{}, honestJudge(0.01))
-	e.store.graders = []postgresql.EvalGrader{llmGrader(31, "pairwise", false), containsGrader()}
+	e, _ := newJudgeEnv(t, honestJudge(0.01))
+	e.store.graders = []postgresql.EvalGrader{llmGrader("pairwise", false), containsGrader()}
 	e.store.add(oneArm(1))
 	e.tick()
 	for _, run := range e.runs() {
 		if run.Labels[tenancy.LabelEvalArm] == "cand" {
 			run.Status.Phase, run.Status.FailureReason = "Failed", "the agent gave up"
 		} else {
-			run.Status.Phase, run.Status.Output, run.Status.SpendUSD = "Succeeded", "all ok", "0.01"
+			run.Status.Phase, run.Status.Output, run.Status.SpendUSD = phaseSucceeded, "all ok", "0.01"
 		}
 		if err := e.kube.Update(context.Background(), &run); err != nil {
 			t.Fatal(err)
@@ -624,7 +625,7 @@ func TestHumanGraderPutsTheExperimentInReviewUntilLabelled(t *testing.T) {
 	e.store.graders = []postgresql.EvalGrader{containsGrader(), humanGrader(41, true)}
 	e.store.add(oneArm(1))
 	e.tick()
-	e.finishRuns("Succeeded", "all ok", "0.05", "")
+	e.finishRuns(phaseSucceeded, "all ok", "0.05", "")
 	e.tick()
 	exp := e.store.exp(1)
 	if exp.Status != postgresql.ExperimentReview {
