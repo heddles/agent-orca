@@ -23,20 +23,20 @@ func agentsUIServer(t *testing.T) *UIServer {
 	}
 	run := func(name, spend string) *agentorcav1alpha1.AgentRun {
 		return &agentorcav1alpha1.AgentRun{
-			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "team-a", Labels: map[string]string{tenancy.LabelTenantID: "tnt_a"}},
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: insightsNS, Labels: map[string]string{tenancy.LabelTenantID: "tnt_a"}},
 			Spec:       agentorcav1alpha1.AgentRunSpec{AgentRef: "helper"},
 			Status:     agentorcav1alpha1.AgentRunStatus{Phase: agentorcav1alpha1.AgentRunPhaseSucceeded, SpendUSD: spend},
 		}
 	}
 	cl := fake.NewClientBuilder().WithScheme(adminScheme(t)).WithObjects(
-		agent("team-a", "helper", map[string]string{tenancy.LabelTenantID: "tnt_a"}, map[string]string{
+		agent(insightsNS, "helper", map[string]string{tenancy.LabelTenantID: "tnt_a"}, map[string]string{
 			AnnotationDescription:   "Helps with things",
 			AnnotationExampleInputs: `["do x","do y"]`,
 			AnnotationInputSchema:   `{"type":"object","properties":{"topic":{"type":"string"}},"required":["topic"]}`,
 		}),
 		agent("team-b", "secret", map[string]string{tenancy.LabelTenantID: "tnt_b"}, nil),
 		&agentorcav1alpha1.AgentDeployment{
-			ObjectMeta: metav1.ObjectMeta{Name: "helper-chat", Namespace: "team-a", Labels: map[string]string{tenancy.LabelTenantID: "tnt_a"}},
+			ObjectMeta: metav1.ObjectMeta{Name: "helper-chat", Namespace: insightsNS, Labels: map[string]string{tenancy.LabelTenantID: "tnt_a"}},
 			Spec:       agentorcav1alpha1.AgentDeploymentSpec{AgentRef: "helper"},
 		},
 		run("r1", "0.10"), run("r2", "0.30"), run("r3", "0.20"),
@@ -54,7 +54,7 @@ func agentsReq(s *UIServer, id *TenantIdentity, method, path, body string) *http
 	return rec
 }
 
-var catalogTenant = &TenantIdentity{TenantID: "tnt_a", TenantName: "a", Namespaces: []string{"team-a"}, UserID: "ada@example.com"}
+var catalogTenant = &TenantIdentity{TenantID: "tnt_a", TenantName: "a", Namespaces: []string{insightsNS}, UserID: "ada@example.com", Roles: tenancy.RoleRunner.Expand()}
 
 func TestCatalogAndManifestAreTenantScoped(t *testing.T) {
 	s := agentsUIServer(t)
@@ -105,7 +105,7 @@ func TestRunCreatesTenantRunWithCreator(t *testing.T) {
 	for _, r := range list.Items {
 		if r.Annotations[AnnotationCreatedBy] == "ada@example.com" {
 			found = true
-			if r.Labels[tenancy.LabelTenantID] != "tnt_a" || r.Namespace != "team-a" || r.Spec.Input != "hello" {
+			if r.Labels[tenancy.LabelTenantID] != "tnt_a" || r.Namespace != insightsNS || r.Spec.Input != "hello" {
 				t.Errorf("unexpected run: %+v", r)
 			}
 		}
@@ -115,6 +115,31 @@ func TestRunCreatesTenantRunWithCreator(t *testing.T) {
 	}
 	if rec := agentsReq(s, catalogTenant, http.MethodGet, "/api/agents/team-a/helper/run", ""); rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("GET run: want 405, got %d", rec.Code)
+	}
+}
+
+// The browser run endpoint reuses the ACP run handler, so it inherits the
+// runner gate: a viewer can read the catalog but cannot start a run.
+func TestViewerCannotRunFromTheCatalog(t *testing.T) {
+	s := agentsUIServer(t)
+	viewer := *catalogTenant
+	viewer.Roles = tenancy.RoleViewer.Expand()
+
+	if rec := agentsReq(s, &viewer, http.MethodGet, "/api/catalog", ""); rec.Code != http.StatusOK {
+		t.Fatalf("viewer catalog: want 200, got %d %s", rec.Code, rec.Body)
+	}
+	rec := agentsReq(s, &viewer, http.MethodPost, "/api/agents/team-a/helper/run", `{"input":[{"parts":[{"content":"hi"}]}]}`)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("viewer run: want 403, got %d %s", rec.Code, rec.Body)
+	}
+	var list agentorcav1alpha1.AgentRunList
+	if err := s.crdClient.List(t.Context(), &list); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range list.Items {
+		if r.Annotations[AnnotationCreatedBy] != "" {
+			t.Fatalf("a viewer's refused request created run %s", r.Name)
+		}
 	}
 }
 
