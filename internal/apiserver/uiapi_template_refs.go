@@ -3,38 +3,20 @@ package apiserver
 import (
 	"fmt"
 	"net/http"
-	"slices"
 	"strings"
 
-	k8serrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
-	"github.com/heddles/agent-orca/internal/tenancy"
+	"github.com/heddles/agent-orca/internal/evals/runner"
 )
 
 // Names in a copy are same-namespace references, so a template copied into a
 // workspace works only if the workspace has what the template names outside its
 // group (its ModelSelector first of all). The check runs before anything is
 // created.
-
-// checkableKinds are the referenced kinds the check can look up, with how to make
-// an empty object and list of each.
-var checkableKinds = map[string]struct {
-	obj  func() client.Object
-	list func() client.ObjectList
-}{
-	"ModelSelector":   {func() client.Object { return &agentorcav1alpha1.ModelSelector{} }, func() client.ObjectList { return &agentorcav1alpha1.ModelSelectorList{} }},
-	kindTool:          {func() client.Object { return &agentorcav1alpha1.Tool{} }, func() client.ObjectList { return &agentorcav1alpha1.ToolList{} }},
-	"KnowledgeBase":   {func() client.Object { return &agentorcav1alpha1.KnowledgeBase{} }, func() client.ObjectList { return &agentorcav1alpha1.KnowledgeBaseList{} }},
-	"GuardrailPolicy": {func() client.Object { return &agentorcav1alpha1.GuardrailPolicy{} }, func() client.ObjectList { return &agentorcav1alpha1.GuardrailPolicyList{} }},
-	"MCPServer":       {func() client.Object { return &agentorcav1alpha1.MCPServer{} }, func() client.ObjectList { return &agentorcav1alpha1.MCPServerList{} }},
-	"ModelProvider":   {func() client.Object { return &agentorcav1alpha1.ModelProvider{} }, func() client.ObjectList { return &agentorcav1alpha1.ModelProviderList{} }},
-	kindAgent:         {func() client.Object { return &agentorcav1alpha1.Agent{} }, func() client.ObjectList { return &agentorcav1alpha1.AgentList{} }},
-}
 
 // typedOf decodes a copy into its API type.
 func typedOf(u *unstructured.Unstructured, kind string) (client.Object, error) {
@@ -69,16 +51,20 @@ type missingRef struct {
 
 // unresolvedRefs lists, one plain-language message each, the references the copies
 // make that point at nothing: not another copy, and not an object of the target
-// namespace that the caller may read.
+// namespace that the caller may read. The lookup is the experiment runner's
+// (runner.RefChecker), so a gap reads the same in both.
 func (s *UIServer) unresolvedRefs(r *http.Request, target string, members []templateMember, copies []*unstructured.Unstructured) ([]string, []missingRef, error) {
 	ctx := r.Context()
 	inSet := map[string]bool{}
 	for _, m := range members {
 		inSet[m.kind+"/"+m.newName] = true
 	}
+	checker := &runner.RefChecker{
+		Reader: s.crdClient, Target: target, InSet: inSet,
+		Readable: func(obj client.Object, kind string) bool { return canRead(ctx, obj, kind) },
+	}
 	var problems []string
 	var missing []missingRef
-	seen := map[string]bool{}
 	for i, u := range copies {
 		obj, err := typedOf(u, members[i].kind)
 		if err != nil {
@@ -87,52 +73,21 @@ func (s *UIServer) unresolvedRefs(r *http.Request, target string, members []temp
 		if obj == nil {
 			continue
 		}
-		for _, ref := range tenancy.RefsOf(obj) {
-			key := ref.Kind + "/" + ref.Name
-			info, checkable := checkableKinds[ref.Kind]
-			if !checkable || inSet[key] || seen[key] {
-				continue
-			}
-			seen[key] = true
-			existing := info.obj()
-			if err := s.crdClient.Get(ctx, client.ObjectKey{Namespace: target, Name: ref.Name}, existing); err == nil && canRead(ctx, existing, ref.Kind) {
-				continue
-			} else if err != nil && !k8serrors.IsNotFound(err) {
-				return nil, nil, err
-			}
-			msg := fmt.Sprintf("%s %q does not exist in namespace %s: ask an administrator to add it", ref.Kind, ref.Name, target)
-			alt, err := s.alternatives(r, target, ref.Kind, info.list())
-			if err != nil {
-				return nil, nil, err
-			}
-			if len(alt) > 0 {
-				msg += fmt.Sprintf(", or use one of its own (%s) by sending {\"replace\":{%q:%q}}", strings.Join(alt, ", "), key, alt[0])
+		gaps, err := checker.Check(ctx, obj)
+		if err != nil {
+			return nil, nil, err
+		}
+		for _, g := range gaps {
+			key := g.Kind + "/" + g.Name
+			msg := fmt.Sprintf("%s %q does not exist in namespace %s: ask an administrator to add it", g.Kind, g.Name, target)
+			if len(g.Alternatives) > 0 {
+				msg += fmt.Sprintf(", or use one of its own (%s) by sending {\"replace\":{%q:%q}}", strings.Join(g.Alternatives, ", "), key, g.Alternatives[0])
 			}
 			problems = append(problems, msg)
-			missing = append(missing, missingRef{Kind: ref.Kind, Name: ref.Name, Namespace: target, Alternatives: alt, ReplaceKey: key})
+			missing = append(missing, missingRef{Kind: g.Kind, Name: g.Name, Namespace: target, Alternatives: g.Alternatives, ReplaceKey: key})
 		}
 	}
 	return problems, missing, nil
-}
-
-// alternatives names the objects of kind in the target namespace that the caller
-// may read.
-func (s *UIServer) alternatives(r *http.Request, target, kind string, list client.ObjectList) ([]string, error) {
-	if err := s.crdClient.List(r.Context(), list, client.InNamespace(target)); err != nil {
-		return nil, err
-	}
-	items, err := meta.ExtractList(list)
-	if err != nil {
-		return nil, err
-	}
-	names := []string{}
-	for _, it := range items {
-		if o, ok := it.(client.Object); ok && canRead(r.Context(), o, kind) {
-			names = append(names, o.GetName())
-		}
-	}
-	slices.Sort(names)
-	return names, nil
 }
 
 // applyReplacements points the references of a copy at the objects the caller
