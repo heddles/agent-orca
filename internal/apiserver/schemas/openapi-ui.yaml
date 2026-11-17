@@ -174,6 +174,41 @@ components:
         reason: { type: string }
         confidence: { type: string }
         timestamp: { type: string, format: date-time, nullable: true }
+    Fleet:
+      type: object
+      properties:
+        window: { type: string, enum: ['24h', '7d'] }
+        since: { type: string, format: date-time }
+        tenantSpendUSD: { type: number }
+        tenantBudgetUSD: { type: number, nullable: true }
+        agents:
+          type: array
+          items: { $ref: '#/components/schemas/FleetRow' }
+    FleetRow:
+      type: object
+      properties:
+        name: { type: string }
+        namespace: { type: string }
+        maintainer: { type: string }
+        published: { type: boolean }
+        deployment: { type: string }
+        owner: { type: string, enum: [ui, git, unknown] }
+        health:
+          type: object
+          properties:
+            status: { type: string, enum: [healthy, degraded, failing, unknown] }
+            reason: { type: string }
+        runCount: { type: integer }
+        errorRate: { type: number, nullable: true }
+        p95DurationSeconds: { type: number, nullable: true }
+        spend:
+          type: object
+          properties:
+            usd: { type: number }
+            agentBudgetUSD: { type: number, nullable: true }
+            tenantBudgetUSD: { type: number, nullable: true }
+        pendingApprovals: { type: integer }
+        lastEvalScore: { type: number, nullable: true }
     CatalogEntry:
       type: object
       properties:
@@ -280,6 +315,32 @@ paths:
               schema:
                 type: array
                 items: { $ref: '#/components/schemas/CatalogEntry' }
+  /api/fleet:
+    get:
+      tags: [agents]
+      summary: Fleet overview
+      description: >
+        One row per agent the caller may read: owner, health (from the agent's
+        and its deployment's conditions), and over the window the run count,
+        error rate (failed over finished runs), p95 duration and spend against
+        the agent's and the tenant's daily budget (scaled to the window), plus
+        pending approvals. lastEvalScore is null until evaluations exist.
+        Needs the viewer role.
+      parameters:
+        - in: query
+          name: window
+          schema: { type: string, enum: ['24h', '7d'], default: '24h' }
+        - in: query
+          name: namespace
+          schema: { type: string }
+      responses:
+        '200':
+          description: the fleet
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Fleet' }
+        '400':
+          description: unknown window
   /api/my/runs:
     get:
       tags: [runs]

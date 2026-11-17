@@ -1,7 +1,7 @@
 /**
  * AppShell — top bar, task-grouped left sidebar, setup banner and the routed
- * page. Section visibility goes through `canSee` (lib/access.ts), the single
- * place role gating will plug in.
+ * page. Section visibility goes through `canSee` (lib/access.ts), which reads
+ * the roles from /api/me.
  */
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { Link, Outlet } from 'react-router'
@@ -9,7 +9,7 @@ import { getSystemStatus, listApprovals } from '../api/sse'
 import { ds, toggleTheme, getPreferredTheme, type Theme } from '../lib/designSystem'
 import { ICON, Icon } from '../lib/icons'
 import { Sidebar, type SidebarGroup } from '../lib/layout'
-import { canSee, canSeeSetupBanners } from '../lib/access'
+import { canSee, canSeeSetupBanners, useRoles, type Roles } from '../lib/access'
 import { useNamespace } from '../lib/namespace'
 import { ROUTES } from '../lib/routes'
 import logoUrl from '../../../assets/logo.png'
@@ -31,23 +31,23 @@ export function usePendingApprovalCount(): number {
   return count
 }
 
-export function buildSidebarGroups(pendingApprovals: number): SidebarGroup[] {
+export function buildSidebarGroups(pendingApprovals: number, roles: Roles = null): SidebarGroup[] {
   const work: SidebarGroup['items'] = []
-  if (canSee('home')) work.push({ to: ROUTES.home, label: 'Home', icon: ICON.home, end: true })
-  if (canSee('agents')) work.push({ to: ROUTES.agents, label: 'Agents', icon: ICON.agent })
-  if (canSee('runs')) work.push({ to: ROUTES.runs, label: 'Runs', icon: ICON.runs })
-  if (canSee('approvals')) {
+  if (canSee(roles, 'home')) work.push({ to: ROUTES.home, label: 'Home', icon: ICON.home, end: true })
+  if (canSee(roles, 'agents')) work.push({ to: ROUTES.agents, label: 'Agents', icon: ICON.agent })
+  if (canSee(roles, 'runs')) work.push({ to: ROUTES.runs, label: 'Runs', icon: ICON.runs })
+  if (canSee(roles, 'approvals')) {
     work.push({
       to: ROUTES.approvals, label: 'Approvals', icon: ICON.approval,
       badge: pendingApprovals, badgeLabel: 'pending',
     })
   }
   const create: SidebarGroup['items'] = []
-  if (canSee('build')) create.push({ to: ROUTES.build, label: 'Build', icon: ICON.tool })
-  if (canSee('evaluate')) create.push({ to: ROUTES.evaluate, label: 'Evaluate', icon: ICON.check })
+  if (canSee(roles, 'build')) create.push({ to: ROUTES.build, label: 'Build', icon: ICON.tool })
+  if (canSee(roles, 'evaluate')) create.push({ to: ROUTES.evaluate, label: 'Evaluate', icon: ICON.check })
   const admin: SidebarGroup['items'] = []
-  if (canSee('operate')) admin.push({ to: ROUTES.operate, label: 'Operate', icon: ICON.chart })
-  if (canSee('settings')) admin.push({ to: ROUTES.settings, label: 'Settings', icon: ICON.settings })
+  if (canSee(roles, 'operate')) admin.push({ to: ROUTES.operate, label: 'Operate', icon: ICON.chart })
+  if (canSee(roles, 'settings')) admin.push({ to: ROUTES.settings, label: 'Settings', icon: ICON.settings })
   return [{ items: work }, { items: create }, { items: admin }].filter((g) => g.items.length > 0)
 }
 
@@ -139,6 +139,7 @@ function UserMenu() {
 
 export function AppShell() {
   const pendingApprovals = usePendingApprovalCount()
+  const roles = useRoles()
   const [showStateBanner, setShowStateBanner] = useState(false)
   const [showSkip, setShowSkip] = useState(false)
   const [theme, setTheme] = useState<Theme>(() => getPreferredTheme())
@@ -172,9 +173,9 @@ export function AppShell() {
           <UserMenu />
         </div>
       </header>
-      {showStateBanner && canSeeSetupBanners() && <StateBanner onDismiss={() => setShowStateBanner(false)} />}
+      {showStateBanner && canSeeSetupBanners(roles) && <StateBanner onDismiss={() => setShowStateBanner(false)} />}
       <div style={s.body}>
-        <Sidebar groups={buildSidebarGroups(pendingApprovals)} />
+        <Sidebar groups={buildSidebarGroups(pendingApprovals, roles)} />
         <main id="main-content" tabIndex={-1} style={s.main}>
           <Outlet />
         </main>

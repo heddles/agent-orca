@@ -84,7 +84,7 @@ export function RoutingInsightsView() {
     <div style={s.root}>
       <div style={s.header}>
         <div>
-          <h2 style={s.title}>Routing</h2>
+          <h2 style={s.title}>Model routing</h2>
           <p style={s.subtitle}>
             What the operator has found about how models are chosen, from traffic and from calls a benchmark replayed on
             another model. It never changes a selector itself: copy a change to apply it, or ask for an approval where a

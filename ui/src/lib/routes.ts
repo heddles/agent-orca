@@ -15,6 +15,7 @@ export const ROUTES = {
   build: '/build',
   evaluate: '/evaluate',
   operate: '/operate',
+  fleet: '/operate/fleet',
   costs: '/operate/costs',
   routing: '/operate/routing',
   status: '/operate/status',
@@ -33,6 +34,8 @@ export const templatePath = (ns: string, name: string) => `/agents/templates/${e
 export const publishedAgentPath = (ns: string, name: string) => `/agents/published/${enc(ns)}/${enc(name)}`
 /** A live run (an AgentRun resource in the cluster). */
 export const liveRunPath = (ns: string, name: string) => `/runs/live/${enc(ns)}/${enc(name)}`
+/** Runs of one agent, through the Runs page's agent filter. */
+export const agentRunsPath = (agent: string) => `/runs?agent=${enc(agent)}`
 /** An archived run (read from the history store). */
 export const archivedRunPath = (ns: string, name: string) => `/runs/history/${enc(ns)}/${enc(name)}`
 export const workflowPath = (ns: string, name: string) => `/operate/workflows/${enc(ns)}/${enc(name)}`

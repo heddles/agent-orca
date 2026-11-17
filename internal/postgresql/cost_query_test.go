@@ -39,7 +39,7 @@ func costMock(t *testing.T) (*Store, sqlmock.Sqlmock) {
 	return &Store{db: db, defaultScope: PlatformScope}, mock
 }
 
-var costCols = []string{"name", "namespace", "agent_ref", "phase", "spend_usd", "cost_capture", "model", "when"}
+var costCols = []string{"name", "namespace", "agent_ref", "phase", "spend_usd", "cost_capture", "model", "when", "start_time", "completion_time"}
 
 // Archived runs must contribute to cost totals once their CRD is GC'd.
 func TestQueryCostRows_ReturnsArchivedRuns(t *testing.T) {
@@ -49,8 +49,8 @@ func TestQueryCostRows_ReturnsArchivedRuns(t *testing.T) {
 	mock.ExpectQuery(`SELECT name, namespace, agent_ref, phase.*FROM archived_runs`).
 		WithArgs(maxCostRows).
 		WillReturnRows(sqlmock.NewRows(costCols).
-			AddRow("a", "ns", "agent-1", "Succeeded", "0.5", "complete", "gpt-4o", done).
-			AddRow("b", "ns", "agent-1", "Failed", "", "incomplete", "", done))
+			AddRow("a", "ns", "agent-1", "Succeeded", "0.5", "complete", "gpt-4o", done, nil, nil).
+			AddRow("b", "ns", "agent-1", "Failed", "", "incomplete", "", done, nil, nil))
 	mock.ExpectCommit()
 
 	rows, err := s.QueryCostRows(context.Background(), CostQuery{})
