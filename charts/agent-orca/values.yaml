@@ -69,6 +69,19 @@ operator:
     # Allow a case copied from a run to keep the original text (redact: false).
     # false makes the API refuse that (EVALS_ALLOW_UNREDACTED_CASES).
     allowUnredactedCases: true
+    # Experiments (docs/evaluations.md): the endpoints and the leader-only runner.
+    # false turns both off (EVALS_ENABLED).
+    enabled: true
+    # The most USD one experiment's budget may be (EVALS_MAX_BUDGET_PER_EXPERIMENT_USD).
+    maxBudgetPerExperimentUSD: 25
+    # The most live cases a dataset may have for an experiment to run on it
+    # (EVALS_MAX_CASES_PER_EXPERIMENT).
+    maxCasesPerExperiment: 500
+    # Experiments one tenant may have queued or running at once
+    # (EVALS_MAX_ACTIVE_EXPERIMENTS_PER_TENANT).
+    maxActiveExperimentsPerTenant: 2
+    # Seconds between the runner's polls (EVALS_RUNNER_INTERVAL_SECONDS).
+    runnerIntervalSeconds: 5
   # extraArgs are appended to the operator container args. Use this to enable
   # optional features such as OIDC login, e.g.:
   #   extraArgs:

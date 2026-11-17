@@ -1,6 +1,6 @@
 # Evaluation datasets
 
-A dataset is a named set of **cases** (an input, an optional reference answer, tags) that belongs to one workspace. Datasets are the first piece of the evaluation work in the evaluations proposal (`docs/proposals/evaluations.md`, not merged yet); experiments, the judge and the publish gate come later. This page covers what exists now: datasets, cases, "add to dataset" from a run, redaction, and deterministic graders.
+A dataset is a named set of **cases** (an input, an optional reference answer, tags) that belongs to one workspace. Datasets are the first piece of the evaluation work in the evaluations proposal (`docs/proposals/evaluations.md`, not merged yet); experiments are described below; the judge and the publish gate come later. This page covers what exists now: datasets, cases, "add to dataset" from a run, redaction, and deterministic graders.
 
 Datasets live in PostgreSQL, in the tables `eval_datasets` and `eval_cases` (migration `0013`). They carry `tenant_id` with row-level security like every other tenant table (see [tenant isolation](tenant-isolation.md)). They are not CRDs and have no GitOps form; the API is the interface. **Without the PostgreSQL store every endpoint answers 503** with `evaluations need the PostgreSQL store`. A caller with no tenant ID (authentication off) cannot create datasets: a dataset always belongs to a tenant.
 
@@ -170,6 +170,57 @@ A dataset can hold up to 50 **graders**: deterministic checks, run in the operat
 
 Tables `eval_graders`, `eval_results` and `eval_grades` (migration `0014`) carry `tenant_id` with the same forced row-level security as the dataset tables, and each child references its parent through a key that includes `tenant_id`, so the database refuses a grader, result or grade under another tenant than its parent's. Another tenant's dataset, grader or result, and anything in a workspace the caller may not use, is a 404. Audit rows use kind `EvalGrader` (name `dataset/grader`) and `EvalResult` and hold names and counts, never an output. Stored outputs are readable by every viewer in the tenant, as cases are; grade only text you would keep in a dataset.
 
+## Experiments
+
+An experiment runs 2 to 4 **arms** over a dataset at its current version (frozen when the experiment is created: later edits to the dataset do not change it), grades every result with the dataset's deterministic graders, and compares the arms. An arm is `{label, agent, revision?, hash?, modelProvider?}`:
+
+- *revision comparison*: the same agent, two saved revisions (a number from the agent's revision history). An arm with no revision runs the live Agent. The runner hashes the spec each arm runs (SHA-256 of its canonical JSON) when the experiment starts and stores the hash in the arm, so a result names a precise artifact. A revision arm is read from the tenant's revision history; if the arm carries a `hash` that the stored revision no longer has, the request is a 422.
+- *model comparison*: the same agent on a different `modelProvider`. The runner makes a one-provider ModelSelector for it.
+- The first arm is the baseline.
+
+The dataset needs at least one grader (409 otherwise). Experiments need PostgreSQL and `operator.evals.enabled`; otherwise the endpoints answer 503.
+
+| Endpoint | Role |
+|---|---|
+| `POST /api/evals/experiments` `{datasetId, name?, arms, repeats?, budgetUsd, runBudgetUsd?, timeoutSeconds?, concurrency?}` | builder, audited |
+| `GET /api/evals/experiments` (`?namespace=`, `?datasetId=`, `?status=`, `?limit=`, `?cursor=`) | viewer |
+| `GET /api/evals/experiments/{id}` | viewer |
+| `GET /api/evals/experiments/{id}/results` (`?arm=`, `?caseId=`, `?limit=`, `?cursor=`) | viewer |
+| `POST /api/evals/experiments/{id}/cancel` | builder, audited |
+
+Another tenant's experiment, or one in a workspace the caller may not use, is a 404. Audit rows (kind `EvalExperiment`) hold the experiment ID, dataset name, version and counts, never case or output text. Defaults: 1 repeat (at most 5), run timeout 600 s, concurrency 4 (at most 16), per-run cap `min($1, budget)`.
+
+### Before it runs
+
+The create call checks what each arm's agent names (its ModelSelector, Tools, KnowledgeBases, GuardrailPolicy, and a model arm's ModelProvider) with the same lookup as "use a template". A gap is a **422** with `{"error", "missing": [{arm, kind, name, namespace, alternatives}]}`. The runner repeats the check when it starts the experiment, because the cluster may have changed; a gap then fails the experiment with the message in `error`.
+
+### How it runs
+
+A leader-only runner in the operator polls `eval_experiments` (`FOR UPDATE SKIP LOCKED`, with a lease, so two operators never run one experiment). For each experiment it:
+
+1. makes a hidden Agent `eval-<id>-<arm>` per arm from the resolved spec (and a ModelSelector of the same name for a model arm). They carry the tenant ID, `agentorca.io/owner: ui`, `agentorca.io/eval=true`, `agentorca.io/eval-experiment` and `agentorca.io/eval-arm`, and are left out of `GET /api/agents`, the catalog and the fleet. A user's own object of the same name is never overwritten: the experiment fails instead;
+2. creates one `AgentRun` per (case, arm, repeat) named `eval-<id>-<arm index>-<case>-<repeat>` (a function of the slot, so a crash cannot make two), labelled `agentorca.io/eval=true`, `eval-experiment`, `eval-arm`, `eval-case`, `eval-repeat`, `tenant-id` and `tenant`. Runs carry **no callbacks and no egress**, so nothing reaches a sink. Work goes out by case, then repeat, then arm, so a stopped experiment still has paired data;
+3. copies each finished run into `eval_results` (output, spend, cost completeness, latency, phase), runs the deterministic graders and stores the grades. The result tables are written in the experiment's own tenant scope, never the platform scope;
+4. ends when every slot has a result, the budget is spent, or a cancel arrives, writes the `summary`, and deletes the hidden Agents and ModelSelectors.
+
+**Budget.** `budgetUsd` is a hard cap on the experiment's runs. Each run gets `spec.budget.maxUSD = min(runBudgetUsd, remaining / (runs in flight + 1), remaining minus the caps already given to runs in flight)` with `onExceeded: fail` (never `pause`: nobody is there to approve). When nothing is left the experiment completes with `summary.stoppedBy = "budget"`. The router can overshoot a run's cap by one call, so the cap carries that slack. Experiment spend also counts against the tenant's `budgetPerDayUSD`: an experiment whose budget is more than what is left today does not start (status `failed`, with the reason), and a running one stops creating runs with `stoppedBy = "daily-budget"` when what is left falls below its remaining budget.
+
+**Concurrency.** At most `concurrency` runs at once, never more than 16 eval runs for a tenant, and never more than the tenant's `rateLimit.concurrentRuns` when set. At most two experiments per tenant are queued or running (a third is a 409). The tenant's `requestsPerMinute` bucket is consulted once per run created.
+
+**Failures.** A run that fails or times out is recorded with that phase and scores as a failed case: a failing agent is data. When the platform fails the run (pod not found, evicted, unschedulable, router or sandbox setup), the runner retries it once (`...-r1`) and then records the result as `Skipped`; the comparison drops that case from every arm, so it stays paired.
+
+**Cancel.** `POST .../cancel` ends a queued experiment at once. For a running one the runner records finished runs, records the others as `Cancelled` (with the spend so far), deletes them, and ends the experiment `cancelled` with a partial summary of the paired data.
+
+**Restart.** All state is in PostgreSQL and in the runs (found by label), so a restarted runner resumes: finished runs are recorded, in-flight ones are adopted, none is created twice. On start a sweep deletes the hidden objects, and any running AgentRun, of experiments that have ended or no longer exist.
+
+### The summary
+
+When an experiment ends `summary` holds `stoppedBy`, `partial`, `results`, `skipped`, `spentUsd` and the paired comparison of each arm against the first (pass rates with intervals, McNemar, score, cost and latency differences, the verdict), from `internal/evals/compare`.
+
+### Left out of production figures
+
+Runs labelled `agentorca.io/eval` are not production traffic. They are left out of: the cost view (`GET /api/costs`), the run list (`GET /api/runs`), run history (`GET /api/runs/history`), the fleet view, "my runs", and routing-benchmark shadow sampling (an eval run is never sampled, whatever a benchmark's `excludeRunSelector` says). `?includeEval=true` on the cost view, the run list and run history puts them back. What experiments cost is reported on its own: `GET /api/costs` has an `evaluations` line (`totalUSD`, `experiments`) that is not part of `totalUSD` or any other figure.
+
 ## Operator settings
 
 Helm values under `operator.evals` (environment variables on the operator):
@@ -179,7 +230,12 @@ Helm values under `operator.evals` (environment variables on the operator):
 | `maxCasesPerDataset` | `EVALS_MAX_CASES_PER_DATASET` | 2000 |
 | `maxCaseBytes` | `EVALS_MAX_CASE_BYTES` | 65536 |
 | `allowUnredactedCases` | `EVALS_ALLOW_UNREDACTED_CASES` | true |
+| `enabled` | `EVALS_ENABLED` | true |
+| `maxBudgetPerExperimentUSD` | `EVALS_MAX_BUDGET_PER_EXPERIMENT_USD` | 25 |
+| `maxCasesPerExperiment` | `EVALS_MAX_CASES_PER_EXPERIMENT` | 500 |
+| `maxActiveExperimentsPerTenant` | `EVALS_MAX_ACTIVE_EXPERIMENTS_PER_TENANT` | 2 |
+| `runnerIntervalSeconds` | `EVALS_RUNNER_INTERVAL_SECONDS` | 5 |
 
 ## Not built yet
 
-Experiments, the LLM judge and human review, the publish gate and the Evaluate screens, and JSONL export of a dataset. They are in the proposal as stages E3 to E6.
+The LLM judge and human review, the publish gate, the Evaluate screens for experiments, result retention, and JSONL export of a dataset. Known limits of the runner: a run's tool calls are not copied into its result (they are in the run's trace), so the tool-call graders cannot pass on experiment results; routing telemetry of eval runs (`routing_events`) is not yet filtered; and the form that makes a builder acknowledge an arm's write and actuate tools is part of the UI stage.
