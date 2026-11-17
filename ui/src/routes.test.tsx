@@ -22,6 +22,10 @@ vi.mock('./components/TemplatesGallery', () => ({
   TemplatesGallery: () => <div>view:templates</div>,
   TemplateDetail: (p: { namespace: string; name: string }) => <div>view:template {p.namespace}/{p.name}</div>,
 }))
+vi.mock('./components/BuildHome', () => ({ BuildHome: () => <div>view:build-home</div> }))
+vi.mock('./components/AgentBuilder', () => ({
+  AgentBuilder: (p: { namespace?: string; name?: string }) => <div>view:builder {p.namespace ? `${p.namespace}/${p.name}` : 'new'}</div>,
+}))
 vi.mock('./components/ApprovalsView', () => ({ ApprovalsView: () => <div>view:approvals</div> }))
 vi.mock('./components/CostDashboard', () => ({ CostDashboard: () => <div>view:costs</div> }))
 vi.mock('./components/RoutingInsightsView', () => ({ RoutingInsightsView: () => <div>view:routing</div> }))
@@ -81,6 +85,9 @@ describe('deep links', () => {
     ['/agents/details/team-a/helper?tab=chat', 'view:agent team-a/helper tab:chat'],
     ['/agents/published/team-a/helper', 'view:published helper'],
     ['/agents/definitions/team-a/coder', 'view:config agent coder'],
+    ['/build', 'view:build-home'],
+    ['/build/new', 'view:builder new'],
+    ['/build/team-a/helper', 'view:builder team-a/helper'],
     ['/approvals', 'view:approvals'],
     ['/operate/fleet', 'view:fleet'],
     ['/operate/costs', 'view:costs'],
@@ -124,6 +131,13 @@ describe('deep links', () => {
     expect(screen.queryByText('view:overview')).not.toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: 'Show' }))
     expect(await screen.findByText('view:overview')).toBeInTheDocument()
+  })
+
+  it('keeps Build away from viewers, with a plain explanation', async () => {
+    mockGetMe.mockResolvedValue(meWith(['viewer']))
+    renderAt('/build/new')
+    expect(await screen.findByText('Building agents needs the builder role')).toBeInTheDocument()
+    expect(screen.queryByText('view:builder new')).not.toBeInTheDocument()
   })
 
   it('sends unknown paths home', async () => {

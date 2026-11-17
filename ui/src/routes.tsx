@@ -11,7 +11,9 @@
  *   /runs/live/:ns/:name                      a live run
  *   /runs/history/:ns/:name                   an archived run
  *   /approvals                                Approvals
- *   /build, /evaluate                         placeholders for later stages
+ *   /build                                    my agents, with Create and Use a template
+ *   /build/new, /build/:ns/:name              the agent builder
+ *   /evaluate                                 placeholder for a later stage
  *   /operate/{fleet,costs,routing,status}     Operate tabs (fleet is the default)
  *   /operate/workflows[/:ns/:name]            workflows
  *   /settings/providers[/:ns/:name]           model providers
@@ -42,6 +44,8 @@ import { TemplateDetail, TemplatesGallery } from './components/TemplatesGallery'
 import { ApprovalsView } from './components/ApprovalsView'
 import { FleetView } from './components/FleetView'
 import { RoutingInsightsView } from './components/RoutingInsightsView'
+import { AgentBuilder } from './components/AgentBuilder'
+import { BuildHome } from './components/BuildHome'
 import { AppShell } from './shell/AppShell'
 import { ICON } from './lib/icons'
 import { ds } from './lib/designSystem'
@@ -253,7 +257,30 @@ function ApprovalsRoute() {
   )
 }
 
-// ── Build and Evaluate (later stages) ────────────────────────────────────────
+// ── Build ────────────────────────────────────────────────────────────────────
+
+/** Build is for builders and admins; the API enforces it, this explains it. */
+function BuildGuard() {
+  const roles = useRoles()
+  if (!canSee(roles, 'build')) {
+    return (
+      <Page>
+        <EmptyState icon={ICON.tool} title="Building agents needs the builder role">
+          Ask an administrator of your workspace to give you the builder role. You can still use the agents
+          that others have published.
+        </EmptyState>
+      </Page>
+    )
+  }
+  return <Outlet />
+}
+
+function BuilderRoute() {
+  const { ns = '', name = '' } = useParams()
+  return <AgentBuilder key={`${ns}/${name}`} namespace={ns} name={name} />
+}
+
+// ── Evaluate (a later stage) ─────────────────────────────────────────────────
 
 function ComingPage({ title, description, children }: { title: string; description: string; children: ReactNode }) {
   return (
@@ -403,15 +430,11 @@ export function AppRoutes() {
 
         <Route path="approvals" element={<ApprovalsRoute />} />
 
-        <Route
-          path="build"
-          element={
-            <ComingPage title="Build" description="Create and edit agents without writing YAML.">
-              Agents are still created by applying manifests, for example through GitOps. A guided builder
-              is planned; until then, use Agents to see what exists.
-            </ComingPage>
-          }
-        />
+        <Route path="build" element={<BuildGuard />}>
+          <Route index element={<BuildHome />} />
+          <Route path="new" element={<AgentBuilder key="new" />} />
+          <Route path=":ns/:name" element={<BuilderRoute />} />
+        </Route>
         <Route
           path="evaluate"
           element={

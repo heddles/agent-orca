@@ -605,6 +605,22 @@ func main() {
 		setupLog.Error(err, "Failed to set up tenant isolation webhooks")
 		os.Exit(1)
 	}
+	// Ownership: one writer per object, the UI or Git. Its failurePolicy is Fail
+	// (chart and config/webhook), independent of the other webhooks.
+	ownershipDetect := tenancy.DetectOptionsFromEnv()
+	if err := agentwebhook.SetupOwnershipWebhook(mgr, agentwebhook.OwnershipConfig{
+		Writers:                tenancy.WritersFromEnv(),
+		Detect:                 ownershipDetect,
+		OperatorNamespace:      os.Getenv("POD_NAMESPACE"),
+		OperatorServiceAccount: os.Getenv("POD_SERVICE_ACCOUNT"),
+	}); err != nil {
+		setupLog.Error(err, "Failed to set up ownership webhook")
+		os.Exit(1)
+	}
+	if err := controller.SetupHandoffControllers(mgr, ownershipDetect); err != nil {
+		setupLog.Error(err, "Failed to set up handoff controllers")
+		os.Exit(1)
+	}
 	// Label objects that predate tenant IDs once the cache is up.
 	if err := mgr.Add(&controller.TenantBackfill{
 		Client: controller.NewBackfillClient(mgr.GetClient(), mgr.GetAPIReader()),
@@ -797,6 +813,7 @@ func main() {
 
 	// Start the UI API server (port 8083) for the React frontend.
 	uiAPI := apiserver.NewUIServer(k8sClient, mgr.GetClient(), stateConfig.Backend != "", stateStore, uiAuthEnabled, externalAuth, pgStore, alertManager) //nolint:lll
+	uiAPI.SetOwnership(ownershipDetect, tenancy.HandoffTTLFromEnv())
 	if uiOIDC != nil {
 		uiAPI.SetOIDCLogin(uiOIDC)
 	}

@@ -1,6 +1,7 @@
 /** Client for the agent catalog, agent manifests, starting runs and "my runs". */
 import { apiFetch } from './sse'
 import type { JSONSchema } from '../lib/schemaForm'
+import type { Ownership } from './builder'
 
 export interface CatalogMember {
   kind: string
@@ -26,6 +27,8 @@ export interface CatalogEntry {
   /** Median cost of the agent's finished runs, in USD. Null when unknown. */
   typicalCostUSD: number | null
   members?: CatalogMember[]
+  /** Who manages the agent: this UI, Git, or unknown. */
+  ownership?: Ownership
 }
 
 export interface AgentManifest {

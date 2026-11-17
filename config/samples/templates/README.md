@@ -3,7 +3,7 @@
 Ready-made agents that appear in the UI under **Agents, Templates**. People can
 read them and see what they include. A template is kept in Git by the platform
 team, so it is read only in the UI. Copying a template into a team's own
-workspace ("Use template") arrives with the agent builder.
+workspace is "Use template" (`POST /api/templates/{ns}/{name}/use`, see `docs/agent-builder.md`).
 
 | Template | What it does | Based on |
 |---|---|---|
@@ -19,6 +19,13 @@ All of them use the `default` ModelSelector and the `openai-reference` runtime
 image, and live in `agent-orca-system`, the default platform catalog namespace. They have no external dependencies, with
 two exceptions: `coder-agent` needs OpenShell sandboxes enabled in its namespace
 (see `docs/coder-agent.md`).
+
+Using a template copies it into the team's namespace, and the references in a
+template are same-namespace names. The namespace therefore needs a ModelSelector
+named `default` (or the caller names another with `replace`, see
+`docs/agent-builder.md`), and any KnowledgeBase, GuardrailPolicy or Tool a
+template names outside its group. Without them "Use template" answers 422 and
+creates nothing.
 
 ## How a template is marked
 

@@ -27,7 +27,10 @@ export const ROUTES = {
   knowledge: '/settings/knowledge',
 } as const
 
-export const agentPath = (ns: string, name: string) => `/agents/definitions/${enc(ns)}/${enc(name)}`
+export const buildNewPath = '/build/new'
+/** An agent in the builder. */
+export const buildPath = (ns: string, name: string) => `/build/${enc(ns)}/${enc(name)}`
+export const agentPath =(ns: string, name: string) => `/agents/definitions/${enc(ns)}/${enc(name)}`
 /** The agent page: run form, and chat when the agent is published. */
 export const agentDetailsPath = (ns: string, name: string) => `/agents/details/${enc(ns)}/${enc(name)}`
 export const templatePath = (ns: string, name: string) => `/agents/templates/${enc(ns)}/${enc(name)}`
