@@ -35,6 +35,8 @@ tags:
     description: ModelSelector listing
   - name: audit
     description: Audit trail of changes (admin)
+  - name: evals
+    description: Evaluation datasets and cases (PostgreSQL store; 503 without it)
 components:
   securitySchemes:
     BearerAuth:
@@ -398,6 +400,129 @@ components:
           properties:
             pending: { type: boolean, description: An export marked the object for handoff and the handoff has not expired. }
             expires: { type: string, format: date-time }
+    EvalDataset:
+      type: object
+      description: >
+        A named, versioned set of evaluation cases in one workspace. version
+        starts at 1 and goes up by one for each add call (a bulk add counts
+        once), each edit that changes a field, and each removal of a case.
+        Changing the description or agent does not change it.
+      required: [id, namespace, name, version, caseCount, createdBy, createdAt, updatedAt]
+      properties:
+        id: { type: integer, format: int64 }
+        tenantId: { type: string }
+        namespace: { type: string, description: The workspace the dataset belongs to. }
+        name: { type: string, description: A DNS label, unique per workspace. }
+        description: { type: string, maxLength: 2000 }
+        agent: { type: string, description: Optional name of the Agent the dataset is meant for. }
+        version: { type: integer }
+        caseCount: { type: integer, description: Live (not removed) cases. }
+        createdBy: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    EvalDatasetCreate:
+      type: object
+      required: [name]
+      properties:
+        namespace: { type: string, description: Defaults to the caller's first workspace. }
+        name: { type: string }
+        description: { type: string }
+        agent: { type: string }
+    EvalDatasetPatch:
+      type: object
+      description: Only the fields present change.
+      properties:
+        description: { type: string }
+        agent: { type: string }
+    EvalCase:
+      type: object
+      required: [id, datasetId, addedIn, input, referenceKind, tags, weight, redacted, createdAt]
+      properties:
+        id: { type: integer, format: int64 }
+        datasetId: { type: integer, format: int64 }
+        namespace: { type: string }
+        datasetName: { type: string }
+        addedIn: { type: integer, description: The dataset version that added the case. }
+        removedIn: { type: integer, description: The version that removed it; absent while live. }
+        input: { type: string }
+        reference: { type: string }
+        referenceKind: { type: string, enum: [none, exact, example, rubric] }
+        tags: { type: array, items: { type: string } }
+        weight: { type: number, exclusiveMinimum: 0 }
+        sourceRunNamespace: { type: string }
+        sourceRun: { type: string, description: The run the case was copied from. A pointer only; the run may be gone. }
+        sourceUser: { type: string }
+        redacted: { type: boolean, description: The text went through redaction on capture. }
+        createdAt: { type: string, format: date-time }
+    EvalCaseInput:
+      type: object
+      description: >
+        One case, as a JSON body or as one line of JSON lines. Give expected or
+        reference, not both. A reference with no referenceKind is exact.
+      required: [input]
+      properties:
+        input: { type: string }
+        expected: { type: string }
+        reference: { type: string }
+        referenceKind: { type: string, enum: [none, exact, example, rubric] }
+        tags: { type: array, items: { type: string }, maxItems: 20 }
+        weight: { type: number, exclusiveMinimum: 0 }
+    EvalCasePatch:
+      type: object
+      description: Only the fields present change.
+      properties:
+        input: { type: string }
+        reference: { type: string }
+        referenceKind: { type: string, enum: [none, exact, example, rubric] }
+        tags: { type: array, items: { type: string } }
+        weight: { type: number }
+    EvalCasePage:
+      type: object
+      required: [cases, datasetVersion]
+      properties:
+        cases: { type: array, items: { $ref: '#/components/schemas/EvalCase' } }
+        nextCursor: { type: string, description: Pass as cursor for the next page; absent on the last. }
+        datasetVersion: { type: integer }
+    EvalCasesAdded:
+      type: object
+      required: [added, datasetVersion, cases]
+      properties:
+        added: { type: integer }
+        datasetVersion: { type: integer, description: The version after the add (one bump for the whole call). }
+        cases: { type: array, items: { $ref: '#/components/schemas/EvalCase' } }
+    EvalCaseChanged:
+      type: object
+      required: [case, datasetVersion]
+      properties:
+        case: { $ref: '#/components/schemas/EvalCase' }
+        datasetVersion: { type: integer }
+    EvalCapture:
+      type: object
+      required: [datasetId]
+      properties:
+        datasetId: { type: integer, format: int64 }
+        reference: { type: string, description: The expected answer, written by the person. }
+        referenceKind: { type: string, enum: [none, exact, example, rubric], description: Default exact when a reference is given. }
+        useOutput: { type: boolean, description: Take the run's output as the reference, kind example. Never the default. }
+        redact: { type: boolean, default: true, description: false keeps the original text; refused with 403 when the operator forbids it. }
+        tags: { type: array, items: { type: string } }
+        preview: { type: boolean, description: Return what would be stored, with the original, and store nothing. }
+    EvalCaptured:
+      type: object
+      required: [case, redaction]
+      properties:
+        case: { $ref: '#/components/schemas/EvalCase' }
+        datasetVersion: { type: integer }
+        redaction:
+          type: object
+          description: What redaction did to "input" and "reference". Rule names only, never text.
+          additionalProperties:
+            type: object
+            properties:
+              replacements: { type: integer }
+              rules: { type: array, items: { type: string } }
+        preview: { type: boolean }
+        original: { type: object, additionalProperties: { type: string }, description: The text before redaction. Only in a preview. }
     ResourceKind:
       type: string
       enum: [agents, tools, mcpservers, modelproviders, knowledgebases, modelselectors, agentdeployments, agentworkflows]
@@ -1204,6 +1329,224 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '503': { description: The audit trail needs the PostgreSQL store }
+  /api/evals/datasets:
+    get:
+      tags: [evals]
+      summary: List evaluation datasets
+      description: >
+        The datasets in the caller's tenant and in the workspaces the caller may
+        use. Needs the viewer role. Every evaluation endpoint answers 503 without
+        the PostgreSQL store.
+      parameters:
+        - { in: query, name: namespace, schema: { type: string } }
+        - { in: query, name: agent, schema: { type: string } }
+      responses:
+        '200':
+          description: datasets, ordered by workspace and name
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [datasets]
+                properties:
+                  datasets: { type: array, items: { $ref: '#/components/schemas/EvalDataset' } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { description: Evaluations need the PostgreSQL store }
+    post:
+      tags: [evals]
+      summary: Create an evaluation dataset
+      description: Needs the builder role. Audited (create, kind EvalDataset). The dataset starts at version 1.
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: '#/components/schemas/EvalDatasetCreate' } }
+      responses:
+        '201':
+          description: created
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/EvalDataset' } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { description: A dataset with that name exists in the workspace }
+        '503': { description: Evaluations need the PostgreSQL store }
+  /api/evals/datasets/{id}:
+    parameters:
+      - { in: path, name: id, required: true, schema: { type: integer, format: int64 } }
+    get:
+      tags: [evals]
+      summary: Get an evaluation dataset
+      description: Needs the viewer role. A dataset of another tenant, or in a workspace the caller may not use, is a 404.
+      responses:
+        '200':
+          description: the dataset
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/EvalDataset' } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { description: Evaluations need the PostgreSQL store }
+    patch:
+      tags: [evals]
+      summary: Change a dataset's description or agent
+      description: Needs the builder role. Audited. Does not change the version.
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: '#/components/schemas/EvalDatasetPatch' } }
+      responses:
+        '200':
+          description: the dataset
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/EvalDataset' } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { description: Evaluations need the PostgreSQL store }
+    delete:
+      tags: [evals]
+      summary: Delete a dataset and its cases
+      description: Needs the builder role. Audited, with the case count. Removed cases go with it.
+      responses:
+        '204': { description: deleted }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { description: Evaluations need the PostgreSQL store }
+  /api/evals/datasets/{id}/cases:
+    parameters:
+      - { in: path, name: id, required: true, schema: { type: integer, format: int64 } }
+    get:
+      tags: [evals]
+      summary: List a dataset's live cases
+      description: Needs the viewer role. Ordered by ID, paged by cursor.
+      parameters:
+        - { in: query, name: tag, schema: { type: string } }
+        - { in: query, name: limit, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+        - { in: query, name: cursor, description: nextCursor of the previous page, schema: { type: string } }
+      responses:
+        '200':
+          description: a page of cases
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/EvalCasePage' } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { description: Evaluations need the PostgreSQL store }
+    post:
+      tags: [evals]
+      summary: Add one case, or up to 200 as JSON lines
+      description: >
+        Needs the builder role. Send one case as application/json, or up to 200
+        as JSON lines (application/x-ndjson, one EvalCaseInput per line, blank
+        lines skipped). The call is all or nothing, bumps the dataset version
+        once, and is audited with the count, never the text. Each of input and
+        reference is limited to operator.evals.maxCaseBytes (default and ceiling
+        65536) and the dataset to operator.evals.maxCasesPerDataset live cases
+        (default 2000).
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: '#/components/schemas/EvalCaseInput' } }
+          application/x-ndjson: { schema: { type: string, description: One EvalCaseInput per line } }
+      responses:
+        '201':
+          description: added
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/EvalCasesAdded' } }
+        '400': { description: A bad case, or more than 200 lines; the message names the line }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: The dataset would pass its case limit }
+        '413': { description: A field is over the size limit }
+        '503': { description: Evaluations need the PostgreSQL store }
+  /api/evals/cases/{id}:
+    parameters:
+      - { in: path, name: id, required: true, schema: { type: integer, format: int64 } }
+    get:
+      tags: [evals]
+      summary: Get a case
+      description: Needs the viewer role. A removed case is a 404.
+      responses:
+        '200':
+          description: the case
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/EvalCase' } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { description: Evaluations need the PostgreSQL store }
+    patch:
+      tags: [evals]
+      summary: Edit a case
+      description: >
+        Needs the builder role. Audited. Raises the dataset version by one when a
+        field really changes; an edit that changes nothing does not. Changing
+        the input or reference clears the redacted flag.
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: '#/components/schemas/EvalCasePatch' } }
+      responses:
+        '200':
+          description: the case and the dataset's version
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/EvalCaseChanged' } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '413': { description: A field is over the size limit }
+        '503': { description: Evaluations need the PostgreSQL store }
+    delete:
+      tags: [evals]
+      summary: Remove a case
+      description: >
+        Needs the builder role. Audited. The case leaves the dataset (soft
+        delete: its row stays, marked removed in the new version) and the version
+        goes up by one.
+      responses:
+        '200':
+          description: the dataset's new version
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [datasetVersion]
+                properties:
+                  datasetVersion: { type: integer }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { description: Evaluations need the PostgreSQL store }
+  /api/runs/{namespace}/{name}/dataset:
+    post:
+      tags: [evals, runs]
+      summary: Add a run to a dataset
+      description: >
+        Copies the run's input into a dataset as a new case (live or archived
+        run). It is a copy: the case keeps the run's namespace and name and
+        nothing else, never the trace. The reference is empty unless the caller
+        writes one or sets useOutput. Redaction is on by default: built-in rules
+        (API keys, bearer tokens, private keys, e-mail addresses, card numbers)
+        plus the patterns and keywords of the run's Agent's GuardrailPolicy
+        (input filters for the input, output filters for the reference). Needs
+        the builder role. A run of another tenant, or in a workspace the caller
+        may not use, is a 404. Audited with the run name and the replacement
+        count, never the text.
+      parameters:
+        - { in: path, name: namespace, required: true, schema: { type: string } }
+        - { in: path, name: name, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: '#/components/schemas/EvalCapture' } }
+      responses:
+        '201':
+          description: the case was added
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/EvalCaptured' } }
+        '200':
+          description: a preview; nothing was stored
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/EvalCaptured' } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { description: Missing role, or redact false while the operator forbids unredacted cases }
+        '404': { description: No such run or dataset in the caller's tenant }
+        '409': { description: The dataset is full, or the run has no output for useOutput }
+        '413': { description: The run's input or reference is over the size limit }
+        '503': { description: Evaluations need the PostgreSQL store }
   /api/openapi.json:
     get:
       tags: [health]

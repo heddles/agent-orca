@@ -99,6 +99,12 @@ spec:
               value: {{ .Values.operator.machineDefaultRole | default "runner" | quote }}
             - name: AGENTORCA_STATE_TENANT_PREFIX
               value: {{ .Values.operator.stateTenantPrefix | toString | quote }}
+            - name: EVALS_MAX_CASES_PER_DATASET
+              value: {{ dig "maxCasesPerDataset" 2000 (.Values.operator.evals | default dict) | toString | quote }}
+            - name: EVALS_MAX_CASE_BYTES
+              value: {{ dig "maxCaseBytes" 65536 (.Values.operator.evals | default dict) | toString | quote }}
+            - name: EVALS_ALLOW_UNREDACTED_CASES
+              value: {{ dig "allowUnredactedCases" true (.Values.operator.evals | default dict) | toString | quote }}
             {{- if .Values.cloudProvider }}
             - name: CLOUD_PROVIDER_OVERRIDE
               value: {{ .Values.cloudProvider | quote }}

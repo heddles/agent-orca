@@ -44,10 +44,12 @@ func TestMigrationsAreOrderedAndNamed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i, m := range all {
-		if m.Version != i+1 {
-			t.Errorf("migration %s has version %d at position %d: versions must be 1..n without gaps", m.Name, m.Version, i)
+	want := 1
+	for _, m := range all {
+		if m.Version != want {
+			t.Errorf("migration %s has version %d, want %d: versions must be 1..n without gaps", m.Name, m.Version, want)
 		}
+		want++
 		if m.SQL == "" {
 			t.Errorf("migration %s is empty", m.Name)
 		}
