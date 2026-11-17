@@ -17,6 +17,8 @@ spec:
       labels:
         {{- include "agent-orca.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: operator
+        # Platform peer: tenant NetworkPolicies select it by this label.
+        agentorca.io/scope: platform
       {{- with .Values.metrics.enabled }}
       annotations:
         # Legacy K8s-native scrape annotations for Prometheus (pod discovery)
@@ -75,6 +77,8 @@ spec:
               value: {{ .Values.operator.tenantIsolationMode | default "audit" | quote }}
             - name: ALLOW_LEGACY_TENANT_TOKENS
               value: {{ .Values.operator.allowLegacyTenantTokens | toString | quote }}
+            - name: MACHINE_DEFAULT_ROLE
+              value: {{ .Values.operator.machineDefaultRole | default "runner" | quote }}
             - name: AGENTORCA_STATE_TENANT_PREFIX
               value: {{ .Values.operator.stateTenantPrefix | toString | quote }}
             {{- if .Values.cloudProvider }}

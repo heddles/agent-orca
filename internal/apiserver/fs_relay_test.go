@@ -145,7 +145,7 @@ func TestACPFSPending_TenantIsolation(t *testing.T) {
 	run := fsTestRun("acp-run-1")
 	s := fsTestServer(t, relay, run)
 	// A different tenant cannot see or answer this run's fs endpoints.
-	other := &TenantIdentity{TenantName: "mallory", Namespace: "tenant-mallory"}
+	other := &TenantIdentity{Roles: testAdminRoles, TenantName: "mallory", Namespace: "tenant-mallory"}
 	h := s.withTenant(other)
 
 	req := httptest.NewRequest(http.MethodGet, "/runs/acp-run-1/fs/pending?wait=0", nil)

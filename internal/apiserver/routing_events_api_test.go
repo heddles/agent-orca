@@ -79,7 +79,7 @@ func TestRecordRoutingEvents_StoresWithServerSideAttribution(t *testing.T) {
 		t.Fatalf("stored %d events, want 1", len(store.got))
 	}
 	e := store.got[0]
-	if e.Namespace != defaultNamespace || e.RunName != routingTestRun || e.Tenant != "acme" {
+	if e.Namespace != defaultNamespace || e.RunName != routingTestRun || e.Tenant != "acme" { //nolint:goconst
 		t.Errorf("attribution = %q/%q/%q, want default/run-1/acme from the URL and the run", e.Namespace, e.RunName, e.Tenant)
 	}
 	if e.CostUSD != 0.5 || e.CreatedAt.IsZero() {
@@ -100,7 +100,7 @@ func TestRecordRoutingEvents_AcceptsADeploymentSidecar(t *testing.T) {
 	if code := postRoutingEvents(s, routingCallerOK, "assistant", `{"events":[{"decisionID":"d-1","provider":"p"}]}`); code != http.StatusNoContent {
 		t.Fatalf("status = %d, want 204", code)
 	}
-	if len(store.got) != 1 || store.got[0].RunName != "assistant" || store.got[0].Tenant != "acme" {
+	if len(store.got) != 1 || store.got[0].RunName != "assistant" || store.got[0].Tenant != "acme" { //nolint:goconst
 		t.Errorf("stored = %+v, want one event attributed to the deployment and its tenant", store.got)
 	}
 	if code := postRoutingEvents(s, routingCallerOK, "ghost", `{"events":[{"decisionID":"d-1","provider":"p"}]}`); code != http.StatusNotFound {

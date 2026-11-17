@@ -35,7 +35,7 @@ func isoMode(t *testing.T, m tenancy.Mode) {
 }
 
 func isoTool(ns, name string, kv ...string) *agentorcav1alpha1.Tool {
-	t := &agentorcav1alpha1.Tool{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Labels: map[string]string{"app.kubernetes.io/managed-by": security.ManagedByValue}}}
+	t := &agentorcav1alpha1.Tool{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Labels: map[string]string{"app.kubernetes.io/managed-by": security.ManagedByValue}, Annotations: map[string]string{tenancy.AnnotationOwner: tenancy.OwnerUI}}}
 	for i := 0; i < len(kv); i += 2 {
 		t.Labels[kv[i]] = kv[i+1]
 	}
@@ -43,7 +43,7 @@ func isoTool(ns, name string, kv ...string) *agentorcav1alpha1.Tool {
 }
 
 func tenantA() *TenantIdentity {
-	return &TenantIdentity{TenantID: isoA, TenantName: "acme", Namespace: "shared", Namespaces: []string{"shared", "a-only"}}
+	return &TenantIdentity{Roles: testAdminRoles, TenantID: isoA, TenantName: "acme", Namespace: "shared", Namespaces: []string{"shared", "a-only"}}
 }
 
 func asTenant(r *http.Request, t *TenantIdentity) *http.Request {
@@ -254,7 +254,7 @@ func TestHandleMe(t *testing.T) {
 	me := get(id)
 	if me.UserID != "grace" || me.Tenant == nil || me.Tenant.ID != isoA || me.Tenant.Name != "acme" ||
 		!slices.Equal(me.Groups, []string{"devs"}) || len(me.Workspaces) != 2 || !me.Workspaces[0].Primary ||
-		me.Workspaces[0].Namespace != "shared" || me.Roles == nil || len(me.Roles) != 0 {
+		me.Workspaces[0].Namespace != "shared" || !slices.Equal(me.Roles, testAdminRoles) { //nolint:goconst
 		t.Errorf("me = %+v", me)
 	}
 	anon := get(nil)
@@ -346,7 +346,7 @@ func TestIssuedTokenUsesLiveTenantConfig(t *testing.T) {
 	a := testAuth(t, testRSAKey(t), tc)
 	a.SetTenantRegistry(registryWith(rec(tidNew, "acme", tenancy.StateActive)))
 
-	tok, err := a.MintSessionForIdentity(&TenantIdentity{
+	tok, err := a.MintSessionForIdentity(&TenantIdentity{Roles: testAdminRoles,
 		TenantID: tidNew, TenantName: "acme", Namespace: "old-ns", Namespaces: []string{"old-ns", defaultNamespace},
 		AllowedAgents: []string{"stale-agent"}, UserID: "grace",
 	})
@@ -379,7 +379,7 @@ func TestIssuedTokenUsesLiveTenantConfig(t *testing.T) {
 func TestLegacyIssuedTokenKeepsItsClaims(t *testing.T) {
 	tc := tenantWithID("acme", "")
 	a := testAuth(t, testRSAKey(t), tc)
-	tok, err := a.MintSessionForIdentity(&TenantIdentity{
+	tok, err := a.MintSessionForIdentity(&TenantIdentity{Roles: testAdminRoles,
 		TenantName: "acme", Namespace: "claimed", Namespaces: []string{"claimed"}, AllowedAgents: []string{"x"}, UserID: "grace",
 	})
 	if err != nil {

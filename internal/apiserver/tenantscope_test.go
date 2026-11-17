@@ -54,7 +54,7 @@ func TestListCRDsMultiNamespaceAccumulates(t *testing.T) {
 		&agentorcav1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "c1", Namespace: nsC}},
 	).Build()
 
-	tenant := &TenantIdentity{
+	tenant := &TenantIdentity{Roles: testAdminRoles,
 		TenantName: "acme",
 		Namespace:  nsA,
 		Namespaces: []string{nsA, nsB, nsC},
@@ -123,7 +123,7 @@ func TestListCRDsMultiNamespaceEmptyTenantNamespaces(t *testing.T) {
 		&agentorcav1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "a1", Namespace: "tenant-acme"}},
 	).Build()
 
-	tenant := &TenantIdentity{TenantName: "acme", Namespace: "", Namespaces: nil}
+	tenant := &TenantIdentity{Roles: testAdminRoles, TenantName: "acme", Namespace: "", Namespaces: nil}
 	ctx := context.WithValue(context.Background(), tenantIdentityKey, tenant)
 
 	var list agentorcav1alpha1.AgentList

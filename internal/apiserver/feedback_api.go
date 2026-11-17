@@ -27,6 +27,7 @@ import (
 	"strings"
 
 	"github.com/heddles/agent-orca/internal/postgresql"
+	"github.com/heddles/agent-orca/internal/tenancy"
 )
 
 // feedbackStore persists feedback on routing. *postgresql.Store implements it.
@@ -114,6 +115,9 @@ func (s *UIServer) feedbackSource() feedbackStore {
 // (a second rating of the same target replaces the first); GET returns the
 // caller's own ratings of the run so the UI can show which thumbs are set.
 func (s *UIServer) handleRunFeedback(w http.ResponseWriter, r *http.Request, ns, runName string) {
+	if r.Method == http.MethodPost && !requireRole(w, r, tenancy.RoleRunner) {
+		return
+	}
 	if r.Method != http.MethodPost && r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -176,6 +180,9 @@ func (s *ExternalAPIServer) WithFeedbackStore(store feedbackStore) *ExternalAPIS
 
 // feedbackTask handles POST /v1/tasks/{id}/feedback.
 func (s *ExternalAPIServer) feedbackTask(w http.ResponseWriter, r *http.Request, taskID string) {
+	if !requireRole(w, r, tenancy.RoleRunner) {
+		return
+	}
 	tenant, ok := TenantFromContext(r.Context())
 	if !ok || tenant == nil {
 		http.Error(w, `{"error":"no tenant identity"}`, http.StatusUnauthorized)

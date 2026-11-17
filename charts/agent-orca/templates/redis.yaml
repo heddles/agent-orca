@@ -49,6 +49,8 @@ spec:
       labels:
         {{- include "agent-orca.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: redis
+        # Platform peer: tenant NetworkPolicies select it by this label.
+        agentorca.io/scope: platform
     spec:
       securityContext:
         runAsNonRoot: true

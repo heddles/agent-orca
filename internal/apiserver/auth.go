@@ -88,14 +88,14 @@ type TenantIdentity struct {
 	// Empty for client_credentials and K8s SA callers (tenant-level, not user-level).
 	// +optional
 	UserID string
-	// Groups are the user's group memberships (e.g. from an IdP "groups" claim),
-	// carried through the identity so a future RBAC layer can map group -> role.
-	// Intentionally NOT used for authorization yet.
+	// Groups are the user's group memberships (e.g. from an IdP "groups" claim).
+	// They are mapped to Roles through the tenant's spec.roles.
 	// +optional
 	Groups []string
-	// Roles are resolved from Groups by a future role-mapper; empty until that
-	// layer exists. Present so the identity shape is stable for RBAC.
-	// +optional
+	// Roles are the caller's roles inside the tenant, cumulative and lowest
+	// first (see tenancy.Role). They are resolved on every request from Groups
+	// and the tenant's live TenantConfig, never read from a token, so a change to
+	// spec.roles reaches sessions already issued. Empty means no access.
 	Roles []string
 
 	// Quota fields below are populated from the tenant's TenantConfig (if any) and
@@ -146,6 +146,10 @@ type ExternalAuth struct {
 	tidMu          sync.Mutex
 	tenantRegistry tenancy.Registry
 	tidCache       map[string]tenantCacheEntry
+	// machineDefaultRole is the role of a caller with no user behind it (a
+	// service-account token or an issued client-credentials token). Empty means
+	// tenancy.DefaultRole.
+	machineDefaultRole string
 	// rejectLegacyTokens refuses tokens without a tid claim. Inverted so the
 	// zero value keeps the one-release bridge open.
 	rejectLegacyTokens bool
@@ -188,6 +192,41 @@ func NewExternalAuth(k8s kubernetes.Interface, crdClient client.Client) (*Extern
 		oidcVerifiers: make(map[string]*gooidc.IDTokenVerifier),
 		rateLimiter:   NewRateLimiter(),
 	}, nil
+}
+
+// SetMachineDefaultRole sets the role of callers with no user behind them
+// (operator.machineDefaultRole). An unknown value is rejected.
+func (a *ExternalAuth) SetMachineDefaultRole(role string) error {
+	if _, ok := tenancy.ParseRole(role); !ok {
+		return fmt.Errorf("machine default role %q is not one of viewer, runner, builder, admin", role)
+	}
+	a.mu.Lock()
+	a.machineDefaultRole = role
+	a.mu.Unlock()
+	return nil
+}
+
+// withRoles resolves id.Roles from the tenant's live TenantConfig. A caller
+// with a user ID is a person: their groups map through spec.roles. A caller
+// without one (service account, client credentials) is a machine and gets the
+// machine default role, whatever the groups.
+func (a *ExternalAuth) withRoles(id *TenantIdentity, tc *agentorcav1alpha1.TenantConfig) *TenantIdentity {
+	if id == nil {
+		return id
+	}
+	if id.UserID == "" {
+		a.mu.RLock()
+		def := a.machineDefaultRole
+		a.mu.RUnlock()
+		id.Roles = tenancy.MachineRoles(def)
+		return id
+	}
+	var spec *agentorcav1alpha1.TenantRoles
+	if tc != nil {
+		spec = tc.Spec.Roles
+	}
+	id.Roles = tenancy.RolesFor(spec, id.Groups)
+	return id
 }
 
 // loadOrCreateSigningKey loads an RSA private key from the named Secret. If the
@@ -310,6 +349,9 @@ func (a *ExternalAuth) Middleware(next http.Handler) http.Handler {
 		// Try agent-orca-issued JWT first (fast, local signature check).
 		if identity, err := a.validateIssuedToken(token); err == nil {
 			ctx := context.WithValue(r.Context(), tenantIdentityKey, identity)
+			if !requireViewer(w, r.WithContext(ctx)) {
+				return
+			}
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		} else {
@@ -323,6 +365,9 @@ func (a *ExternalAuth) Middleware(next http.Handler) http.Handler {
 		// attempted, causing 504 Gateway Time-outs behind an ingress.
 		if identity, err := a.validateTokenParallel(r.Context(), token); err == nil {
 			ctx := context.WithValue(r.Context(), tenantIdentityKey, identity)
+			if !requireViewer(w, r.WithContext(ctx)) {
+				return
+			}
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		} else {
@@ -574,7 +619,6 @@ func (a *ExternalAuth) validateIssuedToken(tokenString string) (*TenantIdentity,
 	// these, leaving the fields empty.
 	userID, _ := claims["userid"].(string)
 	groups := claimStringSlice(claims["groups"])
-	roles := claimStringSlice(claims["roles"])
 
 	// A recreated tenant reuses the name but not the ID, so the tid claim is what
 	// ends the old tenant's sessions.
@@ -603,7 +647,7 @@ func (a *ExternalAuth) validateIssuedToken(tokenString string) (*TenantIdentity,
 		}
 	}
 
-	return attachQuotaFields(&TenantIdentity{
+	return a.withRoles(attachQuotaFields(&TenantIdentity{
 		TenantID:      tid,
 		TenantName:    tenant,
 		Namespace:     namespace,
@@ -611,8 +655,7 @@ func (a *ExternalAuth) validateIssuedToken(tokenString string) (*TenantIdentity,
 		AllowedAgents: allowedAgents,
 		UserID:        userID,
 		Groups:        groups,
-		Roles:         roles,
-	}, tc), nil
+	}, tc), tc), nil
 }
 
 // claimStringSlice normalizes a JWT claim that may be a []any, []string, or a
@@ -710,13 +753,27 @@ func (a *ExternalAuth) validateFederatedToken(ctx context.Context, tokenString s
 		return nil, err
 	}
 
-	return attachQuotaFields(&TenantIdentity{
+	// The verified token's user and groups, through the same claim mappings the
+	// interactive login uses (defaults: userid=sub, groups=groups). A token with no
+	// user claim is a machine caller.
+	userClaim, groupsClaim := fed.ClaimMappings.UserID, fed.ClaimMappings.Groups
+	if userClaim == "" {
+		userClaim = "sub"
+	}
+	if groupsClaim == "" {
+		groupsClaim = "groups"
+	}
+	userID, _ := claims[userClaim].(string)
+
+	return a.withRoles(attachQuotaFields(&TenantIdentity{
 		TenantID:      matchedTC.Status.TenantID,
 		TenantName:    matchedTC.Name,
 		Namespace:     firstNamespace(matchedTC.Spec.AllowedNamespaces),
 		Namespaces:    matchedTC.Spec.AllowedNamespaces,
 		AllowedAgents: matchedTC.Spec.AllowedAgents,
-	}, matchedTC), nil
+		UserID:        userID,
+		Groups:        claimStringSlice(claims[groupsClaim]),
+	}, matchedTC), matchedTC), nil
 }
 
 // findFederatedTenant returns the federated TenantConfig whose IssuerURL matches
@@ -905,13 +962,13 @@ func (a *ExternalAuth) validateK8sToken(ctx context.Context, token string) (*Ten
 	if err := a.checkTenant(tid, tc.Name); err != nil {
 		return nil, err
 	}
-	return &TenantIdentity{
+	return a.withRoles(&TenantIdentity{
 		TenantID:      tid,
 		TenantName:    tc.Name,
 		Namespace:     parts[2],
 		Namespaces:    []string{parts[2]},
 		AllowedAgents: slices.Clone(tc.Spec.AllowedAgents),
-	}, nil
+	}, tc), nil
 }
 
 // resolveServiceAccountTenant maps a ServiceAccount to its tenant. A

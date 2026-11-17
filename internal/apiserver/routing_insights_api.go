@@ -30,6 +30,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
+
+	"github.com/heddles/agent-orca/internal/postgresql"
+	"github.com/heddles/agent-orca/internal/tenancy"
 )
 
 // annotationActionRequestedBy records who asked for the action on a
@@ -288,6 +291,9 @@ type recommendationActionRequest struct {
 // It asks for something to be done, by setting spec.action; the operator raises
 // the approval, and nothing changes until an approver agrees.
 func (s *UIServer) handleRecommendationAction(w http.ResponseWriter, r *http.Request) {
+	if !requireRole(w, r, tenancy.RoleBuilder) {
+		return
+	}
 	rest := strings.TrimPrefix(r.URL.Path, "/api/routing/recommendations/")
 	parts := strings.Split(rest, "/")
 	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] != "action" {
@@ -342,5 +348,7 @@ func (s *UIServer) handleRecommendationAction(w http.ResponseWriter, r *http.Req
 		http.Error(w, "recording the request failed", http.StatusInternalServerError)
 		return
 	}
+	s.recordAudit(w, r, auditEventFor(postgresql.AuditRequest, "RoutingRecommendation", ns, name, rec.ResourceVersion,
+		fmt.Sprintf("asked to %s RoutingRecommendation %s/%s", req.Action, ns, name)))
 	w.WriteHeader(http.StatusNoContent)
 }

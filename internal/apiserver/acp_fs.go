@@ -75,6 +75,9 @@ func (s *ACPServer) SetFilesystemRelay(relay acpfs.Relay) {
 // for requests awaiting a workstation answer. Accepts an optional
 // `?wait=<seconds>` long poll.
 func (s *ACPServer) handleFSPending(w http.ResponseWriter, r *http.Request, tenant *TenantIdentity, runID string) {
+	if !requireRunnerACP(w, r) {
+		return
+	}
 	if s.fsRelay == nil {
 		writeACPError(w, "unavailable", acpfs.ErrUnavailable.Error(), http.StatusNotImplemented)
 		return
@@ -125,6 +128,9 @@ func (s *ACPServer) handleFSPending(w http.ResponseWriter, r *http.Request, tena
 // handleFSRespond handles POST /runs/{run_id}/fs/pending/{request_id}/response
 // — the bridge's answer for one fs request.
 func (s *ACPServer) handleFSRespond(w http.ResponseWriter, r *http.Request, tenant *TenantIdentity, runID, requestID string) {
+	if !requireRunnerACP(w, r) {
+		return
+	}
 	if s.fsRelay == nil {
 		writeACPError(w, "unavailable", acpfs.ErrUnavailable.Error(), http.StatusNotImplemented)
 		return

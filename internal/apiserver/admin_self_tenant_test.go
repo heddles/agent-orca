@@ -165,8 +165,8 @@ func TestRequireSAOrSelfTenant_Unit(t *testing.T) {
 		// Future-RBAC hook: a capability gated on a role the caller lacks is denied.
 		gated := adminCapability{method: http.MethodPost, pathPrefix: "/admin/tenants/", role: "tenant-admin"}
 		rr := doRequestWithPath(t, base.requireSAOrSelfTenant(githubOIDCTenant, gated, stub), "/admin/tenants/github-oidc", ownToken)
-		if rr.Code != http.StatusNotFound {
-			t.Fatalf("missing required role: expected 404, got %d %q", rr.Code, rr.Body.String())
+		if rr.Code != http.StatusForbidden {
+			t.Fatalf("missing required role: expected 403, got %d %q", rr.Code, rr.Body.String())
 		}
 	})
 
@@ -199,7 +199,12 @@ func TestRequireSAOrSelfTenant_Unit(t *testing.T) {
 // TestHandler_AdminSelfTenantRoute exercises the full HTTP routing in Handler().
 func TestHandler_AdminSelfTenantRoute(t *testing.T) {
 	auth, issuerURL, key := federatedAuthForTest(t)
-	ownerToken := mintOIDCToken(t, key, issuerURL, "agent-orca-dev", map[string]any{"actor": "floppyfish14"})
+	// The tenant's roles: only the platform group is admin; everyone else is a viewer.
+	for _, atc := range auth.tenantCache {
+		atc.Spec.Roles = &agentorcav1alpha1.TenantRoles{Admin: []string{"platform"}, DefaultRole: "viewer"}
+	}
+	ownerToken := mintOIDCToken(t, key, issuerURL, "agent-orca-dev", map[string]any{"actor": "floppyfish14", "groups": []string{"platform"}})
+	viewerToken := mintOIDCToken(t, key, issuerURL, "agent-orca-dev", map[string]any{"actor": "floppyfish14", "groups": []string{"interns"}})
 
 	tc := &agentorcav1alpha1.TenantConfig{
 		ObjectMeta: metav1.ObjectMeta{Name: githubOIDCTenant, Namespace: "agent-orca-system"},
@@ -243,6 +248,13 @@ func TestHandler_AdminSelfTenantRoute(t *testing.T) {
 		}
 		if resp.ClientSecret != "" {
 			t.Fatalf("client secret must not be leaked: %+v", resp)
+		}
+	})
+
+	t.Run("federated non-admin of own tenant is forbidden", func(t *testing.T) {
+		rr := doRequestWithPath(t, h, "/admin/tenants/github-oidc", viewerToken)
+		if rr.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 for a viewer reading its own tenant, got %d: %s", rr.Code, rr.Body.String())
 		}
 	})
 

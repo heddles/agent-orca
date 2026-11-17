@@ -135,7 +135,7 @@ func TestStreamTask_OutlivesServerWriteTimeout(t *testing.T) {
 		hasStore:  true,
 		store:     &slowTailStore{tokens: tokens, gap: 100 * time.Millisecond},
 	}
-	tenant := &TenantIdentity{TenantName: "acme", Namespace: "tenant-acme", Namespaces: []string{"tenant-acme"}}
+	tenant := &TenantIdentity{Roles: testAdminRoles, TenantName: "acme", Namespace: "tenant-acme", Namespaces: []string{"tenant-acme"}}
 	api := shortWriteTimeoutServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.streamTask(w, r.WithContext(context.WithValue(r.Context(), tenantIdentityKey, tenant)), "task-1")
 	}))
