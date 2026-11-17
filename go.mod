@@ -26,6 +26,7 @@ require (
 	github.com/prometheus/client_golang v1.25.0
 	github.com/qdrant/go-client v1.19.4
 	github.com/redis/go-redis/v9 v9.23.0
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	github.com/segmentio/kafka-go v0.4.51
 	github.com/spf13/cobra v1.10.2
 	github.com/vectorize-io/hindsight/hindsight-clients/go v0.0.0-20260921150947-9f581a0cc5c9

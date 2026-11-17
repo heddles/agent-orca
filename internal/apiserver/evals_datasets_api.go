@@ -81,6 +81,7 @@ func (s *UIServer) SetEvals(c EvalsConfig) { s.evalCfg = c }
 
 // evalStore is the slice of postgresql.Store the dataset endpoints use.
 type evalStore interface {
+	evalGraderStore
 	CreateEvalDataset(ctx context.Context, d postgresql.EvalDataset) (postgresql.EvalDataset, error)
 	GetEvalDataset(ctx context.Context, id int64) (postgresql.EvalDataset, error)
 	ListEvalDatasets(ctx context.Context, q postgresql.EvalDatasetQuery) ([]postgresql.EvalDataset, error)
@@ -110,6 +111,7 @@ func (s *UIServer) registerEvalRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/evals/datasets", s.handleEvalDatasets)
 	mux.HandleFunc("/api/evals/datasets/", s.handleEvalDataset)
 	mux.HandleFunc("/api/evals/cases/", s.handleEvalCase)
+	mux.HandleFunc("/api/evals/results/", s.handleEvalResult)
 }
 
 // evalPreflight checks the role and the store. It reports whether to go on.
@@ -289,15 +291,19 @@ func (s *UIServer) createEvalDataset(w http.ResponseWriter, r *http.Request) {
 func (s *UIServer) handleEvalDataset(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/evals/datasets/"), "/"), "/")
 	id, ok := parseEvalID(parts[0])
-	if !ok || len(parts) > 2 {
+	if !ok || len(parts) > 3 {
+		http.NotFound(w, r)
+		return
+	}
+	if len(parts) >= 2 && parts[1] != "cases" {
+		s.handleEvalDatasetSub(w, r, id, parts[1:])
+		return
+	}
+	if len(parts) == 3 {
 		http.NotFound(w, r)
 		return
 	}
 	if len(parts) == 2 {
-		if parts[1] != "cases" {
-			http.NotFound(w, r)
-			return
-		}
 		switch r.Method {
 		case http.MethodGet:
 			s.listEvalCases(w, r, id)
