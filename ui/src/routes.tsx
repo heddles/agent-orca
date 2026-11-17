@@ -14,6 +14,7 @@
  *   /build                                    my agents, with Create and Use a template
  *   /build/new, /build/:ns/:name              the agent builder
  *   /evaluate, /evaluate/:id                  evaluation datasets, and one with its cases and graders
+ *   /evaluate/experiments, .../:id, .../:id/review   experiments, one experiment, its blind review queue
  *   /operate/{fleet,costs,routing,status}     Operate tabs (fleet is the default)
  *   /operate/workflows[/:ns/:name]            workflows
  *   /settings/providers[/:ns/:name]           model providers
@@ -48,6 +49,9 @@ import { AgentBuilder } from './components/AgentBuilder'
 import { BuildHome } from './components/BuildHome'
 import { EvalDatasets } from './components/EvalDatasets'
 import { EvalDatasetDetail } from './components/EvalDatasetDetail'
+import { EvalExperiments } from './components/EvalExperiments'
+import { EvalExperimentDetail } from './components/EvalExperimentDetail'
+import { EvalReview } from './components/EvalReview'
 import { AppShell } from './shell/AppShell'
 import { ICON } from './lib/icons'
 import { ds } from './lib/designSystem'
@@ -55,7 +59,7 @@ import { canSee, useRoles } from './lib/access'
 import { EmptyState, ListGroupHeading, MasterDetail, Page, PageHeader, Section, SubNav } from './lib/layout'
 import { useNamespace } from './lib/namespace'
 import {
-  ROUTES, archivedRunPath, legacyTabPath, liveRunPath, pathForSelection, pathForTab, selectionFromPath,
+  ROUTES, archivedRunPath, experimentsPath, legacyTabPath, liveRunPath, pathForSelection, pathForTab, selectionFromPath,
 } from './lib/routes'
 
 // ── Home ─────────────────────────────────────────────────────────────────────
@@ -291,6 +295,34 @@ function EvalDatasetRoute() {
   return <EvalDatasetDetail key={n} id={n} />
 }
 
+function EvaluateLayout() {
+  return (
+    <>
+      <PageHeader title="Evaluate" description="Datasets say what a good answer is. Experiments compare versions of an agent on them, and a gate stops a version that is worse from being published." />
+      <SubNav label="Evaluate" items={[{ to: ROUTES.evaluate, label: 'Datasets', end: true }, { to: experimentsPath, label: 'Experiments' }]} />
+      <Outlet />
+    </>
+  )
+}
+
+function useEvalId(): number | null {
+  const { id = '' } = useParams()
+  const n = Number(id)
+  return Number.isInteger(n) && n >= 1 ? n : null
+}
+
+function EvalExperimentRoute() {
+  const n = useEvalId()
+  if (n === null) return <Navigate to={experimentsPath} replace />
+  return <EvalExperimentDetail key={n} id={n} />
+}
+
+function EvalReviewRoute() {
+  const n = useEvalId()
+  if (n === null) return <Navigate to={experimentsPath} replace />
+  return <EvalReview key={n} id={n} />
+}
+
 // ── Operate ──────────────────────────────────────────────────────────────────
 
 function OperateLayout() {
@@ -433,9 +465,12 @@ export function AppRoutes() {
           <Route path="new" element={<AgentBuilder key="new" />} />
           <Route path=":ns/:name" element={<BuilderRoute />} />
         </Route>
-        <Route path="evaluate">
+        <Route path="evaluate" element={<EvaluateLayout />}>
           <Route index element={<EvalDatasets />} />
           <Route path=":id" element={<EvalDatasetRoute />} />
+          <Route path="experiments" element={<EvalExperiments />} />
+          <Route path="experiments/:id" element={<EvalExperimentRoute />} />
+          <Route path="experiments/:id/review" element={<EvalReviewRoute />} />
         </Route>
 
         <Route path="operate" element={<OperateLayout />}>

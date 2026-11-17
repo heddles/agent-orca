@@ -41,9 +41,10 @@ vi.mock('../api/catalog', async () => {
   }
 })
 const mockWorkspaces = vi.hoisted(() => ({ current: [{ name: 'Mine', namespace: 'team-a', primary: true }] }))
+const mockRoles = vi.hoisted(() => ({ current: ['builder'] }))
 vi.mock('../api/fleet', () => ({
   getMe: () => Promise.resolve({
-    userId: 'u', groups: [], tenant: { id: 't', name: 'T' }, roles: ['builder'],
+    userId: 'u', groups: [], tenant: { id: 't', name: 'T' }, roles: mockRoles.current,
     workspaces: mockWorkspaces.current,
   }),
 }))
@@ -108,6 +109,7 @@ beforeEach(() => {
   m.dryRunResource.mockResolvedValue({ valid: true, errors: [] })
   m.getAgentManifest.mockResolvedValue({ name: 'helper', description: 'd' })
   mockWorkspaces.current = [{ name: 'Mine', namespace: 'team-a', primary: true }]
+  mockRoles.current = ['builder']
   vi.stubGlobal('confirm', vi.fn(() => true))
 })
 
@@ -329,6 +331,58 @@ describe('AgentBuilder: test panel and publishing', () => {
     await user.click(screen.getByRole('button', { name: 'Unpublish' }))
     await waitFor(() => expect(m.unpublishAgent).toHaveBeenCalledWith('team-a', 'helper'))
     expect(await screen.findByText(/Unpublished/)).toBeInTheDocument()
+  })
+})
+
+describe('AgentBuilder: publish gate', () => {
+  beforeEach(() => { m.getResource.mockResolvedValue(agent()) })
+  const gate409 = () => new ApiError(409, 'the quality gate has not passed', [], undefined, undefined, {
+    error: 'the quality gate has not passed',
+    gate: { status: 'failed', reason: 'needs a pass rate no more than 5 points below the baseline', experimentId: 42, best: { cases: 60, passRate: 0.81, baselinePassRate: 0.9, diffLo: -0.15, regressions: 7 } },
+  })
+
+  it('shows why the gate blocked publishing, and gives a builder no override', async () => {
+    m.publishAgent.mockRejectedValue(gate409())
+    const user = userEvent.setup()
+    renderBuilder('/build/team-a/helper')
+    await screen.findByLabelText('Name')
+    await user.click(screen.getByRole('button', { name: 'Publish' }))
+    const alert = await screen.findByText(/Publishing is blocked by the quality gate/)
+    expect(alert).toBeInTheDocument()
+    expect(screen.getByText(/5 points below the baseline/)).toBeInTheDocument()
+    expect(screen.getByText(/60 cases, new version 81% against 90%/)).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Open experiment 42' })).toHaveAttribute('href', '/evaluate/experiments/42')
+    expect(screen.getByText(/Only an administrator can publish past a gate/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Override the gate/ })).not.toBeInTheDocument()
+  })
+
+  it('lets an admin override with a reason of 10 to 500 characters', async () => {
+    mockRoles.current = ['admin']
+    m.publishAgent.mockRejectedValueOnce(gate409())
+    m.publishAgent.mockResolvedValueOnce({ deployment: { metadata: { name: 'helper-chat' } } })
+    const user = userEvent.setup()
+    renderBuilder('/build/team-a/helper')
+    await screen.findByLabelText('Name')
+    await user.click(screen.getByRole('button', { name: 'Publish' }))
+    await user.click(await screen.findByRole('button', { name: /Override the gate/ }))
+    const send = screen.getByRole('button', { name: 'Publish anyway' })
+    expect(send).toBeDisabled()
+    await user.type(screen.getByLabelText('Reason for publishing anyway'), 'too short')
+    expect(send).toBeDisabled()
+    expect(screen.getByText(/at least 10 characters/)).toBeInTheDocument()
+    await user.type(screen.getByLabelText('Reason for publishing anyway'), ' - the baseline is broken')
+    await user.click(send)
+    await waitFor(() => expect(m.publishAgent).toHaveBeenLastCalledWith('team-a', 'helper', { chat: true, overrideGate: { reason: 'too short - the baseline is broken' } }))
+    expect(await screen.findByText(/Published\. People can now use this agent/)).toBeInTheDocument()
+  })
+
+  it('shows a Quality tab', async () => {
+    const user = userEvent.setup()
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(JSON.stringify({ gate: null, overrideAllowed: true }), { status: 200 }))))
+    renderBuilder('/build/team-a/helper')
+    await screen.findByLabelText('Name')
+    await user.click(screen.getByRole('tab', { name: 'Quality' }))
+    expect(await screen.findByText(/No gate is set, so publishing is not checked/)).toBeInTheDocument()
   })
 })
 
