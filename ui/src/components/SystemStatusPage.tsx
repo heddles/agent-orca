@@ -77,7 +77,7 @@ export function SystemStatusPage({ navigateToTab }: Props) {
       {/* Header */}
       <div style={ss.header}>
         <div>
-          <h1 style={ss.title}>System Status</h1>
+          <h2 style={ss.title}>System status</h2>
           <p style={ss.subtitle}>
             Real-time health of all subsystems. Auto-refreshes every 5 seconds.
           </p>
@@ -563,7 +563,7 @@ function TimeRangeSelector({ range, onChange }: { range: MetricRange; onChange: 
 function SystemStatusSkeleton() {
   return (
     <div style={ss.root}>
-      <h1 style={ss.title}>System Status</h1>
+      <h2 style={ss.title}>System status</h2>
       <h2 style={ss.sectionTitle}>Subsystem Health</h2>
       <div style={ss.healthGrid}>
         {Array.from({ length: 4 }).map((_, i) => (
@@ -605,7 +605,7 @@ const ss: Record<string, React.CSSProperties> = {
     gap: 12,
   },
   title: {
-    fontSize: DESIGN.font.size.display,
+    fontSize: 20,
     fontWeight: 700,
     color: 'var(--ds-text-primary)',
     margin: 0,

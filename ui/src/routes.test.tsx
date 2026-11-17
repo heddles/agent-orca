@@ -9,6 +9,9 @@ vi.mock('./api/sse', () => ({
   getSystemStatus: vi.fn(() => Promise.resolve({ stateConfigured: true })),
   listApprovals: vi.fn(() => Promise.resolve([{ id: 'a' }, { id: 'b' }])),
 }))
+const mockGetMe = vi.fn()
+vi.mock('./api/fleet', () => ({ getMe: () => mockGetMe() }))
+vi.mock('./components/FleetView', () => ({ FleetView: () => <div>view:fleet</div> }))
 vi.mock('./components/SystemDashboard', () => ({ SystemDashboard: () => <div>view:overview</div> }))
 vi.mock('./components/MyWork', () => ({ MyWork: () => <div>view:home</div> }))
 vi.mock('./components/AgentCatalog', () => ({ AgentCatalog: () => <div>view:catalog</div> }))
@@ -57,8 +60,12 @@ function renderAt(url: string) {
 
 const where = () => screen.getByTestId('where').textContent
 
+const meWith = (roles: string[]) => ({ userId: 'ada', groups: [], tenant: { id: 'tnt_a', name: 'a' }, workspaces: [], roles })
+
 beforeEach(() => {
   vi.clearAllMocks()
+  // No tenant: authentication is off, so every section shows.
+  mockGetMe.mockResolvedValue({ userId: '', groups: [], tenant: null, workspaces: [], roles: [] })
 })
 
 describe('deep links', () => {
@@ -75,6 +82,7 @@ describe('deep links', () => {
     ['/agents/published/team-a/helper', 'view:published helper'],
     ['/agents/definitions/team-a/coder', 'view:config agent coder'],
     ['/approvals', 'view:approvals'],
+    ['/operate/fleet', 'view:fleet'],
     ['/operate/costs', 'view:costs'],
     ['/operate/routing', 'view:routing'],
     ['/operate/status', 'view:status'],
@@ -132,10 +140,17 @@ describe('deep links', () => {
 })
 
 describe('index redirects', () => {
-  it('/operate goes to costs', async () => {
+  it('/operate goes to the fleet overview', async () => {
     renderAt('/operate')
-    expect(await screen.findByText('view:costs')).toBeInTheDocument()
-    expect(where()).toBe('/operate/costs')
+    expect(await screen.findByText('view:fleet')).toBeInTheDocument()
+    expect(where()).toBe('/operate/fleet')
+  })
+
+  it('puts Costs, Model routing and System status next to Fleet', async () => {
+    renderAt('/operate')
+    const sub = await screen.findByRole('navigation', { name: 'Operate' })
+    expect(within(sub).getAllByRole('link').map((l) => l.textContent)).toEqual(
+      ['Fleet', 'Costs', 'Model routing', 'System status', 'Workflows'])
   })
 
   it('/settings goes to providers', async () => {
@@ -174,6 +189,31 @@ describe('sidebar', () => {
     expect(within(nav).getByRole('link', { name: 'Runs' })).toHaveAttribute('aria-current', 'page')
     expect(within(nav).getByRole('link', { name: 'Agents' })).not.toHaveAttribute('aria-current')
     expect(within(nav).getByRole('link', { name: 'Home' })).not.toHaveAttribute('aria-current')
+  })
+
+  it.each([
+    ['viewer', ['Home', 'Agents', 'Runs', 'Approvals'], ['Build', 'Evaluate', 'Operate', 'Settings']],
+    ['runner', ['Home', 'Agents', 'Runs', 'Approvals'], ['Build', 'Evaluate', 'Operate', 'Settings']],
+    ['builder', ['Home', 'Agents', 'Runs', 'Approvals', 'Build', 'Evaluate', 'Operate'], ['Settings']],
+    ['admin', ['Home', 'Agents', 'Runs', 'Approvals', 'Build', 'Evaluate', 'Operate', 'Settings'], []],
+  ])('shows a %s the sections their role allows', async (role, shown, hidden) => {
+    const order = ['viewer', 'runner', 'builder', 'admin']
+    mockGetMe.mockResolvedValue(meWith(order.slice(0, order.indexOf(role) + 1)))
+    renderAt('/')
+    const nav = await screen.findByRole('navigation', { name: 'Main' })
+    await waitFor(() => {
+      for (const label of hidden) expect(within(nav).queryByRole('link', { name: new RegExp(`^${label}`) })).not.toBeInTheDocument()
+    })
+    for (const label of shown) expect(within(nav).getByRole('link', { name: new RegExp(`^${label}`) })).toBeInTheDocument()
+  })
+
+  it('shows everything when /api/me fails', async () => {
+    mockGetMe.mockRejectedValue(new Error('HTTP 500'))
+    renderAt('/')
+    const nav = await screen.findByRole('navigation', { name: 'Main' })
+    for (const label of ['Build', 'Evaluate', 'Operate', 'Settings']) {
+      expect(within(nav).getByRole('link', { name: new RegExp(`^${label}`) })).toBeInTheDocument()
+    }
   })
 
   it('keeps Operate active on its sub-pages', async () => {

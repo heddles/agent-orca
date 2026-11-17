@@ -402,6 +402,10 @@ type CostRow struct {
 	Model string
 	// When is the completion time, falling back to start then creation time.
 	When time.Time
+	// Started and Completed are the run's start and completion times when the
+	// archive has them. Both are needed to know how long the run took.
+	Started   *time.Time
+	Completed *time.Time
 }
 
 // maxCostRows bounds one cost query so a very large archive cannot exhaust
@@ -463,7 +467,8 @@ func queryCostRows(ctx context.Context, tx dbtx, scope string, q CostQuery) ([]C
 		SELECT name, namespace, agent_ref, phase, COALESCE(spend_usd, ''),
 		       COALESCE(cost_capture, ''),
 		       COALESCE(routing_decisions -> -1 ->> 'model', ''),
-		       COALESCE(completion_time, start_time, created_at)
+		       COALESCE(completion_time, start_time, created_at),
+		       start_time, completion_time
 		FROM archived_runs %s
 		ORDER BY COALESCE(completion_time, start_time, created_at) DESC
 		LIMIT $%d
@@ -480,7 +485,7 @@ func queryCostRows(ctx context.Context, tx dbtx, scope string, q CostQuery) ([]C
 	for rows.Next() {
 		var r CostRow
 		var capture string
-		if err := rows.Scan(&r.Name, &r.Namespace, &r.AgentRef, &r.Phase, &r.SpendUSD, &capture, &r.Model, &r.When); err != nil {
+		if err := rows.Scan(&r.Name, &r.Namespace, &r.AgentRef, &r.Phase, &r.SpendUSD, &capture, &r.Model, &r.When, &r.Started, &r.Completed); err != nil {
 			return nil, fmt.Errorf("scanning cost row: %w", err)
 		}
 		r.CostIncomplete = capture == "incomplete"

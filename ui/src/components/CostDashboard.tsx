@@ -104,7 +104,7 @@ export function CostDashboard({ namespace = 'default', selection, onViewRuns, on
   return (
     <div style={styles.container}>
       <div style={styles.headerRow}>
-        <h2 style={styles.heading}>Cost Dashboard</h2>
+        <h2 style={styles.heading}>Costs</h2>
         {selection && (
           <div role="group" aria-label="Cost scope" style={styles.scopeToggle}>
             <DSButton

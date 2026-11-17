@@ -85,6 +85,7 @@ func agentInputSchemaOverride(agent *agentorcav1alpha1.Agent) map[string]any {
 func (s *UIServer) registerAgentRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/catalog", s.handleCatalog)
 	mux.HandleFunc("/api/my/runs", s.handleMyRuns)
+	s.registerFleetRoutes(mux)
 	mux.HandleFunc("/api/agents/", s.handleAgentAction)
 }
 

@@ -12,7 +12,7 @@
  *   /runs/history/:ns/:name                   an archived run
  *   /approvals                                Approvals
  *   /build, /evaluate                         placeholders for later stages
- *   /operate/{costs,routing,status}           Operate tabs
+ *   /operate/{fleet,costs,routing,status}     Operate tabs (fleet is the default)
  *   /operate/workflows[/:ns/:name]            workflows
  *   /settings/providers[/:ns/:name]           model providers
  *   /settings/models[/:ns/:name]              model selection
@@ -40,11 +40,12 @@ import { AgentCatalog } from './components/AgentCatalog'
 import { AgentPage } from './components/AgentPage'
 import { TemplateDetail, TemplatesGallery } from './components/TemplatesGallery'
 import { ApprovalsView } from './components/ApprovalsView'
+import { FleetView } from './components/FleetView'
 import { RoutingInsightsView } from './components/RoutingInsightsView'
 import { AppShell } from './shell/AppShell'
 import { ICON } from './lib/icons'
 import { ds } from './lib/designSystem'
-import { canSee } from './lib/access'
+import { canSee, useRoles } from './lib/access'
 import { EmptyState, ListGroupHeading, MasterDetail, Page, PageHeader, Section, SubNav } from './lib/layout'
 import { useNamespace } from './lib/namespace'
 import {
@@ -73,7 +74,8 @@ function HomeRoute() {
 /** The platform-wide resource overview, kept below My work and loaded on request. */
 function PlatformOverview({ onOpen }: { onOpen: (tab: ResourceTab) => void }) {
   const [show, setShow] = useState(false)
-  if (!canSee('operate')) return null
+  const roles = useRoles()
+  if (!canSee(roles, 'operate')) return null
   return (
     <Section
       title="Platform overview"
@@ -185,10 +187,14 @@ function PublishedAgentRoute() {
 function RunsRoute() {
   const navigate = useNavigate()
   const { namespace } = useNamespace()
+  const [params] = useSearchParams()
+  const agent = params.get('agent') ?? ''
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
       <RunsView
+        key={agent}
         namespace={namespace}
+        initialAgent={agent}
         onNavigateToRun={(name, ns, source) =>
           navigate(source === 'live' ? liveRunPath(ns, name) : archivedRunPath(ns, name))}
       />
@@ -267,11 +273,12 @@ function OperateLayout() {
     <>
       <PageHeader
         title="Operate"
-        description="How the platform is doing: what it costs, how models are chosen, whether everything is healthy, and long-running workflows."
+        description="How your agents and the platform are doing: which agents need attention, what it costs, how models are chosen, and long-running workflows."
       />
       <SubNav
         label="Operate"
         items={[
+          { to: ROUTES.fleet, label: 'Fleet' },
           { to: ROUTES.costs, label: 'Costs' },
           { to: ROUTES.routing, label: 'Model routing' },
           { to: ROUTES.status, label: 'System status' },
@@ -416,7 +423,8 @@ export function AppRoutes() {
         />
 
         <Route path="operate" element={<OperateLayout />}>
-          <Route index element={<Navigate to="costs" replace />} />
+          <Route index element={<Navigate to="fleet" replace />} />
+          <Route path="fleet" element={<FleetView />} />
           <Route path="costs" element={<CostsRoute />} />
           <Route path="routing" element={<RoutingRoute />} />
           <Route path="status" element={<StatusRoute />} />
