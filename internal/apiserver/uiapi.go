@@ -122,6 +122,11 @@ type UIServer struct {
 	// scrape so we don't list pods + HTTP-scrape every status poll.
 	cachedRouterTokens float64
 	lastRouterScrape   time.Time
+
+	// ownDetect says which labels count as Argo CD tracking; handoffTTL is how
+	// long an export waits for the GitOps tool to adopt the object (see SetOwnership).
+	ownDetect  tenancy.DetectOptions
+	handoffTTL time.Duration
 }
 
 // nsListOpts returns a ListOption slice scoped to ns, or empty (all namespaces) when ns is "".
@@ -201,6 +206,7 @@ func (s *UIServer) Handler() http.Handler {
 	mux.HandleFunc("/api/resources/", s.handleResource)
 	mux.HandleFunc("/api/openapi.json", s.handleUIOpenAPI)
 	s.registerAgentRoutes(mux)
+	s.registerBuilderRoutes(mux)
 	if s.oidcLogin != nil {
 		s.oidcLogin.Register(mux)
 	}
@@ -816,13 +822,14 @@ func (s *UIServer) handleListAgents(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type summary struct {
-		Name               string   `json:"name"`
-		Namespace          string   `json:"namespace"`
-		ModelSelectorRef   string   `json:"modelSelectorRef"`
-		Framework          string   `json:"framework"`
-		Tools              []string `json:"tools"`
-		SystemPrompt       string   `json:"systemPrompt,omitempty"`
-		ServiceAccountName string   `json:"serviceAccountName"`
+		Name               string        `json:"name"`
+		Namespace          string        `json:"namespace"`
+		ModelSelectorRef   string        `json:"modelSelectorRef"`
+		Framework          string        `json:"framework"`
+		Tools              []string      `json:"tools"`
+		SystemPrompt       string        `json:"systemPrompt,omitempty"`
+		ServiceAccountName string        `json:"serviceAccountName"`
+		Ownership          ownershipView `json:"ownership"`
 	}
 	out := make([]summary, 0, len(list.Items))
 	for _, a := range list.Items {
@@ -838,6 +845,7 @@ func (s *UIServer) handleListAgents(w http.ResponseWriter, r *http.Request) {
 			Tools:              tools,
 			SystemPrompt:       a.Spec.SystemPrompt,
 			ServiceAccountName: a.Status.ServiceAccountName,
+			Ownership:          s.ownershipOf(r.Context(), &a, kindAgent),
 		})
 	}
 	jsonResponse(w, out)
@@ -959,6 +967,7 @@ func (s *UIServer) handleListModelSelectors(w http.ResponseWriter, r *http.Reque
 		CapabilityRouting map[string]string `json:"capabilityRouting,omitempty"`
 		Budget            *budgetSummary    `json:"budget,omitempty"`
 		ActiveProviders   []string          `json:"activeProviders,omitempty"`
+		Ownership         ownershipView     `json:"ownership"`
 	}
 	out := make([]summary, 0, len(list.Items))
 	for _, ms := range list.Items {
@@ -979,6 +988,7 @@ func (s *UIServer) handleListModelSelectors(w http.ResponseWriter, r *http.Reque
 			CapabilityRouting: ms.Spec.CapabilityRouting,
 			Budget:            budget,
 			ActiveProviders:   ms.Status.ActiveProviders,
+			Ownership:         s.ownershipOf(r.Context(), &ms, "ModelSelector"),
 		})
 	}
 	jsonResponse(w, out)
@@ -992,14 +1002,15 @@ func (s *UIServer) handleListTools(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	type summary struct {
-		Name          string `json:"name"`
-		Namespace     string `json:"namespace"`
-		Type          string `json:"type"`
-		ExecutionMode string `json:"executionMode"`
-		Description   string `json:"description,omitempty"`
-		Ready         bool   `json:"ready"`
-		OCIRef        string `json:"ociRef,omitempty"`
-		AgentRef      string `json:"agentRef,omitempty"`
+		Name          string        `json:"name"`
+		Namespace     string        `json:"namespace"`
+		Type          string        `json:"type"`
+		ExecutionMode string        `json:"executionMode"`
+		Description   string        `json:"description,omitempty"`
+		Ready         bool          `json:"ready"`
+		OCIRef        string        `json:"ociRef,omitempty"`
+		AgentRef      string        `json:"agentRef,omitempty"`
+		Ownership     ownershipView `json:"ownership"`
 	}
 	out := make([]summary, 0, len(list.Items))
 	for _, t := range list.Items {
@@ -1016,6 +1027,7 @@ func (s *UIServer) handleListTools(w http.ResponseWriter, r *http.Request) {
 			Ready:         t.Status.Ready,
 			OCIRef:        t.Spec.OCIRef,
 			AgentRef:      t.Spec.AgentRef,
+			Ownership:     s.ownershipOf(r.Context(), &t, "Tool"),
 		})
 	}
 	jsonResponse(w, out)
@@ -1080,6 +1092,7 @@ func (s *UIServer) handleListMCPServers(w http.ResponseWriter, r *http.Request) 
 		AllowedAgents []string       `json:"allowedAgents"`
 		Tools         []mcpToolEntry `json:"tools,omitempty"`
 		AllowApps     bool           `json:"allowApps"`
+		Ownership     ownershipView  `json:"ownership"`
 	}
 	out := make([]summary, 0, len(list.Items))
 	for _, m := range list.Items {
@@ -1109,6 +1122,7 @@ func (s *UIServer) handleListMCPServers(w http.ResponseWriter, r *http.Request) 
 			AllowedAgents: allowed,
 			Tools:         tools,
 			AllowApps:     m.Spec.AllowApps,
+			Ownership:     s.ownershipOf(r.Context(), &m, "MCPServer"),
 		})
 	}
 	jsonResponse(w, out)
@@ -1139,6 +1153,7 @@ func (s *UIServer) handleListKnowledgeBases(w http.ResponseWriter, r *http.Reque
 		ChunkOverlap       int                `json:"chunkOverlap"`
 		StorageUsedPercent int                `json:"storageUsedPercent"`
 		LastSyncTime       string             `json:"lastSyncTime,omitempty"`
+		Ownership          ownershipView      `json:"ownership"`
 	}
 	out := make([]summary, 0, len(list.Items))
 	for _, kb := range list.Items {
@@ -1163,6 +1178,7 @@ func (s *UIServer) handleListKnowledgeBases(w http.ResponseWriter, r *http.Reque
 			ChunkSize:          kb.Spec.Embedding.ChunkSize,
 			ChunkOverlap:       kb.Spec.Embedding.ChunkOverlap,
 			StorageUsedPercent: kb.Status.StorageUsedPercent,
+			Ownership:          s.ownershipOf(r.Context(), &kb, "KnowledgeBase"),
 		}
 		if kb.Status.LastSyncTime != nil {
 			s.LastSyncTime = kb.Status.LastSyncTime.UTC().Format(time.RFC3339)
@@ -1180,16 +1196,17 @@ func (s *UIServer) handleListModelProviders(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	type summary struct {
-		Name                       string   `json:"name"`
-		Namespace                  string   `json:"namespace"`
-		LiteLLMModel               string   `json:"litellmModel"`
-		BaseURL                    string   `json:"baseURL,omitempty"`
-		LatencyProfile             string   `json:"latencyProfile"`
-		Capabilities               []string `json:"capabilities"`
-		CostPerMillionInputTokens  string   `json:"costPerMillionInputTokens,omitempty"`
-		CostPerMillionOutputTokens string   `json:"costPerMillionOutputTokens,omitempty"`
-		ContextWindow              int      `json:"contextWindow,omitempty"`
-		Ready                      bool     `json:"ready"`
+		Name                       string        `json:"name"`
+		Namespace                  string        `json:"namespace"`
+		LiteLLMModel               string        `json:"litellmModel"`
+		BaseURL                    string        `json:"baseURL,omitempty"`
+		LatencyProfile             string        `json:"latencyProfile"`
+		Capabilities               []string      `json:"capabilities"`
+		CostPerMillionInputTokens  string        `json:"costPerMillionInputTokens,omitempty"`
+		CostPerMillionOutputTokens string        `json:"costPerMillionOutputTokens,omitempty"`
+		ContextWindow              int           `json:"contextWindow,omitempty"`
+		Ready                      bool          `json:"ready"`
+		Ownership                  ownershipView `json:"ownership"`
 	}
 	out := make([]summary, 0, len(list.Items))
 	for _, p := range list.Items {
@@ -1204,6 +1221,7 @@ func (s *UIServer) handleListModelProviders(w http.ResponseWriter, r *http.Reque
 			CostPerMillionOutputTokens: p.Spec.Constraints.CostPerMillionOutputTokens,
 			ContextWindow:              p.Spec.Constraints.ContextWindow,
 			Ready:                      p.Status.Ready,
+			Ownership:                  s.ownershipOf(r.Context(), &p, "ModelProvider"),
 		})
 	}
 	jsonResponse(w, out)
@@ -1218,14 +1236,15 @@ func (s *UIServer) handleListDeployments(w http.ResponseWriter, r *http.Request)
 	}
 
 	type summary struct {
-		Name            string `json:"name"`
-		Namespace       string `json:"namespace"`
-		AgentRef        string `json:"agentRef"`
-		Phase           string `json:"phase"`
-		ReadyReplicas   int32  `json:"readyReplicas"`
-		InputSourceType string `json:"inputSourceType,omitempty"`
-		LastUpdateTime  string `json:"lastUpdateTime,omitempty"`
-		Message         string `json:"message,omitempty"`
+		Name            string        `json:"name"`
+		Namespace       string        `json:"namespace"`
+		AgentRef        string        `json:"agentRef"`
+		Phase           string        `json:"phase"`
+		ReadyReplicas   int32         `json:"readyReplicas"`
+		InputSourceType string        `json:"inputSourceType,omitempty"`
+		LastUpdateTime  string        `json:"lastUpdateTime,omitempty"`
+		Message         string        `json:"message,omitempty"`
+		Ownership       ownershipView `json:"ownership"`
 	}
 	out := make([]summary, 0, len(list.Items))
 	for _, d := range list.Items {
@@ -1236,6 +1255,7 @@ func (s *UIServer) handleListDeployments(w http.ResponseWriter, r *http.Request)
 			Phase:         string(d.Status.Phase),
 			ReadyReplicas: d.Status.ReadyReplicas,
 			Message:       d.Status.Message,
+			Ownership:     s.ownershipOf(r.Context(), &d, "AgentDeployment"),
 		}
 		if d.Spec.InputSource != nil {
 			s.InputSourceType = string(d.Spec.InputSource.Type)
@@ -1981,18 +2001,19 @@ func (s *UIServer) handleGetDeployment(w http.ResponseWriter, r *http.Request, n
 	}
 
 	type summaryInfo struct {
-		Name                string `json:"name"`
-		Namespace           string `json:"namespace"`
-		AgentRef            string `json:"agentRef"`
-		Phase               string `json:"phase"`
-		ReadyReplicas       int32  `json:"readyReplicas"`
-		AvailableReplicas   int32  `json:"availableReplicas"`
-		ConsecutiveFailures int    `json:"consecutiveFailures"`
-		InputSourceType     string `json:"inputSourceType"`
-		LastUpdateTime      string `json:"lastUpdateTime,omitempty"`
-		Message             string `json:"message,omitempty"`
-		ContextUsedTokens   int    `json:"contextUsedTokens"`
-		MaxContextTokens    int    `json:"maxContextTokens"`
+		Name                string        `json:"name"`
+		Namespace           string        `json:"namespace"`
+		AgentRef            string        `json:"agentRef"`
+		Phase               string        `json:"phase"`
+		ReadyReplicas       int32         `json:"readyReplicas"`
+		AvailableReplicas   int32         `json:"availableReplicas"`
+		ConsecutiveFailures int           `json:"consecutiveFailures"`
+		InputSourceType     string        `json:"inputSourceType"`
+		LastUpdateTime      string        `json:"lastUpdateTime,omitempty"`
+		Message             string        `json:"message,omitempty"`
+		ContextUsedTokens   int           `json:"contextUsedTokens"`
+		MaxContextTokens    int           `json:"maxContextTokens"`
+		Ownership           ownershipView `json:"ownership"`
 	}
 
 	info := summaryInfo{
@@ -2006,6 +2027,7 @@ func (s *UIServer) handleGetDeployment(w http.ResponseWriter, r *http.Request, n
 		Message:             deployment.Status.Message,
 		ContextUsedTokens:   deployment.Status.ContextUsedTokens,
 		MaxContextTokens:    deployment.Status.MaxContextTokens,
+		Ownership:           s.ownershipOf(r.Context(), &deployment, "AgentDeployment"),
 	}
 
 	if deployment.Spec.InputSource != nil {
@@ -2028,9 +2050,9 @@ func (s *UIServer) handleDeleteDeployment(w http.ResponseWriter, r *http.Request
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
-	if tenancy.OwnerOf(&deployment) != tenancy.OwnerUI {
-		jsonError(w, fmt.Sprintf("AgentDeployment %s/%s is not owned by the UI (%s is %q), so the UI cannot delete it",
-			namespace, deploymentName, tenancy.AnnotationOwner, tenancy.OwnerOf(&deployment)), http.StatusForbidden)
+	if o := tenancy.Detect(&deployment, s.ownDetect); o.Owner != tenancy.OwnerUI {
+		jsonError(w, fmt.Sprintf("AgentDeployment %s/%s is not owned by the UI (owner: %s), so the UI cannot delete it",
+			namespace, deploymentName, o.Owner), http.StatusForbidden)
 		return
 	}
 	if err := s.crdClient.Delete(r.Context(), &deployment); err != nil {
@@ -2051,14 +2073,15 @@ func (s *UIServer) handleListWorkflows(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type summary struct {
-		Name           string `json:"name"`
-		Namespace      string `json:"namespace"`
-		Description    string `json:"description,omitempty"`
-		Phase          string `json:"phase"`
-		StepCount      int    `json:"stepCount"`
-		TotalSpendUSD  string `json:"totalSpendUSD"`
-		StartTime      string `json:"startTime,omitempty"`
-		CompletionTime string `json:"completionTime,omitempty"`
+		Name           string        `json:"name"`
+		Namespace      string        `json:"namespace"`
+		Description    string        `json:"description,omitempty"`
+		Phase          string        `json:"phase"`
+		StepCount      int           `json:"stepCount"`
+		TotalSpendUSD  string        `json:"totalSpendUSD"`
+		StartTime      string        `json:"startTime,omitempty"`
+		CompletionTime string        `json:"completionTime,omitempty"`
+		Ownership      ownershipView `json:"ownership"`
 	}
 	out := make([]summary, 0, len(list.Items))
 	for _, wf := range list.Items {
@@ -2069,6 +2092,7 @@ func (s *UIServer) handleListWorkflows(w http.ResponseWriter, r *http.Request) {
 			Phase:         string(wf.Status.Phase),
 			StepCount:     len(wf.Spec.Steps),
 			TotalSpendUSD: wf.Status.TotalSpendUSD,
+			Ownership:     s.ownershipOf(r.Context(), &wf, "AgentWorkflow"),
 		}
 		if wf.Status.StartTime != nil {
 			s.StartTime = wf.Status.StartTime.UTC().Format(time.RFC3339)
@@ -2126,6 +2150,7 @@ func (s *UIServer) handleGetWorkflow(w http.ResponseWriter, r *http.Request) {
 		TotalSpendUSD string             `json:"totalSpendUSD"`
 		Steps         []stepStatus       `json:"steps"`
 		Loops         []workflowLoopView `json:"loops,omitempty"`
+		Ownership     ownershipView      `json:"ownership"`
 		// SandboxFailed is set when the workflow's shared sandbox never came up or was
 		// lost; retrying the "sandbox" provisions it again.
 		SandboxFailed bool `json:"sandboxFailed,omitempty"`
@@ -2144,6 +2169,7 @@ func (s *UIServer) handleGetWorkflow(w http.ResponseWriter, r *http.Request) {
 		StepCount:     len(wf.Spec.Steps),
 		TotalSpendUSD: wf.Status.TotalSpendUSD,
 		Steps:         make([]stepStatus, 0, len(wf.Status.Steps)),
+		Ownership:     s.ownershipOf(r.Context(), &wf, "AgentWorkflow"),
 	}
 	if wf.Status.StartTime != nil {
 		d.StartTime = wf.Status.StartTime.UTC().Format(time.RFC3339)
@@ -2493,7 +2519,7 @@ func (s *UIServer) handleResourceCollection(w http.ResponseWriter, r *http.Reque
 func (s *UIServer) handleResource(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/resources/")
 	parts := strings.Split(path, "/")
-	if len(parts) < 3 {
+	if len(parts) < 3 || len(parts) > 4 {
 		http.Error(w, "expected /api/resources/{kind}/{namespace}/{name}", http.StatusBadRequest)
 		return
 	}
@@ -2501,6 +2527,10 @@ func (s *UIServer) handleResource(w http.ResponseWriter, r *http.Request) {
 	info, ok := crdKinds[kind]
 	if !ok {
 		http.Error(w, `{"error":"unknown resource kind"}`, http.StatusBadRequest)
+		return
+	}
+	if len(parts) == 4 {
+		s.resourceAction(w, r, info, ns, name, parts[3])
 		return
 	}
 
@@ -2524,7 +2554,12 @@ func (s *UIServer) listResource(w http.ResponseWriter, r *http.Request, info crd
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	jsonResponse(w, info.listType)
+	out, err := s.listWithOwnership(r.Context(), info.listType, info.gvk)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	jsonResponse(w, out)
 }
 
 // getResource fetches a single CRD by name, returning spec + metadata (status included read-only).
@@ -2542,7 +2577,12 @@ func (s *UIServer) getResource(w http.ResponseWriter, r *http.Request, info crdK
 		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
 		return
 	}
-	jsonResponse(w, obj)
+	out, err := s.objectWithOwnership(r.Context(), obj, info.gvk)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	jsonResponse(w, out)
 }
 
 // ownedDeployment reports whether the caller may use the deployment, answering

@@ -1,3 +1,28 @@
+import { parseDocument, stringify } from 'yaml'
+
+/** The result of reading YAML text: the value, or a message that says where it went wrong. */
+export type ParsedYAML = { value: unknown; error?: undefined } | { value?: undefined; error: string }
+
+/** Reads YAML (or JSON) text. Never throws. */
+export function parseYAML(text: string): ParsedYAML {
+  try {
+    const doc = parseDocument(text)
+    if (doc.errors.length > 0) {
+      const e = doc.errors[0]
+      const line = e.linePos?.[0]?.line
+      return { error: `${line ? `Line ${line}: ` : ''}${e.message.split('\n')[0]}` }
+    }
+    return { value: doc.toJS() }
+  } catch (e) {
+    return { error: e instanceof Error ? e.message.split('\n')[0] : String(e) }
+  }
+}
+
+/** Writes a value as YAML in the form people keep in Git. */
+export function stringifyYAML(value: unknown): string {
+  return stringify(value, { lineWidth: 0 })
+}
+
 /**
  * toYAML renders a JSON value as block-style YAML. It exists to show a merge
  * patch in the form people paste into a file for `kubectl patch --patch-file`,

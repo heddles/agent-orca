@@ -113,11 +113,11 @@ func readResourceBody(w http.ResponseWriter, r *http.Request, info crdKindInfo) 
 // applyResource server-side applies obj as the UI. On return obj holds the
 // stored object, managedFields included; callers strip them before answering.
 func (s *UIServer) applyResource(r *http.Request, obj *unstructured.Unstructured) error {
-	if err := s.crdClient.Patch(r.Context(), obj, client.Apply, //nolint:staticcheck // Client.Apply takes typed apply configurations, not the sanitised unstructured body
-		client.FieldOwner(tenancy.FieldManagerUI), client.ForceOwnership); err != nil {
-		return err
+	opts := []client.PatchOption{client.FieldOwner(tenancy.FieldManagerUI), client.ForceOwnership}
+	if isDryRun(r) {
+		opts = append(opts, client.DryRunAll)
 	}
-	return nil
+	return s.crdClient.Patch(r.Context(), obj, client.Apply, opts...) //nolint:staticcheck // Client.Apply takes typed apply configurations, not the sanitised unstructured body
 }
 
 // adoptFields makes the apply entry the only owner of what a create wrote. The
@@ -186,6 +186,9 @@ func stampUI(r *http.Request, obj client.Object) {
 // (metadata.name and metadata.namespace included). It needs the builder role,
 // or admin for ModelProvider, ModelSelector, MCPServer and Tool.
 func (s *UIServer) createResource(w http.ResponseWriter, r *http.Request, info crdKindInfo) {
+	if asDryRun(w, r, func(w http.ResponseWriter, r *http.Request) { s.createResource(w, r, info) }) {
+		return
+	}
 	if !requireRole(w, r, writeRoleFor(info.gvk)) {
 		return
 	}
@@ -194,10 +197,18 @@ func (s *UIServer) createResource(w http.ResponseWriter, r *http.Request, info c
 		return
 	}
 	obj := in.obj
+	if !s.prepareNew(w, r, obj) {
+		return
+	}
+	s.createUIObject(w, r, info, obj, "")
+}
 
-	// With a tenant identity the namespace is the tenant's own, never the body's.
-	// Ownership comes from the caller's tenant, never from the body: drop any
-	// tenant-id or platform-scope label the body carries, then stamp our own.
+// prepareNew makes obj ready to be created by the UI: the namespace is the
+// tenant's own, never the body's, and ownership comes from the caller's tenant,
+// never from the body (any tenant-id or platform-scope label the body carries is
+// dropped, then ours is stamped). It answers the error itself and returns false
+// when obj cannot be created.
+func (s *UIServer) prepareNew(w http.ResponseWriter, r *http.Request, obj *unstructured.Unstructured) bool {
 	tenancy.StripOwnership(obj)
 	if tenant, ok := TenantFromContext(r.Context()); ok && tenant != nil {
 		if tenant.Namespace != "" {
@@ -205,18 +216,23 @@ func (s *UIServer) createResource(w http.ResponseWriter, r *http.Request, info c
 		}
 		if tenant.TenantID == "" {
 			http.Error(w, `{"error":"tenant has no ID yet"}`, http.StatusForbidden)
-			return
+			return false
 		}
 		tenancy.Stamp(obj, tenant.TenantID)
 	}
 	if obj.GetName() == "" || obj.GetNamespace() == "" {
 		http.Error(w, `{"error":"metadata.name and metadata.namespace are required"}`, http.StatusBadRequest)
-		return
+		return false
 	}
 	stampUI(r, obj)
+	return true
+}
 
-	intent := obj.DeepCopy()
-	if err := s.crdClient.Create(r.Context(), obj, client.FieldOwner(tenancy.FieldManagerUI)); err != nil {
+// createUIObject creates obj with a plain Create, which the API server makes
+// atomic: a name that exists is a 409, never a takeover. summary overrides the
+// audit text.
+func (s *UIServer) createUIObject(w http.ResponseWriter, r *http.Request, info crdKindInfo, obj *unstructured.Unstructured, summary string) {
+	if err := s.persistNew(r, info.gvk, obj); err != nil {
 		if k8serrors.IsAlreadyExists(err) {
 			current := ""
 			if existing := info.newObj(); s.crdClient.Get(r.Context(), client.ObjectKeyFromObject(obj), existing) == nil && canRead(r.Context(), existing, info.gvk) {
@@ -228,18 +244,44 @@ func (s *UIServer) createResource(w http.ResponseWriter, r *http.Request, info c
 		writeAPIError(w, "creating resource", err)
 		return
 	}
-	// Hand the fields to the apply entry. The version makes it a no-op if anyone
-	// wrote in between; the object is then still correct, only its field
-	// ownership stays with the create, so the first edit may not remove a field.
+	if isDryRun(r) {
+		s.respondObject(w, r, obj, info.gvk)
+		return
+	}
+	if summary == "" {
+		summary = fmt.Sprintf("created %s %s/%s", info.gvk, obj.GetNamespace(), obj.GetName())
+	}
+	s.recordAudit(w, r, auditEventFor(postgresql.AuditCreate, info.gvk, obj.GetNamespace(), obj.GetName(), obj.GetResourceVersion(), summary))
+	w.WriteHeader(http.StatusCreated)
+	s.respondObject(w, r, obj, info.gvk)
+}
+
+// persistNew creates obj with a plain Create and hands its fields to the apply
+// entry. The version makes the hand-over a no-op if anyone wrote in between; the
+// object is then still correct, only its field ownership stays with the create,
+// so the first edit may not remove a field. A dry run only creates with
+// dryRun=All, so obj is what would be stored. On return obj is the stored
+// object, managedFields removed.
+func (s *UIServer) persistNew(r *http.Request, kind string, obj *unstructured.Unstructured) error {
+	if isDryRun(r) {
+		return s.crdClient.Create(r.Context(), obj, client.FieldOwner(tenancy.FieldManagerUI), client.DryRunAll)
+	}
+	intent := obj.DeepCopy()
+	if err := s.crdClient.Create(r.Context(), obj, client.FieldOwner(tenancy.FieldManagerUI)); err != nil {
+		return err
+	}
 	if err := s.adoptFields(r, obj, intent); err != nil {
-		slog.Warn("taking over field ownership after create failed", "kind", info.gvk, "namespace", obj.GetNamespace(), "name", obj.GetName(), "err", err)
+		slog.Warn("taking over field ownership after create failed", "kind", kind, "namespace", obj.GetNamespace(), "name", obj.GetName(), "err", err)
 		unstructured.RemoveNestedField(obj.Object, "metadata", "managedFields")
 	} else {
-		obj = intent
+		obj.Object = intent.Object
 	}
-	s.recordAudit(w, r, auditEventFor(postgresql.AuditCreate, info.gvk, obj.GetNamespace(), obj.GetName(), obj.GetResourceVersion(),
-		fmt.Sprintf("created %s %s/%s", info.gvk, obj.GetNamespace(), obj.GetName())))
-	w.WriteHeader(http.StatusCreated)
+	return nil
+}
+
+// respondObject answers with obj and its ownership.
+func (s *UIServer) respondObject(w http.ResponseWriter, r *http.Request, obj *unstructured.Unstructured, kind string) {
+	obj.Object["ownership"] = s.ownershipOf(r.Context(), obj, kind)
 	jsonResponse(w, obj)
 }
 
@@ -253,6 +295,9 @@ func (s *UIServer) createResource(w http.ResponseWriter, r *http.Request, info c
 //	     names the current version)
 //	428  the body has no resourceVersion
 func (s *UIServer) updateResource(w http.ResponseWriter, r *http.Request, info crdKindInfo, ns, name string) {
+	if asDryRun(w, r, func(w http.ResponseWriter, r *http.Request) { s.updateResource(w, r, info, ns, name) }) {
+		return
+	}
 	if !requireRole(w, r, writeRoleFor(info.gvk)) {
 		return
 	}
@@ -275,9 +320,8 @@ func (s *UIServer) updateResource(w http.ResponseWriter, r *http.Request, info c
 	if !s.authorizeWrite(w, r, existing, info.gvk) {
 		return
 	}
-	if tenancy.OwnerOf(existing) != tenancy.OwnerUI {
-		writeConflict(w, fmt.Sprintf("%s %s/%s is not owned by the UI (%s is %q): change it where it was created, or duplicate it",
-			info.gvk, ns, name, tenancy.AnnotationOwner, tenancy.OwnerOf(existing)), existing.GetResourceVersion())
+	if o := tenancy.Detect(existing, s.ownDetect); o.Owner != tenancy.OwnerUI {
+		notEditable(w, info.gvk, ns, name, o, existing.GetResourceVersion())
 		return
 	}
 	if in.resourceVersion == "" {
@@ -297,6 +341,16 @@ func (s *UIServer) updateResource(w http.ResponseWriter, r *http.Request, info c
 		tenancy.Stamp(obj, t.TenantID)
 	}
 	stampUI(r, obj)
+	// A pending handoff is the owner's decision, not the editor's: an edit keeps it.
+	if h := tenancy.HandoffOf(existing); h.Requested {
+		a := obj.GetAnnotations()
+		for _, k := range []string{tenancy.AnnotationHandoff, tenancy.AnnotationHandoffExpires} {
+			if v, ok := existing.GetAnnotations()[k]; ok {
+				a[k] = v
+			}
+		}
+		obj.SetAnnotations(a)
+	}
 	// The apply names the version, so a write that lands between the check above
 	// and here is refused by the API server rather than overwritten.
 	obj.SetResourceVersion(in.resourceVersion)
@@ -314,9 +368,11 @@ func (s *UIServer) updateResource(w http.ResponseWriter, r *http.Request, info c
 		return
 	}
 	unstructured.RemoveNestedField(obj.Object, "metadata", "managedFields")
-	s.recordAudit(w, r, auditEventFor(postgresql.AuditUpdate, info.gvk, ns, name, obj.GetResourceVersion(),
-		fmt.Sprintf("updated %s %s/%s (resourceVersion %s to %s)", info.gvk, ns, name, in.resourceVersion, obj.GetResourceVersion())))
-	jsonResponse(w, obj)
+	if !isDryRun(r) {
+		s.recordAudit(w, r, auditEventFor(postgresql.AuditUpdate, info.gvk, ns, name, obj.GetResourceVersion(),
+			fmt.Sprintf("updated %s %s/%s (resourceVersion %s to %s)", info.gvk, ns, name, in.resourceVersion, obj.GetResourceVersion())))
+	}
+	s.respondObject(w, r, obj, info.gvk)
 }
 
 // deleteResource handles DELETE /api/resources/{kind}/{ns}/{name}. It deletes
@@ -333,9 +389,9 @@ func (s *UIServer) deleteResource(w http.ResponseWriter, r *http.Request, info c
 	if !s.authorizeWrite(w, r, obj, info.gvk) {
 		return
 	}
-	if tenancy.OwnerOf(obj) != tenancy.OwnerUI {
-		jsonError(w, fmt.Sprintf("%s %s/%s is not owned by the UI (%s is %q), so the UI cannot delete it",
-			info.gvk, ns, name, tenancy.AnnotationOwner, tenancy.OwnerOf(obj)), http.StatusForbidden)
+	if o := tenancy.Detect(obj, s.ownDetect); o.Owner != tenancy.OwnerUI {
+		jsonError(w, fmt.Sprintf("%s %s/%s is not owned by the UI (owner: %s), so the UI cannot delete it",
+			info.gvk, ns, name, o.Owner), http.StatusForbidden)
 		return
 	}
 	if err := s.crdClient.Delete(r.Context(), obj); err != nil {

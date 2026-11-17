@@ -7,13 +7,14 @@
 import { useEffect, useState, type CSSProperties } from 'react'
 import { Link } from 'react-router'
 import { getCatalog, type CatalogEntry } from '../api/catalog'
-import { DSChip } from '../lib/primitives'
+import { DSButton, DSChip } from '../lib/primitives'
 import { ds, DESIGN } from '../lib/designSystem'
 import { ICON } from '../lib/icons'
 import { EmptyState, Page, PageHeader, Section } from '../lib/layout'
 import { ROUTES, templatePath } from '../lib/routes'
 import { useNamespace } from '../lib/namespace'
 import { AgentCard } from './AgentCatalog'
+import { UseTemplateDialog } from './BuilderParts'
 
 function useTemplates(): { templates: CatalogEntry[] | null; error: string | null } {
   const { namespace } = useNamespace()
@@ -80,7 +81,7 @@ export function TemplateDetail({ namespace, name }: { namespace: string; name: s
       <PageHeader
         title={t.name}
         description={t.description.trim().split(/\n\s*\n/)[0].replace(/\s+/g, ' ')}
-        actions={<UseTemplateButton />}
+        actions={<UseTemplateButton namespace={t.namespace} name={t.name} />}
       />
       <Section title="What is included">
         <dl style={s.dl}>
@@ -109,26 +110,14 @@ export function TemplateDetail({ namespace, name }: { namespace: string; name: s
   )
 }
 
-/**
- * "Use template" copies the template into the caller's workspace as UI-owned.
- * It needs the safe write path from the builder stage, so it is disabled for now.
- */
-function UseTemplateButton() {
-  // TODO(U1/U5): when POST /api/templates/{ns}/{name}/use exists, call it here
-  // and open the new agent in the builder. Until then the button stays disabled.
-  const reason = 'Using a template arrives with the builder.'
+/** "Use template" copies the template into the caller's workspace as UI-owned, then opens the copy in the builder. */
+export function UseTemplateButton({ namespace, name }: { namespace: string; name: string }) {
+  const [open, setOpen] = useState(false)
   return (
-    <span title={reason} style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
-      <button
-        type="button"
-        disabled
-        aria-describedby="use-template-note"
-        style={s.disabledBtn}
-      >
-        Use template
-      </button>
-      <span id="use-template-note" style={{ fontSize: 11, color: ds.textMuted }}>{reason}</span>
-    </span>
+    <>
+      <DSButton type="button" variant="primary" onClick={() => setOpen(true)}>Use template</DSButton>
+      {open && <UseTemplateDialog template={{ namespace, name }} onClose={() => setOpen(false)} />}
+    </>
   )
 }
 
@@ -139,8 +128,4 @@ const s: Record<string, CSSProperties> = {
   loading: { padding: 24, color: ds.textMuted, fontSize: 13 },
   error: { margin: 24, padding: 12, color: ds.error, border: '1px solid var(--ds-border)', borderRadius: DESIGN.radii.md, fontSize: 13 },
   dl: { display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '6px 16px', margin: 0, fontSize: 13, color: ds.textSecondary },
-  disabledBtn: {
-    background: 'var(--ds-muted-bg)', color: ds.textMuted, border: '1px solid var(--ds-border)',
-    borderRadius: DESIGN.radii.md, padding: '6px 14px', fontSize: 12, cursor: 'not-allowed',
-  },
 }
