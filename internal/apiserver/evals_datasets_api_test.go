@@ -43,10 +43,13 @@ type fakeEvalStore struct {
 	datasets map[int64]*postgresql.EvalDataset
 	cases    map[int64]*postgresql.EvalCase
 	runs     map[string]*postgresql.RunArchive // tenant|ns/name
+	graders  map[int64]*postgresql.EvalGrader
+	results  map[int64]*postgresql.EvalResult
 }
 
 func newFakeEvalStore() *fakeEvalStore {
-	return &fakeEvalStore{datasets: map[int64]*postgresql.EvalDataset{}, cases: map[int64]*postgresql.EvalCase{}, runs: map[string]*postgresql.RunArchive{}}
+	return &fakeEvalStore{datasets: map[int64]*postgresql.EvalDataset{}, cases: map[int64]*postgresql.EvalCase{}, runs: map[string]*postgresql.RunArchive{},
+		graders: map[int64]*postgresql.EvalGrader{}, results: map[int64]*postgresql.EvalResult{}}
 }
 
 func scopeOf(ctx context.Context) string {
