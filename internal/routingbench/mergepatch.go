@@ -20,6 +20,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+
+	"github.com/heddles/agent-orca/internal/evals/compare"
 )
 
 // InverseMergePatch returns the RFC 7386 merge patch that undoes patch when
@@ -85,7 +87,7 @@ func CheckDowngrade(g Group, opts Options) (verdict string, w Worth) {
 		return VerdictInconclusive, w
 	case w.InconsistentRate > o.JudgeUnreliableRate:
 		return VerdictInconclusive, w
-	case w.NetWinCI.Lo > o.NonInferiorityMargin:
+	case compare.ExceedsMargin(w.NetWinCI, o.NonInferiorityMargin):
 		return VerdictRegressed, w
 	}
 	return VerdictConfirmed, w

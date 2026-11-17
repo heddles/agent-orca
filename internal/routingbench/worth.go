@@ -364,8 +364,8 @@ func Evaluate(g Group, opts Options) Worth {
 	w := Worth{N: g.N(), InconsistentRate: g.InconsistentRate()}
 	w.CapableBetter, w.EfficientBetter, w.Equal = g.counts()
 	if w.N == 0 {
-		w.NetWinCI = Interval{math.NaN(), math.NaN()}
-		w.DeltaCostUSDCI = Interval{math.NaN(), math.NaN()}
+		w.NetWinCI = Interval{Lo: math.NaN(), Hi: math.NaN()}
+		w.DeltaCostUSDCI = Interval{Lo: math.NaN(), Hi: math.NaN()}
 		return w
 	}
 	all := make([]int, w.N)
