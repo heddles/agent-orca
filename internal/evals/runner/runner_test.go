@@ -49,11 +49,21 @@ type fakeStore struct {
 	grades    map[int64]map[slot][]postgresql.EvalGrade
 	revisions map[string]postgresql.Revision
 	finished  map[int64]json.RawMessage
+
+	// archives are the archived runs, by "namespace/name", for the trace.
+	archives map[string]*postgresql.RunArchive
+	getRuns  int
+	// resultIDs numbers results, in the order they were recorded.
+	resultIDs map[int64]map[int64]slot
+	nextID    int64
+	canary    map[int64]float64
+	pending   map[int64]int
 }
 
 func newFakeStore(t *testing.T) *fakeStore {
 	return &fakeStore{t: t, exps: map[int64]*postgresql.EvalExperiment{}, results: map[int64]map[slot]postgresql.EvalResult{},
-		grades: map[int64]map[slot][]postgresql.EvalGrade{}, revisions: map[string]postgresql.Revision{}, finished: map[int64]json.RawMessage{}}
+		grades: map[int64]map[slot][]postgresql.EvalGrade{}, revisions: map[string]postgresql.Revision{}, finished: map[int64]json.RawMessage{},
+		archives: map[string]*postgresql.RunArchive{}, resultIDs: map[int64]map[int64]slot{}, canary: map[int64]float64{}, pending: map[int64]int{}}
 }
 
 func (f *fakeStore) wantScope(ctx context.Context, id int64) {
@@ -92,7 +102,7 @@ func (f *fakeStore) ClaimEvalExperiments(ctx context.Context, _ string, _ time.D
 	defer f.mu.Unlock()
 	var out []postgresql.EvalExperiment
 	for _, e := range f.exps {
-		if e.Status == postgresql.ExperimentQueued || e.Status == postgresql.ExperimentRunning {
+		if e.Status == postgresql.ExperimentQueued || e.Status == postgresql.ExperimentRunning || e.Status == postgresql.ExperimentReview {
 			c := *e
 			c.ResultsDone = len(f.results[e.ID])
 			out = append(out, c)
@@ -151,7 +161,15 @@ func (f *fakeStore) RecordEvalRunResult(ctx context.Context, id int64, r postgre
 		return false, nil
 	}
 	f.results[id][s], f.grades[id][s] = r, grades
+	f.nextID++
+	if f.resultIDs[id] == nil {
+		f.resultIDs[id] = map[int64]slot{}
+	}
+	f.resultIDs[id][f.nextID] = s
 	f.exps[id].SpentUSD += r.CostUSD
+	for _, g := range grades {
+		f.exps[id].SpentUSD += g.JudgeCostUSD
+	}
 	return true, nil
 }
 
@@ -160,7 +178,7 @@ func (f *fakeStore) FinishEvalExperiment(ctx context.Context, id int64, status s
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	e := f.exps[id]
-	if e.Status != postgresql.ExperimentQueued && e.Status != postgresql.ExperimentRunning {
+	if e.Status != postgresql.ExperimentQueued && e.Status != postgresql.ExperimentRunning && e.Status != postgresql.ExperimentReview {
 		return postgresql.ErrExperimentFinished
 	}
 	e.Status, e.Error, e.Summary = status, errText, summary
@@ -176,7 +194,11 @@ func (f *fakeStore) EvalSummaryRows(ctx context.Context, id int64) ([]compare.Ro
 	for s, r := range f.results[id] {
 		row := compare.Row{CaseID: s.caseID, Arm: s.arm, Repeat: s.repeat, Phase: r.Phase, CostUSD: r.CostUSD, CostComplete: !r.CostIncomplete}
 		for _, g := range f.grades[id][s] {
-			row.Grades = append(row.Grades, compare.Grade{GraderID: g.GraderID, Score: g.Score, Pass: g.Pass, Status: compare.GradeOK, Weight: 1})
+			status := g.Status
+			if status == "" {
+				status = compare.GradeOK
+			}
+			row.Grades = append(row.Grades, compare.Grade{GraderID: g.GraderID, Score: g.Score, Pass: g.Pass, Status: status, Weight: 1})
 		}
 		out = append(out, row)
 	}
@@ -189,6 +211,149 @@ func (f *fakeStore) EvalSummaryRows(ctx context.Context, id int64) ([]compare.Ro
 
 func (f *fakeStore) ListEvalGraders(ctx context.Context, datasetID int64) ([]postgresql.EvalGrader, error) {
 	return f.graders, nil
+}
+
+func (f *fakeStore) GetRun(_ context.Context, namespace, name string) (*postgresql.RunArchive, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.getRuns++
+	return f.archives[namespace+"/"+name], nil
+}
+
+func (f *fakeStore) ListEvalExperimentResults(ctx context.Context, id int64, q postgresql.EvalExperimentResultQuery) ([]postgresql.EvalResult, error) {
+	f.wantScope(ctx, id)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []postgresql.EvalResult
+	for rid, s := range f.resultIDs[id] {
+		if rid <= q.After {
+			continue
+		}
+		r := f.results[id][s]
+		r.ID, r.Grades = rid, append([]postgresql.EvalGrade(nil), f.grades[id][s]...)
+		out = append(out, r)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	if q.Limit > 0 && len(out) > q.Limit {
+		out = out[:q.Limit]
+	}
+	return out, nil
+}
+
+func (f *fakeStore) SaveEvalGrades(ctx context.Context, id, resultID int64, grades []postgresql.EvalGrade) error {
+	f.wantScope(ctx, id)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	s, ok := f.resultIDs[id][resultID]
+	if !ok {
+		return postgresql.ErrEvalNotFound
+	}
+	f.grades[id][s] = append(f.grades[id][s], grades...)
+	for _, g := range grades {
+		f.exps[id].SpentUSD += g.JudgeCostUSD
+	}
+	return nil
+}
+
+func (f *fakeStore) AddEvalSpend(ctx context.Context, id int64, usd float64) error {
+	f.wantScope(ctx, id)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.exps[id].SpentUSD += usd
+	f.canary[id] += usd
+	return nil
+}
+
+func (f *fakeStore) EvalJudgeSpendSince(context.Context, time.Time) (float64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var total float64
+	for id, c := range f.canary {
+		total += c
+		for _, gs := range f.grades[id] {
+			for _, g := range gs {
+				total += g.JudgeCostUSD
+			}
+		}
+	}
+	return total, nil
+}
+
+func (f *fakeStore) EvalGraderStats(ctx context.Context, id int64) ([]postgresql.EvalGraderStat, error) {
+	f.wantScope(ctx, id)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	byID := map[int64]*postgresql.EvalGraderStat{}
+	for _, gs := range f.grades[id] {
+		for _, g := range gs {
+			st := byID[g.GraderID]
+			if st == nil {
+				st = &postgresql.EvalGraderStat{Grader: fmt.Sprint("grader-", g.GraderID)}
+				byID[g.GraderID] = st
+			}
+			switch g.Status {
+			case postgresql.GradePendingReview:
+				st.Pending++
+			case postgresql.GradeInvalid:
+				st.Invalid++
+			case postgresql.GradeError:
+				st.Errors++
+			default:
+				st.Graded++
+				if g.Pass {
+					st.Passed++
+				}
+			}
+			st.JudgeCostUSD += g.JudgeCostUSD
+		}
+	}
+	var out []postgresql.EvalGraderStat
+	for _, st := range byID {
+		out = append(out, *st)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Grader < out[j].Grader })
+	return out, nil
+}
+
+func (f *fakeStore) PrepareEvalReview(ctx context.Context, id int64) (int, error) {
+	f.wantScope(ctx, id)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if n, ok := f.pending[id]; ok {
+		return n, nil
+	}
+	n := 0
+	for _, gs := range f.grades[id] {
+		for _, g := range gs {
+			if g.Status == postgresql.GradePendingReview {
+				n++
+			}
+		}
+	}
+	f.pending[id] = n
+	return n, nil
+}
+
+func (f *fakeStore) AwaitEvalReview(ctx context.Context, id int64, summary json.RawMessage) error {
+	f.wantScope(ctx, id)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.exps[id].Status, f.exps[id].Summary = postgresql.ExperimentReview, summary
+	return nil
+}
+
+func (f *fakeStore) PendingEvalReviews(ctx context.Context, id int64) (int, error) {
+	f.wantScope(ctx, id)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.pending[id], nil
+}
+
+// label records n human labels: the items they cover are no longer pending.
+func (f *fakeStore) label(id int64, n int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pending[id] -= n
 }
 
 func (f *fakeStore) GetRevision(_ context.Context, q postgresql.RevisionQuery, n int) (postgresql.Revision, error) {

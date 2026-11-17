@@ -859,6 +859,11 @@ func (s *Store) EvalSummaryRows(ctx context.Context, id int64) ([]compare.Row, e
 			if notGraded.Bool {
 				g.Score, g.Pass = 0, false
 			}
+			if status.String == GradeInvalid {
+				// A judge reply that was not usable is a failed grade, never a free
+				// pass and never a missing one (docs/evaluations.md).
+				g.Status, g.Score, g.Pass = compare.GradeOK, 0, false
+			}
 			last := &out[len(out)-1]
 			last.Grades = append(last.Grades, g)
 		}

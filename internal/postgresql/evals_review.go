@@ -624,3 +624,61 @@ func (s *Store) EvalCalibrationPairs(ctx context.Context, datasetID int64, llmGr
 	}
 	return out, nil
 }
+
+// EvalGraderStat counts how one grader graded an experiment's results.
+type EvalGraderStat struct {
+	Grader string `json:"grader"`
+	Kind   string `json:"kind"`
+	// Graded is the grades that count (status ok and not "not graded"); Passed those
+	// among them that passed.
+	Graded int `json:"graded"`
+	Passed int `json:"passed"`
+	// NotGraded had nothing to grade (no reference, or a pairwise partner missing).
+	NotGraded int `json:"notGraded"`
+	// Invalid are unusable judge replies (counted as failed in the summary), Errors
+	// grades that could not be made, Pending those waiting for a human.
+	Invalid int `json:"invalid"`
+	Errors  int `json:"errors"`
+	Pending int `json:"pendingReview"`
+	// Inconsistent are pairwise grades whose two orderings disagreed.
+	Inconsistent int     `json:"inconsistent"`
+	JudgeCostUSD float64 `json:"judgeCostUsd"`
+}
+
+// EvalGraderStats returns, per grader, how its grades of an experiment came out.
+func (s *Store) EvalGraderStats(ctx context.Context, experimentID int64) ([]EvalGraderStat, error) {
+	out := []EvalGraderStat{}
+	err := s.scoped(ctx, func(tx dbtx, scope string) error {
+		rows, err := tx.QueryContext(ctx, `
+			SELECT gr.name, gr.kind,
+			       count(*) FILTER (WHERE e.status = 'ok' AND NOT e.not_graded),
+			       count(*) FILTER (WHERE e.status = 'ok' AND NOT e.not_graded AND e.pass),
+			       count(*) FILTER (WHERE e.status = 'ok' AND e.not_graded),
+			       count(*) FILTER (WHERE e.status = 'invalid'),
+			       count(*) FILTER (WHERE e.status = 'error'),
+			       count(*) FILTER (WHERE e.status = 'pending_review'),
+			       count(*) FILTER (WHERE e.inconsistent),
+			       COALESCE(sum(e.judge_cost_usd), 0)::float8
+			  FROM eval_grades e
+			  JOIN eval_results r  ON r.id = e.result_id AND r.tenant_id = e.tenant_id
+			  JOIN eval_graders gr ON gr.id = e.grader_id AND gr.tenant_id = e.tenant_id
+			 WHERE r.experiment_id = $1 AND ($2::text = '*' OR e.tenant_id = $2)
+			 GROUP BY gr.name, gr.kind ORDER BY gr.name`, experimentID, scope)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = rows.Close() }()
+		for rows.Next() {
+			var st EvalGraderStat
+			if err := rows.Scan(&st.Grader, &st.Kind, &st.Graded, &st.Passed, &st.NotGraded, &st.Invalid, &st.Errors, &st.Pending, &st.Inconsistent, &st.JudgeCostUSD); err != nil {
+				return err
+			}
+			out = append(out, st)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, wrapEval("reading grader statistics", err)
+	}
+	return out, nil
+}

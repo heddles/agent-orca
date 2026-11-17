@@ -52,7 +52,7 @@ const (
 const callTimeout = 90 * time.Second
 
 // ErrBudget is the reason of an error outcome when the budget has no room for the call.
-var ErrBudget = errors.New("the experiment's budget has no room for the judge")
+var ErrBudget = errors.New("the experiment's budget or the tenant's daily budget has no room for the judge")
 
 // Request is one chat completion for the judge: no tools, temperature 0.
 type Request struct {

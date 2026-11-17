@@ -104,6 +104,13 @@ func (r *Runner) todaySpend(ctx context.Context, tenantID string) (float64, erro
 	}
 	today := r.cfg.Now().UTC().Truncate(24 * time.Hour)
 	var total float64
+	// Judge calls are not on an AgentRun: they are on the grades and, for the
+	// canary check, the experiment.
+	judged, err := r.store.EvalJudgeSpendSince(ctx, r.cfg.Now().UTC().Truncate(24*time.Hour))
+	if err != nil {
+		return 0, err
+	}
+	total += judged
 	for i := range list.Items {
 		run := &list.Items[i]
 		if !run.CreationTimestamp.IsZero() && run.CreationTimestamp.UTC().Before(today) {

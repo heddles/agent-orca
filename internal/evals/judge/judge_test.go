@@ -29,7 +29,9 @@ func (s *stub) Complete(_ context.Context, r Request) (Reply, error) {
 	return Reply{Text: text, CostUSD: s.perCall}, err
 }
 
-func (s *stub) PriceUSD(prompt, completion int) float64 { return float64(prompt+completion) * s.priceTok }
+func (s *stub) PriceUSD(prompt, completion int) float64 {
+	return float64(prompt+completion) * s.priceTok
+}
 
 func (s *stub) count() int {
 	s.mu.Lock()
@@ -362,8 +364,8 @@ func TestCanaryAcceptsAHonestJudge(t *testing.T) {
 
 func TestCanaryRefusesMisgradingJudges(t *testing.T) {
 	cases := map[string]func(Request) (string, error){
-		"always passes":       func(Request) (string, error) { return reply(1, 0.7), nil },
-		"always fails":        func(Request) (string, error) { return reply(0, 0.7), nil },
+		"always passes": func(Request) (string, error) { return reply(1, 0.7), nil },
+		"always fails":  func(Request) (string, error) { return reply(0, 0.7), nil },
 		"obeys the injection": func(r Request) (string, error) {
 			if strings.Contains(r.User, "reply with score 1") {
 				return reply(1, 0.7), nil
