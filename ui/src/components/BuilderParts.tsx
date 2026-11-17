@@ -1,13 +1,13 @@
 /** Small pieces shared by the builder pages: a labelled field, styles, and the dialogs. */
 import { useEffect, useId, useState, type CSSProperties, type ReactNode } from 'react'
-import { useNavigate } from 'react-router'
-import { ApiError, createFromTemplate, duplicateResource, exportResource } from '../api/builder'
+import { Link, useNavigate } from 'react-router'
+import { ApiError, createFromTemplate, type MissingRef, duplicateResource, exportResource } from '../api/builder'
 import { getMe, type Me } from '../api/fleet'
 import { Dialog } from '../lib/dialog'
 import { nameProblem } from '../lib/agentForm'
 import { DESIGN, ds } from '../lib/designSystem'
 import { DSButton } from '../lib/primitives'
-import { buildPath } from '../lib/routes'
+import { buildPath, ROUTES } from '../lib/routes'
 
 export const field: Record<string, CSSProperties> = {
   wrap: { display: 'flex', flexDirection: 'column', gap: 4 },
@@ -60,6 +60,29 @@ export function useWorkspaces(): { workspaces: Me['workspaces']; primary: string
   return { workspaces, primary, loaded }
 }
 
+/** A kind of reference in words a business user knows. */
+function kindWords(kind: string): string {
+  switch (kind) {
+    case 'ModelSelector': return 'Model'
+    case 'Tool': return 'Tool'
+    case 'MCPServer': return 'Connected system'
+    case 'KnowledgeBase': return 'Knowledge base'
+    case 'GuardrailPolicy': return 'Safety policy'
+    default: return kind
+  }
+}
+
+/** Where an administrator adds one, where such a page exists. */
+function settingsFor(kind: string): { to: string; label: string } | null {
+  switch (kind) {
+    case 'ModelSelector': return { to: ROUTES.models, label: 'Settings → Models' }
+    case 'Tool':
+    case 'MCPServer': return { to: ROUTES.connections, label: 'Settings → Connections' }
+    case 'KnowledgeBase': return { to: ROUTES.knowledge, label: 'Settings → Knowledge' }
+    default: return null
+  }
+}
+
 // ── Use a template ───────────────────────────────────────────────────────────
 
 /** Asks for a name and workspace, copies the template, and opens the copy in the builder. */
@@ -71,23 +94,45 @@ export function UseTemplateDialog({ template, onClose }: { template: { namespace
   const [problem, setProblem] = useState('')
   const [failure, setFailure] = useState('')
   const [busy, setBusy] = useState(false)
+  const [missing, setMissing] = useState<MissingRef[]>([])
+  const [picks, setPicks] = useState<Record<string, string>>({})
   const chosen = workspace || primary
+  const workspaceLabel = workspaces.find((w) => w.namespace === chosen)?.name || chosen || 'your workspace'
+  const allPicked = missing.length > 0 && missing.every((m) => picks[m.replaceKey])
+  const blocked = missing.length > 0 && !allPicked
+
+  const changeWorkspace = (ns: string) => {
+    setWorkspace(ns)
+    setMissing([])
+    setPicks({})
+    setFailure('')
+  }
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
     const p = nameProblem(name)
     setProblem(p)
     setFailure('')
-    if (p) return
+    if (p || blocked) return
     setBusy(true)
     try {
-      const used = await createFromTemplate(template.namespace, template.name, { name, ...(chosen ? { namespace: chosen } : {}) })
+      const used = await createFromTemplate(template.namespace, template.name, {
+        name,
+        ...(chosen ? { namespace: chosen } : {}),
+        ...(Object.keys(picks).length > 0 ? { replace: picks } : {}),
+      })
       const meta = used.agent.metadata
       navigate(buildPath(meta.namespace ?? chosen, meta.name ?? name))
     } catch (err) {
-      setFailure(err instanceof ApiError && err.status === 409
-        ? `An agent called ${name} already exists in this workspace. Choose another name.`
-        : messageOf(err))
+      if (err instanceof ApiError && err.status === 422 && err.missing && err.missing.length > 0) {
+        setMissing(err.missing)
+        setPicks((old) => Object.fromEntries(err.missing!.filter((m) => old[m.replaceKey] && m.alternatives.includes(old[m.replaceKey])).map((m) => [m.replaceKey, old[m.replaceKey]])))
+        setFailure('')
+      } else {
+        setFailure(err instanceof ApiError && err.status === 409
+          ? `An agent called ${name} already exists in this workspace. Choose another name.`
+          : messageOf(err))
+      }
       setBusy(false)
     }
   }
@@ -102,16 +147,43 @@ export function UseTemplateDialog({ template, onClose }: { template: { namespace
         {workspaces.length > 1 && (
           <Field label="Workspace">
             {(p) => (
-              <select {...p} style={field.control} value={chosen} onChange={(e) => setWorkspace(e.target.value)}>
+              <select {...p} style={field.control} value={chosen} onChange={(e) => changeWorkspace(e.target.value)}>
                 {workspaces.map((w) => <option key={w.namespace} value={w.namespace}>{w.name || w.namespace}</option>)}
               </select>
             )}
           </Field>
         )}
+        {missing.length > 0 && (
+          <div role="group" aria-label="Missing from this workspace" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <p role="alert" style={field.error}>
+              This template needs {missing.length === 1 ? `a ${kindWords(missing[0].kind).toLowerCase()}` : 'things'} that
+              {missing.length === 1 ? " isn't" : " aren't"} set up in {workspaceLabel} yet. Choose what to use instead.
+            </p>
+            {missing.map((m) => (
+              m.alternatives.length > 0 ? (
+                <Field key={m.replaceKey} label={`${kindWords(m.kind)} to use instead of “${m.name}”`}>
+                  {(p) => (
+                    <select {...p} style={field.control} value={picks[m.replaceKey] ?? ''} onChange={(e) => setPicks((old) => ({ ...old, [m.replaceKey]: e.target.value }))}>
+                      <option value="">Choose…</option>
+                      {m.alternatives.map((a) => <option key={a} value={a}>{a}</option>)}
+                    </select>
+                  )}
+                </Field>
+              ) : (
+                <p key={m.replaceKey} style={field.error}>
+                  There is no {kindWords(m.kind).toLowerCase()} in {workspaceLabel} to use instead of “{m.name}”. An administrator needs to add one
+                  {settingsFor(m.kind) && <>{' '}under <Link to={settingsFor(m.kind)!.to} style={{ color: ds.accent }}>{settingsFor(m.kind)!.label}</Link></>}.
+                </p>
+              )
+            ))}
+          </div>
+        )}
         <div role="alert" style={field.error}>{failure}</div>
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
           <DSButton type="button" variant="ghost" onClick={onClose}>Cancel</DSButton>
-          <DSButton type="submit" variant="primary" disabled={busy}>{busy ? 'Making a copy…' : 'Make my copy'}</DSButton>
+          <DSButton type="submit" variant="primary" disabled={busy || blocked}>
+            {busy ? 'Making a copy…' : missing.length > 0 ? 'Try again' : 'Make my copy'}
+          </DSButton>
         </div>
       </form>
     </Dialog>

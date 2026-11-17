@@ -15,8 +15,9 @@ vi.mock('../api/builder', async () => {
   const actual = await vi.importActual<typeof import('../api/builder')>('../api/builder')
   return { ...actual, createFromTemplate: (...a: unknown[]) => mockUse(...a) }
 })
+const mockWorkspaces = vi.hoisted(() => ({ current: [{ name: 'Mine', namespace: 'team-a', primary: true }] }))
 vi.mock('../api/fleet', () => ({
-  getMe: () => Promise.resolve({ userId: 'u', groups: [], tenant: { id: 't', name: 'T' }, roles: ['builder'], workspaces: [{ name: 'Mine', namespace: 'team-a', primary: true }] }),
+  getMe: () => Promise.resolve({ userId: 'u', groups: [], tenant: { id: 't', name: 'T' }, roles: ['builder'], workspaces: mockWorkspaces.current }),
 }))
 
 import { TemplateDetail, TemplatesGallery } from './TemplatesGallery'
@@ -37,7 +38,10 @@ const list = [
   entry({ name: 'ordinary', template: false }),
 ]
 
-beforeEach(() => { mockCatalog.mockReset(); mockUse.mockReset() })
+beforeEach(() => {
+  mockCatalog.mockReset(); mockUse.mockReset()
+  mockWorkspaces.current = [{ name: 'Mine', namespace: 'team-a', primary: true }]
+})
 
 describe('TemplatesGallery', () => {
   it('lists only templates, each linking to its details', async () => {
@@ -111,6 +115,94 @@ describe('TemplateDetail', () => {
     await user.type(name, 'taken')
     await user.click(screen.getByRole('button', { name: 'Make my copy' }))
     expect(await screen.findByText(/already exists/)).toBeInTheDocument()
+  })
+
+  describe('when the template needs something the workspace lacks', () => {
+    const missingModel = { kind: 'ModelSelector', name: 'default', namespace: 'shared', alternatives: ['team-sel', 'other-sel'], replaceKey: 'ModelSelector/default' }
+    const renderWithBuilder = () => render(
+      <MemoryRouter initialEntries={['/agents/templates/platform/financial-analysis']}>
+        <Routes>
+          <Route path="/agents/templates/:ns/:name" element={<TemplateDetail namespace="platform" name="financial-analysis" />} />
+          <Route path="/build/:ns/:name" element={<div>builder opened</div>} />
+          <Route path="/settings/models" element={<div>models page</div>} />
+        </Routes>
+      </MemoryRouter>,
+    )
+    const open = async (user: ReturnType<typeof userEvent.setup>) => {
+      await user.click(await screen.findByRole('button', { name: 'Use template' }))
+      await user.click(screen.getByRole('button', { name: 'Make my copy' }))
+    }
+
+    it('lets the user pick a stand-in, then retries with replace and opens the copy', async () => {
+      mockCatalog.mockResolvedValue(list)
+      const { ApiError } = await import('../api/builder')
+      mockUse.mockRejectedValueOnce(new ApiError(422, 'needs a model', [], undefined, [missingModel]))
+      mockUse.mockResolvedValueOnce({ agent: { metadata: { name: 'financial-analysis', namespace: 'team-a' } }, created: [] })
+      const user = userEvent.setup()
+      renderWithBuilder()
+      await open(user)
+      expect(await screen.findByText(/needs a model that isn.t set up in Mine yet/)).toBeInTheDocument()
+      const retry = screen.getByRole('button', { name: 'Try again' })
+      expect(retry).toBeDisabled()
+      await user.selectOptions(screen.getByLabelText(/Model to use instead of/), 'team-sel')
+      expect(retry).toBeEnabled()
+      await user.click(retry)
+      await waitFor(() => expect(mockUse).toHaveBeenLastCalledWith('platform', 'financial-analysis', {
+        name: 'financial-analysis', namespace: 'team-a', replace: { 'ModelSelector/default': 'team-sel' },
+      }))
+      expect(await screen.findByText('builder opened')).toBeInTheDocument()
+    })
+
+    it('says an administrator must add one when there is no alternative, and keeps Try again off', async () => {
+      mockCatalog.mockResolvedValue(list)
+      const { ApiError } = await import('../api/builder')
+      mockUse.mockRejectedValue(new ApiError(422, 'x', [], undefined, [{ ...missingModel, alternatives: [] }]))
+      const user = userEvent.setup()
+      renderWithBuilder()
+      await open(user)
+      expect(await screen.findByText(/An administrator needs to add one/)).toBeInTheDocument()
+      expect(screen.getByRole('link', { name: 'Settings → Models' })).toHaveAttribute('href', '/settings/models')
+      expect(screen.getByRole('button', { name: 'Try again' })).toBeDisabled()
+      expect(screen.queryByRole('combobox', { name: /instead of/ })).not.toBeInTheDocument()
+    })
+
+    it('shows a readable message for a 422 without missing, never raw JSON', async () => {
+      mockCatalog.mockResolvedValue(list)
+      const { ApiError } = await import('../api/builder')
+      mockUse.mockRejectedValue(new ApiError(422, 'spec.tools[0]: tool not found; spec.x: bad'))
+      const user = userEvent.setup()
+      renderWithBuilder()
+      await open(user)
+      expect(await screen.findByText('spec.tools[0]: tool not found; spec.x: bad')).toBeInTheDocument()
+      expect(screen.queryByText(/\{/)).not.toBeInTheDocument()
+    })
+
+    it('clears the state when the workspace changes', async () => {
+      mockCatalog.mockResolvedValue(list)
+      mockWorkspaces.current = [{ name: 'Mine', namespace: 'team-a', primary: true }, { name: 'Other', namespace: 'team-b', primary: false }]
+      const { ApiError } = await import('../api/builder')
+      mockUse.mockRejectedValue(new ApiError(422, 'x', [], undefined, [missingModel]))
+      const user = userEvent.setup()
+      renderWithBuilder()
+      await user.click(await screen.findByRole('button', { name: 'Use template' }))
+      await user.click(await screen.findByRole('option', { name: 'Other' }).then(() => screen.getByRole('button', { name: 'Make my copy' })))
+      await screen.findByText(/set up in Mine yet/)
+      await user.selectOptions(screen.getByLabelText('Workspace'), 'team-b')
+      expect(screen.queryByText(/set up in/)).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Make my copy' })).toBeEnabled()
+    })
+  })
+
+  it('turns a failed JSON body into a readable message in the API client', async () => {
+    const { createFromTemplate } = await vi.importActual<typeof import('../api/builder')>('../api/builder')
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(
+      JSON.stringify({ errors: ['a is missing', 'b is wrong'], missing: [{ kind: 'Tool', name: 't', namespace: 'n', replaceKey: 'Tool/t' }] }),
+      { status: 422 },
+    ))))
+    const err = await createFromTemplate('p', 't', { name: 'x' }).catch((e: unknown) => e) as import('../api/builder').ApiError
+    expect(err.message).toBe('a is missing; b is wrong')
+    expect(err.missing?.[0].alternatives).toEqual([])
+    vi.unstubAllGlobals()
   })
 
   it('handles a missing template', async () => {

@@ -49,34 +49,51 @@ export interface BuilderOptions {
   guardrailPolicies: OptionItem[]
 }
 
+/** A reference a template needs that the target workspace lacks, with what could stand in for it. */
+export interface MissingRef {
+  kind: string
+  name: string
+  namespace: string
+  alternatives: string[]
+  /** The key to use in a `replace` map, for example "ModelSelector/default". */
+  replaceKey: string
+}
+
 /** A failed API call. `status` is the HTTP status; the other fields come from the body when present. */
 export class ApiError extends Error {
   status: number
   errors: string[]
   currentResourceVersion?: string
-  constructor(status: number, message: string, errors: string[] = [], currentResourceVersion?: string) {
+  /** References a template names that do not exist in the target workspace (422 from using a template). */
+  missing?: MissingRef[]
+  constructor(status: number, message: string, errors: string[] = [], currentResourceVersion?: string, missing?: MissingRef[]) {
     super(message)
     this.name = 'ApiError'
     this.status = status
     this.errors = errors
     this.currentResourceVersion = currentResourceVersion
+    this.missing = missing
   }
 }
 
 async function failure(res: Response): Promise<ApiError> {
-  let text = ''
+  let message = ''
   let errors: string[] = []
   let current: string | undefined
+  let missing: MissingRef[] | undefined
+  const text = (await res.text().catch(() => '')).trim()
   try {
-    text = (await res.text()).trim()
-    const body = JSON.parse(text) as { message?: string; error?: string; errors?: string[]; currentResourceVersion?: string }
-    text = body.message || body.error || text
+    const body = JSON.parse(text) as { message?: string; error?: string; errors?: string[]; currentResourceVersion?: string; missing?: MissingRef[] }
     errors = Array.isArray(body.errors) ? body.errors : []
     current = body.currentResourceVersion
+    missing = Array.isArray(body.missing) ? body.missing.map((m) => ({ ...m, alternatives: m.alternatives ?? [] })) : undefined
+    // Never show raw JSON: prefer the message, then the listed errors.
+    message = body.message || body.error || errors.join('; ')
   } catch {
     // Not JSON: use the text as is.
+    message = text
   }
-  return new ApiError(res.status, text || `HTTP ${res.status}`, errors, current)
+  return new ApiError(res.status, message || `HTTP ${res.status}`, errors, current, missing)
 }
 
 const enc = encodeURIComponent
@@ -133,8 +150,11 @@ export async function dryRunResource(kind: string, obj: KubeObject, existing: { 
 
 export interface UsedTemplate { agent: KubeObject; created: ObjectRef[] }
 
-/** Copies a template into the caller's workspace as a UI-owned agent. 409 when the name exists. */
-export async function createFromTemplate(namespace: string, name: string, req: { name: string; namespace?: string }): Promise<UsedTemplate> {
+/**
+ * Copies a template into the caller's workspace as a UI-owned agent. 409 when the name exists; 422 with
+ * `missing` when the template names references the workspace lacks (answer with `replace`).
+ */
+export async function createFromTemplate(namespace: string, name: string, req: { name: string; namespace?: string; replace?: Record<string, string> }): Promise<UsedTemplate> {
   const res = await apiFetch(`/api/templates/${enc(namespace)}/${enc(name)}/use`, {
     method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(req),
   })
