@@ -82,6 +82,9 @@ operator:
     maxActiveExperimentsPerTenant: 2
     # Seconds between the runner's polls (EVALS_RUNNER_INTERVAL_SECONDS).
     runnerIntervalSeconds: 5
+    # true refuses a review label from the person who started the experiment
+    # (EVALS_REQUIRE_INDEPENDENT_REVIEW).
+    requireIndependentReview: false
   # extraArgs are appended to the operator container args. Use this to enable
   # optional features such as OIDC login, e.g.:
   #   extraArgs:

@@ -100,6 +100,12 @@ func (s *UIServer) handleEvalDatasetSub(w http.ResponseWriter, r *http.Request, 
 			return
 		}
 		s.gradeEvalResult(w, r, id)
+	case parts[0] == segCalibration && len(parts) == 1:
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		s.getEvalCalibration(w, r, id)
 	case parts[0] == "results" && len(parts) == 1:
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

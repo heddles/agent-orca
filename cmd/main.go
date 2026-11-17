@@ -54,6 +54,7 @@ import (
 	"github.com/heddles/agent-orca/internal/acpfs"
 	"github.com/heddles/agent-orca/internal/apiserver"
 	"github.com/heddles/agent-orca/internal/controller"
+	"github.com/heddles/agent-orca/internal/evals/judge"
 	evalrunner "github.com/heddles/agent-orca/internal/evals/runner"
 	"github.com/heddles/agent-orca/internal/githubapp"
 	"github.com/heddles/agent-orca/internal/openshell"
@@ -828,6 +829,7 @@ func main() {
 		}
 		if err := mgr.Add(evalrunner.New(pgStore.AsPlatform(), mgr.GetClient(), evalrunner.Config{
 			Interval: evalRunnerIntervalFromEnv(), Limiter: limiter,
+			Judges: judge.KubeResolver{Reader: mgr.GetClient()},
 		})); err != nil {
 			setupLog.Error(err, "Unable to add the evaluation experiment runner")
 			os.Exit(1)
@@ -1025,6 +1027,9 @@ func evalsConfigFromEnv() apiserver.EvalsConfig {
 	}
 	if v, err := strconv.ParseBool(strings.TrimSpace(os.Getenv("EVALS_ENABLED"))); err == nil {
 		c.DisableExperiments = !v
+	}
+	if v, err := strconv.ParseBool(strings.TrimSpace(os.Getenv("EVALS_REQUIRE_INDEPENDENT_REVIEW"))); err == nil {
+		c.RequireIndependentReview = v
 	}
 	return c
 }

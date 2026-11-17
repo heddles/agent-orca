@@ -72,6 +72,9 @@ type EvalsConfig struct {
 	DisallowUnredactedCases bool
 	// DisableExperiments turns the experiment endpoints off (they answer 503).
 	DisableExperiments bool
+	// RequireIndependentReview refuses a label from the person who started the
+	// experiment.
+	RequireIndependentReview bool
 }
 
 func (c EvalsConfig) limits() postgresql.EvalLimits {
@@ -116,6 +119,7 @@ func (s *UIServer) registerEvalRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/evals/results/", s.handleEvalResult)
 	mux.HandleFunc("/api/evals/experiments", s.handleEvalExperiments)
 	mux.HandleFunc("/api/evals/experiments/", s.handleEvalExperiment)
+	mux.HandleFunc("/api/evals/review/", s.handleEvalReviewItem)
 }
 
 // evalPreflight checks the role and the store. It reports whether to go on.
