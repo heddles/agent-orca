@@ -57,21 +57,32 @@ func typedOf(u *unstructured.Unstructured, kind string) (client.Object, error) {
 	return obj, nil
 }
 
+// missingRef is one reference of a template that points at nothing in the target
+// namespace, with what the caller could use instead.
+type missingRef struct {
+	Kind         string   `json:"kind"`
+	Name         string   `json:"name"`
+	Namespace    string   `json:"namespace"`
+	Alternatives []string `json:"alternatives"`
+	ReplaceKey   string   `json:"replaceKey"`
+}
+
 // unresolvedRefs lists, one plain-language message each, the references the copies
 // make that point at nothing: not another copy, and not an object of the target
 // namespace that the caller may read.
-func (s *UIServer) unresolvedRefs(r *http.Request, target string, members []templateMember, copies []*unstructured.Unstructured) ([]string, error) {
+func (s *UIServer) unresolvedRefs(r *http.Request, target string, members []templateMember, copies []*unstructured.Unstructured) ([]string, []missingRef, error) {
 	ctx := r.Context()
 	inSet := map[string]bool{}
 	for _, m := range members {
 		inSet[m.kind+"/"+m.newName] = true
 	}
 	var problems []string
+	var missing []missingRef
 	seen := map[string]bool{}
 	for i, u := range copies {
 		obj, err := typedOf(u, members[i].kind)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if obj == nil {
 			continue
@@ -87,18 +98,21 @@ func (s *UIServer) unresolvedRefs(r *http.Request, target string, members []temp
 			if err := s.crdClient.Get(ctx, client.ObjectKey{Namespace: target, Name: ref.Name}, existing); err == nil && canRead(ctx, existing, ref.Kind) {
 				continue
 			} else if err != nil && !k8serrors.IsNotFound(err) {
-				return nil, err
+				return nil, nil, err
 			}
 			msg := fmt.Sprintf("%s %q does not exist in namespace %s: ask an administrator to add it", ref.Kind, ref.Name, target)
-			if alt, err := s.alternatives(r, target, ref.Kind, info.list()); err != nil {
-				return nil, err
-			} else if len(alt) > 0 {
+			alt, err := s.alternatives(r, target, ref.Kind, info.list())
+			if err != nil {
+				return nil, nil, err
+			}
+			if len(alt) > 0 {
 				msg += fmt.Sprintf(", or use one of its own (%s) by sending {\"replace\":{%q:%q}}", strings.Join(alt, ", "), key, alt[0])
 			}
 			problems = append(problems, msg)
+			missing = append(missing, missingRef{Kind: ref.Kind, Name: ref.Name, Namespace: target, Alternatives: alt, ReplaceKey: key})
 		}
 	}
-	return problems, nil
+	return problems, missing, nil
 }
 
 // alternatives names the objects of kind in the target namespace that the caller
@@ -111,7 +125,7 @@ func (s *UIServer) alternatives(r *http.Request, target, kind string, list clien
 	if err != nil {
 		return nil, err
 	}
-	var names []string
+	names := []string{}
 	for _, it := range items {
 		if o, ok := it.(client.Object); ok && canRead(r.Context(), o, kind) {
 			names = append(names, o.GetName())

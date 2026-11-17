@@ -39,7 +39,8 @@ const (
 	// oidcSessionCookie is the HttpOnly session cookie carrying the agent-orca-issued
 	// JWT minted after a successful OIDC login (UI/browser flow).
 	oidcSessionCookie = "agentorca_session"
-	// oidcStateCookie carries the CSRF state value across the IdP redirect.
+	// oidcStateCookie carries the CSRF state value across the IdP redirect. The
+	// pending login itself travels in the sealed oidcLoginCookie.
 	oidcStateCookie = "agentorca_oidc_state"
 
 	oidcLoginStateTTL = 5 * time.Minute
@@ -49,50 +50,6 @@ const (
 // ExternalAuth.NewProviderForTenant (reads the tenant's client_secret from K8s);
 // tests inject a fake so no K8s cluster or real IdP is needed.
 type providerFactory func(tc *agentorcav1alpha1.TenantConfig) (oidc.PrincipalProvider, error)
-
-// loginState holds the ephemeral tenant + nonce + PKCE verifier bound to a login
-// state. The tenant is carried in the state so the callback uses the right tenant's
-// IdP/secret — this is what keeps the flow multi-tenant.
-type loginState struct {
-	tenant       string
-	nonce        string
-	codeVerifier string
-	expiresAt    time.Time
-}
-
-// loginStateStore is a short-lived, in-process store for OAuth2 state/nonce values.
-// Dev-only by design; production should back sessions with a shared store.
-type loginStateStore struct {
-	mu      sync.Mutex
-	entries map[string]loginState
-}
-
-func newLoginStateStore() *loginStateStore {
-	return &loginStateStore{entries: make(map[string]loginState)}
-}
-
-func (s *loginStateStore) Set(state, tenant, nonce, codeVerifier string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.entries[state] = loginState{
-		tenant:       tenant,
-		nonce:        nonce,
-		codeVerifier: codeVerifier,
-		expiresAt:    time.Now().Add(oidcLoginStateTTL),
-	}
-}
-
-func (s *loginStateStore) Take(state string) (loginState, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	st, ok := s.entries[state]
-	if !ok || time.Now().After(st.expiresAt) {
-		delete(s.entries, state)
-		return loginState{}, false
-	}
-	delete(s.entries, state)
-	return st, true
-}
 
 // OIDCLoginHandler implements the tenant-aware OIDC authorization-code login flow.
 // Each federated TenantConfig that carries a clientSecretRef/redirectURI is a
@@ -104,10 +61,11 @@ func (s *loginStateStore) Take(state string) (loginState, bool) {
 type OIDCLoginHandler struct {
 	auth         *ExternalAuth
 	cookieSecure bool
-	sessions     *loginStateStore
-	redirectURI  string          // where to land the browser post-login/logout (default "/")
-	factory      providerFactory // test seam; nil => auth.NewProviderForTenant
-	logoResolver logoResolver    // test seam; nil => defaultLogoResolver
+	sealer       *loginSealer     // sealed pending-login cookie; nil => in-process fallback
+	sessions     *loginStateStore // fallback store, only set when sealer is nil
+	redirectURI  string           // where to land the browser post-login/logout (default "/")
+	factory      providerFactory  // test seam; nil => auth.NewProviderForTenant
+	logoResolver logoResolver     // test seam; nil => defaultLogoResolver
 }
 
 // OIDCLoginOption configures an OIDCLoginHandler.
@@ -142,11 +100,19 @@ func WithOIDCLogoResolver(r logoResolver) OIDCLoginOption {
 func NewOIDCLoginHandler(auth *ExternalAuth, opts ...OIDCLoginOption) *OIDCLoginHandler {
 	h := &OIDCLoginHandler{
 		auth:        auth,
-		sessions:    newLoginStateStore(),
 		redirectURI: "/",
 	}
 	for _, opt := range opts {
 		opt(h)
+	}
+	if sealer, err := newLoginSealer(auth.loginKeyMaterial()); err == nil {
+		h.sealer = sealer
+	} else {
+		// Without shared key material each replica can only complete the logins it
+		// started. This affects any ExternalAuth built without a signing key; the
+		// production path always loads one from the shared Secret.
+		slog.Warn("oidc login: no shared signing key; pending logins are kept in process memory, so login only works with a single operator replica", "err", err)
+		h.sessions = newLoginStateStore()
 	}
 	if h.logoResolver == nil {
 		h.logoResolver = defaultLogoResolver
@@ -195,12 +161,19 @@ func (h *OIDCLoginHandler) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	state, nonce := randomState(), randomState()
 	authURL, codeVerifier := provider.AuthCodeURL(state, nonce)
-	h.sessions.Set(state, tenant, nonce, codeVerifier)
-	http.SetCookie(w, &http.Cookie{
-		Name: oidcStateCookie, Value: state, Path: "/",
-		MaxAge: int(oidcLoginStateTTL.Seconds()), HttpOnly: true,
-		SameSite: http.SameSiteLaxMode, Secure: h.cookieSecure,
-	})
+	pending := loginState{Tenant: tenant, Nonce: nonce, CodeVerifier: codeVerifier, State: state}
+	if h.sealer != nil {
+		sealed, err := h.sealer.seal(pending)
+		if err != nil {
+			slog.Error("oidc login: sealing pending login failed", "tenant", tenant, "err", err)
+			http.Error(w, `{"error":"server_error"}`, http.StatusInternalServerError)
+			return
+		}
+		h.setLoginCookie(w, oidcLoginCookie, sealed)
+	} else {
+		h.sessions.Set(pending)
+	}
+	h.setLoginCookie(w, oidcStateCookie, state)
 	http.Redirect(w, r, authURL, http.StatusFound)
 }
 
@@ -576,23 +549,27 @@ func (h *OIDCLoginHandler) handleCallback(w http.ResponseWriter, r *http.Request
 		http.Error(w, `{"error":"invalid login state"}`, http.StatusBadRequest)
 		return
 	}
-	st, ok := h.sessions.Take(state)
+	st, ok := h.takePendingLogin(r, state)
 	if !ok {
 		http.Error(w, `{"error":"login expired; try signing in again"}`, http.StatusBadRequest)
 		return
 	}
-	tc := h.auth.tenantConfigFor(st.tenant)
+	// The pending login is consumed: clear it whatever happens next.
+	h.clearLoginCookie(w, oidcLoginCookie)
+	// Replay: the sealed payload is stateless, so replaying this callback within
+	// oidcLoginStateTTL is only limited by the IdP's single-use authorization code.
+	tc := h.auth.tenantConfigFor(st.Tenant)
 	if tc == nil {
 		http.Error(w, `{"error":"tenant not found"}`, http.StatusBadRequest)
 		return
 	}
 	provider, err := h.providerFor(r, tc)
 	if err != nil {
-		slog.Error("oidc callback: building provider failed", "tenant", st.tenant, "err", err)
+		slog.Error("oidc callback: building provider failed", "tenant", st.Tenant, "err", err)
 		http.Error(w, `{"error":"login provider unavailable"}`, http.StatusServiceUnavailable)
 		return
 	}
-	principal, err := provider.ExchangeAndVerify(r.Context(), code, st.nonce, st.codeVerifier)
+	principal, err := provider.ExchangeAndVerify(r.Context(), code, st.Nonce, st.CodeVerifier)
 	if err != nil {
 		http.Error(w, `{"error":"authentication failed"}`, http.StatusUnauthorized)
 		return
@@ -621,16 +598,42 @@ func (h *OIDCLoginHandler) handleCallback(w http.ResponseWriter, r *http.Request
 	}
 
 	// Clear the CSRF state cookie; set the session cookie.
-	http.SetCookie(w, &http.Cookie{
-		Name: oidcStateCookie, Value: "", Path: "/", MaxAge: -1,
-		HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: h.cookieSecure,
-	})
+	h.clearLoginCookie(w, oidcStateCookie)
 	http.SetCookie(w, &http.Cookie{
 		Name: oidcSessionCookie, Value: signed, Path: "/",
 		MaxAge: int(jwtDefaultExpiry.Seconds()), HttpOnly: true,
 		SameSite: http.SameSiteLaxMode, Secure: h.cookieSecure,
 	})
 	http.Redirect(w, r, h.redirectURI, http.StatusFound)
+}
+
+// takePendingLogin returns the pending login for state: from the sealed cookie
+// when a shared key is configured, else from the in-process fallback store.
+func (h *OIDCLoginHandler) takePendingLogin(r *http.Request, state string) (loginState, bool) {
+	if h.sealer == nil {
+		return h.sessions.Take(state)
+	}
+	c, err := r.Cookie(oidcLoginCookie)
+	if err != nil {
+		return loginState{}, false
+	}
+	st, err := h.sealer.open(c.Value, state)
+	return st, err == nil
+}
+
+func (h *OIDCLoginHandler) setLoginCookie(w http.ResponseWriter, name, value string) {
+	http.SetCookie(w, &http.Cookie{
+		Name: name, Value: value, Path: "/",
+		MaxAge: int(oidcLoginStateTTL.Seconds()), HttpOnly: true,
+		SameSite: http.SameSiteLaxMode, Secure: h.cookieSecure,
+	})
+}
+
+func (h *OIDCLoginHandler) clearLoginCookie(w http.ResponseWriter, name string) {
+	http.SetCookie(w, &http.Cookie{
+		Name: name, Value: "", Path: "/", MaxAge: -1,
+		HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: h.cookieSecure,
+	})
 }
 
 // handleLogout destroys the session.
