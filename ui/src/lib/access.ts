@@ -56,3 +56,8 @@ export function canWriteEvals(roles: Roles): boolean {
 export function canGradeEvals(roles: Roles): boolean {
   return roles === null || roles.includes('runner')
 }
+
+/** Whether the caller may set or remove a publish gate and publish past a failing one (the admin role). */
+export function canAdminEvals(roles: Roles): boolean {
+  return roles === null || roles.includes('admin')
+}

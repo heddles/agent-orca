@@ -21,14 +21,17 @@ import (
 
 const kindAgentDeployment = "AgentDeployment"
 
-// publishRequest is the body of POST /api/agents/{ns}/{name}/publish. Both
-// fields are optional.
+// publishRequest is the body of POST /api/agents/{ns}/{name}/publish. Every
+// field is optional.
 type publishRequest struct {
 	// Name of the AgentDeployment. Default: the agent's existing deployment, else
 	// the agent's own name.
 	Name string `json:"name,omitempty"`
 	// Chat makes the deployment take chat input (the default).
 	Chat *bool `json:"chat,omitempty"`
+	// OverrideGate publishes past a failing evaluation gate. Admin only, with a
+	// reason of 10 to 500 characters; audited (evals_gates_api.go).
+	OverrideGate *overrideRequest `json:"overrideGate,omitempty"`
 }
 
 // handlePublish serves /api/agents/{ns}/{name}/publish.
@@ -91,6 +94,9 @@ func (s *UIServer) publishAgent(w http.ResponseWriter, r *http.Request, ns, name
 	}
 	if o := tenancy.Detect(&agent, s.ownDetect); o.Owner != tenancy.OwnerUI {
 		notEditable(w, kindAgent, ns, name, o, agent.ResourceVersion)
+		return
+	}
+	if !s.gatePublish(w, r, &agent, req.OverrideGate) {
 		return
 	}
 	existing, err := s.deploymentsOf(r, ns, name)

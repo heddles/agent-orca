@@ -21,6 +21,8 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+
+	"github.com/heddles/agent-orca/internal/evals/graders"
 )
 
 // Result phases, as stored in eval_results.phase.
@@ -74,6 +76,12 @@ type ArmSummary struct {
 	Cases   int `json:"cases"`
 	Skipped int `json:"skipped"`
 	Passed  int `json:"passed"`
+	// ExcludedError and ExcludedPending count the results (not cases) left out
+	// of every figure because a grade could not be produced (error) or is
+	// waiting for a person (pending review). Skipped counts the cases that this
+	// leaves with no usable result at all.
+	ExcludedError   int `json:"excludedError"`
+	ExcludedPending int `json:"excludedPending"`
 	// PassRate is Passed over Cases, with the Wilson interval for it.
 	PassRate   float64  `json:"passRate"`
 	PassRateCI Interval `json:"passRateCi"`
@@ -127,6 +135,10 @@ type Summary struct {
 	Options     Options      `json:"options"`
 	Arms        []ArmSummary `json:"arms"`
 	Comparisons []Comparison `json:"comparisons"`
+	// ExcludedError and ExcludedPending total the arms' results left out of every
+	// figure for a grade in error or waiting for a person.
+	ExcludedError   int `json:"excludedError"`
+	ExcludedPending int `json:"excludedPending"`
 }
 
 // caseOutcome is one arm's outcome on one case, with repeats folded in.
@@ -139,61 +151,87 @@ type caseOutcome struct {
 	cost    float64 // mean over all the case's rows
 	latency float64 // mean over rows that have one
 	hasLat  bool
+	// errored and pending count the case's results left out for a grade in
+	// error or waiting for a person.
+	errored int
+	pending int
 }
 
+// exclusion says why a succeeded result is left out of a comparison.
+type exclusion int
+
+const (
+	notExcluded exclusion = iota
+	// excludedPlatform is a cancelled or skipped run, or one with no grades yet.
+	excludedPlatform
+	// excludedError is a result with a grade whose grader could not run.
+	excludedError
+	// excludedPending is a result with a grade still waiting for a person.
+	excludedPending
+)
+
 // rowOutcome classifies one result: usable or not, and if so pass and score.
-func rowOutcome(r Row) (usable, pass bool, score float64, err error) {
+// A succeeded result passes by graders.CasePass, the rule stored in
+// eval_results.case_pass: every required grader passes and the weighted mean
+// score of the others is at least graders.CasePassMean. An invalid judge reply
+// is a failed grade with score 0. A grade in error or pending review leaves the
+// whole result out (the reason is returned), so a result is judged on all of its
+// graders or not at all, and the exclusion is counted in the summary.
+func rowOutcome(r Row) (usable, pass bool, score float64, ex exclusion, err error) {
 	switch r.Phase {
 	case PhaseCancelled, PhaseSkipped:
-		return false, false, 0, nil
+		return false, false, 0, excludedPlatform, nil
 	case PhaseFailed, PhaseTimedOut:
 		// The agent did not answer: that is a failed case, not a missing one.
-		return true, false, 0, nil
+		return true, false, 0, notExcluded, nil
 	case PhaseSucceeded:
 	default:
-		return false, false, 0, invalidf("case %d arm %q has unknown phase %q", r.CaseID, r.Arm, r.Phase)
+		return false, false, 0, notExcluded, invalidf("case %d arm %q has unknown phase %q", r.CaseID, r.Arm, r.Phase)
 	}
 	if len(r.Grades) == 0 {
-		return false, false, 0, nil
+		return false, false, 0, excludedPlatform, nil
 	}
-	var wsum, wscore, wpass, wnonreq float64
+	var wsum, wscore float64
+	graded := make([]graders.Graded, 0, len(r.Grades))
 	for _, g := range r.Grades {
 		if !finite(g.Score) || g.Score < 0 || g.Score > 1 {
-			return false, false, 0, invalidf("case %d arm %q has score %v outside 0 to 1", r.CaseID, r.Arm, g.Score)
+			return false, false, 0, notExcluded, invalidf("case %d arm %q has score %v outside 0 to 1", r.CaseID, r.Arm, g.Score)
 		}
 		if !finite(g.Weight) || g.Weight < 0 {
-			return false, false, 0, invalidf("case %d arm %q has grader weight %v", r.CaseID, r.Arm, g.Weight)
+			return false, false, 0, notExcluded, invalidf("case %d arm %q has grader weight %v", r.CaseID, r.Arm, g.Weight)
 		}
 		switch g.Status {
-		case GradeOK:
-		case GradeError, GradeInvalid, GradePendingReview:
-			// A result is judged on every grader or not at all.
-			return false, false, 0, nil
+		case GradeOK, GradeInvalid:
+		case GradeError, GradePendingReview:
 		default:
-			return false, false, 0, invalidf("case %d arm %q has unknown grade status %q", r.CaseID, r.Arm, g.Status)
+			return false, false, 0, notExcluded, invalidf("case %d arm %q has unknown grade status %q", r.CaseID, r.Arm, g.Status)
 		}
 	}
-	pass = true
+	for _, g := range r.Grades {
+		switch g.Status {
+		case GradeError:
+			return false, false, 0, excludedError, nil
+		case GradePendingReview:
+			ex = excludedPending
+		}
+	}
+	if ex != notExcluded {
+		return false, false, 0, ex, nil
+	}
 	for _, g := range r.Grades {
 		w := g.Weight
 		if w == 0 {
 			w = 1
 		}
+		score := g.Score
+		if g.Status == GradeInvalid {
+			score, g.Pass = 0, false
+		}
 		wsum += w
-		wscore += w * g.Score
-		if g.Required {
-			pass = pass && g.Pass
-			continue
-		}
-		wnonreq += w
-		if g.Pass {
-			wpass += w
-		}
+		wscore += w * score
+		graded = append(graded, graders.Graded{Result: graders.Result{Pass: g.Pass, Score: score}, Weight: g.Weight, Required: g.Required})
 	}
-	if wnonreq > 0 && !(wpass > wnonreq/2) {
-		pass = false
-	}
-	return true, pass, wscore / wsum, nil
+	return true, graders.CasePass(graded), wscore / wsum, notExcluded, nil
 }
 
 // foldCase folds the rows of one case in one arm.
@@ -208,11 +246,18 @@ func foldCase(rows []Row) (caseOutcome, error) {
 			lat += float64(*r.LatencyMS)
 			nLat++
 		}
-		usable, pass, s, err := rowOutcome(r)
+		usable, pass, s, ex, err := rowOutcome(r)
 		if err != nil {
 			return o, err
 		}
 		if !usable {
+			switch ex {
+			case excludedError:
+				o.errored++
+			case excludedPending:
+				o.pending++
+			case notExcluded, excludedPlatform:
+			}
 			continue
 		}
 		o.repeats++
@@ -254,10 +299,12 @@ func validateRow(r Row) error {
 //
 // How rows become outcomes, stated so the numbers can be checked by hand. A run
 // that failed or timed out is a failed case with score 0. A run that was
-// cancelled or skipped, or whose grades are not all "ok" (an error, an invalid
-// judgment, or a review still pending), is unusable. A succeeded run passes
-// when every required grader passes and more than half of the optional graders
-// (by weight) pass; its score is the weight-averaged score. With repeats, a
+// cancelled or skipped, or with a grade in error or pending review, is unusable. A succeeded run passes
+// by graders.CasePass, the rule stored in eval_results.case_pass: every required
+// grader passes and the weighted mean score of the others is at least 0.5; its
+// score is the weight-averaged score. An invalid judge reply is a failed grade
+// of score 0; a grade in error or pending review leaves the result out, and
+// ArmSummary counts those results. With repeats, a
 // case passes in an arm when more than half of its usable repeats pass, and
 // its score, cost and latency are the means over repeats. A case with no usable
 // result in an arm is skipped for every comparison that involves the arm.
@@ -310,6 +357,8 @@ func Summarize(rows []Row, baseline string, opts Options) (Summary, error) {
 			return Summary{}, err
 		}
 		s.Arms = append(s.Arms, as)
+		s.ExcludedError += as.ExcludedError
+		s.ExcludedPending += as.ExcludedPending
 	}
 	for _, arm := range arms {
 		if arm == baseline {
@@ -340,6 +389,8 @@ func summarizeArm(label string, rows map[int64][]Row, out map[int64]caseOutcome,
 	var lats []float64
 	for _, id := range sortedCaseIDs(out) {
 		oc := out[id]
+		a.ExcludedError += oc.errored
+		a.ExcludedPending += oc.pending
 		caseCosts = append(caseCosts, oc.cost)
 		if !oc.usable {
 			a.Skipped++

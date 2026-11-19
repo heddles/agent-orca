@@ -19,6 +19,7 @@ package security
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"strings"
 
 	"net"
 	"net/url"
@@ -425,7 +426,7 @@ func BuildTenantWorkloadIngressPolicy(tenantID, namespace, operatorNamespace str
 	}
 	return &networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "agentorca-tenant-" + SafeLabelValue(tenantID),
+			Name:      TenantPolicyName(tenantID),
 			Namespace: namespace,
 			Labels: map[string]string{
 				LabelManagedBy:  ManagedByValue,
@@ -627,4 +628,11 @@ func BuildRouterSandboxIngressPolicy(
 			}},
 		},
 	}, runTenantID(run))
+}
+
+// TenantPolicyName is the name of a tenant's workload NetworkPolicy. A tenant ID
+// contains an underscore ("tnt_..."), which is not valid in a Kubernetes object
+// name, so it is replaced; the full ID stays in the policy's labels.
+func TenantPolicyName(tenantID string) string {
+	return "agentorca-tenant-" + strings.ReplaceAll(strings.ToLower(SafeLabelValue(tenantID)), "_", "-")
 }

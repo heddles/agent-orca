@@ -135,6 +135,9 @@ func (r *RoutingEvaluationReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		Namespace: sel.Namespace, Agents: agentNames(users),
 		Since: now.Add(-benchmarkWindowOrDefault(bench)), Now: now,
 	}
+	if bench != nil && bench.Spec.Evaluation != nil {
+		query.IncludeExperiments = bench.Spec.Evaluation.IncludeExperiments
+	}
 	obs, err := r.Source.LoadObservations(ctx, query)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("loading routing evidence for %s: %w", sel.Name, err)

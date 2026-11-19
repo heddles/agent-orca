@@ -218,6 +218,16 @@ type EvaluationSpec struct {
 	// +kubebuilder:default="0.95"
 	// +optional
 	ConfidenceLevel string `json:"confidenceLevel,omitempty"`
+
+	// IncludeExperiments adds the paired results of finished evaluation
+	// experiments (docs/evaluations.md) to the shadow samples: for an experiment
+	// that compares ModelProviders on one of the benchmarked Agents, the first
+	// arm plays the served model, each other arm the shadow, and the case tag is
+	// the category. Recommendations built from it say so in status.evidence.
+	// Off by default, so existing findings do not change.
+	// +kubebuilder:default=false
+	// +optional
+	IncludeExperiments bool `json:"includeExperiments,omitempty"`
 }
 
 // BenchmarkThresholds say when a difference is worth acting on.

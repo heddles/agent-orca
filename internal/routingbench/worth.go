@@ -53,6 +53,12 @@ type Sample struct {
 	// model is to solve the task.
 	Algorithm  string
 	Confidence float64
+
+	// FromExperiment marks a pair projected from an evaluation experiment (the
+	// baseline arm served, the candidate arm is the shadow) rather than from a
+	// shadow sample. It feeds the win-rate evidence only: there is no routing
+	// score, so the threshold and routing-lift detectors leave it out.
+	FromExperiment bool
 }
 
 // Tiers says which of two models is the capable (dearer) one. When the selector

@@ -28,6 +28,9 @@ type Query struct {
 	Agents []string
 	// Since and Now bound the window.
 	Since, Now time.Time
+	// IncludeExperiments adds the paired results of finished evaluation
+	// experiments to the samples (spec.evaluation.includeExperiments).
+	IncludeExperiments bool
 }
 
 // Volume is how many calls a provider served for one Agent and category in the
@@ -96,9 +99,26 @@ func Analyze(ev Observations, c Cluster, q Query, opts Options) []Finding {
 		g.RoutedCapableCalls = volume[Volume{Agent: g.Agent, Category: g.Category, Provider: g.Capable}]
 		g.WindowDays = days
 	}
-	return Detect(Input{
-		Groups: groups, Calls: Orient(ev.Samples, c.tiersOf),
+	var shadowed []Sample
+	experiment := map[AgentCategory]int{}
+	for _, sm := range ev.Samples {
+		if sm.FromExperiment {
+			experiment[AgentCategory{sm.Agent, sm.Category}]++
+			continue
+		}
+		shadowed = append(shadowed, sm)
+	}
+	findings := Detect(Input{
+		Groups: groups, Calls: Orient(shadowed, c.tiersOf),
 		Selectors: c.Selectors, AgentSelector: c.AgentSelector,
 		ProviderStats: ev.ProviderStats, Ratings: ev.Ratings, Options: opts,
 	})
+	// A finding that rests on win-rate samples says how many came from experiments.
+	for i := range findings {
+		f := &findings[i]
+		if f.Evidence.Samples > 0 {
+			f.Evidence.ExperimentSamples = experiment[AgentCategory{f.Agent, f.Category}]
+		}
+	}
+	return findings
 }
