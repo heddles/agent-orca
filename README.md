@@ -130,6 +130,7 @@ In-depth guides, organized by audience. **Developers** start with the first bloc
 | [Switchyard Routing](docs/switchyard-routing.md) | Operators | Switchyard routing integration |
 | [Observability](docs/observability.md) | Operators | Health probes, Prometheus metrics, audit logging, ServiceMonitor/PodMonitor |
 | [Egress Sinks](docs/egress-sinks.md) | Operators | Kafka/PubSub/Redis result delivery, AgentDeployment input sources |
+| [Scheduled Runs](docs/schedules.md) | Operators | Start agents on a cron schedule (`AgentSchedule`) |
 | [CRDs](docs/crds.md) | Operators | All CRD definitions and field references |
 | [Authentication](docs/auth.md) | Operators | OAuth2, OIDC, ServiceAccount, BFF trust model |
 | [Redis Setup](docs/redis.md) | Operators | Redis setup and configuration |

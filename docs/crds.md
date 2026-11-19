@@ -1,6 +1,6 @@
 # agent-orca CRDs
 
-agent-orca uses fourteen Custom Resource Definitions (CRDs) that form a layered model: from raw LLM endpoints at the bottom to long-running agent services at the top.
+agent-orca uses fifteen Custom Resource Definitions (CRDs) that form a layered model: from raw LLM endpoints at the bottom to long-running agent services at the top.
 
 ---
 
@@ -17,6 +17,7 @@ graph TD
     A --> AR[AgentRun<br/>One-time execution]
     A --> AD[AgentDeployment<br/>Long-running service]
     A --> AW[AgentWorkflow<br/>Declarative DAG of steps]
+    SCH[AgentSchedule<br/>Starts runs on a clock] -->|creates on each tick| AR
     GP[GuardrailPolicy<br/>Content filtering] --> A
     MCPS[MCPServer<br/>External MCP servers] -->|creates| T
     SC[SandboxClass<br/>Admin-set sandbox profile] -->|constrains| A
@@ -41,7 +42,7 @@ graph TD
 
     classDef crd fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
     classDef infra fill:#f3f4f6,stroke:#6b7280,color:#374151
-    class MP,MS,T,A,AR,AD,AW,KB,GP,MCPS,SC,TC,RB,RR crd
+    class MP,MS,T,A,AR,AD,AW,KB,GP,MCPS,SC,TC,RB,RR,SCH crd
     class Pod1,Dep,CS,QD,PG,HS,OS infra
 ```
 
@@ -659,6 +660,28 @@ Status `phase` is one of `Proposed`, `PendingApproval`, `Applied`, `Rejected`, `
 
 ---
 
+## 15. AgentSchedule
+
+**Purpose:** Starts an agent on a clock, like a Kubernetes `CronJob` starts a `Job`. Each tick creates an ordinary `AgentRun` that the schedule owns. Short name `asched`. See [Scheduled runs](schedules.md).
+
+| Field | Description |
+|---|---|
+| `agentRef` | The Agent to run, in the schedule's namespace. Exactly one of `agentRef` and `workflowTemplateRef` |
+| `workflowTemplateRef` | An `AgentWorkflow` with `mode: template`. Each tick creates a workflow from it |
+| `schedule` | Five-field cron expression, or `@hourly`, `@daily`, `@weekly`, `@monthly` |
+| `timeZone` | IANA name, default `UTC`. A wall-clock time in a daylight-saving gap is skipped; one that occurs twice fires once |
+| `input` / `parameters` | The run input, or the template parameters. `{{schedule.time}}`, `{{schedule.date}}` and `{{schedule.name}}` are the only placeholders |
+| `concurrencyPolicy` | `Forbid` (default), `Allow` or `Replace` |
+| `startingDeadlineSeconds` | How late a missed tick may still start. Default 3600 |
+| `successfulRunsHistoryLimit`, `failedRunsHistoryLimit` | Finished runs kept. Default 7 each |
+| `suspend` | Stops new runs. Runs in flight are untouched |
+| `timeout`, `budget`, `safeguards`, `result` | Copied onto every created run |
+| `spend` | A cap for the schedule as a whole, per day and per month |
+
+Status carries `lastScheduleTime`, `nextScheduleTime`, `active`, `consecutiveFailures`, the last ten skipped ticks, spend today and this month, and the conditions `Ready`, `Suspended`, `BudgetExhausted`, `TargetMissing` and `Degraded`.
+
+---
+
 ## How They All Fit Together
 
 ```mermaid
@@ -772,3 +795,4 @@ Every AgentRun/AgentDeployment enforces:
 | `SandboxClass` | Cluster-scoped sandbox profile | Permanent | Platform team |
 | `RoutingBenchmark` | Routing evaluation | Permanent | Platform team |
 | `RoutingRecommendation` | Proposed ModelSelector change | Until decided | Operator creates; platform team decides |
+| `AgentSchedule` | Starts runs on a clock | Until deleted | App team |

@@ -56,6 +56,7 @@ Multi-group layout organizes APIs by group name (e.g., `batch`, `apps`). Check t
 | [aoctl-reference.md](aoctl-reference.md) | Developers | Complete `aoctl` CLI reference (all subcommands) |
 | [observability.md](observability.md) | Operators | Health probes, Prometheus metrics, audit logging |
 | [egress-sinks.md](egress-sinks.md) | Operators | Kafka/PubSub/Redis egress configuration + AgentDeployment input sources |
+| [schedules.md](schedules.md) | Operators | Scheduled runs (`AgentSchedule`) |
 | [crds.md](crds.md) | Operators | All CRD definitions and field references |
 | [auth.md](auth.md) | Operators | Authentication model (OAuth2, OIDC, ServiceAccount, trust) |
 | [oauth-login.md](oauth-login.md) | Operators | Interactive OIDC login (auth-code flow, session cookies, ID-token mapping) |

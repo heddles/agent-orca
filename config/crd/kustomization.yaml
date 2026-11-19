@@ -11,6 +11,7 @@ resources:
 - bases/agentorca.agentorca.io_agentruns.yaml
 - bases/agentorca.agentorca.io_agentdeployments.yaml
 - bases/agentorca.agentorca.io_agentworkflows.yaml
+- bases/agentorca.agentorca.io_agentschedules.yaml
 - bases/agentorca.agentorca.io_mcpservers.yaml
 - bases/agentorca.agentorca.io_knowledgebases.yaml
 - bases/agentorca.agentorca.io_tenantconfigs.yaml

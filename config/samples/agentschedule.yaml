@@ -1,0 +1,23 @@
+# Runs an agent every weekday at 08:00 Berlin time (docs/schedules.md). Each tick
+# creates one ordinary AgentRun named weekday-digest-<unix time of the tick>,
+# owned by this schedule. Create the agent (digest-agent here) first.
+apiVersion: agentorca.agentorca.io/v1alpha1
+kind: AgentSchedule
+metadata:
+  name: weekday-digest
+  namespace: agent-orca-system
+spec:
+  agentRef: digest-agent
+  schedule: "0 8 * * 1-5"
+  timeZone: Europe/Berlin
+  input: "Write the team digest for {{schedule.date}}."
+  # Skip a tick while the previous run is still going (the default).
+  concurrencyPolicy: Forbid
+  # Start a missed tick only if it is less than an hour late (the default).
+  startingDeadlineSeconds: 3600
+  successfulRunsHistoryLimit: 7
+  failedRunsHistoryLimit: 7
+  timeout: 30m
+  # Each run stops at $1.00. An unattended run never waits for a budget approval.
+  budget:
+    maxUSD: "1.00"

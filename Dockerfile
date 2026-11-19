@@ -43,6 +43,7 @@ COPY internal/rag/*.go internal/rag/
 COPY internal/ratelimit/ internal/ratelimit/
 COPY internal/router/ internal/router/
 COPY internal/routingbench/ internal/routingbench/
+COPY internal/schedule/ internal/schedule/
 COPY internal/security/ internal/security/
 COPY internal/shellsandbox/ internal/shellsandbox/
 COPY internal/state/ internal/state/

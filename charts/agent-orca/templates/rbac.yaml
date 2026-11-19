@@ -23,6 +23,9 @@ rules:
       - agentruns
       - agentruns/status
       - agentruns/finalizers
+      - agentschedules
+      - agentschedules/status
+      - agentschedules/finalizers
       - agentdeployments
       - agentdeployments/status
       - agentdeployments/finalizers
