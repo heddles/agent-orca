@@ -829,7 +829,8 @@ func main() {
 		}
 		if err := mgr.Add(evalrunner.New(pgStore.AsPlatform(), mgr.GetClient(), evalrunner.Config{
 			Interval: evalRunnerIntervalFromEnv(), Limiter: limiter,
-			Judges: judge.KubeResolver{Reader: mgr.GetClient()},
+			Judges:              judge.KubeResolver{Reader: mgr.GetClient()},
+			ResultRetentionDays: evalResultRetentionDaysFromEnv(),
 		})); err != nil {
 			setupLog.Error(err, "Unable to add the evaluation experiment runner")
 			os.Exit(1)
@@ -1061,4 +1062,13 @@ func evalRunnerIntervalFromEnv() time.Duration {
 		return time.Duration(n) * time.Second
 	}
 	return 0
+}
+
+// evalResultRetentionDaysFromEnv is how long evaluation result outputs and
+// grades are kept (EVALS_RESULT_RETENTION_DAYS, default 90; 0 keeps them).
+func evalResultRetentionDaysFromEnv() int {
+	if n, err := strconv.Atoi(strings.TrimSpace(os.Getenv("EVALS_RESULT_RETENTION_DAYS"))); err == nil && n >= 0 {
+		return n
+	}
+	return 90
 }

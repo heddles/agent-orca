@@ -46,6 +46,7 @@ import (
 //	DELETE /api/evals/datasets/{id}                 builder, audited
 //	GET    /api/evals/datasets/{id}/cases           viewer
 //	POST   /api/evals/datasets/{id}/cases           builder, audited (one case, or JSON lines)
+//	GET    /api/evals/datasets/{id}/export          builder, audited (the live cases as JSON lines)
 //	GET    /api/evals/cases/{id}                    viewer
 //	PATCH  /api/evals/cases/{id}                    builder, audited
 //	DELETE /api/evals/cases/{id}                    builder, audited
@@ -305,6 +306,14 @@ func (s *UIServer) handleEvalDataset(w http.ResponseWriter, r *http.Request) {
 	id, ok := parseEvalID(parts[0])
 	if !ok || len(parts) > 3 {
 		http.NotFound(w, r)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "export" {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		s.exportEvalDataset(w, r, id)
 		return
 	}
 	if len(parts) >= 2 && parts[1] != "cases" {

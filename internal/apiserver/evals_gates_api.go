@@ -29,6 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
+	"github.com/heddles/agent-orca/internal/evals/calibrate"
 	"github.com/heddles/agent-orca/internal/evals/gate"
 	"github.com/heddles/agent-orca/internal/evals/graders"
 	"github.com/heddles/agent-orca/internal/evals/runner"
@@ -66,6 +67,7 @@ type evalGateStore interface {
 	PutEvalGate(ctx context.Context, g postgresql.EvalGate) (postgresql.EvalGate, *postgresql.EvalGate, error)
 	DeleteEvalGate(ctx context.Context, namespace, agent string) (postgresql.EvalGate, error)
 	LatestGateExperiment(ctx context.Context, namespace, agent string) (postgresql.GateEvidence, bool, error)
+	EvalCalibrationPairs(ctx context.Context, datasetID int64, llmGrader, humanGrader string, experimentID int64) ([]postgresql.EvalCalibrationPair, error)
 }
 
 func (s *UIServer) gateSource() evalGateStore {
@@ -325,7 +327,54 @@ func (s *UIServer) gateDecision(ctx context.Context, store evalGateStore, g post
 			Baseline: ev.Experiment.Arms[0].Label, Candidate: ev.Experiment.Arms[1].Label,
 		}
 	}
+	if in.DatasetExists {
+		if in.UntrustedJudges, err = untrustedJudges(sctx, store, g.DatasetID); err != nil {
+			return gate.Decision{}, d, err
+		}
+	}
 	return gate.CheckGate(in), d, nil
+}
+
+// untrustedJudges names the dataset's llm graders that a gate may not rest on:
+// those with no human grader whose labels agree with them (Cohen's kappa of at
+// least calibrate.TrustworthyKappa over at least calibrate.MinPairs results).
+// Docs: docs/proposals/evaluations.md, open question 5.
+func untrustedJudges(ctx context.Context, store evalGateStore, datasetID int64) ([]string, error) {
+	gs, err := store.ListEvalGraders(ctx, datasetID)
+	if err != nil {
+		return nil, err
+	}
+	var humans []string
+	for _, g := range gs {
+		if g.Kind == graders.KindHuman {
+			humans = append(humans, g.Name)
+		}
+	}
+	var out []string
+	for _, g := range gs {
+		if g.Kind != graders.KindLLM {
+			continue
+		}
+		trusted := false
+		for _, h := range humans {
+			pairs, err := store.EvalCalibrationPairs(ctx, datasetID, g.Name, h, 0)
+			if err != nil {
+				return nil, err
+			}
+			in := make([]calibrate.Pair, len(pairs))
+			for i, p := range pairs {
+				in[i] = calibrate.Pair{ResultID: p.ResultID, CaseID: p.CaseID, LLMPass: p.LLMPass, HumanPass: p.HumanPass, LLMScore: p.LLMScore, HumanScore: p.HumanScore}
+			}
+			if rep, err := calibrate.Compute(in); err == nil && rep.Trustworthy {
+				trusted = true
+				break
+			}
+		}
+		if !trusted {
+			out = append(out, g.Name)
+		}
+	}
+	return out, nil
 }
 
 // overrideRequest is the overrideGate member of a publish request.

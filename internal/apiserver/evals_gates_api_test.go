@@ -44,6 +44,27 @@ type fakeGateStore struct {
 	gates          map[string]*postgresql.EvalGate
 	gradersChanged bool
 	failRead       bool
+	// pairs are the calibration pairs every (llm, human) grader pair returns.
+	pairs []postgresql.EvalCalibrationPair
+}
+
+func (f *fakeGateStore) EvalCalibrationPairs(ctx context.Context, datasetID int64, llm, human string, experimentID int64) ([]postgresql.EvalCalibrationPair, error) {
+	return f.pairs, nil
+}
+
+// calibrationPairs are n results; the judge and the human disagree on the
+// first miss of them.
+func calibrationPairs(n, miss int) []postgresql.EvalCalibrationPair {
+	out := make([]postgresql.EvalCalibrationPair, n)
+	for i := range out {
+		human := i%2 == 0
+		judge := human
+		if i < miss {
+			judge = !human
+		}
+		out[i] = postgresql.EvalCalibrationPair{ResultID: int64(i + 1), CaseID: int64(i + 1), LLMPass: judge, HumanPass: human}
+	}
+	return out
 }
 
 func newFakeGateStore() *fakeGateStore {

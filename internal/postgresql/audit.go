@@ -37,6 +37,8 @@ const (
 	// AuditOverride is a publish that went ahead past a failing evaluation gate
 	// (docs/evaluations.md). The normal publish row is written too.
 	AuditOverride = "override"
+	// AuditExport is a dataset's cases leaving as a JSONL download.
+	AuditExport = "export"
 )
 
 // MaxAuditSummaryBytes bounds the summary of an audit event.
