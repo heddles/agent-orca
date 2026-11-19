@@ -68,10 +68,19 @@ type AuthorizationServerMetadata struct {
 	CodeChallengeMethodsSupported     []string `json:"code_challenge_methods_supported"`
 	ScopesSupported                   []string `json:"scopes_supported"`
 	ResponseTypesSupported            []string `json:"response_types_supported"`
+	// RevocationEndpoint is the RFC 7009 token revocation endpoint, when offered.
+	RevocationEndpoint string `json:"revocation_endpoint,omitempty"`
+	// IssParameterSupported is RFC 9207: the authorization response carries iss.
+	IssParameterSupported bool `json:"authorization_response_iss_parameter_supported,omitempty"`
 }
 
 // Metadata is the resolved, server-agnostic OAuth configuration for an MCP server.
 type Metadata struct {
+	// Issuer is the authorization server's issuer identifier (RFC 8414), the value
+	// an RFC 9207 "iss" response parameter must equal.
+	Issuer                   string
+	RevocationEndpoint       string
+	IssParameterSupported    bool
 	AuthorizationEndpoint    string
 	TokenEndpoint            string
 	GrantTypes               []string
@@ -108,6 +117,13 @@ type Config struct {
 	// AccessTokenSecretRef is the Secret/key the model-router reads as the bearer
 	// (referenced by MCPServer.spec.auth.bearerToken).
 	AccessTokenSecretRef SecretKeyRef
+	// State is the opaque anti-CSRF value LoginURL sends as "state" (RFC 6749 10.12).
+	// The one-time CLI seed leaves it empty; a browser flow must set it.
+	State string
+	// Resource is the RFC 8707 resource indicator: the canonical URI of the MCP
+	// server the token is for. When set it is sent on the authorization, code and
+	// refresh requests so the token is audience-bound to that server.
+	Resource string
 	// RefreshInterval bounds how often to attempt a refresh when no expires_in is known.
 	// A zero value defaults to 50m.
 	RefreshInterval time.Duration
@@ -152,6 +168,9 @@ func (m *TokenManager) Discover(ctx context.Context, serverURL string) (*Metadat
 		return nil, fmt.Errorf("authorization-server metadata missing endpoint(s)")
 	}
 	return &Metadata{
+		Issuer:                   asm.Issuer,
+		RevocationEndpoint:       asm.RevocationEndpoint,
+		IssParameterSupported:    asm.IssParameterSupported,
 		AuthorizationEndpoint:    asm.AuthorizationEndpoint,
 		TokenEndpoint:            asm.TokenEndpoint,
 		GrantTypes:               asm.GrantTypesSupported,
@@ -181,6 +200,9 @@ func (m *TokenManager) Refresh(ctx context.Context, meta *Metadata, cfg *Config)
 	if len(cfg.Scopes) > 0 {
 		form.Set("scope", strings.Join(cfg.Scopes, " "))
 	}
+	if cfg.Resource != "" {
+		form.Set("resource", cfg.Resource)
+	}
 	return m.postToken(ctx, meta.TokenEndpoint, form)
 }
 
@@ -209,6 +231,9 @@ func (m *TokenManager) ExchangeCode(ctx context.Context, meta *Metadata, cfg *Co
 	if len(cfg.Scopes) > 0 {
 		form.Set("scope", strings.Join(cfg.Scopes, " "))
 	}
+	if cfg.Resource != "" {
+		form.Set("resource", cfg.Resource)
+	}
 	return m.postToken(ctx, meta.TokenEndpoint, form)
 }
 
@@ -235,7 +260,51 @@ func (m *TokenManager) LoginURL(meta *Metadata, cfg *Config) (authURL, codeVerif
 	}
 	q.Set("code_challenge", challenge)
 	q.Set("code_challenge_method", "S256")
+	if cfg.State != "" {
+		q.Set("state", cfg.State)
+	}
+	if cfg.Resource != "" {
+		q.Set("resource", cfg.Resource)
+	}
 	return meta.AuthorizationEndpoint + "?" + q.Encode(), verifier, nil
+}
+
+// ErrNoRevocationEndpoint means the authorization server publishes no RFC 7009
+// revocation endpoint.
+var ErrNoRevocationEndpoint = errors.New("authorization server has no revocation endpoint")
+
+// Revoke asks the authorization server to revoke a token (RFC 7009). tokenTypeHint
+// is "refresh_token" or "access_token". The token is sent in the request body only.
+func (m *TokenManager) Revoke(ctx context.Context, meta *Metadata, cfg *Config, token, tokenTypeHint string) error {
+	if meta.RevocationEndpoint == "" {
+		return ErrNoRevocationEndpoint
+	}
+	form := url.Values{}
+	form.Set("token", token)
+	if tokenTypeHint != "" {
+		form.Set("token_type_hint", tokenTypeHint)
+	}
+	if cfg.ClientID != "" {
+		form.Set("client_id", cfg.ClientID)
+	}
+	if cfg.ClientSecret != "" {
+		form.Set("client_secret", cfg.ClientSecret)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, meta.RevocationEndpoint, strings.NewReader(form.Encode()))
+	if err != nil {
+		return fmt.Errorf("building revocation request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := m.HTTPClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("revocation request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("revocation endpoint returned HTTP %d", resp.StatusCode)
+	}
+	return nil
 }
 
 // postToken POSTs an OAuth form-encoded body to the token endpoint and decodes the
@@ -263,7 +332,7 @@ func (m *TokenManager) postToken(ctx context.Context, tokenEndpoint string, form
 		return nil, fmt.Errorf("decoding token response: %w (body: %s)", err, truncate(string(body), 200))
 	}
 	if resp.StatusCode >= 400 || tr.isFailure() {
-		return nil, fmt.Errorf("token exchange failed: %s", tr.ErrorOrMessage())
+		return nil, &TokenError{Code: tr.ErrorOrMessage()}
 	}
 	if tr.AccessToken == "" {
 		return nil, fmt.Errorf("token exchange returned no access_token: %s", truncate(string(body), 200))
@@ -277,8 +346,23 @@ type TokenResponse struct {
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token,omitempty"` // absent => token not rotated; keep existing
 	ExpiresIn    int    `json:"expires_in,omitempty"`    // seconds; absent => unknown lifetime
+	Scope        string `json:"scope,omitempty"`         // granted scopes, space separated (RFC 6749 5.1); absent => as requested
 	TokenType    string `json:"token_type,omitempty"`
 	Error        string `json:"error,omitempty"` // OAuth error code (e.g. invalid_grant) or Slack error
+}
+
+// TokenError is a failed token endpoint answer. Code is the OAuth error code
+// ("invalid_grant", ...); it never carries a token.
+type TokenError struct{ Code string }
+
+func (e *TokenError) Error() string { return "token exchange failed: " + e.Code }
+
+// IsInvalidGrant reports whether err is the authorization server saying the
+// refresh token or code is no longer valid (revoked, expired, rotated away):
+// the user must connect again.
+func IsInvalidGrant(err error) bool {
+	var te *TokenError
+	return errors.As(err, &te) && te.Code == "invalid_grant"
 }
 
 func (t *TokenResponse) isFailure() bool {
