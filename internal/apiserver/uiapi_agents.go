@@ -12,6 +12,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
+	"github.com/heddles/agent-orca/internal/schedule"
 	"github.com/heddles/agent-orca/internal/tenancy"
 )
 
@@ -374,6 +375,10 @@ func (s *UIServer) handleMyRuns(w http.ResponseWriter, r *http.Request) {
 		out := []myRun{}
 		for i := range runs.Items {
 			run := &runs.Items[i]
+			// A scheduled run has no invoker: it shows under Scheduled, not here.
+			if strings.HasPrefix(run.Annotations[AnnotationCreatedBy], schedule.ActorPrefix) {
+				continue
+			}
 			if mine && run.Annotations[AnnotationCreatedBy] != userID {
 				continue
 			}

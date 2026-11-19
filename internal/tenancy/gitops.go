@@ -39,6 +39,7 @@ var UIKinds = map[string]func() client.Object{
 	"ModelSelector":   func() client.Object { return &agentorcav1alpha1.ModelSelector{} },
 	"AgentDeployment": func() client.Object { return &agentorcav1alpha1.AgentDeployment{} },
 	"AgentWorkflow":   func() client.Object { return &agentorcav1alpha1.AgentWorkflow{} },
+	"AgentSchedule":   func() client.Object { return &agentorcav1alpha1.AgentSchedule{} },
 }
 
 // NewUIObject returns an empty object of a UI-writable kind, nil for any other.

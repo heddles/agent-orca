@@ -78,7 +78,7 @@ func TestOwnershipEnvtest(t *testing.T) { //nolint:gocyclo // one scenario on on
 				Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
 				Rule: admissionregistrationv1.Rule{
 					APIGroups: []string{"agentorca.agentorca.io"}, APIVersions: []string{"v1alpha1"},
-					Resources: []string{"agents", "tools", "mcpservers", "knowledgebases", "modelselectors", "modelproviders", "agentdeployments", "agentworkflows"},
+					Resources: []string{"agents", "tools", "mcpservers", "knowledgebases", "modelselectors", "modelproviders", "agentdeployments", "agentworkflows", "agentschedules"},
 				},
 			}},
 		}},
@@ -240,6 +240,40 @@ func TestOwnershipEnvtest(t *testing.T) { //nolint:gocyclo // one scenario on on
 		eventually("the GitOpsWriteBlocked event", func() bool { return hasEvent("triage", agentwebhook.EventReasonGitOpsBlocked) })
 		// Argo creating an object that claims UI ownership is denied too.
 		denied(create(argo, argoFM, newAgent("squatter", nil, uiOwned)))
+	})
+
+	// An AgentSchedule is owned like the other kinds: a GitOps writer is denied
+	// on a UI-owned one, and the UI is denied on a Git-owned one.
+	t.Run("a GitOps writer is denied on a UI-owned schedule", func(t *testing.T) {
+		newSchedule := func(name string, annotations map[string]string) *agentorcav1alpha1.AgentSchedule {
+			return &agentorcav1alpha1.AgentSchedule{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "team-a", Annotations: annotations},
+				Spec: agentorcav1alpha1.AgentScheduleSpec{
+					AgentRef: "triage", Schedule: "0 8 * * *", Input: "go", Budget: &agentorcav1alpha1.RunBudget{MaxUSD: "1"},
+				},
+			}
+		}
+		var err error
+		for range 50 {
+			if err = ui.Create(ctx, newSchedule("nightly", uiOwned), client.FieldOwner(tenancy.FieldManagerUI)); err == nil {
+				break
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+		must(t, err)
+		var sc agentorcav1alpha1.AgentSchedule
+		must(t, admin.Get(ctx, client.ObjectKey{Namespace: "team-a", Name: "nightly"}, &sc))
+		sc.Spec.Input = "from argo"
+		denied(argo.Update(ctx, &sc, client.FieldOwner(argoFM)), `AgentSchedule "nightly"`, "owned by the agent-orca UI")
+		denied(flux.Update(ctx, &sc, client.FieldOwner(fluxFM)), "owned by the agent-orca UI")
+		denied(argo.Create(ctx, newSchedule("squatter", uiOwned), client.FieldOwner(argoFM)))
+
+		// Argo's own schedule is Git-owned, and the UI may not touch it.
+		git := map[string]string{"argocd.argoproj.io/tracking-id": "shop:agentorca.agentorca.io/AgentSchedule:team-a/synced"}
+		must(t, argo.Create(ctx, newSchedule("synced", git), client.FieldOwner(argoFM)))
+		must(t, admin.Get(ctx, client.ObjectKey{Namespace: "team-a", Name: "synced"}, &sc))
+		sc.Spec.Suspend = true
+		denied(ui.Update(ctx, &sc, client.FieldOwner(tenancy.FieldManagerUI)), "owned by Git")
 	})
 
 	// A GitOps tool nobody listed (renamed service account, custom field manager)

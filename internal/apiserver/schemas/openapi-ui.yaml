@@ -20,7 +20,9 @@ tags:
   - name: runs
     description: AgentRun listing, detail, streaming, history
   - name: resources
-    description: Generic CRUD for all CRD types (agents, tools, mcpservers, modelproviders, knowledgebases, modelselectors, agentdeployments, agentworkflows)
+    description: Generic CRUD for all CRD types (agents, tools, mcpservers, modelproviders, knowledgebases, modelselectors, agentdeployments, agentworkflows, agentschedules)
+  - name: schedules
+    description: Scheduled runs (AgentSchedule). Plain CRUD is /api/resources/agentschedules; these are the summary, preview, history and run controls
   - name: deployments
     description: AgentDeployment chat execution, history, streaming
   - name: workflows
@@ -771,7 +773,7 @@ components:
         original: { type: object, additionalProperties: { type: string }, description: The text before redaction. Only in a preview. }
     ResourceKind:
       type: string
-      enum: [agents, tools, mcpservers, modelproviders, knowledgebases, modelselectors, agentdeployments, agentworkflows]
+      enum: [agents, tools, mcpservers, modelproviders, knowledgebases, modelselectors, agentdeployments, agentworkflows, agentschedules]
 security:
   - BearerAuth: []
 paths:
@@ -2348,6 +2350,59 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/CurrentUser' }
+  /api/schedules:
+    get:
+      tags: [schedules]
+      summary: List schedules with state, next run (absolute and in the schedule's zone), last result, spend and ownership
+      parameters:
+        - in: query
+          name: namespace
+          schema: { type: string }
+      responses:
+        '200': { description: "array of schedule summaries; state is one of active, suspended, degraded, budgetExhausted, targetMissing, invalid" }
+  /api/schedules/preview:
+    get:
+      tags: [schedules]
+      summary: The next firings of a cron expression in a time zone
+      parameters:
+        - { in: query, name: cron, required: true, schema: { type: string } }
+        - { in: query, name: tz, schema: { type: string, default: UTC } }
+        - { in: query, name: count, schema: { type: integer, default: 5, maximum: 20 } }
+      responses:
+        '200': { description: "nextRuns (utc and local), minInterval, shortestGap and tooFrequent" }
+        '400': { description: invalid expression or time zone }
+  /api/schedules/{namespace}/{name}/runs:
+    get:
+      tags: [schedules]
+      summary: History of a schedule's runs and workflows, newest first
+      parameters:
+        - { in: query, name: limit, schema: { type: integer, default: 20, maximum: 100 } }
+        - { in: query, name: before, description: "cursor: the nextBefore of the previous page (RFC 3339)", schema: { type: string } }
+      responses:
+        '200': { description: "runs (trigger schedule or manual) and nextBefore" }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/schedules/{namespace}/{name}/suspend:
+    post:
+      tags: [schedules]
+      summary: Stop new runs (runner role). UI-owned schedules only; a Git-owned one answers 409
+      responses:
+        '200': { description: "ok, or status unchanged" }
+        '409': { description: Git-owned }
+  /api/schedules/{namespace}/{name}/resume:
+    post:
+      tags: [schedules]
+      summary: Resume a suspended schedule, or clear the failure breaker of a Degraded one (runner role)
+      responses:
+        '200': { description: "ok, or status unchanged" }
+        '409': { description: Git-owned }
+  /api/schedules/{namespace}/{name}/run:
+    post:
+      tags: [schedules]
+      summary: Run now (runner role). A normal run with trigger manual, started by the caller, passing the tenant's quotas
+      responses:
+        '202': { description: "kind, name and namespace of the created run or workflow" }
+        '402': { description: daily budget exceeded }
+        '429': { description: concurrent run limit reached }
   /api/runs:
     get:
       tags: [runs]
@@ -2358,6 +2413,10 @@ paths:
           schema: { type: string }
         - in: query
           name: deployment
+          schema: { type: string }
+        - in: query
+          name: schedule
+          description: Only runs labelled for this AgentSchedule. Each run summary carries `schedule` and `trigger` (`schedule` for an unattended tick, `manual` for Run now)
           schema: { type: string }
       responses:
         '200': { description: run list }

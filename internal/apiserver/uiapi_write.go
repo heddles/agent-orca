@@ -197,6 +197,9 @@ func (s *UIServer) createResource(w http.ResponseWriter, r *http.Request, info c
 		return
 	}
 	obj := in.obj
+	if info.gvk == kindAgentSchedule && !scheduleWriteGate(w, r, obj, nil) {
+		return
+	}
 	if !s.prepareNew(w, r, obj) {
 		return
 	}
@@ -319,6 +322,29 @@ func (s *UIServer) updateResource(w http.ResponseWriter, r *http.Request, info c
 	if !ok {
 		return
 	}
+	if info.gvk == kindAgentSchedule {
+		var existing agentorcav1alpha1.AgentSchedule
+		var cur *agentorcav1alpha1.AgentSchedule
+		if s.crdClient.Get(r.Context(), client.ObjectKey{Namespace: ns, Name: name}, &existing) == nil {
+			cur = &existing
+		}
+		if !scheduleWriteGate(w, r, in.obj, cur) {
+			return
+		}
+	}
+	s.applyUpdate(w, r, info, ns, name, in, updateAudit{})
+}
+
+// updateAudit says how applyUpdate records the change: the audit action and
+// summary. The zero value is a plain update.
+type updateAudit struct {
+	action  string
+	summary string
+}
+
+// applyUpdate is the body of an update: ownership, version and tenant checks,
+// then a server-side apply as the UI. The caller has checked the role.
+func (s *UIServer) applyUpdate(w http.ResponseWriter, r *http.Request, info crdKindInfo, ns, name string, in resourceBody, audit updateAudit) {
 	obj := in.obj
 	obj.SetName(name)
 	obj.SetNamespace(ns)
@@ -383,8 +409,11 @@ func (s *UIServer) updateResource(w http.ResponseWriter, r *http.Request, info c
 	}
 	unstructured.RemoveNestedField(obj.Object, "metadata", "managedFields")
 	if !isDryRun(r) {
-		s.recordWrite(w, r, obj, auditEventFor(postgresql.AuditUpdate, info.gvk, ns, name, obj.GetResourceVersion(),
-			fmt.Sprintf("updated %s %s/%s (resourceVersion %s to %s)", info.gvk, ns, name, in.resourceVersion, obj.GetResourceVersion())))
+		action, summary := postgresql.AuditUpdate, fmt.Sprintf("updated %s %s/%s (resourceVersion %s to %s)", info.gvk, ns, name, in.resourceVersion, obj.GetResourceVersion())
+		if audit.action != "" {
+			action, summary = audit.action, audit.summary
+		}
+		s.recordWrite(w, r, obj, auditEventFor(action, info.gvk, ns, name, obj.GetResourceVersion(), summary))
 	}
 	s.respondObject(w, r, obj, info.gvk)
 }

@@ -843,6 +843,7 @@ func main() {
 	// Start the UI API server (port 8083) for the React frontend.
 	uiAPI := apiserver.NewUIServer(k8sClient, mgr.GetClient(), stateConfig.Backend != "", stateStore, uiAuthEnabled, externalAuth, pgStore, alertManager) //nolint:lll
 	uiAPI.SetOwnership(ownershipDetect, tenancy.HandoffTTLFromEnv())
+	uiAPI.SetScheduleMinInterval(scheduleMinInterval)
 	uiAPI.SetRevisionsKeep(apiserver.RevisionsKeepFromEnv())
 	evalsCfg := evalsConfigFromEnv()
 	uiAPI.SetEvals(evalsCfg)

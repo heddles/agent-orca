@@ -44,6 +44,7 @@ import (
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
 	"github.com/heddles/agent-orca/internal/checkpoint"
 	"github.com/heddles/agent-orca/internal/postgresql"
+	"github.com/heddles/agent-orca/internal/schedule"
 	"github.com/heddles/agent-orca/internal/security"
 	"github.com/heddles/agent-orca/internal/state"
 	"github.com/heddles/agent-orca/internal/tenancy"
@@ -154,6 +155,10 @@ type UIServer struct {
 	// long an export waits for the GitOps tool to adopt the object (see SetOwnership).
 	ownDetect  tenancy.DetectOptions
 	handoffTTL time.Duration
+
+	// scheduleMinInterval is the minimum interval the schedule preview reports
+	// against (see SetScheduleMinInterval).
+	scheduleMinInterval time.Duration
 }
 
 // nsListOpts returns a ListOption slice scoped to ns, or empty (all namespaces) when ns is "".
@@ -236,6 +241,7 @@ func (s *UIServer) Handler() http.Handler {
 	s.registerBuilderRoutes(mux)
 	s.registerEvalRoutes(mux)
 	s.registerTriggerRoutes(mux)
+	s.registerScheduleRoutes(mux)
 	s.registerWidgetKeyRoutes(mux)
 	if s.oidcLogin != nil {
 		s.oidcLogin.Register(mux)
@@ -367,9 +373,23 @@ func (s *UIServer) handleListRuns(w http.ResponseWriter, r *http.Request) {
 		list.Items = filtered
 	}
 
+	if sch := r.URL.Query().Get("schedule"); sch != "" {
+		filtered := make([]agentorcav1alpha1.AgentRun, 0, len(list.Items))
+		for _, run := range list.Items {
+			if run.Labels[schedule.LabelSchedule] == sch {
+				filtered = append(filtered, run)
+			}
+		}
+		list.Items = filtered
+	}
+
 	type summary struct {
-		Name           string `json:"name"`
-		Namespace      string `json:"namespace"`
+		Name      string `json:"name"`
+		Namespace string `json:"namespace"`
+		// Trigger is "schedule" for a run an AgentSchedule started on its own,
+		// "manual" for one a person started with Run now, else empty.
+		Trigger        string `json:"trigger,omitempty"`
+		Schedule       string `json:"schedule,omitempty"`
 		AgentRef       string `json:"agentRef"`
 		Phase          string `json:"phase"`
 		SpendUSD       string `json:"spendUSD"`
@@ -386,6 +406,13 @@ func (s *UIServer) handleListRuns(w http.ResponseWriter, r *http.Request) {
 			Phase:        string(run.Status.Phase),
 			SpendUSD:     run.Status.SpendUSD,
 			RestartCount: run.Status.RestartCount,
+			Schedule:     run.Labels[schedule.LabelSchedule],
+		}
+		if s.Schedule != "" {
+			s.Trigger = "manual"
+			if strings.HasPrefix(run.Annotations[AnnotationCreatedBy], schedule.ActorPrefix) {
+				s.Trigger = "schedule"
+			}
 		}
 		if run.Status.StartTime != nil {
 			s.StartTime = run.Status.StartTime.UTC().Format(time.RFC3339)
@@ -2579,6 +2606,7 @@ var crdKinds = map[string]crdKindInfo{
 	"modelselectors":   {&agentorcav1alpha1.ModelSelectorList{}, func() client.Object { return &agentorcav1alpha1.ModelSelector{} }, "ModelSelector"},
 	"agentdeployments": {&agentorcav1alpha1.AgentDeploymentList{}, func() client.Object { return &agentorcav1alpha1.AgentDeployment{} }, "AgentDeployment"},
 	"agentworkflows":   {&agentorcav1alpha1.AgentWorkflowList{}, func() client.Object { return &agentorcav1alpha1.AgentWorkflow{} }, "AgentWorkflow"},
+	"agentschedules":   {&agentorcav1alpha1.AgentScheduleList{}, func() client.Object { return &agentorcav1alpha1.AgentSchedule{} }, "AgentSchedule"},
 }
 
 // handleResourceCollection handles GET (list) and POST (create) on /api/resources/{kind}.

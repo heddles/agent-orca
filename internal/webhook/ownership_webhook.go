@@ -52,7 +52,7 @@ const OwnershipPath = "/validate-agentorca-agentorca-io-v1alpha1-ownership"
 // The webhook never changes ownership. The handoff controller does, after the
 // GitOps tool has adopted the object.
 
-// +kubebuilder:webhook:path=/validate-agentorca-agentorca-io-v1alpha1-ownership,mutating=false,failurePolicy=fail,sideEffects=None,groups=agentorca.agentorca.io,resources=agents;tools;mcpservers;knowledgebases;modelselectors;modelproviders;agentdeployments;agentworkflows,verbs=create;update,versions=v1alpha1,name=vownership.kb.io,admissionReviewVersions=v1
+// +kubebuilder:webhook:path=/validate-agentorca-agentorca-io-v1alpha1-ownership,mutating=false,failurePolicy=fail,sideEffects=None,groups=agentorca.agentorca.io,resources=agents;tools;mcpservers;knowledgebases;modelselectors;modelproviders;agentdeployments;agentworkflows;agentschedules,verbs=create;update,versions=v1alpha1,name=vownership.kb.io,admissionReviewVersions=v1
 
 // Event reasons the webhook and the handoff controller record on an object.
 const (
