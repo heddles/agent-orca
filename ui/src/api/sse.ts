@@ -183,6 +183,10 @@ export interface AgentRunSummary {
   restartCount: number
   startTime?: string
   completionTime?: string
+  /** The AgentSchedule that started the run, if any. */
+  schedule?: string
+  /** "schedule" for an unattended tick, "manual" for Run now. */
+  trigger?: string
 }
 
 export interface AgentSummary {
@@ -331,6 +335,10 @@ export interface AgentRunDetail {
   lastRestartReason?: string
   startTime?: string
   completionTime?: string
+  /** The AgentSchedule that started the run, how, and the tick it was due for. */
+  schedule?: string
+  trigger?: string
+  scheduledFor?: string
   routingDecisions: RoutingDecisionInfo[]
   /** Every decision recorded; `routingDecisions` holds only the latest ones. */
   routingDecisionsTotal?: number

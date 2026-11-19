@@ -12,6 +12,7 @@ vi.mock('./api/sse', () => ({
 const mockGetMe = vi.fn()
 vi.mock('./api/fleet', () => ({ getMe: () => mockGetMe() }))
 vi.mock('./components/FleetView', () => ({ FleetView: () => <div>view:fleet</div> }))
+vi.mock('./components/SchedulesView', () => ({ SchedulesView: () => <div>view:schedules</div> }))
 vi.mock('./components/SystemDashboard', () => ({ SystemDashboard: () => <div>view:overview</div> }))
 vi.mock('./components/MyWork', () => ({ MyWork: () => <div>view:home</div> }))
 vi.mock('./components/AgentCatalog', () => ({ AgentCatalog: () => <div>view:catalog</div> }))
@@ -164,7 +165,12 @@ describe('index redirects', () => {
     renderAt('/operate')
     const sub = await screen.findByRole('navigation', { name: 'Operate' })
     expect(within(sub).getAllByRole('link').map((l) => l.textContent)).toEqual(
-      ['Fleet', 'Costs', 'Model routing', 'System status', 'Workflows'])
+      ['Fleet', 'Schedules', 'Costs', 'Model routing', 'System status', 'Workflows'])
+  })
+
+  it('/operate/schedules shows the schedules', async () => {
+    renderAt('/operate/schedules')
+    expect(await screen.findByText('view:schedules')).toBeInTheDocument()
   })
 
   it('/settings goes to providers', async () => {

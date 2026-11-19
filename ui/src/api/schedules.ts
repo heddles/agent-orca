@@ -1,0 +1,112 @@
+/**
+ * Client for scheduled runs (docs/schedules.md). Reading needs the viewer role,
+ * suspend, resume and Run now the runner role, and creating, editing and
+ * deleting a schedule the builder role. Plain CRUD goes through
+ * /api/resources/agentschedules (see api/builder.ts); the rest is /api/schedules.
+ */
+import { ApiError, failure, getResource, type KubeObject, type Ownership } from './builder'
+import { apiFetch } from './sse'
+
+export const SCHEDULE_KIND = 'agentschedules'
+
+export type ScheduleState = 'active' | 'suspended' | 'degraded' | 'budgetExhausted' | 'targetMissing' | 'invalid'
+
+export interface ScheduleResult {
+  status: 'succeeded' | 'failed' | 'skipped' | 'none'
+  at?: string
+  reason?: string
+  run?: string
+}
+
+export interface ScheduleSummary {
+  name: string
+  namespace: string
+  target: string
+  targetKind: 'agent' | 'workflowTemplate'
+  schedule: string
+  timeZone: string
+  concurrencyPolicy: string
+  suspended: boolean
+  state: ScheduleState
+  stateReason?: string
+  /** The next run, absolute (UTC) and in the schedule's own zone. */
+  nextRun?: string
+  nextRunLocal?: string
+  lastRun?: string
+  lastResult: ScheduleResult
+  spentTodayUSD?: string
+  spentMonthUSD?: string
+  consecutiveFailures: number
+  active: string[]
+  recentSkips: { time: string; reason: string; message?: string }[]
+  ownership: Ownership
+}
+
+export interface SchedulePreview {
+  timeZone: string
+  nextRuns: { utc: string; local: string }[]
+  minInterval: string
+  shortestGap: string
+  tooFrequent: boolean
+}
+
+export interface ScheduleRun {
+  name: string
+  namespace: string
+  kind: 'AgentRun' | 'AgentWorkflow'
+  /** "schedule" for an unattended tick, "manual" for Run now. */
+  trigger: 'schedule' | 'manual'
+  scheduledFor?: string
+  createdBy?: string
+  phase: string
+  spendUSD?: string
+  createdAt: string
+  completionTime?: string
+}
+
+const enc = encodeURIComponent
+
+async function call<T>(url: string, method = 'GET'): Promise<T> {
+  const res = await apiFetch(url, { method })
+  if (!res.ok) throw await failure(res)
+  return res.json()
+}
+
+export async function listSchedules(namespace = ''): Promise<ScheduleSummary[]> {
+  return (await call<ScheduleSummary[] | null>(`/api/schedules?namespace=${enc(namespace)}`)) ?? []
+}
+
+export const previewSchedule = (cron: string, tz: string, count = 5) =>
+  call<SchedulePreview>(`/api/schedules/preview?cron=${enc(cron)}&tz=${enc(tz)}&count=${count}`)
+
+export async function listScheduleRuns(namespace: string, name: string, before = ''): Promise<{ runs: ScheduleRun[]; nextBefore: string }> {
+  const q = before ? `?before=${enc(before)}` : ''
+  const body = await call<{ runs: ScheduleRun[] | null; nextBefore: string }>(`/api/schedules/${enc(namespace)}/${enc(name)}/runs${q}`)
+  return { runs: body.runs ?? [], nextBefore: body.nextBefore }
+}
+
+const action = (ns: string, name: string, what: string) => `/api/schedules/${enc(ns)}/${enc(name)}/${what}`
+export const suspendSchedule = (ns: string, name: string) => call<{ status: string }>(action(ns, name, 'suspend'), 'POST')
+export const resumeSchedule = (ns: string, name: string) => call<{ status: string }>(action(ns, name, 'resume'), 'POST')
+export const runScheduleNow = (ns: string, name: string) =>
+  call<{ kind: string; name: string; namespace: string }>(action(ns, name, 'run'), 'POST')
+
+export const getSchedule = (ns: string, name: string) => getResource(SCHEDULE_KIND, ns, name)
+
+export async function deleteSchedule(ns: string, name: string): Promise<void> {
+  const res = await apiFetch(`/api/resources/${SCHEDULE_KIND}/${enc(ns)}/${enc(name)}`, { method: 'DELETE' })
+  if (!res.ok) throw await failure(res)
+}
+
+/** A plain-language message for a failed call. */
+export function describeScheduleError(e: unknown): string {
+  if (e instanceof ApiError) {
+    if (e.status === 403) return e.message || 'You do not have the role this needs.'
+    if (e.status === 409) return e.message || 'Someone changed this schedule. Reload it and try again.'
+    if (e.status === 429 || e.status === 402) return e.message || 'The workspace is over a limit. Try again later.'
+    return e.errors.length ? e.errors.join(' ') : e.message
+  }
+  return e instanceof Error ? e.message : String(e)
+}
+
+export type { KubeObject }

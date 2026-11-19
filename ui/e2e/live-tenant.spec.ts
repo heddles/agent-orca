@@ -8,7 +8,7 @@ test.skip(!session, 'E2E_SESSION not set')
 const pages = [
   '/', '/agents', '/agents/templates', '/agents/published/ui-e2e/e2e-helper', '/runs', '/approvals',
   '/build/new', '/build/ui-e2e/e2e-helper', '/evaluate', '/evaluate/1', '/evaluate/experiments',
-  '/evaluate/experiments/1', '/operate/fleet', '/operate/costs', '/settings/providers',
+  '/evaluate/experiments/1', '/operate/fleet', '/operate/schedules', '/operate/costs', '/settings/providers',
 ]
 
 test.beforeEach(async ({ context, baseURL }) => {
