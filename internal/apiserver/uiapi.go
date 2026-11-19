@@ -2549,7 +2549,13 @@ func (s *UIServer) handleResourceCollection(w http.ResponseWriter, r *http.Reque
 // handleResource handles GET (read), PUT (update), DELETE on /api/resources/{kind}/{ns}/{name}.
 func (s *UIServer) handleResource(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/resources/")
-	parts := strings.Split(path, "/")
+	parts := strings.Split(strings.TrimSuffix(path, "/"), "/")
+	// The mux sends /api/resources/{kind} here (only the bare /api/resources
+	// goes to the collection handler), so list and create are routed on.
+	if len(parts) == 1 {
+		s.handleResourceCollection(w, r)
+		return
+	}
 	if len(parts) < 3 || len(parts) > 6 {
 		http.Error(w, "expected /api/resources/{kind}/{namespace}/{name}", http.StatusBadRequest)
 		return
