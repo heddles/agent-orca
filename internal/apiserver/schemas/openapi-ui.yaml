@@ -400,6 +400,49 @@ components:
           properties:
             pending: { type: boolean, description: An export marked the object for handoff and the handoff has not expired. }
             expires: { type: string, format: date-time }
+    EvalGate:
+      type: object
+      required: [id, namespace, agent, datasetId, baselineRevision, margin, minCases, budgetUsd, enabled, updatedBy]
+      properties:
+        id: { type: integer }
+        namespace: { type: string }
+        agent: { type: string }
+        datasetId: { type: integer }
+        baselineRevision: { type: integer }
+        margin: { type: number }
+        minCases: { type: integer }
+        minPassRate: { type: number }
+        maxRegressions: { type: integer }
+        budgetUsd: { type: number }
+        enabled: { type: boolean }
+        updatedBy: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    GateDecision:
+      type: object
+      required: [status, required, reason]
+      properties:
+        status: { type: string, enum: [passed, failed, missing, stale] }
+        reason: { type: string }
+        experimentId: { type: integer }
+        required:
+          type: object
+          properties:
+            margin: { type: number }
+            minCases: { type: integer }
+            minPassRate: { type: number }
+            maxRegressions: { type: integer }
+        best:
+          type: object
+          description: What the latest gate experiment found.
+          properties:
+            cases: { type: integer }
+            passRate: { type: number }
+            baselinePassRate: { type: number }
+            diffLo: { type: number }
+            regressions: { type: integer }
+            nonInferior: { type: boolean }
+            unreviewed: { type: integer }
     EvalExperiment:
       type: object
       required: [id, namespace, datasetId, datasetVersion, status, arms, repeats, budgetUsd, spentUsd, resultsTotal]
@@ -1421,6 +1464,11 @@ paths:
         Creates the minimal deployment (agentRef, chat input, one replica; the
         rest comes from the agent and its model selector), stamped and annotated
         like any UI-created object, or updates the one that already runs the agent.
+        When the agent has an enabled publish gate (PUT /api/evals/gates/{namespace}/{agent})
+        the latest gate experiment must pass first, else the answer is 409 with
+        the gate's state; a workspace with no gate publishes as before. An admin
+        may publish past a failing gate with overrideGate and a reason, which is
+        audited (action override); anyone else who sends overrideGate gets 403.
       parameters:
         - in: path
           name: namespace
@@ -1438,6 +1486,12 @@ paths:
               properties:
                 name: { type: string, description: Deployment name. Default is the agent's existing deployment, else the agent's name. }
                 chat: { type: boolean, default: true, description: Take chat input. false leaves inputSource unchanged or unset. }
+                overrideGate:
+                  type: object
+                  required: [reason]
+                  description: Publish past a failing evaluation gate. Admin only; audited.
+                  properties:
+                    reason: { type: string, minLength: 10, maxLength: 500 }
       responses:
         '200':
           description: an existing deployment was updated
@@ -1450,9 +1504,21 @@ paths:
             application/json:
               schema: { type: object, properties: { deployment: { type: object } } }
         '400': { $ref: '#/components/responses/BadRequest' }
-        '403': { $ref: '#/components/responses/Forbidden' }
+        '403': { description: The caller lacks the builder role, sent overrideGate without the admin role, or overrides are turned off (operator.evals.allowGateOverride) }
         '404': { $ref: '#/components/responses/NotFound' }
-        '409': { $ref: '#/components/responses/ResourceConflict' }
+        '409':
+          description: >
+            A Git-owned agent or deployment, or the publish gate has not passed.
+            A gate answer has gate.status failed, missing or stale with the bar
+            (required), what the latest experiment found (best), its id and a reason.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error: { type: string }
+                  gate: { $ref: '#/components/schemas/GateDecision' }
+        '503': { description: The publish gate could not be read, so nothing was published }
     delete:
       tags: [builder]
       summary: Unpublish an agent (delete its AgentDeployment)
@@ -1652,6 +1718,41 @@ paths:
                   nextCursor: { type: string }
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { description: Experiments need the PostgreSQL store and operator.evals.enabled }
+  /api/evals/experiments/{id}/summary:
+    get:
+      tags: [evals]
+      summary: The comparison of an experiment
+      description: >
+        Needs the viewer role. Per arm: cases, pass rate with its Wilson interval,
+        mean score, failure rate, cost and latency, stability under repeats, and
+        the results left out because a grade was in error or pending review
+        (excludedError, excludedPending). Per candidate arm against the first: the
+        paired counts (improved, regressed, unchanged), the exact McNemar p-value,
+        the pass-rate difference with its interval, score, cost and latency
+        differences, and the verdict. A case passes by the stored case rule: every
+        required grader passes and the weighted mean score of the others is at
+        least 0.5. Once the experiment has ended this is the summary stored then;
+        before that it is worked out from the results so far, with live and partial
+        both true. partial is also true when an ended experiment stopped early.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: integer } }
+      responses:
+        '200':
+          description: the summary
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [experimentId, status, live, partial, summary]
+                properties:
+                  experimentId: { type: integer }
+                  status: { type: string }
+                  live: { type: boolean }
+                  partial: { type: boolean }
+                  summary: { type: object, description: 'stoppedBy, partial, results, skipped, spentUsd, comparison (arms, comparisons, excludedError, excludedPending), graders' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: The experiment is queued, or failed before it had a summary }
+        '503': { description: Experiments need the PostgreSQL store and operator.evals.enabled }
   /api/evals/experiments/{id}/cancel:
     post:
       tags: [evals]
@@ -1725,6 +1826,97 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { description: The experiment is not awaiting review }
+  /api/evals/gates/{namespace}/{agent}:
+    parameters:
+      - { in: path, name: namespace, required: true, schema: { type: string } }
+      - { in: path, name: agent, required: true, schema: { type: string } }
+    get:
+      tags: [evals]
+      summary: An agent's publish gate and where it stands
+      description: >
+        Needs the viewer role. gate is null when the agent has none. decision, for an
+        enabled gate, is what a publish would be told now.
+      responses:
+        '200':
+          description: the gate
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [gate, overrideAllowed]
+                properties:
+                  gate: { nullable: true, allOf: [ { $ref: '#/components/schemas/EvalGate' } ] }
+                  decision: { $ref: '#/components/schemas/GateDecision' }
+                  overrideAllowed: { type: boolean }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { description: Gates need the PostgreSQL store }
+    put:
+      tags: [evals]
+      summary: Set or replace an agent's publish gate
+      description: >
+        Needs the admin role, so the person writing the agent does not also write
+        the bar. Audited with the old and new numbers (kind EvalGate). The gate is
+        off for agents that have none. A dataset with only llm graders is a 409:
+        a judge can be swayed by the output it grades, so a gate needs a
+        deterministic or human grader as well. The dataset a gate rests on cannot
+        be deleted until the gate is changed or removed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [datasetId, baselineRevision]
+              properties:
+                datasetId: { type: integer }
+                baselineRevision: { type: integer, minimum: 1, description: The saved revision of the agent the candidate is compared with. }
+                margin: { type: number, exclusiveMinimum: 0, exclusiveMaximum: 1, default: 0.05, description: Non-inferiority margin on the pass rate. }
+                minCases: { type: integer, minimum: 1, maximum: 2000, default: 30 }
+                minPassRate: { type: number, minimum: 0, maximum: 1 }
+                maxRegressions: { type: integer, minimum: 0 }
+                budgetUsd: { type: number, default: 5, description: Budget of the experiment the evaluate action starts. }
+                enabled: { type: boolean, default: true }
+      responses:
+        '200':
+          description: the gate
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/EvalGate' } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: The dataset has only llm graders }
+    delete:
+      tags: [evals]
+      summary: Remove an agent's publish gate
+      description: Needs the admin role. Audited.
+      responses:
+        '204': { description: removed }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/agents/{namespace}/{name}/evaluate:
+    post:
+      tags: [evals]
+      summary: Run the publish gate's evaluation
+      description: >
+        Needs the builder role. Audited. Queues the gate experiment: the agent as it
+        is now (the candidate arm, pinned to the hash of its spec) against the
+        baseline revision the gate names, on the gate's dataset at its current
+        version. A pass counts for that agent version and that dataset version only:
+        editing the agent, the dataset or its graders makes it stale. 409 when the
+        agent has no gate.
+      parameters:
+        - { in: path, name: namespace, required: true, schema: { type: string } }
+        - { in: path, name: name, required: true, schema: { type: string } }
+      responses:
+        '201':
+          description: the queued experiment (purpose gate)
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/EvalExperiment' } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: The agent has no gate, the dataset has no graders, or the tenant has too many active experiments }
+        '422': { description: The baseline revision or an object the arms name is missing }
+        '503': { description: Experiments need the PostgreSQL store and operator.evals.enabled }
   /api/evals/review/{id}:
     parameters:
       - { in: path, name: id, required: true, schema: { type: integer, format: int64 } }

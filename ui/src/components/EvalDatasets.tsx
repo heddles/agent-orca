@@ -36,7 +36,7 @@ export function EvalDatasets() {
   return (
     <Page>
       <PageHeader
-        title="Evaluate"
+        title="Datasets"
         description="Datasets are sets of example cases, with checks that say whether an agent's answer is good."
         actions={actions}
       />

@@ -29,6 +29,10 @@ export const ROUTES = {
 
 /** An evaluation dataset. */
 export const datasetPath = (id: number) => `/evaluate/${id}`
+/** The experiments list, one experiment, and its blind review queue. */
+export const experimentsPath = '/evaluate/experiments'
+export const experimentPath = (id: number) => `/evaluate/experiments/${id}`
+export const reviewPath = (id: number) => `/evaluate/experiments/${id}/review`
 export const buildNewPath = '/build/new'
 /** An agent in the builder. */
 export const buildPath = (ns: string, name: string) => `/build/${enc(ns)}/${enc(name)}`

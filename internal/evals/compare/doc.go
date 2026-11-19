@@ -82,9 +82,12 @@ limitations under the License.
 // differ.
 //
 //   - A run that failed or timed out is a failed case, not a skipped one.
-//   - A succeeded run passes when every required grader passes and more than
-//     half of the optional graders, by weight, pass. A result with any grade
-//     that is not "ok" is unusable until that is resolved.
+//   - A succeeded run passes by the same rule as the stored case verdict
+//     (graders.CasePass): every required grader passes and the weighted mean
+//     score of the other graders is at least 0.5. An invalid judge reply is a
+//     failed grade with score 0. A result with a grade in error, or still
+//     pending review, is left out of every figure until that is resolved, and
+//     ArmSummary.ExcludedError and ExcludedPending count how many.
 //   - With repeats, a case passes when more than half of its usable repeats
 //     pass; a tie fails. Scores, cost and latency are averaged per case first.
 //     The share of cases whose repeats disagree is reported as stability.
