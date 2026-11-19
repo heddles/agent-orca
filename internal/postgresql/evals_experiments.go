@@ -812,65 +812,71 @@ func wrapEvalErr(what string, err error) error {
 // a result unless it is required, when it counts as a failure, the same rule
 // graders.CasePass applies.
 func (s *Store) EvalSummaryRows(ctx context.Context, id int64) ([]compare.Row, error) {
-	out := []compare.Row{}
+	var out []compare.Row
 	err := s.scoped(ctx, func(tx dbtx, scope string) error {
-		rows, err := tx.QueryContext(ctx, `
-			SELECT r.id, r.case_id, r.arm, r.repeat, r.phase, r.cost_usd::float8, r.cost_complete, r.latency_ms,
-			       g.grader_id, g.score, g.pass, g.not_graded, gr.weight, gr.required, g.status
-			FROM eval_results r
-			LEFT JOIN eval_grades g ON g.result_id = r.id AND g.tenant_id = r.tenant_id
-			LEFT JOIN eval_graders gr ON gr.id = g.grader_id AND gr.tenant_id = g.tenant_id
-			WHERE r.experiment_id = $1 AND ($2::text = '*' OR r.tenant_id = $2)
-			ORDER BY r.id, g.grader_id`, id, scope)
-		if err != nil {
-			return err
-		}
-		defer func() { _ = rows.Close() }()
-		var lastID int64 = -1
-		for rows.Next() {
-			var (
-				rid                      int64
-				caseID                   sql.NullInt64
-				row                      compare.Row
-				latency                  int64
-				graderID                 sql.NullInt64
-				score, weight            sql.NullFloat64
-				pass, notGraded, require sql.NullBool
-				status                   sql.NullString
-			)
-			if err := rows.Scan(&rid, &caseID, &row.Arm, &row.Repeat, &row.Phase, &row.CostUSD, &row.CostComplete, &latency,
-				&graderID, &score, &pass, &notGraded, &weight, &require, &status); err != nil {
-				return err
-			}
-			if rid != lastID {
-				row.CaseID = caseID.Int64
-				if latency > 0 {
-					ms := int(latency)
-					row.LatencyMS = &ms
-				}
-				out = append(out, row)
-				lastID = rid
-			}
-			if !graderID.Valid || (notGraded.Bool && !require.Bool) {
-				continue
-			}
-			g := compare.Grade{GraderID: graderID.Int64, Score: score.Float64, Pass: pass.Bool, Status: status.String,
-				Weight: weight.Float64, Required: require.Bool}
-			if notGraded.Bool {
-				g.Score, g.Pass = 0, false
-			}
-			if status.String == GradeInvalid {
-				// A judge reply that was not usable is a failed grade, never a free
-				// pass and never a missing one (docs/evaluations.md).
-				g.Status, g.Score, g.Pass = compare.GradeOK, 0, false
-			}
-			last := &out[len(out)-1]
-			last.Grades = append(last.Grades, g)
-		}
-		return rows.Err()
+		var err error
+		out, err = evalSummaryRows(ctx, tx, scope, id)
+		return err
 	})
 	if err != nil {
 		return nil, wrapEval("reading the experiment's results", err)
 	}
+	return out, nil
+}
+
+func evalSummaryRows(ctx context.Context, tx dbtx, scope string, id int64) ([]compare.Row, error) {
+	out := []compare.Row{}
+	rows, err := tx.QueryContext(ctx, `
+		SELECT r.id, r.case_id, r.arm, r.repeat, r.phase, r.cost_usd::float8, r.cost_complete, r.latency_ms,
+		       g.grader_id, g.score, g.pass, g.not_graded, gr.weight, gr.required, g.status
+		FROM eval_results r
+		LEFT JOIN eval_grades g ON g.result_id = r.id AND g.tenant_id = r.tenant_id
+		LEFT JOIN eval_graders gr ON gr.id = g.grader_id AND gr.tenant_id = g.tenant_id
+		WHERE r.experiment_id = $1 AND ($2::text = '*' OR r.tenant_id = $2)
+		ORDER BY r.id, g.grader_id`, id, scope)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var lastID int64 = -1
+	for rows.Next() {
+		var (
+			rid                      int64
+			caseID                   sql.NullInt64
+			row                      compare.Row
+			latency                  int64
+			graderID                 sql.NullInt64
+			score, weight            sql.NullFloat64
+			pass, notGraded, require sql.NullBool
+			status                   sql.NullString
+		)
+		if err := rows.Scan(&rid, &caseID, &row.Arm, &row.Repeat, &row.Phase, &row.CostUSD, &row.CostComplete, &latency,
+			&graderID, &score, &pass, &notGraded, &weight, &require, &status); err != nil {
+			return nil, err
+		}
+		if rid != lastID {
+			row.CaseID = caseID.Int64
+			if latency > 0 {
+				ms := int(latency)
+				row.LatencyMS = &ms
+			}
+			out = append(out, row)
+			lastID = rid
+		}
+		if !graderID.Valid || (notGraded.Bool && !require.Bool) {
+			continue
+		}
+		g := compare.Grade{GraderID: graderID.Int64, Score: score.Float64, Pass: pass.Bool, Status: status.String,
+			Weight: weight.Float64, Required: require.Bool}
+		if notGraded.Bool {
+			g.Score, g.Pass = 0, false
+		}
+		last := &out[len(out)-1]
+		last.Grades = append(last.Grades, g)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
 	return out, nil
 }

@@ -169,7 +169,7 @@ func TestEvaluation_WritesARecommendationForAFinding(t *testing.T) {
 		t.Fatalf("recommendations = %d, want 1", len(recs))
 	}
 	rec := recs[0]
-	if !strings.HasPrefix(rec.Name, "adaptive-overspend-") || rec.Labels[labelRecSelector] != evalSel || rec.Labels[labelRecDetector] != "overspend" {
+	if !strings.HasPrefix(rec.Name, "adaptive-overspend-") || rec.Labels[labelRecSelector] != evalSel || rec.Labels[labelRecDetector] != routingbench.DetectorOverspend {
 		t.Errorf("name %q labels %v", rec.Name, rec.Labels)
 	}
 	sp := rec.Spec

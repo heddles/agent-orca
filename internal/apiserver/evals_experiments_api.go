@@ -27,6 +27,7 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/heddles/agent-orca/internal/evals/compare"
 	"github.com/heddles/agent-orca/internal/evals/runner"
 	"github.com/heddles/agent-orca/internal/postgresql"
 	"github.com/heddles/agent-orca/internal/tenancy"
@@ -38,6 +39,7 @@ import (
 //	GET  /api/evals/experiments                     viewer
 //	GET  /api/evals/experiments/{id}                viewer
 //	GET  /api/evals/experiments/{id}/results        viewer (paged)
+//	GET  /api/evals/experiments/{id}/summary        viewer (the stored summary, or a live partial one)
 //	POST /api/evals/experiments/{id}/cancel         builder, audited
 //	GET  /api/evals/experiments/{id}/review         viewer (the blind review queue, evals_review_api.go)
 //	POST /api/evals/experiments/{id}/review/close   builder, audited
@@ -54,6 +56,7 @@ const (
 	maxExperimentBody  = 64 << 10
 	segResults         = "results"
 	segCancel          = "cancel"
+	segSummary         = "summary"
 )
 
 // evalExperimentStore is the slice of postgresql.Store the experiment endpoints use.
@@ -64,6 +67,7 @@ type evalExperimentStore interface {
 	GetEvalExperiment(ctx context.Context, id int64) (postgresql.EvalExperiment, error)
 	ListEvalExperiments(ctx context.Context, q postgresql.EvalExperimentQuery) ([]postgresql.EvalExperiment, error)
 	RequestEvalCancel(ctx context.Context, id int64) (postgresql.EvalExperiment, error)
+	EvalSummaryRows(ctx context.Context, id int64) ([]compare.Row, error)
 	ListEvalExperimentResults(ctx context.Context, id int64, q postgresql.EvalExperimentResultQuery) ([]postgresql.EvalResult, error)
 }
 
@@ -154,6 +158,8 @@ func (s *UIServer) handleEvalExperiment(w http.ResponseWriter, r *http.Request) 
 		s.getEvalExperiment(w, r, id)
 	case len(parts) == 2 && parts[1] == segResults && r.Method == http.MethodGet:
 		s.listEvalExperimentResults(w, r, id)
+	case len(parts) == 2 && parts[1] == segSummary && r.Method == http.MethodGet:
+		s.getEvalExperimentSummary(w, r, id)
 	case len(parts) == 2 && parts[1] == segCancel && r.Method == http.MethodPost:
 		s.cancelEvalExperiment(w, r, id)
 	case len(parts) == 2 && parts[1] == segReview && r.Method == http.MethodGet:
@@ -168,7 +174,7 @@ func (s *UIServer) handleEvalExperiment(w http.ResponseWriter, r *http.Request) 
 }
 
 func isExperimentSeg(seg string) bool {
-	return seg == segResults || seg == segCancel || seg == segReview
+	return seg == segResults || seg == segSummary || seg == segCancel || seg == segReview
 }
 
 type experimentRequest struct {

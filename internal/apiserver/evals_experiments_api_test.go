@@ -16,6 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
+	"github.com/heddles/agent-orca/internal/evals/compare"
 	"github.com/heddles/agent-orca/internal/postgresql"
 	"github.com/heddles/agent-orca/internal/tenancy"
 )
@@ -27,6 +28,7 @@ type fakeExperimentStore struct {
 	*fakeEvalStore
 	exps     map[int64]*postgresql.EvalExperiment
 	results  map[int64][]postgresql.EvalResult
+	rows     map[int64][]compare.Row
 	spend    postgresql.EvalSpend
 	gotSpend postgresql.EvalSpendQuery
 }
@@ -572,4 +574,14 @@ func TestEvalRunsAreLeftOutOfTheFleet(t *testing.T) {
 	if arch.n == 0 || arch.got.IncludeEval {
 		t.Errorf("the fleet's archive query: %+v (%d calls)", arch.got, arch.n)
 	}
+}
+
+// EvalSummaryRows returns the rows set in rows[id], as the real store reads them.
+func (f *fakeExperimentStore) EvalSummaryRows(ctx context.Context, id int64) ([]compare.Row, error) {
+	if _, err := f.GetEvalExperiment(ctx, id); err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.rows[id], nil
 }
