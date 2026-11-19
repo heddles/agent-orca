@@ -39,6 +39,8 @@ tags:
     description: Evaluation datasets and cases (PostgreSQL store; 503 without it)
   - name: triggers
     description: Webhook triggers that start a run of an agent from outside (PostgreSQL store; 503 without it)
+  - name: widget
+    description: Chat widget keys, and the public endpoints a page's widget calls (PostgreSQL store; 503 or 404 without it)
 components:
   securitySchemes:
     BearerAuth:
@@ -402,6 +404,21 @@ components:
           properties:
             pending: { type: boolean, description: An export marked the object for handoff and the handoff has not expired. }
             expires: { type: string, format: date-time }
+    WidgetKey:
+      type: object
+      required: [id, namespace, agent, name, allowedOrigins, rateLimitPerMin, budgetUsdPerDay, enabled, createdBy, createdAt]
+      properties:
+        id: { type: string, description: The public key in the embed snippet. It is not a secret. }
+        tenantId: { type: string }
+        namespace: { type: string }
+        agent: { type: string }
+        name: { type: string }
+        allowedOrigins: { type: array, items: { type: string }, description: Exact page origins, https (http for localhost). }
+        rateLimitPerMin: { type: integer }
+        budgetUsdPerDay: { type: number }
+        enabled: { type: boolean }
+        createdBy: { type: string }
+        createdAt: { type: string, format: date-time }
     Trigger:
       type: object
       required: [id, namespace, agent, name, inputPath, rateLimitPerMin, enabled, createdBy, createdAt, fireCount]
@@ -2512,6 +2529,168 @@ paths:
         '413': { description: The body is over 64 KiB }
         '422': { description: The body does not fit the trigger's input path }
         '429': { description: The trigger's rate limit or the tenant's quota is used up }
+  /api/widget-keys:
+    get:
+      tags: [widget]
+      summary: List chat widget keys
+      description: Needs the viewer role.
+      parameters:
+        - { in: query, name: namespace, schema: { type: string } }
+        - { in: query, name: agent, schema: { type: string } }
+      responses:
+        '200':
+          description: the keys
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/WidgetKey' } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { description: Widget keys need the PostgreSQL store }
+    post:
+      tags: [widget]
+      summary: Create a chat widget key for a published agent
+      description: >
+        Needs the builder role. Audited (kind WidgetKey). The widget chats through the
+        agent's deployment, so an agent that is not published is a 409. Origins are exact
+        (no wildcards) and must be https, or http for localhost.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [namespace, agent, name, allowedOrigins]
+              properties:
+                namespace: { type: string }
+                agent: { type: string }
+                name: { type: string, maxLength: 80 }
+                allowedOrigins: { type: array, minItems: 1, maxItems: 10, items: { type: string } }
+                rateLimitPerMin: { type: integer, minimum: 1, maximum: 600, default: 30 }
+                budgetUsdPerDay: { type: number, exclusiveMinimum: 0, maximum: 10000, default: 5 }
+      responses:
+        '201':
+          description: the key
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/WidgetKey' } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: The agent is not published, a template, or the name is taken }
+  /api/widget-keys/{id}:
+    parameters:
+      - { in: path, name: id, required: true, schema: { type: string } }
+    patch:
+      tags: [widget]
+      summary: Change a chat widget key
+      description: Needs the builder role. Audited. Any of the fields; a removed origin stops working at once.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                enabled: { type: boolean }
+                allowedOrigins: { type: array, items: { type: string } }
+                rateLimitPerMin: { type: integer }
+                budgetUsdPerDay: { type: number }
+      responses:
+        '200':
+          description: the key
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/WidgetKey' } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [widget]
+      summary: Delete a chat widget key
+      description: Needs the builder role. Audited.
+      responses:
+        '204': { description: deleted }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /widget/v1.js:
+    get:
+      tags: [widget]
+      summary: The chat widget script
+      description: Public and cacheable. Embedded with a script tag carrying data-key.
+      responses:
+        '200': { description: JavaScript, content: { text/javascript: { schema: { type: string } } } }
+  /widget/v1/{key}/sessions:
+    parameters:
+      - { in: path, name: key, required: true, schema: { type: string } }
+    post:
+      tags: [widget]
+      summary: Start a widget session
+      description: >
+        Public, for the origins of the key only (the Origin header; others get 403). Answers
+        a token for X-Widget-Session, valid 30 minutes, bound to the key and the origin. Limited
+        per key.
+      responses:
+        '200':
+          description: the session
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string }
+                  expiresAt: { type: string, format: date-time }
+                  agent: { type: string }
+        '403': { description: The page's origin is not allowed }
+        '404': { description: No such enabled key }
+        '429': { description: The key's rate limit is used up }
+  /widget/v1/{key}/messages:
+    parameters:
+      - { in: path, name: key, required: true, schema: { type: string } }
+    post:
+      tags: [widget]
+      summary: Send a message in a widget session
+      description: >
+        Needs X-Widget-Session. Starts a chat turn of the key's agent through its deployment, as the UI's
+        chat does. 402 when the key's daily budget is spent, 429 on its rate or when too many runs are active.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [input]
+              properties:
+                input: { type: string, maxLength: 4000 }
+      responses:
+        '202':
+          description: the run that answers
+          content:
+            application/json:
+              schema: { type: object, properties: { runName: { type: string } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { description: The session is missing, expired, forged or for another key or origin }
+        '402': { description: The key's daily budget is spent }
+        '403': { description: The page's origin is not allowed }
+        '404': { description: The key, agent or tenant is gone }
+        '429': { description: Rate limit or too many active runs }
+  /widget/v1/{key}/runs/{run}:
+    parameters:
+      - { in: path, name: key, required: true, schema: { type: string } }
+      - { in: path, name: run, required: true, schema: { type: string } }
+    get:
+      tags: [widget]
+      summary: Poll for the answer of a widget message
+      description: Needs X-Widget-Session; only runs of that session are visible (404 otherwise).
+      responses:
+        '200':
+          description: the state of the run
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  phase: { type: string, enum: [running, done, failed] }
+                  output: { type: string }
+                  error: { type: string }
+        '401': { description: The session is missing or expired }
+        '404': { description: Not a run of this session }
 responseComponents:
   BadRequest:
     description: Bad request

@@ -112,6 +112,13 @@ func main() {
 		proxy.ServeHTTP(w, r)
 	})
 
+	// /widget/* — the embeddable chat widget: its script and its API. Sessions are
+	// the widget's own (X-Widget-Session) and the operator checks the page's
+	// Origin, so the proxy only forwards.
+	mux.HandleFunc("/widget/", func(w http.ResponseWriter, r *http.Request) {
+		proxy.ServeHTTP(w, r)
+	})
+
 	// /oauth/* — proxy the OIDC login flow to the operator. The Director only
 	// strips Authorization (to inject the SA token); ReverseProxy forwards
 	// Cookie/Set-Cookie by default, so the agent-orca session cookie round-trips.
