@@ -31,9 +31,9 @@ import (
 // In audit mode (tenancy.ModeAudit, the default) a violation is logged,
 // counted and returned to the client as an admission warning, but allowed.
 
-// +kubebuilder:webhook:path=/mutate-agentorca-agentorca-io-v1alpha1-tenantlabel,mutating=true,failurePolicy=fail,sideEffects=None,groups=agentorca.agentorca.io,resources=agents;tools;mcpservers;knowledgebases;modelselectors;modelproviders;agentdeployments;agentworkflows;agentruns,verbs=create;update,versions=v1alpha1,name=mtenantlabel.kb.io,admissionReviewVersions=v1
+// +kubebuilder:webhook:path=/mutate-agentorca-agentorca-io-v1alpha1-tenantlabel,mutating=true,failurePolicy=fail,sideEffects=None,groups=agentorca.agentorca.io,resources=agents;tools;mcpservers;knowledgebases;modelselectors;modelproviders;agentdeployments;agentworkflows;agentruns;agentschedules,verbs=create;update,versions=v1alpha1,name=mtenantlabel.kb.io,admissionReviewVersions=v1
 
-// +kubebuilder:webhook:path=/validate-agentorca-agentorca-io-v1alpha1-tenantisolation,mutating=false,failurePolicy=fail,sideEffects=None,groups=agentorca.agentorca.io,resources=agents;tools;mcpservers;knowledgebases;modelselectors;modelproviders;agentdeployments;agentworkflows;agentruns,verbs=create;update,versions=v1alpha1,name=vtenantisolation.kb.io,admissionReviewVersions=v1
+// +kubebuilder:webhook:path=/validate-agentorca-agentorca-io-v1alpha1-tenantisolation,mutating=false,failurePolicy=fail,sideEffects=None,groups=agentorca.agentorca.io,resources=agents;tools;mcpservers;knowledgebases;modelselectors;modelproviders;agentdeployments;agentworkflows;agentruns;agentschedules,verbs=create;update,versions=v1alpha1,name=vtenantisolation.kb.io,admissionReviewVersions=v1
 
 // tenantObject is the part of an admission request both handlers read.
 type tenantObject struct {

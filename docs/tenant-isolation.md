@@ -7,7 +7,7 @@ Every tenant-owned object and every row of tenant data carries the tenant's ID. 
 | Layer | What isolates | Where |
 |---|---|---|
 | Identity | Session and issued tokens carry a `tid` claim. Kubernetes ServiceAccount tokens resolve to the `TenantConfig` that claims the ServiceAccount's namespace, and carry its ID. | `internal/apiserver/auth.go` |
-| Labels and webhooks | `agentorca.io/tenant-id` on every tenant-owned object. Webhooks default it from the namespace, make it immutable and reject references to another tenant's objects. Objects shared by the platform carry `agentorca.io/scope=platform` instead. | `internal/webhook`, `internal/tenancy` |
+| Labels and webhooks | `agentorca.io/tenant-id` on every tenant-owned object. Webhooks default it from the namespace, make it immutable and reject references to another tenant's objects. `AgentSchedule` is covered like the other kinds: it can reference only an agent or template of its own namespace and tenant. Objects shared by the platform carry `agentorca.io/scope=platform` instead. | `internal/webhook`, `internal/tenancy` |
 | API filtering | The UI, external and ACP APIs hide objects of other tenants. `/api/me` reports the caller's tenant. | `internal/apiserver` |
 | PostgreSQL | A `tenant_id` column on every tenant table, with row-level security (RLS) as a backstop under the query filters. | `internal/postgresql` |
 | Redis | A run's keys are prefixed `t:<tenant ID>:`. The operator, the APIs and the model-router all build keys the same way. | `internal/state/tenant.go` |

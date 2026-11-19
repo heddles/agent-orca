@@ -20,6 +20,16 @@ operator:
       cpu: 500m
       memory: 512Mi
   leaderElection: true
+  # Scheduled runs (AgentSchedule, docs/schedules.md). Leader election above keeps
+  # the schedule controller on one replica; the deterministic run name per tick
+  # is what prevents a double start if two ever run.
+  schedule:
+    # The shortest gap a schedule may have between ticks. A cron expression that
+    # fires more often is refused when it is created or edited.
+    minInterval: 5m
+    # A schedule stops ticking (condition Degraded) after this many finished
+    # runs in a row failed, until someone resumes it.
+    maxConsecutiveFailures: 5
   # Comma-separated list of allowed OCI registry prefixes.
   # Empty = allow all registries.
   allowedRegistries: ""

@@ -19,7 +19,10 @@ import (
 	"github.com/heddles/agent-orca/internal/tenancy"
 )
 
-const schedTenant = "tnt_0198aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee"
+const (
+	schedTenant = "tnt_0198aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee"
+	schedName   = "digest"
+)
 
 // schedEnv is a reconciler on a fake client with a clock the test moves.
 type schedEnv struct {
@@ -39,7 +42,7 @@ func newSchedEnv(t *testing.T, start time.Time, objs ...client.Object) *schedEnv
 		t.Fatal(err)
 	}
 	cl := fake.NewClientBuilder().WithScheme(scheme).
-		WithStatusSubresource(&agentorcav1alpha1.AgentSchedule{}, &agentorcav1alpha1.AgentRun{}).
+		WithStatusSubresource(&agentorcav1alpha1.AgentSchedule{}, &agentorcav1alpha1.AgentRun{}, &agentorcav1alpha1.AgentWorkflow{}).
 		WithObjects(objs...).Build()
 	e := &schedEnv{t: t, cl: cl, now: start}
 	e.r = &AgentScheduleReconciler{Client: cl, Scheme: scheme, Now: func() time.Time { return e.now }}
@@ -55,7 +58,7 @@ func schedAgent() *agentorcav1alpha1.Agent {
 func hourly(mods ...func(*agentorcav1alpha1.AgentSchedule)) *agentorcav1alpha1.AgentSchedule {
 	s := &agentorcav1alpha1.AgentSchedule{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "digest", Namespace: "team-a", UID: types.UID("sched-uid"), Generation: 1,
+			Name: schedName, Namespace: "team-a", UID: types.UID("sched-uid"), Generation: 1,
 			Labels: map[string]string{tenancy.LabelTenantID: schedTenant},
 		},
 		Spec: agentorcav1alpha1.AgentScheduleSpec{
@@ -148,7 +151,7 @@ func TestScheduleTickCreatesExactlyOneRun(t *testing.T) {
 	if want := schedule.RunName("digest", utc(10, 0)); run.Name != want {
 		t.Errorf("name = %q, want %q", run.Name, want)
 	}
-	if run.Labels[schedule.LabelSchedule] != "digest" || run.Labels[tenancy.LabelTenantID] != schedTenant {
+	if run.Labels[schedule.LabelSchedule] != schedName || run.Labels[tenancy.LabelTenantID] != schedTenant {
 		t.Errorf("labels = %v", run.Labels)
 	}
 	if run.Annotations[schedule.AnnotationCreatedBy] != "schedule:team-a/digest" ||

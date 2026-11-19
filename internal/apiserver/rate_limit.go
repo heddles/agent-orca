@@ -18,13 +18,13 @@ package apiserver
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"strconv"
 	"sync"
 	"time"
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
-	"github.com/heddles/agent-orca/internal/tenancy"
+	"github.com/heddles/agent-orca/internal/quota"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -35,13 +35,6 @@ var runTerminalPhases = map[agentorcav1alpha1.AgentRunPhase]bool{ //nolint:unuse
 	agentorcav1alpha1.AgentRunPhaseSucceeded:       true,
 	agentorcav1alpha1.AgentRunPhaseFailed:          true,
 	agentorcav1alpha1.AgentRunPhaseHandedOff:       true,
-	agentorcav1alpha1.AgentRunPhaseWaitingForInput: true,
-}
-
-// activePhases are AgentRun phases that consume a concurrent-run slot.
-var activePhases = map[agentorcav1alpha1.AgentRunPhase]bool{
-	agentorcav1alpha1.AgentRunPhasePending:         true,
-	agentorcav1alpha1.AgentRunPhaseRunning:         true,
 	agentorcav1alpha1.AgentRunPhaseWaitingForInput: true,
 }
 
@@ -150,99 +143,21 @@ func enforceQuotas(
 		}
 	}
 
-	// 2. Concurrent-run cap (external-task runs only).
-	if tenant.ConcurrentRuns > 0 && kube != nil {
-		running, err := countActiveExternalRuns(ctx, kube, tenantNamespaces(tenant), tenant.TenantID)
-		if err != nil {
-			// Don't block the tenant on a transient K8s error — log via caller; fail closed
-			// only matters if we wanted to deny. We deny on uncertainty to avoid budget blowout.
-			return &QuotaError{Code: 500, Message: fmt.Sprintf("checking concurrent runs: %s", err)}
-		}
-		if running >= tenant.ConcurrentRuns {
-			return &QuotaError{
-				Code:    429,
-				Message: fmt.Sprintf("concurrent run limit (%d) reached for tenant %q; retry later", tenant.ConcurrentRuns, tenant.TenantName),
-			}
-		}
-	}
-
-	// 3. Daily budget cap.
-	if tenant.BudgetPerDayUSD != "" && tenant.BudgetPerDayUSD != "0" && kube != nil {
-		used, err := sumTodayTenantSpend(ctx, kube, tenant.TenantName, tenant.TenantID)
-		if err != nil {
-			return &QuotaError{Code: 500, Message: fmt.Sprintf("checking budget: %s", err)}
-		}
-		cap, _ := strconv.ParseFloat(tenant.BudgetPerDayUSD, 64)
-		if cap > 0 && used >= cap {
-			return &QuotaError{
-				Code:    402,
-				Message: fmt.Sprintf("daily budget ($%s) exceeded for tenant %q (used $%s)", tenant.BudgetPerDayUSD, tenant.TenantName, strconv.FormatFloat(used, 'f', 6, 64)),
-			}
+	// 2. Concurrent-run cap and 3. daily budget, shared with the schedule
+	// controller so both count the same runs.
+	if kube != nil {
+		err := quota.Check(ctx, kube, quota.Limits{
+			TenantName:      tenant.TenantName,
+			TenantID:        tenant.TenantID,
+			Namespaces:      tenantNamespaces(tenant),
+			ConcurrentRuns:  tenant.ConcurrentRuns,
+			BudgetPerDayUSD: tenant.BudgetPerDayUSD,
+		})
+		var qe *quota.Error
+		if errors.As(err, &qe) {
+			return &QuotaError{Code: qe.Code, Message: qe.Message}
 		}
 	}
 
 	return nil
-}
-
-// countActiveExternalRuns counts AgentRuns in any of the tenant's authorized
-// namespaces that are active (holding a concurrent-run slot), selected by the
-// external-task label.
-func countActiveExternalRuns(ctx context.Context, kube client.Client, namespaces []string, tenantID string) (int, error) {
-	if len(namespaces) == 0 {
-		return 0, fmt.Errorf("tenant has no authorized namespaces")
-	}
-	var list agentorcav1alpha1.AgentRunList
-	for _, ns := range namespaces {
-		var l agentorcav1alpha1.AgentRunList
-		if err := kube.List(ctx, &l,
-			client.InNamespace(ns),
-			client.MatchingLabels{"agentorca.io/external-task": "true"},
-		); err != nil {
-			return 0, err
-		}
-		list.Items = append(list.Items, l.Items...)
-	}
-	n := 0
-	for i := range list.Items {
-		// Two tenants can share a namespace: a run labelled for another tenant
-		// does not hold this tenant's slot. Unlabelled runs still count.
-		if owner := list.Items[i].Labels[tenancy.LabelTenantID]; tenantID != "" && owner != "" && owner != tenantID {
-			continue
-		}
-		if activePhases[list.Items[i].Status.Phase] {
-			n++
-		}
-	}
-	return n, nil
-}
-
-// sumTodayTenantSpend sums status.spendUSD across all AgentRuns belonging to a
-// tenant (by label) that were created today. Runs still in-flight contribute
-// their last-reported status.spendUSD; runs with no spend field contribute 0.
-func sumTodayTenantSpend(ctx context.Context, kube client.Client, tenantName, tenantID string) (float64, error) {
-	// Select by the stable ID when there is one: a same-name tenant recreated
-	// later must not inherit this one's spend.
-	selector := client.MatchingLabels{"agentorca.io/tenant": tenantName}
-	if tenantID != "" {
-		selector = client.MatchingLabels{tenancy.LabelTenantID: tenantID}
-	}
-	var list agentorcav1alpha1.AgentRunList
-	if err := kube.List(ctx, &list, selector); err != nil {
-		return 0, err
-	}
-	today := time.Now().UTC().Truncate(24 * time.Hour)
-	var total float64
-	for i := range list.Items {
-		r := &list.Items[i]
-		if !r.CreationTimestamp.IsZero() && r.CreationTimestamp.UTC().Before(today) {
-			continue
-		}
-		if r.Status.SpendUSD == "" {
-			continue
-		}
-		if v, err := strconv.ParseFloat(r.Status.SpendUSD, 64); err == nil {
-			total += v
-		}
-	}
-	return total, nil
 }

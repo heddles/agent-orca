@@ -39,6 +39,7 @@ COPY internal/oauth/ internal/oauth/
 COPY internal/openshell/ internal/openshell/
 COPY internal/podbuilder/ internal/podbuilder/
 COPY internal/postgresql/ internal/postgresql/
+COPY internal/quota/ internal/quota/
 COPY internal/rag/*.go internal/rag/
 COPY internal/ratelimit/ internal/ratelimit/
 COPY internal/router/ internal/router/

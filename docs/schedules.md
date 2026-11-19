@@ -49,3 +49,47 @@ A schedule name is at most 52 characters.
 `successfulRunsHistoryLimit` and `failedRunsHistoryLimit` (default 7 each) bound the finished runs kept; the oldest are deleted first. The schedule counts a finished run (failure streak, last success) before it can be pruned.
 
 `status` shows `lastScheduleTime`, `nextScheduleTime`, the runs in `active`, `consecutiveFailures` and the last ten skipped ticks with the reason.
+
+## Tenant isolation and quotas
+
+A schedule belongs to one tenant. It gets `agentorca.io/tenant-id` from its namespace like every other kind, the label is immutable, and the isolation webhook rejects an `agentRef`, `workflowTemplateRef` or sink Secret that belongs to another tenant. The target must be in the schedule's own namespace; the validating webhook rejects one that is not found there.
+
+Everything is checked again on **every tick**, because the world changes after a schedule is written:
+
+- the agent (or each agent of the template's steps) must still exist and be in the tenant's `allowedAgents`; otherwise the tick is skipped, `TargetMissing` is set, and the UI says why;
+- the tenant's `rateLimit.concurrentRuns` and `budgetPerDayUSD` apply (the same code as the External API, `internal/quota`). Scheduled runs count toward the concurrent-run limit. A refusal skips the tick with the reason `SkippedQuota` and starts nothing. `requestsPerMinute` does not apply: the minimum interval does that job;
+- the schedule must still have a spending ceiling (below).
+
+A run that was cancelled or refused never counts against the schedule's failure streak.
+
+### A ceiling is required
+
+An unattended run with no ceiling is the failure scheduling must not allow. A schedule is refused when it is created or edited unless it has at least one of: `spec.budget` (per run), `spec.spend` (per schedule), a workflow template with `budgetCap`, or a tenant with `budgetPerDayUSD`.
+
+A scheduled run has nobody to approve a budget raise, so `budget.onExceeded` is `fail` unless set; `pause` is accepted with a warning.
+
+### Spend caps
+
+`spec.spend.maxUSDPerDay` and `maxUSDPerMonth` (UTC windows) cap the schedule as a whole. The schedule sums the cost of its runs into `status.spentTodayUSD` and `status.spentMonthUSD`; the cost of a finished run is kept in `status.ledger`, so pruning a run does not lose it. At a cap the condition `BudgetExhausted` is set, ticks are skipped with the reason `SkippedBudget`, and the schedule wakes when the window rolls over. It never rewrites `spec.suspend`, which belongs to the person. The overshoot is bounded by one run's budget. The moment a cap stops a schedule is written to the audit log as action `suspend` by `system:agentschedule`.
+
+### Failure breaker
+
+After `operator.schedule.maxConsecutiveFailures` (default 5) finished runs in a row that failed, the schedule becomes `Degraded` and stops ticking, so a broken schedule cannot spend every day on failures nobody saw. A success resets the count. Editing the schedule or resuming it clears the condition.
+
+## Concurrency policy
+
+- `Forbid` (default) skips a tick while a run of the schedule is active.
+- `Allow` starts a run regardless.
+- `Replace` cancels the active runs first, the way the UI's Stop does: the run is failed, the cancel signal reaches the state store so the agent stops and its sandbox is released, and the run is marked `agentorca.io/schedule-replaced` so the cancellation does not count as a failure. `Replace` is for `agentRef` schedules; a workflow cannot be cancelled, and the CRD refuses it with `workflowTemplateRef`.
+
+## Workflow templates
+
+`workflowTemplateRef` names an `AgentWorkflow` with `spec.mode: template` in the same namespace. Each tick creates an `AgentWorkflow` named `<schedule>-<unix time>` with `spec.fromTemplate` set to the template and `parameters` from the schedule (the three placeholders are substituted in the values). Timeout, budget cap and safeguards come from the template. The history limits prune these workflow instances, and their cost, from `status.totalSpendUSD`, counts toward the schedule's spend. A workflow's step runs are not counted toward the tenant's concurrent-run limit.
+
+## Configuration
+
+| Helm value | Default | Meaning |
+|---|---|---|
+| `operator.schedule.minInterval` | `5m` | The shortest gap between ticks. Checked against the closest pair of firings in the coming year, so `* * * * *` and `0,1 * * * *` are both refused |
+| `operator.schedule.maxConsecutiveFailures` | `5` | The failure breaker |
+| `operator.leaderElection` | `true` | Keeps the controller on one replica. The deterministic run name is the safety net if it is ever off |

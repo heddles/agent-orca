@@ -242,6 +242,8 @@ spec:
             - --metrics-secure=false
             - --metrics-bind-address=:8080
             - --ui-auth-enabled=true
+            - --schedule-min-interval={{ dig "schedule" "minInterval" "5m" .Values.operator }}
+            - --schedule-max-consecutive-failures={{ dig "schedule" "maxConsecutiveFailures" 5 .Values.operator | int }}
             {{- range .Values.operator.extraArgs }}
             - {{ . | quote }}
             {{- end }}

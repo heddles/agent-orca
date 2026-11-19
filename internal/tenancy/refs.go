@@ -87,6 +87,9 @@ func RefsOf(obj client.Object) []Ref {
 		}
 	case *agentorcav1alpha1.AgentRun:
 		add("Agent", "spec.agentRef", o.Spec.AgentRef)
+	case *agentorcav1alpha1.AgentSchedule:
+		add("Agent", "spec.agentRef", o.Spec.AgentRef)
+		add("AgentWorkflow", "spec.workflowTemplateRef", o.Spec.WorkflowTemplateRef)
 	}
 	if spec := specValue(obj); spec.IsValid() {
 		collectSecretRefs(spec, "spec", &refs)
@@ -192,8 +195,20 @@ func NewObject(kind string) client.Object {
 		return &corev1.ConfigMap{}
 	case "ServiceAccount":
 		return &corev1.ServiceAccount{}
+	case "AgentSchedule":
+		return &agentorcav1alpha1.AgentSchedule{}
 	}
 	return nil
+}
+
+// newRefTarget is NewObject for the kinds a reference can point at. It also
+// knows AgentWorkflow, which a schedule's workflowTemplateRef names; a workflow
+// is not itself held to the label rules by the isolation webhook.
+func newRefTarget(kind string) client.Object {
+	if kind == "AgentWorkflow" {
+		return &agentorcav1alpha1.AgentWorkflow{}
+	}
+	return NewObject(kind)
 }
 
 // RefViolation is a reference to another tenant's object.
@@ -230,7 +245,7 @@ func CheckRefs(ctx context.Context, reader client.Reader, owner client.Object, t
 	}
 	var out []RefViolation
 	for _, ref := range RefsOf(owner) {
-		target := NewObject(ref.Kind)
+		target := newRefTarget(ref.Kind)
 		if target == nil {
 			continue
 		}

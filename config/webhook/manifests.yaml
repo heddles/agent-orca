@@ -31,6 +31,7 @@ webhooks:
     - agentdeployments
     - agentworkflows
     - agentruns
+    - agentschedules
   sideEffects: None
 ---
 apiVersion: admissionregistration.k8s.io/v1
@@ -77,6 +78,26 @@ webhooks:
     - UPDATE
     resources:
     - agentruns
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-agentorca-agentorca-io-v1alpha1-agentschedule
+  failurePolicy: Fail
+  name: vagentschedule.kb.io
+  rules:
+  - apiGroups:
+    - agentorca.agentorca.io
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - agentschedules
   sideEffects: None
 - admissionReviewVersions:
   - v1
@@ -172,6 +193,7 @@ webhooks:
     - agentdeployments
     - agentworkflows
     - agentruns
+    - agentschedules
   sideEffects: None
 - admissionReviewVersions:
   - v1

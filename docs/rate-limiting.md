@@ -34,7 +34,7 @@ spec:
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `rateLimit.requestsPerMinute` | int | 0 (unlimited) | Maximum task submissions per minute per tenant |
-| `rateLimit.concurrentRuns` | int | 0 (unlimited) | Maximum AgentRuns in `Running` phase simultaneously |
+| `rateLimit.concurrentRuns` | int | 0 (unlimited) | Maximum active AgentRuns at once. Counts External API tasks and runs started by an [AgentSchedule](schedules.md); a scheduled tick over the limit is skipped, not queued |
 | `budgetPerDayUSD` | string | "" (no limit) | Maximum daily LLM spend in USD |
 
 ## Enforcement order
