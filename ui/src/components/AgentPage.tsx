@@ -1,6 +1,6 @@
 /**
  * AgentPage — one agent: what it does, a run form generated from its input
- * schema, and for published agents the chat on a second tab.
+ * schema, and for published agents the chat and webhook triggers on further tabs.
  */
 import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { Link } from 'react-router'
@@ -16,6 +16,7 @@ import {
 } from '../lib/schemaForm'
 import { SchemaForm } from './SchemaForm'
 import { DeploymentView } from './DeploymentView'
+import { AgentTriggers } from './AgentTriggers'
 import { formatCost } from './AgentCatalog'
 
 /** The input shape every agent has: one free-text field. */
@@ -175,8 +176,8 @@ export function AgentPage({ namespace, name, tab, onTabChange, onNavigateToRun }
   if (!manifest) return <div role="status" style={{ padding: 24, color: ds.textMuted, fontSize: 13 }}>Loading agent…</div>
 
   const published = entry?.published ?? false
-  const active = tab === 'chat' && published ? 'chat' : 'run'
-  const tabs = [{ key: 'run', label: 'Run' }, ...(published ? [{ key: 'chat', label: 'Chat' }] : [])]
+  const active = published && (tab === 'chat' || tab === 'triggers') ? tab : 'run'
+  const tabs = [{ key: 'run', label: 'Run' }, ...(published ? [{ key: 'chat', label: 'Chat' }, { key: 'triggers', label: 'Triggers' }] : [])]
   const examples = manifest.example_inputs ?? entry?.exampleInputs ?? []
 
   return (
@@ -216,6 +217,10 @@ export function AgentPage({ namespace, name, tab, onTabChange, onNavigateToRun }
               />
             </div>
           </Section>
+        </div>
+      ) : active === 'triggers' ? (
+        <div role="tabpanel" id="triggers-panel" aria-label="Triggers">
+          <AgentTriggers namespace={namespace} name={name} />
         </div>
       ) : (
         <div role="tabpanel" id="chat-panel" aria-label="Chat" style={{ flex: 1, minHeight: 480, display: 'flex' }}>
