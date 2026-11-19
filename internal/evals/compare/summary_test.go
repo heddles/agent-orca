@@ -22,6 +22,8 @@ import (
 	"reflect"
 	"slices"
 	"testing"
+
+	"github.com/heddles/agent-orca/internal/evals/graders"
 )
 
 func decide(t *testing.T, c PairedCounts, o Options) VerdictResult {
@@ -282,22 +284,28 @@ func TestSummarizeSkipsAndFailures(t *testing.T) {
 func TestSummarizeGradersAndRepeats(t *testing.T) {
 	// Two optional graders of weight 1 and 3: the heavy one decides. A required
 	// grader failing fails the case whatever else says.
+	sc := func(b bool) float64 {
+		if b {
+			return 1
+		}
+		return 0
+	}
 	mk := func(req, a, b bool) Row {
 		return Row{CaseID: 1, Arm: "x", Phase: PhaseSucceeded, CostComplete: true, Grades: []Grade{
-			{GraderID: 1, Score: 1, Pass: req, Status: GradeOK, Required: true},
-			{GraderID: 2, Score: 1, Pass: a, Status: GradeOK, Weight: 1},
-			{GraderID: 3, Score: 0, Pass: b, Status: GradeOK, Weight: 3},
+			{GraderID: 1, Score: sc(req), Pass: req, Status: GradeOK, Required: true},
+			{GraderID: 2, Score: sc(a), Pass: a, Status: GradeOK, Weight: 1},
+			{GraderID: 3, Score: sc(b), Pass: b, Status: GradeOK, Weight: 3},
 		}}
 	}
 	for _, tc := range []struct {
 		req, a, b, want bool
 	}{{true, true, true, true}, {true, false, true, true}, {true, true, false, false}, {false, true, true, false}} {
-		_, pass, _, err := rowOutcome(mk(tc.req, tc.a, tc.b))
+		_, pass, _, _, err := rowOutcome(mk(tc.req, tc.a, tc.b))
 		if err != nil || pass != tc.want {
 			t.Errorf("required %v a %v b %v: pass = %v, %v; want %v", tc.req, tc.a, tc.b, pass, err, tc.want)
 		}
 	}
-	_, _, score, _ := rowOutcome(mk(true, true, true))
+	_, _, score, _, _ := rowOutcome(mk(true, true, false))
 	near(t, "weighted score", score, (1*1+1*1+3*0)/5.0, 1e-12) // required has weight 0, counted as 1
 
 	// Repeats: a majority decides; a flaky case is flagged.
@@ -430,4 +438,71 @@ func FuzzSummarizeNoNaN(f *testing.F) {
 			}
 		}
 	})
+}
+
+// The comparison uses the rule stored in eval_results.case_pass: the weighted
+// mean score of the non-required graders is at least 0.5, so half the weight
+// passing is a pass, and partial scores count.
+func TestRowOutcomeMatchesStoredCasePass(t *testing.T) {
+	scores := []float64{0, 0.25, 0.5, 0.75, 1}
+	for _, req := range []bool{true, false} {
+		for _, s1 := range scores {
+			for _, s2 := range scores {
+				for _, w2 := range []float64{0, 1, 3} {
+					row := Row{CaseID: 1, Arm: "x", Phase: PhaseSucceeded, Grades: []Grade{
+						{GraderID: 1, Score: 1, Pass: req, Status: GradeOK, Required: true},
+						{GraderID: 2, Score: s1, Pass: s1 >= 0.7, Status: GradeOK, Weight: 2},
+						{GraderID: 3, Score: s2, Pass: s2 >= 0.7, Status: GradeOK, Weight: w2},
+					}}
+					gs := []graders.Graded{
+						{Result: graders.Result{Pass: req, Score: 1}, Required: true},
+						{Result: graders.Result{Pass: s1 >= 0.7, Score: s1}, Weight: 2},
+						{Result: graders.Result{Pass: s2 >= 0.7, Score: s2}, Weight: w2},
+					}
+					_, pass, _, _, err := rowOutcome(row)
+					if err != nil || pass != graders.CasePass(gs) {
+						t.Fatalf("req %v s1 %v s2 %v w2 %v: compare says %v (%v), CasePass says %v", req, s1, s2, w2, pass, err, graders.CasePass(gs))
+					}
+				}
+			}
+		}
+	}
+	// Half the weight passing with score 1 and 0 is a pass (mean 0.5); the old
+	// "more than half" rule failed it.
+	row := Row{CaseID: 1, Arm: "x", Phase: PhaseSucceeded, Grades: []Grade{
+		{GraderID: 1, Score: 1, Pass: true, Status: GradeOK, Weight: 1},
+		{GraderID: 2, Score: 0, Pass: false, Status: GradeOK, Weight: 1},
+	}}
+	if _, pass, _, _, _ := rowOutcome(row); !pass {
+		t.Error("a mean of exactly 0.5 should pass")
+	}
+}
+
+func TestSummarizeExcludesErrorAndPendingAndCountsThem(t *testing.T) {
+	rows := fortyCases()
+	for i := range rows {
+		switch {
+		case rows[i].Arm == armNew && rows[i].CaseID == 1:
+			rows[i].Grades[0].Status = GradeError
+		case rows[i].Arm == armNew && rows[i].CaseID == 2:
+			rows[i].Grades[0].Status = GradePendingReview
+		case rows[i].Arm == armNew && rows[i].CaseID == 3:
+			rows[i].Grades[0].Status = GradeInvalid // a failed grade, not a missing one
+		}
+	}
+	s, err := Summarize(rows, armBase, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := s.Arms[1]
+	if n.ExcludedError != 1 || n.ExcludedPending != 1 || n.Skipped != 2 || n.Cases != 38 {
+		t.Errorf("candidate = %+v", n)
+	}
+	if b := s.Arms[0]; b.ExcludedError != 0 || b.ExcludedPending != 0 {
+		t.Errorf("baseline = %+v", b)
+	}
+	c := s.Comparisons[0]
+	if !reflect.DeepEqual(c.SkippedCases, []int64{1, 2}) || !slices.Contains(c.RegressedCases, 3) {
+		t.Errorf("skipped %v regressed %v", c.SkippedCases, c.RegressedCases)
+	}
 }

@@ -489,3 +489,17 @@ func TestCreateAgentIsStampedAndAudited(t *testing.T) {
 		t.Errorf("audit = %+v", f.audit.events)
 	}
 }
+
+// The other tests call the handlers directly; this one goes through the mux,
+// where /api/resources/{kind} must reach the collection handler.
+func TestCollectionRoutesThroughTheMux(t *testing.T) {
+	f := newWriteFixture(t)
+	for _, p := range []string{"/api/resources/agents", "/api/resources/agents/"} {
+		req := asTenant(httptest.NewRequest(http.MethodGet, p, nil), f.as(tenancy.RoleViewer))
+		rec := httptest.NewRecorder()
+		f.s.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Errorf("GET %s via mux: want 200, got %d %s", p, rec.Code, rec.Body)
+		}
+	}
+}

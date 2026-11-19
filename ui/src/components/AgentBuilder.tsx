@@ -10,6 +10,8 @@ import {
   unpublishAgent, updateResource, type BuilderOptions, type KubeObject, type OptionItem,
 } from '../api/builder'
 import { getCatalog } from '../api/catalog'
+import { gateFromPublishError, type GateDecision, type GateState } from '../api/evals'
+import { canAdminEvals, useRoles } from '../lib/access'
 import {
   AUTO_MODEL_SELECTOR, autoAvailable, emptyForm, fieldForServerError, formFromObject, nameProblem, objectFromForm, validateForm,
   type AgentForm, type FormErrors,
@@ -22,6 +24,7 @@ import { parseYAML, stringifyYAML } from '../lib/yaml'
 import { publishedAgentPath, ROUTES, buildPath } from '../lib/routes'
 import { RevisionHistory } from './RevisionHistory'
 import { BuilderTestPanel } from './BuilderTestPanel'
+import { AgentQuality, GateFailure } from './AgentQuality'
 import { DuplicateDialog, ExportDialog, Field, field, useWorkspaces } from './BuilderParts'
 
 const KIND = 'agents'
@@ -69,8 +72,10 @@ export function AgentBuilder({ namespace, name }: Props) {
   const navigate = useNavigate()
   const { workspaces, primary, loaded: workspacesLoaded, roles } = useWorkspaces()
   const [params, setParams] = useSearchParams()
-  const tab: 'edit' | 'history' = params.get('tab') === 'history' && !isNew ? 'history' : 'edit'
-  const setTab = (t: 'edit' | 'history') => setParams((p) => { const n = new URLSearchParams(p); if (t === 'history') n.set('tab', 'history'); else n.delete('tab'); return n }, { replace: true })
+  type Tab = 'edit' | 'history' | 'quality'
+  const requested = params.get('tab')
+  const tab: Tab = !isNew && (requested === 'history' || requested === 'quality') ? requested : 'edit'
+  const setTab = (t: Tab) => setParams((p) => { const n = new URLSearchParams(p); if (t !== 'edit') n.set('tab', t); else n.delete('tab'); return n }, { replace: true })
   const [historyKey, setHistoryKey] = useState(0)
   const [latestVersion, setLatestVersion] = useState<number | null>(null)
 
@@ -99,6 +104,9 @@ export function AgentBuilder({ namespace, name }: Props) {
   const [chat, setChat] = useState(true)
   const [publishBusy, setPublishBusy] = useState(false)
   const [publishMsg, setPublishMsg] = useState<{ ok: boolean; text: string; deployment?: string } | null>(null)
+  const evalRoles = useRoles()
+  const [gateFailure, setGateFailure] = useState<GateDecision | null>(null)
+  const [overrideAllowed, setOverrideAllowed] = useState(true)
   const [dialog, setDialog] = useState<'export' | 'duplicate' | null>(null)
   const [handoffMsg, setHandoffMsg] = useState('')
   const [copied, setCopied] = useState(false)
@@ -312,16 +320,20 @@ export function AgentBuilder({ namespace, name }: Props) {
   }
 
   // ── Publish ──
-  const publish = async () => {
+  const publish = async (overrideReason?: string) => {
     setPublishBusy(true)
     setPublishMsg(null)
+    setGateFailure(null)
     try {
-      const r = await publishAgent(form.namespace, form.name, { chat })
+      const r = await publishAgent(form.namespace, form.name, { chat, ...(overrideReason ? { overrideGate: { reason: overrideReason } } : {}) })
       setPublished(true)
       setHistoryKey((k) => k + 1)
       setPublishMsg({ ok: true, text: 'Published. People can now use this agent.', deployment: r.deployment.metadata?.name })
     } catch (e) {
-      setPublishMsg({ ok: false, text: `Could not publish: ${messageOf(e)}` })
+      const blocked = gateFromPublishError(e)
+      if (blocked) setGateFailure(blocked.gate)
+      else if (e instanceof ApiError && e.status === 403 && overrideReason) setPublishMsg({ ok: false, text: `Could not publish past the gate: ${messageOf(e)}` })
+      else setPublishMsg({ ok: false, text: `Could not publish: ${messageOf(e)}` })
     } finally {
       setPublishBusy(false)
     }
@@ -435,14 +447,21 @@ export function AgentBuilder({ namespace, name }: Props) {
 
         {!isNew && (
           <div role="tablist" aria-label="Agent sections" style={{ display: 'flex', gap: 4, borderBottom: '1px solid var(--ds-border)' }}>
-            {(['edit', 'history'] as const).map((t) => (
+            {(['edit', 'history', 'quality'] as const).map((t) => (
               <button
                 key={t} type="button" role="tab" id={`tab-${t}`} aria-selected={tab === t} aria-controls={`panel-${t}`}
                 tabIndex={tab === t ? 0 : -1} onClick={() => setTab(t)}
-                onKeyDown={(e) => { if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') { e.preventDefault(); setTab(t === 'edit' ? 'history' : 'edit'); document.getElementById(`tab-${t === 'edit' ? 'history' : 'edit'}`)?.focus() } }}
+                onKeyDown={(e) => {
+                  if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return
+                  e.preventDefault()
+                  const order: Tab[] = ['edit', 'history', 'quality']
+                  const next = order[(order.indexOf(t) + (e.key === 'ArrowRight' ? 1 : order.length - 1)) % order.length]
+                  setTab(next)
+                  document.getElementById(`tab-${next}`)?.focus()
+                }}
                 style={{ ...toggleBtn(false), padding: '8px 14px', fontSize: 13, background: 'transparent', color: tab === t ? ds.textPrimary : ds.textSecondary, borderBottom: `2px solid ${tab === t ? ds.accent : 'transparent'}`, fontWeight: tab === t ? 600 : 400 }}
               >
-                {t === 'edit' ? 'Edit' : 'History'}
+                {t === 'edit' ? 'Edit' : t === 'history' ? 'History' : 'Quality'}
               </button>
             ))}
           </div>
@@ -463,6 +482,12 @@ export function AgentBuilder({ namespace, name }: Props) {
                 setNotice(`Restored version ${from}. The form now shows it.`)
               }}
             />
+          </div>
+        )}
+
+        {!isNew && tab === 'quality' && (
+          <div role="tabpanel" id="panel-quality" aria-labelledby="tab-quality">
+            <AgentQuality namespace={form.namespace} name={form.name} saved={savedExists && !dirty} onGateChange={(g: GateState) => setOverrideAllowed(g.overrideAllowed)} />
           </div>
         )}
 
@@ -639,12 +664,15 @@ export function AgentBuilder({ namespace, name }: Props) {
                 <p style={field.help}>Publishing offers the saved version of this agent to the people in your organisation.</p>
                 {published && <DSChip size="sm" variant="success" dot>Published</DSChip>}
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                  <DSButton type="button" variant="primary" onClick={publish} disabled={!savedExists || dirty || publishBusy} title={!savedExists ? 'Save first' : dirty ? 'Save your changes first' : undefined}>
+                  <DSButton type="button" variant="primary" onClick={() => publish()} disabled={!savedExists || dirty || publishBusy} title={!savedExists ? 'Save first' : dirty ? 'Save your changes first' : undefined}>
                     {published ? 'Publish changes' : 'Publish'}
                   </DSButton>
                   {published && <DSButton type="button" variant="secondary" onClick={unpublish} disabled={publishBusy}>Unpublish</DSButton>}
                 </div>
                 {(!savedExists || dirty) && <p style={field.help}>{!savedExists ? 'Save the agent before publishing.' : 'Save your changes before publishing.'}</p>}
+                {gateFailure && (
+                  <GateFailure gate={gateFailure} canOverride={canAdminEvals(evalRoles)} overrideAllowed={overrideAllowed} busy={publishBusy} onOverride={(reason) => { void publish(reason) }} />
+                )}
                 <div role="status" aria-live="polite">
                   {publishMsg && (
                     <p style={publishMsg.ok ? field.help : field.error}>

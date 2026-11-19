@@ -66,13 +66,16 @@ export class ApiError extends Error {
   currentResourceVersion?: string
   /** References a template names that do not exist in the target workspace (422 from using a template). */
   missing?: MissingRef[]
-  constructor(status: number, message: string, errors: string[] = [], currentResourceVersion?: string, missing?: MissingRef[]) {
+  /** The parsed JSON body of the failed response, when it had one (a 409 from publish carries `gate`). */
+  body?: Record<string, unknown>
+  constructor(status: number, message: string, errors: string[] = [], currentResourceVersion?: string, missing?: MissingRef[], body?: Record<string, unknown>) {
     super(message)
     this.name = 'ApiError'
     this.status = status
     this.errors = errors
     this.currentResourceVersion = currentResourceVersion
     this.missing = missing
+    this.body = body
   }
 }
 
@@ -81,9 +84,11 @@ export async function failure(res: Response): Promise<ApiError> {
   let errors: string[] = []
   let current: string | undefined
   let missing: MissingRef[] | undefined
+  let parsed: Record<string, unknown> | undefined
   const text = (await res.text().catch(() => '')).trim()
   try {
     const body = JSON.parse(text) as { message?: string; error?: string; errors?: string[]; currentResourceVersion?: string; missing?: MissingRef[] }
+    if (body && typeof body === 'object' && !Array.isArray(body)) parsed = body as Record<string, unknown>
     errors = Array.isArray(body.errors) ? body.errors : []
     current = body.currentResourceVersion
     missing = Array.isArray(body.missing) ? body.missing.map((m) => ({ ...m, alternatives: m.alternatives ?? [] })) : undefined
@@ -93,7 +98,7 @@ export async function failure(res: Response): Promise<ApiError> {
     // Not JSON: use the text as is.
     message = text
   }
-  return new ApiError(res.status, message || `HTTP ${res.status}`, errors, current, missing)
+  return new ApiError(res.status, message || `HTTP ${res.status}`, errors, current, missing, parsed)
 }
 
 const enc = encodeURIComponent
@@ -163,7 +168,7 @@ export async function createFromTemplate(namespace: string, name: string, req: {
 }
 
 /** Creates or updates the AgentDeployment of an agent. */
-export async function publishAgent(namespace: string, name: string, req: { name?: string; chat?: boolean }): Promise<{ deployment: KubeObject }> {
+export async function publishAgent(namespace: string, name: string, req: { name?: string; chat?: boolean; overrideGate?: { reason: string } }): Promise<{ deployment: KubeObject }> {
   const res = await apiFetch(`/api/agents/${enc(namespace)}/${enc(name)}/publish`, {
     method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(req),
   })
