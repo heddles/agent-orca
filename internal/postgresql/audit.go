@@ -34,6 +34,9 @@ const (
 	AuditRequest = "request"
 	AuditApprove = "approve"
 	AuditReject  = "reject"
+	// AuditOverride is a publish that went ahead past a failing evaluation gate
+	// (docs/evaluations.md). The normal publish row is written too.
+	AuditOverride = "override"
 )
 
 // MaxAuditSummaryBytes bounds the summary of an audit event.

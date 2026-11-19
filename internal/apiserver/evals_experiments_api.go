@@ -229,43 +229,59 @@ func (s *UIServer) createEvalExperiment(w http.ResponseWriter, r *http.Request) 
 		BudgetUSD: req.BudgetUSD, RunBudgetUSD: req.RunBudgetUSD, TimeoutSeconds: req.TimeoutSeconds,
 		Concurrency: req.Concurrency, CreatedBy: actorOf(r.Context()),
 	}
+	created, warnings, ok := s.queueExperiment(w, r, store, d, e)
+	if !ok {
+		return
+	}
+	view := experimentViewOf(created)
+	view.Warnings = warnings
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(view)
+}
+
+// queueExperiment validates, checks and queues an experiment over d, and audits
+// it. It has answered the request when ok is false. Both the experiment
+// endpoint and the gate's evaluate action use it.
+func (s *UIServer) queueExperiment(w http.ResponseWriter, r *http.Request, store evalExperimentStore, d postgresql.EvalDataset, e postgresql.EvalExperiment) (postgresql.EvalExperiment, []string, bool) {
+	ctx := pgScope(r.Context())
 	e.Normalize()
 	if err := e.Validate(s.evalLimits); err != nil {
 		evalFail(w, "creating the experiment", err)
-		return
+		return e, nil, false
 	}
 	graders, err := store.ListEvalGraders(ctx, d.ID)
 	if err != nil {
 		evalFail(w, "listing graders", err)
-		return
+		return e, nil, false
 	}
 	if len(graders) == 0 {
 		jsonError(w, "the dataset has no graders: add one so the results can be compared", http.StatusConflict)
-		return
+		return e, nil, false
 	}
 	tenantID := ""
 	if t, ok := TenantFromContext(r.Context()); ok && t != nil {
 		tenantID = t.TenantID
 	}
 	if !s.checkExperimentArms(w, r, e, tenantID) {
-		return
+		return e, nil, false
 	}
 	warnings, ok := s.checkExperimentJudges(w, r, e, graders)
 	if !ok {
-		return
+		return e, nil, false
 	}
 	created, err := store.CreateEvalExperiment(ctx, e, s.evalLimits)
 	if err != nil {
 		evalFail(w, "creating the experiment", err)
-		return
+		return e, nil, false
 	}
-	s.experimentAudit(w, r, postgresql.AuditCreate, created, fmt.Sprintf("queued experiment on dataset %s v%d: %d arms, %d repeats, budget $%.2f",
-		d.Name, created.DatasetVersion, len(created.Arms), created.Repeats, created.BudgetUSD))
-	view := experimentViewOf(created)
-	view.Warnings = warnings
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(view)
+	purpose := ""
+	if created.Purpose == postgresql.PurposeGate {
+		purpose = " (publish gate)"
+	}
+	s.experimentAudit(w, r, postgresql.AuditCreate, created, fmt.Sprintf("queued experiment%s on dataset %s v%d: %d arms, %d repeats, budget $%.2f",
+		purpose, d.Name, created.DatasetVersion, len(created.Arms), created.Repeats, created.BudgetUSD))
+	return created, warnings, true
 }
 
 // checkExperimentArms resolves every arm (its revision or the live agent) and

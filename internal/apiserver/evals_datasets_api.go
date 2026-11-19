@@ -75,6 +75,9 @@ type EvalsConfig struct {
 	// RequireIndependentReview refuses a label from the person who started the
 	// experiment.
 	RequireIndependentReview bool
+	// DisallowGateOverride refuses a publish with overrideGate, so only changing
+	// the gate (itself audited) unblocks a publish.
+	DisallowGateOverride bool
 }
 
 func (c EvalsConfig) limits() postgresql.EvalLimits {
@@ -120,6 +123,7 @@ func (s *UIServer) registerEvalRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/evals/experiments", s.handleEvalExperiments)
 	mux.HandleFunc("/api/evals/experiments/", s.handleEvalExperiment)
 	mux.HandleFunc("/api/evals/review/", s.handleEvalReviewItem)
+	s.registerGateRoutes(mux)
 }
 
 // evalPreflight checks the role and the store. It reports whether to go on.
@@ -142,7 +146,7 @@ func evalFail(w http.ResponseWriter, what string, err error) {
 		jsonError(w, "not found", http.StatusNotFound)
 	case errors.Is(err, postgresql.ErrEvalExists):
 		jsonError(w, err.Error(), http.StatusConflict)
-	case errors.Is(err, postgresql.ErrDatasetFull), errors.Is(err, postgresql.ErrTooManyExperiments), errors.Is(err, postgresql.ErrExperimentFinished):
+	case errors.Is(err, postgresql.ErrDatasetFull), errors.Is(err, postgresql.ErrTooManyExperiments), errors.Is(err, postgresql.ErrExperimentFinished), errors.Is(err, postgresql.ErrDatasetGated):
 		jsonError(w, err.Error(), http.StatusConflict)
 	case errors.Is(err, postgresql.ErrEvalTooLarge):
 		jsonError(w, err.Error(), http.StatusRequestEntityTooLarge)

@@ -413,6 +413,11 @@ func (s *Store) DeleteEvalDataset(ctx context.Context, id int64) (EvalDataset, e
 		if err != nil {
 			return notFound(err)
 		}
+		if gated, err := gateUsesDataset(ctx, tx, id); err != nil {
+			return err
+		} else if gated {
+			return ErrDatasetGated
+		}
 		_, err = tx.ExecContext(ctx, `DELETE FROM eval_datasets WHERE id = $1`, id)
 		return err
 	})
@@ -726,7 +731,7 @@ func notFound(err error) error {
 // wrapEval adds context to an error but keeps the package's sentinel errors
 // reachable with errors.Is, and does not prefix them (their text is for callers).
 func wrapEval(what string, err error) error {
-	for _, sentinel := range []error{ErrEvalNotFound, ErrEvalExists, ErrDatasetFull, ErrInvalidEval, ErrNoTenantScope, ErrTooManyExperiments, ErrExperimentFinished} {
+	for _, sentinel := range []error{ErrEvalNotFound, ErrEvalExists, ErrDatasetFull, ErrInvalidEval, ErrNoTenantScope, ErrTooManyExperiments, ErrExperimentFinished, ErrDatasetGated} {
 		if errors.Is(err, sentinel) {
 			return err
 		}

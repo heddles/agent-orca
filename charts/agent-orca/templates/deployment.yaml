@@ -117,6 +117,8 @@ spec:
               value: {{ dig "runnerIntervalSeconds" 5 (.Values.operator.evals | default dict) | toString | quote }}
             - name: EVALS_REQUIRE_INDEPENDENT_REVIEW
               value: {{ dig "requireIndependentReview" false (.Values.operator.evals | default dict) | toString | quote }}
+            - name: EVALS_ALLOW_GATE_OVERRIDE
+              value: {{ dig "allowGateOverride" true (.Values.operator.evals | default dict) | toString | quote }}
             {{- if .Values.cloudProvider }}
             - name: CLOUD_PROVIDER_OVERRIDE
               value: {{ .Values.cloudProvider | quote }}

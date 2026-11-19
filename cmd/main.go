@@ -1031,6 +1031,9 @@ func evalsConfigFromEnv() apiserver.EvalsConfig {
 	if v, err := strconv.ParseBool(strings.TrimSpace(os.Getenv("EVALS_REQUIRE_INDEPENDENT_REVIEW"))); err == nil {
 		c.RequireIndependentReview = v
 	}
+	if v, err := strconv.ParseBool(strings.TrimSpace(os.Getenv("EVALS_ALLOW_GATE_OVERRIDE"))); err == nil {
+		c.DisallowGateOverride = !v
+	}
 	return c
 }
 

@@ -13,6 +13,8 @@ Datasets live in PostgreSQL, in the tables `eval_datasets` and `eval_cases` (mig
 | Grade a supplied result; label an item in a review queue | `runner` |
 | Read a review queue, a calibration report | `viewer` |
 | Close an experiment's review | `builder` |
+| Run a gate's evaluation (`POST .../evaluate`) | `builder` |
+| Set, change or delete a publish gate; publish with `overrideGate` | `admin` |
 
 A dataset of another tenant is a 404, as is one in a workspace (namespace) the caller may not use. Creating a dataset in a workspace the caller may not use is a 403. Machine callers get `operator.machineDefaultRole` (runner by default) and so cannot write datasets.
 
@@ -190,6 +192,7 @@ The dataset needs at least one grader (409 otherwise). Experiments need PostgreS
 | `GET /api/evals/experiments` (`?namespace=`, `?datasetId=`, `?status=`, `?limit=`, `?cursor=`) | viewer |
 | `GET /api/evals/experiments/{id}` | viewer |
 | `GET /api/evals/experiments/{id}/results` (`?arm=`, `?caseId=`, `?limit=`, `?cursor=`) | viewer |
+| `GET /api/evals/experiments/{id}/summary` | viewer |
 | `POST /api/evals/experiments/{id}/cancel` | builder, audited |
 
 Another tenant's experiment, or one in a workspace the caller may not use, is a 404. Audit rows (kind `EvalExperiment`) hold the experiment ID, dataset name, version and counts, never case or output text. Defaults: 1 repeat (at most 5), run timeout 600 s, concurrency 4 (at most 16), per-run cap `min($1, budget)`.
@@ -221,7 +224,17 @@ A leader-only runner in the operator polls `eval_experiments` (`FOR UPDATE SKIP 
 
 ### The summary
 
-When an experiment ends `summary` holds `stoppedBy`, `partial`, `results`, `skipped`, `spentUsd` and the paired comparison of each arm against the first (pass rates with intervals, McNemar, score, cost and latency differences, the verdict), from `internal/evals/compare`. It also holds `graders`, one entry per grader with the grades that counted (`graded`, `passed`), `notGraded`, `invalid`, `errors`, `pendingReview`, `inconsistent` (pairwise ties from a judge that disagreed with itself) and `judgeCostUsd`, plus `judgeSpentUsd` and `reviewPending`. While an experiment is `awaiting_review` the summary is an interim one that leaves out the results still pending; it is made again when the review ends.
+When an experiment ends `summary` holds `stoppedBy`, `partial`, `results`, `skipped`, `spentUsd` and the paired comparison of each arm against the first, from `internal/evals/compare`. It also holds `graders`, one entry per grader with the grades that counted (`graded`, `passed`), `notGraded`, `invalid`, `errors`, `pendingReview`, `inconsistent` (pairwise ties from a judge that disagreed with itself) and `judgeCostUsd`, plus `judgeSpentUsd` and `reviewPending`. While an experiment is `awaiting_review` the summary is an interim one that leaves out the results still pending; it is made again when the review ends.
+
+`GET /api/evals/experiments/{id}/summary` returns it as `{experimentId, status, live, partial, summary}`. Once the experiment has ended it is the stored summary. Before that (`running`, `grading`, `awaiting_review` without one) it is worked out from the results so far, with `live: true` and `partial: true`; a queued experiment or one that failed before it had a summary is a 409. `partial` is also true for an ended experiment that stopped early (a cancel, the budget). What it holds, per `compare.Summary`:
+
+- **Per arm:** `cases` with a usable result, `skipped`, `passed`, `passRate` with its Wilson interval (`passRateCi`), `meanScore`, `failureRate`, cost (`costTotalUsd`, `costMedianUsd`, `costIncomplete`), latency p50 and p95, and the repeat `stability`.
+- **Per candidate arm against the first:** the paired `passRate` difference with counts (`improved`, `regressed`, both pass, both fail), the exact McNemar p-value on the discordant pairs, the Newcombe interval, mean paired differences with a bootstrap interval for `score`, `cost` and `latency`, the paired median difference and relative change for cost and latency, the verdict (`better`, `worse`, `no clear difference`, `not enough data`, with `nonInferior`) and the lists of regressed, improved and skipped case IDs.
+- **Left out:** `excludedError` and `excludedPending`, on each arm and in total.
+
+**How a case passes in the comparison.** It is the rule stored in `eval_results.case_pass` (`graders.CasePass`), applied to the grades: every `required` grader passes and the weighted mean score of the other graders is at least 0.5 (a weight of 0 counts as 1). So the comparison and the case verdict shown on a result agree. With repeats a case passes in an arm when more than half of its usable repeats pass. A run that failed or timed out is a failed case. An `invalid` judge reply is a failed grade with score 0.
+
+**What is left out, and counted.** A succeeded result with a grade in `error` (the grader could not run) or `pending_review` (a person has not labelled it) is left out of every figure of its arm, and so is its case from every comparison that involves that arm, because a result is judged on all its graders or on none. Nothing is guessed for it. The summary counts them (`excludedError`, `excludedPending`) so a number is never read without knowing how many results it leaves out; `skipped` counts the cases this leaves with nothing usable. Cancelled and skipped runs are left out the same way.
 
 ### Left out of production figures
 
@@ -273,6 +286,57 @@ What blinding does not cover: the output text can give an arm away ("As the chea
 
 `GET /api/evals/datasets/{id}/calibration?llm=<grader>&human=<grader>` (viewer; `&experimentId=` limits it to one experiment) compares an `llm` grader with a `human` grader over the results both graded with an `ok` grade: the share they agree on, **Cohen's kappa**, the 2x2 confusion table and the disagreements (the biggest score gaps first, at most 100), so an author can fix a rubric. It needs at least **20** such results (`tooFewPairs` otherwise). A kappa under **0.4** sets `trustworthy: false`; so does a kappa that is undefined because one side gave the same verdict throughout (agreement of 100% on a single class says nothing about the judge). The code is `internal/evals/calibrate`. Using an untrustworthy judge in the publish gate is for the gate stage to refuse.
 
+## Feeding routing benchmarks
+
+A model-comparison experiment is stronger evidence for a routing decision than shadow samples: whole tasks, a reference, no production traffic. `RoutingBenchmark.spec.evaluation.includeExperiments` (default `false`) lets the benchmark's findings read it. It is a read path, nothing is copied, and with the flag off the findings are exactly what they were.
+
+With the flag on, the routing evaluation loads, besides the shadow samples, the **finished (`complete`) experiments in the benchmark's window** (by finish time) in the benchmark's workspace, and projects each into the shape the shadow samples have:
+
+- Only an experiment whose **first (baseline) arm names a `modelProvider`** counts, for an Agent the benchmark covers. The baseline plays the *served* model; each other arm of the **same agent** with a different `modelProvider` is a *shadow* of it. An experiment whose baseline runs the live agent names no model that "served", and is left out.
+- Each case that has a usable result in both arms is one pair. The category is the case's tag, `tag:<tag>` (one pair per tag; `tag:untagged` for a case with none). The winner is the arm that passed the case alone, a tie when both did the same; it uses the same case outcomes as the experiment's own comparison, so results waiting for review or in error are left out. The cost of each side is the case's mean cost in that arm.
+- A category such as `tag:billing` is not a routing stage, so a finding built from it is reported and never proposes a patch to the selector (only `stage:` categories can be routed). The routing-score detectors (threshold, strategy switch) do not read experiment pairs, which have no routing score.
+- A finding that rests on win-rate samples says how many of them came from experiments in `status.evidence.experimentSamples` (absent when none). A recommendation still never applies itself.
+
+## The publish gate
+
+A gate makes an agent pass an evaluation before **Publish** (`POST /api/agents/{ns}/{name}/publish`) creates or updates its AgentDeployment. It is **off unless an agent has an enabled gate**: a workspace that sets none publishes exactly as before. The gate is a row in `eval_gates` (migration `0017`, tenant row-level security like the other evaluation tables), not a field of the Agent, because anyone who can edit the Agent could then lower it.
+
+**Configuration**, `PUT /api/evals/gates/{ns}/{agent}` (admin; `GET` is viewer, `DELETE` admin), audited as kind `EvalGate` with the old and the new numbers:
+
+| Field | Meaning |
+|---|---|
+| `datasetId` | The dataset the evaluation runs on. It needs a deterministic or human grader: a dataset with only `llm` graders is a 409, because a judge can be swayed by the output it grades. |
+| `baselineRevision` | The saved revision of the agent the candidate is compared with (the version that is live). Required. |
+| `margin` | The non-inferiority margin on the pass rate, default 0.05: the low end of the interval for candidate minus baseline must be above minus the margin (the `nonInferior` of the verdict). |
+| `minCases` | The fewest paired cases an evaluation needs, default 30, at most 2000. |
+| `minPassRate`, `maxRegressions` | Optional extra bars: a floor on the candidate's own pass rate, and the most cases that may go from pass to fail. |
+| `budgetUsd` | The budget of the experiment `evaluate` starts, default 5. |
+| `enabled` | Default true. |
+
+The dataset a gate rests on cannot be deleted (409) until the gate is changed or removed.
+
+**Running the evaluation**, `POST /api/agents/{ns}/{name}/evaluate` (builder, audited): queues an experiment with `purpose: gate`, two arms: `baseline` (the gate's revision) and `candidate` (the agent as it is now, pinned to the hash of its spec, so an edit before the runner starts it refuses the experiment rather than evaluating something else), on the gate's dataset at its current version. It answers 201 with the experiment, and 409 when the agent has no gate.
+
+**Enforcement.** Publish calls `gate.CheckGate` (`internal/evals/gate`) before it changes anything. The latest `complete` gate experiment of the agent decides, not the best one, so a pass cannot be had by rerunning until lucky. It counts only when:
+
+1. its candidate arm ran the **hash of the spec being published**;
+2. it ran on the gate's dataset at the dataset's **current version** (every edit of the cases raises the version);
+3. the dataset's **graders** have not changed since (a grader added, edited or removed changes the bar, and does not change the dataset's version, so this is checked on its own);
+4. no candidate result is still waiting for a review;
+5. it compared at least `minCases` cases, the candidate is non-inferior to the baseline by `margin`, and the optional `minPassRate` and `maxRegressions` hold.
+
+If so, publish goes on. If not, the answer is **409** `{"error", "gate": {"status", "reason", "required", "best", "experimentId"}}` with `status`:
+
+- `missing`: no finished gate experiment;
+- `stale`: the latest one no longer applies (another agent version, another dataset or dataset version, changed graders, the dataset is gone);
+- `failed`: it applies and does not meet the bar (`best` has the cases, pass rates, the low end of the difference and the regressions).
+
+`GET /api/evals/gates/{ns}/{agent}` returns the gate and the same decision, so a screen can say why Publish is blocked. If the gate or its evidence cannot be read, publish stops with a 503: the gate fails closed. Unpublish (`DELETE .../publish`) is never gated.
+
+**Override.** `POST .../publish` with `{"overrideGate": {"reason": "..."}}` (10 to 500 characters) publishes past a failing gate. It needs the **admin** role: anyone else who sends `overrideGate` gets a 403, whatever the gate says. An override is written to the audit trail with the action `override` (kind `Agent`), and a summary such as `gate override (failed) on dataset support-core v7: needs a pass rate no more than 5 points below the baseline over 30 cases; experiment 42 had 81% against 90% over 60 cases; reason: ...`, within the 1 KiB audit limit; the normal publish row is written too. An admin who sends `overrideGate` for a gate that passes just publishes, with no override row. With `operator.evals.allowGateOverride: false` an override is a 403 and only changing the gate (itself audited) unblocks a publish.
+
+**What the gate does not cover.** It gates the Publish action. It does not stop a direct `PUT /api/resources/Agent/...` or a `kubectl` edit of an Agent that an AgentDeployment already runs. "Require review before publish" and the gate are independent; both must pass.
+
 ## Operator settings
 
 Helm values under `operator.evals` (environment variables on the operator):
@@ -288,7 +352,8 @@ Helm values under `operator.evals` (environment variables on the operator):
 | `maxActiveExperimentsPerTenant` | `EVALS_MAX_ACTIVE_EXPERIMENTS_PER_TENANT` | 2 |
 | `runnerIntervalSeconds` | `EVALS_RUNNER_INTERVAL_SECONDS` | 5 |
 | `requireIndependentReview` | `EVALS_REQUIRE_INDEPENDENT_REVIEW` | false |
+| `allowGateOverride` | `EVALS_ALLOW_GATE_OVERRIDE` | true |
 
 ## Not built yet
 
-The publish gate (and the rule that a gate must not rest on an untrustworthy or llm-only grader), the Evaluate screens, result retention, JSONL export of a dataset, and the "add to dataset from a thumbs-up" bridge. Known limits of the runner: the review stage has no "disagreement only" sampling (`sample` picks cases at random); a case-pass rule difference between the live case rule (weighted mean score of the non-required graders at least 0.5, `graders.CasePass`, stored in `eval_results.case_pass`) and the comparison's rule (more than half of the non-required weight passing, `internal/evals/compare`) is not yet reconciled; judge calls are made one at a time by the runner; a judge can overshoot the experiment budget by what the runs in flight already held; routing telemetry of eval runs (`routing_events`) is not yet filtered; and the form that makes a builder acknowledge an arm's write and actuate tools is part of the UI stage.
+The rule that a gate must not rest on an untrustworthy judge (a gate with only `llm` graders is refused, but a judge whose calibration kappa is low is not yet checked), the Evaluate screens, result retention, JSONL export of a dataset, "Check with my cases" on a routing recommendation, and the "add to dataset from a thumbs-up" bridge. Known limits of the runner: the review stage has no "disagreement only" sampling (`sample` picks cases at random); judge calls are made one at a time by the runner; a judge can overshoot the experiment budget by what the runs in flight already held; routing telemetry of eval runs (`routing_events`) is not yet filtered; and the form that makes a builder acknowledge an arm's write and actuate tools is part of the UI stage. Known limits of the gate: it evaluates the agent as saved on the cluster, so an agent that a person has edited in the UI but not saved is not what is evaluated.
