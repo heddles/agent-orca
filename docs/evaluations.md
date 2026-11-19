@@ -49,6 +49,7 @@ All are in `internal/apiserver/schemas/openapi-ui.yaml` (served at `/api/openapi
 | `DELETE /api/evals/datasets/{id}` | builder |
 | `GET /api/evals/datasets/{id}/cases` (`?tag=`, `?limit=` 1 to 200, `?cursor=`) | viewer |
 | `POST /api/evals/datasets/{id}/cases` (one case, or JSON lines) | builder |
+| `GET /api/evals/datasets/{id}/export` (the live cases as JSON lines; audited as `export`, with the count and no text) | builder |
 | `GET /api/evals/cases/{id}` | viewer |
 | `PATCH /api/evals/cases/{id}` | builder |
 | `DELETE /api/evals/cases/{id}` | builder |
@@ -84,7 +85,7 @@ The response is `{added, datasetVersion, cases}`. A manually added case has no s
 | Cases per call | 200 | fixed |
 | Tags per case | 20 | fixed |
 
-The byte limit can be lowered, not raised: the table refuses more than 65536 bytes, so a higher value is capped to it. Going over a size limit is a **413**; going over the case limit is a **409** and adds nothing; removed cases do not count towards it. Retention of results (outputs and grades) arrives with the experiment runner and is not part of datasets: cases stay until deleted.
+The byte limit can be lowered, not raised: the table refuses more than 65536 bytes, so a higher value is capped to it. Going over a size limit is a **413**; going over the case limit is a **409** and adds nothing; removed cases do not count towards it. Cases stay until deleted. Retention applies to results (outputs and grades), see operator settings.
 
 ## Add to dataset, from a run
 
@@ -284,7 +285,7 @@ What blinding does not cover: the output text can give an arm away ("As the chea
 
 ### Calibration
 
-`GET /api/evals/datasets/{id}/calibration?llm=<grader>&human=<grader>` (viewer; `&experimentId=` limits it to one experiment) compares an `llm` grader with a `human` grader over the results both graded with an `ok` grade: the share they agree on, **Cohen's kappa**, the 2x2 confusion table and the disagreements (the biggest score gaps first, at most 100), so an author can fix a rubric. It needs at least **20** such results (`tooFewPairs` otherwise). A kappa under **0.4** sets `trustworthy: false`; so does a kappa that is undefined because one side gave the same verdict throughout (agreement of 100% on a single class says nothing about the judge). The code is `internal/evals/calibrate`. Using an untrustworthy judge in the publish gate is for the gate stage to refuse.
+`GET /api/evals/datasets/{id}/calibration?llm=<grader>&human=<grader>` (viewer; `&experimentId=` limits it to one experiment) compares an `llm` grader with a `human` grader over the results both graded with an `ok` grade: the share they agree on, **Cohen's kappa**, the 2x2 confusion table and the disagreements (the biggest score gaps first, at most 100), so an author can fix a rubric. It needs at least **20** such results (`tooFewPairs` otherwise). A kappa under **0.4** sets `trustworthy: false`; so does a kappa that is undefined because one side gave the same verdict throughout (agreement of 100% on a single class says nothing about the judge). The code is `internal/evals/calibrate`. The publish gate uses the same rule: a gate that passes on the numbers but rests on an `llm` grader with no human grader that agrees with it (kappa of at least 0.4 over at least 20 results) is `untrusted_judge`, a 409 that an admin may publish past with an override and a reason, which is audited.
 
 ## Feeding routing benchmarks
 
@@ -353,7 +354,10 @@ Helm values under `operator.evals` (environment variables on the operator):
 | `runnerIntervalSeconds` | `EVALS_RUNNER_INTERVAL_SECONDS` | 5 |
 | `requireIndependentReview` | `EVALS_REQUIRE_INDEPENDENT_REVIEW` | false |
 | `allowGateOverride` | `EVALS_ALLOW_GATE_OVERRIDE` | true |
+| `resultRetentionDays` | `EVALS_RESULT_RETENTION_DAYS` | 90 |
+
+`resultRetentionDays`: the leader operator sweeps hourly and, for results older than this many days whose experiment is over, deletes their grades and empties their output and tool calls. The result row (cost, latency, pass flag) stays, and results of an experiment still running or awaiting review are never touched. `0` keeps everything. Datasets and cases are not affected.
 
 ## Not built yet
 
-The rule that a gate must not rest on an untrustworthy judge (a gate with only `llm` graders is refused, but a judge whose calibration kappa is low is not yet checked), result retention, JSONL export of a dataset, "Check with my cases" on a routing recommendation, and the "add to dataset from a thumbs-up" bridge. Known limits of the runner: the review stage has no "disagreement only" sampling (`sample` picks cases at random); judge calls are made one at a time by the runner; a judge can overshoot the experiment budget by what the runs in flight already held; routing telemetry of eval runs (`routing_events`) is not yet filtered; and the form that makes a builder acknowledge an arm's write and actuate tools is not built. Known limits of the gate: it evaluates the agent as saved on the cluster, so an agent that a person has edited in the UI but not saved is not what is evaluated.
+"Check with my cases" on a routing recommendation. Known limits of the runner: the review stage has no "disagreement only" sampling (`sample` picks cases at random); judge calls are made one at a time by the runner; a judge can overshoot the experiment budget by what the runs in flight already held; routing telemetry of eval runs (`routing_events`) is not yet filtered; and the form that makes a builder acknowledge an arm's write and actuate tools is not built. Known limits of the gate: it evaluates the agent as saved on the cluster, so an agent that a person has edited in the UI but not saved is not what is evaluated.
