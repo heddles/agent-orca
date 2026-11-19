@@ -18,7 +18,7 @@ func TestEvalResultRetentionAgainstPostgres(t *testing.T) {
 	t.Cleanup(func() { _ = admin.Close() })
 	a, b := WithTenant(context.Background(), tenantA), WithTenant(context.Background(), tenantB)
 
-	save := func(ctx context.Context, name string) (EvalResult, EvalDataset) {
+	save := func(ctx context.Context, name string) EvalResult {
 		d := evalDS(ctx, t, s, evalNSA, name)
 		g := evalGrader(ctx, t, s, d.ID, "g")
 		r, err := s.SaveEvalResult(ctx, d.ID, EvalResult{Arm: "a", Output: "out", ToolCalls: []string{"x"}, CostUSD: 0.5, CreatedBy: evalUser},
@@ -26,11 +26,11 @@ func TestEvalResultRetentionAgainstPostgres(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		return r, d
+		return r
 	}
-	oldA, _ := save(a, "old-a")
-	newA, _ := save(a, "new-a")
-	oldB, _ := save(b, "old-b")
+	oldA := save(a, "old-a")
+	newA := save(a, "new-a")
+	oldB := save(b, "old-b")
 	for _, id := range []int64{oldA.ID, oldB.ID} {
 		if _, err := admin.ExecContext(context.Background(),
 			`UPDATE eval_results SET created_at = now() - interval '100 days' WHERE id = $1`, id); err != nil {

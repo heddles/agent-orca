@@ -4,6 +4,7 @@ import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { DESIGN, ds } from '../lib/designSystem'
 import { Icon, ICON } from '../lib/icons'
+import { AddToDataset } from './AddToDataset'
 import { FeedbackThumbs, useRunFeedback, type FeedbackTarget } from './FeedbackThumbs'
 
 interface Props {
@@ -70,6 +71,7 @@ export function OutputCard({ output, streaming, markdown, feedbackRun }: Props) 
         <div style={{ padding: '6px 16px', borderTop: '1px solid var(--ds-border)', fontSize: 12, color: 'var(--ds-text-secondary)' }}>
           Was this run's model choice right?
           <FeedbackThumbs feedback={feedback} label="this run" />
+          {feedbackRun && feedback.ratings[''] === 1 && <AddToDataset namespace={feedbackRun.namespace} runName={feedbackRun.runName} />}
         </div>
       )}
     </div>

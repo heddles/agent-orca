@@ -157,6 +157,38 @@ export const patchDataset = (id: number, patch: { description?: string; agent?: 
 
 export const deleteDataset = (id: number) => send<void>(`${root}/datasets/${id}`, 'DELETE')
 
+/** Downloads the dataset's live cases as JSON lines (builder role; the export is audited). */
+export async function exportDataset(id: number): Promise<{ blob: Blob; filename: string }> {
+  const res = await apiFetch(`${root}/datasets/${id}/export`, { method: 'GET' })
+  if (!res.ok) throw await failure(res)
+  const m = /filename="([^"]+)"/.exec(res.headers.get('Content-Disposition') ?? '')
+  return { blob: await res.blob(), filename: m?.[1] ?? `dataset-${id}.jsonl` }
+}
+
+export interface CaptureRequest {
+  datasetId: number
+  /** The expected answer the person wrote. Leave out for a case with no reference. */
+  reference?: string
+  referenceKind?: ReferenceKind
+  /** Take the run's own output as the reference example. Never the default. */
+  useOutput?: boolean
+  tags?: string[]
+  /** Return what would be stored (redacted) and store nothing. */
+  preview?: boolean
+}
+
+export interface CaptureResult {
+  case: EvalCase
+  datasetVersion?: number
+  redaction: Record<string, { replacements: number; rules?: string[] }>
+  preview?: boolean
+  original?: Record<string, string>
+}
+
+/** Copies a run into a dataset as a case: an explicit step, never automatic. Needs the builder role. */
+export const captureRun = (namespace: string, run: string, req: CaptureRequest) =>
+  send<CaptureResult>(`/api/runs/${enc(namespace)}/${enc(run)}/dataset`, 'POST', req)
+
 export async function listCases(datasetId: number, opts: { tag?: string; limit?: number; cursor?: string } = {}): Promise<CasePage> {
   const q = new URLSearchParams()
   if (opts.tag) q.set('tag', opts.tag)
