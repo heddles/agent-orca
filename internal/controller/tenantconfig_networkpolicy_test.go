@@ -56,7 +56,7 @@ func TestTenantConfigCreatesAWorkloadPolicyPerClaimedNamespace(t *testing.T) {
 		t.Fatalf("policies = %v, want one per claimed namespace for %s", got, id)
 	}
 	var np networkingv1.NetworkPolicy
-	if err := c.Get(context.Background(), client.ObjectKey{Namespace: "acme-ns", Name: "agentorca-tenant-" + id}, &np); err != nil {
+	if err := c.Get(context.Background(), client.ObjectKey{Namespace: "acme-ns", Name: security.TenantPolicyName(id)}, &np); err != nil {
 		t.Fatal(err)
 	}
 	if np.Spec.PodSelector.MatchLabels[security.LabelTenantID] != id {

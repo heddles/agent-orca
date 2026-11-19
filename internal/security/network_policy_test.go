@@ -12,6 +12,7 @@ import (
 
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/validation"
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
 )
@@ -328,5 +329,14 @@ func TestMetricsIngressDoesNotOpenOtherPorts(t *testing.T) {
 	np := BuildNetworkPolicy(run, "tenant-a", nil, false, "", "agent-orca-system")
 	if len(np.Spec.Ingress) != 1 {
 		t.Fatalf("combined-pod policy must expose exactly one ingress rule, got %d", len(np.Spec.Ingress))
+	}
+}
+
+// A tenant ID is "tnt_<uuid>"; the policy name derived from it must be a valid
+// Kubernetes object name, or the API server rejects the policy.
+func TestTenantPolicyNameIsAValidObjectName(t *testing.T) {
+	name := TenantPolicyName("tnt_01a1e89a-184b-7880-b356-8b205e1c1bc0")
+	if errs := validation.IsDNS1123Subdomain(name); len(errs) != 0 {
+		t.Fatalf("%q is not a valid name: %v", name, errs)
 	}
 }
