@@ -10,7 +10,7 @@ The UI and GitOps tools (Argo CD, Flux, Helm) can both write agent-orca resource
 
 There is no warn-only mode, no Git write-back (the UI never opens a pull request or edits a repository), and no shared-field mode (Git owning some fields while the UI edits others). Moving work between the two is an export or a duplicate, done by a person.
 
-The kinds covered are the ones the UI can write: `Agent`, `Tool`, `MCPServer`, `KnowledgeBase`, `ModelSelector`, `ModelProvider`, `AgentDeployment` and `AgentWorkflow`. `AgentRun` and the rest are not.
+The kinds covered are the ones the UI can write: `Agent`, `Tool`, `MCPServer`, `KnowledgeBase`, `ModelSelector`, `ModelProvider`, `AgentDeployment`, `AgentWorkflow` and `AgentSchedule`. `AgentRun` and the rest are not.
 
 ## How ownership is detected
 

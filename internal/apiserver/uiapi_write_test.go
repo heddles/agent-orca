@@ -303,7 +303,7 @@ func TestDeleteResourceOwnership(t *testing.T) {
 func TestResourceWriteRoleByKind(t *testing.T) {
 	f := newWriteFixture(t)
 	kinds := map[string]tenancy.Role{
-		"agents": tenancy.RoleBuilder, "knowledgebases": tenancy.RoleBuilder, "agentdeployments": tenancy.RoleBuilder, "agentworkflows": tenancy.RoleBuilder,
+		"agents": tenancy.RoleBuilder, "knowledgebases": tenancy.RoleBuilder, "agentdeployments": tenancy.RoleBuilder, "agentworkflows": tenancy.RoleBuilder, "agentschedules": tenancy.RoleBuilder,
 		"tools": tenancy.RoleAdmin, "mcpservers": tenancy.RoleAdmin, "modelproviders": tenancy.RoleAdmin, "modelselectors": tenancy.RoleAdmin,
 	}
 	for kind, min := range kinds {

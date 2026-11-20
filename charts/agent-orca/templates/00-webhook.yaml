@@ -191,7 +191,7 @@ webhooks:
       - apiGroups: ["agentorca.agentorca.io"]
         apiVersions: ["v1alpha1"]
         operations: ["CREATE", "UPDATE"]
-        resources: ["agents", "tools", "mcpservers", "knowledgebases", "modelselectors", "modelproviders", "agentdeployments", "agentworkflows"]
+        resources: ["agents", "tools", "mcpservers", "knowledgebases", "modelselectors", "modelproviders", "agentdeployments", "agentworkflows", "agentschedules"]
     failurePolicy: Fail
     sideEffects: None
 ---

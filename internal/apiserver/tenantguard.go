@@ -69,9 +69,11 @@ func tenantOwnedListKind(list client.ObjectList) string {
 	case *agentorcav1alpha1.AgentDeploymentList:
 		return "AgentDeployment"
 	case *agentorcav1alpha1.AgentWorkflowList:
-		return "AgentWorkflow"
+		return kindAgentWorkflow
 	case *agentorcav1alpha1.AgentRunList:
-		return "AgentRun"
+		return kindAgentRun
+	case *agentorcav1alpha1.AgentScheduleList:
+		return kindAgentSchedule
 	}
 	return ""
 }

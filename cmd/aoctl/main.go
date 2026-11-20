@@ -190,7 +190,9 @@ type AdminTenantResponse struct {
 type Client struct {
 	Endpoint string
 	ACP      string
-	HTTP     *http.Client
+	// UI is the UI API base URL, used by `aoctl schedule`.
+	UI   string
+	HTTP *http.Client
 
 	// token is the bearer token presented on every request. It is guarded by
 	// tokenMu because the long-lived `aoctl acp serve` bridge issues requests
@@ -890,6 +892,7 @@ func saveConfig(cfg *Config) error {
 type settings struct {
 	endpoint string
 	acp      string
+	ui       string
 	token    string
 	// tokenFromFlag is true when --token was supplied explicitly on the command
 	// line. Such tokens are treated as opaque and never auto-refreshed (the
@@ -936,7 +939,12 @@ type settings struct {
 }
 
 func (s *settings) client() *Client {
-	return newClient(s.endpoint, s.acp, s.token, s.timeout, s.insecure)
+	c := newClient(s.endpoint, s.acp, s.token, s.timeout, s.insecure)
+	c.UI = s.ui
+	if c.UI == "" {
+		c.UI = os.Getenv("AOCTL_UI_ENDPOINT")
+	}
+	return c
 }
 
 // runLogin resolves the requested auth method and dispatches to the right
@@ -1620,7 +1628,7 @@ Examples:
 	agentRun.Flags().StringVar(&s.contentType, "content-type", "text/plain", "MIME type of the input (e.g. text/plain, application/json)") //nolint:lll
 	agents.AddCommand(agentRun)
 
-	root.AddCommand(login, tasks, agents, validateCmd)
+	root.AddCommand(login, tasks, agents, validateCmd, newScheduleCommand(s))
 
 	// admin — tenant lifecycle management (requires a K8s SA token, not OAuth2).
 	admin := &cobra.Command{

@@ -93,3 +93,27 @@ After `operator.schedule.maxConsecutiveFailures` (default 5) finished runs in a 
 | `operator.schedule.minInterval` | `5m` | The shortest gap between ticks. Checked against the closest pair of firings in the coming year, so `* * * * *` and `0,1 * * * *` are both refused |
 | `operator.schedule.maxConsecutiveFailures` | `5` | The failure breaker |
 | `operator.leaderElection` | `true` | Keeps the controller on one replica. The deterministic run name is the safety net if it is ever off |
+
+## API and ownership
+
+`AgentSchedule` is a UI-writable kind. Create, update and delete go through the generic `/api/resources/agentschedules` endpoints, so the rules of [GitOps and the UI](gitops-coexistence.md) apply unchanged: a UI-created schedule carries `agentorca.io/owner: ui`, edits are server-side applies with field manager `agent-orca-ui` and a required `resourceVersion` (409 when stale), a GitOps writer is denied on a UI-owned schedule, and a Git-owned schedule is read-only in the UI (Copy YAML, Duplicate). The controller's status writes are never blocked.
+
+| Endpoint | Role | What it does |
+|---|---|---|
+| `GET /api/schedules` | viewer | Summary list: state, next run (absolute and in the schedule's zone), last result, spend, ownership |
+| `GET /api/schedules/preview?cron=&tz=&count=` | viewer | The next firings, and whether the expression is under the minimum interval |
+| `GET /api/schedules/{ns}/{name}/runs` | viewer | History, newest first, paged with `limit` and `before` |
+| `POST .../suspend`, `POST .../resume` | runner | Edit `spec.suspend` as the UI. Git-owned schedules answer 409: suspend them in Git. Resuming a `Degraded` schedule also clears the failure breaker |
+| `POST .../run` | runner | Run now: a normal run started by the caller, passing the same quotas |
+| `GET /api/runs?schedule=<name>` | viewer | Runs of a schedule; each run summary carries `schedule` and `trigger` |
+| create, update, delete | builder | A schedule whose `result.egress` has a `secretRef` needs admin, as MCPServer and Tool do (a builder may keep one an admin set) |
+
+Run now creates the run with `agentorca.io/schedule=<name>` but no owner reference and `created-by` set to the person, so it shows in My runs and is not counted in the schedule's history limits, failure streak or spend caps. Scheduled ticks (`created-by: schedule:<ns>/<name>`) are left out of My runs.
+
+Audit rows: `create`, `update`, `delete` on `AgentSchedule` as for other kinds, plus `suspend` and `resume`; Run now is `request` on `AgentRun`.
+
+```
+aoctl schedule list | get <name> | suspend <name> | resume <name> | run <name>
+```
+
+`aoctl schedule` talks to the UI API (`--ui-endpoint`, `AOCTL_UI_ENDPOINT`, default `http://localhost:8083`) with the same token as the other commands.

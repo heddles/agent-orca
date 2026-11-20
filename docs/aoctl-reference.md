@@ -177,6 +177,18 @@ aoctl agents run support-bot --input "Hello, I'm Matthew" --session-id "$SID"
 aoctl agents run support-bot --input "Follow up on my previous question" --session-id "$SID"
 ```
 
+### `aoctl schedule`
+
+Control [scheduled runs](schedules.md). Talks to the UI API; pass `--ui-endpoint` or set `AOCTL_UI_ENDPOINT` (default `http://localhost:8083`).
+
+| Command | Role | |
+|---|---|---|
+| `aoctl schedule list [-n ns]` | viewer | Name, target, schedule, state, next run, last result |
+| `aoctl schedule get <name>` | viewer | One schedule in detail |
+| `aoctl schedule suspend <name>` | runner | Stop new runs. A Git-owned schedule is suspended in Git |
+| `aoctl schedule resume <name>` | runner | Resume, or clear the failure breaker |
+| `aoctl schedule run <name>` | runner | Run now, passing the tenant's quotas |
+
 ### `aoctl admin tenants`
 
 Manage tenants via the Admin API (`POST /admin/*` on port 8084). **Requires a

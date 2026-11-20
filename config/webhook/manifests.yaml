@@ -125,6 +125,7 @@ webhooks:
     - modelproviders
     - agentdeployments
     - agentworkflows
+    - agentschedules
   sideEffects: None
 - admissionReviewVersions:
   - v1
