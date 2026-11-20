@@ -133,6 +133,10 @@ operator:
     # Accept http authorization endpoints (local development against a fake
     # provider only; CONNECTION_ALLOW_INSECURE_OAUTH).
     allowInsecureOAuth: false
+    # A connection unused for this many days is revoked at the provider (RFC 7009,
+    # best effort) and expires: its tokens are wiped and its owner must reconnect
+    # (CONNECTION_IDLE_EXPIRY_DAYS). 0 turns the expiry off.
+    idleExpiryDays: 90
 
   # operator.networkPolicy controls the NetworkPolicy applied to the operator pod.
   # oidcEgress grants the operator egress so it can reach its OIDC IdP(s) for JWKS

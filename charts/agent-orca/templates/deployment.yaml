@@ -170,6 +170,8 @@ spec:
               value: /etc/agentorca/connection-keys
             - name: CONNECTION_REDIRECT_URI
               value: {{ .Values.operator.connections.redirectURI | quote }}
+            - name: CONNECTION_IDLE_EXPIRY_DAYS
+              value: {{ .Values.operator.connections.idleExpiryDays | default 0 | quote }}
             {{- if .Values.operator.connections.allowInsecureOAuth }}
             - name: CONNECTION_ALLOW_INSECURE_OAUTH
               value: "true"

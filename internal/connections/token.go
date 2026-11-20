@@ -59,9 +59,27 @@ const (
 	refreshWindow = 60 * time.Second
 	// defaultAccessLifetime applies when the provider gives no expires_in.
 	defaultAccessLifetime = 50 * time.Minute
-	// lastUsedEvery bounds how often a use writes last_used_at.
-	lastUsedEvery = 5 * time.Minute
+	// lastUsedEvery bounds how often a use writes last_used_at. The idle expiry is
+	// counted in days, so an hour of imprecision costs nothing and saves a write
+	// on the hot path of every run.
+	lastUsedEvery = time.Hour
 )
+
+// What the model is told when a connection cannot be used. Neither names a user,
+// a token or the provider's answer; both say who can fix it and how.
+const (
+	msgNeedsReauth = "the connection was revoked or rejected by the provider; its owner must reconnect the account in Connections"
+	msgExpired     = "the connection expired after a long period without use; its owner must reconnect the account in Connections"
+)
+
+// failureReason classifies a failed refresh for the metric.
+func failureReason(err error) string {
+	var te *oauth.TokenError
+	if errors.As(err, &te) {
+		return reasonProviderError
+	}
+	return reasonUnavailable
+}
 
 // TokenRequest asks for a connection's access token. The identity is the
 // connection owner's, resolved by the caller from the AgentRun and the Agent, never
@@ -99,7 +117,10 @@ func (s *Service) AccessToken(ctx context.Context, req TokenRequest) (AccessToke
 			refused = &TokenError{CodeRequired, "the connection was made for an earlier version of this server and must be made again"}
 			return nil, nil
 		case cur.Status == postgresql.ConnectionNeedsReauth:
-			refused = &TokenError{CodeNeedsReauth, "the connection needs to be renewed by its owner"}
+			refused = &TokenError{CodeNeedsReauth, msgNeedsReauth}
+			return nil, nil
+		case cur.Status == postgresql.ConnectionExpired:
+			refused = &TokenError{CodeNeedsReauth, msgExpired}
 			return nil, nil
 		case cur.Status != postgresql.ConnectionActive:
 			refused = &TokenError{CodeUnavailable, "the connection has been revoked"}
@@ -117,9 +138,11 @@ func (s *Service) AccessToken(ctx context.Context, req TokenRequest) (AccessToke
 		case errors.As(err, &te) && te.Code == "invalid_grant":
 			cur.Status = postgresql.ConnectionNeedsReauth
 			reauth = &cur
-			refused = &TokenError{CodeNeedsReauth, "the connection needs to be renewed by its owner"}
+			refused = &TokenError{CodeNeedsReauth, msgNeedsReauth}
+			refreshFailures.WithLabelValues(reasonInvalidGrant).Inc()
 			return &cur, nil
 		case err != nil:
+			refreshFailures.WithLabelValues(failureReason(err)).Inc()
 			return nil, err
 		}
 		out.Token, out.ExpiresAt = Secret(tr.AccessToken), *next.AccessExpiresAt

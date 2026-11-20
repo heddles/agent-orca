@@ -658,3 +658,82 @@ func TestConnections_InvokerRequiredAndNoPublishGate(t *testing.T) {
 		t.Errorf("publishedBy = %q, want none for invoker", a.Status.PublishedBy)
 	}
 }
+
+func TestConnections_OffboardingRevokesAllOfOneUsersConnections(t *testing.T) {
+	f := newConnFixture(t)
+	f.store.conns = []postgresql.MCPConnection{
+		{TenantID: isoA, UserID: connOtherUser, ServerNS: "shared", ServerName: tokServerName, ServerUID: "uid-github", Status: postgresql.ConnectionActive},
+		{TenantID: isoA, UserID: connOtherUser, ServerNS: "shared", ServerName: "legacy", ServerUID: "uid-legacy", Status: postgresql.ConnectionExpired},
+		{TenantID: isoA, UserID: connTestUser, ServerNS: "shared", ServerName: tokServerName, ServerUID: "uid-github", Status: postgresql.ConnectionActive},
+		{TenantID: isoB, UserID: connOtherUser, ServerNS: "b-only", ServerName: "theirs", ServerUID: "uid-theirs", Status: postgresql.ConnectionActive},
+	}
+	// Admin only, and the user is required: no "revoke everyone" by omission.
+	if rec := f.do(connUser(tenancy.RoleRunner, isoA, connTestUser), http.MethodDelete, "/api/connections?user=bob", ""); rec.Code != http.StatusForbidden {
+		t.Errorf("runner = %d", rec.Code)
+	}
+	if rec := f.do(connUser(tenancy.RoleAdmin, isoA, "root"), http.MethodDelete, "/api/connections", ""); rec.Code != http.StatusBadRequest {
+		t.Errorf("no user = %d", rec.Code)
+	}
+	if len(f.backend.disconnects) != 0 {
+		t.Fatalf("refused requests disconnected %v", f.backend.disconnects)
+	}
+	rec := f.do(connUser(tenancy.RoleAdmin, isoA, "root"), http.MethodDelete, "/api/connections?user=bob", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("offboard = %d %s", rec.Code, rec.Body)
+	}
+	got := evalDecode[map[string]int](t, rec)
+	if got["removed"] != 2 || got["revokedAtProvider"] != 2 || got["failed"] != 0 {
+		t.Errorf("result = %v", got)
+	}
+	// Only bob's connections in the admin's tenant: not alice's, not tenant B's.
+	if len(f.backend.disconnects) != 2 || f.backend.disconnects[0] != isoA+"/bob/shared/"+tokServerName || f.backend.disconnects[1] != isoA+"/bob/shared/legacy" {
+		t.Errorf("disconnects = %v", f.backend.disconnects)
+	}
+	// One audit event per connection and one for the sweep, all by the admin.
+	if len(f.audit.events) != 3 {
+		t.Fatalf("audit events = %d: %+v", len(f.audit.events), f.audit.events)
+	}
+	for _, e := range f.audit.events {
+		if e.Action != postgresql.AuditRevoke || e.UserID != "root" || e.Kind != kindMCPConnection {
+			t.Errorf("audit = %+v", e)
+		}
+	}
+	if !strings.Contains(f.audit.events[2].Summary, "offboarded user \"bob\": 2 connection(s)") {
+		t.Errorf("summary = %q", f.audit.events[2].Summary)
+	}
+}
+
+func TestConnections_OwnerNeedsReconnectIsSurfaced(t *testing.T) {
+	f := newConnFixture(t)
+	ctx := context.Background()
+	var agent agentorcav1alpha1.Agent
+	if err := f.srv.crdClient.Get(ctx, client.ObjectKey{Namespace: "shared", Name: "support"}, &agent); err != nil {
+		t.Fatal(err)
+	}
+	agent.Status.PublishedBy = connTestUser
+	if err := f.srv.crdClient.Status().Update(ctx, &agent); err != nil {
+		t.Fatal(err)
+	}
+	type resp struct {
+		OwnerNeedsReconnect []requiredServer `json:"ownerNeedsReconnect"`
+	}
+	get := func() resp {
+		return evalDecode[resp](t, f.do(connUser(tenancy.RoleRunner, isoA, connOtherUser), http.MethodGet, "/api/me/connections/required?agent=shared/support", ""))
+	}
+	conn := func(status string) []postgresql.MCPConnection {
+		return []postgresql.MCPConnection{{TenantID: isoA, UserID: connTestUser, ServerNS: "shared", ServerName: tokServerName, ServerUID: "uid-github", Status: status}}
+	}
+	for status, wantNeeds := range map[string]bool{
+		postgresql.ConnectionActive: false, postgresql.ConnectionNeedsReauth: true, postgresql.ConnectionExpired: true, postgresql.ConnectionRevoked: true,
+	} {
+		f.store.conns = conn(status)
+		if r := get(); (len(r.OwnerNeedsReconnect) == 1) != wantNeeds {
+			t.Errorf("owner connection %s: ownerNeedsReconnect = %+v", status, r.OwnerNeedsReconnect)
+		}
+	}
+	// The owner left and deleted the connection: same answer.
+	f.store.conns = nil
+	if r := get(); len(r.OwnerNeedsReconnect) != 1 || r.OwnerNeedsReconnect[0].Server != tokServerName {
+		t.Errorf("no connection: %+v", r.OwnerNeedsReconnect)
+	}
+}

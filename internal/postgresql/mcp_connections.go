@@ -41,6 +41,9 @@ const (
 	ConnectionRevoked     = "revoked"
 )
 
+// ConnectionExpired (an idle connection whose tokens were wiped) is in
+// mcp_connections_lifecycle.go.
+
 // AuditKindMCPConnection is the audit kind of connection events.
 const AuditKindMCPConnection = "MCPConnection"
 
@@ -319,7 +322,7 @@ func (s *Store) DeleteConnection(ctx context.Context, userID, ns, server string)
 // SetConnectionStatus marks a connection active, needs_reauth or revoked.
 func (s *Store) SetConnectionStatus(ctx context.Context, userID, ns, server, status string) error {
 	switch status {
-	case ConnectionActive, ConnectionNeedsReauth, ConnectionRevoked:
+	case ConnectionActive, ConnectionNeedsReauth, ConnectionRevoked, ConnectionExpired:
 	default:
 		return fmt.Errorf("%w: status %q", ErrInvalidConnection, status)
 	}
