@@ -29,6 +29,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"log/slog"
 	"net/http"
 	"os"
@@ -40,13 +41,17 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/heddles/agent-orca/internal/executor"
+	"github.com/heddles/agent-orca/internal/redact"
 	"github.com/heddles/agent-orca/internal/router"
 	"github.com/heddles/agent-orca/internal/state"
 )
 
 func main() { //nolint:gocyclo
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	// Everything the router logs passes through the redactor, so an MCP access token
+	// it holds cannot reach the logs (internal/redact).
+	logger := slog.New(redact.Handler(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})))
 	slog.SetDefault(logger)
+	log.SetOutput(redact.Writer(os.Stderr))
 
 	cfg, err := router.ConfigFromEnv()
 	if err != nil {

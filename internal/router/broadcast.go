@@ -16,7 +16,11 @@ limitations under the License.
 
 package router
 
-import "sync"
+import (
+	"sync"
+
+	"github.com/heddles/agent-orca/internal/redact"
+)
 
 // TokenBroadcaster fans out streaming LLM tokens to multiple SSE subscribers.
 // It maintains a replay buffer so that late subscribers (e.g. the operator
@@ -66,6 +70,9 @@ func (b *TokenBroadcaster) Subscribe() (<-chan string, func()) {
 // Send broadcasts a token to all current subscribers and appends it
 // to the replay buffer for future subscribers.
 func (b *TokenBroadcaster) Send(token string) {
+	// Every SSE token and trace event passes here: no credential may be streamed
+	// or replayed (internal/redact).
+	token = redact.String(token)
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.closed {

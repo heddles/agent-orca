@@ -810,6 +810,17 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              publishedAt:
+                description: PublishedAt is when PublishedBy last published the agent.
+                format: date-time
+                type: string
+              publishedBy:
+                description: |-
+                  PublishedBy is the user who last published the agent through the UI API. A
+                  maintainer-mode MCP server (spec.auth.oauth.connectionMode) uses this user's
+                  connected account for every run of the agent. It is recorded at publish time
+                  and not looked up at runtime, so "the maintainer left" is a visible state.
+                type: string
               serviceAccountName:
                 description: ServiceAccountName is the name of the stable SA managed
                   by the operator.

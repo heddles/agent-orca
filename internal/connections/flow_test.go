@@ -22,6 +22,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -33,6 +34,9 @@ import (
 	"github.com/heddles/agent-orca/internal/oauth"
 	"github.com/heddles/agent-orca/internal/postgresql"
 )
+
+// testUser is the user of the flow tests.
+const testUser = "alice"
 
 // fakeRefreshToken is the refresh token the fake authorization server mints.
 const fakeRefreshToken = "refresh-1"
@@ -149,6 +153,10 @@ type fakeAS struct {
 	issParam     bool
 	pkceMethods  []string
 	refreshCalls int
+	// rotate makes every refresh mint a new refresh token and retire the old one.
+	rotate       bool
+	validRefresh string
+	refreshN     int
 }
 
 func newFakeAS(t *testing.T) *fakeAS {
@@ -190,12 +198,22 @@ func newFakeAS(t *testing.T) *fakeAS {
 			_ = json.NewEncoder(w).Encode(resp)
 		case "refresh_token":
 			f.refreshCalls++
-			if r.PostForm.Get("refresh_token") != fakeRefreshToken {
+			want := f.validRefresh
+			if want == "" {
+				want = fakeRefreshToken
+			}
+			if r.PostForm.Get("refresh_token") != want || r.PostForm.Get("resource") == "" {
 				w.WriteHeader(http.StatusBadRequest)
 				_, _ = w.Write([]byte(`{"error":"invalid_grant"}`))
 				return
 			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "access-2", "expires_in": 3600})
+			f.refreshN++
+			resp := map[string]any{"access_token": fmt.Sprintf("access-r%d", f.refreshN), "expires_in": 3600}
+			if f.rotate {
+				f.validRefresh = fmt.Sprintf("refresh-r%d", f.refreshN)
+				resp["refresh_token"] = f.validRefresh
+			}
+			_ = json.NewEncoder(w).Encode(resp)
 		}
 	})
 	mux.HandleFunc("/revoke", func(w http.ResponseWriter, r *http.Request) {
@@ -253,7 +271,7 @@ func (h *harness) resolve(ref ServerRef) func(context.Context, string, string) (
 
 func (h *harness) start(t *testing.T) (state, code string) {
 	t.Helper()
-	st, err := h.svc.Start(context.Background(), StartRequest{TenantID: "tnt_a", UserID: "alice", Server: h.ref, Scopes: []string{"read"}})
+	st, err := h.svc.Start(context.Background(), StartRequest{TenantID: "tnt_a", UserID: testUser, Server: h.ref, Scopes: []string{"read"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,11 +291,11 @@ func TestStartAndCompleteRoundTrip(t *testing.T) {
 		q.Get("resource") != h.as.URL+"/mcp" || q.Get("scope") != "read" || len(state) < 40 {
 		t.Fatalf("authorize query = %v", q)
 	}
-	conn, err := h.complete(state, code, state, "tnt_a", "alice", "")
+	conn, err := h.complete(state, code, state, "tnt_a", testUser, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if conn.UserID != "alice" || conn.ServerUID != "uid-1" || conn.Status != "active" || len(conn.Scopes) != 1 || conn.Scopes[0] != "read" {
+	if conn.UserID != testUser || conn.ServerUID != "uid-1" || conn.Status != "active" || len(conn.Scopes) != 1 || conn.Scopes[0] != "read" {
 		t.Fatalf("connection = %+v", conn)
 	}
 	// The token endpoint got the client secret (decrypted), the resource and the verifier.
@@ -288,7 +306,7 @@ func TestStartAndCompleteRoundTrip(t *testing.T) {
 	if strings.Contains(string(conn.RefreshTokenEnc), fakeRefreshToken) || strings.Contains(string(conn.AccessTokenEnc), "access-1") {
 		t.Error("tokens stored in the clear")
 	}
-	rt, err := h.svc.Keys.Open(conn.KeyID, conn.RefreshTokenEnc, AAD("refresh", "tnt_a", "alice", "uid-1"))
+	rt, err := h.svc.Keys.Open(conn.KeyID, conn.RefreshTokenEnc, AAD("refresh", "tnt_a", testUser, "uid-1"))
 	if err != nil || string(rt) != fakeRefreshToken {
 		t.Errorf("refresh token = %q, %v", rt, err)
 	}
@@ -304,20 +322,20 @@ func TestCallbackRejections(t *testing.T) {
 		want error
 	}{
 		{"replay", func(h *harness, s, c string) error {
-			_, _ = h.complete(s, c, s, "tnt_a", "alice", "")
-			_, err := h.complete(s, c, s, "tnt_a", "alice", "")
+			_, _ = h.complete(s, c, s, "tnt_a", testUser, "")
+			_, err := h.complete(s, c, s, "tnt_a", testUser, "")
 			return err
 		}, ErrBadState},
 		{"unknown state", func(h *harness, s, c string) error {
-			_, err := h.complete("nope", c, "nope", "tnt_a", "alice", "")
+			_, err := h.complete("nope", c, "nope", "tnt_a", testUser, "")
 			return err
 		}, ErrBadState},
 		{"missing cookie", func(h *harness, s, c string) error {
-			_, err := h.complete(s, c, "", "tnt_a", "alice", "")
+			_, err := h.complete(s, c, "", "tnt_a", testUser, "")
 			return err
 		}, ErrStateMismatch},
 		{"cookie of another flow", func(h *harness, s, c string) error {
-			_, err := h.complete(s, c, "some-other-state", "tnt_a", "alice", "")
+			_, err := h.complete(s, c, "some-other-state", "tnt_a", testUser, "")
 			return err
 		}, ErrStateMismatch},
 		{"state of another user", func(h *harness, s, c string) error {
@@ -325,29 +343,29 @@ func TestCallbackRejections(t *testing.T) {
 			return err
 		}, ErrStateMismatch},
 		{"state of another tenant", func(h *harness, s, c string) error {
-			_, err := h.complete(s, c, s, "tnt_b", "alice", "")
+			_, err := h.complete(s, c, s, "tnt_b", testUser, "")
 			return err
 		}, ErrStateMismatch},
 		{"mismatched iss", func(h *harness, s, c string) error {
-			_, err := h.complete(s, c, s, "tnt_a", "alice", "https://evil.example")
+			_, err := h.complete(s, c, s, "tnt_a", testUser, "https://evil.example")
 			return err
 		}, ErrIssuerMismatch},
 		{"missing iss when the server announces it", func(h *harness, s, c string) error {
 			h.as.mu.Lock()
 			h.as.issParam = true
 			h.as.mu.Unlock()
-			_, err := h.complete(s, c, s, "tnt_a", "alice", "")
+			_, err := h.complete(s, c, s, "tnt_a", testUser, "")
 			return err
 		}, ErrIssuerMismatch},
 		{"user denied", func(h *harness, s, c string) error {
-			_, err := h.svc.Complete(context.Background(), CompleteRequest{TenantID: "tnt_a", UserID: "alice", State: s, CookieState: s,
+			_, err := h.svc.Complete(context.Background(), CompleteRequest{TenantID: "tnt_a", UserID: testUser, State: s, CookieState: s,
 				ProviderError: "access_denied", Resolve: h.resolve(h.ref)})
 			return err
 		}, ErrProviderDenied},
 		{"server recreated (new uid)", func(h *harness, s, c string) error {
 			other := h.ref
 			other.UID = "uid-2"
-			_, err := h.svc.Complete(context.Background(), CompleteRequest{TenantID: "tnt_a", UserID: "alice", State: s, CookieState: s,
+			_, err := h.svc.Complete(context.Background(), CompleteRequest{TenantID: "tnt_a", UserID: testUser, State: s, CookieState: s,
 				Code: c, Resolve: h.resolve(other)})
 			return err
 		}, ErrBadState},
@@ -366,7 +384,7 @@ func TestCallbackRejections(t *testing.T) {
 				t.Error("a connection was stored")
 			}
 			// A rejected state is burned: the right session cannot use it afterwards.
-			if _, err := h.complete(state, code, state, "tnt_a", "alice", ""); err == nil {
+			if _, err := h.complete(state, code, state, "tnt_a", testUser, ""); err == nil {
 				t.Error("a state that failed a check was still usable")
 			}
 		})
@@ -382,7 +400,7 @@ func TestExpiredFlow(t *testing.T) {
 		h.store.flows[k] = f
 	}
 	h.store.mu.Unlock()
-	if _, err := h.complete(state, code, state, "tnt_a", "alice", ""); !errors.Is(err, ErrBadState) {
+	if _, err := h.complete(state, code, state, "tnt_a", testUser, ""); !errors.Is(err, ErrBadState) {
 		t.Fatalf("expired = %v", err)
 	}
 }
@@ -393,7 +411,7 @@ func TestStartRefusals(t *testing.T) {
 	h.as.mu.Lock()
 	h.as.pkceMethods = []string{"plain"}
 	h.as.mu.Unlock()
-	if _, err := h.svc.Start(ctx, StartRequest{TenantID: "tnt_a", UserID: "alice", Server: h.ref}); !errors.Is(err, ErrNoPKCE) {
+	if _, err := h.svc.Start(ctx, StartRequest{TenantID: "tnt_a", UserID: testUser, Server: h.ref}); !errors.Is(err, ErrNoPKCE) {
 		t.Errorf("no S256 = %v", err)
 	}
 	h.as.mu.Lock()
@@ -401,23 +419,23 @@ func TestStartRefusals(t *testing.T) {
 	h.as.mu.Unlock()
 	noApp := h.ref
 	noApp.AppRef = "missing"
-	if _, err := h.svc.Start(ctx, StartRequest{TenantID: "tnt_a", UserID: "alice", Server: noApp}); !errors.Is(err, ErrNotConfigured) {
+	if _, err := h.svc.Start(ctx, StartRequest{TenantID: "tnt_a", UserID: testUser, Server: noApp}); !errors.Is(err, ErrNotConfigured) {
 		t.Errorf("no app = %v", err)
 	}
-	if _, err := h.svc.Start(ctx, StartRequest{TenantID: "tnt_a", UserID: "alice", Server: h.ref, Scopes: []string{"admin"}}); !errors.Is(err, ErrScopesExceeded) {
+	if _, err := h.svc.Start(ctx, StartRequest{TenantID: "tnt_a", UserID: testUser, Server: h.ref, Scopes: []string{"admin"}}); !errors.Is(err, ErrScopesExceeded) {
 		t.Errorf("scope outside the app = %v", err)
 	}
 	bounded := h.ref
 	bounded.UserScopes = []string{"read"}
-	if _, err := h.svc.Start(ctx, StartRequest{TenantID: "tnt_a", UserID: "alice", Server: bounded, Scopes: []string{"write"}}); !errors.Is(err, ErrScopesExceeded) {
+	if _, err := h.svc.Start(ctx, StartRequest{TenantID: "tnt_a", UserID: testUser, Server: bounded, Scopes: []string{"write"}}); !errors.Is(err, ErrScopesExceeded) {
 		t.Errorf("scope outside userScopes = %v", err)
 	}
 	h.svc.AllowInsecure = false
-	if _, err := h.svc.Start(ctx, StartRequest{TenantID: "tnt_a", UserID: "alice", Server: h.ref}); !errors.Is(err, ErrInsecureOAuth) {
+	if _, err := h.svc.Start(ctx, StartRequest{TenantID: "tnt_a", UserID: testUser, Server: h.ref}); !errors.Is(err, ErrInsecureOAuth) {
 		t.Errorf("http endpoints = %v", err)
 	}
 	h.svc.Keys = nil
-	if _, err := h.svc.Start(ctx, StartRequest{TenantID: "tnt_a", UserID: "alice", Server: h.ref}); !errors.Is(err, ErrNoKeys) {
+	if _, err := h.svc.Start(ctx, StartRequest{TenantID: "tnt_a", UserID: testUser, Server: h.ref}); !errors.Is(err, ErrNoKeys) {
 		t.Errorf("no keys = %v", err)
 	}
 }
@@ -426,7 +444,7 @@ func TestCompleteRefusesWithoutRefreshTokenOrTooMuchScope(t *testing.T) {
 	h := newHarness(t)
 	h.as.noRefresh = true
 	state, code := h.start(t)
-	if _, err := h.complete(state, code, state, "tnt_a", "alice", ""); !errors.Is(err, ErrNoRefreshToken) {
+	if _, err := h.complete(state, code, state, "tnt_a", testUser, ""); !errors.Is(err, ErrNoRefreshToken) {
 		t.Errorf("no refresh token = %v", err)
 	}
 	if len(h.as.revoked) != 1 {
@@ -436,7 +454,7 @@ func TestCompleteRefusesWithoutRefreshTokenOrTooMuchScope(t *testing.T) {
 	h = newHarness(t)
 	h.as.tokenScope = "read admin"
 	state, code = h.start(t)
-	if _, err := h.complete(state, code, state, "tnt_a", "alice", ""); !errors.Is(err, ErrScopesExceeded) {
+	if _, err := h.complete(state, code, state, "tnt_a", testUser, ""); !errors.Is(err, ErrScopesExceeded) {
 		t.Errorf("provider granted more = %v", err)
 	}
 	if len(h.store.conns) != 0 {
@@ -450,7 +468,7 @@ func TestPKCEMismatchIsRejectedByProvider(t *testing.T) {
 	h.as.mu.Lock()
 	h.as.challenges[code] = "different-challenge"
 	h.as.mu.Unlock()
-	if _, err := h.complete(state, code, state, "tnt_a", "alice", ""); !oauth.IsInvalidGrant(err) {
+	if _, err := h.complete(state, code, state, "tnt_a", testUser, ""); !oauth.IsInvalidGrant(err) {
 		t.Fatalf("want invalid_grant, got %v", err)
 	}
 }
@@ -458,17 +476,17 @@ func TestPKCEMismatchIsRejectedByProvider(t *testing.T) {
 func TestDisconnectRevokesAtProvider(t *testing.T) {
 	h := newHarness(t)
 	state, code := h.start(t)
-	if _, err := h.complete(state, code, state, "tnt_a", "alice", ""); err != nil {
+	if _, err := h.complete(state, code, state, "tnt_a", testUser, ""); err != nil {
 		t.Fatal(err)
 	}
-	res, err := h.svc.Disconnect(context.Background(), "tnt_a", "alice", h.ref)
+	res, err := h.svc.Disconnect(context.Background(), "tnt_a", testUser, h.ref)
 	if err != nil || !res.Revoked {
 		t.Fatalf("disconnect = %+v, %v", res, err)
 	}
 	if len(h.as.revoked) != 1 || h.as.revoked[0] != fakeRefreshToken {
 		t.Errorf("revoked = %v", h.as.revoked)
 	}
-	if _, err := h.svc.Disconnect(context.Background(), "tnt_a", "alice", h.ref); !errors.Is(err, postgresql.ErrConnectionNotFound) {
+	if _, err := h.svc.Disconnect(context.Background(), "tnt_a", testUser, h.ref); !errors.Is(err, postgresql.ErrConnectionNotFound) {
 		t.Errorf("second disconnect = %v", err)
 	}
 }
@@ -482,5 +500,147 @@ func TestResourceIndicator(t *testing.T) {
 		if got := ResourceIndicator(in); got != want {
 			t.Errorf("ResourceIndicator(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func (h *harness) connect(t *testing.T) postgresql.MCPConnection {
+	t.Helper()
+	state, code := h.start(t)
+	conn, err := h.complete(state, code, state, "tnt_a", testUser, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return conn
+}
+
+func (h *harness) token(t *testing.T) (AccessToken, error) {
+	t.Helper()
+	return h.svc.AccessToken(context.Background(), TokenRequest{TenantID: "tnt_a", UserID: testUser, Server: h.ref})
+}
+
+func TestAccessTokenUsesTheStoredTokenThenRefreshes(t *testing.T) {
+	h := newHarness(t)
+	h.connect(t)
+	tok, err := h.token(t)
+	if err != nil || tok.Token.Reveal() != "access-1" || h.as.refreshCalls != 0 {
+		t.Fatalf("fresh token = %v, %v, refreshes=%d", tok.Token.Reveal(), err, h.as.refreshCalls)
+	}
+	if tok.AccountLabel != testUser || time.Until(tok.ExpiresAt) < 50*time.Minute {
+		t.Errorf("token = %+v", tok)
+	}
+	// Once the access token is within a minute of expiry, the operator refreshes it.
+	h.svc.Now = func() time.Time { return time.Now().Add(time.Hour - 30*time.Second) }
+	tok, err = h.token(t)
+	if err != nil || tok.Token.Reveal() != "access-r1" || h.as.refreshCalls != 1 {
+		t.Fatalf("refreshed token = %v, %v, refreshes=%d", tok.Token.Reveal(), err, h.as.refreshCalls)
+	}
+	// The refresh token never appears in the answer, and the stored row is ciphertext.
+	if strings.Contains(fmt.Sprintf("%+v %v", tok, tok), "refresh-1") {
+		t.Error("answer carries the refresh token")
+	}
+	stored, _ := h.store.GetConnection(context.Background(), testUser, "team", "github")
+	if strings.Contains(string(stored.AccessTokenEnc), "access-r1") || stored.LastUsedAt == nil {
+		t.Errorf("stored = %+v", stored)
+	}
+}
+
+func TestAccessTokenRotatesTheRefreshToken(t *testing.T) {
+	h := newHarness(t)
+	h.as.rotate = true
+	h.connect(t)
+	for i, want := range []string{"access-r1", "access-r2", "access-r3"} {
+		// Each call is made after the previous token expired, so each one rotates.
+		h.svc.Now = func() time.Time { return time.Now().Add(time.Duration(i+1) * 2 * time.Hour) }
+		tok, err := h.token(t)
+		if err != nil || tok.Token.Reveal() != want {
+			t.Fatalf("call %d = %q, %v", i, tok.Token.Reveal(), err)
+		}
+	}
+	stored, _ := h.store.GetConnection(context.Background(), testUser, "team", "github")
+	rt, err := h.svc.Keys.Open(stored.KeyID, stored.RefreshTokenEnc, AAD("refresh", "tnt_a", testUser, "uid-1"))
+	if err != nil || string(rt) != "refresh-r3" {
+		t.Errorf("stored refresh token = %q, %v", rt, err)
+	}
+}
+
+func TestAccessTokenIsSingleFlightPerConnection(t *testing.T) {
+	h := newHarness(t)
+	h.as.rotate = true
+	h.connect(t)
+	h.svc.Now = func() time.Time { return time.Now().Add(2 * time.Hour) }
+	var wg sync.WaitGroup
+	errs := make(chan error, 8)
+	for range 8 {
+		wg.Go(func() {
+			if _, err := h.token(t); err != nil {
+				errs <- err
+			}
+		})
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("concurrent call failed (a rotating refresh token was spent twice?): %v", err)
+	}
+	if h.as.refreshCalls != 1 {
+		t.Errorf("refresh calls = %d, want 1", h.as.refreshCalls)
+	}
+}
+
+func TestAccessTokenInvalidGrantNeedsReauth(t *testing.T) {
+	h := newHarness(t)
+	h.connect(t)
+	var reauthed []postgresql.MCPConnection
+	h.svc.OnReauth = func(_ context.Context, c postgresql.MCPConnection) { reauthed = append(reauthed, c) }
+	h.as.validRefresh = "something-else" // the provider no longer accepts ours
+	h.svc.Now = func() time.Time { return time.Now().Add(2 * time.Hour) }
+	_, err := h.token(t)
+	if te := AsTokenError(err); te == nil || te.Code != CodeNeedsReauth {
+		t.Fatalf("err = %v", err)
+	}
+	if len(reauthed) != 1 || reauthed[0].UserID != testUser {
+		t.Errorf("OnReauth = %+v", reauthed)
+	}
+	stored, _ := h.store.GetConnection(context.Background(), testUser, "team", "github")
+	if stored.Status != postgresql.ConnectionNeedsReauth {
+		t.Errorf("status = %s", stored.Status)
+	}
+	// Later calls fail without bothering the provider.
+	calls := h.as.refreshCalls
+	if _, err := h.token(t); AsTokenError(err) == nil || AsTokenError(err).Code != CodeNeedsReauth || h.as.refreshCalls != calls {
+		t.Errorf("second call = %v, refreshes %d -> %d", err, calls, h.as.refreshCalls)
+	}
+}
+
+func TestAccessTokenRefusals(t *testing.T) {
+	h := newHarness(t)
+	if _, err := h.token(t); AsTokenError(err) == nil || AsTokenError(err).Code != CodeRequired {
+		t.Errorf("not connected = %v", err)
+	}
+	h.connect(t)
+	// A server recreated under the same name does not inherit the credential.
+	other := h.ref
+	other.UID = "uid-2"
+	if _, err := h.svc.AccessToken(context.Background(), TokenRequest{TenantID: "tnt_a", UserID: testUser, Server: other}); AsTokenError(err) == nil || AsTokenError(err).Code != CodeRequired {
+		t.Errorf("recreated server = %v", err)
+	}
+	// Another user has no connection.
+	if _, err := h.svc.AccessToken(context.Background(), TokenRequest{TenantID: "tnt_a", UserID: "bob", Server: h.ref}); AsTokenError(err) == nil || AsTokenError(err).Code != CodeRequired {
+		t.Errorf("other user = %v", err)
+	}
+	_ = h.store.SetConnectionStatus(context.Background(), testUser, "team", "github", postgresql.ConnectionRevoked)
+	if _, err := h.token(t); AsTokenError(err) == nil || AsTokenError(err).Code != CodeUnavailable {
+		t.Errorf("revoked = %v", err)
+	}
+}
+
+func TestAccessTokenNeverRevealsInErrors(t *testing.T) {
+	h := newHarness(t)
+	h.connect(t)
+	h.as.Close() // the provider is gone: the error must not say anything about tokens
+	h.svc.Now = func() time.Time { return time.Now().Add(2 * time.Hour) }
+	_, err := h.token(t)
+	if te := AsTokenError(err); te == nil || te.Code != CodeUnavailable || strings.Contains(te.Message, "refresh-1") || strings.Contains(te.Message, h.as.URL) {
+		t.Errorf("err = %v", err)
 	}
 }

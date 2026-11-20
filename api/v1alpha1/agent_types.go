@@ -591,6 +591,17 @@ type AgentStatus struct {
 	// +optional
 	ServiceAccountName string `json:"serviceAccountName,omitempty"`
 
+	// PublishedBy is the user who last published the agent through the UI API. A
+	// maintainer-mode MCP server (spec.auth.oauth.connectionMode) uses this user's
+	// connected account for every run of the agent. It is recorded at publish time
+	// and not looked up at runtime, so "the maintainer left" is a visible state.
+	// +optional
+	PublishedBy string `json:"publishedBy,omitempty"`
+
+	// PublishedAt is when PublishedBy last published the agent.
+	// +optional
+	PublishedAt *metav1.Time `json:"publishedAt,omitempty"`
+
 	// CloudProviderDetected is the cloud provider the operator detected at startup.
 	// +optional
 	CloudProviderDetected string `json:"cloudProviderDetected,omitempty"`

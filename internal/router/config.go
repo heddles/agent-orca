@@ -295,6 +295,12 @@ type ProviderConfig struct {
 	TokenEncoding string
 }
 
+// UserConnectionConfig names the MCPServer whose per-user connection a tool server uses.
+type UserConnectionConfig struct {
+	// Server is the MCPServer name; the Tool name can differ.
+	Server string `json:"server"`
+}
+
 // MCPServerConfig describes an MCP server the model-router should connect to at startup.
 type MCPServerConfig struct {
 	// Name is the Tool CRD name this server corresponds to.
@@ -320,6 +326,11 @@ type MCPServerConfig struct {
 	// servers (e.g. Slack); no access-token Secret is mounted — only the credentials
 	// Secret (see MCPOAuthConfig on the MCPServer CRD).
 	OAuth *mcp.OAuthConfig `json:"oauth,omitempty"`
+	// UserConnection, when set, makes the router attach the access token of a
+	// per-user connection (MCPServer connectionMode maintainer) to every request to
+	// this server. The router asks the operator for the token; no credential is
+	// mounted into the pod (docs/mcp-oauth.md).
+	UserConnection *UserConnectionConfig `json:"userConnection,omitempty"`
 	// AllowApps enables MCP App iframe rendering for tools from this server.
 	AllowApps bool `json:"allowApps,omitempty"`
 	// IncludePatterns is a list of glob patterns used to filter the tools the

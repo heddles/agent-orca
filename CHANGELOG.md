@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Per-user OAuth for MCP servers (maintainer mode)** — `MCPServer.spec.auth.oauth.connectionMode: maintainer` lets the
+  user who publishes an agent connect their own account; tokens are stored envelope-encrypted in PostgreSQL (migration
+  `0020`, key from a Kubernetes Secret, key id per row), never in a pod, the model, a trace or a log. The router asks the
+  operator for a short-lived access token per run (`POST /agentrun/{ns}/{run}/mcp-token`). New Connections page, admin OAuth
+  app registration, audit rows and Helm values `database.connectionKeySecret` and `operator.connections.*`. Existing servers
+  stay `shared`. See `docs/mcp-oauth.md`.
 - **Scheduled runs** — a new `AgentSchedule` kind starts an agent on a cron schedule in an IANA time zone. Each tick
   creates an ordinary `AgentRun` (or, for a workflow template, an `AgentWorkflow`) owned by the schedule, with a
   deterministic name derived from the tick so it cannot start twice. Concurrency policy, missed-tick deadline, history

@@ -39,16 +39,15 @@ const FlowTTL = 5 * time.Minute
 // Errors of the flow. Messages are safe to show to the user: none carries a
 // token, a code or a state.
 var (
-	ErrNotConfigured   = errors.New("the OAuth app for this server is not registered")
-	ErrNoPKCE          = errors.New("the server's authorization service does not support PKCE S256")
-	ErrInsecureOAuth   = errors.New("the server's authorization endpoints must use https")
-	ErrBadState        = errors.New("the connection request is unknown, expired or already used")
-	ErrStateMismatch   = errors.New("the connection request does not belong to this session")
-	ErrIssuerMismatch  = errors.New("the authorization response came from an unexpected issuer")
-	ErrProviderDenied  = errors.New("the provider did not grant access")
-	ErrNoRefreshToken  = errors.New("the provider returned no refresh token; request offline access for the app")
-	ErrScopesExceeded  = errors.New("the provider granted more access than the administrator allows for this server")
-	ErrConnectionInUse = errors.New("the connection cannot be used")
+	ErrNotConfigured  = errors.New("the OAuth app for this server is not registered")
+	ErrNoPKCE         = errors.New("the server's authorization service does not support PKCE S256")
+	ErrInsecureOAuth  = errors.New("the server's authorization endpoints must use https")
+	ErrBadState       = errors.New("the connection request is unknown, expired or already used")
+	ErrStateMismatch  = errors.New("the connection request does not belong to this session")
+	ErrIssuerMismatch = errors.New("the authorization response came from an unexpected issuer")
+	ErrProviderDenied = errors.New("the provider did not grant access")
+	ErrNoRefreshToken = errors.New("the provider returned no refresh token; request offline access for the app")
+	ErrScopesExceeded = errors.New("the provider granted more access than the administrator allows for this server")
 )
 
 // Store is the slice of postgresql.Store the flow uses.
@@ -74,6 +73,9 @@ type Service struct {
 	// AllowInsecure accepts http authorization endpoints (tests, local dev).
 	AllowInsecure bool
 	Now           func() time.Time
+	// OnReauth is called after a refresh failed with invalid_grant and the
+	// connection became needs_reauth, so the caller can audit it.
+	OnReauth func(ctx context.Context, c postgresql.MCPConnection)
 }
 
 func (s *Service) now() time.Time {

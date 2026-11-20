@@ -25,6 +25,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -38,6 +39,7 @@ import (
 	"time"
 
 	"github.com/heddles/agent-orca/internal/oauth"
+	"github.com/heddles/agent-orca/internal/redact"
 )
 
 // Transport is the MCP connection transport type.
@@ -76,6 +78,42 @@ type OAuthConfig struct {
 	Scopes []string
 }
 
+// Token is a short-lived access token for one MCP server.
+type Token struct {
+	Value     string
+	ExpiresAt time.Time
+}
+
+// TokenSource supplies the access token of a per-user connection (connection mode
+// maintainer, docs/mcp-oauth.md). The model-router implements it by asking the
+// operator, which holds the long-lived credential. The token is put in the
+// Authorization header of the request to the MCP server after the model has chosen
+// the tool, and nowhere else.
+type TokenSource interface {
+	MCPToken(ctx context.Context, server string) (Token, error)
+}
+
+// ConnectionError is a failure to get a connection's token. Code is a stable word
+// ("connection_required", "connection_unavailable", "needs_reauth") and Message
+// is safe to show the model: it never carries a credential.
+type ConnectionError struct {
+	Code    string
+	Message string
+}
+
+func (e *ConnectionError) Error() string { return e.Code + ": " + e.Message }
+
+// UserConnection makes a server use a person's connected account.
+type UserConnection struct {
+	// Server is the MCPServer name the operator keys the connection by (the Tool
+	// name can differ).
+	Server string
+	Tokens TokenSource
+}
+
+// tokenSkew is how long before expiry a cached token is replaced.
+const tokenSkew = 30 * time.Second
+
 // ServerConfig describes a running MCP server to connect to.
 type ServerConfig struct {
 	// Name is the Tool CRD name this server corresponds to.
@@ -96,6 +134,10 @@ type ServerConfig struct {
 	// OAuth, when set, makes the client perform the OAuth 2.0 exchange (in-memory
 	// bearer) instead of using a static authHeaderFile. Only for http/sse transports.
 	OAuth *OAuthConfig
+	// User, when set, makes every HTTP/SSE request carry the access token of a
+	// per-user connection, fetched from User.Tokens and cached in memory until it
+	// expires. Mutually exclusive with AuthHeaderFiles and OAuth.
+	User *UserConnection
 	// AllowApps enables MCP App iframe rendering for tools from this server.
 	AllowApps bool
 	// IncludePatterns and ExcludePatterns filter the tool names the model-router
@@ -184,6 +226,33 @@ func (s *serverConn) setAuthHeaders(h http.Header) {
 	}
 }
 
+// setUserToken puts the per-user connection's access token in the request. The
+// token is cached until shortly before it expires; the long-lived credential is
+// never here.
+func (s *serverConn) setUserToken(ctx context.Context, h http.Header) error {
+	if s.user == nil {
+		return nil
+	}
+	s.userMu.Lock()
+	defer s.userMu.Unlock()
+	if s.userToken.Value == "" || time.Until(s.userToken.ExpiresAt) < tokenSkew {
+		tok, err := s.user.Tokens.MCPToken(ctx, s.user.Server)
+		if err != nil {
+			return err
+		}
+		redact.Register(tok.Value)
+		s.userToken = tok
+	}
+	h.Set("Authorization", "Bearer "+s.userToken.Value)
+	return nil
+}
+
+func (s *serverConn) dropUserToken() {
+	s.userMu.Lock()
+	s.userToken = Token{}
+	s.userMu.Unlock()
+}
+
 // Tools returns all tools discovered from connected MCP servers.
 func (c *Client) Tools() []Tool {
 	c.mu.RLock()
@@ -227,9 +296,11 @@ func (c *Client) Call(ctx context.Context, toolName, arguments string) (string, 
 
 	result, err := target.callTool(ctx, localName, args)
 	if err != nil {
-		return "", err
+		// A server may echo the credential it was sent; mask it before the text can
+		// reach the model, a trace or a log (internal/redact).
+		return "", errors.New(redact.String(err.Error()))
 	}
-	return result, nil
+	return redact.String(result), nil
 }
 
 // Close disconnects from all MCP servers.
@@ -258,6 +329,9 @@ type serverConn struct {
 	authHeaderFiles []AuthHeaderFile // bearer/credential configs, resolved per request (supports token rotation)
 	oauth           *OAuthConfig     // OAuth config; token acquired in-memory (no token Secret)
 	oauthToken      string           // current bearer access token (in-memory)
+	user            *UserConnection  // per-user connection; token fetched per request and cached
+	userMu          sync.Mutex
+	userToken       Token
 	// JSON-RPC ID counter
 	nextID atomic.Int64
 }
@@ -326,6 +400,7 @@ func connect(ctx context.Context, cfg ServerConfig) (*serverConn, error) {
 	// setAuthHeaders so the operator can rotate the bearer token in the mounted Secret
 	// and have running pods pick up the new value without a restart.
 	conn.authHeaderFiles = cfg.AuthHeaderFiles
+	conn.user = cfg.User
 
 	switch cfg.Transport {
 	case TransportStdio:
@@ -490,7 +565,7 @@ func (c *Client) FetchResource(ctx context.Context, serverName, uri string) (str
 
 	result, err := target.send(ctx, "resources/read", map[string]any{"uri": uri})
 	if err != nil {
-		return "", fmt.Errorf("resources/read: %w", err)
+		return "", fmt.Errorf("resources/read: %s", redact.String(err.Error()))
 	}
 
 	var resp struct {
@@ -501,7 +576,7 @@ func (c *Client) FetchResource(ctx context.Context, serverName, uri string) (str
 	}
 	for _, block := range resp.Contents {
 		if t := extractContentText(block); t != "" {
-			return t, nil
+			return redact.String(t), nil
 		}
 	}
 	return "", fmt.Errorf("no text content in resources/read response")
@@ -660,12 +735,18 @@ func (s *serverConn) sendHTTP(ctx context.Context, reqBytes []byte) (json.RawMes
 	if s.oauthToken != "" {
 		req.Header.Set("Authorization", "Bearer "+s.oauthToken)
 	}
+	if err := s.setUserToken(ctx, req.Header); err != nil {
+		return nil, err
+	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode == http.StatusUnauthorized {
+		s.dropUserToken() // the next request asks for a fresh one
+	}
 
 	var rpcResp jsonrpcResponse
 	if err := json.NewDecoder(resp.Body).Decode(&rpcResp); err != nil {
@@ -701,6 +782,9 @@ func (s *serverConn) notify(ctx context.Context, method string, params any) erro
 		s.setAuthHeaders(httpReq.Header)
 		if s.oauthToken != "" {
 			httpReq.Header.Set("Authorization", "Bearer "+s.oauthToken)
+		}
+		if err := s.setUserToken(ctx, httpReq.Header); err != nil {
+			return err
 		}
 		resp, err := http.DefaultClient.Do(httpReq)
 		if err != nil {

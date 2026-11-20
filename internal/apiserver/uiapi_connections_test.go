@@ -31,6 +31,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
@@ -41,6 +42,7 @@ import (
 
 const (
 	connTestUser    = "alice"
+	connOtherUser   = "bob"
 	connStateValue  = "state-value-123"
 	connSecretValue = "client-secret-SENTINEL"
 	connTokenValue  = "refresh-token-SENTINEL"
@@ -192,9 +194,10 @@ func newConnFixture(t *testing.T) *connFixture {
 		connMCPServer("b-only", "theirs", isoB, "maintainer", nil),
 		connMCPServer("platform-ns", "plat", "", "maintainer", map[string]string{tenancy.LabelScope: tenancy.ScopePlatform}),
 		tool,
-		&agentorcav1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "support", Namespace: "shared", Labels: map[string]string{tenancy.LabelTenantID: isoA}},
+		&agentorcav1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "support", Namespace: "shared", Labels: map[string]string{tenancy.LabelTenantID: isoA},
+			Annotations: map[string]string{tenancy.AnnotationOwner: tenancy.OwnerUI}},
 			Spec: agentorcav1alpha1.AgentSpec{Tools: []string{"github"}}},
-	).Build()
+	).WithStatusSubresource(&agentorcav1alpha1.Agent{}).Build()
 	f := &connFixture{t: t, backend: &fakeConnBackend{}, store: &fakeConnStore{apps: map[string]postgresql.MCPOAuthApp{}}, audit: &fakeAudit{}}
 	f.srv = &UIServer{crdClient: cl, audit: f.audit}
 	f.srv.SetConnections(f.backend, f.store, true)
@@ -396,7 +399,7 @@ func TestConnections_ListIsTheCallersOwn(t *testing.T) {
 		return postgresql.MCPConnection{TenantID: tenant, UserID: user, ServerNS: "shared", ServerName: "github", Scopes: []string{"repo:read"},
 			Status: postgresql.ConnectionActive, RefreshTokenEnc: []byte(connTokenValue), AccessTokenEnc: []byte("access-SENTINEL"), KeyID: "k1"}
 	}
-	f.store.conns = []postgresql.MCPConnection{mk(isoA, connTestUser), mk(isoA, "bob"), mk(isoB, connTestUser)}
+	f.store.conns = []postgresql.MCPConnection{mk(isoA, connTestUser), mk(isoA, connOtherUser), mk(isoB, connTestUser)}
 	rec := f.do(connUser(tenancy.RoleViewer, isoA, connTestUser), http.MethodGet, "/api/connections", "")
 	got := evalDecode[[]connectionView](t, rec)
 	if len(got) != 1 || got[0].Server != "github" {
@@ -411,7 +414,7 @@ func TestConnections_ListIsTheCallersOwn(t *testing.T) {
 	}
 	// The admin view lists users and statuses, no tokens, only this tenant's.
 	rec = f.do(connUser(tenancy.RoleAdmin, isoA, "admin"), http.MethodGet, "/api/mcpservers/shared/github/connections", "")
-	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "SENTINEL") || !strings.Contains(rec.Body.String(), "bob") ||
+	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "SENTINEL") || !strings.Contains(rec.Body.String(), connOtherUser) ||
 		!strings.Contains(rec.Body.String(), `"active":2`) {
 		t.Errorf("admin view = %d %s", rec.Code, rec.Body)
 	}
@@ -496,7 +499,7 @@ func TestConnections_RequiredLists(t *testing.T) {
 	get := func(user string) resp {
 		return evalDecode[resp](t, f.do(connUser(tenancy.RoleRunner, isoA, user), http.MethodGet, "/api/me/connections/required?agent=shared/support", ""))
 	}
-	alice, bob := get(connTestUser), get("bob")
+	alice, bob := get(connTestUser), get(connOtherUser)
 	if len(alice.Servers) != 1 || !alice.Servers[0].Connected || alice.Servers[0].Mode != "maintainer" || len(alice.Required) != 0 {
 		t.Errorf("alice = %+v", alice)
 	}
@@ -535,5 +538,86 @@ func TestDefaultMCPConnectionMode(t *testing.T) {
 		if got := mode(o); got != tc.want {
 			t.Errorf("%s: mode = %q, want %q", name, got, tc.want)
 		}
+	}
+}
+
+func TestConnections_PublishNeedsThePublishersOwnConnectionAndRecordsThem(t *testing.T) {
+	f := newConnFixture(t)
+	publish := func(user string) *httptest.ResponseRecorder {
+		return f.do(connUser(tenancy.RoleBuilder, isoA, user), http.MethodPost, "/api/agents/shared/support/publish", "")
+	}
+	agent := func() agentorcav1alpha1.Agent {
+		var a agentorcav1alpha1.Agent
+		if err := f.srv.crdClient.Get(context.Background(), client.ObjectKey{Namespace: "shared", Name: "support"}, &a); err != nil {
+			t.Fatal(err)
+		}
+		return a
+	}
+	// No connection: refused, nothing created, nobody recorded.
+	rec := publish(connTestUser)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "github") {
+		t.Fatalf("publish without a connection = %d %s", rec.Code, rec.Body)
+	}
+	var deps agentorcav1alpha1.AgentDeploymentList
+	_ = f.srv.crdClient.List(context.Background(), &deps)
+	if len(deps.Items) != 0 || agent().Status.PublishedBy != "" {
+		t.Errorf("a refused publish left state: %d deployments, publishedBy %q", len(deps.Items), agent().Status.PublishedBy)
+	}
+	// Somebody else's connection does not count; a needs_reauth one does not either.
+	conn := postgresql.MCPConnection{TenantID: isoA, UserID: connOtherUser, ServerNS: "shared", ServerName: "github", ServerUID: "uid-github", Status: postgresql.ConnectionActive}
+	f.store.conns = []postgresql.MCPConnection{conn}
+	if rec := publish(connTestUser); rec.Code != http.StatusConflict {
+		t.Errorf("publish on bob's connection = %d", rec.Code)
+	}
+	conn.UserID, conn.Status = connTestUser, postgresql.ConnectionNeedsReauth
+	f.store.conns = []postgresql.MCPConnection{conn}
+	if rec := publish(connTestUser); rec.Code != http.StatusConflict {
+		t.Errorf("publish on a needs_reauth connection = %d", rec.Code)
+	}
+	conn.Status, conn.ServerUID = postgresql.ConnectionActive, "uid-old"
+	f.store.conns = []postgresql.MCPConnection{conn}
+	if rec := publish(connTestUser); rec.Code != http.StatusConflict {
+		t.Errorf("publish on a connection of a recreated server = %d", rec.Code)
+	}
+	// An active connection of the publisher: published, and the publisher recorded.
+	conn.ServerUID = "uid-github"
+	f.store.conns = []postgresql.MCPConnection{conn}
+	if rec := publish(connTestUser); rec.Code != http.StatusCreated {
+		t.Fatalf("publish with a connection = %d %s", rec.Code, rec.Body)
+	}
+	if a := agent(); a.Status.PublishedBy != connTestUser || a.Status.PublishedAt == nil {
+		t.Errorf("status = %+v", a.Status)
+	}
+	// Republishing as somebody else needs their connection, and then they become the maintainer.
+	if rec := publish(connOtherUser); rec.Code != http.StatusConflict {
+		t.Errorf("bob without a connection = %d", rec.Code)
+	}
+	if agent().Status.PublishedBy != connTestUser {
+		t.Error("a refused republish changed the maintainer")
+	}
+	f.store.conns = append(f.store.conns, postgresql.MCPConnection{TenantID: isoA, UserID: connOtherUser, ServerNS: "shared", ServerName: "github", ServerUID: "uid-github", Status: postgresql.ConnectionActive})
+	if rec := publish(connOtherUser); rec.Code != http.StatusOK {
+		t.Fatalf("bob with a connection = %d %s", rec.Code, rec.Body)
+	}
+	if agent().Status.PublishedBy != connOtherUser {
+		t.Errorf("publishedBy = %q", agent().Status.PublishedBy)
+	}
+}
+
+func TestConnections_PublishOfAnAgentWithoutPerUserServersIsUnchanged(t *testing.T) {
+	f := newConnFixture(t)
+	cl := f.srv.crdClient
+	plain := &agentorcav1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "plain", Namespace: "shared", Labels: map[string]string{tenancy.LabelTenantID: isoA},
+		Annotations: map[string]string{tenancy.AnnotationOwner: tenancy.OwnerUI}}}
+	if err := cl.Create(context.Background(), plain); err != nil {
+		t.Fatal(err)
+	}
+	if rec := f.do(connUser(tenancy.RoleBuilder, isoA, connTestUser), http.MethodPost, "/api/agents/shared/plain/publish", ""); rec.Code != http.StatusCreated {
+		t.Fatalf("publish = %d %s", rec.Code, rec.Body)
+	}
+	var got agentorcav1alpha1.Agent
+	_ = cl.Get(context.Background(), client.ObjectKeyFromObject(plain), &got)
+	if got.Status.PublishedBy != "" {
+		t.Errorf("publishedBy = %q for an agent with no maintainer servers", got.Status.PublishedBy)
 	}
 }

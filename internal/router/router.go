@@ -43,6 +43,7 @@ import (
 
 	"github.com/heddles/agent-orca/internal/executor"
 	"github.com/heddles/agent-orca/internal/mcp"
+	"github.com/heddles/agent-orca/internal/redact"
 	"github.com/heddles/agent-orca/internal/state"
 	tiktoken "github.com/pkoukk/tiktoken-go"
 	hindsight "github.com/vectorize-io/hindsight/hindsight-clients/go"
@@ -695,7 +696,12 @@ func (r *Router) InitMCPServers() {
 				Prefix:     ahf.Prefix,
 			})
 		}
+		var userConn *mcp.UserConnection
+		if s.UserConnection != nil {
+			userConn = &mcp.UserConnection{Server: s.UserConnection.Server, Tokens: r}
+		}
 		serverConfigs = append(serverConfigs, mcp.ServerConfig{
+			User:            userConn,
 			Name:            s.Name,
 			Transport:       mcp.Transport(s.Transport),
 			URL:             s.URL,
@@ -2102,7 +2108,8 @@ func (r *Router) emitTraceEvent(eventJSON string) {
 	key := "tokens:" + r.cfg.RunNamespace + ":" + r.cfg.RunName
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := r.store.SaveTraceEvent(ctx, key, eventJSON); err != nil {
+	// The one place trace events are stored: no credential may be written (internal/redact).
+	if err := r.store.SaveTraceEvent(ctx, key, redact.String(eventJSON)); err != nil {
 		slog.Warn("failed to save trace event", "err", err)
 	}
 }
