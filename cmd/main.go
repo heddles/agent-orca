@@ -503,6 +503,15 @@ func main() {
 		setupLog.Error(err, "Failed to create controller", "controller", "RoutingRecommendation")
 		os.Exit(1)
 	}
+	// Runs on a clock. Leader election (on in the chart) keeps the work to one
+	// replica; the run name derived from each tick is what actually prevents a
+	// double start if two ever run.
+	if err := (&controller.AgentScheduleReconciler{
+		Client: mgr.GetClient(), Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "AgentSchedule")
+		os.Exit(1)
+	}
 	var gitHubApp controller.GitHubTokenMinter
 	if dir := os.Getenv("GITHUB_APP_DIR"); dir != "" {
 		app, err := githubapp.FromDir(dir, os.Getenv("GITHUB_API_URL"))

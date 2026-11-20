@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Scheduled runs** — a new `AgentSchedule` kind starts an agent on a cron schedule in an IANA time zone. Each tick
+  creates an ordinary `AgentRun` (or, for a workflow template, an `AgentWorkflow`) owned by the schedule, with a
+  deterministic name derived from the tick so it cannot start twice. Concurrency policy, missed-tick deadline, history
+  limits, suspend, per-run budget, schedule spend caps, a failure breaker, tenant quotas checked on every tick,
+  `/api/schedules` endpoints, `aoctl schedule` and a Schedules page in the UI. See `docs/schedules.md`.
 - **Coding-agent harness trace** — an Agent with `spec.runtime.harness: claude-code` (sandbox required) runs the
   Claude Code CLI with `--output-format stream-json --verbose`, and the operator copies what it did into the run's
   trace as `harness` events: tool calls and their results, the final result with token usage, and the

@@ -61,6 +61,7 @@ rules:
   - agentdeployments
   - agentruns
   - agents
+  - agentschedules
   - agentworkflows
   - knowledgebases
   - mcpservers
@@ -84,6 +85,7 @@ rules:
   - agentdeployments/finalizers
   - agentruns/finalizers
   - agents/finalizers
+  - agentschedules/finalizers
   - agentworkflows/finalizers
   - knowledgebases/finalizers
   - mcpservers/finalizers
@@ -101,6 +103,7 @@ rules:
   - agentdeployments/status
   - agentruns/status
   - agents/status
+  - agentschedules/status
   - agentworkflows/status
   - knowledgebases/status
   - mcpservers/status
