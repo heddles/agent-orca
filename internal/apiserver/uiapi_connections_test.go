@@ -621,3 +621,40 @@ func TestConnections_PublishOfAnAgentWithoutPerUserServersIsUnchanged(t *testing
 		t.Errorf("publishedBy = %q for an agent with no maintainer servers", got.Status.PublishedBy)
 	}
 }
+
+func TestConnections_InvokerRequiredAndNoPublishGate(t *testing.T) {
+	f := newConnFixture(t)
+	ctx := context.Background()
+	var srv agentorcav1alpha1.MCPServer
+	if err := f.srv.crdClient.Get(ctx, client.ObjectKey{Namespace: "shared", Name: tokServerName}, &srv); err != nil {
+		t.Fatal(err)
+	}
+	srv.Spec.Auth.OAuth.ConnectionMode = agentorcav1alpha1.MCPConnectionInvoker
+	if err := f.srv.crdClient.Update(ctx, &srv); err != nil {
+		t.Fatal(err)
+	}
+	f.store.conns = []postgresql.MCPConnection{{TenantID: isoA, UserID: connTestUser, ServerNS: "shared", ServerName: "github", ServerUID: "uid-github", Status: postgresql.ConnectionActive}}
+	type resp struct {
+		Required []requiredServer `json:"required"`
+	}
+	get := func(user string) resp {
+		return evalDecode[resp](t, f.do(connUser(tenancy.RoleRunner, isoA, user), http.MethodGet, "/api/me/connections/required?agent=shared/support", ""))
+	}
+	// The caller's own connection decides: alice has one, bob is asked to connect.
+	if r := get(connTestUser); len(r.Required) != 0 {
+		t.Errorf("alice = %+v", r)
+	}
+	if r := get(connOtherUser); len(r.Required) != 1 || r.Required[0].Server != "github" || r.Required[0].Mode != "invoker" || r.Required[0].Connected {
+		t.Errorf("bob = %+v", r)
+	}
+	// Publishing needs no publisher connection (unlike maintainer) and records no maintainer.
+	f.store.conns = nil
+	if rec := f.do(connUser(tenancy.RoleBuilder, isoA, connOtherUser), http.MethodPost, "/api/agents/shared/support/publish", ""); rec.Code != http.StatusCreated {
+		t.Fatalf("publish = %d %s", rec.Code, rec.Body)
+	}
+	var a agentorcav1alpha1.Agent
+	_ = f.srv.crdClient.Get(ctx, client.ObjectKey{Namespace: "shared", Name: "support"}, &a)
+	if a.Status.PublishedBy != "" {
+		t.Errorf("publishedBy = %q, want none for invoker", a.Status.PublishedBy)
+	}
+}

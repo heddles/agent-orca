@@ -219,12 +219,14 @@ spec:
                         default: shared
                         description: |-
                           ConnectionMode says whose credential a run uses: shared (default, one Secret,
-                          today's behaviour) or maintainer (the user who last published the agent
-                          connected their own account; the operator stores the tokens encrypted in
-                          PostgreSQL and hands the router a short-lived access token per run).
+                          today's behaviour), maintainer (the user who last published the agent
+                          connected their own account) or invoker (the user who started the run did;
+                          a run with no such user has no credential). The operator stores the tokens
+                          encrypted in PostgreSQL and hands the router a short-lived access token per run.
                         enum:
                         - shared
                         - maintainer
+                        - invoker
                         type: string
                       credentials:
                         description: |-

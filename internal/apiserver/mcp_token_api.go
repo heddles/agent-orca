@@ -46,7 +46,7 @@ import (
 // the run's own agent, so a pod of one agent cannot ask for another agent's
 // connection. Whose connection it is comes from the AgentRun and Agent objects
 // (Agent.status.publishedBy), never from the request body, which names only the
-// server. The run must still be active, the server must be a maintainer-mode
+// server. The run must still be active, the server must be a per-user (maintainer or invoker) mode
 // server that lists the agent in allowedAgents and that the agent uses, and the
 // connection's tenant is the agent's tenant (the store's row-level security
 // enforces it a second time).
@@ -134,8 +134,12 @@ func (s *Server) issueMCPToken(w http.ResponseWriter, r *http.Request, caller, n
 	if server.Spec.Auth != nil {
 		oa = server.Spec.Auth.OAuth
 	}
-	if oa == nil || oa.Mode() != agentorcav1alpha1.MCPConnectionMaintainer {
-		tokenFail(w, http.StatusConflict, connections.CodeUnavailable, "this server does not use a maintainer connection")
+	mode := agentorcav1alpha1.MCPConnectionShared
+	if oa != nil {
+		mode = oa.Mode()
+	}
+	if mode != agentorcav1alpha1.MCPConnectionMaintainer && mode != agentorcav1alpha1.MCPConnectionInvoker {
+		tokenFail(w, http.StatusConflict, connections.CodeUnavailable, "this server does not use a per-user connection")
 		return
 	}
 	if serverTenant, platform := tenancy.TenantOf(&server); !platform && serverTenant != "" && serverTenant != tenantID {
@@ -146,14 +150,28 @@ func (s *Server) issueMCPToken(w http.ResponseWriter, r *http.Request, caller, n
 		tokenFail(w, http.StatusForbidden, errCodeForbid, "the agent may not use this server")
 		return
 	}
-	maintainer := agent.Status.PublishedBy
-	if maintainer == "" {
-		tokenFail(w, http.StatusConflict, connections.CodeUnavailable,
-			"this agent has not been published by a user, so there is no connection owner; publish it from the builder")
-		return
+	// Whose connection: from the objects, never the request.
+	var owner, label string
+	if mode == agentorcav1alpha1.MCPConnectionInvoker {
+		user, why := invokerOf(&run)
+		if user == "" {
+			// Fail closed: no fallback to the maintainer, a shared credential or anyone else.
+			slog.Info("MCP invoker connection refused", "run", runName, "namespace", namespace, "server", server.Name, "reason", why)
+			tokenFail(w, http.StatusConflict, connections.CodeRequired,
+				"this run was not started by a person, so there is no account to use for "+server.Name+"; start it yourself from the UI")
+			return
+		}
+		owner, label = user, " (invoker)"
+	} else {
+		owner, label = agent.Status.PublishedBy, " (maintainer)"
+		if owner == "" {
+			tokenFail(w, http.StatusConflict, connections.CodeUnavailable,
+				"this agent has not been published by a user, so there is no connection owner; publish it from the builder")
+			return
+		}
 	}
 	tok, err := s.mcpTokens.AccessToken(postgresql.WithTenant(ctx, tenantID), connections.TokenRequest{
-		TenantID: tenantID, UserID: maintainer,
+		TenantID: tenantID, UserID: owner,
 		Server: connections.ServerRef{Namespace: server.Namespace, Name: server.Name, UID: string(server.UID), URL: server.Spec.URL,
 			AppRef: oa.AppRef, UserScopes: oa.UserScopes},
 	})
@@ -168,13 +186,13 @@ func (s *Server) issueMCPToken(w http.ResponseWriter, r *http.Request, caller, n
 		return
 	}
 	// The token is not logged, here or anywhere: only who it was for.
-	slog.Info("MCP connection token issued", "run", runName, "namespace", namespace, "server", server.Name, "maintainer", maintainer)
+	slog.Info("MCP connection token issued", "run", runName, "namespace", namespace, "server", server.Name, "mode", mode, "identity", owner)
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"accessToken": tok.Token.Reveal(),
 		"expiresAt":   tok.ExpiresAt.UTC().Format(time.RFC3339),
-		"identity":    tok.AccountLabel + " (maintainer)",
+		"identity":    tok.AccountLabel + label,
 	})
 }
 
