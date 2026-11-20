@@ -31,7 +31,7 @@ func warmUserRouter(t *testing.T, env *userMCPEnv, store *testStore) *Router {
 	t.Helper()
 	r := env.router(t, store)
 	r.cfg.WarmMode = true
-	r.cfg.RunName = ""
+	r.cfg.RunName = "agent-placeholder" // a real warm pod config carries the agent name, not an AgentRun
 	r.cfg.ToolDefinitions = []ToolDefinition{{Name: "github", BackendType: backendTypeMCP, BackendRef: "github"}}
 	return r
 }

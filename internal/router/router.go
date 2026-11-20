@@ -688,9 +688,11 @@ func (r *Router) InitMCPServers() {
 		r.mu.Unlock()
 		return
 	}
-	// A warm pod starts with no run, and the operator hands out a per-user token
-	// only for a run. Those servers wait for the claim (DiscoverUserMCP).
-	deferUser := r.cfg.WarmMode && r.cfg.RunName == ""
+	// A warm pod starts with no run (its config carries the agent's name as a
+	// placeholder RunName, not a real AgentRun), and the operator hands out a
+	// per-user token only for a real run. Those servers wait for the claim
+	// (DiscoverUserMCP).
+	deferUser := r.cfg.WarmMode
 	var serverConfigs []mcp.ServerConfig
 	for _, s := range r.cfg.MCPServers {
 		if s.UserConnection != nil && !deferUser {
