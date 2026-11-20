@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { render, renderHook, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router'
 
@@ -8,7 +8,8 @@ vi.mock('../api/fleet', () => ({ getMe: () => mockGetMe() }))
 
 import { ConnectionsView } from './ConnectionsView'
 import { McpOAuthAdmin } from './McpOAuthAdmin'
-import { RequiredConnections } from './RequiredConnections'
+import { RequiredConnections, useInvokerIdentities } from './RequiredConnections'
+import { needsConnection } from '../api/connections'
 
 const me = (roles: string[]) => ({ userId: 'u', groups: [], tenant: { id: 't', name: 'T' }, workspaces: [{ name: 'A', namespace: 'team-a', primary: true }], roles })
 const SERVER = { name: 'github', namespace: 'team-a', transport: 'http', toolCount: 3, ready: true, allowedAgents: [], allowApps: false, connectionMode: 'maintainer', appRef: 'gh' }
@@ -123,5 +124,35 @@ describe('RequiredConnections', () => {
     rerender(<MemoryRouter><RequiredConnections required={[{ namespace: 'n', server: 'github', mode: 'invoker', connected: false }]} /></MemoryRouter>)
     expect(screen.getByRole('alert')).toHaveTextContent('Connect github to run this agent')
     expect(screen.getByRole('link', { name: 'Open Connections' })).toHaveAttribute('href', '/connections')
+  })
+})
+
+describe('invoker connections', () => {
+  it('lists invoker servers on Connections with the invoker wording', async () => {
+    routes['GET /api/mcpservers'] = { status: 200, body: [{ ...SERVER, name: 'drive', connectionMode: 'invoker' }, SHARED] }
+    routes['GET /api/connections'] = { status: 200, body: [] }
+    setup()
+    const item = await screen.findByLabelText('Connection drive')
+    expect(item).toHaveTextContent('acts as whoever starts the run')
+    expect(item).toHaveTextContent('Scheduled and automatic runs')
+    expect(screen.queryByLabelText('Connection legacy')).toBeNull()
+  })
+
+  it('labels the identity of connected invoker servers as "<server> as <user> (invoker)"', async () => {
+    routes['GET /api/me/connections/required'] = { status: 200, body: { servers: [
+      { namespace: 'team-a', server: 'github', mode: 'invoker', connected: true },
+      { namespace: 'team-a', server: 'other', mode: 'maintainer', connected: true },
+    ], required: [] } }
+    routes['GET /api/connections'] = { status: 200, body: [{ namespace: 'team-a', server: 'github', scopes: [], accountLabel: 'alice', status: 'active', createdAt: '2026-01-01T00:00:00Z' }] }
+    const { result } = renderHook(() => useInvokerIdentities('team-a', 'reporter'))
+    await waitFor(() => expect(result.current).toEqual(['github as alice (invoker)']))
+    render(<MemoryRouter><RequiredConnections required={[]} identities={result.current} /></MemoryRouter>)
+    expect(screen.getByText(/github as alice \(invoker\)/)).toBeInTheDocument()
+  })
+
+  it('knows the connect question the router asks', () => {
+    expect(needsConnection('This agent needs your github account. Connect it under Connections, then answer here to continue.')).toBe(true)
+    expect(needsConnection('Which branch?')).toBe(false)
+    expect(needsConnection(undefined)).toBe(false)
   })
 })

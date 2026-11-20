@@ -72,29 +72,35 @@ type turnInputKey struct{}
 // Router is the core model-router sidecar. It is created once at startup and
 // handles all LLM proxy requests for the lifetime of the agent pod.
 type Router struct {
-	cfg               *Config
-	auth              *Authenticator
-	ruleRouter        *RuleRouter
-	metaRouter        *MetaRouter
-	selector          Selector       // picks the provider for each call; see selectorOrDefault
-	telemetry         *telemetrySink // routing telemetry to the operator; nil when no operator API is configured
-	shadow            *shadowRunner  // RoutingBenchmark replays; nil when no benchmark samples this run
-	store             state.Store
-	priorMessages     []Message       // conversation history before the current turn (checkpoint + folded turns)
-	messages          []Message       // the current turn: client input, assistant replies, tool results
-	turnPreamble      []Message       // injected context for the current turn, reused by its continuations; never stored
-	turnLocalTools    map[string]bool // agent-run tools the current turn's request declared (local_tools.go)
-	responsesOnly     sync.Map        // provider name → true once OpenAI asked for the Responses API (responses.go)
-	mu                sync.Mutex
-	spendUSD          float64
-	budgetCap         float64       // current spend cap; 0 until the operator reports one (see budget.go)
-	budgetWarned      bool          // the warning for the current cap was sent
-	budgetSynced      bool          // the cap was read from the operator once
-	budgetPoll        time.Duration // how often a paused run asks the operator for the cap (tests shorten it)
-	toolApprovalPoll  time.Duration // how often a call waiting for approval asks for the decision (tests shorten it)
-	sseStarted        atomic.Bool   // a budget pause already began the SSE response of the current request
-	checkpointTTL     time.Duration
-	handedOff         bool // set to true when _handoff tool completes; short-circuits further LLM calls
+	cfg              *Config
+	auth             *Authenticator
+	ruleRouter       *RuleRouter
+	metaRouter       *MetaRouter
+	selector         Selector       // picks the provider for each call; see selectorOrDefault
+	telemetry        *telemetrySink // routing telemetry to the operator; nil when no operator API is configured
+	shadow           *shadowRunner  // RoutingBenchmark replays; nil when no benchmark samples this run
+	store            state.Store
+	priorMessages    []Message       // conversation history before the current turn (checkpoint + folded turns)
+	messages         []Message       // the current turn: client input, assistant replies, tool results
+	turnPreamble     []Message       // injected context for the current turn, reused by its continuations; never stored
+	turnLocalTools   map[string]bool // agent-run tools the current turn's request declared (local_tools.go)
+	responsesOnly    sync.Map        // provider name → true once OpenAI asked for the Responses API (responses.go)
+	mu               sync.Mutex
+	spendUSD         float64
+	budgetCap        float64       // current spend cap; 0 until the operator reports one (see budget.go)
+	budgetWarned     bool          // the warning for the current cap was sent
+	budgetSynced     bool          // the cap was read from the operator once
+	budgetPoll       time.Duration // how often a paused run asks the operator for the cap (tests shorten it)
+	toolApprovalPoll time.Duration // how often a call waiting for approval asks for the decision (tests shorten it)
+	sseStarted       atomic.Bool   // a budget pause already began the SSE response of the current request
+	checkpointTTL    time.Duration
+	handedOff        bool // set to true when _handoff tool completes; short-circuits further LLM calls
+	// connectionPause is set when a tool call was refused with connection_required
+	// and the run moved to WaitingForInput: the conversation is checkpointed once
+	// the call's result has been appended.
+	connectionPause bool
+	// connIdentities are the (server, identity) pairs already traced this run.
+	connIdentities    map[string]bool
 	waitingForInput   bool // set to true when _clarify tool completes; short-circuits further LLM calls
 	doneExplicit      bool // set to true when _done tool completes; short-circuits further LLM calls
 	failedExplicit    bool // set to true when _fail tool completes; short-circuits further LLM calls
@@ -2657,11 +2663,16 @@ func (r *Router) classifyTool(toolName, args string) (backendType, backendRef st
 // It also fetches and caches the MCP App HTML resource if allowApps is set,
 // returning an appUrl that the UI can use to render a sandboxed iframe.
 func (r *Router) callMCPTool(ctx context.Context, td ToolDefinition, args string) (result, appUrl string) {
-	if r.mcpClient == nil {
+	mc := r.mcpClient
+	if mc == nil {
 		return `{"error": "MCP client not initialized"}`, ""
 	}
-	res, err := r.mcpClient.Call(ctx, td.BackendRef+":"+td.Name, args)
+	res, err := mc.Call(ctx, td.BackendRef+":"+td.Name, args)
 	if err != nil {
+		var ce *mcp.ConnectionError
+		if errors.As(err, &ce) && ce.Code == connectionRequiredCode {
+			return r.connectionRequired(td, ce), ""
+		}
 		return fmt.Sprintf(`{"error": %q}`, err.Error()), ""
 	}
 	result = res
@@ -2670,7 +2681,7 @@ func (r *Router) callMCPTool(ctx context.Context, td ToolDefinition, args string
 		cacheKey := td.BackendRef + "/" + td.Name
 		if cached, loadErr := r.store.LoadKV(ctx, "mcpapp", cacheKey); loadErr != nil || cached == nil {
 			// Cache miss — fetch from MCP server.
-			html, fetchErr := r.mcpClient.FetchResource(ctx, td.BackendRef, td.AppResourceURI)
+			html, fetchErr := mc.FetchResource(ctx, td.BackendRef, td.AppResourceURI)
 			if fetchErr != nil {
 				slog.Warn("MCP app resource fetch failed", "server", td.BackendRef, "tool", td.Name, "err", fetchErr)
 			} else if len(html) > 1<<20 {
@@ -2844,12 +2855,22 @@ func (r *Router) executeClarify(ctx context.Context, args string) string { //nol
 	// message with the _clarify tool call so we can resume with the answer.
 	r.checkpoint(context.Background())
 
+	if err := r.announceClarify(clarifyArgs.Question); err != nil {
+		return fmt.Sprintf(`{"error": %q}`, err)
+	}
+
+	slog.Info("clarify requested", "run", r.cfg.RunName, "question", clarifyArgs.Question)
+	return `{"status": "waiting_for_input", "message": "A clarifying question has been sent to the user. The agent will resume when the user responds."}`
+}
+
+// announceClarify sets the run to WaitingForInput and shows the question.
+func (r *Router) announceClarify(question string) error {
 	// Notify the operator to set WaitingForInput BEFORE writing to Redis.
 	// If we wrote to Redis first, the browser would receive the "clarify" event
 	// and the user could submit an answer before the run's phase is set —
 	// causing handleAnswerRun to reject the submission with "not waiting for input".
-	if err := r.notifyOperatorClarify(clarifyArgs.Question); err != nil {
-		return fmt.Sprintf(`{"error": %q}`, err)
+	if err := r.notifyOperatorClarify(question); err != nil {
+		return err
 	}
 
 	// Emit a "clarify" trace event to the Redis token stream so the UI shows the question.
@@ -2858,7 +2879,7 @@ func (r *Router) executeClarify(ctx context.Context, args string) string { //nol
 	if r.store != nil {
 		tokenStreamKey := "tokens:" + r.cfg.RunNamespace + ":" + r.cfg.RunName
 		clarifyEvent, _ := json.Marshal(map[string]string{
-			"type": "clarify", "question": clarifyArgs.Question,
+			"type": "clarify", "question": question,
 		})
 		// The `clarify` trace event is terminal (state.IsTerminalTraceEventJSON);
 		// TailTokens closes the UI SSE after it. No empty-token "done sentinel"
@@ -2866,8 +2887,7 @@ func (r *Router) executeClarify(ctx context.Context, args string) string { //nol
 		_ = r.store.SaveTraceEvent(context.Background(), tokenStreamKey, string(clarifyEvent))
 	}
 
-	slog.Info("clarify requested", "run", r.cfg.RunName, "question", clarifyArgs.Question)
-	return `{"status": "waiting_for_input", "message": "A clarifying question has been sent to the user. The agent will resume when the user responds."}`
+	return nil
 }
 
 // notifyOperatorClarify POSTs to the operator internal API to set the run's
@@ -4716,6 +4736,8 @@ func (r *Router) ClaimRun(input WarmRunInput) {
 	r.spendUSD = 0
 	r.handedOff = false
 	r.waitingForInput = false
+	r.connIdentities = nil
+	r.connectionPause = false
 	r.doneExplicit = false
 	r.failedExplicit = false
 	r.resumedWithAnswer = false
@@ -5053,4 +5075,58 @@ func (r *Router) hindsightRetain(runName, content string) error {
 // stringToNullable converts a string to a hindsight NullableString.
 func stringToNullable(s string) hindsight.NullableString {
 	return *hindsight.NewNullableString(&s)
+}
+
+// connectionRequiredCode is the operator's code for "this account is not connected".
+const connectionRequiredCode = "connection_required"
+
+// connectionRequired is the tool result for a call refused because the invoker
+// has not connected their account. The model gets an error it can relay (no
+// secret in it) and the run moves to WaitingForInput with a card asking the user
+// to connect; their answer resumes the run through the ordinary clarify path.
+// If the pause cannot be set up the run simply continues with the tool error.
+func (r *Router) connectionRequired(td ToolDefinition, ce *mcp.ConnectionError) string {
+	server := td.BackendRef
+	question := fmt.Sprintf("This agent needs your %s account. Connect it under Connections, then answer here to continue.", server)
+	msg := fmt.Sprintf("the %s account is not connected (%s). The user has been asked to connect it; do not retry this call, wait for their answer.", server, ce.Code)
+	r.mu.Lock()
+	child := r.cfg.ParentRunName != ""
+	r.mu.Unlock()
+	if child {
+		// A child run has no human to ask (_clarify is withheld from it for the same
+		// reason): it returns the error to its caller instead.
+		msg = fmt.Sprintf("the %s account is not connected (%s) and this run cannot ask the user. Report that to your caller.", server, ce.Code)
+	} else if err := r.announceClarify(question); err == nil {
+		// The conversation is saved once this call's result is in it (stream.go),
+		// so the answer resumes after a complete tool exchange.
+		r.mu.Lock()
+		r.connectionPause = true
+		r.mu.Unlock()
+	} else {
+		slog.Warn("could not pause the run for a connection", "server", server, "err", err)
+	}
+	out, _ := json.Marshal(map[string]string{"error": connectionRequiredCode, "message": msg})
+	return string(out)
+}
+
+// checkpointAfterConnectionPause saves the conversation when a tool call just
+// paused the run for a connection, now that the call's result is in it.
+func (r *Router) checkpointAfterConnectionPause(ctx context.Context) {
+	r.mu.Lock()
+	pause := r.connectionPause
+	r.connectionPause = false
+	r.mu.Unlock()
+	if pause {
+		r.checkpoint(ctx)
+	}
+}
+
+// invokerServer reports whether tools of the named server act as the invoker.
+func (r *Router) invokerServer(server string) bool {
+	for _, s := range r.cfg.MCPServers {
+		if s.Name == server {
+			return s.ConnectionMode == "invoker"
+		}
+	}
+	return false
 }

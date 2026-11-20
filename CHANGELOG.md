@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Per-user OAuth for MCP servers (invoker mode)** — `connectionMode: invoker` runs an agent as the user who started the run (the
+  run's `created-by`). Scheduled, trigger, widget, machine, workflow, evaluation and unpropagated child runs fail closed with
+  `connection_required`; agent-as-tool children keep the original invoker, set by the operator. A refused call pauses the run
+  with a "connect your account" card. Tools of an invoker server need approval by default; warm pods connect per-user servers
+  at claim time. See `docs/mcp-oauth.md`.
 - **Per-user OAuth for MCP servers (maintainer mode)** — `MCPServer.spec.auth.oauth.connectionMode: maintainer` lets the
   user who publishes an agent connect their own account; tokens are stored envelope-encrypted in PostgreSQL (migration
   `0020`, key from a Kubernetes Secret, key id per row), never in a pod, the model, a trace or a log. The router asks the

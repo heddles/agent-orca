@@ -365,10 +365,34 @@ func (r *Router) MCPToken(ctx context.Context, server string) (mcp.Token, error)
 	var out struct {
 		AccessToken string    `json:"accessToken"`
 		ExpiresAt   time.Time `json:"expiresAt"`
+		Identity    string    `json:"identity"`
 	}
 	if err := json.Unmarshal(data, &out); err != nil || out.AccessToken == "" {
 		return mcp.Token{}, &mcp.ConnectionError{Code: "connection_unavailable", Message: "the operator sent an unreadable connection token"}
 	}
 	redact.Register(out.AccessToken)
-	return mcp.Token{Value: out.AccessToken, ExpiresAt: out.ExpiresAt}, nil
+	r.recordConnectionIdentity(server, out.Identity)
+	return mcp.Token{Value: out.AccessToken, ExpiresAt: out.ExpiresAt, Identity: out.Identity}, nil
+}
+
+// recordConnectionIdentity writes one trace event per server and identity per run
+// saying whose account a per-user server was used as ("alice (invoker)"), so a
+// run's trace shows which connection acted. The label is not a secret.
+func (r *Router) recordConnectionIdentity(server, identity string) {
+	if identity == "" {
+		return
+	}
+	key := server + "\x00" + identity
+	r.mu.Lock()
+	if r.connIdentities == nil {
+		r.connIdentities = map[string]bool{}
+	}
+	seen := r.connIdentities[key]
+	r.connIdentities[key] = true
+	r.mu.Unlock()
+	if seen {
+		return
+	}
+	ev, _ := json.Marshal(map[string]string{"type": "mcpConnection", "server": server, "identity": identity})
+	r.emitTraceEvent(string(ev))
 }

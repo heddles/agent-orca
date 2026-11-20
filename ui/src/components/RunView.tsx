@@ -4,6 +4,9 @@
  * When child runs exist, a "Child Runs" tab is added alongside "Details".
  */
 import { useEffect, useRef, useState } from 'react'
+import { Link } from 'react-router'
+import { needsConnection } from '../api/connections'
+import { ROUTES } from '../lib/routes'
 import {
   getRun,
   getRunRoutingEvents,
@@ -390,6 +393,9 @@ export function RunView({
             <div style={s.clarifyCard}>
               <div style={s.clarifyTitle}>Waiting for human input</div>
               <div style={s.clarifyBody}>{detail.clarifyQuestion}</div>
+              {needsConnection(detail.clarifyQuestion) && (
+                <div style={s.clarifyBody}><Link to={ROUTES.myConnections}>Connect your account</Link>, then answer to continue.</div>
+              )}
             </div>
           )}
 

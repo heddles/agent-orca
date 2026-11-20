@@ -123,8 +123,8 @@ function MCPServerDetail({ data }: { data: MCPServerSummary }) {
           ? <span style={{ color: 'var(--ds-success)', fontSize: 13, fontWeight: 600 }}>Enabled</span>
           : <span style={s.muted}>Disabled</span>
       } />
-      {data.connectionMode && <Field label="Connection" value={data.connectionMode === 'maintainer' ? 'Per user: the agent acts as the person who published it' : 'Shared credential'} />}
-      {data.connectionMode === 'maintainer' && <McpOAuthAdmin namespace={data.namespace} name={data.name} />}
+      {data.connectionMode && <Field label="Connection" value={data.connectionMode === 'maintainer' ? 'Per user: the agent acts as the person who published it' : data.connectionMode === 'invoker' ? 'Per user: the agent acts as the person who starts the run (invoker)' : 'Shared credential'} />}
+      {(data.connectionMode === 'maintainer' || data.connectionMode === 'invoker') && <McpOAuthAdmin namespace={data.namespace} name={data.name} />}
       {data.tools && data.tools.length > 0 && <MCPToolList tools={data.tools} />}
     </>
   )

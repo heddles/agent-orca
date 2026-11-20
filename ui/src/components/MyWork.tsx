@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useState, type CSSProperties } from 'react'
 import { Link, useNavigate } from 'react-router'
 import { answerClarification } from '../api/sse'
+import { needsConnection } from '../api/connections'
 import { getMyRuns, type MyRun, type MyRuns } from '../api/catalog'
 import { DSButton } from '../lib/primitives'
 import { ds, DESIGN } from '../lib/designSystem'
@@ -130,6 +131,7 @@ function QuestionCard({ run, onAnswered }: { run: MyRun; onAnswered: () => void 
         <Link to={liveRunPath(run.namespace, run.name)} style={s.link}>Open run</Link>
       </div>
       <p style={s.question}>{run.clarifyQuestion}</p>
+      {needsConnection(run.clarifyQuestion) && <p style={s.question}><Link to={ROUTES.myConnections} style={s.link}>Connect</Link>, then answer here to continue.</p>}
       <label htmlFor={id} style={s.srOnly}>Your answer to {run.agentRef}</label>
       <textarea
         id={id}

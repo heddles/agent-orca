@@ -646,6 +646,7 @@ func (r *AgentDeploymentReconciler) buildDeploymentRouterConfig( //nolint:gocycl
 					// No credential is mounted: the router asks the operator for a short-lived
 					// access token per request (docs/mcp-oauth.md).
 					mcpCfg.UserConnection = &router.UserConnectionConfig{Server: mcpServerNameOf(&tool)}
+					mcpCfg.ConnectionMode = a.OAuth.Mode()
 				}
 				mcpServers = append(mcpServers, mcpCfg)
 			}

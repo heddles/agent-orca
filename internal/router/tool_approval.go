@@ -48,7 +48,11 @@ const (
 )
 
 // Tool side-effect classes.
-const toolSideEffectActuate = "actuate"
+const (
+	toolSideEffectActuate = "actuate"
+	toolSideEffectRead    = "read"
+	toolSideEffectWrite   = "write"
+)
 
 const (
 	// defaultToolApprovalPoll is how often a waiting call asks for the decision.
@@ -75,9 +79,9 @@ func (c *ToolApprovalConfig) requirement(class string) string {
 	var set string
 	if c != nil {
 		switch class {
-		case "read":
+		case toolSideEffectRead:
 			set = c.Read
-		case "write":
+		case toolSideEffectWrite:
 			set = c.Write
 		case toolSideEffectActuate:
 			set = c.Actuate
@@ -93,6 +97,26 @@ func (c *ToolApprovalConfig) requirement(class string) string {
 		return toolRequirementApprove
 	}
 	return toolRequirementNone
+}
+
+// explicit reports whether the policy sets a requirement for the class itself
+// (as opposed to the built-in default).
+func (c *ToolApprovalConfig) explicit(class string) bool {
+	if c == nil {
+		return false
+	}
+	var set string
+	switch class {
+	case toolSideEffectRead:
+		set = c.Read
+	case toolSideEffectWrite:
+		set = c.Write
+	case toolSideEffectActuate:
+		set = c.Actuate
+	default:
+		set = c.Unclassified
+	}
+	return set != ""
 }
 
 // toolApprovalState is the operator's answer about one approval.
@@ -119,7 +143,15 @@ func (r *Router) gateToolCall(ctx context.Context, tc ToolCall) string {
 	if td == nil {
 		return ""
 	}
-	switch r.cfg.ToolApproval.requirement(td.SideEffect) {
+	req := r.cfg.ToolApproval.requirement(td.SideEffect)
+	// Acting as a person is a write until shown otherwise: a tool of an invoker
+	// server needs approval unless the policy says what its class needs. MCP
+	// discovery does not carry a class, so most such tools are unclassified.
+	if req == toolRequirementNone && td.BackendType == backendTypeMCP && td.SideEffect != toolSideEffectRead &&
+		r.invokerServer(td.BackendRef) && !r.cfg.ToolApproval.explicit(td.SideEffect) {
+		req = toolRequirementApprove
+	}
+	switch req {
 	case toolRequirementNone:
 		return ""
 	case toolRequirementDeny:

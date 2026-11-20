@@ -182,7 +182,7 @@ func toolSemantics(tools []ToolDefinition) syengine.ToolSemantics {
 		switch t.SideEffect {
 		case "read":
 			sem.Observe = append(sem.Observe, t.Name)
-		case "write", "actuate":
+		case toolSideEffectWrite, toolSideEffectActuate:
 			sem.Mutate = append(sem.Mutate, t.Name)
 		}
 	}

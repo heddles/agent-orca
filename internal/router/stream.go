@@ -725,6 +725,7 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 		}
 
 		r.mu.Unlock()
+		r.checkpointAfterConnectionPause(req.Context())
 		// Recursive call with the full conversation as the new request body.
 		slog.Debug("recursive HandleChatCompletions call", "toolCalls", len(toolCalls), "messages", len(r.messages))
 		newBody, _ := json.Marshal(continueReq)
