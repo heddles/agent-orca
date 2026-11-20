@@ -42,6 +42,7 @@ export function buildSidebarGroups(pendingApprovals: number, roles: Roles = null
       badge: pendingApprovals, badgeLabel: 'pending',
     })
   }
+  if (canSee(roles, 'home')) work.push({ to: ROUTES.myConnections, label: 'Connections', icon: ICON.mcpserver })
   const create: SidebarGroup['items'] = []
   if (canSee(roles, 'build')) create.push({ to: ROUTES.build, label: 'Build', icon: ICON.tool })
   if (canSee(roles, 'evaluate')) create.push({ to: ROUTES.evaluate, label: 'Evaluate', icon: ICON.check })

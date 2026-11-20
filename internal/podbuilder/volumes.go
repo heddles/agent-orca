@@ -208,7 +208,9 @@ func ResolveToolSecretVolumes(
 				addSecretKeyVolume(toolName, &auth.Headers[i].SecretKeyRef, true)
 			}
 
-			if auth.OAuth != nil {
+			// A per-user connection (connectionMode maintainer) has no credentials Secret:
+			// its tokens never reach the pod (docs/mcp-oauth.md).
+			if auth.OAuth != nil && auth.OAuth.Credentials != nil {
 				// OAuth-managed server: mount the credentials Secret as a directory so the
 				// model-router's MCP client can read client_id/client_secret/refresh_token
 				// files and perform the OAuth exchange itself. No access-token Secret needed.

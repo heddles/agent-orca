@@ -203,7 +203,30 @@ func (s *UIServer) createResource(w http.ResponseWriter, r *http.Request, info c
 	if !s.prepareNew(w, r, obj) {
 		return
 	}
+	if info.gvk == "MCPServer" {
+		defaultMCPConnectionMode(obj)
+	}
 	s.createUIObject(w, r, info, obj, "")
+}
+
+// defaultMCPConnectionMode makes a new MCPServer that the UI creates with an
+// OAuth block and no credentials Secret a maintainer-mode server: the user who
+// publishes the agent connects their own account (docs/mcp-oauth.md). An explicit
+// connectionMode, and any server that names a credentials Secret, is left alone.
+// Existing servers are never touched, so they stay shared.
+func defaultMCPConnectionMode(obj *unstructured.Unstructured) {
+	oauth, found, err := unstructured.NestedMap(obj.Object, "spec", "auth", "oauth")
+	if err != nil || !found {
+		return
+	}
+	if _, set := oauth["connectionMode"]; set {
+		return
+	}
+	if _, hasCreds := oauth["credentials"]; hasCreds {
+		return
+	}
+	oauth["connectionMode"] = "maintainer"
+	_ = unstructured.SetNestedMap(obj.Object, oauth, "spec", "auth", "oauth")
 }
 
 // prepareNew makes obj ready to be created by the UI: the namespace is the

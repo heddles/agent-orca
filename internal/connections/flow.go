@@ -465,3 +465,7 @@ func (s *Service) Disconnect(ctx context.Context, tenantID, userID string, ref S
 	}
 	return res, nil
 }
+
+// CallbackURL is the fixed redirect URI of this deployment, which an admin
+// registers in each OAuth app at the provider.
+func (s *Service) CallbackURL() string { return s.RedirectURI }

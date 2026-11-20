@@ -208,6 +208,24 @@ spec:
                         - key
                         - name
                         type: object
+                      appRef:
+                        description: |-
+                          AppRef names the OAuth app an admin registered for this server (client id and
+                          secret, stored encrypted in PostgreSQL, per tenant). Required when
+                          connectionMode is not shared; it replaces credentials for those modes.
+                        maxLength: 63
+                        type: string
+                      connectionMode:
+                        default: shared
+                        description: |-
+                          ConnectionMode says whose credential a run uses: shared (default, one Secret,
+                          today's behaviour) or maintainer (the user who last published the agent
+                          connected their own account; the operator stores the tokens encrypted in
+                          PostgreSQL and hands the router a short-lived access token per run).
+                        enum:
+                        - shared
+                        - maintainer
+                        type: string
                       credentials:
                         description: |-
                           Credentials is a Secret (in the MCPServer's namespace) holding the OAuth client
@@ -216,6 +234,7 @@ spec:
                           refresh_token). Supplying a refresh_token skips the one-time authorization-code
                           seed; otherwise the controller reports "seeding required" and the operator runs
                           `oauth-proxy seed` once.
+                          Required in shared mode, not allowed in the per-user modes.
                         properties:
                           name:
                             description: Name of the resource.
@@ -242,15 +261,35 @@ spec:
                         - key
                         - name
                         type: object
+                      revokeOnDisconnect:
+                        description: |-
+                          RevokeOnDisconnect asks the provider to revoke the token (RFC 7009) when a
+                          user disconnects. Default true.
+                        type: boolean
                       scopes:
                         description: Scopes overrides the server's scopes_supported;
                           if empty, discovery scopes win.
                         items:
                           type: string
                         type: array
-                    required:
-                    - credentials
+                      userScopes:
+                        description: UserScopes is the most a user may grant. A connection
+                          with more is refused.
+                        items:
+                          type: string
+                        type: array
                     type: object
+                    x-kubernetes-validations:
+                    - message: spec.auth.oauth.credentials is required in shared connection
+                        mode
+                      rule: (has(self.connectionMode) && self.connectionMode != 'shared')
+                        || has(self.credentials)
+                    - message: 'a per-user connection mode needs appRef and takes
+                        no credentials, refreshTokenSecretRef or accessTokenSecretRef:
+                        the app and the tokens live in the operator database'
+                      rule: '!has(self.connectionMode) || self.connectionMode == ''shared''
+                        || (has(self.appRef) && size(self.appRef) > 0 && !has(self.credentials)
+                        && !has(self.refreshTokenSecretRef) && !has(self.accessTokenSecretRef))'
                 type: object
               discoverability:
                 default: enabled

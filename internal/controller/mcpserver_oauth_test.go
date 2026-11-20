@@ -59,7 +59,7 @@ var _ = Describe("MCPServer OAuth (forward-only; client does the exchange)", fun
 				URL:       "https://mcp.slack.com/mcp",
 				Auth: &agentorcav1alpha1.MCPAuthConfig{
 					OAuth: &agentorcav1alpha1.MCPOAuthConfig{
-						Credentials: agentorcav1alpha1.LocalObjectRef{Name: "slack-mcp-oauth"},
+						Credentials: &agentorcav1alpha1.LocalObjectRef{Name: "slack-mcp-oauth"},
 						Scopes:      []string{"search:read.public"},
 					},
 				},
@@ -86,5 +86,52 @@ var _ = Describe("MCPServer OAuth (forward-only; client does the exchange)", fun
 		// No token Secret is created by the controller (the model-router does OAuth in-memory).
 		var tokenSec corev1.Secret
 		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: "slack-mcp-token", Namespace: ns}, &tokenSec))).To(BeTrue())
+	})
+
+	Describe("per-user connection modes (CEL)", func() {
+		mk := func(name string, o *agentorcav1alpha1.MCPOAuthConfig) *agentorcav1alpha1.MCPServer {
+			return &agentorcav1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+				Spec: agentorcav1alpha1.MCPServerSpec{Transport: "http", URL: "https://mcp.example.com/mcp",
+					Auth: &agentorcav1alpha1.MCPAuthConfig{OAuth: o}},
+			}
+		}
+		AfterEach(func() {
+			for _, n := range []string{"cel-ok", "cel-bad"} {
+				ignoreNotFoundDelete(&agentorcav1alpha1.MCPServer{ObjectMeta: metav1.ObjectMeta{Name: n, Namespace: ns}})
+			}
+		})
+
+		It("accepts maintainer mode with an appRef and no credentials", func() {
+			Expect(k8sClient.Create(ctx, mk("cel-ok", &agentorcav1alpha1.MCPOAuthConfig{
+				ConnectionMode: "maintainer", AppRef: "github", UserScopes: []string{"repo:read"},
+			}))).To(Succeed())
+			var got agentorcav1alpha1.MCPServer
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "cel-ok", Namespace: ns}, &got)).To(Succeed())
+			Expect(got.Spec.Auth.OAuth.PerUser()).To(BeTrue())
+		})
+		It("defaults to shared and still requires credentials there", func() {
+			err := k8sClient.Create(ctx, mk("cel-bad", &agentorcav1alpha1.MCPOAuthConfig{Scopes: []string{"x"}}))
+			Expect(err).To(MatchError(ContainSubstring("credentials is required in shared connection mode")))
+		})
+		It("rejects maintainer mode without an appRef", func() {
+			err := k8sClient.Create(ctx, mk("cel-bad", &agentorcav1alpha1.MCPOAuthConfig{ConnectionMode: "maintainer"}))
+			Expect(err).To(MatchError(ContainSubstring("needs appRef")))
+		})
+		It("rejects maintainer mode with credentials or a token secret ref", func() {
+			err := k8sClient.Create(ctx, mk("cel-bad", &agentorcav1alpha1.MCPOAuthConfig{
+				ConnectionMode: "maintainer", AppRef: "github", Credentials: &agentorcav1alpha1.LocalObjectRef{Name: "creds"},
+			}))
+			Expect(err).To(MatchError(ContainSubstring("needs appRef")))
+			err = k8sClient.Create(ctx, mk("cel-bad", &agentorcav1alpha1.MCPOAuthConfig{
+				ConnectionMode: "maintainer", AppRef: "github",
+				AccessTokenSecretRef: &agentorcav1alpha1.SecretKeyRef{Name: "tok", Key: "token"},
+			}))
+			Expect(err).To(MatchError(ContainSubstring("needs appRef")))
+		})
+		It("rejects an unknown mode", func() {
+			err := k8sClient.Create(ctx, mk("cel-bad", &agentorcav1alpha1.MCPOAuthConfig{ConnectionMode: "invoker", AppRef: "a"}))
+			Expect(err).To(HaveOccurred())
+		})
 	})
 })

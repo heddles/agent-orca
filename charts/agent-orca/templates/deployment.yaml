@@ -165,6 +165,16 @@ spec:
               value: {{ .Values.systemStatus.alertHmacSecret | quote }}
             {{- end }}
             {{- end }}
+            {{- if and .Values.database.enabled .Values.database.connectionKeySecret }}
+            - name: CONNECTION_KEY_DIR
+              value: /etc/agentorca/connection-keys
+            - name: CONNECTION_REDIRECT_URI
+              value: {{ .Values.operator.connections.redirectURI | quote }}
+            {{- if .Values.operator.connections.allowInsecureOAuth }}
+            - name: CONNECTION_ALLOW_INSECURE_OAUTH
+              value: "true"
+            {{- end }}
+            {{- end }}
             {{- if .Values.operator.oidc.enabled }}
             - name: OIDC_LOGIN_ENABLED
               value: "true"
@@ -321,6 +331,11 @@ spec:
               mountPath: /etc/github-app
               readOnly: true
             {{- end }}
+            {{- if and .Values.database.enabled .Values.database.connectionKeySecret }}
+            - name: connection-keys
+              mountPath: /etc/agentorca/connection-keys
+              readOnly: true
+            {{- end }}
       volumes:
         - name: tmp
           emptyDir:
@@ -342,6 +357,12 @@ spec:
         - name: github-app
           secret:
             secretName: {{ .Values.github.app.secretName }}
+        {{- end }}
+        {{- if and .Values.database.enabled .Values.database.connectionKeySecret }}
+        - name: connection-keys
+          secret:
+            secretName: {{ .Values.database.connectionKeySecret }}
+            defaultMode: 0400
         {{- end }}
       {{- with .Values.global.imagePullSecrets }}
       imagePullSecrets:

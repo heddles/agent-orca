@@ -18,6 +18,7 @@ import { SchemaForm } from './SchemaForm'
 import { DeploymentView } from './DeploymentView'
 import { AgentTriggers } from './AgentTriggers'
 import { AgentWidget } from './AgentWidget'
+import { RequiredConnections, useRequiredConnections } from './RequiredConnections'
 import { formatCost } from './AgentCatalog'
 
 /** The input shape every agent has: one free-text field. */
@@ -33,9 +34,11 @@ interface RunFormProps {
   schema: JSONSchema | undefined
   examples: string[]
   onStarted: (runName: string) => void
+  /** Disables Run agent, for example while a connection the agent needs is missing. */
+  blocked?: boolean
 }
 
-export function RunForm({ namespace, name, schema, examples, onStarted }: RunFormProps) {
+export function RunForm({ namespace, name, schema, examples, onStarted, blocked = false }: RunFormProps) {
   const effective = useMemo<JSONSchema | undefined>(
     () => (isFormSchema(schema) ? { ...schema, properties: withInputTitle(schema) } : undefined),
     [schema],
@@ -121,7 +124,7 @@ export function RunForm({ namespace, name, schema, examples, onStarted }: RunFor
       )}
       {failure && <p role="alert" style={s.error}>Could not start the run: {failure}</p>}
       <div style={s.actions}>
-        <DSButton type="submit" variant="primary" disabled={busy}>{busy ? 'Starting…' : 'Run agent'}</DSButton>
+        <DSButton type="submit" variant="primary" disabled={busy || blocked}>{busy ? 'Starting…' : 'Run agent'}</DSButton>
         {formSupported && !plain && (
           <DSButton type="button" variant="ghost" onClick={() => setRawMode((m) => !m)}>
             {rawMode ? 'Use the form' : 'Edit as JSON'}
@@ -151,6 +154,7 @@ export function AgentPage({ namespace, name, tab, onTabChange, onNavigateToRun }
   const [manifest, setManifest] = useState<AgentManifest | null>(null)
   const [entry, setEntry] = useState<CatalogEntry | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const required = useRequiredConnections(namespace, name)
 
   useEffect(() => {
     let live = true
@@ -209,9 +213,11 @@ export function AgentPage({ namespace, name, tab, onTabChange, onNavigateToRun }
         <div role="tabpanel" id="run-panel" aria-label="Run">
           <Section title="Start a run">
             <div style={{ maxWidth: 640 }}>
+              <RequiredConnections required={required} />
               <RunForm
                 namespace={namespace}
                 name={name}
+                blocked={required.length > 0}
                 schema={manifest.input_schema}
                 examples={examples}
                 onStarted={(runName) => onNavigateToRun(runName, namespace)}

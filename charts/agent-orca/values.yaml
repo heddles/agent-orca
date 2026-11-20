@@ -123,6 +123,17 @@ operator:
     enabled: false
     cookieSecure: true          # set false for plain-HTTP local dev
 
+  # operator.connections: per-user OAuth connections to MCP servers
+  # (docs/mcp-oauth.md). Also needs database.connectionKeySecret.
+  connections:
+    # The UI's public callback URL, registered in every OAuth app at the provider,
+    # for example https://agents.example.com/api/connections/callback. It is fixed
+    # per deployment and never taken from a request.
+    redirectURI: ""
+    # Accept http authorization endpoints (local development against a fake
+    # provider only; CONNECTION_ALLOW_INSECURE_OAUTH).
+    allowInsecureOAuth: false
+
   # operator.networkPolicy controls the NetworkPolicy applied to the operator pod.
   # oidcEgress grants the operator egress so it can reach its OIDC IdP(s) for JWKS
   # discovery and token introspection (the operator must reach the issuer URL). K8s
@@ -426,6 +437,16 @@ database:
   passwordSecret:
     name: "postgres-app"
     key: "password"
+  # Per-user OAuth connections to MCP servers (docs/mcp-oauth.md) store tokens
+  # encrypted in this database. The key-encryption key (KEK) comes from a Secret
+  # you create: one key per entry, the entry name is the key id and the value is 32
+  # random bytes as base64 or hex (openssl rand -base64 32). An entry named
+  # "active" holds the id of the key to encrypt new data with (optional when there
+  # is one key); to rotate, add a second key, point "active" at it, then remove the
+  # old one once rows are re-wrapped. Empty leaves the feature off. Needs
+  # operator.connections.redirectURI. A KMS-held key is preferable; this Secret is
+  # the only place the KEK lives, so keep it out of the database backups.
+  connectionKeySecret: ""
 
 # System status alerting configuration.
 # When alertWebhookURL is set, the operator fires webhook notifications on

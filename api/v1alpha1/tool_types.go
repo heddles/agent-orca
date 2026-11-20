@@ -208,20 +208,55 @@ type MCPAuthConfig struct {
 	OAuth *MCPOAuthConfig `json:"oauth,omitempty"`
 }
 
+// Connection modes of an MCP server's OAuth credential (docs/mcp-oauth.md).
+const (
+	// MCPConnectionShared is today's behaviour: one credential in a Secret, shared
+	// by every run. The default.
+	MCPConnectionShared = "shared"
+	// MCPConnectionMaintainer uses the credential of the user who last published
+	// the agent, stored encrypted in PostgreSQL. It is a delegation: the agent acts
+	// as its maintainer for everyone who runs it.
+	MCPConnectionMaintainer = "maintainer"
+)
+
 // MCPOAuthConfig configures OAuth 2.0 token acquisition and rotation for an MCP server.
 // The credentials live in a user-managed Secret; the operator exchanges them for a
 // (rotating) access token and writes it to accessTokenSecretRef, whose value the
 // model-router sends as the bearer. This lets any OAuth-only MCP be declared
 // declaratively in the MCPServer CR.
+// +kubebuilder:validation:XValidation:rule="(has(self.connectionMode) && self.connectionMode != 'shared') || has(self.credentials)",message="spec.auth.oauth.credentials is required in shared connection mode"
+// +kubebuilder:validation:XValidation:rule="!has(self.connectionMode) || self.connectionMode == 'shared' || (has(self.appRef) && size(self.appRef) > 0 && !has(self.credentials) && !has(self.refreshTokenSecretRef) && !has(self.accessTokenSecretRef))",message="a per-user connection mode needs appRef and takes no credentials, refreshTokenSecretRef or accessTokenSecretRef: the app and the tokens live in the operator database"
 type MCPOAuthConfig struct {
+	// ConnectionMode says whose credential a run uses: shared (default, one Secret,
+	// today's behaviour) or maintainer (the user who last published the agent
+	// connected their own account; the operator stores the tokens encrypted in
+	// PostgreSQL and hands the router a short-lived access token per run).
+	// +kubebuilder:validation:Enum=shared;maintainer
+	// +kubebuilder:default=shared
+	// +optional
+	ConnectionMode string `json:"connectionMode,omitempty"`
+	// AppRef names the OAuth app an admin registered for this server (client id and
+	// secret, stored encrypted in PostgreSQL, per tenant). Required when
+	// connectionMode is not shared; it replaces credentials for those modes.
+	// +kubebuilder:validation:MaxLength=63
+	// +optional
+	AppRef string `json:"appRef,omitempty"`
+	// UserScopes is the most a user may grant. A connection with more is refused.
+	// +optional
+	UserScopes []string `json:"userScopes,omitempty"`
+	// RevokeOnDisconnect asks the provider to revoke the token (RFC 7009) when a
+	// user disconnects. Default true.
+	// +optional
+	RevokeOnDisconnect *bool `json:"revokeOnDisconnect,omitempty"`
 	// Credentials is a Secret (in the MCPServer's namespace) holding the OAuth client
 	// id/secret (keys: client_id, client_secret), an optional registered redirect_uri
 	// (key: redirect_uri), and an optional pre-provisioned refresh_token (key:
 	// refresh_token). Supplying a refresh_token skips the one-time authorization-code
 	// seed; otherwise the controller reports "seeding required" and the operator runs
 	// `oauth-proxy seed` once.
-	// +required
-	Credentials LocalObjectRef `json:"credentials"`
+	// Required in shared mode, not allowed in the per-user modes.
+	// +optional
+	Credentials *LocalObjectRef `json:"credentials,omitempty"`
 	// Scopes overrides the server's scopes_supported; if empty, discovery scopes win.
 	// +optional
 	Scopes []string `json:"scopes,omitempty"`
@@ -305,3 +340,15 @@ type ToolList struct {
 func init() {
 	SchemeBuilder.Register(&Tool{}, &ToolList{})
 }
+
+// Mode returns the effective connection mode: shared when unset.
+func (o *MCPOAuthConfig) Mode() string {
+	if o == nil || o.ConnectionMode == "" {
+		return MCPConnectionShared
+	}
+	return o.ConnectionMode
+}
+
+// PerUser reports whether the credential is a user's connection rather than the
+// shared Secret.
+func (o *MCPOAuthConfig) PerUser() bool { return o.Mode() != MCPConnectionShared }
