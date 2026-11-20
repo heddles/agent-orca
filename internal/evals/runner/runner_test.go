@@ -58,6 +58,7 @@ type fakeStore struct {
 	nextID    int64
 	canary    map[int64]float64
 	pending   map[int64]int
+	purges    []time.Time
 }
 
 func newFakeStore(t *testing.T) *fakeStore {
@@ -253,6 +254,13 @@ func (f *fakeStore) SaveEvalGrades(ctx context.Context, id, resultID int64, grad
 		f.exps[id].SpentUSD += g.JudgeCostUSD
 	}
 	return nil
+}
+
+func (f *fakeStore) PurgeEvalResultsBefore(ctx context.Context, cutoff time.Time) (int64, int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.purges = append(f.purges, cutoff)
+	return 1, 2, nil
 }
 
 func (f *fakeStore) AddEvalSpend(ctx context.Context, id int64, usd float64) error {
@@ -1073,5 +1081,21 @@ func TestSpecHashIsStable(t *testing.T) {
 	h3, _ := SpecHash(b)
 	if h1 != h2 || h1 == h3 || len(h1) != 64 {
 		t.Errorf("hashes %s %s %s", h1, h2, h3)
+	}
+}
+
+func TestSweepRetention(t *testing.T) {
+	now := time.Date(2026, 11, 19, 12, 0, 0, 0, time.UTC)
+	fs := newFakeStore(t)
+	r := New(fs, nil, Config{ResultRetentionDays: 90, Now: func() time.Time { return now }})
+	r.SweepRetention(context.Background())
+	if len(fs.purges) != 1 || !fs.purges[0].Equal(now.AddDate(0, 0, -90)) {
+		t.Fatalf("purges = %v, want one at %v", fs.purges, now.AddDate(0, 0, -90))
+	}
+	// Zero keeps everything.
+	fs = newFakeStore(t)
+	New(fs, nil, Config{Now: func() time.Time { return now }}).SweepRetention(context.Background())
+	if len(fs.purges) != 0 {
+		t.Fatalf("retention 0 purged: %v", fs.purges)
 	}
 }

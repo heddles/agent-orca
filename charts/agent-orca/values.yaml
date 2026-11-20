@@ -85,6 +85,10 @@ operator:
     # true refuses a review label from the person who started the experiment
     # (EVALS_REQUIRE_INDEPENDENT_REVIEW).
     requireIndependentReview: false
+    # Days to keep an experiment result's output and grades; older ones are
+    # emptied by an hourly sweep in the leader (EVALS_RESULT_RETENTION_DAYS).
+    # 0 keeps them for ever. Datasets and cases are kept until deleted.
+    resultRetentionDays: 90
     # false stops an admin publishing past a failing evaluation gate with
     # overrideGate; only changing the gate (audited) unblocks a publish
     # (EVALS_ALLOW_GATE_OVERRIDE).

@@ -58,7 +58,9 @@ import (
 const (
 	DefaultInterval = 5 * time.Second
 	DefaultLease    = 60 * time.Second
-	claimBatch      = 20
+	// DefaultRetentionInterval is the time between result-retention sweeps.
+	DefaultRetentionInterval = time.Hour
+	claimBatch               = 20
 	// minRunBudgetUSD is the smallest per-run cap worth starting a run with.
 	minRunBudgetUSD = 0.0001
 	// MaxTenantEvalRuns is the most eval runs one tenant has active at once.
@@ -98,6 +100,8 @@ type Store interface {
 	AwaitEvalReview(ctx context.Context, id int64, summary json.RawMessage) error
 	PendingEvalReviews(ctx context.Context, experimentID int64) (int, error)
 	GetRevision(ctx context.Context, q postgresql.RevisionQuery, n int) (postgresql.Revision, error)
+	// PurgeEvalResultsBefore is result retention (platform scope).
+	PurgeEvalResultsBefore(ctx context.Context, cutoff time.Time) (results, grades int64, err error)
 }
 
 // Limiter is the tenant request-rate bucket (apiserver.RateLimiter satisfies it).
@@ -121,6 +125,11 @@ type Config struct {
 	// Judges finds the model an llm grader names. Nil means no judge: an
 	// experiment whose dataset has an llm grader fails to start.
 	Judges JudgeResolver
+	// ResultRetentionDays is how long result outputs and grades are kept
+	// (EVALS_RESULT_RETENTION_DAYS). Zero or less keeps them for ever.
+	ResultRetentionDays int
+	// RetentionInterval is the time between retention sweeps. Default one hour.
+	RetentionInterval time.Duration
 }
 
 // Runner runs experiments.
@@ -149,6 +158,9 @@ func New(store Store, kube client.Client, cfg Config) *Runner {
 	if cfg.Lease <= 0 {
 		cfg.Lease = DefaultLease
 	}
+	if cfg.RetentionInterval <= 0 {
+		cfg.RetentionInterval = DefaultRetentionInterval
+	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
@@ -164,7 +176,12 @@ func (r *Runner) Start(ctx context.Context) error {
 	}
 	t := time.NewTicker(r.cfg.Interval)
 	defer t.Stop()
+	var lastRetention time.Time
 	for {
+		if now := r.cfg.Now(); now.Sub(lastRetention) >= r.cfg.RetentionInterval {
+			lastRetention = now
+			r.SweepRetention(ctx)
+		}
 		if err := r.Tick(ctx); err != nil && ctx.Err() == nil {
 			r.log.Error("evaluation tick failed", "err", err)
 		}
@@ -173,6 +190,25 @@ func (r *Runner) Start(ctx context.Context) error {
 			return nil
 		case <-t.C:
 		}
+	}
+}
+
+// SweepRetention deletes the grades and outputs of results older than the
+// retention period (docs/evaluations.md). It does nothing when retention is off.
+func (r *Runner) SweepRetention(ctx context.Context) {
+	if r.cfg.ResultRetentionDays <= 0 {
+		return
+	}
+	cutoff := r.cfg.Now().Add(-time.Duration(r.cfg.ResultRetentionDays) * 24 * time.Hour)
+	results, grades, err := r.store.PurgeEvalResultsBefore(postgresql.WithPlatform(ctx), cutoff)
+	if err != nil {
+		if ctx.Err() == nil {
+			r.log.Error("applying result retention", "err", err)
+		}
+		return
+	}
+	if results > 0 || grades > 0 {
+		r.log.Info("applied result retention", "results", results, "grades", grades, "days", r.cfg.ResultRetentionDays)
 	}
 }
 

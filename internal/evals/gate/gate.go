@@ -27,6 +27,7 @@ package gate
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/heddles/agent-orca/internal/evals/compare"
 )
@@ -43,6 +44,10 @@ const (
 	// StatusStale: the latest evaluation no longer applies: the agent, the
 	// dataset or its graders changed since.
 	StatusStale = "stale"
+	// StatusUntrustedJudge: the evaluation meets the bar but rests on an llm
+	// grader that is not calibrated against human labels (kappa under 0.4, or
+	// fewer than 20 labelled pairs). An admin may publish past it with a reason.
+	StatusUntrustedJudge = "untrusted_judge"
 )
 
 // Config is the bar, from the agent's gate row.
@@ -80,6 +85,9 @@ type Input struct {
 	DatasetExists  bool
 	// Hash is the hash of the spec being published.
 	Hash string
+	// UntrustedJudges names the llm graders of the dataset that are not trusted
+	// (calibrate.Report.Trustworthy is false for every human grader).
+	UntrustedJudges []string
 	// Experiment is nil when the agent has no finished gate experiment.
 	Experiment *Experiment
 }
@@ -186,8 +194,18 @@ func CheckGate(in Input) Decision {
 		d.Status, d.Reason = StatusFailed, fmt.Sprintf("experiment %d: the candidate passes %.0f%%; the gate needs %.0f%%", e.ID, b.PassRate*100, *c.MinPassRate*100)
 	case c.MaxRegressions != nil && b.Regressions > *c.MaxRegressions:
 		d.Status, d.Reason = StatusFailed, fmt.Sprintf("experiment %d: %d cases went from pass to fail; the gate allows %d", e.ID, b.Regressions, *c.MaxRegressions)
+	case len(in.UntrustedJudges) > 0:
+		d.Status, d.Reason = StatusUntrustedJudge, fmt.Sprintf("experiment %d meets the bar, but it rests on the llm %s %s, which %s not calibrated against human labels (Cohen's kappa of at least 0.4 over at least 20 labelled results): label results in a review, or an admin may publish past this with a reason",
+			e.ID, plural(len(in.UntrustedJudges), "grader", "graders"), strings.Join(in.UntrustedJudges, ", "), plural(len(in.UntrustedJudges), "is", "are"))
 	default:
 		d.Status, d.Reason = StatusPassed, fmt.Sprintf("experiment %d: the candidate passes %.0f%% (baseline %.0f%%) over %d cases and is not worse by more than %.0f points", e.ID, b.PassRate*100, b.BaselinePassRate*100, b.Cases, c.Margin*100)
 	}
 	return d
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
 }
