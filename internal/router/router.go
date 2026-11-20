@@ -120,6 +120,11 @@ type Router struct {
 	// mcpClient manages connections to MCP servers declared in cfg.MCPServers.
 	// Tool discoveries from MCP servers are merged into cfg.ToolDefinitions at startup.
 	mcpClient *mcp.Client
+	// mcpInitDone closes when InitMCPServers finishes; userMCPDone records the
+	// per-user servers a warm pod has discovered; userMCPMu serialises discovery.
+	mcpInitDone chan struct{}
+	userMCPDone map[string]bool
+	userMCPMu   sync.Mutex
 
 	// metrics exposes model-router Prometheus counters on the :9091/metrics
 	// endpoint (tokens streamed, tool calls, stream latency). May be nil when
@@ -675,6 +680,7 @@ const (
 // goroutine after the HTTP server is already listening so MCP subprocess startup
 // does not delay the startup probe.
 func (r *Router) InitMCPServers() {
+	defer r.markMCPInitDone()
 	if len(r.cfg.MCPServers) == 0 {
 		// Always set mcpClient so callMCPTool never hits the nil guard.
 		r.mu.Lock()
@@ -682,39 +688,25 @@ func (r *Router) InitMCPServers() {
 		r.mu.Unlock()
 		return
 	}
+	// A warm pod starts with no run, and the operator hands out a per-user token
+	// only for a run. Those servers wait for the claim (DiscoverUserMCP).
+	deferUser := r.cfg.WarmMode && r.cfg.RunName == ""
 	var serverConfigs []mcp.ServerConfig
 	for _, s := range r.cfg.MCPServers {
-		var envFiles []mcp.EnvFileMapping
-		for _, ef := range s.EnvFiles {
-			envFiles = append(envFiles, mcp.EnvFileMapping{Name: ef.Name, FilePath: ef.FilePath})
+		if s.UserConnection != nil && !deferUser {
+			// Connected here with the run it started with: nothing to defer.
+			r.mu.Lock()
+			if r.userMCPDone == nil {
+				r.userMCPDone = map[string]bool{}
+			}
+			r.userMCPDone[s.Name] = true
+			r.mu.Unlock()
 		}
-		var authHeaderFiles []mcp.AuthHeaderFile
-		for _, ahf := range s.AuthHeaderFiles {
-			authHeaderFiles = append(authHeaderFiles, mcp.AuthHeaderFile{
-				HeaderName: ahf.HeaderName,
-				FilePath:   ahf.FilePath,
-				Prefix:     ahf.Prefix,
-			})
+		if deferUser && s.UserConnection != nil {
+			slog.Info("MCP server deferred until a run is claimed", "server", s.Name)
+			continue
 		}
-		var userConn *mcp.UserConnection
-		if s.UserConnection != nil {
-			userConn = &mcp.UserConnection{Server: s.UserConnection.Server, Tokens: r}
-		}
-		serverConfigs = append(serverConfigs, mcp.ServerConfig{
-			User:            userConn,
-			Name:            s.Name,
-			Transport:       mcp.Transport(s.Transport),
-			URL:             s.URL,
-			Cmd:             s.Cmd,
-			Args:            s.Args,
-			Env:             s.Env,
-			EnvFiles:        envFiles,
-			AuthHeaderFiles: authHeaderFiles,
-			OAuth:           s.OAuth,
-			AllowApps:       s.AllowApps,
-			IncludePatterns: s.IncludePatterns,
-			ExcludePatterns: s.ExcludePatterns,
-		})
+		serverConfigs = append(serverConfigs, r.mcpServerConfig(s))
 	}
 	client := mcp.New(context.Background(), serverConfigs)
 	r.mu.Lock()
@@ -724,17 +716,181 @@ func (r *Router) InitMCPServers() {
 
 	// Emit a trace event per MCP server with discovered tool count.
 	for _, s := range r.cfg.MCPServers {
-		toolCount := 0
-		for _, td := range r.cfg.ToolDefinitions {
-			if td.BackendRef == s.Name && td.BackendType == backendTypeMCP {
-				toolCount++
-			}
+		if deferUser && s.UserConnection != nil {
+			continue
 		}
-		r.emitTraceEvent(fmt.Sprintf(`{"type":"mcpDiscovery","server":%q,"tools":%d}`,
-			s.Name, toolCount))
+		r.emitMCPDiscovery(s.Name)
 	}
 
 	slog.Info("MCP servers initialized", "tools", len(client.Tools()))
+}
+
+func (r *Router) mcpServerConfig(s MCPServerConfig) mcp.ServerConfig {
+	envFiles := make([]mcp.EnvFileMapping, 0, len(s.EnvFiles))
+	for _, ef := range s.EnvFiles {
+		envFiles = append(envFiles, mcp.EnvFileMapping{Name: ef.Name, FilePath: ef.FilePath})
+	}
+	authHeaderFiles := make([]mcp.AuthHeaderFile, 0, len(s.AuthHeaderFiles))
+	for _, ahf := range s.AuthHeaderFiles {
+		authHeaderFiles = append(authHeaderFiles, mcp.AuthHeaderFile{
+			HeaderName: ahf.HeaderName,
+			FilePath:   ahf.FilePath,
+			Prefix:     ahf.Prefix,
+		})
+	}
+	var userConn *mcp.UserConnection
+	if s.UserConnection != nil {
+		userConn = &mcp.UserConnection{Server: s.UserConnection.Server, Tokens: r}
+	}
+	return mcp.ServerConfig{
+		User:            userConn,
+		Name:            s.Name,
+		Transport:       mcp.Transport(s.Transport),
+		URL:             s.URL,
+		Cmd:             s.Cmd,
+		Args:            s.Args,
+		Env:             s.Env,
+		EnvFiles:        envFiles,
+		AuthHeaderFiles: authHeaderFiles,
+		OAuth:           s.OAuth,
+		AllowApps:       s.AllowApps,
+		IncludePatterns: s.IncludePatterns,
+		ExcludePatterns: s.ExcludePatterns,
+	}
+}
+
+func (r *Router) emitMCPDiscovery(server string) {
+	r.mu.Lock()
+	toolCount := 0
+	for _, td := range r.cfg.ToolDefinitions {
+		if td.BackendRef == server && td.BackendType == backendTypeMCP {
+			toolCount++
+		}
+	}
+	r.mu.Unlock()
+	r.emitTraceEvent(fmt.Sprintf(`{"type":"mcpDiscovery","server":%q,"tools":%d}`, server, toolCount))
+}
+
+// mcpInitDoneCh returns the channel closed when InitMCPServers has finished.
+func (r *Router) mcpInitDoneCh() chan struct{} {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.mcpInitDone == nil {
+		r.mcpInitDone = make(chan struct{})
+	}
+	return r.mcpInitDone
+}
+
+func (r *Router) markMCPInitDone() {
+	ch := r.mcpInitDoneCh()
+	select {
+	case <-ch:
+	default:
+		close(ch)
+	}
+}
+
+// mcpInitWait bounds how long a claim waits for pod-start MCP init.
+const mcpInitWait = 60 * time.Second
+
+// DiscoverUserMCP connects the per-user MCP servers that a warm pod skipped at
+// start, using the run that was just claimed for the operator token request. Call
+// it after ClaimRun and before the claim is acknowledged, so the first model call
+// has the tools. A server that connected is kept for later claims; one that failed
+// (the operator refused, e.g. connection_unavailable) is simply absent and tried
+// again at the next claim. It never fails the claim.
+//
+// The token cache lives per server connection and is not keyed by run. That is
+// safe because the operator derives the connection owner from the agent that the
+// run belongs to, not from the run, and a warm pod serves a single agent.
+func (r *Router) DiscoverUserMCP(ctx context.Context) {
+	if !r.cfg.WarmMode {
+		return
+	}
+	var pending []MCPServerConfig
+	r.mu.Lock()
+	for _, s := range r.cfg.MCPServers {
+		if s.UserConnection != nil && !r.userMCPDone[s.Name] {
+			pending = append(pending, s)
+		}
+	}
+	r.mu.Unlock()
+	if len(pending) == 0 {
+		return
+	}
+	r.userMCPMu.Lock()
+	defer r.userMCPMu.Unlock()
+
+	select {
+	case <-r.mcpInitDoneCh():
+	case <-time.After(mcpInitWait):
+		slog.Warn("per-user MCP discovery skipped: pod-start MCP init still running; will retry at next claim")
+		return
+	case <-ctx.Done():
+		return
+	}
+
+	// Re-filter: a concurrent claim may have finished some while we waited.
+	r.mu.Lock()
+	var cfgs []mcp.ServerConfig
+	var names []string
+	for _, s := range pending {
+		if !r.userMCPDone[s.Name] {
+			cfgs = append(cfgs, r.mcpServerConfig(s))
+			names = append(names, s.Name)
+		}
+	}
+	client := r.mcpClient
+	r.mu.Unlock()
+	if len(cfgs) == 0 || client == nil {
+		return
+	}
+
+	tools, failed := client.AddServers(ctx, cfgs)
+	for name, err := range failed {
+		code := "unknown"
+		var ce *mcp.ConnectionError
+		if errors.As(err, &ce) {
+			code = ce.Code
+		}
+		slog.Warn("per-user MCP discovery failed at claim; tools unavailable, will retry at next claim",
+			"server", name, "code", code)
+	}
+	r.mu.Lock()
+	for _, n := range names {
+		if _, bad := failed[n]; bad {
+			continue
+		}
+		if r.userMCPDone == nil {
+			r.userMCPDone = map[string]bool{}
+		}
+		r.userMCPDone[n] = true
+	}
+	r.cfg.ToolDefinitions = mergeUserMCPToolDefs(r.cfg.ToolDefinitions, names, tools)
+	r.mu.Unlock()
+	for _, n := range names {
+		if _, bad := failed[n]; !bad {
+			r.emitMCPDiscovery(n)
+		}
+	}
+	slog.Info("per-user MCP servers discovered", "tools", len(tools), "failed", len(failed))
+}
+
+// mergeUserMCPToolDefs replaces the definitions of the named servers with the
+// discovered tools and leaves every other definition alone.
+func mergeUserMCPToolDefs(defs []ToolDefinition, servers []string, discovered []mcp.Tool) []ToolDefinition {
+	drop := map[string]bool{}
+	for _, n := range servers {
+		drop[n] = true
+	}
+	result := make([]ToolDefinition, 0, len(defs)+len(discovered))
+	for _, d := range defs {
+		if d.BackendType == backendTypeMCP && drop[d.BackendRef] {
+			continue
+		}
+		result = append(result, d)
+	}
+	return append(result, mergeMCPToolDefs(nil, discovered)...)
 }
 
 // mergeMCPToolDefs removes CRD-level MCP placeholder definitions and replaces

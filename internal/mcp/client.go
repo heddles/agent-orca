@@ -175,39 +175,75 @@ type Client struct {
 func New(ctx context.Context, configs []ServerConfig) *Client {
 	c := &Client{}
 	for _, cfg := range configs {
-		conn, err := connect(ctx, cfg)
-		// HTTP/SSE servers (incl. OAuth-managed ones) may not have their bearer token
-		// populated yet at this exact instant; the operator writes it shortly after pod
-		// start. Retry briefly so the initial tools/list succeeds once the token appears.
-		if err != nil && (cfg.Transport == TransportHTTP || cfg.Transport == TransportSSE) {
-			for attempt := 0; attempt < 5 && err != nil; attempt++ {
-				slog.Warn("MCP server connect retry", "server", cfg.Name, "attempt", attempt+1, "err", err)
-				select {
-				case <-time.After(2 * time.Second):
-				case <-ctx.Done():
-				}
-				conn, err = connect(ctx, cfg)
-			}
-		}
+		conn, tools, err := connectAndList(ctx, cfg, true)
 		if err != nil {
-			slog.Warn("MCP server connect failed", "server", cfg.Name, "err", err)
 			continue
-		}
-		tools, err := conn.listTools(ctx)
-		if err != nil {
-			slog.Warn("MCP tools/list failed", "server", cfg.Name, "err", err)
-			_ = conn.close()
-			continue
-		}
-		for i := range tools {
-			tools[i].ServerName = cfg.Name
-			tools[i].AllowApps = cfg.AllowApps
 		}
 		c.servers = append(c.servers, conn)
 		c.tools = append(c.tools, tools...)
-		slog.Info("MCP server connected", "server", cfg.Name, "tools", len(tools))
 	}
 	return c
+}
+
+// AddServers connects to servers after the client was created and returns the
+// tools they discovered, keyed by server name for the ones that failed. It makes
+// one attempt per server (no retry loop): the caller decides when to try again.
+// Servers already connected are untouched. The router uses it for per-user
+// servers, which can only connect once a run is claimed.
+func (c *Client) AddServers(ctx context.Context, configs []ServerConfig) ([]Tool, map[string]error) {
+	var added []Tool
+	var failed map[string]error
+	for _, cfg := range configs {
+		conn, tools, err := connectAndList(ctx, cfg, false)
+		if err != nil {
+			if failed == nil {
+				failed = map[string]error{}
+			}
+			failed[cfg.Name] = err
+			continue
+		}
+		c.mu.Lock()
+		c.servers = append(c.servers, conn)
+		c.tools = append(c.tools, tools...)
+		c.mu.Unlock()
+		added = append(added, tools...)
+	}
+	return added, failed
+}
+
+// connectAndList connects to one server and lists its tools. With retry, HTTP/SSE
+// servers get a few more attempts at connect.
+func connectAndList(ctx context.Context, cfg ServerConfig, retry bool) (*serverConn, []Tool, error) {
+	conn, err := connect(ctx, cfg)
+	// HTTP/SSE servers (incl. OAuth-managed ones) may not have their bearer token
+	// populated yet at this exact instant; the operator writes it shortly after pod
+	// start. Retry briefly so the initial tools/list succeeds once the token appears.
+	if err != nil && retry && (cfg.Transport == TransportHTTP || cfg.Transport == TransportSSE) {
+		for attempt := 0; attempt < 5 && err != nil; attempt++ {
+			slog.Warn("MCP server connect retry", "server", cfg.Name, "attempt", attempt+1, "err", err)
+			select {
+			case <-time.After(2 * time.Second):
+			case <-ctx.Done():
+			}
+			conn, err = connect(ctx, cfg)
+		}
+	}
+	if err != nil {
+		slog.Warn("MCP server connect failed", "server", cfg.Name, "err", err)
+		return nil, nil, err
+	}
+	tools, err := conn.listTools(ctx)
+	if err != nil {
+		slog.Warn("MCP tools/list failed", "server", cfg.Name, "err", err)
+		_ = conn.close()
+		return nil, nil, err
+	}
+	for i := range tools {
+		tools[i].ServerName = cfg.Name
+		tools[i].AllowApps = cfg.AllowApps
+	}
+	slog.Info("MCP server connected", "server", cfg.Name, "tools", len(tools))
+	return conn, tools, nil
 }
 
 // setAuthHeaders resolves the bearer/credential files fresh from disk on every

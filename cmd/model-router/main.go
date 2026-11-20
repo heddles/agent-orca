@@ -174,6 +174,12 @@ func main() { //nolint:gocyclo
 			}
 			r.ClaimRun(input)
 			bindExecutor(input.RunName)
+			// Per-user MCP servers need the claimed run for their token, so they
+			// connect now, before the run loop is signalled. A failure leaves the
+			// tools out and does not fail the claim.
+			discCtx, discCancel := context.WithTimeout(req.Context(), 90*time.Second)
+			r.DiscoverUserMCP(discCtx)
+			discCancel()
 			w.WriteHeader(http.StatusOK)
 			slog.Info("warm pod claimed", "run", input.RunName, "priorRun", input.PriorRunRef,
 				"resumeKey", input.ResumeCheckpointKey)
