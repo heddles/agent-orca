@@ -9,6 +9,8 @@
  */
 import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { Link } from 'react-router'
+import { listSchedules, type ScheduleSummary } from '../api/schedules'
+import { ScheduleBadge } from './ScheduleParts'
 import { getFleet, type FleetHealthStatus, type FleetOwner, type FleetRow, type FleetWindow } from '../api/fleet'
 import { ds } from '../lib/designSystem'
 import { StatusIcon } from '../lib/icons'
@@ -25,6 +27,8 @@ export interface FleetFilters {
   owner: '' | FleetOwner
   health: '' | FleetHealthStatus
   published: '' | 'published' | 'unpublished'
+  /** Only agents that have a schedule. Applied by the view, which knows the schedules. */
+  scheduled?: boolean
 }
 
 export const NO_FLEET_FILTERS: FleetFilters = { query: '', owner: '', health: '', published: '' }
@@ -158,6 +162,15 @@ export function FleetView() {
   const [filters, setFilters] = useState<FleetFilters>(NO_FLEET_FILTERS)
   const [sort, setSort] = useState<{ key: FleetSortKey; dir: 'asc' | 'desc' }>({ key: 'health', dir: 'asc' })
 
+  // Schedules by the agent they run. A failed call only hides the badges.
+  const [schedules, setSchedules] = useState<ScheduleSummary[]>([])
+  useEffect(() => {
+    let cancelled = false
+    listSchedules(namespace).then((l) => { if (!cancelled) setSchedules(l) }).catch(() => { if (!cancelled) setSchedules([]) })
+    return () => { cancelled = true }
+  }, [namespace])
+  const schedulesOf = (ns: string, agent: string) => schedules.filter((x) => x.targetKind === 'agent' && x.target === agent && x.namespace === ns)
+
   useEffect(() => {
     let cancelled = false
     setError(null)
@@ -167,9 +180,13 @@ export function FleetView() {
     return () => { cancelled = true }
   }, [windowSel, namespace])
 
-  const shown = useMemo(() => sortFleet(filterFleet(rows ?? [], filters), sort.key, sort.dir), [rows, filters, sort])
+  const shown = useMemo(() => {
+    const base = filterFleet(rows ?? [], filters)
+    const scoped = filters.scheduled ? base.filter((r) => schedules.some((x) => x.targetKind === 'agent' && x.target === r.name && x.namespace === r.namespace)) : base
+    return sortFleet(scoped, sort.key, sort.dir)
+  }, [rows, filters, sort, schedules])
   const set = <K extends keyof FleetFilters>(k: K, v: FleetFilters[K]) => setFilters((f) => ({ ...f, [k]: v }))
-  const filtered = filters.query || filters.owner || filters.health || filters.published
+  const filtered = filters.query || filters.owner || filters.health || filters.published || filters.scheduled
 
   return (
     <div style={s.root}>
@@ -197,6 +214,10 @@ export function FleetView() {
           <option value="">Published or not</option>
           <option value="published">Published</option>
           <option value="unpublished">Not published</option>
+        </select>
+        <select aria-label="Filter by schedule" value={filters.scheduled ? 'scheduled' : ''} onChange={(e) => set('scheduled', e.target.value === 'scheduled')} style={s.input}>
+          <option value="">Scheduled or not</option>
+          <option value="scheduled">Scheduled</option>
         </select>
         <div role="group" aria-label="Time window" style={s.windowGroup}>
           {(['24h', '7d'] as const).map((w) => (
@@ -255,6 +276,7 @@ export function FleetView() {
                   <td style={s.td}>
                     <Link to={agentDetailsPath(r.namespace, r.name)} style={s.nameLink}>{r.name}</Link>
                     <div style={s.sub}>{r.maintainer}{r.published ? ' · published' : ''}</div>
+                    <ScheduleBadge schedules={schedulesOf(r.namespace, r.name)} />
                   </td>
                   <td style={s.td}>{OWNER_LABEL[r.owner]}</td>
                   <td style={s.td}><HealthBadge status={r.health.status} reason={r.health.reason} /></td>

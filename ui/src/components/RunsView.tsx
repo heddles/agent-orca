@@ -30,6 +30,8 @@ type SortKey = 'name' | 'agent' | 'phase' | 'cost' | 'started' | 'completed'
 type SortDir = 'asc' | 'desc'
 export type RunSource = 'live' | 'archived'
 type SourceFilter = '' | RunSource
+/** Who started a run: a person (or an API call), or an AgentSchedule on its own. */
+type StartedByFilter = '' | 'people' | 'schedule'
 
 /** A run from either source, tagged with where it came from. */
 type RunRow = RunHistorySummary & { source: RunSource }
@@ -47,6 +49,7 @@ export function RunsView({ onNavigateToRun, namespace = '', initialAgent = '' }:
   const [live, setLive] = useState<AgentRunSummary[]>([])
   const [liveError, setLiveError] = useState<string | null>(null)
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('')
+  const [startedBy, setStartedBy] = useState<StartedByFilter>('')
   const [page, setPage] = useState<RunHistoryResponse>({
     runs: [],
     total: 0,
@@ -138,14 +141,16 @@ export function RunsView({ onNavigateToRun, namespace = '', initialAgent = '' }:
     const liveRows: RunRow[] = live
       .filter((r) => (!phase || r.phase === phase)
         && (!agent || r.agentRef.toLowerCase().includes(agent))
-        && (!search || r.name.toLowerCase().includes(search)))
+        && (!search || r.name.toLowerCase().includes(search))
+        && (startedBy === '' || (startedBy === 'schedule') === (r.trigger === 'schedule')))
       .map((r) => ({ ...r, source: 'live' as const }))
     const allLiveKeys = new Set(live.map((r) => `${r.namespace}/${r.name}`))
+    // Archived runs do not record how they started, so they are not "scheduled".
     const archivedRows: RunRow[] = archived
-      .filter((r) => !allLiveKeys.has(`${r.namespace}/${r.name}`))
+      .filter((r) => !allLiveKeys.has(`${r.namespace}/${r.name}`) && startedBy !== 'schedule')
       .map((r) => ({ ...r, source: 'archived' as const }))
     return [...liveRows, ...archivedRows].filter((r) => !sourceFilter || r.source === sourceFilter)
-  }, [live, archived, filters, sourceFilter])
+  }, [live, archived, filters, sourceFilter, startedBy])
 
   // Sort the current page's rows (local sort — better for responsiveness than
   // re-querying the server for a column click).
@@ -191,7 +196,7 @@ export function RunsView({ onNavigateToRun, namespace = '', initialAgent = '' }:
     }
   }
 
-  const filtered = Boolean(filters.phase || filters.agentRef || filters.search || sourceFilter)
+  const filtered = Boolean(filters.phase || filters.agentRef || filters.search || sourceFilter || startedBy)
   const archivedShown = runs.filter((r) => r.source === 'archived').length
   const liveShown = runs.length - archivedShown
   const total = liveShown + (sourceFilter === 'live' ? 0 : Math.max(page.total - (archived.length - archivedShown), archivedShown))
@@ -273,6 +278,19 @@ export function RunsView({ onNavigateToRun, namespace = '', initialAgent = '' }:
           </select>
         </div>
         <div style={s.filterGroup}>
+          <label style={s.filterLabel}>Started by</label>
+          <select
+            value={startedBy}
+            onChange={(e) => setStartedBy(e.target.value as StartedByFilter)}
+            style={s.select}
+            aria-label="Filter by who started the run"
+          >
+            <option value="">Anyone</option>
+            <option value="people">People</option>
+            <option value="schedule">Schedules</option>
+          </select>
+        </div>
+        <div style={s.filterGroup}>
           <label style={s.filterLabel}>Agent</label>
           <input
             type="text"
@@ -297,6 +315,7 @@ export function RunsView({ onNavigateToRun, namespace = '', initialAgent = '' }:
           style={s.resetBtn}
           onClick={() => {
             setFilters({ phase: '', agentRef: '', search: '' })
+            setStartedBy('')
             setPage((prev) => ({ ...prev, offset: 0 }))
             setTimeout(() => void load(), 0)
           }}

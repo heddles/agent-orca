@@ -330,3 +330,20 @@ func TestScheduledRunsAreNotInMyRuns(t *testing.T) {
 		t.Fatalf("fallback shows scheduled runs: %s", rec.Body)
 	}
 }
+
+func TestRunDetailNamesItsSchedule(t *testing.T) {
+	run := &agentorcav1alpha1.AgentRun{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "digest-1", Namespace: sharedNS, Labels: map[string]string{schedule.LabelSchedule: "digest", tenancy.LabelTenantID: isoA},
+			Annotations: map[string]string{AnnotationCreatedBy: schedule.Actor(sharedNS, "digest"), schedule.AnnotationScheduledFor: "2026-11-16T08:00:00+01:00"},
+		},
+		Spec: agentorcav1alpha1.AgentRunSpec{AgentRef: helperAgent, Input: "x"},
+	}
+	f := newWriteFixture(t, run)
+	rec := f.act(f.as(tenancy.RoleViewer), http.MethodGet, "/api/runs/shared/digest-1")
+	for _, want := range []string{`"schedule":"digest"`, `"trigger":"schedule"`, `"scheduledFor":"2026-11-16T08:00:00+01:00"`} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Errorf("run detail missing %s: %s", want, rec.Body)
+		}
+	}
+}

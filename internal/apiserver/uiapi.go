@@ -409,9 +409,9 @@ func (s *UIServer) handleListRuns(w http.ResponseWriter, r *http.Request) {
 			Schedule:     run.Labels[schedule.LabelSchedule],
 		}
 		if s.Schedule != "" {
-			s.Trigger = "manual"
+			s.Trigger = triggerManual
 			if strings.HasPrefix(run.Annotations[AnnotationCreatedBy], schedule.ActorPrefix) {
-				s.Trigger = "schedule"
+				s.Trigger = triggerSchedule
 			}
 		}
 		if run.Status.StartTime != nil {
@@ -492,6 +492,11 @@ func (s *UIServer) handleRunOrStream(w http.ResponseWriter, r *http.Request) {
 		ContinuationRunRef    string   `json:"continuationRunRef,omitempty"`
 		ContextUsedTokens     int      `json:"contextUsedTokens"`
 		MaxContextTokens      int      `json:"maxContextTokens"`
+		// Schedule names the AgentSchedule that made the run; Trigger is
+		// "schedule" for an unattended tick and "manual" for Run now.
+		Schedule     string `json:"schedule,omitempty"`
+		Trigger      string `json:"trigger,omitempty"`
+		ScheduledFor string `json:"scheduledFor,omitempty"`
 	}
 
 	detail := runDetail{
@@ -513,6 +518,14 @@ func (s *UIServer) handleRunOrStream(w http.ResponseWriter, r *http.Request) {
 		ContinuationRunRef:    run.Status.ContinuationRunRef,
 		ContextUsedTokens:     run.Status.ContextUsedTokens,
 		MaxContextTokens:      run.Status.MaxContextTokens,
+		Schedule:              run.Labels[schedule.LabelSchedule],
+		ScheduledFor:          run.Annotations[schedule.AnnotationScheduledFor],
+	}
+	if detail.Schedule != "" {
+		detail.Trigger = triggerManual
+		if strings.HasPrefix(run.Annotations[AnnotationCreatedBy], schedule.ActorPrefix) {
+			detail.Trigger = triggerSchedule
+		}
 	}
 	if run.Status.WaitingSince != nil {
 		detail.WaitingSince = run.Status.WaitingSince.UTC().Format(time.RFC3339)

@@ -24,6 +24,8 @@ import type { ResourceSelection } from './ResourceList'
 import { PHASE_COLOR } from '../lib/phaseColors'
 import { DESIGN } from '../lib/designSystem'
 import { Icon, ICON } from '../lib/icons'
+import { ScheduledByChip } from './ScheduleParts'
+import { runScheduleNow, describeScheduleError } from '../api/schedules'
 
 interface Props {
   runId: string
@@ -49,6 +51,8 @@ export function RunView({
   onNavigateToRun,
 }: Props) {
   const [detail, setDetail] = useState<AgentRunDetail | null>(null)
+  const [runAgainBusy, setRunAgainBusy] = useState(false)
+  const [runAgainError, setRunAgainError] = useState('')
   const [entries, setEntries] = useState<TraceEntry[]>([])
   const [streamOutput, setStreamOutput] = useState('')
   const [markdown, setMarkdown] = useState(false)
@@ -225,6 +229,25 @@ export function RunView({
           <div style={s.subtitle}>
             {detail?.agentRef ?? '…'} · {agentRelTime} · {namespace}
           </div>
+          {detail?.schedule && (
+            <div style={{ marginTop: 6 }}>
+              <ScheduledByChip
+                schedule={detail.schedule}
+                trigger={detail.trigger}
+                scheduledFor={detail.scheduledFor}
+                busy={runAgainBusy}
+                onRunAgain={() => {
+                  setRunAgainBusy(true)
+                  setRunAgainError('')
+                  runScheduleNow(namespace, detail.schedule as string)
+                    .then((r) => onNavigateToRun?.(r.name, r.namespace))
+                    .catch((e: unknown) => setRunAgainError(describeScheduleError(e)))
+                    .finally(() => setRunAgainBusy(false))
+                }}
+              />
+              {runAgainError && <div role="alert" style={{ color: 'var(--ds-error)', fontSize: 12, marginTop: 4 }}>{runAgainError}</div>}
+            </div>
+          )}
         </div>
         <div style={s.stats}>
           <StatusBadge phase={phase} />

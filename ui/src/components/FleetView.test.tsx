@@ -6,6 +6,8 @@ import type { Fleet, FleetRow } from '../api/fleet'
 import { NamespaceProvider } from '../lib/namespace'
 
 const mockFleet = vi.fn()
+const mockSchedules = vi.fn()
+vi.mock('../api/schedules', () => ({ listSchedules: (...a: unknown[]) => mockSchedules(...a) }))
 vi.mock('../api/fleet', () => ({ getFleet: (...a: unknown[]) => mockFleet(...a) }))
 
 import { FleetView, filterFleet, sortFleet, NO_FLEET_FILTERS, formatDuration, SpendMeter } from './FleetView'
@@ -84,6 +86,8 @@ const bodyNames = () => within(screen.getAllByRole('rowgroup')[1]).getAllByRole(
 describe('FleetView', () => {
   beforeEach(() => {
     mockFleet.mockReset()
+    mockSchedules.mockReset()
+    mockSchedules.mockResolvedValue([])
     mockFleet.mockResolvedValue({ window: '24h', since: '', tenantSpendUSD: 0, tenantBudgetUSD: null, agents: rows } satisfies Fleet)
   })
 
@@ -95,6 +99,18 @@ describe('FleetView', () => {
     expect(screen.getByRole('link', { name: 'triage' })).toHaveAttribute('href', '/agents/details/team-a/triage')
     expect(screen.getByRole('link', { name: '10 runs of triage' })).toHaveAttribute('href', '/runs?agent=triage')
     expect(screen.getByRole('link', { name: '2 pending approvals for triage' })).toHaveAttribute('href', '/approvals')
+  })
+
+  it('badges an agent that has a schedule and filters to scheduled agents', async () => {
+    mockSchedules.mockResolvedValue([{
+      name: 'nightly', namespace: 'team-a', target: 'coder', targetKind: 'agent', timeZone: 'UTC', suspended: false, state: 'active',
+      nextRun: '2026-11-16T07:00:00Z', lastResult: { status: 'failed', at: '2026-11-15T07:00:00Z' },
+    }])
+    renderFleet()
+    const badge = await screen.findByRole('link', { name: /Scheduled: nightly, next .*Last run failed/ })
+    expect(badge).toHaveAttribute('href', '/operate/schedules')
+    await userEvent.selectOptions(screen.getByLabelText('Filter by schedule'), 'scheduled')
+    expect(bodyNames()).toEqual(['coder'])
   })
 
   it('sorts when a column header is clicked and marks the sort', async () => {

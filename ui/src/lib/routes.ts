@@ -20,6 +20,7 @@ export const ROUTES = {
   routing: '/operate/routing',
   status: '/operate/status',
   workflows: '/operate/workflows',
+  schedules: '/operate/schedules',
   settings: '/settings',
   providers: '/settings/providers',
   models: '/settings/models',

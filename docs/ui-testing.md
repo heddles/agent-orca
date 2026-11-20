@@ -48,6 +48,10 @@ it('maps Running to a hex color', () => {
 })
 ```
 
+### Scheduled runs flows
+
+`ui/src/components/SchedulesView.test.tsx` drives the schedule flows against a stubbed API: the list with next run, last result and spend; creating a schedule from a preset with the live "next runs" preview; refusing a schedule that runs too often or has no spend limit; editing with the `resourceVersion` it read and showing a 409 in words; pause, resume and Run now (including a quota refusal); the history with skipped times; deleting after a confirmation; and a Git-owned schedule opening read-only with Copy YAML and Duplicate. `RunsView.test.tsx` covers the "Started by" filter, `FleetView.test.tsx` the clock badge and the Scheduled filter. `/operate/schedules` is also in the live-tenant smoke test.
+
 ## End-to-End Tests
 
 E2E tests use [Playwright](https://playwright.dev/) and run against a deployed instance of the application. They exercise the full stack: UI served by Caddy, API proxied to the operator, and Kubernetes resources.

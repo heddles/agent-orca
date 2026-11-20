@@ -56,6 +56,9 @@ const (
 	kindAgentRun      = "AgentRun"
 	kindAgentSchedule = "AgentSchedule"
 
+	triggerManual   = "manual"
+	triggerSchedule = "schedule"
+
 	stateSuspended  = "suspended"
 	outcomeFailed   = "failed"
 	schedActionRuns = "runs"
@@ -420,12 +423,12 @@ func (s *UIServer) handleScheduleRuns(w http.ResponseWriter, r *http.Request, sc
 			break
 		}
 		sr := scheduleRun{
-			Name: o.GetName(), Namespace: o.GetNamespace(), Trigger: "schedule",
+			Name: o.GetName(), Namespace: o.GetNamespace(), Trigger: triggerSchedule,
 			ScheduledFor: o.GetAnnotations()[schedule.AnnotationScheduledFor], CreatedBy: o.GetAnnotations()[schedule.AnnotationCreatedBy],
 			CreatedAt: created.UTC().Format(time.RFC3339Nano),
 		}
 		if !strings.HasPrefix(sr.CreatedBy, schedule.ActorPrefix) {
-			sr.Trigger = "manual"
+			sr.Trigger = triggerManual
 		}
 		switch v := o.(type) {
 		case *agentorcav1alpha1.AgentRun:

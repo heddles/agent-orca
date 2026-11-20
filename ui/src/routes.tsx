@@ -15,7 +15,7 @@
  *   /build/new, /build/:ns/:name              the agent builder
  *   /evaluate, /evaluate/:id                  evaluation datasets, and one with its cases and graders
  *   /evaluate/experiments, .../:id, .../:id/review   experiments, one experiment, its blind review queue
- *   /operate/{fleet,costs,routing,status}     Operate tabs (fleet is the default)
+ *   /operate/{fleet,schedules,costs,routing,status}   Operate tabs (fleet is the default)
  *   /operate/workflows[/:ns/:name]            workflows
  *   /settings/providers[/:ns/:name]           model providers
  *   /settings/models[/:ns/:name]              model selection
@@ -44,6 +44,7 @@ import { AgentPage } from './components/AgentPage'
 import { TemplateDetail, TemplatesGallery } from './components/TemplatesGallery'
 import { ApprovalsView } from './components/ApprovalsView'
 import { FleetView } from './components/FleetView'
+import { SchedulesView } from './components/SchedulesView'
 import { RoutingInsightsView } from './components/RoutingInsightsView'
 import { AgentBuilder } from './components/AgentBuilder'
 import { BuildHome } from './components/BuildHome'
@@ -336,6 +337,7 @@ function OperateLayout() {
         label="Operate"
         items={[
           { to: ROUTES.fleet, label: 'Fleet' },
+          { to: ROUTES.schedules, label: 'Schedules' },
           { to: ROUTES.costs, label: 'Costs' },
           { to: ROUTES.routing, label: 'Model routing' },
           { to: ROUTES.status, label: 'System status' },
@@ -476,6 +478,7 @@ export function AppRoutes() {
         <Route path="operate" element={<OperateLayout />}>
           <Route index element={<Navigate to="fleet" replace />} />
           <Route path="fleet" element={<FleetView />} />
+          <Route path="schedules" element={<div style={{ flex: 1, overflowY: 'auto' }}><SchedulesView /></div>} />
           <Route path="costs" element={<CostsRoute />} />
           <Route path="routing" element={<RoutingRoute />} />
           <Route path="status" element={<StatusRoute />} />

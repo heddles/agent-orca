@@ -49,6 +49,20 @@ describe('RunsView', () => {
     expect(screen.getByRole('button', { name: 'View run old-1' })).toBeInTheDocument()
   })
 
+  it('separates what schedules started from what people started', async () => {
+    listRuns.mockResolvedValue([run('mine', 'Running'), run('tick-1', 'Running', { schedule: 'digest', trigger: 'schedule' }), run('manual-1', 'Running', { schedule: 'digest', trigger: 'manual' })])
+    render(<RunsView onNavigateToRun={vi.fn()} />)
+    await screen.findByRole('button', { name: 'View run tick-1' })
+    await userEvent.selectOptions(screen.getByLabelText('Filter by who started the run'), 'schedule')
+    expect(screen.getByRole('button', { name: 'View run tick-1' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'View run mine' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'View run old-1' })).not.toBeInTheDocument()
+    await userEvent.selectOptions(screen.getByLabelText('Filter by who started the run'), 'people')
+    expect(screen.queryByRole('button', { name: 'View run tick-1' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'View run mine' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'View run manual-1' })).toBeInTheDocument()
+  })
+
   it('still lists live runs when run history is not configured', async () => {
     listRunHistory.mockRejectedValue(new Error('HTTP 503'))
     render(<RunsView onNavigateToRun={vi.fn()} />)
