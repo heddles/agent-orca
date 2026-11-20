@@ -1,6 +1,6 @@
 /**
  * AgentPage — one agent: what it does, a run form generated from its input
- * schema, and for published agents the chat and webhook triggers on further tabs.
+ * schema, and for published agents the chat, webhook triggers and the chat widget on further tabs.
  */
 import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { Link } from 'react-router'
@@ -17,6 +17,7 @@ import {
 import { SchemaForm } from './SchemaForm'
 import { DeploymentView } from './DeploymentView'
 import { AgentTriggers } from './AgentTriggers'
+import { AgentWidget } from './AgentWidget'
 import { formatCost } from './AgentCatalog'
 
 /** The input shape every agent has: one free-text field. */
@@ -176,8 +177,8 @@ export function AgentPage({ namespace, name, tab, onTabChange, onNavigateToRun }
   if (!manifest) return <div role="status" style={{ padding: 24, color: ds.textMuted, fontSize: 13 }}>Loading agent…</div>
 
   const published = entry?.published ?? false
-  const active = published && (tab === 'chat' || tab === 'triggers') ? tab : 'run'
-  const tabs = [{ key: 'run', label: 'Run' }, ...(published ? [{ key: 'chat', label: 'Chat' }, { key: 'triggers', label: 'Triggers' }] : [])]
+  const active = published && (tab === 'chat' || tab === 'triggers' || tab === 'widget') ? tab : 'run'
+  const tabs = [{ key: 'run', label: 'Run' }, ...(published ? [{ key: 'chat', label: 'Chat' }, { key: 'triggers', label: 'Triggers' }, { key: 'widget', label: 'Chat widget' }] : [])]
   const examples = manifest.example_inputs ?? entry?.exampleInputs ?? []
 
   return (
@@ -221,6 +222,10 @@ export function AgentPage({ namespace, name, tab, onTabChange, onNavigateToRun }
       ) : active === 'triggers' ? (
         <div role="tabpanel" id="triggers-panel" aria-label="Triggers">
           <AgentTriggers namespace={namespace} name={name} />
+        </div>
+      ) : active === 'widget' ? (
+        <div role="tabpanel" id="widget-panel" aria-label="Chat widget">
+          <AgentWidget namespace={namespace} name={name} />
         </div>
       ) : (
         <div role="tabpanel" id="chat-panel" aria-label="Chat" style={{ flex: 1, minHeight: 480, display: 'flex' }}>

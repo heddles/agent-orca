@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"slices"
 	"sort"
@@ -111,6 +112,10 @@ type UIServer struct {
 	triggers triggerStore
 	// hooks holds the state of the unauthenticated /hooks endpoint.
 	hooks hookState
+	// widgetKeys overrides the widget key store (tests); nil means pgStore.
+	widgetKeys widgetKeyStore
+	// widget holds the state of the public /widget endpoints.
+	widget widgetState
 	// evalLimits are the configured limits on experiments.
 	evalLimits postgresql.EvalExperimentLimits
 	// evalCfg holds the limits on evaluation datasets and cases.
@@ -231,10 +236,21 @@ func (s *UIServer) Handler() http.Handler {
 	s.registerBuilderRoutes(mux)
 	s.registerEvalRoutes(mux)
 	s.registerTriggerRoutes(mux)
+	s.registerWidgetKeyRoutes(mux)
 	if s.oidcLogin != nil {
 		s.oidcLogin.Register(mux)
 	}
-	return corsMiddleware(requestTimeoutMiddleware(instrument("ui", s.requireAuth(mux)), uiAPIRequestTimeout))
+	api := corsMiddleware(requestTimeoutMiddleware(instrument("ui", s.requireAuth(mux)), uiAPIRequestTimeout))
+	// The chat widget's endpoints are called by other sites' pages, so they have
+	// their own CORS (per key) and no session: see widget_public.go.
+	widget := requestTimeoutMiddleware(instrument("widget", s.widgetMux()), widgetRequestTimeout)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/widget/") {
+			widget.ServeHTTP(w, r)
+			return
+		}
+		api.ServeHTTP(w, r)
+	})
 }
 
 func (s *UIServer) requireAuth(next http.Handler) http.Handler {
@@ -1798,10 +1814,35 @@ func (s *UIServer) handleExecute(w http.ResponseWriter, r *http.Request, namespa
 		return
 	}
 
-	existing, err := sessionStore(r.Context(), s.checkpoint).Load(r.Context(), sessionID)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("loading checkpoint: %v", err), http.StatusInternalServerError)
+	run, cerr := s.startChatTurn(r.Context(), &deployment, namespace, deploymentName, sessionID, req.Input, nil, nil)
+	if cerr != nil {
+		http.Error(w, cerr.msg, cerr.status)
 		return
+	}
+
+	jsonResponse(w, map[string]any{
+		"runName":   run.Name,
+		"sessionId": sessionID,
+	})
+}
+
+// chatError is a failure of a chat step with the status the handler answers.
+type chatError struct {
+	status int
+	msg    string
+}
+
+func (e *chatError) Error() string { return e.msg }
+
+// startChatTurn records the user's message in the session checkpoint and
+// creates the AgentRun that answers it, chained to the session's previous run.
+// It is the chat path of the UI, and the chat widget uses the same one: labels
+// and annotations are extra metadata for the run (the widget names its key).
+// The tenant comes from ctx, which stampOwner and the session store read.
+func (s *UIServer) startChatTurn(ctx context.Context, deployment *agentorcav1alpha1.AgentDeployment, namespace, deploymentName, sessionID, input string, labels, annotations map[string]string) (*agentorcav1alpha1.AgentRun, *chatError) {
+	existing, err := sessionStore(ctx, s.checkpoint).Load(ctx, sessionID)
+	if err != nil {
+		return nil, &chatError{http.StatusInternalServerError, fmt.Sprintf("loading checkpoint: %v", err)}
 	}
 
 	version := 1
@@ -1810,7 +1851,7 @@ func (s *UIServer) handleExecute(w http.ResponseWriter, r *http.Request, namespa
 		version = existing.Version + 1
 		history = append(history, existing.ConversationHistory...)
 	}
-	history = append(history, agentorcav1alpha1.ConversationMessage{Role: "user", Content: req.Input})
+	history = append(history, agentorcav1alpha1.ConversationMessage{Role: "user", Content: input})
 
 	cp := &agentorcav1alpha1.Checkpoint{
 		SessionID:           sessionID,
@@ -1825,9 +1866,8 @@ func (s *UIServer) handleExecute(w http.ResponseWriter, r *http.Request, namespa
 	if existing != nil && existing.Metadata.StartTime != nil {
 		cp.Metadata.StartTime = existing.Metadata.StartTime
 	}
-	if _, err := sessionStore(r.Context(), s.checkpoint).Save(r.Context(), cp); err != nil {
-		http.Error(w, fmt.Sprintf("saving checkpoint: %v", err), http.StatusInternalServerError)
-		return
+	if _, err := sessionStore(ctx, s.checkpoint).Save(ctx, cp); err != nil {
+		return nil, &chatError{http.StatusInternalServerError, fmt.Sprintf("saving checkpoint: %v", err)}
 	}
 
 	priorRunRef := ""
@@ -1847,7 +1887,7 @@ func (s *UIServer) handleExecute(w http.ResponseWriter, r *http.Request, namespa
 		},
 		Spec: agentorcav1alpha1.AgentRunSpec{
 			AgentRef:    deployment.Spec.AgentRef,
-			Input:       req.Input,
+			Input:       input,
 			PriorRunRef: priorRunRef,
 		},
 	}
@@ -1856,27 +1896,26 @@ func (s *UIServer) handleExecute(w http.ResponseWriter, r *http.Request, namespa
 			ToolExecutionTimeoutSec: deployment.Spec.ToolExecutionTimeoutSec,
 		}
 	}
-	stampOwner(r.Context(), run)
-	if err := s.crdClient.Create(r.Context(), run); err != nil {
-		http.Error(w, fmt.Sprintf("creating agent run: %v", err), http.StatusInternalServerError)
-		return
+	maps.Copy(run.Labels, labels)
+	if len(annotations) > 0 {
+		run.Annotations = maps.Clone(annotations)
+	}
+	stampOwner(ctx, run)
+	if err := s.crdClient.Create(ctx, run); err != nil {
+		return nil, &chatError{http.StatusInternalServerError, fmt.Sprintf("creating agent run: %v", err)}
 	}
 
 	cp.LastRunRef = run.Name
-	if _, err := sessionStore(r.Context(), s.checkpoint).Save(r.Context(), cp); err != nil {
+	if _, err := sessionStore(ctx, s.checkpoint).Save(ctx, cp); err != nil {
 		slog.Warn("failed to update checkpoint LastRunRef", "run", run.Name, "err", err)
 	}
 
 	if s.store != nil && priorRunRef != "" {
-		if err := s.ensureRunCheckpoint(r.Context(), run, priorRunRef, cp.ConversationHistory); err != nil {
+		if err := s.ensureRunCheckpoint(ctx, run, priorRunRef, cp.ConversationHistory); err != nil {
 			slog.Warn("safety-net checkpoint write failed", "run", priorRunRef, "err", err)
 		}
 	}
-
-	jsonResponse(w, map[string]any{
-		"runName":   run.Name,
-		"sessionId": sessionID,
-	})
+	return run, nil
 }
 
 func (s *UIServer) ensureRunCheckpoint(ctx context.Context, owner client.Object, runName string, history []agentorcav1alpha1.ConversationMessage) error {
@@ -1946,14 +1985,26 @@ func (s *UIServer) handleSaveResponse(w http.ResponseWriter, r *http.Request, na
 		return
 	}
 
-	cp, err := sessionStore(r.Context(), s.checkpoint).Load(r.Context(), req.SessionID)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("loading checkpoint: %v", err), http.StatusInternalServerError)
+	if cerr := s.saveChatResponse(r.Context(), namespace, req.SessionID, req.Output, req.TraceEntries); cerr != nil {
+		http.Error(w, cerr.msg, cerr.status)
 		return
+	}
+
+	jsonResponse(w, map[string]string{"status": "ok"})
+}
+
+// saveChatResponse appends the agent's answer to the session checkpoint and
+// carries the conversation into the run's saved state, so the next turn sees
+// it. The UI calls it when its stream ends; the chat widget, which has no
+// stream, calls it when it finds a run finished.
+func (s *UIServer) saveChatResponse(ctx context.Context, namespace, sessionID, output, trace string) *chatError {
+	cp, err := sessionStore(ctx, s.checkpoint).Load(ctx, sessionID)
+	if err != nil {
+		return &chatError{http.StatusInternalServerError, fmt.Sprintf("loading checkpoint: %v", err)}
 	}
 	if cp == nil {
 		cp = &agentorcav1alpha1.Checkpoint{
-			SessionID: req.SessionID,
+			SessionID: sessionID,
 			Version:   0,
 			Metadata: agentorcav1alpha1.CheckpointMetadata{
 				StartTime: &metav1.Time{Time: time.Now()},
@@ -1964,15 +2015,15 @@ func (s *UIServer) handleSaveResponse(w http.ResponseWriter, r *http.Request, na
 	cp.Version++
 	cp.ConversationHistory = append(cp.ConversationHistory, agentorcav1alpha1.ConversationMessage{
 		Role:         "assistant",
-		Content:      req.Output,
-		TraceEntries: req.TraceEntries,
+		Content:      output,
+		TraceEntries: trace,
 	})
 	cp.Metadata.TotalMessages = len(cp.ConversationHistory)
 	cp.Metadata.LastMessageTime = &metav1.Time{Time: time.Now()}
 
 	var lastRun agentorcav1alpha1.AgentRun // names the tenant whose run checkpoint is rewritten below
 	if cp.LastRunRef != "" {
-		if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: cp.LastRunRef, Namespace: namespace}, &lastRun); err == nil && lastRun.Status.SpendUSD != "" {
+		if err := s.crdClient.Get(ctx, client.ObjectKey{Name: cp.LastRunRef, Namespace: namespace}, &lastRun); err == nil && lastRun.Status.SpendUSD != "" {
 			existing, _ := strconv.ParseFloat(cp.Metadata.TotalCostUSD, 64)
 			runSpend, _ := strconv.ParseFloat(lastRun.Status.SpendUSD, 64)
 			if runSpend > 0 {
@@ -1981,9 +2032,8 @@ func (s *UIServer) handleSaveResponse(w http.ResponseWriter, r *http.Request, na
 		}
 	}
 
-	if _, err := sessionStore(r.Context(), s.checkpoint).Save(r.Context(), cp); err != nil {
-		http.Error(w, fmt.Sprintf("saving checkpoint: %v", err), http.StatusInternalServerError)
-		return
+	if _, err := sessionStore(ctx, s.checkpoint).Save(ctx, cp); err != nil {
+		return &chatError{http.StatusInternalServerError, fmt.Sprintf("saving checkpoint: %v", err)}
 	}
 
 	if s.store != nil && cp.LastRunRef != "" {
@@ -1997,10 +2047,9 @@ func (s *UIServer) handleSaveResponse(w http.ResponseWriter, r *http.Request, na
 			raw, _ := json.Marshal(routerMsg)
 			msgs = append(msgs, raw)
 		}
-		_ = runState(s.store, &lastRun).SaveMessages(r.Context(), checkpointKey, msgs, 24*time.Hour)
+		_ = runState(s.store, &lastRun).SaveMessages(ctx, checkpointKey, msgs, 24*time.Hour)
 	}
-
-	jsonResponse(w, map[string]string{"status": "ok"})
+	return nil
 }
 
 func (s *UIServer) handleDeploymentStream(w http.ResponseWriter, r *http.Request, namespace, deploymentName string) {

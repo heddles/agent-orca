@@ -131,7 +131,7 @@ func (f *fakeTriggerStore) RecordTriggerFire(ctx context.Context, id string, at 
 	return nil
 }
 
-const hookTestAgent = "support"
+var hookTestAgent = "support"
 
 type hookFixture struct {
 	t     *testing.T
@@ -156,7 +156,7 @@ func newHookFixture(t *testing.T) *hookFixture {
 		hookAgent("shared", "support", nil),
 		hookAgent("shared", "draft", nil),
 		hookAgent("shared", "tmpl", map[string]string{LabelTemplate: templateMarker}),
-		&agentorcav1alpha1.AgentDeployment{ObjectMeta: metav1.ObjectMeta{Name: "support-dep", Namespace: "shared"}, Spec: agentorcav1alpha1.AgentDeploymentSpec{AgentRef: "support"}},
+		&agentorcav1alpha1.AgentDeployment{ObjectMeta: metav1.ObjectMeta{Name: "support-dep", Namespace: "shared", Labels: map[string]string{tenancy.LabelTenantID: isoA}}, Spec: agentorcav1alpha1.AgentDeploymentSpec{AgentRef: "support"}},
 		&agentorcav1alpha1.AgentDeployment{ObjectMeta: metav1.ObjectMeta{Name: "tmpl-dep", Namespace: "shared"}, Spec: agentorcav1alpha1.AgentDeploymentSpec{AgentRef: "tmpl"}},
 	).Build()
 	f := &hookFixture{t: t, c: cl, store: newFakeTriggerStore(), audit: &fakeAudit{}, now: time.Unix(1_800_000_000, 0)}
@@ -344,7 +344,7 @@ func TestHook_StartsARunAsTheTriggerOfItsTenant(t *testing.T) {
 		t.Fatalf("runs = %d", len(runs))
 	}
 	r := runs[0]
-	if r.Namespace != "shared" || r.Spec.AgentRef != "support" || r.Spec.Input != `{"event":"opened","title":"printer on fire"}` {
+	if r.Namespace != sharedNS || r.Spec.AgentRef != hookTestAgent || r.Spec.Input != `{"event":"opened","title":"printer on fire"}` {
 		t.Errorf("run = %+v", r.Spec)
 	}
 	if r.Annotations[AnnotationCreatedBy] != "trigger:"+c.Trigger.ID || r.Labels[LabelTriggerID] != c.Trigger.ID ||
