@@ -107,6 +107,10 @@ type UIServer struct {
 	evalGates evalGateStore
 	// evalReviews overrides the review store (tests); nil means pgStore.
 	evalReviews evalReviewStore
+	// triggers overrides the webhook trigger store (tests); nil means pgStore.
+	triggers triggerStore
+	// hooks holds the state of the unauthenticated /hooks endpoint.
+	hooks hookState
 	// evalLimits are the configured limits on experiments.
 	evalLimits postgresql.EvalExperimentLimits
 	// evalCfg holds the limits on evaluation datasets and cases.
@@ -226,6 +230,7 @@ func (s *UIServer) Handler() http.Handler {
 	s.registerAgentRoutes(mux)
 	s.registerBuilderRoutes(mux)
 	s.registerEvalRoutes(mux)
+	s.registerTriggerRoutes(mux)
 	if s.oidcLogin != nil {
 		s.oidcLogin.Register(mux)
 	}
@@ -246,7 +251,8 @@ func (s *UIServer) requireAuth(next http.Handler) http.Handler {
 		"/oauth/logout":      true,
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if uiPublicPaths[r.URL.Path] {
+		// Webhooks carry no session: /hooks/{id} authenticates by signature.
+		if uiPublicPaths[r.URL.Path] || isPublicEndpoint(r.URL.Path) {
 			next.ServeHTTP(w, r)
 			return
 		}

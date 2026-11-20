@@ -106,6 +106,12 @@ func main() {
 		proxy.ServeHTTP(w, r)
 	})
 
+	// /hooks/* — webhook triggers. They carry no session: the operator checks the
+	// request's HMAC signature, so the proxy only forwards them.
+	mux.HandleFunc("/hooks/", func(w http.ResponseWriter, r *http.Request) {
+		proxy.ServeHTTP(w, r)
+	})
+
 	// /oauth/* — proxy the OIDC login flow to the operator. The Director only
 	// strips Authorization (to inject the SA token); ReverseProxy forwards
 	// Cookie/Set-Cookie by default, so the agent-orca session cookie round-trips.
