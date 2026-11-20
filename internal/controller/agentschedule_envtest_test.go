@@ -48,6 +48,7 @@ func TestAgentScheduleEnvtest(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "team-a"},
 			Spec: agentorcav1alpha1.AgentScheduleSpec{
 				AgentRef: "digest-agent", Schedule: "0 * * * *", Input: "run on {{schedule.date}}",
+				Budget: &agentorcav1alpha1.RunBudget{MaxUSD: "1.00"},
 			},
 		}
 		if mod != nil {

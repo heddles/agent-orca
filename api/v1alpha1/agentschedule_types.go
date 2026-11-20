@@ -33,7 +33,8 @@ const (
 
 // Conditions of an AgentSchedule.
 const (
-	// ScheduleConditionReady is true while the schedule can start runs.
+	// ScheduleConditionReady is true while the spec is valid: the expression and
+	// time zone parse and the name fits.
 	ScheduleConditionReady = "Ready"
 	// ScheduleConditionSuspended is true while spec.suspend is set.
 	ScheduleConditionSuspended = "Suspended"
@@ -43,7 +44,7 @@ const (
 	// schedule runs is missing or not allowed for the tenant.
 	ScheduleConditionTargetMissing = "TargetMissing"
 	// ScheduleConditionDegraded is true after too many consecutive failed runs;
-	// the schedule stops ticking until a person resumes it.
+	// the schedule stops ticking until a person resumes it (or edits it).
 	ScheduleConditionDegraded = "Degraded"
 )
 
@@ -61,6 +62,7 @@ const (
 // +kubebuilder:validation:XValidation:rule="has(self.agentRef) != has(self.workflowTemplateRef)",message="set exactly one of agentRef and workflowTemplateRef"
 // +kubebuilder:validation:XValidation:rule="!has(self.workflowTemplateRef) || (!has(self.input) && !has(self.timeout) && !has(self.budget) && !has(self.safeguards) && !has(self.result))",message="a workflowTemplateRef schedule takes parameters, not input, timeout, budget, safeguards or result: those belong to the template"
 // +kubebuilder:validation:XValidation:rule="!has(self.agentRef) || !has(self.parameters)",message="parameters apply to workflowTemplateRef only"
+// +kubebuilder:validation:XValidation:rule="!has(self.workflowTemplateRef) || !has(self.concurrencyPolicy) || self.concurrencyPolicy != 'Replace'",message="a workflow cannot be cancelled, so Replace applies to agentRef schedules only"
 // +kubebuilder:validation:XValidation:rule="!has(self.agentRef) || (has(self.input) && size(self.input) > 0)",message="an agentRef schedule needs an input"
 type AgentScheduleSpec struct {
 	// AgentRef is the Agent to run, in the schedule's namespace. Set exactly one
@@ -133,7 +135,7 @@ type AgentScheduleSpec struct {
 
 	// Budget caps each run's model spend. Copied onto every created AgentRun.
 	// An unattended run has nobody to approve a raise, so onExceeded defaults to
-	// fail and pause is refused.
+	// fail; pause is allowed with a warning.
 	// +optional
 	Budget *RunBudget `json:"budget,omitempty"`
 

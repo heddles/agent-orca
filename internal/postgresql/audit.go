@@ -32,6 +32,11 @@ const (
 	AuditDelete  = "delete"
 	AuditCancel  = "cancel"
 	AuditRequest = "request"
+	// AuditSuspend and AuditResume stop and restart an AgentSchedule. The
+	// schedule controller writes AuditSuspend, as system:agentschedule, when a
+	// spend cap stops it.
+	AuditSuspend = "suspend"
+	AuditResume  = "resume"
 	AuditApprove = "approve"
 	AuditReject  = "reject"
 	// AuditOverride is a publish that went ahead past a failing evaluation gate

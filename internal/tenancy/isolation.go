@@ -139,6 +139,26 @@ func NamespaceClaimants(tcs []agentorcav1alpha1.TenantConfig, namespace string) 
 	return ids, claims
 }
 
+// TenantConfigFor returns the TenantConfig that owns obj: the one whose ID its
+// tenant-id label names, else the only one that claims its namespace. nil means
+// none: a platform-shared object, or a namespace no tenant claims alone.
+func TenantConfigFor(tcs []agentorcav1alpha1.TenantConfig, obj metav1.Object) *agentorcav1alpha1.TenantConfig {
+	id, _ := TenantOf(obj)
+	if id == "" {
+		ids, _ := NamespaceClaimants(tcs, obj.GetNamespace())
+		if len(ids) != 1 {
+			return nil
+		}
+		id = ids[0]
+	}
+	for i := range tcs {
+		if tcs[i].DeletionTimestamp.IsZero() && TenantIDOf(&tcs[i]) == id {
+			return &tcs[i]
+		}
+	}
+	return nil
+}
+
 // TenantOf reads an object's ownership. id is empty when it has no tenant-id
 // label; platform is true for platform-shared objects.
 func TenantOf(obj metav1.Object) (id string, platform bool) {

@@ -73,7 +73,7 @@ spec:
                 description: |-
                   Budget caps each run's model spend. Copied onto every created AgentRun.
                   An unattended run has nobody to approve a raise, so onExceeded defaults to
-                  fail and pause is refused.
+                  fail; pause is allowed with a warning.
                 properties:
                   approverGroups:
                     description: |-
@@ -346,6 +346,10 @@ spec:
                 && !has(self.budget) && !has(self.safeguards) && !has(self.result))'
             - message: parameters apply to workflowTemplateRef only
               rule: '!has(self.agentRef) || !has(self.parameters)'
+            - message: a workflow cannot be cancelled, so Replace applies to agentRef
+                schedules only
+              rule: '!has(self.workflowTemplateRef) || !has(self.concurrencyPolicy)
+                || self.concurrencyPolicy != ''Replace'''
             - message: an agentRef schedule needs an input
               rule: '!has(self.agentRef) || (has(self.input) && size(self.input) >
                 0)'

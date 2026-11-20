@@ -105,6 +105,23 @@ webhooks:
         resources: ["tools"]
     failurePolicy: {{ .Values.webhook.failurePolicy | default "Fail" }}
     sideEffects: None
+  - name: vagentschedule.kb.io
+    admissionReviewVersions: ["v1"]
+    clientConfig:
+      service:
+        name: {{ include "agent-orca.fullname" . }}-webhook
+        namespace: {{ .Release.Namespace }}
+        path: /validate-agentorca-agentorca-io-v1alpha1-agentschedule
+      {{- if not .Values.webhook.certManager }}
+      caBundle: {{ $caCert | b64enc }}
+      {{- end }}
+    rules:
+      - apiGroups: ["agentorca.agentorca.io"]
+        apiVersions: ["v1alpha1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["agentschedules"]
+    failurePolicy: {{ .Values.webhook.failurePolicy | default "Fail" }}
+    sideEffects: None
   - name: vsandboxclass.kb.io
     admissionReviewVersions: ["v1"]
     clientConfig:
@@ -153,7 +170,7 @@ webhooks:
       - apiGroups: ["agentorca.agentorca.io"]
         apiVersions: ["v1alpha1"]
         operations: ["CREATE", "UPDATE"]
-        resources: ["agents", "tools", "mcpservers", "knowledgebases", "modelselectors", "modelproviders", "agentdeployments", "agentworkflows", "agentruns"]
+        resources: ["agents", "tools", "mcpservers", "knowledgebases", "modelselectors", "modelproviders", "agentdeployments", "agentworkflows", "agentruns", "agentschedules"]
     failurePolicy: {{ .Values.webhook.failurePolicy | default "Fail" }}
     sideEffects: None
   # Ownership: one writer per object, the UI or Git. failurePolicy is Fail on
@@ -203,7 +220,7 @@ webhooks:
       - apiGroups: ["agentorca.agentorca.io"]
         apiVersions: ["v1alpha1"]
         operations: ["CREATE", "UPDATE"]
-        resources: ["agents", "tools", "mcpservers", "knowledgebases", "modelselectors", "modelproviders", "agentdeployments", "agentworkflows", "agentruns"]
+        resources: ["agents", "tools", "mcpservers", "knowledgebases", "modelselectors", "modelproviders", "agentdeployments", "agentworkflows", "agentruns", "agentschedules"]
     failurePolicy: {{ .Values.webhook.failurePolicy | default "Fail" }}
     sideEffects: None
 ---

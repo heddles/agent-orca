@@ -229,6 +229,9 @@ func TestRefsOfFindsEveryKind(t *testing.T) {
 	}{
 		{"deployment", &agentorcav1alpha1.AgentDeployment{Spec: agentorcav1alpha1.AgentDeploymentSpec{AgentRef: "ag"}}, "Agent/ag"},
 		{"run", &agentorcav1alpha1.AgentRun{Spec: agentorcav1alpha1.AgentRunSpec{AgentRef: "ag"}}, "Agent/ag"},
+		{"schedule agent", &agentorcav1alpha1.AgentSchedule{Spec: agentorcav1alpha1.AgentScheduleSpec{AgentRef: "ag"}}, "Agent/ag"},
+		{"schedule template", &agentorcav1alpha1.AgentSchedule{Spec: agentorcav1alpha1.AgentScheduleSpec{WorkflowTemplateRef: "tpl"}}, "AgentWorkflow/tpl"},
+		{"schedule sink secret", &agentorcav1alpha1.AgentSchedule{Spec: agentorcav1alpha1.AgentScheduleSpec{AgentRef: "ag", Result: &agentorcav1alpha1.ScheduleResult{Egress: &agentorcav1alpha1.EgressConfig{SecretRef: &agentorcav1alpha1.SecretKeyRef{Name: "sink"}}}}}, "Secret/sink"},
 		{"workflow step", &agentorcav1alpha1.AgentWorkflow{Spec: agentorcav1alpha1.AgentWorkflowSpec{Steps: []agentorcav1alpha1.WorkflowStep{{Name: "s", AgentRef: "ag"}}}}, "Agent/ag"},
 		{"agent tool", &agentorcav1alpha1.Tool{Spec: agentorcav1alpha1.ToolSpec{AgentRef: "ag"}}, "Agent/ag"},
 		{"selector provider", &agentorcav1alpha1.ModelSelector{Spec: agentorcav1alpha1.ModelSelectorSpec{Providers: []agentorcav1alpha1.ProviderWeight{{Name: "p"}}}}, "ModelProvider/p"},
@@ -471,4 +474,39 @@ func testutilCount(t *testing.T, rule, kind string) float64 {
 		t.Fatal(err)
 	}
 	return m.GetCounter().GetValue()
+}
+
+func TestTenantConfigForAndAgentAllowed(t *testing.T) {
+	a := &agentorcav1alpha1.TenantConfig{ObjectMeta: metav1.ObjectMeta{Name: "a"}, Spec: agentorcav1alpha1.TenantConfigSpec{TenantID: "tnt_a", AllowedNamespaces: []string{"a-ns", "shared"}}}
+	b := &agentorcav1alpha1.TenantConfig{ObjectMeta: metav1.ObjectMeta{Name: "b"}, Spec: agentorcav1alpha1.TenantConfigSpec{TenantID: "tnt_b", AllowedNamespaces: []string{"b-ns", "shared"}}}
+	tcs := []agentorcav1alpha1.TenantConfig{*a, *b}
+	obj := func(ns string, kv ...string) metav1.Object {
+		o := &agentorcav1alpha1.AgentSchedule{ObjectMeta: metav1.ObjectMeta{Namespace: ns}}
+		if len(kv) == 2 {
+			o.Labels = map[string]string{kv[0]: kv[1]}
+		}
+		return o
+	}
+	for name, tc := range map[string]struct {
+		obj  metav1.Object
+		want string
+	}{
+		"by label":                   {obj("shared", LabelTenantID, "tnt_b"), "b"},
+		"by the only claimant":       {obj("a-ns"), "a"},
+		"shared namespace, no label": {obj("shared"), ""},
+		"unclaimed namespace":        {obj("nowhere"), ""},
+		"label of an unknown tenant": {obj("a-ns", LabelTenantID, "tnt_zzz"), ""},
+		"platform label falls back to the namespace claimant": {obj("a-ns", LabelScope, ScopePlatform), "a"},
+	} {
+		got := TenantConfigFor(tcs, tc.obj)
+		switch {
+		case tc.want == "" && got != nil:
+			t.Errorf("%s: got %s, want none", name, got.Name)
+		case tc.want != "" && (got == nil || got.Name != tc.want):
+			t.Errorf("%s: got %v, want %s", name, got, tc.want)
+		}
+	}
+	if !AgentAllowed(nil, "x") || !AgentAllowed([]string{}, "x") || !AgentAllowed([]string{"x"}, "x") || AgentAllowed([]string{"y"}, "x") {
+		t.Error("AgentAllowed: nil and empty allow all; a list allows only its members")
+	}
 }

@@ -544,11 +544,7 @@ func (s *ACPServer) handleAgentRoutes(w http.ResponseWriter, r *http.Request) {
 
 // tenantCanAccessAgent checks if the tenant is allowed to access the given agent.
 func tenantCanAccessAgent(tenant *TenantIdentity, name string) bool {
-	if tenant.AllowedAgents == nil || len(tenant.AllowedAgents) == 0 { //nolint:staticcheck
-
-		return true
-	}
-	return slices.Contains(tenant.AllowedAgents, name)
+	return tenancy.AgentAllowed(tenant.AllowedAgents, name)
 }
 
 // writeAgentManifest builds and writes the enriched agent manifest.

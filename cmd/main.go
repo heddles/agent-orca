@@ -60,6 +60,7 @@ import (
 	"github.com/heddles/agent-orca/internal/openshell"
 	"github.com/heddles/agent-orca/internal/podbuilder"
 	"github.com/heddles/agent-orca/internal/postgresql"
+	"github.com/heddles/agent-orca/internal/schedule"
 	"github.com/heddles/agent-orca/internal/security"
 	"github.com/heddles/agent-orca/internal/state"
 	"github.com/heddles/agent-orca/internal/tenancy"
@@ -125,6 +126,12 @@ func main() {
 		"Require a valid UIProxy Kubernetes SA token (audience 'agentorca/ui') on all UI API "+
 			"requests. Set to true in production deployments where the UIProxy pod provides the token. "+
 			"Leave false for local development (npm run dev + operator without the proxy).")
+	var scheduleMinInterval time.Duration
+	flag.DurationVar(&scheduleMinInterval, "schedule-min-interval", schedule.DefaultMinInterval,
+		"The shortest gap an AgentSchedule may have between ticks.")
+	var scheduleMaxFailures int
+	flag.IntVar(&scheduleMaxFailures, "schedule-max-consecutive-failures", schedule.DefaultMaxConsecutiveFailures,
+		"An AgentSchedule stops ticking after this many finished runs in a row failed, until it is resumed.")
 	var adminBootstrapToken string
 	flag.StringVar(&adminBootstrapToken, "admin-bootstrap-token", "",
 		"One-time bootstrap: when set to a non-empty value, the operator creates a ServiceAccount "+
@@ -506,8 +513,15 @@ func main() {
 	// Runs on a clock. Leader election (on in the chart) keeps the work to one
 	// replica; the run name derived from each tick is what actually prevents a
 	// double start if two ever run.
+	var scheduleAudit controller.ScheduleAuditor
+	if pgStore != nil {
+		scheduleAudit = pgStore.AsPlatform()
+	}
 	if err := (&controller.AgentScheduleReconciler{
 		Client: mgr.GetClient(), Scheme: mgr.GetScheme(),
+		StateStore:             stateStore,
+		Audit:                  scheduleAudit,
+		MaxConsecutiveFailures: scheduleMaxFailures,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "AgentSchedule")
 		os.Exit(1)
@@ -589,6 +603,10 @@ func main() {
 	}
 	if err := agentwebhook.SetupToolWebhook(mgr, allowedRegistries); err != nil {
 		setupLog.Error(err, "Failed to set up Tool webhook")
+		os.Exit(1)
+	}
+	if err := agentwebhook.SetupAgentScheduleWebhook(mgr, scheduleMinInterval); err != nil {
+		setupLog.Error(err, "Failed to set up AgentSchedule webhook")
 		os.Exit(1)
 	}
 	if err := agentwebhook.SetupSandboxClassWebhook(mgr); err != nil {
