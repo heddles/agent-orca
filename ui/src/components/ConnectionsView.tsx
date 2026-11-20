@@ -101,6 +101,7 @@ export function ConnectionsView() {
 export function ConnectionChip({ status }: { status: string }) {
   if (status === 'active') return <DSChip size="sm" variant="success" dot>Connected</DSChip>
   if (status === 'needs_reauth') return <DSChip size="sm" variant="warning" dot>Needs renewing</DSChip>
+  if (status === 'expired') return <DSChip size="sm" variant="warning" dot>Expired (unused), reconnect</DSChip>
   return <DSChip size="sm" variant="neutral" dot>Revoked</DSChip>
 }
 

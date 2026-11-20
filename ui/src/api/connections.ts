@@ -11,7 +11,7 @@ import { apiFetch } from './sse'
 const enc = encodeURIComponent
 const JSON_HEADERS = { 'Content-Type': 'application/json' }
 
-export type ConnectionStatus = 'active' | 'needs_reauth' | 'revoked'
+export type ConnectionStatus = 'active' | 'needs_reauth' | 'revoked' | 'expired'
 
 export interface Connection {
   namespace: string
@@ -92,9 +92,9 @@ export async function listServerConnections(namespace: string, server: string) {
 }
 
 export async function getRequiredConnections(namespace: string, agent: string) {
-  const r = await send<{ servers: RequiredServer[] | null; required: RequiredServer[] | null }>(
+  const r = await send<{ servers: RequiredServer[] | null; required: RequiredServer[] | null; ownerNeedsReconnect?: RequiredServer[] | null }>(
     `/api/me/connections/required?agent=${enc(`${namespace}/${agent}`)}`, 'GET')
-  return { servers: r.servers ?? [], required: r.required ?? [] }
+  return { servers: r.servers ?? [], required: r.required ?? [], ownerNeedsReconnect: r.ownerNeedsReconnect ?? [] }
 }
 
 /** A readable sentence for a failed call, by status. */

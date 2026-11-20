@@ -21,6 +21,17 @@ export function useRequiredConnections(namespace: string, agent: string): Requir
   return required
 }
 
+/** The maintainer-mode servers whose connection owner must reconnect; empty while loading and on any failure. */
+export function useOwnerNeedsReconnect(namespace: string, agent: string): RequiredServer[] {
+  const [servers, setServers] = useState<RequiredServer[]>([])
+  useEffect(() => {
+    let live = true
+    getRequiredConnections(namespace, agent).then((r) => { if (live) setServers(r.ownerNeedsReconnect) }).catch(() => { if (live) setServers([]) })
+    return () => { live = false }
+  }, [namespace, agent])
+  return servers
+}
+
 /** "github as alice (invoker)" for each invoker-mode server the caller is connected to. Empty on any failure. */
 export function useInvokerIdentities(namespace: string, agent: string): string[] {
   const [labels, setLabels] = useState<string[]>([])
@@ -43,15 +54,31 @@ export function useInvokerIdentities(namespace: string, agent: string): string[]
   return labels
 }
 
-export function RequiredConnections({ required, identities = [] }: { required: RequiredServer[]; identities?: string[] }) {
-  if (required.length === 0 && identities.length === 0) return null
+export function RequiredConnections({ required, identities = [], ownerNeedsReconnect = [] }: {
+  required: RequiredServer[]; identities?: string[]; ownerNeedsReconnect?: RequiredServer[]
+}) {
+  const owner = ownerNeedsReconnect.length > 0 && (
+    <p role="alert" style={{ margin: '0 0 12px', fontSize: 13, color: ds.textPrimary }}>
+      Connection owner needs to reconnect ({ownerNeedsReconnect.map((r) => r.server).join(', ')}): runs of this agent fail until they do,
+      or until it is published again by someone with a connection.
+    </p>
+  )
+  if (required.length === 0 && identities.length === 0) return owner || null
   if (required.length === 0) {
-    return <p style={{ margin: '0 0 12px', fontSize: 12, color: ds.textMuted }}>Runs use your account: {identities.join(', ')}.</p>
+    return (
+      <>
+        {owner}
+        <p style={{ margin: '0 0 12px', fontSize: 12, color: ds.textMuted }}>Runs use your account: {identities.join(', ')}.</p>
+      </>
+    )
   }
   return (
+    <>
+    {owner}
     <p role="alert" style={{ margin: '0 0 12px', fontSize: 13, color: ds.textPrimary }}>
       Connect {required.map((r) => r.server).join(', ')} to run this agent.{' '}
       <Link to={ROUTES.myConnections} style={{ color: ds.accent }}>Open Connections</Link>
     </p>
+    </>
   )
 }

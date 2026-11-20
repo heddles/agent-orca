@@ -4,9 +4,8 @@ A business user wants an agent to read **their own** GitHub, Google Drive or Sla
 way was one shared token in a Secret: one identity for everyone who uses the agent. This page describes
 the connection model that lets a person connect their own account.
 
-Status: the `maintainer` and `invoker` modes are built. The lifecycle jobs (idle expiry, offboarding hook,
-key rotation job, metrics) are not built yet; see
-[What is not built](#what-is-not-built). The design is in `docs/proposals/mcp-user-oauth.md` on the
+Status: the `maintainer` and `invoker` modes and the lifecycle (idle expiry, offboarding, key rotation,
+metrics) are built; see [Lifecycle](#lifecycle) and [What is not built](#what-is-not-built). The design is in `docs/proposals/mcp-user-oauth.md` on the
 `docs/proposals-triggers-oauth` branch.
 
 ## The model
@@ -66,8 +65,7 @@ Envelope encryption (`internal/connections/crypto.go`): each value gets a fresh 
 wrapped by a key-encryption key (KEK). The additional authenticated data binds the ciphertext to its purpose
 and its owner (tenant, user, server UID; for an app, tenant, namespace and appRef), so a row copied to
 another tenant or user does not decrypt. The row stores the `key_id` of the KEK that wrapped it, so two keys
-are valid while a rotation is in progress (`Keyring.Rewrap` re-wraps a value; the background job that runs
-it is not built yet).
+are valid while a rotation is in progress (`Keyring.Rewrap` re-wraps a value; the [rotation job](#key-rotation) runs it).
 
 The KEK comes from a Kubernetes Secret you create, named in the chart value
 `database.connectionKeySecret`:
@@ -82,7 +80,7 @@ helm upgrade ... --set database.connectionKeySecret=mcp-connection-keys \
 
 Each entry is a key: the entry name is the key id, the value is 32 random bytes as base64 or hex. The entry
 `active` names the key that encrypts new data (optional with one key). To rotate: add a second key, point
-`active` at it, re-wrap, then remove the old one. The Secret is mounted into the operator only, read-only at
+`active` at it, wait for the [rotation job](#key-rotation) to finish, then remove the old one. The Secret is mounted into the operator only, read-only at
 `/etc/agentorca/connection-keys`.
 
 **A stolen database dump is ciphertext only if the KEK is kept apart. Database access plus Secret access is
@@ -254,16 +252,73 @@ Rows in `audit_events`, kind `MCPConnection`, name = the server, summary has the
 never a token: `connect`, `disconnect` (and whether the provider revoked), `revoke` (an admin removing
 another user's), `reauth_required` (a refresh failed with `invalid_grant`; written as
 `system:mcp-connections`), `app_register`, `app_rotate`. A change of `connectionMode` is an ordinary
-MCPServer `update` row. Use is not audited per call: `last_used_at` is updated at most every 5 minutes.
+MCPServer `update` row. Use is not audited per call: `last_used_at` is updated at most every hour.
+The lifecycle adds `expire` (an idle connection expired; written as `system:mcp-connections`) and a `revoke` row
+for each connection of an offboarded user plus one for the sweep.
+
+## Lifecycle
+
+The operator runs one pass every ten minutes on the elected leader (`leader-elect`); nothing runs with leader
+election off except on the single replica that has it.
+
+### Idle expiry
+
+A connection whose last use (or creation, when never used) is older than `operator.connections.idleExpiryDays`
+(default 90; env `CONNECTION_IDLE_EXPIRY_DAYS`; 0 turns it off) is expired: the row is locked and its last use
+checked again (a use that raced the sweep keeps it), the tokens are wiped and the status becomes `expired`
+(migration `0021`), then the provider is asked to revoke the refresh token (RFC 7009). A failed or missing
+revocation, or a server that was deleted or has `revokeOnDisconnect: false`, does not stop the expiry; it is
+logged, counted and audited (`expire`, with the revocation outcome). The row stays so the owner sees "Expired
+(unused), reconnect" on Connections; connecting again replaces it. `last_used_at` is written when a token is
+issued, at most once an hour per connection.
+
+### Offboarding
+
+The operator has no signal that a user left, so offboarding is an admin action:
+`DELETE /api/connections?user=<id>` deletes every connection of that user in the admin's tenant, asks each
+provider to revoke, and is audited per connection and once for the sweep. Single connections are removed with
+`DELETE /api/connections/{ns}/{server}?user=<id>`. Agents the user published keep working only if their
+connections are live: a maintainer-mode agent whose publisher has none fails with `connection_required` and shows
+"Connection owner needs to reconnect" until someone with a connection republishes it. (`aoctl` has no connection
+commands, so there is none for this.)
+
+### Key rotation
+
+The leader re-wraps every row not under the active key: connection tokens (refresh and access together, same AAD)
+and OAuth app client secrets. It works in batches of 100 by id and holds one row lock at a time; the work list is
+"`key_id` is not the active key", so an interrupted pass resumes by itself. A row a refresh holds is skipped
+(`FOR UPDATE SKIP LOCKED`); the refresh seals under the active key itself, so nothing is lost and nothing is
+overwritten. A row that cannot be re-wrapped (a missing key, a corrupt blob) is logged by row id and counted, and
+the pass goes on; it is retried each pass. An access token that cannot be opened is dropped (the next use
+refreshes). Pending authorization flows live five minutes and are not rotated. Remove the old key only when
+`agentorca_mcp_key_rotation_pending_rows` is 0 and `agentorca_mcp_connections` shows no connection you still
+need under it. Logs carry the active key id, counts and row ids, never key material or tokens.
+
+### Metrics
+
+On the operator's metrics endpoint. No label carries a user, a server or a tenant.
+
+| Metric | Meaning |
+|---|---|
+| `agentorca_mcp_connections{status}` | Connections by status: `active`, `needs_reauth`, `expired` (read from the database on scrape, cached 30 s, so any replica answers) |
+| `agentorca_mcp_token_refresh_failures_total{reason}` | Failed refreshes: `invalid_grant` (the connection now needs renewing), `provider_error` (the provider refused for another reason), `unavailable` (the provider or the database could not be reached) |
+| `agentorca_mcp_connections_expired_total{revocation}` | Idle expiries, by `revoked`, `not_revoked` or `failed` provider revocation |
+| `agentorca_mcp_key_rotation_rows_total{result}` | Rows re-wrapped (`rewrapped`) or not (`failed`) |
+| `agentorca_mcp_key_rotation_pending_rows` | Rows still under a non-active key after the last pass (failures and rows skipped as busy) |
+
+An alert on `agentorca_mcp_token_refresh_failures_total{reason="invalid_grant"}` rising, or on
+`agentorca_mcp_connections{status="needs_reauth"}` staying high, finds a provider that revoked an app.
 
 ## Failure behaviour
 
 | Situation | What happens |
 |---|---|
 | The maintainer never connected, or the server was recreated | The tool call fails with `connection_required`. |
-| A refresh fails with `invalid_grant` | The status becomes `needs_reauth` and the call fails with a message the model can relay without secrets ("the connection needs to be renewed by its owner"). The owner sees "Needs renewing" on Connections. |
+| A refresh fails with `invalid_grant` | The status becomes `needs_reauth` and the call fails with a message the model can relay without secrets ("the connection was revoked or rejected by the provider; its owner must reconnect the account in Connections"). The owner sees "Needs renewing" on Connections. Concurrent runs refresh once: the row is locked, so a rotating refresh token is spent once and the new one is stored. |
 | The maintainer disconnected | `connection_required`. The run never falls back to `shared` or to another user. |
 | Invoker mode, the user has not connected, or the run has no person behind it | `connection_required`; see [Invoker mode](#invoker-mode) for the pause and the connect card. |
+| The connection sat unused for the idle period | Status `expired`, tokens wiped. The call fails with `needs_reauth` and "the connection expired after a long period without use; its owner must reconnect the account in Connections". |
+| The agent's maintainer has no live connection (left, expired, needs renewing) | Runs fail as above; the agent page says "Connection owner needs to reconnect" (`ownerNeedsReconnect` on `GET /api/me/connections/required`). Republish the agent as someone with a connection to change the owner. |
 | The provider is down | The call fails with `connection_unavailable`; the status does not change. |
 
 When no token can be obtained while the run's router starts, that server's tools are not discovered (the
@@ -273,7 +328,7 @@ router logs a warning with the code, no secret), so the model sees no tools from
 
 See `internal/apiserver/schemas/openapi-ui.yaml`, tag `connections`: `GET /api/connections`,
 `POST /api/connections/{ns}/{server}/start`, `GET /api/connections/callback`,
-`DELETE /api/connections/{ns}/{server}[?user=]`, `GET /api/mcpservers/{ns}/{name}/connections`,
+`DELETE /api/connections/{ns}/{server}[?user=]`, `DELETE /api/connections?user=` (offboarding), `GET /api/mcpservers/{ns}/{name}/connections`,
 `GET|PUT /api/mcp-oauth-apps/{ns}/{server}`, `GET /api/me/connections/required?agent={ns}/{name}`, and the
 internal `POST /agentrun/{ns}/{run}/mcp-token`. `GET /api/mcpservers` now reports `connectionMode` and
 `appRef`.
@@ -286,8 +341,5 @@ internal `POST /agentrun/{ns}/{run}/mcp-token`. `GET /api/mcpservers` now report
   error; the run form blocks a user who has not connected, but a scheduled or trigger run simply lacks the
   tools. The MCP tool's side-effect class is not carried through discovery, so the approval default
   applies to the whole server rather than to its write tools only.
-* **Lifecycle** (C5): the 90-day idle expiry, an offboarding hook, the key-rotation job, the
-  `agentorca_mcp_connections` and refresh-failure metrics. There is no user-lifecycle signal in the operator
-  today, so offboarding is manual: an admin revokes the user's connections.
 * A KMS-backed key, dynamic client registration, a per-app switch for the resource indicator, a provider
   account lookup for the account label, `MCPOAuthApp` as a CRD for GitOps.
