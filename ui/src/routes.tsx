@@ -11,6 +11,7 @@
  *   /runs/live/:ns/:name                      a live run
  *   /runs/history/:ns/:name                   an archived run
  *   /approvals                                Approvals
+ *   /connections                              your connected accounts for MCP servers (and the OAuth callback landing page)
  *   /build                                    my agents, with Create and Use a template
  *   /build/new, /build/:ns/:name              the agent builder
  *   /evaluate, /evaluate/:id                  evaluation datasets, and one with its cases and graders
@@ -45,6 +46,7 @@ import { TemplateDetail, TemplatesGallery } from './components/TemplatesGallery'
 import { ApprovalsView } from './components/ApprovalsView'
 import { FleetView } from './components/FleetView'
 import { SchedulesView } from './components/SchedulesView'
+import { ConnectionsView } from './components/ConnectionsView'
 import { RoutingInsightsView } from './components/RoutingInsightsView'
 import { AgentBuilder } from './components/AgentBuilder'
 import { BuildHome } from './components/BuildHome'
@@ -461,6 +463,7 @@ export function AppRoutes() {
         </Route>
 
         <Route path="approvals" element={<ApprovalsRoute />} />
+        <Route path="connections" element={<div style={{ flex: 1, overflowY: 'auto' }}><ConnectionsView /></div>} />
 
         <Route path="build" element={<BuildGuard />}>
           <Route index element={<BuildHome />} />

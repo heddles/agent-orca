@@ -39,6 +39,8 @@ tags:
     description: Audit trail of changes (admin)
   - name: evals
     description: Evaluation datasets and cases (PostgreSQL store; 503 without it)
+  - name: connections
+    description: Per-user OAuth connections to MCP servers (PostgreSQL store and a connection key; 503 without them). Responses never carry a token, a client secret or an authorization code
   - name: triggers
     description: Webhook triggers that start a run of an agent from outside (PostgreSQL store; 503 without it)
   - name: widget
@@ -2474,6 +2476,98 @@ paths:
     get:
       tags: [deployments]
       summary: Fetch conversation history for a session
+  /api/connections:
+    get:
+      tags: [connections]
+      summary: The signed-in user's own connections (viewer). Needs a user identity
+      responses:
+        '200': { description: "array of {namespace, server, scopes, accountLabel, status (active, needs_reauth, revoked), lastUsedAt, createdAt}" }
+        '403': { description: no signed-in user }
+        '503': { description: no database or no connection key }
+  /api/connections/{namespace}/{server}/start:
+    post:
+      tags: [connections]
+      summary: Begin the authorization-code flow with PKCE for a per-user MCP server (runner)
+      description: Sets a single-use state cookie (__Host- prefix when the operator serves TLS) and stores the pending flow for 5 minutes. The browser is sent to authorizeUrl.
+      parameters:
+        - { in: path, name: namespace, required: true, schema: { type: string } }
+        - { in: path, name: server, required: true, schema: { type: string } }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, properties: { scopes: { type: array, items: { type: string } } } }
+      responses:
+        '200': { description: "{authorizeUrl}" }
+        '404': { description: not found, or not the caller's tenant's }
+        '409': { description: the server is not per-user, or an admin has not registered the OAuth app }
+  /api/connections/callback:
+    get:
+      tags: [connections]
+      summary: The redirect target registered in each OAuth app; completes the exchange and redirects to /connections?status=
+      description: Needs the session. Checks the state (single use, stored in PostgreSQL), the cookie, that the session is the user and tenant the flow was minted for, the server UID and the RFC 9207 iss. status is connected, denied, expired, scopes or failed.
+      parameters:
+        - { in: query, name: code, schema: { type: string } }
+        - { in: query, name: state, schema: { type: string } }
+        - { in: query, name: iss, schema: { type: string } }
+        - { in: query, name: error, schema: { type: string } }
+      responses:
+        '302': { description: redirect to the UI }
+  /api/connections/{namespace}/{server}:
+    delete:
+      tags: [connections]
+      summary: Disconnect your own connection (runner); an admin revokes another user's with ?user=
+      parameters:
+        - { in: path, name: namespace, required: true, schema: { type: string } }
+        - { in: path, name: server, required: true, schema: { type: string } }
+        - { in: query, name: user, schema: { type: string } }
+      responses:
+        '204': { description: deleted; the provider is asked to revoke the token (RFC 7009) unless revokeOnDisconnect is false }
+  /api/mcpservers/{namespace}/{name}/connections:
+    get:
+      tags: [connections]
+      summary: Who is connected to a server and in what state, with counts (admin). Never a token
+      parameters:
+        - { in: path, name: namespace, required: true, schema: { type: string } }
+        - { in: path, name: name, required: true, schema: { type: string } }
+      responses:
+        '200': { description: "{connections: [{userId, status, scopes, lastUsedAt, createdAt}], counts}" }
+  /api/mcp-oauth-apps/{namespace}/{server}:
+    get:
+      tags: [connections]
+      summary: The registered OAuth app of a per-user server, without its secret (admin)
+      parameters:
+        - { in: path, name: namespace, required: true, schema: { type: string } }
+        - { in: path, name: server, required: true, schema: { type: string } }
+      responses:
+        '200': { description: "{registered, clientId, hasClientSecret, redirectUri, scopesAllowed}" }
+    put:
+      tags: [connections]
+      summary: Register or rotate the OAuth app (admin). The client secret is write-only; empty keeps the stored one
+      parameters:
+        - { in: path, name: namespace, required: true, schema: { type: string } }
+        - { in: path, name: server, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [clientId]
+              properties:
+                clientId: { type: string }
+                clientSecret: { type: string, writeOnly: true }
+                scopesAllowed: { type: array, items: { type: string } }
+      responses:
+        '200': { description: the app view }
+  /api/me/connections/required:
+    get:
+      tags: [connections]
+      summary: The per-user servers an agent uses and whether the caller is connected; required lists those that need the caller's own account (runner)
+      parameters:
+        - { in: query, name: agent, required: true, schema: { type: string }, description: "namespace/name" }
+      responses:
+        '200': { description: "{servers: [{namespace, server, mode, connected}], required: [...]}" }
   /api/triggers:
     get:
       tags: [triggers]

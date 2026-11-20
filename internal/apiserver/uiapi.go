@@ -113,6 +113,8 @@ type UIServer struct {
 	triggers triggerStore
 	// hooks holds the state of the unauthenticated /hooks endpoint.
 	hooks hookState
+	// conns serves the per-user MCP connection endpoints; nil means the feature is off.
+	conns *connectionsAPI
 	// widgetKeys overrides the widget key store (tests); nil means pgStore.
 	widgetKeys widgetKeyStore
 	// widget holds the state of the public /widget endpoints.
@@ -242,6 +244,7 @@ func (s *UIServer) Handler() http.Handler {
 	s.registerEvalRoutes(mux)
 	s.registerTriggerRoutes(mux)
 	s.registerScheduleRoutes(mux)
+	s.registerConnectionRoutes(mux)
 	s.registerWidgetKeyRoutes(mux)
 	if s.oidcLogin != nil {
 		s.oidcLogin.Register(mux)
@@ -1184,6 +1187,10 @@ func (s *UIServer) handleListMCPServers(w http.ResponseWriter, r *http.Request) 
 		Tools         []mcpToolEntry `json:"tools,omitempty"`
 		AllowApps     bool           `json:"allowApps"`
 		Ownership     ownershipView  `json:"ownership"`
+		// ConnectionMode is shared, maintainer or empty (no OAuth). AppRef names the
+		// registered OAuth app of a per-user server.
+		ConnectionMode string `json:"connectionMode,omitempty"`
+		AppRef         string `json:"appRef,omitempty"`
 	}
 	out := make([]summary, 0, len(list.Items))
 	for _, m := range list.Items {
@@ -1202,7 +1209,7 @@ func (s *UIServer) handleListMCPServers(w http.ResponseWriter, r *http.Request) 
 			}
 			tools = append(tools, entry)
 		}
-		out = append(out, summary{
+		entry := summary{
 			Name:          m.Name,
 			Namespace:     m.Namespace,
 			Transport:     m.Spec.Transport,
@@ -1214,7 +1221,11 @@ func (s *UIServer) handleListMCPServers(w http.ResponseWriter, r *http.Request) 
 			Tools:         tools,
 			AllowApps:     m.Spec.AllowApps,
 			Ownership:     s.ownershipOf(r.Context(), &m, "MCPServer"),
-		})
+		}
+		if m.Spec.Auth != nil && m.Spec.Auth.OAuth != nil {
+			entry.ConnectionMode, entry.AppRef = m.Spec.Auth.OAuth.Mode(), m.Spec.Auth.OAuth.AppRef
+		}
+		out = append(out, entry)
 	}
 	jsonResponse(w, out)
 }

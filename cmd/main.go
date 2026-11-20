@@ -53,10 +53,12 @@ import (
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
 	"github.com/heddles/agent-orca/internal/acpfs"
 	"github.com/heddles/agent-orca/internal/apiserver"
+	"github.com/heddles/agent-orca/internal/connections"
 	"github.com/heddles/agent-orca/internal/controller"
 	"github.com/heddles/agent-orca/internal/evals/judge"
 	evalrunner "github.com/heddles/agent-orca/internal/evals/runner"
 	"github.com/heddles/agent-orca/internal/githubapp"
+	"github.com/heddles/agent-orca/internal/oauth"
 	"github.com/heddles/agent-orca/internal/openshell"
 	"github.com/heddles/agent-orca/internal/podbuilder"
 	"github.com/heddles/agent-orca/internal/postgresql"
@@ -867,6 +869,7 @@ func main() {
 	if uiOIDC != nil {
 		uiAPI.SetOIDCLogin(uiOIDC)
 	}
+	setupConnections(uiAPI, pgStore, oidcCookieSecure)
 	go func() {
 		srv := newHTTPServer(":8083", uiAPI.Handler())
 		setupLog.Info("Starting UI API server", "addr", srv.Addr, "tls", internalAPICert != "")
@@ -1099,4 +1102,39 @@ func evalResultRetentionDaysFromEnv() int {
 		return n
 	}
 	return 90
+}
+
+// setupConnections turns on per-user MCP OAuth connections (docs/mcp-oauth.md).
+// It needs the PostgreSQL store and a key-encryption key: CONNECTION_KEY_DIR is a
+// directory mounted from the Secret named by database.connectionKeySecret. Either
+// missing leaves the feature off and the endpoints answer 503.
+func setupConnections(uiAPI *apiserver.UIServer, pgStore *postgresql.Store, cookieSecure bool) {
+	dir := os.Getenv("CONNECTION_KEY_DIR")
+	if dir == "" {
+		setupLog.Info("per-user MCP connections are off: no connection key configured (database.connectionKeySecret)")
+		return
+	}
+	if pgStore == nil {
+		setupLog.Info("per-user MCP connections are off: they need the PostgreSQL store")
+		return
+	}
+	keys, err := connections.LoadKeyringDir(dir)
+	if err != nil {
+		setupLog.Error(err, "Per-user MCP connections are off: cannot load the connection keys")
+		return
+	}
+	allowInsecure, _ := strconv.ParseBool(os.Getenv("CONNECTION_ALLOW_INSECURE_OAUTH"))
+	svc := &connections.Service{
+		Store:         pgStore.AsPlatform(),
+		Keys:          keys,
+		OAuth:         oauth.New(&http.Client{Timeout: 15 * time.Second}, nil),
+		RedirectURI:   os.Getenv("CONNECTION_REDIRECT_URI"),
+		AllowInsecure: allowInsecure,
+	}
+	if svc.RedirectURI == "" {
+		setupLog.Info("per-user MCP connections are off: set operator.connections.redirectURI (the UI callback URL)")
+		return
+	}
+	uiAPI.SetConnections(svc, pgStore, cookieSecure)
+	setupLog.Info("Per-user MCP connections enabled", "activeKey", keys.ActiveID(), "redirectURI", svc.RedirectURI)
 }

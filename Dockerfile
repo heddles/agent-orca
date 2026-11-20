@@ -22,6 +22,7 @@ COPY cmd/*.go cmd/
 COPY internal/acpfs/ internal/acpfs/
 COPY internal/apiserver/ internal/apiserver/
 COPY internal/checkpoint/ internal/checkpoint/
+COPY internal/connections/ internal/connections/
 COPY internal/controller/ internal/controller/
 COPY internal/egress/ internal/egress/
 COPY internal/evals/calibrate/ internal/evals/calibrate/

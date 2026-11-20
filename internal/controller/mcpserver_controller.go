@@ -157,7 +157,14 @@ func (r *MCPServerReconciler) validate(server *agentorcav1alpha1.MCPServer) (boo
 		if server.Spec.Auth.BearerToken != nil || server.Spec.Auth.APIKey != nil || len(server.Spec.Auth.Headers) > 0 {
 			return false, "spec.auth.oauth is mutually exclusive with spec.auth.bearerToken/apiKey/headers"
 		}
-		if server.Spec.Auth.OAuth.Credentials.Name == "" {
+		if o := server.Spec.Auth.OAuth; o.PerUser() {
+			if o.AppRef == "" {
+				return false, "spec.auth.oauth.appRef is required for a per-user connection mode"
+			}
+			if o.Credentials != nil || o.RefreshTokenSecretRef != nil || o.AccessTokenSecretRef != nil {
+				return false, "a per-user connection mode takes no credentials, refreshTokenSecretRef or accessTokenSecretRef"
+			}
+		} else if o.Credentials == nil || o.Credentials.Name == "" {
 			return false, "spec.auth.oauth.credentials is required when spec.auth.oauth is set"
 		}
 		if server.Spec.Transport != "http" && server.Spec.Transport != "sse" {

@@ -976,7 +976,7 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 						})
 					}
 				}
-				if tool.Spec.MCPConfig.Auth != nil && tool.Spec.MCPConfig.Auth.OAuth != nil {
+				if tool.Spec.MCPConfig.Auth != nil && tool.Spec.MCPConfig.Auth.OAuth != nil && tool.Spec.MCPConfig.Auth.OAuth.Credentials != nil {
 					o := tool.Spec.MCPConfig.Auth.OAuth
 					mcpCfg.OAuth = &mcp.OAuthConfig{
 						CredentialsDir: podbuilder.OAuthCredsMountDir(toolName, o.Credentials.Name),
