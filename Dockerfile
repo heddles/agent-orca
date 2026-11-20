@@ -43,6 +43,7 @@ COPY internal/postgresql/ internal/postgresql/
 COPY internal/quota/ internal/quota/
 COPY internal/rag/*.go internal/rag/
 COPY internal/ratelimit/ internal/ratelimit/
+COPY internal/redact/ internal/redact/
 COPY internal/router/ internal/router/
 COPY internal/routingbench/ internal/routingbench/
 COPY internal/schedule/ internal/schedule/

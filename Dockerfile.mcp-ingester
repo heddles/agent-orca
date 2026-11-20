@@ -21,6 +21,7 @@ COPY internal/oauth/ internal/oauth/
 COPY internal/podbuilder/ internal/podbuilder/
 COPY internal/rag/ internal/rag/
 COPY internal/ratelimit/ internal/ratelimit/
+COPY internal/redact/ internal/redact/
 COPY internal/security/*.go internal/security/
 COPY internal/tenancy/ internal/tenancy/
 # END generated go-deps

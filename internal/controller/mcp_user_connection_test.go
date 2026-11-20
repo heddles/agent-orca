@@ -1,0 +1,36 @@
+/*
+Copyright 2026.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package controller
+
+import (
+	"testing"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
+)
+
+func TestMCPServerNameOf(t *testing.T) {
+	owned := &agentorcav1alpha1.Tool{ObjectMeta: metav1.ObjectMeta{Name: "github-search",
+		OwnerReferences: []metav1.OwnerReference{{Kind: "MCPServer", Name: "github"}}}}
+	if got := mcpServerNameOf(owned); got != "github" {
+		t.Errorf("owned tool = %q", got)
+	}
+	if got := mcpServerNameOf(&agentorcav1alpha1.Tool{ObjectMeta: metav1.ObjectMeta{Name: "hand-made"}}); got != "hand-made" {
+		t.Errorf("unowned tool = %q", got)
+	}
+}

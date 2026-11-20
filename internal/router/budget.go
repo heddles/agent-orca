@@ -37,6 +37,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/heddles/agent-orca/internal/mcp"
+	"github.com/heddles/agent-orca/internal/redact"
 )
 
 // traceEventTypeBudget is the trace event for budget state changes.
@@ -311,3 +314,61 @@ func (r *Router) budgetPollInterval() time.Duration {
 
 // formatUSD renders an amount with the precision model costs need.
 func formatUSD(v float64) string { return strconv.FormatFloat(v, 'f', 4, 64) }
+
+// mcpTokenTimeout bounds the operator's token call: it may refresh the access
+// token at the provider.
+const mcpTokenTimeout = 25 * time.Second
+
+// MCPToken asks the operator for the short-lived access token of a per-user MCP
+// connection (mcp.TokenSource). The operator decides whose connection it is from
+// the AgentRun object, never from this request, so the body names only the server.
+// A refusal comes back as an *mcp.ConnectionError with a code and a message that
+// carries no credential.
+func (r *Router) MCPToken(ctx context.Context, server string) (mcp.Token, error) {
+	if r.cfg.OperatorAPIURL == "" {
+		return mcp.Token{}, &mcp.ConnectionError{Code: "connection_unavailable", Message: "no operator API is configured for this run"}
+	}
+	saToken, err := os.ReadFile(r.cfg.SATokenFile)
+	if err != nil {
+		return mcp.Token{}, &mcp.ConnectionError{Code: "connection_unavailable", Message: "the run has no service account token"}
+	}
+	body, _ := json.Marshal(map[string]string{"server": server})
+	r.mu.Lock()
+	ns, run := r.cfg.RunNamespace, r.cfg.RunName
+	r.mu.Unlock()
+	ctx, cancel := context.WithTimeout(ctx, mcpTokenTimeout)
+	defer cancel()
+	url := fmt.Sprintf("%s/agentrun/%s/%s/mcp-token", r.cfg.OperatorAPIURL, ns, run)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return mcp.Token{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(saToken)))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return mcp.Token{}, &mcp.ConnectionError{Code: "connection_unavailable", Message: "the operator could not be reached to get the connection token"}
+	}
+	defer func() { _ = resp.Body.Close() }()
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+	if resp.StatusCode != http.StatusOK {
+		var e struct {
+			Error   string `json:"error"`
+			Message string `json:"message"`
+		}
+		_ = json.Unmarshal(data, &e)
+		if e.Error == "" {
+			e.Error, e.Message = "connection_unavailable", fmt.Sprintf("the operator refused the connection token (HTTP %d)", resp.StatusCode)
+		}
+		return mcp.Token{}, &mcp.ConnectionError{Code: e.Error, Message: redact.String(e.Message)}
+	}
+	var out struct {
+		AccessToken string    `json:"accessToken"`
+		ExpiresAt   time.Time `json:"expiresAt"`
+	}
+	if err := json.Unmarshal(data, &out); err != nil || out.AccessToken == "" {
+		return mcp.Token{}, &mcp.ConnectionError{Code: "connection_unavailable", Message: "the operator sent an unreadable connection token"}
+	}
+	redact.Register(out.AccessToken)
+	return mcp.Token{Value: out.AccessToken, ExpiresAt: out.ExpiresAt}, nil
+}

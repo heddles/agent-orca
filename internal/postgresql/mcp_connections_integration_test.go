@@ -21,6 +21,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 )
@@ -222,3 +223,38 @@ func TestMCPOAuthAppsAndFlowsAgainstPostgres(t *testing.T) {
 
 // testFlowTTL is a lifetime that outlasts a test.
 const testFlowTTL = 5 * time.Minute
+
+// Two callers that both find the access token expired must not both refresh: the
+// row lock makes the second wait and then see the first's update.
+func TestMCPConnectionLockSerializesRefreshAgainstPostgres(t *testing.T) {
+	s, _ := appStore(t)
+	a := WithTenant(context.Background(), tenantA)
+	if _, err := s.UpsertConnection(a, sampleConn("alice")); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	refreshes := 0
+	var wg sync.WaitGroup
+	for range 6 {
+		wg.Go(func() {
+			err := s.WithConnectionLock(a, "alice", "team", "github", func(cur MCPConnection) (*MCPConnection, error) {
+				if bytes.Equal(cur.AccessTokenEnc, []byte("refreshed")) {
+					return nil, nil // somebody else already refreshed
+				}
+				time.Sleep(50 * time.Millisecond) // the provider call
+				mu.Lock()
+				refreshes++
+				mu.Unlock()
+				cur.AccessTokenEnc = []byte("refreshed")
+				return &cur, nil
+			})
+			if err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	wg.Wait()
+	if refreshes != 1 {
+		t.Errorf("refreshes = %d, want 1", refreshes)
+	}
+}

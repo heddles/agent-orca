@@ -74,6 +74,9 @@ type Server struct {
 	routingEvents RoutingEventStore
 	// shadow stores shadow benchmarking results and budget leases (shadow_api.go).
 	shadow ShadowStore
+	// mcpTokens hands a run's router the short-lived access token of a per-user MCP
+	// connection (mcp_token_api.go). nil answers 503.
+	mcpTokens mcpTokenBroker
 }
 
 // New creates a new API server.
@@ -133,6 +136,8 @@ func (s *Server) handleAgentRun(w http.ResponseWriter, r *http.Request) { //noli
 		s.requestToolApproval(w, r, caller, namespace, parts[1])
 	case r.Method == http.MethodGet && len(parts) == 4 && parts[2] == "tool-approval":
 		s.getToolApproval(w, r, caller, namespace, parts[1], parts[3])
+	case r.Method == http.MethodPost && len(parts) == 3 && parts[2] == "mcp-token":
+		s.issueMCPToken(w, r, caller, namespace, parts[1])
 	case r.Method == http.MethodPost && len(parts) == 3 && parts[2] == "budget":
 		s.reportBudget(w, r, caller, namespace, parts[1])
 	case r.Method == http.MethodGet && len(parts) == 3 && parts[2] == "budget":

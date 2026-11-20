@@ -99,6 +99,9 @@ func (s *UIServer) publishAgent(w http.ResponseWriter, r *http.Request, ns, name
 	if !s.gatePublish(w, r, &agent, req.OverrideGate) {
 		return
 	}
+	if !s.gateMaintainerConnections(w, r, &agent) {
+		return
+	}
 	existing, err := s.deploymentsOf(r, ns, name)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -169,6 +172,9 @@ func (s *UIServer) createDeployment(w http.ResponseWriter, r *http.Request, agen
 		writeAPIError(w, "creating deployment", err)
 		return
 	}
+	if !s.recordPublisher(w, r, agent) {
+		return
+	}
 	s.recordWrite(w, r, u, auditEventFor(postgresql.AuditCreate, kindAgentDeployment, u.GetNamespace(), u.GetName(), u.GetResourceVersion(),
 		fmt.Sprintf("published Agent %s/%s as AgentDeployment %s", agent.Namespace, agent.Name, u.GetName())))
 	w.WriteHeader(http.StatusCreated)
@@ -192,6 +198,9 @@ func (s *UIServer) updateDeployment(w http.ResponseWriter, r *http.Request, dep 
 	stampUI(r, dep)
 	if err := s.crdClient.Patch(r.Context(), dep, client.MergeFrom(orig), client.FieldOwner(tenancy.FieldManagerUI)); err != nil {
 		writeAPIError(w, "updating deployment", err)
+		return
+	}
+	if !s.recordPublisher(w, r, agent) {
 		return
 	}
 	s.recordWrite(w, r, dep, auditEventFor(postgresql.AuditUpdate, kindAgentDeployment, dep.Namespace, dep.Name, dep.ResourceVersion,

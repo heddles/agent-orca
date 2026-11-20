@@ -715,6 +715,12 @@ func main() {
 
 	// Start the internal API server (port 8082) for agent-to-agent communication.
 	internalAPI := apiserver.New(k8sClient, mgr.GetClient())
+	// Per-user MCP connections (docs/mcp-oauth.md): the service behind the UI
+	// endpoints and the router-facing token endpoint. nil leaves both off.
+	connService := newConnectionService(pgStore)
+	if connService != nil {
+		internalAPI.WithMCPTokens(connService)
+	}
 	// Tool-call approvals (Tool.spec.sideEffect) need the PostgreSQL store; without
 	// it routers asking for one get 503 and the gated tool call is refused.
 	if pgStore != nil {
@@ -869,7 +875,9 @@ func main() {
 	if uiOIDC != nil {
 		uiAPI.SetOIDCLogin(uiOIDC)
 	}
-	setupConnections(uiAPI, pgStore, oidcCookieSecure)
+	if connService != nil {
+		uiAPI.SetConnections(connService, pgStore, oidcCookieSecure)
+	}
 	go func() {
 		srv := newHTTPServer(":8083", uiAPI.Handler())
 		setupLog.Info("Starting UI API server", "addr", srv.Addr, "tls", internalAPICert != "")
@@ -1104,37 +1112,51 @@ func evalResultRetentionDaysFromEnv() int {
 	return 90
 }
 
-// setupConnections turns on per-user MCP OAuth connections (docs/mcp-oauth.md).
-// It needs the PostgreSQL store and a key-encryption key: CONNECTION_KEY_DIR is a
-// directory mounted from the Secret named by database.connectionKeySecret. Either
-// missing leaves the feature off and the endpoints answer 503.
-func setupConnections(uiAPI *apiserver.UIServer, pgStore *postgresql.Store, cookieSecure bool) {
+// newConnectionService builds the per-user MCP connection service
+// (docs/mcp-oauth.md). It needs the PostgreSQL store and a key-encryption key:
+// CONNECTION_KEY_DIR is a directory mounted from the Secret named by
+// database.connectionKeySecret. Anything missing leaves the feature off: the
+// endpoints answer 503 and per-user servers get no token.
+func newConnectionService(pgStore *postgresql.Store) *connections.Service {
 	dir := os.Getenv("CONNECTION_KEY_DIR")
 	if dir == "" {
 		setupLog.Info("per-user MCP connections are off: no connection key configured (database.connectionKeySecret)")
-		return
+		return nil
 	}
 	if pgStore == nil {
 		setupLog.Info("per-user MCP connections are off: they need the PostgreSQL store")
-		return
+		return nil
 	}
 	keys, err := connections.LoadKeyringDir(dir)
 	if err != nil {
 		setupLog.Error(err, "Per-user MCP connections are off: cannot load the connection keys")
-		return
+		return nil
+	}
+	redirect := os.Getenv("CONNECTION_REDIRECT_URI")
+	if redirect == "" {
+		setupLog.Info("per-user MCP connections are off: set operator.connections.redirectURI (the UI callback URL)")
+		return nil
 	}
 	allowInsecure, _ := strconv.ParseBool(os.Getenv("CONNECTION_ALLOW_INSECURE_OAUTH"))
+	platform := pgStore.AsPlatform()
 	svc := &connections.Service{
-		Store:         pgStore.AsPlatform(),
+		Store:         platform,
 		Keys:          keys,
 		OAuth:         oauth.New(&http.Client{Timeout: 15 * time.Second}, nil),
-		RedirectURI:   os.Getenv("CONNECTION_REDIRECT_URI"),
+		RedirectURI:   redirect,
 		AllowInsecure: allowInsecure,
 	}
-	if svc.RedirectURI == "" {
-		setupLog.Info("per-user MCP connections are off: set operator.connections.redirectURI (the UI callback URL)")
-		return
+	// A refresh that fails with invalid_grant is audited as the system.
+	svc.OnReauth = func(ctx context.Context, c postgresql.MCPConnection) {
+		_, aerr := platform.AppendAudit(postgresql.WithPlatform(ctx), postgresql.AuditEvent{
+			TenantID: c.TenantID, UserID: "system:mcp-connections", Action: postgresql.AuditReauth,
+			Kind: postgresql.AuditKindMCPConnection, Namespace: c.ServerNS, Name: c.ServerName,
+			Summary: "refresh failed with invalid_grant for user " + c.UserID + ": the connection needs to be renewed",
+		})
+		if aerr != nil {
+			setupLog.Error(aerr, "Could not audit a connection that needs renewing", "server", c.ServerNS+"/"+c.ServerName)
+		}
 	}
-	uiAPI.SetConnections(svc, pgStore, cookieSecure)
-	setupLog.Info("Per-user MCP connections enabled", "activeKey", keys.ActiveID(), "redirectURI", svc.RedirectURI)
+	setupLog.Info("Per-user MCP connections enabled", "activeKey", keys.ActiveID(), "redirectURI", redirect)
+	return svc
 }

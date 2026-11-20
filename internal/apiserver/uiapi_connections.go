@@ -27,6 +27,7 @@ import (
 	"strings"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
@@ -661,4 +662,78 @@ func (s *UIServer) agentMCPServers(ctx context.Context, agent *agentorcav1alpha1
 	}
 	slices.SortFunc(out, func(a, b *agentorcav1alpha1.MCPServer) int { return strings.Compare(a.Name, b.Name) })
 	return out, nil
+}
+
+// maintainerServers returns the maintainer-mode MCP servers the agent uses.
+func (s *UIServer) maintainerServers(ctx context.Context, agent *agentorcav1alpha1.Agent) ([]*agentorcav1alpha1.MCPServer, error) {
+	all, err := s.agentMCPServers(ctx, agent)
+	if err != nil {
+		return nil, err
+	}
+	var out []*agentorcav1alpha1.MCPServer
+	for _, srv := range all {
+		if srv.Spec.Auth.OAuth.Mode() == agentorcav1alpha1.MCPConnectionMaintainer {
+			out = append(out, srv)
+		}
+	}
+	return out, nil
+}
+
+// gateMaintainerConnections refuses to publish an agent that uses a maintainer-mode
+// server unless the publisher has an active connection to it: the agent will act as
+// the publisher, so the publisher must have connected and so consented to that. It
+// answers on refusal.
+func (s *UIServer) gateMaintainerConnections(w http.ResponseWriter, r *http.Request, agent *agentorcav1alpha1.Agent) bool {
+	servers, err := s.maintainerServers(r.Context(), agent)
+	if err != nil {
+		jsonError(w, "reading the agent's servers failed", http.StatusInternalServerError)
+		return false
+	}
+	if len(servers) == 0 {
+		return true
+	}
+	if s.conns == nil {
+		jsonError(w, connNeedsPG, http.StatusServiceUnavailable)
+		return false
+	}
+	_, user, ok := connIdentity(w, r)
+	if !ok {
+		return false
+	}
+	var missing []string
+	for _, srv := range servers {
+		c, err := s.conns.store.GetConnection(pgScope(r.Context()), user, srv.Namespace, srv.Name)
+		if err != nil || c.Status != postgresql.ConnectionActive || c.ServerUID != string(srv.UID) {
+			missing = append(missing, srv.Name)
+		}
+	}
+	if len(missing) > 0 {
+		jsonError(w, fmt.Sprintf("this agent acts as its publisher on %s: connect your own account first (Connections), then publish", strings.Join(missing, ", ")), http.StatusConflict)
+		return false
+	}
+	return true
+}
+
+// recordPublisher copies the publisher into Agent.status.publishedBy when the agent
+// uses a maintainer-mode server: that is whose account its runs use. It answers 500
+// when it cannot, because a published agent with no recorded maintainer would have
+// no usable connection.
+func (s *UIServer) recordPublisher(w http.ResponseWriter, r *http.Request, agent *agentorcav1alpha1.Agent) bool {
+	servers, err := s.maintainerServers(r.Context(), agent)
+	if err != nil {
+		jsonError(w, "reading the agent's servers failed", http.StatusInternalServerError)
+		return false
+	}
+	if len(servers) == 0 {
+		return true
+	}
+	orig := agent.DeepCopy()
+	now := metav1.Now()
+	agent.Status.PublishedBy, agent.Status.PublishedAt = actorOf(r.Context()), &now
+	if err := s.crdClient.Status().Patch(r.Context(), agent, client.MergeFrom(orig)); err != nil {
+		slog.Error("recording the publisher failed", "agent", agent.Namespace+"/"+agent.Name, "err", err)
+		jsonError(w, "the agent was published but its maintainer could not be recorded; publish again", http.StatusInternalServerError)
+		return false
+	}
+	return true
 }
