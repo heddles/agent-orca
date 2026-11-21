@@ -219,6 +219,12 @@ components:
               event: { type: object, description: Discriminated trace event }
               ts: { type: string, format: date-time }
               childRunName: { type: string }
+        payloadPrunedAt:
+          type: string
+          format: date-time
+          description: >
+            Set when archived-run retention (ARCHIVED_RUNS_RETENTION_DAYS) emptied this
+            run's output and trace. Cost, status, tokens and times are kept.
     RoutingDecisionInfo:
       type: object
       properties:

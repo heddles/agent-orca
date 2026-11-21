@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Archived run retention** — `ARCHIVED_RUNS_RETENTION_DAYS` (Helm `database.archivedRunsRetentionDays`, default `0` keeps
+  everything) makes the leader operator empty the output, raw output and execution trace of archived runs older than that many
+  days, every 6 hours, in batches. The summary row stays (status, spend, tokens, times, routing decisions, input), so cost
+  totals, the fleet view and the history list are unchanged; the run page says the output and trace were removed
+  (`payloadPrunedAt`). Evaluation dataset cases copy their data when created and are not affected. Counted by
+  `agentorca_archived_runs_swept_total`. Cluster-wide, no per-tenant override. Migration `0022`. See
+  `docs/observability.md`.
+
 - **Audit of chat, answers and feedback, and a routing events list** — the audit trail (`GET /api/audit`, admin) now records a
   signed-in user's chat turn on a deployment (`chat`), an answer to a clarification question (`answer`) and a run rating
   (`feedback`), next to the existing approval decisions. Rows hold the actor, tenant, namespace, target and ids and byte

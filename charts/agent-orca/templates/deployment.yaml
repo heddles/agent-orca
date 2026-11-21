@@ -156,6 +156,8 @@ spec:
                   key: {{ .Values.database.passwordSecret.key | quote }}
             - name: POSTGRES_DSN
               value: {{ .Values.database.dsn | quote }}
+            - name: ARCHIVED_RUNS_RETENTION_DAYS
+              value: {{ .Values.database.archivedRunsRetentionDays | default 0 | toString | quote }}
             {{- end }}
             {{- if .Values.systemStatus }}
             {{- if .Values.systemStatus.alertWebhookURL }}

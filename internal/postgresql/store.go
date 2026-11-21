@@ -81,6 +81,9 @@ type RunArchive struct {
 	// at archival time. NULL when no trace events were available (store
 	// disabled, stream expired, or pre-feature run).
 	TraceEventsJSON []byte `db:"trace_events"`
+	// PayloadPrunedAt is when archived-run retention emptied the output and
+	// trace of this run (ARCHIVED_RUNS_RETENTION_DAYS); nil when it is intact.
+	PayloadPrunedAt *time.Time `db:"payload_pruned_at"`
 	// Timestamps.
 	CreatedAt time.Time `db:"created_at"`
 	UpdatedAt time.Time `db:"updated_at"`
@@ -223,6 +226,7 @@ func (s *Store) ArchiveRun(ctx context.Context, run *agentorcav1alpha1.AgentRun,
 			trace_events = CASE WHEN EXCLUDED.trace_events IS NOT NULL
 			                    THEN EXCLUDED.trace_events
 			                    ELSE archived_runs.trace_events END,
+			payload_pruned_at = NULL,
 			updated_at = EXCLUDED.updated_at
 	`
 	now := time.Now().UTC()
@@ -518,7 +522,7 @@ func (s *Store) GetRun(ctx context.Context, namespace, name string) (*RunArchive
 		prior_run_ref, timeout_sec, phase, pod_name, spend_usd, output, raw_output,
 		restart_count, start_time, completion_time, context_used_tokens, max_context_tokens,
 		tenant, routing_decisions, child_run_refs, trace_events, created_at, updated_at,
-		COALESCE(tenant_id, '')
+		COALESCE(tenant_id, ''), payload_pruned_at
 		FROM archived_runs WHERE id = $1 AND ($2::text = '*' OR tenant_id = $2)`
 	id := fmt.Sprintf("%s/%s", namespace, name)
 	var r RunArchive
@@ -531,7 +535,7 @@ func (s *Store) GetRun(ctx context.Context, namespace, name string) (*RunArchive
 			&r.RestartCount, &r.StartTime, &r.CompletionTime,
 			&r.ContextUsedTokens, &r.MaxContextTokens, &r.Tenant,
 			&r.RoutingDecisionsJSON, &r.ChildRunRefsJSON, &r.TraceEventsJSON, &r.CreatedAt, &r.UpdatedAt,
-			&r.TenantID,
+			&r.TenantID, &r.PayloadPrunedAt,
 		)
 	})
 	if err != nil {

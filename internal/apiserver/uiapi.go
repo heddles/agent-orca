@@ -2506,6 +2506,7 @@ func (s *UIServer) handleGetArchivedRun(w http.ResponseWriter, r *http.Request, 
 		RoutingDecisions:  routingDecisionsToJSON(routing),
 		ChildRunRefs:      childRefs,
 		ResolvedModel:     resolvedModel,
+		PayloadPrunedAt:   formatTimePtr(archive.PayloadPrunedAt),
 	}
 
 	if s.crdClient != nil {
@@ -2602,6 +2603,8 @@ type archivedRunDetail struct {
 	MCPServers         []string              `json:"mcps,omitempty"`
 	ResolvedModel      string                `json:"resolvedModel,omitempty"`
 	TraceEntries       []traceEntryJSON      `json:"traceEntries,omitempty"`
+	// PayloadPrunedAt is set when retention emptied this run's output and trace.
+	PayloadPrunedAt string `json:"payloadPrunedAt,omitempty"`
 }
 
 func routingDecisionsToJSON(rds []agentorcav1alpha1.RoutingDecision) []routingDecisionJSON {
