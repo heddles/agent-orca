@@ -27,6 +27,13 @@ import (
 	"testing"
 )
 
+// MCP method names, which the fixtures and the assertions both speak.
+const (
+	methodInitialize               = "initialize"
+	methodNotificationsInitialized = "notifications/initialized"
+	methodToolsList                = "tools/list"
+)
+
 // streamableServer is a minimal Streamable HTTP MCP server: it demands the Accept
 // header the spec requires, opens a session on initialize, answers initialize with
 // a one-shot SSE stream that starts with a notification, and answers everything
@@ -83,7 +90,7 @@ func (s *streamableServer) handler(t *testing.T) http.Handler {
 		s.mu.Unlock()
 
 		switch msg.Method {
-		case "initialize":
+		case methodInitialize:
 			s.mu.Lock()
 			s.initHeader = r.Header.Get(mcpProtocolVersionHeader)
 			s.mu.Unlock()
@@ -94,12 +101,12 @@ func (s *streamableServer) handler(t *testing.T) http.Handler {
 			// client must skip it and read on.
 			_, _ = fmt.Fprint(w, "event: message\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\",\"params\":{\"level\":\"info\",\"data\":\"starting\"}}\n\n")
 			_, _ = fmt.Fprintf(w, "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":%d,\"result\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"serverInfo\":{\"name\":\"test\",\"version\":\"1\"}}}\n\n", msg.ID)
-		case "notifications/initialized":
+		case methodNotificationsInitialized:
 			if got := r.Header.Get(mcpSessionHeader); got != s.session {
 				t.Errorf("initialized %s = %q, want %q", mcpSessionHeader, got, s.session)
 			}
 			w.WriteHeader(http.StatusAccepted)
-		case "tools/list":
+		case methodToolsList:
 			if got := r.Header.Get(mcpSessionHeader); got != s.session {
 				t.Errorf("tools/list %s = %q, want %q", mcpSessionHeader, got, s.session)
 			}
@@ -145,7 +152,7 @@ func TestStreamableHTTPConnectListAndClose(t *testing.T) {
 	if srv.initHeader != "" {
 		t.Errorf("%s on initialize = %q, want none", mcpProtocolVersionHeader, srv.initHeader)
 	}
-	if want := []string{"initialize", "notifications/initialized", "tools/list"}; strings.Join(srv.seenMethod, ",") != strings.Join(want, ",") {
+	if want := []string{methodInitialize, methodNotificationsInitialized, methodToolsList}; strings.Join(srv.seenMethod, ",") != strings.Join(want, ",") {
 		t.Errorf("methods = %v, want %v", srv.seenMethod, want)
 	}
 }
@@ -229,11 +236,11 @@ func TestStreamableHTTPWithoutSessionStaysStateless(t *testing.T) {
 		_ = json.NewDecoder(r.Body).Decode(&msg)
 		w.Header().Set("Content-Type", "application/json")
 		switch msg.Method {
-		case "initialize":
+		case methodInitialize:
 			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"result":{"protocolVersion":"2025-03-26","capabilities":{}}}`, msg.ID)
-		case "notifications/initialized":
+		case methodNotificationsInitialized:
 			w.WriteHeader(http.StatusAccepted)
-		case "tools/list":
+		case methodToolsList:
 			// No session id, but the negotiated version must still be sent: the
 			// two are independent, and a server rejects a version it cannot speak.
 			mu.Lock()
@@ -274,7 +281,7 @@ func TestStreamableHTTPRejectsAMismatchedResponseID(t *testing.T) {
 		}
 		_ = json.NewDecoder(r.Body).Decode(&msg)
 		w.Header().Set("Content-Type", "application/json")
-		if msg.Method == "initialize" {
+		if msg.Method == methodInitialize {
 			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"result":{"protocolVersion":"2025-03-26","capabilities":{}}}`, msg.ID)
 			return
 		}
