@@ -307,3 +307,17 @@ func TestOnlyOperatorDefinedToolsAreGated(t *testing.T) {
 		t.Errorf("result = %q, posts = %d: unknown tools should fail as before, ungated", got, svc.postCount())
 	}
 }
+
+// A discovered MCP tool is not in the agent's tool list; the request names its
+// server so the operator can tie the call to the agent.
+func TestApprovalRequestNamesTheServerOfAnMCPTool(t *testing.T) {
+	svc := newFakeApprovalService(t, "rejected")
+	r, _ := toolRouter(t, svc, nil, "")
+	td := &ToolDefinition{Name: "create_issue", BackendType: backendTypeMCP, BackendRef: "github"}
+	r.waitForToolApproval(context.Background(), td, ToolCall{ID: "c", Function: FunctionCall{Name: "create_issue", Arguments: "{}"}})
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	if len(svc.posts) != 1 || svc.posts[0]["server"] != "github" || svc.posts[0]["tool"] != "create_issue" {
+		t.Errorf("approval request = %v, want the tool and its server", svc.posts)
+	}
+}
