@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Audit of chat, answers and feedback, and a routing events list** — the audit trail (`GET /api/audit`, admin) now records a
+  signed-in user's chat turn on a deployment (`chat`), an answer to a clarification question (`answer`) and a run rating
+  (`feedback`), next to the existing approval decisions. Rows hold the actor, tenant, namespace, target and ids and byte
+  counts, never the message text. New `GET /api/routing-events` lists routing decisions across runs by `namespace`, `agent`,
+  `selector`, `outcome`, `since`, `until` and `shadow`, limited to the caller's tenant (`tenant_id` filter and row-level
+  security, as the per-run endpoint already was); the cross-tenant, filter and retention-under-RLS cases are tested against
+  PostgreSQL. No migration: `routing_events` already carried `tenant_id` and its policy (0009, 0010).
+
 - **Result notifications for scheduled runs** — `AgentSchedule.spec.result.notify` (`channel`, `on` of `Succeeded`, `Failed`,
   `Skipped`, `BreakerOpen`, default `Failed`, and `includeOutput`) sends a short message to a channel an administrator set up on
   `TenantConfig.spec.notifications.channels` (`webhook` signed with HMAC-SHA256 like the trigger webhooks, Slack incoming

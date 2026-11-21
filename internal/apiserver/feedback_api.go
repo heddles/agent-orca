@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -167,6 +168,18 @@ func (s *UIServer) handleRunFeedback(w http.ResponseWriter, r *http.Request, ns,
 		http.Error(w, "storing feedback failed", http.StatusInternalServerError)
 		return
 	}
+	// The row says which run (and decision) was rated and how, with the size of
+	// the comment; the comment itself stays in the feedback table.
+	target := "run " + runName
+	if f.DecisionID != "" {
+		target += ", decision " + f.DecisionID
+	}
+	verb := "up"
+	if f.Rating < 0 {
+		verb = "down"
+	}
+	s.recordAudit(w, r, auditEventFor(postgresql.AuditFeedback, "AgentRun", ns, runName, "",
+		fmt.Sprintf("rated %s thumbs %s, comment %d bytes", target, verb, len(f.Comment))))
 	w.WriteHeader(http.StatusNoContent)
 }
 

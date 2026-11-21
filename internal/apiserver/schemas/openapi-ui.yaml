@@ -108,14 +108,14 @@ components:
         name: { type: string }
         status: { type: string, enum: [up, down, degraded] }
         message: { type: string }
-        latencyMs: { type: integer }
+        latencyMS: { type: integer }
     ProviderHealth:
       type: object
       properties:
         name: { type: string }
         namespace: { type: string }
         ready: { type: boolean }
-        latencyMs: { type: integer }
+        latencyMS: { type: integer }
         message: { type: string }
     SystemMetrics:
       type: object
@@ -740,7 +740,7 @@ components:
         arm: { type: string }
         output: { type: string }
         toolCalls: { type: array, items: { type: string } }
-        costUsd: { type: number }
+        costUSD: { type: number }
         latencyMs: { type: integer, format: int64 }
         casePass: { type: boolean }
         createdBy: { type: string }
@@ -1579,19 +1579,78 @@ paths:
         '200': { description: deleted }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+  /api/routing-events:
+    get:
+      tags: [runs]
+      summary: Routing decisions across the caller's runs
+      description: >
+        LLM calls the model-router made, newest first, limited to the caller's
+        tenant (tenant_id filter with row-level security underneath) and, without
+        a namespace, to the namespaces the tenant may use. Needs the viewer role.
+        Shadow (counterfactual) calls are left out unless shadow=true.
+      parameters:
+        - { in: query, name: namespace, schema: { type: string } }
+        - { in: query, name: agent, schema: { type: string } }
+        - { in: query, name: selector, schema: { type: string } }
+        - { in: query, name: outcome, description: ok is neither error nor fallback, schema: { type: string, enum: [ok, error, fallback] } }
+        - { in: query, name: shadow, schema: { type: boolean, default: false } }
+        - { in: query, name: since, description: Inclusive lower bound on the call time (RFC 3339), schema: { type: string, format: date-time } }
+        - { in: query, name: until, description: Exclusive upper bound (RFC 3339), schema: { type: string, format: date-time } }
+        - { in: query, name: limit, schema: { type: integer, minimum: 1, maximum: 500, default: 100 } }
+      responses:
+        '200':
+          description: events, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [events]
+                properties:
+                  events:
+                    type: array
+                    items:
+                      type: object
+                      required: [decisionID, provider, namespace, run]
+                      properties:
+                        decisionID: { type: string }
+                        parentDecisionID: { type: string }
+                        namespace: { type: string }
+                        run: { type: string }
+                        agent: { type: string }
+                        selector: { type: string }
+                        provider: { type: string }
+                        model: { type: string }
+                        path: { type: string }
+                        stage: { type: string }
+                        isShadow: { type: boolean }
+                        promptTokens: { type: integer }
+                        completionTokens: { type: integer }
+                        costUSD: { type: number }
+                        latencyMS: { type: integer }
+                        finishReason: { type: string }
+                        fallbackFrom: { type: string }
+                        errorClass: { type: string }
+                        createdAt: { type: string, format: date-time }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { description: Routing history needs the PostgreSQL store }
   /api/audit:
     get:
       tags: [audit]
       summary: The tenant's audit trail (admin only)
       description: >
         Changes made through the UI API and approval decisions, newest first,
-        scoped to the caller's tenant and namespaces.
+        scoped to the caller's tenant and namespaces. Also the conversation
+        actions of signed-in users: chat (a turn sent to a deployment), answer
+        (an answer to a run's clarification question) and feedback (a rating of
+        a run). Those rows carry ids and sizes only, never the message, answer
+        or comment text.
       parameters:
         - { in: query, name: kind, schema: { type: string } }
         - { in: query, name: namespace, schema: { type: string } }
         - { in: query, name: name, schema: { type: string } }
         - { in: query, name: user, schema: { type: string } }
-        - { in: query, name: action, schema: { type: string, enum: [create, update, delete, cancel, request, approve, reject] } }
+        - { in: query, name: action, schema: { type: string, enum: [create, update, delete, cancel, request, approve, reject, chat, answer, feedback] } }
         - { in: query, name: limit, schema: { type: integer, minimum: 1, maximum: 500, default: 100 } }
         - { in: query, name: cursor, description: nextCursor of the previous page, schema: { type: string } }
       responses:

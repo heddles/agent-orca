@@ -236,6 +236,7 @@ func (s *UIServer) Handler() http.Handler {
 	mux.HandleFunc("/api/approvals", s.handleListApprovals)
 	mux.HandleFunc("/api/approvals/", s.handleApproval)
 	mux.HandleFunc("/api/audit", s.handleAudit)
+	mux.HandleFunc("/api/routing-events", s.handleRoutingEvents)
 	mux.HandleFunc("/api/resources", s.handleResourceCollection)
 	mux.HandleFunc("/api/resources/", s.handleResource)
 	mux.HandleFunc("/api/openapi.json", s.handleUIOpenAPI)
@@ -895,6 +896,8 @@ func (s *UIServer) handleAnswerRun(w http.ResponseWriter, r *http.Request, ns, r
 		"originalRun", runName,
 		"continuationRun", continuation.Name,
 		"ns", ns)
+	s.recordAudit(w, r, auditEventFor(postgresql.AuditAnswer, "AgentRun", ns, runName, "",
+		fmt.Sprintf("answered the clarification of run %s (%d bytes), continuation run %s", runName, len(req.Answer), continuation.Name)))
 	jsonResponse(w, map[string]any{
 		"status":  "ok",
 		"runName": continuation.Name,
@@ -1876,6 +1879,9 @@ func (s *UIServer) handleExecute(w http.ResponseWriter, r *http.Request, namespa
 		return
 	}
 
+	// The row names the session, run and size of the message, never its text.
+	s.recordAudit(w, r, auditEventFor(postgresql.AuditChat, "AgentDeployment", namespace, deploymentName, "",
+		fmt.Sprintf("chat turn in session %s, run %s, %d bytes of input", sessionID, run.Name, len(req.Input))))
 	jsonResponse(w, map[string]any{
 		"runName":   run.Name,
 		"sessionId": sessionID,

@@ -67,7 +67,7 @@ func TestRunRoutingEvents_ReturnsTheRunsHistory(t *testing.T) {
 	if len(body.Events) != 2 || body.Events[1].ParentDecisionID != "d-1" {
 		t.Errorf("events = %+v", body.Events)
 	}
-	if reader.gotNS != "team-a" || reader.gotRun != "run-1" || reader.gotLimit != 500 { //nolint:goconst
+	if reader.gotNS != "team-a" || reader.gotRun != routingTestRun || reader.gotLimit != 500 { //nolint:goconst
 		t.Errorf("queried %q/%q limit %d", reader.gotNS, reader.gotRun, reader.gotLimit)
 	}
 }
@@ -103,6 +103,92 @@ func TestRunRoutingEvents_StoreErrorAndMethod(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/runs/ns/run/routing-events", nil)
 	rec := httptest.NewRecorder()
 	s.handleRunOrStream(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("POST: status = %d, want 405", rec.Code)
+	}
+}
+
+type fakeRoutingLister struct {
+	fakeRoutingReader
+	events []postgresql.RoutingEvent
+	got    postgresql.RoutingEventQuery
+	err    error
+}
+
+func (f *fakeRoutingLister) ListRoutingEvents(_ context.Context, q postgresql.RoutingEventQuery) ([]postgresql.RoutingEvent, error) {
+	f.hits++
+	f.got = q
+	return f.events, f.err
+}
+
+func listRoutingEvents(s *UIServer, ctx context.Context, query string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodGet, "/api/routing-events"+query, nil).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	s.handleRoutingEvents(rec, req)
+	return rec
+}
+
+func TestRoutingEventsList_PassesFiltersAndNamesTheRun(t *testing.T) {
+	l := &fakeRoutingLister{events: []postgresql.RoutingEvent{{DecisionID: "d-1", Provider: "p", Namespace: "team-a", RunName: routingTestRun}}}
+	s := &UIServer{routingReader: l}
+	rec := listRoutingEvents(s, context.Background(),
+		"?namespace=team-a&agent=bot&selector=sel&outcome=error&shadow=true&since=2026-01-02T03:04:05Z&until=2026-01-03T00:00:00Z&limit=20")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
+	}
+	g := l.got
+	if len(g.Namespaces) != 1 || g.Namespaces[0] != "team-a" || g.Agent != "bot" || g.Selector != "sel" || g.Outcome != "error" ||
+		!g.IncludeShadow || g.Limit != 20 || g.Since.IsZero() || g.Until.IsZero() {
+		t.Errorf("query = %+v", g)
+	}
+	var body struct {
+		Events []struct{ DecisionID, Namespace, Run string } `json:"events"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || len(body.Events) != 1 || body.Events[0].Namespace != "team-a" || body.Events[0].Run != routingTestRun {
+		t.Errorf("body = %s, %v", rec.Body, err)
+	}
+}
+
+func TestRoutingEventsList_TenantsAreLimitedToTheirNamespaces(t *testing.T) {
+	l := &fakeRoutingLister{}
+	s := &UIServer{routingReader: l}
+	ctx := context.WithValue(context.Background(), tenantIdentityKey, &TenantIdentity{Roles: testAdminRoles, TenantName: "acme", Namespaces: []string{"team-a", "team-c"}})
+
+	if rec := listRoutingEvents(s, ctx, "?namespace=team-b"); rec.Code != http.StatusForbidden || l.hits != 0 {
+		t.Errorf("other namespace: status = %d, hits = %d; want 403 and no store call", rec.Code, l.hits)
+	}
+	if rec := listRoutingEvents(s, ctx, ""); rec.Code != http.StatusOK || len(l.got.Namespaces) != 2 {
+		t.Errorf("no namespace: status = %d, query = %+v; want the tenant's namespaces", rec.Code, l.got)
+	}
+	none := context.WithValue(context.Background(), tenantIdentityKey, &TenantIdentity{Roles: testAdminRoles, TenantName: "acme"})
+	hits := l.hits
+	if rec := listRoutingEvents(s, none, ""); rec.Code != http.StatusOK || l.hits != hits {
+		t.Errorf("tenant without namespaces: status = %d, hits %d -> %d; want 200 and an empty answer without a query", rec.Code, hits, l.hits)
+	}
+}
+
+func TestRoutingEventsList_RejectsBadInput(t *testing.T) {
+	l := &fakeRoutingLister{}
+	s := &UIServer{routingReader: l}
+	for _, q := range []string{"?since=yesterday", "?until=x", "?limit=0", "?limit=501", "?limit=x"} {
+		if rec := listRoutingEvents(s, context.Background(), q); rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: status = %d, want 400", q, rec.Code)
+		}
+	}
+	l.err = postgresql.ErrInvalidRoutingQuery
+	if rec := listRoutingEvents(s, context.Background(), "?outcome=bogus"); rec.Code != http.StatusBadRequest {
+		t.Errorf("bad outcome: status = %d, want 400", rec.Code)
+	}
+	l.err = errors.New("boom")
+	if rec := listRoutingEvents(s, context.Background(), ""); rec.Code != http.StatusInternalServerError {
+		t.Errorf("store error: status = %d, want 500", rec.Code)
+	}
+	if rec := listRoutingEvents(&UIServer{}, context.Background(), ""); rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("no store: status = %d, want 503", rec.Code)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/routing-events", nil)
+	rec := httptest.NewRecorder()
+	s.handleRoutingEvents(rec, req)
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("POST: status = %d, want 405", rec.Code)
 	}
