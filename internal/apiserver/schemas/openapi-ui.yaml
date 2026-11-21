@@ -80,6 +80,22 @@ components:
         mcpServers: { type: array, items: { $ref: '#/components/schemas/BuilderOption' } }
         knowledgeBases: { type: array, items: { $ref: '#/components/schemas/BuilderOption' } }
         guardrailPolicies: { type: array, items: { $ref: '#/components/schemas/BuilderOption' } }
+    BuilderCheckRequest:
+      type: object
+      required: [agent, datasetId]
+      properties:
+        agent: { type: object, description: 'The draft Agent object, saved or not. It is validated by the dry-run write and never stored.' }
+        datasetId: { type: integer, description: 'A dataset in the same workspace as the draft.' }
+        budgetUsd: { type: number, description: 'The spending limit. Default operator.builder.checkDefaultBudgetUSD (0.25), at most operator.builder.checkMaxBudgetUSD (2).' }
+        compareWithPublished: { type: boolean, description: 'Default true: when the agent has an AgentDeployment, the live agent runs as the baseline arm.' }
+    BuilderCheckResponse:
+      type: object
+      required: [valid, experiment, comparedWithPublished, capped]
+      properties:
+        valid: { type: boolean }
+        experiment: { $ref: '#/components/schemas/EvalExperiment' }
+        comparedWithPublished: { type: boolean, description: 'True when the arms are "published" (baseline) then "draft"; otherwise only "draft".' }
+        capped: { type: boolean, description: 'True when only the first cases of the dataset run.' }
     CreatedRef:
       type: object
       required: [kind, namespace, name]
@@ -498,7 +514,9 @@ components:
         datasetVersion: { type: integer, description: The dataset version the experiment runs, frozen at creation }
         name: { type: string }
         status: { type: string, enum: [queued, running, grading, awaiting_review, complete, cancelled, failed] }
-        arms: { type: array, items: { type: object, description: label, agent, revision, hash (filled when it starts), modelProvider } }
+        arms: { type: array, items: { type: object, description: 'label, agent, revision, hash (filled when it starts), modelProvider, and for a check the draft spec' } }
+        purpose: { type: string, enum: [compare, gate, check] }
+        maxCases: { type: integer, description: 'A check runs only the first maxCases cases.' }
         repeats: { type: integer }
         budgetUsd: { type: number }
         spentUsd: { type: number }
@@ -1414,6 +1432,40 @@ paths:
           content:
             application/json: { schema: { $ref: '#/components/schemas/BuilderOptions' } }
         '403': { $ref: '#/components/responses/Forbidden' }
+  /api/builder/check:
+    post:
+      tags: [builder]
+      summary: Check a draft agent against a dataset of test cases
+      description: >
+        Needs the builder role; audited (create, kind EvalExperiment, a
+        "builder check of a draft" summary with counts and no text). The draft
+        goes through the same dry-run write as ?dryRun=true (CRD schema,
+        webhooks, ownership, tenant checks) and is never stored; if it is
+        invalid the answer is that of a failed dry run, 4xx
+        {valid:false, errors:[...]}, and nothing is queued. A valid draft runs
+        as an arm of an experiment of purpose "check", on the existing
+        experiment runner, graders and budget caps. The budget, the number of
+        cases (the first N), the concurrency and the checks per user per hour
+        are capped by operator.builder.*. A check is hidden from the experiment
+        list and never counts for a publish gate; follow it with
+        GET /api/evals/experiments/{id}, /results and /summary. Git-owned
+        agents are refused (409), as they cannot be saved here.
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: '#/components/schemas/BuilderCheckRequest' } }
+      responses:
+        '201':
+          description: the check was queued
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/BuilderCheckResponse' } }
+        '400': { description: 'The draft is invalid (valid:false with errors), the budget is over the cap, or the dataset is in another workspace' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { description: The dataset is not found for the caller }
+        '409': { description: 'The dataset has no graders, too many experiments are running, or the agent is Git-owned' }
+        '422': { description: The draft names things the workspace does not have }
+        '429': { description: The user started too many checks this hour }
+        '503': { description: Needs the PostgreSQL store and operator.evals.enabled }
   /api/templates/{namespace}/{name}/use:
     post:
       tags: [builder]

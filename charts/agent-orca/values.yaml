@@ -103,6 +103,17 @@ operator:
     # overrideGate; only changing the gate (audited) unblocks a publish
     # (EVALS_ALLOW_GATE_OVERRIDE).
     allowGateOverride: true
+  # The agent builder's helpers (docs/agent-builder.md).
+  builder:
+    # "Check with my cases": the budget a check gets when it names none, the
+    # most it may be given (USD), the most cases it runs (a larger dataset is cut
+    # to its first cases), the runs it has in flight, and the checks one user may
+    # start an hour (BUILDER_CHECK_*).
+    checkDefaultBudgetUSD: 0.25
+    checkMaxBudgetUSD: 2
+    checkMaxCases: 25
+    checkMaxConcurrency: 2
+    checkPerUserPerHour: 12
   # extraArgs are appended to the operator container args. Use this to enable
   # optional features such as OIDC login, e.g.:
   #   extraArgs:

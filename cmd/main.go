@@ -875,6 +875,7 @@ func main() {
 	evalsCfg := evalsConfigFromEnv()
 	uiAPI.SetEvals(evalsCfg)
 	uiAPI.SetEvalExperimentLimits(evalExperimentLimitsFromEnv())
+	uiAPI.SetBuilder(builderConfigFromEnv())
 	// The evaluation experiment runner needs PostgreSQL. It is a manager runnable
 	// that wants leader election (the default), so one operator runs it at a time.
 	if pgStore != nil && !evalsCfg.DisableExperiments {
@@ -1115,6 +1116,29 @@ func evalExperimentLimitsFromEnv() postgresql.EvalExperimentLimits {
 		l.MaxBudgetUSD = v
 	}
 	return l
+}
+
+// builderConfigFromEnv reads the limits of the agent builder's helpers (chart
+// values operator.builder.*). An unset or unreadable value keeps the default.
+func builderConfigFromEnv() apiserver.BuilderConfig {
+	var c apiserver.BuilderConfig
+	env := func(name string) string { return strings.TrimSpace(os.Getenv(name)) }
+	num := func(name string, into *int) {
+		if n, err := strconv.Atoi(env(name)); err == nil && n > 0 {
+			*into = n
+		}
+	}
+	usd := func(name string, into *float64) {
+		if v, err := strconv.ParseFloat(env(name), 64); err == nil && v > 0 {
+			*into = v
+		}
+	}
+	usd("BUILDER_CHECK_DEFAULT_BUDGET_USD", &c.CheckDefaultBudgetUSD)
+	usd("BUILDER_CHECK_MAX_BUDGET_USD", &c.CheckMaxBudgetUSD)
+	num("BUILDER_CHECK_MAX_CASES", &c.CheckMaxCases)
+	num("BUILDER_CHECK_MAX_CONCURRENCY", &c.CheckMaxConcurrency)
+	num("BUILDER_CHECK_PER_USER_PER_HOUR", &c.CheckPerUserPerHour)
+	return c
 }
 
 // evalRunnerIntervalFromEnv is how often the experiment runner polls

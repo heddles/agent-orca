@@ -121,6 +121,16 @@ spec:
               value: {{ dig "resultRetentionDays" 90 (.Values.operator.evals | default dict) | toString | quote }}
             - name: EVALS_ALLOW_GATE_OVERRIDE
               value: {{ dig "allowGateOverride" true (.Values.operator.evals | default dict) | toString | quote }}
+            - name: BUILDER_CHECK_DEFAULT_BUDGET_USD
+              value: {{ dig "checkDefaultBudgetUSD" 0.25 (.Values.operator.builder | default dict) | toString | quote }}
+            - name: BUILDER_CHECK_MAX_BUDGET_USD
+              value: {{ dig "checkMaxBudgetUSD" 2 (.Values.operator.builder | default dict) | toString | quote }}
+            - name: BUILDER_CHECK_MAX_CASES
+              value: {{ dig "checkMaxCases" 25 (.Values.operator.builder | default dict) | toString | quote }}
+            - name: BUILDER_CHECK_MAX_CONCURRENCY
+              value: {{ dig "checkMaxConcurrency" 2 (.Values.operator.builder | default dict) | toString | quote }}
+            - name: BUILDER_CHECK_PER_USER_PER_HOUR
+              value: {{ dig "checkPerUserPerHour" 12 (.Values.operator.builder | default dict) | toString | quote }}
             {{- if .Values.cloudProvider }}
             - name: CLOUD_PROVIDER_OVERRIDE
               value: {{ .Values.cloudProvider | quote }}

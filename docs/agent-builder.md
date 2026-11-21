@@ -10,6 +10,7 @@ readable description is `internal/apiserver/schemas/openapi-ui.yaml`.
 | `GET /api/builder/options` | viewer | no |
 | `POST /api/resources/{kind}?dryRun=true`, `PUT /api/resources/{kind}/{ns}/{name}?dryRun=true` | as the real write | no (nothing is written) |
 | `POST /api/templates/{ns}/{name}/use` | builder | yes, one row per object |
+| `POST /api/builder/check` | builder | yes, one row per check |
 | `POST /api/agents/{ns}/{name}/publish` | builder | yes |
 | `DELETE /api/agents/{ns}/{name}/publish` | builder | yes |
 
@@ -29,6 +30,37 @@ server's `dryRun=All`. Nothing is stored, no audit row is written and no
 A failure has the status a real write would give (400, 403, 404, 409, 428, ...)
 and `errors` lists the messages. A webhook denial is reduced to its own message.
 A stale `resourceVersion` also returns `currentResourceVersion`.
+
+## Check with my cases
+
+`POST /api/builder/check` runs the draft that is on screen, saved or not, against a dataset of test cases
+(`docs/evaluations.md`), so a person sees pass or fail, a score, the cost and the time of each case before they
+save or publish. It builds nothing second: it queues an experiment of purpose `check` on the existing runner, graders
+and budget caps.
+
+```
+{"agent": {...Agent object...}, "datasetId": 7, "budgetUsd": 0.25, "compareWithPublished": true}
+201 {"valid": true, "experiment": {...}, "comparedWithPublished": true, "capped": false}
+```
+
+- **Nothing is saved or published.** The draft goes through the same dry-run write as above (CRD schema, webhooks,
+  ownership, tenant stamping); a draft that fails answers like a failed dry run (`400 {"valid": false, "errors": [...]}`)
+  and nothing is queued. A valid draft travels as the inline `spec` of one experiment arm (`draft`); the runner makes
+  the usual hidden `eval-<id>-draft` Agent from it, which is deleted with the experiment's other objects. An Agent of
+  that name is never created. A Git-owned agent is a 409, as it cannot be saved here; an agent in another tenant is a 404.
+- **Against the published version.** When the agent has an AgentDeployment, the live agent runs as the first arm
+  (`published`) and the draft as the second, so the paired summary says whether the draft is better or worse. Send
+  `compareWithPublished: false` to skip it (it doubles the cost).
+- **Caps, all enforced by the server** (`operator.builder.*`): the budget (default `$0.25`, at most `$2`; over it is a 400),
+  the cases (the first 25 of a larger dataset, shown as `capped`), the runs in flight (2), the per-run budget (at most
+  `$0.50`), and 12 checks per user an hour (`429` with `Retry-After`). The tenant's active-experiment cap and daily budget
+  apply as for any experiment.
+- **Visibility.** A check is not in `GET /api/evals/experiments`. It is read with the experiment endpoints by id
+  (`/results`, `/summary`), by anyone with the viewer role in the tenant. It can never be the evidence of a publish gate.
+- **Audit.** One row (`create`, `EvalExperiment`) with the dataset name, the number of arms and the budget. No case, draft
+  or output text.
+- Tools the draft uses are really called, as in any experiment, so a draft with a tool that changes things changes them
+  once per case. Test it on a safe workspace.
 
 ## Use a template
 

@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Builder: Check with my cases** — `POST /api/builder/check` runs the agent draft on screen (saved or not) against an
+  evaluation dataset and shows pass or fail, score, cost and time for each case, with a summary against the published
+  version when there is one. It reuses the experiment runner: the draft is the inline `spec` of one arm of an experiment of
+  the new purpose `check` (migration `0023`, which also adds `max_cases`), validated first by the dry-run write, never saved
+  or published, hidden from the experiment list and never gate evidence. Capped by budget, cases, concurrency and checks per
+  user per hour (`operator.builder.check*`), tenant-scoped, builder role, audited. UI: a "Check with my cases" card next to
+  "Try it". See `docs/agent-builder.md`.
+
 - **Archived run retention** — `ARCHIVED_RUNS_RETENTION_DAYS` (Helm `database.archivedRunsRetentionDays`, default `0` keeps
   everything) makes the leader operator empty the output, raw output and execution trace of archived runs older than that many
   days, every 6 hours, in batches. The summary row stays (status, spend, tokens, times, routing decisions, input), so cost

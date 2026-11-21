@@ -24,6 +24,7 @@ import { parseYAML, stringifyYAML } from '../lib/yaml'
 import { publishedAgentPath, ROUTES, buildPath } from '../lib/routes'
 import { RevisionHistory } from './RevisionHistory'
 import { BuilderTestPanel } from './BuilderTestPanel'
+import { BuilderCheckPanel } from './BuilderCheckPanel'
 import { AgentQuality, GateFailure } from './AgentQuality'
 import { DuplicateDialog, ExportDialog, Field, field, useWorkspaces } from './BuilderParts'
 
@@ -687,6 +688,17 @@ export function AgentBuilder({ namespace, name }: Props) {
             <div style={s.card}>
               <BuilderTestPanel namespace={form.namespace} name={form.name} saved={savedExists} unsavedChanges={dirty} version={version} />
             </div>
+
+            {!readOnly && (
+              <div style={s.card}>
+                <BuilderCheckPanel
+                  namespace={form.namespace}
+                  name={form.name}
+                  draft={current}
+                  blocked={yamlError ? 'Fix the YAML first.' : nameProblem(form.name) || !form.namespace ? 'Give the agent a name first.' : ''}
+                />
+              </div>
+            )}
           </aside>
         </div>
       </div>

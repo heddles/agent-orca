@@ -1028,6 +1028,36 @@ func TestRevisionArmsRunTheStoredSpecAndAreVerified(t *testing.T) {
 	}
 }
 
+func TestDraftArmsRunTheInlineSpecWithoutTheAgentExisting(t *testing.T) {
+	e := newEnv(t, opts{})
+	draft := agentorcav1alpha1.AgentSpec{ModelSelectorRef: "default", SystemPrompt: "unsaved draft prompt"}
+	raw, _ := json.Marshal(draft)
+	wantHash, _ := SpecHash(draft)
+	x := baseExperiment(1)
+	x.Purpose = postgresql.PurposeCheck
+	// The draft's agent was never saved; the baseline is the live one.
+	x.Arms = []postgresql.EvalArm{{Label: "published", Agent: "support"}, {Label: "draft", Agent: "never-saved", Spec: raw}}
+	e.store.add(x)
+	e.tick()
+	exp := e.store.exp(1)
+	if exp.Status != postgresql.ExperimentRunning || exp.Arms[1].Hash != wantHash {
+		t.Fatalf("arms = %+v (status %s, %q)", exp.Arms, exp.Status, exp.Error)
+	}
+	var a agentorcav1alpha1.Agent
+	if err := e.kube.Get(context.Background(), client.ObjectKey{Namespace: ns, Name: "eval-1-draft"}, &a); err != nil || a.Spec.SystemPrompt != "unsaved draft prompt" {
+		t.Errorf("the draft arm runs %q (%v)", a.Spec.SystemPrompt, err)
+	}
+	var saved agentorcav1alpha1.Agent
+	if err := e.kube.Get(context.Background(), client.ObjectKey{Namespace: ns, Name: "never-saved"}, &saved); err == nil {
+		t.Error("the draft was stored as an agent")
+	}
+	// A spec that cannot be read is the requester's problem.
+	_, err := ResolveArms(context.Background(), e.kube, e.store, tenant, ns, []postgresql.EvalArm{{Label: "draft", Agent: "x", Spec: []byte(`{"tools":"no"}`)}})
+	if _, ok := err.(*ArmError); !ok {
+		t.Errorf("unreadable spec: err = %v", err)
+	}
+}
+
 func TestArmNamesCannotTakeOverAnExistingObject(t *testing.T) {
 	e := newEnv(t, opts{extras: []client.Object{
 		&agentorcav1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "eval-1-base", Namespace: ns, Labels: labelled(tenant)}},
