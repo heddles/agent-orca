@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Per-user MCP connection lifecycle** — a connection unused for 90 days (`operator.connections.idleExpiryDays`, 0 turns it
+  off) is revoked at the provider (RFC 7009, best effort) and expires: tokens wiped, row kept as `expired`, and its owner is
+  told to reconnect; `last_used_at` is now written at most hourly. A leader-elected job re-wraps connection tokens and OAuth
+  app secrets under the active key (batched, resumable, safe against concurrent refresh, no key material logged), so an old
+  key can be removed. `DELETE /api/connections?user=<id>` (admin) revokes all of one user's connections for offboarding.
+  `GET /api/me/connections/required` reports `ownerNeedsReconnect` and the agent page shows "Connection owner needs to
+  reconnect". New metrics `agentorca_mcp_connections{status}`, `agentorca_mcp_token_refresh_failures_total{reason}`,
+  `agentorca_mcp_connections_expired_total`, `agentorca_mcp_key_rotation_rows_total` and
+  `agentorca_mcp_key_rotation_pending_rows`. Migration `0021`. See `docs/mcp-oauth.md`.
 - **Per-user OAuth for MCP servers (invoker mode)** — `connectionMode: invoker` runs an agent as the user who started the run (the
   run's `created-by`). Scheduled, trigger, widget, machine, workflow, evaluation and unpropagated child runs fail closed with
   `connection_required`; agent-as-tool children keep the original invoker, set by the operator. A refused call pauses the run

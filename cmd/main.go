@@ -20,6 +20,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/base64"
+	"errors"
 	"flag"
 	"fmt"
 	"net/http"
@@ -43,6 +44,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
@@ -877,6 +879,10 @@ func main() {
 	}
 	if connService != nil {
 		uiAPI.SetConnections(connService, pgStore, oidcCookieSecure)
+		if err := addConnectionLifecycle(mgr, connService, pgStore.AsPlatform()); err != nil {
+			setupLog.Error(err, "Unable to schedule the MCP connection lifecycle jobs")
+			os.Exit(1)
+		}
 	}
 	go func() {
 		srv := newHTTPServer(":8083", uiAPI.Handler())
@@ -1110,6 +1116,52 @@ func evalResultRetentionDaysFromEnv() int {
 		return n
 	}
 	return 90
+}
+
+// connectionIdleExpiryFromEnv is how long a per-user MCP connection may go unused
+// before it is revoked and expired (CONNECTION_IDLE_EXPIRY_DAYS, default 90; 0
+// turns the expiry off).
+func connectionIdleExpiryFromEnv() time.Duration {
+	if n, err := strconv.Atoi(strings.TrimSpace(os.Getenv("CONNECTION_IDLE_EXPIRY_DAYS"))); err == nil && n >= 0 {
+		return time.Duration(n) * 24 * time.Hour
+	}
+	return connections.DefaultIdleAfter
+}
+
+// addConnectionLifecycle schedules the leader-only jobs of the per-user
+// connections (idle expiry, key re-wrapping) and registers their gauge.
+func addConnectionLifecycle(mgr manager.Manager, svc *connections.Service, platform *postgresql.Store) error {
+	if err := connections.RegisterStatusGauge(platform); err != nil {
+		return err
+	}
+	life := &connections.Lifecycle{
+		Store: platform, Svc: svc, IdleAfter: connectionIdleExpiryFromEnv(),
+		Resolve: func(ctx context.Context, ns, name string) (connections.ServerRef, error) {
+			var srv agentorcav1alpha1.MCPServer
+			if err := mgr.GetClient().Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, &srv); err != nil {
+				return connections.ServerRef{}, err
+			}
+			o := srv.Spec.Auth
+			noRevoke := o != nil && o.OAuth != nil && o.OAuth.RevokeOnDisconnect != nil && !*o.OAuth.RevokeOnDisconnect
+			if o == nil || o.OAuth == nil || !o.OAuth.PerUser() || noRevoke {
+				return connections.ServerRef{}, errors.New("no provider revocation for this server")
+			}
+			return connections.ServerRef{Namespace: srv.Namespace, Name: srv.Name, UID: string(srv.UID), URL: srv.Spec.URL,
+				AppRef: o.OAuth.AppRef, UserScopes: o.OAuth.UserScopes}, nil
+		},
+		OnExpire: func(ctx context.Context, c postgresql.MCPConnection, revocation string) {
+			_, aerr := platform.AppendAudit(postgresql.WithPlatform(ctx), postgresql.AuditEvent{
+				TenantID: c.TenantID, UserID: "system:mcp-connections", Action: postgresql.AuditExpire,
+				Kind: postgresql.AuditKindMCPConnection, Namespace: c.ServerNS, Name: c.ServerName,
+				Summary: "expired the unused connection of user " + c.UserID + " (provider revocation: " + revocation + ")",
+			})
+			if aerr != nil {
+				setupLog.Error(aerr, "Could not audit an expired connection", "server", c.ServerNS+"/"+c.ServerName)
+			}
+		},
+	}
+	setupLog.Info("MCP connection lifecycle jobs scheduled", "idleExpiry", life.IdleAfter.String())
+	return mgr.Add(life)
 }
 
 // newConnectionService builds the per-user MCP connection service

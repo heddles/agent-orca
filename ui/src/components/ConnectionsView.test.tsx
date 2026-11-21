@@ -125,6 +125,11 @@ describe('RequiredConnections', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('Connect github to run this agent')
     expect(screen.getByRole('link', { name: 'Open Connections' })).toHaveAttribute('href', '/connections')
   })
+
+  it('says when the connection owner needs to reconnect', () => {
+    render(<MemoryRouter><RequiredConnections required={[]} ownerNeedsReconnect={[{ namespace: 'n', server: 'github', mode: 'maintainer', connected: false }]} /></MemoryRouter>)
+    expect(screen.getByRole('alert')).toHaveTextContent('Connection owner needs to reconnect (github)')
+  })
 })
 
 describe('invoker connections', () => {

@@ -18,7 +18,7 @@ import { SchemaForm } from './SchemaForm'
 import { DeploymentView } from './DeploymentView'
 import { AgentTriggers } from './AgentTriggers'
 import { AgentWidget } from './AgentWidget'
-import { RequiredConnections, useInvokerIdentities, useRequiredConnections } from './RequiredConnections'
+import { RequiredConnections, useInvokerIdentities, useOwnerNeedsReconnect, useRequiredConnections } from './RequiredConnections'
 import { formatCost } from './AgentCatalog'
 
 /** The input shape every agent has: one free-text field. */
@@ -155,6 +155,7 @@ export function AgentPage({ namespace, name, tab, onTabChange, onNavigateToRun }
   const [entry, setEntry] = useState<CatalogEntry | null>(null)
   const [error, setError] = useState<string | null>(null)
   const required = useRequiredConnections(namespace, name)
+  const ownerNeedsReconnect = useOwnerNeedsReconnect(namespace, name)
   const identities = useInvokerIdentities(namespace, name)
 
   useEffect(() => {
@@ -214,7 +215,7 @@ export function AgentPage({ namespace, name, tab, onTabChange, onNavigateToRun }
         <div role="tabpanel" id="run-panel" aria-label="Run">
           <Section title="Start a run">
             <div style={{ maxWidth: 640 }}>
-              <RequiredConnections required={required} identities={identities} />
+              <RequiredConnections required={required} identities={identities} ownerNeedsReconnect={ownerNeedsReconnect} />
               <RunForm
                 namespace={namespace}
                 name={name}

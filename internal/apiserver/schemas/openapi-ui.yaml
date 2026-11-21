@@ -2481,9 +2481,20 @@ paths:
       tags: [connections]
       summary: The signed-in user's own connections (viewer). Needs a user identity
       responses:
-        '200': { description: "array of {namespace, server, scopes, accountLabel, status (active, needs_reauth, revoked), lastUsedAt, createdAt}" }
+        '200': { description: "array of {namespace, server, scopes, accountLabel, status (active, needs_reauth, revoked, expired), lastUsedAt, createdAt}" }
         '403': { description: no signed-in user }
         '503': { description: no database or no connection key }
+    delete:
+      tags: [connections]
+      summary: Offboarding. Revoke every connection of one user in the caller's tenant (admin)
+      description: Deletes the user's connections and asks each provider to revoke the refresh token (RFC 7009, best effort). Audited per connection and once for the sweep. user is required.
+      parameters:
+        - { in: query, name: user, required: true, schema: { type: string } }
+      responses:
+        '200': { description: "{removed, revokedAtProvider, failed}" }
+        '400': { description: user is missing }
+        '403': { description: not an admin }
+        '500': { description: some connections could not be removed; the counts say how many }
   /api/connections/{namespace}/{server}/start:
     post:
       tags: [connections]
@@ -2567,7 +2578,7 @@ paths:
       parameters:
         - { in: query, name: agent, required: true, schema: { type: string }, description: "namespace/name" }
       responses:
-        '200': { description: "{servers: [{namespace, server, mode, connected}], required: [...]}" }
+        '200': { description: "{servers: [{namespace, server, mode, connected}], required: [...], ownerNeedsReconnect: [...]}" }
   /api/triggers:
     get:
       tags: [triggers]

@@ -442,30 +442,37 @@ func (s *Service) Disconnect(ctx context.Context, tenantID, userID string, ref S
 	if s.Keys == nil || ref.URL == "" || ref.UID != conn.ServerUID {
 		return res, nil
 	}
+	res.Revoked, res.RevokeError = s.revokeAtProvider(ctx, tenantID, conn, ref)
+	return res, nil
+}
+
+// revokeAtProvider asks the provider to revoke a connection's refresh token
+// (RFC 7009). A provider with no revocation endpoint is neither revoked nor an
+// error. A connection whose tokens were wiped has nothing to revoke.
+func (s *Service) revokeAtProvider(ctx context.Context, tenantID string, conn postgresql.MCPConnection, ref ServerRef) (bool, error) {
+	if len(conn.RefreshTokenEnc) == 0 {
+		return false, nil
+	}
 	rt, err := s.Keys.Open(conn.KeyID, conn.RefreshTokenEnc, AAD("refresh", conn.TenantID, conn.UserID, conn.ServerUID))
 	if err != nil {
-		res.RevokeError = err
-		return res, nil
+		return false, err
 	}
 	app, secret, err := s.app(ctx, ref, tenantID)
 	if err != nil {
-		res.RevokeError = err
-		return res, nil
+		return false, err
 	}
 	meta, err := s.OAuth.Discover(ctx, ref.URL)
 	if err != nil {
-		res.RevokeError = err
-		return res, nil
+		return false, err
 	}
 	err = s.OAuth.Revoke(ctx, meta, &oauth.Config{ClientID: app.ClientID, ClientSecret: secret}, string(rt), "refresh_token")
 	switch {
 	case err == nil:
-		res.Revoked = true
+		return true, nil
 	case errors.Is(err, oauth.ErrNoRevocationEndpoint):
-	default:
-		res.RevokeError = err
+		return false, nil
 	}
-	return res, nil
+	return false, err
 }
 
 // CallbackURL is the fixed redirect URI of this deployment, which an admin

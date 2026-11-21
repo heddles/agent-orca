@@ -43,6 +43,7 @@ import (
 //	POST   /api/connections/{ns}/{server}/start          begin the flow, returns {authorizeUrl} (runner)
 //	GET    /api/connections/callback                     the provider's redirect target (the session)
 //	DELETE /api/connections/{ns}/{server}                disconnect; ?user= is the admin's revoke
+//	DELETE /api/connections?user=<id>                    offboarding: revoke all of one user's connections in the tenant (admin)
 //	GET    /api/mcpservers/{ns}/{name}/connections       who is connected, never a token (admin)
 //	GET    /api/mcp-oauth-apps/{ns}/{server}             the registered app, without its secret (admin)
 //	PUT    /api/mcp-oauth-apps/{ns}/{server}             register or rotate the app; the secret is write-only (admin)
@@ -190,6 +191,10 @@ func serverRefOf(srv *agentorcav1alpha1.MCPServer) connections.ServerRef {
 }
 
 func (s *UIServer) handleListConnections(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodDelete {
+		s.handleRevokeUserConnections(w, r)
+		return
+	}
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -436,6 +441,66 @@ func (s *UIServer) handleConnectionDelete(w http.ResponseWriter, r *http.Request
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handleRevokeUserConnections is the offboarding action: it deletes every
+// connection of one user in the caller's tenant and asks each provider to revoke
+// the refresh token (best effort). There is no user-lifecycle signal in the
+// operator, so an admin does this by hand when someone leaves. Each connection is
+// audited, and so is the sweep.
+func (s *UIServer) handleRevokeUserConnections(w http.ResponseWriter, r *http.Request) {
+	if !s.connPreflight(w, r, tenancy.RoleAdmin) {
+		return
+	}
+	tenant, _, ok := connIdentity(w, r)
+	if !ok {
+		return
+	}
+	target := r.URL.Query().Get("user")
+	if target == "" {
+		jsonError(w, "user is required: this revokes every connection of that user", http.StatusBadRequest)
+		return
+	}
+	list, err := s.conns.store.ListConnections(pgScope(r.Context()), target)
+	if err != nil {
+		slog.Error("listing a user's connections failed", "err", err)
+		jsonError(w, "listing connections failed", http.StatusInternalServerError)
+		return
+	}
+	var removed, revoked, failed int
+	for _, c := range list {
+		ref := connections.ServerRef{Namespace: c.ServerNS, Name: c.ServerName}
+		if srv, err := s.lookupConnectableServer(r.Context(), c.ServerNS, c.ServerName); err == nil {
+			ref = serverRefOf(srv)
+			if o := srv.Spec.Auth.OAuth; o.RevokeOnDisconnect != nil && !*o.RevokeOnDisconnect {
+				ref.URL = ""
+			}
+		}
+		res, err := s.conns.backend.Disconnect(pgScope(r.Context()), tenant, target, ref)
+		if err != nil {
+			failed++
+			slog.Error("revoking a user's connection failed", "server", c.ServerNS+"/"+c.ServerName, "err", err)
+			continue
+		}
+		removed++
+		outcome := "provider revocation not attempted"
+		switch {
+		case res.Revoked:
+			revoked++
+			outcome = "revoked at the provider"
+		case res.RevokeError != nil:
+			outcome = "provider revocation failed"
+		}
+		s.recordAudit(w, r, auditEventFor(postgresql.AuditRevoke, kindMCPConnection, c.ServerNS, c.ServerName, "",
+			fmt.Sprintf("revoked the connection of user %q (%s)", target, outcome)))
+	}
+	s.recordAudit(w, r, auditEventFor(postgresql.AuditRevoke, kindMCPConnection, "", "", "",
+		fmt.Sprintf("offboarded user %q: %d connection(s) removed, %d revoked at the provider, %d failed", target, removed, revoked, failed)))
+	if failed > 0 {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+	}
+	jsonResponse(w, map[string]int{"removed": removed, "revokedAtProvider": revoked, "failed": failed})
+}
+
 func (s *UIServer) handleServerConnections(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -580,6 +645,10 @@ type requiredServer struct {
 	Mode      string `json:"mode"`
 	// Connected is whether the caller has an active connection to it.
 	Connected bool `json:"connected"`
+	// OwnerNeedsReconnect is set in maintainer mode when the account the agent acts
+	// as (its publisher's) has no live connection: runs fail until that person
+	// reconnects, or someone republishes the agent.
+	OwnerNeedsReconnect bool `json:"ownerNeedsReconnect,omitempty"`
 }
 
 func (s *UIServer) handleConnectionsRequired(w http.ResponseWriter, r *http.Request) {
@@ -611,7 +680,10 @@ func (s *UIServer) handleConnectionsRequired(w http.ResponseWriter, r *http.Requ
 	out := struct {
 		Servers  []requiredServer `json:"servers"`
 		Required []requiredServer `json:"required"`
-	}{Servers: []requiredServer{}, Required: []requiredServer{}}
+		// OwnerNeedsReconnect lists the maintainer-mode servers whose connection
+		// owner must reconnect: the UI shows "Connection owner needs to reconnect".
+		OwnerNeedsReconnect []requiredServer `json:"ownerNeedsReconnect"`
+	}{Servers: []requiredServer{}, Required: []requiredServer{}, OwnerNeedsReconnect: []requiredServer{}}
 	for _, srv := range servers {
 		o := srv.Spec.Auth.OAuth
 		if o == nil || !o.PerUser() {
@@ -620,6 +692,13 @@ func (s *UIServer) handleConnectionsRequired(w http.ResponseWriter, r *http.Requ
 		rs := requiredServer{Namespace: srv.Namespace, Server: srv.Name, Mode: o.Mode()}
 		c, err := s.conns.store.GetConnection(pgScope(r.Context()), user, srv.Namespace, srv.Name)
 		rs.Connected = err == nil && c.Status == postgresql.ConnectionActive && c.ServerUID == string(srv.UID)
+		if o.Mode() == agentorcav1alpha1.MCPConnectionMaintainer && agent.Status.PublishedBy != "" {
+			oc, err := s.conns.store.GetConnection(pgScope(r.Context()), agent.Status.PublishedBy, srv.Namespace, srv.Name)
+			if err != nil || oc.Status != postgresql.ConnectionActive || oc.ServerUID != string(srv.UID) {
+				rs.OwnerNeedsReconnect = true
+				out.OwnerNeedsReconnect = append(out.OwnerNeedsReconnect, rs)
+			}
+		}
 		out.Servers = append(out.Servers, rs)
 		// Only a mode that uses the caller's own account needs the caller to connect:
 		// in maintainer mode the maintainer's connection is used, not the caller's.
