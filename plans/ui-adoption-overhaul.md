@@ -1,5 +1,56 @@
 # UI adoption overhaul — agents for everyone, GitOps-safe
 
+## Status (2026-11-20)
+
+Everything below is merged to `main` (head dd192e4) unless marked otherwise. The stage checklists
+further down were written as the plan and are not ticked item by item; this table is the current
+state. Per-stage detail is in the PRs (#199-#234) and in `docs/`.
+
+| Stage | State | Notes |
+|---|---|---|
+| U0 tenant identity and isolation | Merged | Generated `tnt_` IDs, JWT `tid`, label stamping, Postgres RLS, NetworkPolicies by tenant ID. Items not individually re-checked for this update: Redis, object store, vector DB and Hindsight scoping, audit-then-enforce rollout. |
+| U1 safe write path and roles | Merged | viewer/runner/builder/admin, federated roles via `TenantConfig.spec.roles`, server-side apply, 409 on conflict, audit. |
+| U2 ownership and GitOps coexistence | Merged, e2e open | Ownership webhook blocks GitOps writes to UI-owned objects (`failurePolicy: Fail`), handoff, export, `docs/gitops-coexistence.md`. **Not done:** the kind e2e with real Argo CD and Flux. The mlx-k3s cluster has no Argo CD yet. |
+| U3 shell and IA | Merged | |
+| U4 catalog, templates, My work | Merged | |
+| U5 builder | Mostly merged | Guided builder, test panel, form/YAML, publish. **Not built:** document upload for knowledge, draft-from-description, "Check with my cases". |
+| U6 versions, review, export | Merged | Revisions, diff, rollback, export. |
+| U7 evaluations | Merged | Datasets, graders (incl. untrusted-judge publish gate), experiments, gates, retention, JSONL export. |
+| U8 fleet overview | Merged | |
+| U9 where people work | Partly merged | Webhook triggers and the embeddable chat widget are merged. **Not built:** Slack/Teams app, email trigger. |
+| Scheduled runs (S1-S4) | Merged | `AgentSchedule` CRD, controller, API, ownership, UI. **Not built:** result notifications (S5). |
+| Per-user MCP OAuth C1-C3 | Merged | Connect flow, encrypted store, `maintainer` mode, redaction, publish gate. |
+| C4 `invoker` mode | Merged (#232) | Fails closed for schedule, trigger, widget, machine, child and workflow runs; pause with a connect card. |
+| C5 lifecycle | Merged (#233) | Idle expiry (90 days), key-rotation job, bulk offboarding, metrics, migration 0021. |
+
+### Verified on the mlx-k3s cluster
+Routing, the live tenant page sweep, triggers, widget, schedules, and per-user OAuth `maintainer` mode
+against a fake provider. **Not verified live:** C4 `invoker` pause and resume, C5 lifecycle jobs, the
+warm-pod claim path for per-user servers (unit tests only; needs an http-input agent), migration 0021 on
+the cluster. The cluster still runs images built before C4/C5.
+
+### Remaining work, in order
+1. Schedule result notifications (S5).
+2. Slack, Teams and email triggers (U9 rest).
+3. Builder gaps: document upload, draft-from-description, "Check with my cases".
+4. `routing_events` filtering; audit of chat, answer and feedback.
+5. `archived_runs` retention caveats.
+6. Argo CD / Flux kind e2e (U2), last.
+
+### Known issues and decisions pending
+- Persistent `agentorca-deploy-*` pods have a placeholder run name and still fail the per-user token fetch;
+  unknown whether anything uses them.
+- `invoker` approval default is coarse: MCP discovery drops side-effect classes, so most invoker tools
+  default to requiring approval until a policy sets the class.
+- A scheduled or trigger run with no invoker connection gets no tools from that server instead of a
+  `connection_required` error.
+- Two `-race` test flakes exist on `main`: `TestRoutingRequestLogCarriesTheReason` and
+  `TestClaimRun_RestartKeepsPriorRunSearchable`.
+- The OIDC login keeps pending-login state in process (`oidc_handlers.go`), so a multi-replica operator can
+  fail the callback.
+- Test rows from the live e2e remain in cluster Postgres; cleanup must be scoped by `tenant_id`.
+- The connections redirect URI on the cluster is a localhost placeholder.
+
 ## Goal
 
 Anyone (business users, AI consumers) can find an agent, put it to work, build
