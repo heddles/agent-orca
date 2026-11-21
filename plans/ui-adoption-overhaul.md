@@ -10,7 +10,7 @@ state. Per-stage detail is in the PRs (#199-#234) and in `docs/`.
 |---|---|---|
 | U0 tenant identity and isolation | Merged | Generated `tnt_` IDs, JWT `tid`, label stamping, Postgres RLS, NetworkPolicies by tenant ID. Items not individually re-checked for this update: Redis, object store, vector DB and Hindsight scoping, audit-then-enforce rollout. |
 | U1 safe write path and roles | Merged | viewer/runner/builder/admin, federated roles via `TenantConfig.spec.roles`, server-side apply, 409 on conflict, audit. |
-| U2 ownership and GitOps coexistence | Merged, e2e open | Ownership webhook blocks GitOps writes to UI-owned objects (`failurePolicy: Fail`), handoff, export, `docs/gitops-coexistence.md`. **Not done:** the kind e2e with real Argo CD and Flux. The mlx-k3s cluster has no Argo CD yet. |
+| U2 ownership and GitOps coexistence | Merged, e2e open | Ownership webhook blocks GitOps writes to UI-owned objects (`failurePolicy: Fail`), handoff, export, `docs/gitops-coexistence.md`. **Not done:** the e2e with real Argo CD and Flux. Argo CD (v3.6.1, Helm release `argocd`) is installed on mlx-k3s, so the Argo half can run there; Flux is not installed. |
 | U3 shell and IA | Merged | |
 | U4 catalog, templates, My work | Merged | |
 | U5 builder | Mostly merged | Guided builder, test panel, form/YAML, publish. **Not built:** document upload for knowledge, draft-from-description, "Check with my cases". |
@@ -26,8 +26,7 @@ state. Per-stage detail is in the PRs (#199-#234) and in `docs/`.
 ### Verified on the mlx-k3s cluster
 Routing, the live tenant page sweep, triggers, widget, schedules, and per-user OAuth `maintainer` mode
 against a fake provider. **Not verified live:** C4 `invoker` pause and resume, C5 lifecycle jobs, the
-warm-pod claim path for per-user servers (unit tests only; needs an http-input agent), migration 0021 on
-the cluster. The cluster still runs images built before C4/C5.
+warm-pod claim path for per-user servers (unit tests only; needs an http-input agent),  mlx-k3s was upgraded to `e2e-dd192e46` (operator, UI, router; main dd192e4, Helm revision 11) on 2026-11-20 with migration 0021 and the new CRD enum applied and the 90-day idle expiry on; the live checks above are still to do. Note: `helm upgrade` does not update CRDs, apply `charts/agent-orca/crds` with server-side apply.
 
 ### Remaining work, in order
 1. Schedule result notifications (S5).
