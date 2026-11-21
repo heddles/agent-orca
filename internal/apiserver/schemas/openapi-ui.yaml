@@ -2373,6 +2373,18 @@ paths:
       responses:
         '200': { description: "nextRuns (utc and local), minInterval, shortestGap and tooFrequent" }
         '400': { description: invalid expression or time zone }
+  /api/notification-channels:
+    get:
+      tags: [schedules]
+      summary: Notification channels of the caller's tenant (builder role), names and types only
+      description: >
+        The channels an administrator set up on the tenant's TenantConfig
+        (spec.notifications.channels), for the schedule builder's "Send the result to"
+        choice. Read-only: the Secret that holds a channel's destination is never
+        returned, and the UI cannot change TenantConfig.
+      responses:
+        '200': { description: "array of {name, type}; type is webhook, slack or smtp" }
+        '403': { description: needs the builder role }
   /api/schedules/{namespace}/{name}/runs:
     get:
       tags: [schedules]

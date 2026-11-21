@@ -339,7 +339,8 @@ approvals:
   notifyWebhookSecret:
     name: ""
     key: url
-  # Public base URL of the UI, for links to the approvals inbox in messages.
+  # Public base URL of the UI, for links to the approvals inbox in messages and
+  # to the run in a schedule's result notification. Empty: no link.
   uiURL: ""
 
 # Cluster DNS domain. Sandboxed agents reach their router by its fully

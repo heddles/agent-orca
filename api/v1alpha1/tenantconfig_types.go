@@ -79,6 +79,79 @@ type TenantConfigSpec struct {
 	// gets defaultRole, or no access at all when that is unset.
 	// +optional
 	Roles *TenantRoles `json:"roles,omitempty"`
+
+	// Notifications are the places the tenant's schedules can send a message
+	// to. Administrators own this field: it is not writable from the UI, which
+	// only lists the channel names.
+	// +optional
+	Notifications *TenantNotifications `json:"notifications,omitempty"`
+}
+
+// Notification channel types.
+const (
+	// NotificationChannelWebhook POSTs a JSON body signed with HMAC-SHA256.
+	NotificationChannelWebhook = "webhook"
+	// NotificationChannelSlack POSTs {"text": ...} to a Slack incoming webhook.
+	NotificationChannelSlack = "slack"
+	// NotificationChannelSMTP sends an email.
+	NotificationChannelSMTP = "smtp"
+)
+
+// TenantNotifications lists the tenant's notification channels.
+type TenantNotifications struct {
+	// Channels are the named destinations an AgentSchedule's
+	// spec.result.notify.channel can pick.
+	// +listType=map
+	// +listMapKey=name
+	// +kubebuilder:validation:MaxItems=20
+	// +optional
+	Channels []NotificationChannel `json:"channels,omitempty"`
+}
+
+// NotificationChannel is one destination. Where it goes is in a Secret, never
+// in the spec: the URL of a Slack incoming webhook is itself a credential.
+type NotificationChannel struct {
+	// Name is what an AgentSchedule refers to.
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	// +kubebuilder:validation:MaxLength=63
+	Name string `json:"name"`
+
+	// Type is webhook, slack or smtp.
+	// +kubebuilder:validation:Enum=webhook;slack;smtp
+	Type string `json:"type"`
+
+	// SecretRef is the Secret that holds the destination.
+	//
+	//   - webhook: url, and signingKey (the HMAC-SHA256 key; the body is signed
+	//     as "<timestamp>.<body>" like the trigger webhooks, in the headers
+	//     X-AgentOrca-Timestamp and X-AgentOrca-Signature).
+	//   - slack: url (an incoming-webhook URL).
+	//   - smtp: host, port, from and to (comma separated), and optionally
+	//     username and password.
+	SecretRef NotificationSecretRef `json:"secretRef"`
+
+	// Insecure allows an http:// URL (webhook, slack) or an SMTP server that
+	// does not offer STARTTLS. Default false: https and STARTTLS are required.
+	// +optional
+	Insecure bool `json:"insecure,omitempty"`
+
+	// AllowPrivateAddresses allows a destination that resolves to a loopback,
+	// link-local, private or otherwise internal address, such as a mail relay
+	// in the cluster. Default false: such addresses are refused, which keeps a
+	// channel from being pointed at the cluster's own services or at a cloud
+	// metadata endpoint.
+	// +optional
+	AllowPrivateAddresses bool `json:"allowPrivateAddresses,omitempty"`
+}
+
+// NotificationSecretRef names a Secret.
+type NotificationSecretRef struct {
+	// Name of the Secret.
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+	// Namespace of the Secret. Defaults to the TenantConfig's namespace.
+	// +optional
+	Namespace string `json:"namespace,omitempty"`
 }
 
 // TenantRoles maps OIDC groups to the roles of the UI API, ACP and External

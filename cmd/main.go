@@ -60,6 +60,7 @@ import (
 	"github.com/heddles/agent-orca/internal/evals/judge"
 	evalrunner "github.com/heddles/agent-orca/internal/evals/runner"
 	"github.com/heddles/agent-orca/internal/githubapp"
+	"github.com/heddles/agent-orca/internal/notify"
 	"github.com/heddles/agent-orca/internal/oauth"
 	"github.com/heddles/agent-orca/internal/openshell"
 	"github.com/heddles/agent-orca/internal/podbuilder"
@@ -526,6 +527,10 @@ func main() {
 		StateStore:             stateStore,
 		Audit:                  scheduleAudit,
 		MaxConsecutiveFailures: scheduleMaxFailures,
+		// Result notifications (spec.result.notify). The link in a message uses
+		// the UI address the approval messages use.
+		Notifier: &notify.Sender{},
+		UIURL:    os.Getenv("APPROVALS_UI_URL"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "AgentSchedule")
 		os.Exit(1)
