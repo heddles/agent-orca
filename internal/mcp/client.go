@@ -376,9 +376,26 @@ type serverConn struct {
 	user            *UserConnection  // per-user connection; token fetched per request and cached
 	userMu          sync.Mutex
 	userToken       Token
+	// http session fields, assigned by the server on initialize
+	httpMu          sync.Mutex
+	sessionID       string // Mcp-Session-Id the server opened; echoed on later requests
+	protocolVersion string // version the server negotiated, sent as MCP-Protocol-Version
 	// JSON-RPC ID counter
 	nextID atomic.Int64
 }
+
+// Headers of the Streamable HTTP transport (MCP 2025-03-26 and later).
+const (
+	// mcpSessionHeader carries the session the server assigned on initialize.
+	// Servers that use sessions answer 400 to a later request without it.
+	mcpSessionHeader = "Mcp-Session-Id"
+	// mcpProtocolVersionHeader lets a server reject a request whose protocol
+	// version it does not speak; it carries the negotiated version.
+	mcpProtocolVersionHeader = "MCP-Protocol-Version"
+	// httpAcceptStreamable is what Streamable HTTP requires on every POST: the
+	// answer may be a plain JSON body or a one-shot SSE stream.
+	httpAcceptStreamable = "application/json, text/event-stream"
+)
 
 // exchangeOAuthToken performs the OAuth 2.0 token exchange against the server's
 // published endpoints (RFC 8414 discovery + refresh_token grant) and returns the
@@ -511,6 +528,14 @@ func (s *serverConn) initialize(ctx context.Context) error {
 	})
 	if err != nil {
 		return fmt.Errorf("MCP initialize: %w", err)
+	}
+	// The server may answer with the version it will actually speak; send that
+	// one back in MCP-Protocol-Version from here on.
+	var init struct {
+		ProtocolVersion string `json:"protocolVersion"`
+	}
+	if err := json.Unmarshal(resp, &init); err == nil && init.ProtocolVersion != "" {
+		s.setSession("", init.ProtocolVersion)
 	}
 	slog.Debug("MCP initialized", "server", s.name, "result", string(resp))
 
@@ -769,17 +794,88 @@ func (s *serverConn) sendStdio(reqBytes []byte) (json.RawMessage, error) {
 	}
 }
 
-func (s *serverConn) sendHTTP(ctx context.Context, reqBytes []byte) (json.RawMessage, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.httpURL, bytes.NewReader(reqBytes))
+// newHTTPRequest builds a request with the headers a Streamable HTTP server
+// requires: both content types in Accept, the session it assigned, the negotiated
+// protocol version, and the configured credentials. userToken is false only for
+// the request that ends the session, which must not ask for a new token.
+func (s *serverConn) newHTTPRequest(ctx context.Context, method string, body []byte, userToken bool) (*http.Request, error) {
+	var rdr io.Reader
+	if body != nil {
+		rdr = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, s.httpURL, rdr)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Content-Type", "application/json")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	req.Header.Set("Accept", httpAcceptStreamable)
+	// The session and the version are separate: a server may negotiate
+	// 2025-06-18 and assign no session at all, and it still rejects an unknown
+	// version. Neither header has a value before initialize.
+	id, version := s.sessionHeaders()
+	if id != "" {
+		req.Header.Set(mcpSessionHeader, id)
+	}
+	if version != "" {
+		req.Header.Set(mcpProtocolVersionHeader, version)
+	}
 	s.setAuthHeaders(req.Header)
 	if s.oauthToken != "" {
 		req.Header.Set("Authorization", "Bearer "+s.oauthToken)
 	}
-	if err := s.setUserToken(ctx, req.Header); err != nil {
+	if userToken {
+		if err := s.setUserToken(ctx, req.Header); err != nil {
+			return nil, err
+		}
+	}
+	return req, nil
+}
+
+// setSession records what the server assigned or negotiated. Empty values are
+// ignored so a later response without the header cannot clear the session.
+func (s *serverConn) setSession(id, version string) {
+	s.httpMu.Lock()
+	defer s.httpMu.Unlock()
+	if id != "" {
+		s.sessionID = id
+	}
+	if version != "" {
+		s.protocolVersion = version
+	}
+}
+
+func (s *serverConn) sessionHeaders() (id, version string) {
+	s.httpMu.Lock()
+	defer s.httpMu.Unlock()
+	return s.sessionID, s.protocolVersion
+}
+
+// httpStatusError names the status and quotes the server, so a 406 reads as
+// "client must accept both application/json and text/event-stream" instead of a
+// JSON parse failure that points at the wrong end of the wire.
+func (s *serverConn) httpStatusError(resp *http.Response) error {
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<10))
+	var rpcResp jsonrpcResponse
+	if err := json.Unmarshal(body, &rpcResp); err == nil && rpcResp.Error != nil {
+		return fmt.Errorf("MCP HTTP %d: %s", resp.StatusCode, rpcResp.Error.Message)
+	}
+	if msg := strings.TrimSpace(string(body)); msg != "" {
+		return fmt.Errorf("MCP HTTP %d from %s: %s", resp.StatusCode, s.name, msg)
+	}
+	return fmt.Errorf("MCP HTTP %d from %s", resp.StatusCode, s.name)
+}
+
+func (s *serverConn) sendHTTP(ctx context.Context, reqBytes []byte) (json.RawMessage, error) {
+	var reqMsg struct {
+		ID int64 `json:"id"`
+	}
+	if err := json.Unmarshal(reqBytes, &reqMsg); err != nil {
+		return nil, fmt.Errorf("parsing MCP request: %w", err)
+	}
+	req, err := s.newHTTPRequest(ctx, http.MethodPost, reqBytes, true)
+	if err != nil {
 		return nil, err
 	}
 
@@ -791,15 +887,107 @@ func (s *serverConn) sendHTTP(ctx context.Context, reqBytes []byte) (json.RawMes
 	if resp.StatusCode == http.StatusUnauthorized {
 		s.dropUserToken() // the next request asks for a fresh one
 	}
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return nil, s.httpStatusError(resp)
+	}
+	// The server opens a session on initialize; every later request echoes it.
+	// Only a successful answer may set it: a rejecting server's header is not a
+	// session this client agreed to.
+	s.setSession(resp.Header.Get(mcpSessionHeader), "")
 
+	// A Streamable HTTP server may answer with a one-shot SSE stream rather than
+	// a JSON body; both carry the same JSON-RPC response.
+	if isEventStream(resp.Header.Get("Content-Type")) {
+		return s.readSSEResponse(resp.Body, reqMsg.ID)
+	}
 	var rpcResp jsonrpcResponse
 	if err := json.NewDecoder(resp.Body).Decode(&rpcResp); err != nil {
 		return nil, fmt.Errorf("parsing MCP HTTP response: %w", err)
+	}
+	// A response to another request would be silently used as this one's result
+	// otherwise; the id is the only thing that ties the two together.
+	if rpcResp.ID != reqMsg.ID {
+		return nil, fmt.Errorf("MCP HTTP response id %d does not match request %d", rpcResp.ID, reqMsg.ID)
 	}
 	if rpcResp.Error != nil {
 		return nil, fmt.Errorf("MCP error %d: %s", rpcResp.Error.Code, rpcResp.Error.Message)
 	}
 	return rpcResp.Result, nil
+}
+
+// isEventStream reports whether a Content-Type is an SSE stream.
+func isEventStream(contentType string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(contentType)), "text/event-stream")
+}
+
+// readSSEResponse reads a one-shot event stream until the JSON-RPC response whose
+// id matches wantID. Servers interleave other messages — a logging notification
+// before the initialize result is common — so anything else is skipped.
+func (s *serverConn) readSSEResponse(r io.Reader, wantID int64) (json.RawMessage, error) {
+	br := bufio.NewReader(r)
+	var data strings.Builder
+	dispatch := func() (json.RawMessage, bool, error) {
+		payload := data.String()
+		data.Reset()
+		if strings.TrimSpace(payload) == "" {
+			return nil, false, nil
+		}
+		return s.streamMessage(payload, wantID)
+	}
+	for {
+		line, readErr := br.ReadString('\n')
+		line = strings.TrimRight(line, "\r\n")
+		switch {
+		case strings.HasPrefix(line, "data:"):
+			if data.Len() > 0 {
+				data.WriteByte('\n')
+			}
+			data.WriteString(strings.TrimPrefix(strings.TrimPrefix(line, "data:"), " "))
+		case line == "":
+			if res, ok, err := dispatch(); err != nil || ok {
+				return res, err
+			}
+		}
+		if readErr != nil {
+			// A final event may arrive without its terminating blank line.
+			if res, ok, err := dispatch(); err != nil || ok {
+				return res, err
+			}
+			if errors.Is(readErr, io.EOF) {
+				return nil, fmt.Errorf("MCP event stream closed before the response to request %d", wantID)
+			}
+			return nil, fmt.Errorf("reading MCP event stream: %w", readErr)
+		}
+	}
+}
+
+// streamMessage interprets one SSE payload. A message without a method is a
+// response, and only the one whose id matches is ours. A message with a method is
+// a notification (no id) or a server-initiated request (id): this client answers
+// neither, and a server request must not be mistaken for the reply, since a
+// server may reuse the id namespace the client is using.
+func (s *serverConn) streamMessage(payload string, wantID int64) (json.RawMessage, bool, error) {
+	var msg struct {
+		ID     *int64          `json:"id"`
+		Method string          `json:"method"`
+		Result json.RawMessage `json:"result"`
+		Error  *jsonrpcError   `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(payload), &msg); err != nil {
+		slog.Debug("skipping non-JSON MCP event stream message", "server", s.name)
+		return nil, false, nil
+	}
+	if msg.Method != "" {
+		slog.Debug("skipping MCP event stream message", "server", s.name, "method", msg.Method)
+		return nil, false, nil
+	}
+	if msg.ID == nil || *msg.ID != wantID {
+		return nil, false, nil
+	}
+	if msg.Error != nil {
+		return nil, false, fmt.Errorf("MCP error %d: %s", msg.Error.Code, msg.Error.Message)
+	}
+	return msg.Result, true, nil
 }
 
 // notify sends a JSON-RPC notification (no response expected).
@@ -818,23 +1006,25 @@ func (s *serverConn) notify(ctx context.Context, method string, params any) erro
 		_, err := fmt.Fprintf(s.stdin, "%s\n", reqBytes)
 		return err
 	case TransportHTTP, TransportSSE:
-		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, s.httpURL, bytes.NewReader(reqBytes))
+		httpReq, err := s.newHTTPRequest(ctx, http.MethodPost, reqBytes, true)
 		if err != nil {
-			return err
-		}
-		httpReq.Header.Set("Content-Type", "application/json")
-		s.setAuthHeaders(httpReq.Header)
-		if s.oauthToken != "" {
-			httpReq.Header.Set("Authorization", "Bearer "+s.oauthToken)
-		}
-		if err := s.setUserToken(ctx, httpReq.Header); err != nil {
 			return err
 		}
 		resp, err := http.DefaultClient.Do(httpReq)
 		if err != nil {
 			return err
 		}
-		_ = resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode == http.StatusUnauthorized {
+			s.dropUserToken() // the next request asks for a fresh one
+		}
+		if resp.StatusCode < 200 || resp.StatusCode > 299 {
+			return s.httpStatusError(resp)
+		}
+		s.setSession(resp.Header.Get(mcpSessionHeader), "")
+		// A notification is answered with 202 and no body; drain whatever came
+		// back so the connection is reusable.
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<10))
 		return nil
 	}
 	return nil
@@ -847,7 +1037,35 @@ func (s *serverConn) close() error {
 	if s.cmd != nil {
 		return s.cmd.Wait()
 	}
+	s.endHTTPSession()
 	return nil
+}
+
+// endHTTPSession asks the server to discard the session it opened at initialize
+// (Streamable HTTP: DELETE carrying the session id). Without it a server keeps
+// the session, and whatever upstream state hangs off it, until it times out.
+func (s *serverConn) endHTTPSession() {
+	if s.transport != TransportHTTP && s.transport != TransportSSE {
+		return
+	}
+	if id, _ := s.sessionHeaders(); id == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	// No user token: closing must not start a token exchange.
+	req, err := s.newHTTPRequest(ctx, http.MethodDelete, nil, false)
+	if err != nil {
+		slog.Debug("MCP session delete request not built", "server", s.name, "err", err)
+		return
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		slog.Debug("MCP session delete failed", "server", s.name, "err", err)
+		return
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<10))
+	_ = resp.Body.Close()
 }
 
 // parseToolName splits "serverName:toolName" into components.
