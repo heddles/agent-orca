@@ -118,3 +118,9 @@ export const CONNECT_OUTCOMES: Record<string, { ok: boolean; text: string }> = {
   scopes: { ok: false, text: 'The provider granted more access than the administrator allows for this server, so the connection was refused.' },
   failed: { ok: false, text: 'The connection could not be completed. Start again, and ask an administrator if it keeps failing.' },
 }
+
+/** The question a run asks when a tool call needed the user's own connection (router: connectionRequired). */
+export const CONNECTION_QUESTION_PREFIX = 'This agent needs your '
+export function needsConnection(question?: string): boolean {
+  return !!question && question.startsWith(CONNECTION_QUESTION_PREFIX)
+}

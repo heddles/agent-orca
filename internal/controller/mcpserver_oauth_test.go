@@ -130,8 +130,30 @@ var _ = Describe("MCPServer OAuth (forward-only; client does the exchange)", fun
 			Expect(err).To(MatchError(ContainSubstring("needs appRef")))
 		})
 		It("rejects an unknown mode", func() {
-			err := k8sClient.Create(ctx, mk("cel-bad", &agentorcav1alpha1.MCPOAuthConfig{ConnectionMode: "invoker", AppRef: "a"}))
+			err := k8sClient.Create(ctx, mk("cel-bad", &agentorcav1alpha1.MCPOAuthConfig{ConnectionMode: "everyone", AppRef: "a"}))
 			Expect(err).To(HaveOccurred())
+		})
+		It("accepts invoker mode with an appRef and no credentials", func() {
+			Expect(k8sClient.Create(ctx, mk("cel-ok", &agentorcav1alpha1.MCPOAuthConfig{
+				ConnectionMode: "invoker", AppRef: "github", UserScopes: []string{"repo:read"},
+			}))).To(Succeed())
+			var got agentorcav1alpha1.MCPServer
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "cel-ok", Namespace: ns}, &got)).To(Succeed())
+			Expect(got.Spec.Auth.OAuth.Mode()).To(Equal(agentorcav1alpha1.MCPConnectionInvoker))
+			Expect(got.Spec.Auth.OAuth.PerUser()).To(BeTrue())
+		})
+		It("rejects invoker mode without an appRef, or with credentials or token secret refs", func() {
+			err := k8sClient.Create(ctx, mk("cel-bad", &agentorcav1alpha1.MCPOAuthConfig{ConnectionMode: "invoker"}))
+			Expect(err).To(MatchError(ContainSubstring("needs appRef")))
+			err = k8sClient.Create(ctx, mk("cel-bad", &agentorcav1alpha1.MCPOAuthConfig{
+				ConnectionMode: "invoker", AppRef: "github", Credentials: &agentorcav1alpha1.LocalObjectRef{Name: "creds"},
+			}))
+			Expect(err).To(MatchError(ContainSubstring("needs appRef")))
+			err = k8sClient.Create(ctx, mk("cel-bad", &agentorcav1alpha1.MCPOAuthConfig{
+				ConnectionMode: "invoker", AppRef: "github",
+				RefreshTokenSecretRef: &agentorcav1alpha1.SecretKeyRef{Name: "tok", Key: "token"},
+			}))
+			Expect(err).To(MatchError(ContainSubstring("needs appRef")))
 		})
 	})
 })

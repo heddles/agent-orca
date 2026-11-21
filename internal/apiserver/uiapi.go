@@ -852,6 +852,11 @@ func (s *UIServer) handleAnswerRun(w http.ResponseWriter, r *http.Request, ns, r
 			WorkflowSandbox: run.Spec.WorkflowSandbox,
 		},
 	}
+	// The continuation is the same person's run: it keeps the invoker, so a
+	// "connect your account" pause resumes with the connection just made.
+	if by := run.Annotations[AnnotationCreatedBy]; by != "" {
+		continuation.Annotations = map[string]string{AnnotationCreatedBy: by}
+	}
 	if err := s.crdClient.Create(r.Context(), continuation); err != nil {
 		http.Error(w, fmt.Sprintf("creating continuation run: %v", err), http.StatusInternalServerError)
 		return
@@ -1950,6 +1955,13 @@ func (s *UIServer) startChatTurn(ctx context.Context, deployment *agentorcav1alp
 	maps.Copy(run.Labels, labels)
 	if len(annotations) > 0 {
 		run.Annotations = maps.Clone(annotations)
+	}
+	// A turn a signed-in user types is that user's run (their invoker identity).
+	if t, ok := TenantFromContext(ctx); ok && t != nil && t.UserID != "" && run.Annotations[AnnotationCreatedBy] == "" {
+		if run.Annotations == nil {
+			run.Annotations = map[string]string{}
+		}
+		run.Annotations[AnnotationCreatedBy] = t.UserID
 	}
 	stampOwner(ctx, run)
 	if err := s.crdClient.Create(ctx, run); err != nil {

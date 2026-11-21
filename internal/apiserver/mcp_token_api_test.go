@@ -131,7 +131,7 @@ func TestMCPToken_IssuesTheMaintainersShortLivedToken(t *testing.T) {
 		t.Fatalf("broker calls = %d", len(f.broker.reqs))
 	}
 	got := f.broker.reqs[0]
-	if got.UserID != tokMaintainer || got.TenantID != isoA || got.Server.UID != tokUID || got.Server.Name != "github" ||
+	if got.UserID != tokMaintainer || got.TenantID != isoA || got.Server.UID != tokUID || got.Server.Name != tokServerName ||
 		got.Server.AppRef != tokApp || got.Server.URL != "https://mcp.github.example/mcp" {
 		t.Errorf("request = %+v", got)
 	}

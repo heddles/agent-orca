@@ -623,7 +623,7 @@ func (s *UIServer) handleConnectionsRequired(w http.ResponseWriter, r *http.Requ
 		out.Servers = append(out.Servers, rs)
 		// Only a mode that uses the caller's own account needs the caller to connect:
 		// in maintainer mode the maintainer's connection is used, not the caller's.
-		if o.Mode() == "invoker" && !rs.Connected {
+		if o.Mode() == agentorcav1alpha1.MCPConnectionInvoker && !rs.Connected {
 			out.Required = append(out.Required, rs)
 		}
 	}

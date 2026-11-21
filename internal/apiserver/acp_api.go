@@ -1485,6 +1485,10 @@ func (s *ACPServer) resumeACPRun(w http.ResponseWriter, r *http.Request, run *ag
 			WorkflowSandbox: run.Spec.WorkflowSandbox,
 		},
 	}
+	// Same person's run: keep the invoker (docs/mcp-oauth.md).
+	if by := run.Annotations[AnnotationCreatedBy]; by != "" {
+		continuation.Annotations = map[string]string{AnnotationCreatedBy: by}
+	}
 	if err := s.crdClient.Create(r.Context(), continuation); err != nil {
 		writeACPError(w, "server_error", fmt.Sprintf("creating continuation run: %s", err), http.StatusInternalServerError)
 		return

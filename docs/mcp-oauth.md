@@ -4,8 +4,8 @@ A business user wants an agent to read **their own** GitHub, Google Drive or Sla
 way was one shared token in a Secret: one identity for everyone who uses the agent. This page describes
 the connection model that lets a person connect their own account.
 
-Status: the `maintainer` mode is built. The `invoker` mode (the account of whoever starts the run) and the
-lifecycle jobs (idle expiry, offboarding hook, key rotation job, metrics) are not built yet; see
+Status: the `maintainer` and `invoker` modes are built. The lifecycle jobs (idle expiry, offboarding hook,
+key rotation job, metrics) are not built yet; see
 [What is not built](#what-is-not-built). The design is in `docs/proposals/mcp-user-oauth.md` on the
 `docs/proposals-triggers-oauth` branch.
 
@@ -18,7 +18,7 @@ lifecycle jobs (idle expiry, offboarding hook, key rotation job, metrics) are no
 | `shared` (default) | One credential in a Secret (`credentials`) | An admin, once | Today's behaviour. Existing servers stay `shared`; nothing changes for them. |
 | `maintainer` | The account of the user who **last published** the agent | The maintainer, from the UI | A delegation: the agent acts as its maintainer for everyone who runs it. The run page and the Connections page say so. |
 
-`invoker` (the user who starts the run) is deliberately not accepted by the CRD yet.
+| `invoker` | The account of the user who **started the run** (the run's `agentorca.io/created-by`) | Each user, for themselves, from the UI | The agent acts as whoever runs it. A run with no person behind it has no account: it fails closed (see [Invoker mode](#invoker-mode)). |
 
 A server the UI creates with an `auth.oauth` block and no `credentials` Secret becomes `maintainer`
 by default. A server with `credentials`, and every server that already exists, stays `shared`.
@@ -88,6 +88,51 @@ Each entry is a key: the entry name is the key id, the value is 32 random bytes 
 **A stolen database dump is ciphertext only if the KEK is kept apart. Database access plus Secret access is
 a full compromise.** A KMS-held key is preferable; the `Keyring` has a small interface for it, but only the
 Secret-backed keyring is implemented.
+
+## Invoker mode
+
+With `connectionMode: invoker` the run acts as the person who started it. The operator reads that person
+from the **AgentRun object** (`agentorca.io/created-by`), never from the request body, and uses only that
+user's connection. There is no fallback to the maintainer, to a shared credential or to anyone else.
+
+The token endpoint answers `409 connection_required` (and uses no connection at all) when the run has no
+person behind it:
+
+| Run | Why it has no invoker |
+|---|---|
+| `created-by` empty | Nothing recorded (an unattributed run). |
+| `schedule:` (a schedule), `trigger:` (an external trigger), `widget:` (a chat widget key), `machine:` or `anonymous` | Not a person. A service account or client-credentials caller records no user. |
+| External API task, workflow step, evaluation run (label `agentorca.io/external-task`, `agentorca.io/workflow`, `agentorca.io/eval-arm`) | Started by a system, even if a user is named on it. |
+| A child run (`parentRunRef`) with no propagation | See below. |
+
+**Agent as tool.** A child run keeps the ORIGINAL invoker. When a pod creates a child run
+(`POST /agentrun/{ns}`) the operator drops any `created-by` the body carried and, only when the caller is the
+ServiceAccount of the parent run's own agent and the parent has an invoker, copies the parent's `created-by`
+and sets `agentorca.io/invoker-from-run` to the parent's name. The token endpoint accepts a child only when
+that annotation names its `parentRunRef`. The callee's own `allowedAgents`, "agent uses the server" and tenant
+checks still apply. A child whose parent has no invoker (a scheduled run) has none either.
+
+**Pausing for a connection.** If a tool call is refused with `connection_required` (for example the user
+disconnected during the run), the model gets a tool error it can relay ("the github account is not
+connected ... do not retry") and the run moves to `WaitingForInput` with the card "This agent needs your
+github account. Connect it under Connections, then answer here to continue." The run page and My work show
+a Connect link next to it. Answering resumes the run through the ordinary clarification path; the
+continuation keeps the original `created-by`. A child run cannot ask a human, so it returns the error to its
+caller instead. Before a run starts, `GET /api/me/connections/required?agent=ns/name` lists the invoker
+servers the caller has not connected, and the run form shows "Connect X to run this agent" and stays blocked.
+
+**Approval.** A tool of an invoker server needs an approver unless the agent's GuardrailPolicy says what the
+tool's class needs. MCP discovery carries no side-effect class, so most such tools are unclassified and are
+gated; set `toolApproval.unclassified: none` (or `write: none` for tools classified `write`) to let them run.
+`read` tools are never gated by this default. See [tool-side-effects.md](tool-side-effects.md).
+
+**Publishing.** An agent that uses an invoker server needs no publisher connection and records no
+`publishedBy`. The run form says `github as alice (invoker)` for a connected user, and the run's trace has an
+`mcpConnection` event with the server and identity label (once per server per run). The token endpoint logs
+the run, server, mode and identity, never the token.
+
+**Warm pods.** A warm pod has no run when it starts, so it connects only its non-per-user servers then; the
+per-user servers (maintainer and invoker) connect when the pod is claimed, with the claimed run's token.
 
 ## Setting it up (admin)
 
@@ -198,6 +243,7 @@ bytes is ignored. An MCP server that echoes its credential is a trust issue for 
 | Connect and disconnect your own account, "what does this agent need" | runner |
 | Register or rotate the OAuth app, set `connectionMode` and `userScopes`, see who is connected, revoke anyone's connection | admin (MCPServer writes are admin already) |
 | Publish an agent that uses a maintainer server | builder, with an active connection of their own |
+| Run an agent that uses an invoker server | runner, with an active connection of their own |
 
 A request with no signed-in **user** (a service account, client credentials, authentication disabled) cannot
 connect: it answers 403.
@@ -217,6 +263,7 @@ MCPServer `update` row. Use is not audited per call: `last_used_at` is updated a
 | The maintainer never connected, or the server was recreated | The tool call fails with `connection_required`. |
 | A refresh fails with `invalid_grant` | The status becomes `needs_reauth` and the call fails with a message the model can relay without secrets ("the connection needs to be renewed by its owner"). The owner sees "Needs renewing" on Connections. |
 | The maintainer disconnected | `connection_required`. The run never falls back to `shared` or to another user. |
+| Invoker mode, the user has not connected, or the run has no person behind it | `connection_required`; see [Invoker mode](#invoker-mode) for the pause and the connect card. |
 | The provider is down | The call fails with `connection_unavailable`; the status does not change. |
 
 When no token can be obtained while the run's router starts, that server's tools are not discovered (the
@@ -233,9 +280,12 @@ internal `POST /agentrun/{ns}/{run}/mcp-token`. `GET /api/mcpservers` now report
 
 ## What is not built
 
-* **`invoker` mode** (C4): the run identity from `created-by`, fail-closed rules for scheduled, external,
-  child and workflow runs, the WaitingForInput connect card, the approval default for writes.
-  `GET /api/me/connections/required` already exists and reports `required: []` until then.
+* **Invoker mode, cut parts** (C4): a tool call can only be refused with `connection_required` for tools the
+  router already discovered. When the invoker has no connection (or the run is scheduled) when the run starts,
+  that server's tools are not discovered, so the model sees no tools from it instead of a `connection_required`
+  error; the run form blocks a user who has not connected, but a scheduled or trigger run simply lacks the
+  tools. The MCP tool's side-effect class is not carried through discovery, so the approval default
+  applies to the whole server rather than to its write tools only.
 * **Lifecycle** (C5): the 90-day idle expiry, an offboarding hook, the key-rotation job, the
   `agentorca_mcp_connections` and refresh-failure metrics. There is no user-lifecycle signal in the operator
   today, so offboarding is manual: an admin revokes the user's connections.

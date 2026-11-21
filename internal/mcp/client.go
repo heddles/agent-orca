@@ -82,6 +82,8 @@ type OAuthConfig struct {
 type Token struct {
 	Value     string
 	ExpiresAt time.Time
+	// Identity is who the token acts as, e.g. "alice (invoker)". Not a secret.
+	Identity string
 }
 
 // TokenSource supplies the access token of a per-user connection (connection mode
@@ -332,6 +334,12 @@ func (c *Client) Call(ctx context.Context, toolName, arguments string) (string, 
 
 	result, err := target.callTool(ctx, localName, args)
 	if err != nil {
+		// A refused connection keeps its code so the router can act on it; its
+		// message never carries a credential (the operator sends a fixed text).
+		var ce *ConnectionError
+		if errors.As(err, &ce) {
+			return "", &ConnectionError{Code: ce.Code, Message: redact.String(ce.Message)}
+		}
 		// A server may echo the credential it was sent; mask it before the text can
 		// reach the model, a trace or a log (internal/redact).
 		return "", errors.New(redact.String(err.Error()))

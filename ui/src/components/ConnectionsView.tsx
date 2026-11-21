@@ -1,6 +1,6 @@
 /**
  * ConnectionsView — "Connect your account": the MCP servers that act as a person
- * (connection mode maintainer), whether you are connected to each, and Connect
+ * (connection mode maintainer or invoker), whether you are connected to each, and Connect
  * and Disconnect. The provider sends the browser back to /connections?status=…
  * after the flow; the page shows the outcome. Tokens never reach the browser.
  */
@@ -32,7 +32,7 @@ export function ConnectionsView() {
   const load = useCallback(() => {
     let live = true
     Promise.all([listMCPServers(''), listConnections()])
-      .then(([s, c]) => { if (live) { setServers(s.filter((m) => m.connectionMode === 'maintainer')); setConns(c); setError('') } })
+      .then(([s, c]) => { if (live) { setServers(s.filter((m) => m.connectionMode === 'maintainer' || m.connectionMode === 'invoker')); setConns(c); setError('') } })
       .catch((e: unknown) => { if (live) { setError(describeConnectionError(e)); setServers((old) => old ?? []) } })
     return () => { live = false }
   }, [])
@@ -65,7 +65,7 @@ export function ConnectionsView() {
       {servers === null && <div role="status" style={{ padding: 24, color: ds.textMuted, fontSize: 13 }}>Loading connections…</div>}
       {servers?.length === 0 && !error && (
         <EmptyState icon={ICON.tool} title="No services to connect yet">
-          {admin ? 'Set a server to connection mode maintainer under Settings, Connections, and register its OAuth app.' : 'An administrator has not set up any service that uses your own account.'}
+          {admin ? 'Set a server to connection mode maintainer or invoker under Settings, Connections, and register its OAuth app.' : 'An administrator has not set up any service that uses your own account.'}
         </EmptyState>
       )}
       <ul style={{ listStyle: 'none', margin: 0, padding: '0 24px', display: 'flex', flexDirection: 'column', gap: 10, maxWidth: 760 }}>
@@ -79,7 +79,9 @@ export function ConnectionsView() {
               </div>
               {c && <p style={muted}>Connected as {c.accountLabel || 'you'}. Access: {c.scopes.length ? c.scopes.join(', ') : 'as granted by the service'}.{c.lastUsedAt ? ` Last used ${new Date(c.lastUsedAt).toLocaleString()}.` : ''}</p>}
               {c && c.status !== 'active' && <p style={muted}>This connection needs to be renewed. Connect again to continue.</p>}
-              <p style={muted}>An agent you publish that uses this service acts as you for everyone who runs it.</p>
+              <p style={muted}>{m.connectionMode === 'invoker'
+                ? 'An agent that uses this service acts as whoever starts the run. Scheduled and automatic runs have no one to act as, so they cannot use it.'
+                : 'An agent you publish that uses this service acts as you for everyone who runs it.'}</p>
               {runner && (
                 <div style={row}>
                   <DSButton size="sm" variant="primary" disabled={busy === key(m.namespace, m.name)} onClick={() => connect(m)}>

@@ -229,7 +229,7 @@ export interface MCPServerSummary {
   tools?: MCPTool[]
   /** Whether MCP App iframe rendering is enabled for this server. Defaults to false. */
   allowApps: boolean
-  /** shared, maintainer or absent (no OAuth). maintainer servers use a person's connected account. */
+  /** shared, maintainer, invoker or absent (no OAuth). maintainer and invoker servers use a person's connected account. */
   connectionMode?: string
   appRef?: string
 }

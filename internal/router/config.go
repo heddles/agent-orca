@@ -331,6 +331,10 @@ type MCPServerConfig struct {
 	// this server. The router asks the operator for the token; no credential is
 	// mounted into the pod (docs/mcp-oauth.md).
 	UserConnection *UserConnectionConfig `json:"userConnection,omitempty"`
+	// ConnectionMode is the MCPServer's connection mode when it is per-user
+	// (maintainer or invoker). Tool calls to an invoker server default to needing
+	// approval (gateToolCall).
+	ConnectionMode string `json:"connectionMode,omitempty"`
 	// AllowApps enables MCP App iframe rendering for tools from this server.
 	AllowApps bool `json:"allowApps,omitempty"`
 	// IncludePatterns is a list of glob patterns used to filter the tools the

@@ -67,12 +67,16 @@ func newUserMCPEnv(t *testing.T) *userMCPEnv {
 		exp := e.expires
 		e.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/clarify") { // the run pausing for a connection
+			w.WriteHeader(http.StatusOK)
+			return
+		}
 		if status != http.StatusOK {
 			w.WriteHeader(status)
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": code, "message": "the connection needs to be renewed by its owner"})
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"accessToken": userTokenValue, "expiresAt": exp.Format(time.RFC3339)})
+		_ = json.NewEncoder(w).Encode(map[string]any{"accessToken": userTokenValue, "expiresAt": exp.Format(time.RFC3339), "identity": "alice (invoker)"})
 	}))
 	e.mcp = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		e.mu.Lock()

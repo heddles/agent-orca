@@ -123,7 +123,7 @@ func (s *Server) handleAgentRun(w http.ResponseWriter, r *http.Request) { //noli
 
 	switch {
 	case r.Method == http.MethodPost && len(parts) == 1:
-		s.createAgentRun(w, r, namespace)
+		s.createAgentRun(w, r, caller, namespace)
 	case r.Method == http.MethodGet && len(parts) == 2:
 		s.getAgentRun(w, r, namespace, parts[1])
 	case r.Method == http.MethodPost && len(parts) == 3 && parts[2] == "handoff":
@@ -176,7 +176,7 @@ func (s *Server) handleAgentRun(w http.ResponseWriter, r *http.Request) { //noli
 }
 
 // createAgentRun deserializes an AgentRun from the request body and creates it.
-func (s *Server) createAgentRun(w http.ResponseWriter, r *http.Request, namespace string) {
+func (s *Server) createAgentRun(w http.ResponseWriter, r *http.Request, caller, namespace string) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {
 		http.Error(w, "reading body", http.StatusBadRequest)
@@ -204,6 +204,16 @@ func (s *Server) createAgentRun(w http.ResponseWriter, r *http.Request, namespac
 	}
 	run.Labels[security.LabelManagedBy] = security.ManagedByValue
 
+	// The invoker is never taken from the body. A child run keeps its parent's
+	// invoker (agent-as-tool acts for the person who started the chain) only when
+	// the caller is the pod of the parent run's own agent; otherwise it has none
+	// and an invoker-mode server refuses it (connection_required).
+	var parent *agentorcav1alpha1.AgentRun
+	if run.Spec.ParentRunRef != "" {
+		parent = s.callerOwnedParent(r.Context(), caller, namespace, run.Spec.ParentRunRef)
+	}
+	propagateInvoker(&run, parent)
+
 	if err := s.crdClient.Create(r.Context(), &run); err != nil {
 		slog.Error("creating child AgentRun", "err", err, "run", run.Name)
 		http.Error(w, fmt.Sprintf("creating AgentRun: %v", err), http.StatusInternalServerError)
@@ -228,6 +238,23 @@ func (s *Server) createAgentRun(w http.ResponseWriter, r *http.Request, namespac
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(run)
+}
+
+// callerOwnedParent returns the parent run when caller is the ServiceAccount of
+// that run's agent, nil otherwise.
+func (s *Server) callerOwnedParent(ctx context.Context, caller, namespace, name string) *agentorcav1alpha1.AgentRun {
+	var parent agentorcav1alpha1.AgentRun
+	if err := s.crdClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &parent); err != nil {
+		return nil
+	}
+	var agent agentorcav1alpha1.Agent
+	if err := s.crdClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: parent.Spec.AgentRef}, &agent); err != nil {
+		return nil
+	}
+	if caller != "system:serviceaccount:"+namespace+":"+agentServiceAccount(&agent) {
+		return nil
+	}
+	return &parent
 }
 
 // getAgentRun retrieves an AgentRun by name and returns its current state.

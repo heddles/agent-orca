@@ -217,6 +217,10 @@ const (
 	// the agent, stored encrypted in PostgreSQL. It is a delegation: the agent acts
 	// as its maintainer for everyone who runs it.
 	MCPConnectionMaintainer = "maintainer"
+	// MCPConnectionInvoker uses the credential of the user who started the run
+	// (the run's agentorca.io/created-by), stored encrypted in PostgreSQL. A run
+	// with no such user (scheduled, trigger, machine, child) has no credential.
+	MCPConnectionInvoker = "invoker"
 )
 
 // MCPOAuthConfig configures OAuth 2.0 token acquisition and rotation for an MCP server.
@@ -228,10 +232,11 @@ const (
 // +kubebuilder:validation:XValidation:rule="!has(self.connectionMode) || self.connectionMode == 'shared' || (has(self.appRef) && size(self.appRef) > 0 && !has(self.credentials) && !has(self.refreshTokenSecretRef) && !has(self.accessTokenSecretRef))",message="a per-user connection mode needs appRef and takes no credentials, refreshTokenSecretRef or accessTokenSecretRef: the app and the tokens live in the operator database"
 type MCPOAuthConfig struct {
 	// ConnectionMode says whose credential a run uses: shared (default, one Secret,
-	// today's behaviour) or maintainer (the user who last published the agent
-	// connected their own account; the operator stores the tokens encrypted in
-	// PostgreSQL and hands the router a short-lived access token per run).
-	// +kubebuilder:validation:Enum=shared;maintainer
+	// today's behaviour), maintainer (the user who last published the agent
+	// connected their own account) or invoker (the user who started the run did;
+	// a run with no such user has no credential). The operator stores the tokens
+	// encrypted in PostgreSQL and hands the router a short-lived access token per run.
+	// +kubebuilder:validation:Enum=shared;maintainer;invoker
 	// +kubebuilder:default=shared
 	// +optional
 	ConnectionMode string `json:"connectionMode,omitempty"`

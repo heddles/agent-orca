@@ -6,7 +6,7 @@
  */
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router'
-import { getRequiredConnections, type RequiredServer } from '../api/connections'
+import { getRequiredConnections, listConnections, type RequiredServer } from '../api/connections'
 import { ds } from '../lib/designSystem'
 import { ROUTES } from '../lib/routes'
 
@@ -21,8 +21,33 @@ export function useRequiredConnections(namespace: string, agent: string): Requir
   return required
 }
 
-export function RequiredConnections({ required }: { required: RequiredServer[] }) {
-  if (required.length === 0) return null
+/** "github as alice (invoker)" for each invoker-mode server the caller is connected to. Empty on any failure. */
+export function useInvokerIdentities(namespace: string, agent: string): string[] {
+  const [labels, setLabels] = useState<string[]>([])
+  useEffect(() => {
+    let live = true
+    getRequiredConnections(namespace, agent)
+      .then(async (r) => {
+        const mine = r.servers.filter((s) => s.mode === 'invoker' && s.connected)
+        if (mine.length === 0) return []
+        const conns = await listConnections()
+        return mine.map((s) => {
+          const c = conns.find((x) => x.namespace === s.namespace && x.server === s.server)
+          return `${s.server} as ${c?.accountLabel || 'you'} (invoker)`
+        })
+      })
+      .then((l) => { if (live) setLabels(l) })
+      .catch(() => { if (live) setLabels([]) })
+    return () => { live = false }
+  }, [namespace, agent])
+  return labels
+}
+
+export function RequiredConnections({ required, identities = [] }: { required: RequiredServer[]; identities?: string[] }) {
+  if (required.length === 0 && identities.length === 0) return null
+  if (required.length === 0) {
+    return <p style={{ margin: '0 0 12px', fontSize: 12, color: ds.textMuted }}>Runs use your account: {identities.join(', ')}.</p>
+  }
   return (
     <p role="alert" style={{ margin: '0 0 12px', fontSize: 13, color: ds.textPrimary }}>
       Connect {required.map((r) => r.server).join(', ')} to run this agent.{' '}

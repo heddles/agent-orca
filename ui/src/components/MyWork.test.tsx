@@ -87,6 +87,18 @@ describe('MyWork', () => {
     await waitFor(() => expect(mockAnswer).toHaveBeenCalledWith('ask', 'Q3', 'team-a'))
   })
 
+  it('offers Connect when the question is the agent asking for the user’s account', async () => {
+    mockMyRuns.mockResolvedValue(runs('user', [
+      run({ name: 'ask', phase: 'WaitingForInput', clarifyQuestion: 'This agent needs your github account. Connect it under Connections, then answer here to continue.' }),
+      run({ name: 'plain', agentRef: 'other', phase: 'WaitingForInput', clarifyQuestion: 'Which quarter?' }),
+    ]))
+    renderHome()
+    const form = await screen.findByRole('form', { name: 'Question from researcher' })
+    expect(within(form).getByRole('link', { name: 'Connect' })).toHaveAttribute('href', '/connections')
+    const other = await screen.findByRole('form', { name: 'Question from other' })
+    expect(within(other).queryByRole('link', { name: 'Connect' })).toBeNull()
+  })
+
   it('shows pending approvals inline and no "nothing waiting" note', async () => {
     mockMyRuns.mockResolvedValue(runs('user', [run({})]))
     mockApprovals.mockResolvedValue([{
