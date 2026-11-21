@@ -291,6 +291,31 @@ func (r *Router) forwardToAnthropicStream(ctx context.Context, provider *Provide
 	return &translated, nil
 }
 
+// finishStreamedTurn ends a turn whose run reached a terminal or paused state
+// after the turn's tool calls were dispatched (the _done, _fail, _handoff and
+// _clarify built-ins). The SSE response is already open, so the turn has to end
+// the way a normal one does — a final chunk carrying a finish_reason, then
+// [DONE] — instead of recursing into HandleChatCompletions, which would answer
+// the continuation with an HTTP error written into the open event stream. Why
+// the run ended is carried by the run's phase and trace events, not by the SSE
+// finish reason; to an OpenAI client this is simply the last chunk.
+func finishStreamedTurn(w http.ResponseWriter) {
+	stop := finishReasonStop
+	writeSSEChunk(w, streamingChatCompletionChunk{
+		ID:     "run-terminal",
+		Object: "chat.completion.chunk",
+		Choices: []streamChoice{{
+			Index:        0,
+			Delta:        streamDelta{},
+			FinishReason: &stop,
+		}},
+	})
+	_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
 // writeStreamError reports a failure on a streaming chat request. Before the
 // response has begun it is an HTTP error status. After (a budget pause holding
 // the response open, or a tool-call continuation of a stream already sent) the
@@ -725,6 +750,14 @@ func (r *Router) handleStreamingResponse(w http.ResponseWriter, req *http.Reques
 		}
 
 		r.mu.Unlock()
+		// A terminal built-in in this batch ended the run (or paused it for
+		// input). Recursing would only re-enter HandleChatCompletions to be
+		// refused, so close the stream here while it is still ours.
+		if r.runStopped() {
+			slog.Debug("tool batch ended the run; closing stream", "run", r.cfg.RunName)
+			finishStreamedTurn(w)
+			return
+		}
 		r.checkpointAfterConnectionPause(req.Context())
 		// Recursive call with the full conversation as the new request body.
 		slog.Debug("recursive HandleChatCompletions call", "toolCalls", len(toolCalls), "messages", len(r.messages))
