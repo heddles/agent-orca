@@ -18,6 +18,7 @@ package inbound
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"strings"
@@ -118,7 +119,7 @@ func (r *Runner) Sync(ctx context.Context) {
 			continue
 		}
 		if a, ok := r.P.Registry.Get(c.Kind); ok {
-			if _, isPoller := a.(Poller); isPoller {
+			if _, isPoller := a.(Poller); isPoller && polls(a, c.Config) {
 				want[c.ID] = c
 			}
 		}
@@ -146,6 +147,16 @@ func (r *Runner) Running() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return len(r.pollers)
+}
+
+// polls reports whether a connection of a polling adapter needs a poller.
+func polls(a Adapter, config json.RawMessage) bool {
+	sel, ok := a.(PollSelector)
+	if !ok {
+		return true
+	}
+	s, err := ParseSettings(config)
+	return err == nil && sel.Polls(s.Adapter)
 }
 
 func fingerprint(c postgresql.InboundConnection) string {
@@ -200,7 +211,7 @@ func (r *Runner) pollOnce(ctx context.Context, sc postgresql.InboundConnection) 
 	now := r.P.now()
 	st := postgresql.InboundStatus{PolledAt: &now, SetError: true}
 	if err != nil {
-		st.LastError = clip(safeErr(err, Connection{}), 300)
+		st.LastError = clip(safeErr(err, c), 300)
 		slog.Warn("polling an inbound connection failed", "connection", sc.ID, "kind", sc.Kind, "err", st.LastError)
 	}
 	if rerr := r.P.Store.RecordInboundStatus(scope, sc.ID, st); rerr != nil {

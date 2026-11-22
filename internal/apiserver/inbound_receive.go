@@ -211,6 +211,9 @@ func (s *UIServer) handleInboundReceive(w http.ResponseWriter, r *http.Request) 
 	var authErr *inbound.AuthError
 	var rej *inbound.Rejection
 	switch {
+	case errors.Is(err, inbound.ErrNotReceiving):
+		jsonError(w, "not found", http.StatusNotFound)
+		return
 	case errors.As(err, &authErr):
 		jsonError(w, authErr.Msg, http.StatusUnauthorized)
 		return

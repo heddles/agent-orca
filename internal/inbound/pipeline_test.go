@@ -21,10 +21,14 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/heddles/agent-orca/internal/postgresql"
 )
@@ -512,4 +516,39 @@ func TestRegistryRefusesTwoAdaptersOfAKind(t *testing.T) {
 		}
 	}()
 	r.Register(&fakeAdapter{})
+}
+
+func TestMetricsCountOutcomesByKind(t *testing.T) {
+	f := newFixture(t)
+	val := func(o Outcome) float64 { return testutil.ToFloat64(messagesTotal.WithLabelValues("fake", string(o))) }
+	started, rejected, dup := val(OutcomeStarted), val(OutcomeRejected), val(OutcomeDuplicate)
+	f.handle(msg("metric-1", "alice@example.com", "example.com"), nil)
+	f.handle(msg("metric-1", "alice@example.com", "example.com"), nil)
+	f.handle(msg("metric-2", "mallory@evil.example", "evil.example"), nil)
+	if val(OutcomeStarted) != started+1 || val(OutcomeDuplicate) != dup+1 || val(OutcomeRejected) != rejected+1 {
+		t.Errorf("started %v duplicate %v rejected %v", val(OutcomeStarted)-started, val(OutcomeDuplicate)-dup, val(OutcomeRejected)-rejected)
+	}
+}
+
+// The core must stay vendor neutral: a channel is named only inside its adapter's
+// package (docs/inbound-channels.md).
+func TestCoreNamesNoChannelVendor(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil || len(files) == 0 {
+		t.Fatal(err)
+	}
+	vendors := []string{"slack", "microsoft", "teams", "google", "mattermost", "webex", "discord", "telegram", "whatsapp", "twilio",
+		"gmail", "outlook", "exchange", "sendgrid", "mailgun", "postmark", "office365"}
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		b, _ := os.ReadFile(f)
+		low := strings.ToLower(string(b))
+		for _, v := range vendors {
+			if strings.Contains(low, v) {
+				t.Errorf("%s mentions %q: vendor names belong in an adapter package", f, v)
+			}
+		}
+	}
 }

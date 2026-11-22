@@ -266,5 +266,16 @@ func (r *Registry) Kinds() []string {
 	return out
 }
 
+// ErrNotReceiving is returned by a Receiver for a connection that does not take
+// requests (an email connection that polls a mailbox): the endpoint answers 404.
+var ErrNotReceiving = errors.New("this connection does not take requests")
+
+// PollSelector is implemented by a Poller that polls only for some settings (an
+// adapter with a polling mode and a push mode): the runner starts no poller for
+// the rest.
+type PollSelector interface {
+	Polls(adapterConfig json.RawMessage) bool
+}
+
 // ErrUnknownKind: no adapter is registered for a connection's kind.
 var ErrUnknownKind = errors.New("no adapter for this kind of connection")
