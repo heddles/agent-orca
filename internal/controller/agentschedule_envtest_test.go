@@ -100,7 +100,7 @@ func TestAgentScheduleEnvtest(t *testing.T) {
 		}
 		good := newSchedule("good-notify", withNotify(agentorcav1alpha1.ScheduleNotify{Channel: "ops"}))
 		must(t, cl.Create(ctx, good))
-		if on := good.Spec.Result.Notify.On; len(on) != 1 || on[0] != "Failed" {
+		if on := good.Spec.Result.Notify.On; len(on) != 1 || on[0] != agentorcav1alpha1.ScheduleNotifyFailed {
 			t.Errorf("on = %v, want the default [Failed]", on)
 		}
 		must(t, cl.Delete(ctx, good))
