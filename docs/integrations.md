@@ -80,6 +80,8 @@ A builder adds an email channel to a **published** agent on the agent page, tab 
 | `DELETE /api/inbound-connections/{id}` | builder | yes |
 | `POST /api/inbound-connections/{id}/test` | builder | no |
 | `POST /inbound/email/{id}` | signed, no session | no |
+| `GET /api/inbound-kinds` | viewer | no |
+| `POST /inbound/{slack,mattermost}/{id}` | verified by the platform's signature or token, no session | no |
 
 `test` logs in and reports the folders' message counts (IMAP) or checks the configuration (webhook). It reads no message, changes no flag and sends nothing. The list shows the status: last poll, last error (never a secret), and the received, answered and refused counts. `operator.inbound.enabled` (Helm; env `INBOUND_CHANNELS_DISABLED=true`) turns the feature off; it is on by default and does nothing until a connection exists.
 
@@ -194,6 +196,10 @@ The endpoint answers 202 for every message it recorded (`{"status":"started"|"du
 ### What is stored and logged
 
 Message bodies and subjects are not stored, not logged and not audited. The ledger (`inbound_messages`) holds digests, sizes, a status and the run's name; the sender's address is kept, only while an answer is pending, in the reply target. The audit trail records connection changes (id, name, kind), not messages. The status counters on the connection are counts. Logs name the connection id and kind, never an address or text.
+
+## Chat platforms
+
+Slack and Mattermost are adapters of the same [inbound channel core](inbound-channels.md): people mention the bot, message it or use a slash command, and the agent answers in the thread. Setup, scopes, Secret keys and behaviour are in [chat-channels.md](chat-channels.md); the contract for further platforms is in [inbound-channels.md](inbound-channels.md#chat-contract). `GET /api/inbound-kinds` lists the registered kinds with their settings, Secret keys and setup steps.
 
 ## Chat widget
 

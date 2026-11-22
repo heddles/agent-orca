@@ -477,10 +477,11 @@ components:
         config:
           type: object
           description: >
-            Non-secret settings. allowSenders (exact ids) or allowGroups (exact domains or
-            workspaces) is required: nobody is admitted by default. Also ratePerMin,
-            senderPerHour, pollSeconds (30 to 3600), newThreadPerMessage, and the adapter's own
-            settings under adapter.
+            Non-secret settings. At least one of allowSenders (exact ids), allowGroups (exact
+            domains or workspace ids) and allowChannels (exact space ids, chat only) is required:
+            nobody is admitted by default. Also modes (chat: direct, mention, command, channel;
+            channel needs allowChannels), ratePerMin, senderPerHour, pollSeconds (30 to 3600),
+            newThreadPerMessage, and the adapter's own settings under adapter.
         secretRef: { type: string, description: 'Name of the Secret, in the agent namespace, that holds the credentials. An administrator labels it agentorca.io/inbound-secret=true. Never the values.' }
         createdBy: { type: string }
         createdAt: { type: string, format: date-time }
@@ -2955,6 +2956,31 @@ paths:
         '413': { description: The body is over 64 KiB }
         '422': { description: The body does not fit the trigger's input path }
         '429': { description: The trigger's rate limit or the tenant's quota is used up }
+  /api/inbound-kinds:
+    get:
+      tags: [inbound]
+      summary: List the registered kinds of inbound channel
+      description: >
+        Needs the viewer role. For each kind: its settings schema (fields), the keys its Secret
+        needs, help for the allow-lists, setup steps ({{url}} stands for the connection's
+        receive URL) and its capabilities (threads, dialect, modes, ackFirst, workingIndicator).
+        The Channels tab draws its form from this.
+      responses:
+        '200':
+          description: the kinds
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    kind: { type: string }
+                    descriptor: { type: object }
+                    capabilities: { type: object }
+                    testable: { type: boolean }
+                    receives: { type: boolean }
+        '503': { description: Inbound channels need the PostgreSQL store }
   /api/inbound-connections:
     get:
       tags: [inbound]
@@ -3072,6 +3098,9 @@ paths:
         /hooks/{id}: X-AgentOrca-Timestamp (Unix seconds, within five minutes) and
         X-AgentOrca-Signature (sha256= and the hex HMAC-SHA256 of "<timestamp>.<body>" under
         hex(sha256(secret)), the secret being the signingSecret of the connection's Secret).
+        For the chat kinds (slack, mattermost) the request is verified by the platform's own
+        signature or token, and is answered 200 at once: the message is handled in the
+        background if the pipeline takes longer than two seconds ({"status":"accepted"}).
         A recorded message is answered 202 whatever became of it (started, duplicate,
         rejected, ignored, throttled), so the provider does not retry what policy refused.
         An unknown, disabled or mismatching connection is 404.
