@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Chat channels: Microsoft Teams, Google Chat and Webex** — three more adapters on the chat contract, each in its own package with
+  a descriptor, a connection test and setup steps in the Channels tab. Teams: Bot Framework activities verified as an RS256 JWT from
+  the Bot Framework key set (endorsed for Teams, issuer, audience, `serviceUrl` claim), replies through the activity's service URL with
+  a cached client-credentials token (single- or multi-tenant). Google Chat: HTTP endpoint app, bearer token verified for either
+  audience type (project number or endpoint URL), replies through the Chat REST API with a cached service-account access token, in the
+  message's thread. Webex: `X-Spark-Signature` HMAC-SHA1 webhooks, the message and the bot's own account fetched after the
+  acknowledgement, replies with `parentId`. Shared additions: `verify.VerifyHMACSHA1` (for the one platform that mandates it),
+  `JWTVerifier.VerifyEndorsed`, `chat.TokenCache`, `chat.RenderBytes`, the `mrkdwn-raw` dialect, and a comparison of the five adapters
+  in `docs/chat-channels.md`. Not tried against a real Teams tenant, Google Chat space or Webex organisation; the vendor-specific
+  guesses are listed in the docs. Not built: the Google Workspace add-on event format, Teams emulator and managed-identity auth, Webex for
+  Government, attachments.
+
 - **Chat channels: Slack and Mattermost, on a vendor-neutral chat layer** — the inbound core gains what chat needs: sender identity
   (workspace, user, name), a conversation scope (space, thread), allow-lists by user, workspace and channel id (default deny, exact),
   trigger modes (direct, mention, command, channel; the last needs listed channels), loop prevention against bots and the bot's own
