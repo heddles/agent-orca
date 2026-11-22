@@ -28,6 +28,7 @@ package verify
 
 import (
 	"crypto/hmac"
+	"crypto/sha1" //nolint:gosec // see VerifyHMACSHA1: a platform mandates it
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
@@ -81,6 +82,26 @@ type Sig struct {
 
 // VerifyHMAC checks an HMAC-SHA256 signature in constant time.
 func VerifyHMAC(s Sig) error {
+	return verifyHMAC(s, func(secret, base []byte) []byte { return HMACSHA256(secret, base) })
+}
+
+// HMACSHA1 is the raw HMAC-SHA1 of base under secret.
+func HMACSHA1(secret, base []byte) []byte {
+	m := hmac.New(sha1.New, secret)
+	m.Write(base)
+	return m.Sum(nil)
+}
+
+// VerifyHMACSHA1 checks an HMAC-SHA1 signature in constant time. SHA-1 is weak
+// as a plain hash, but HMAC does not depend on collision resistance, and this
+// exists only because one chat platform signs its webhooks with HMAC-SHA1 and
+// offers nothing else. An adapter must use VerifyHMAC wherever the platform
+// allows a choice.
+func VerifyHMACSHA1(s Sig) error {
+	return verifyHMAC(s, HMACSHA1)
+}
+
+func verifyHMAC(s Sig, mac func(secret, base []byte) []byte) error {
 	if len(s.Secret) == 0 {
 		return ErrNoSecret
 	}
@@ -98,7 +119,7 @@ func VerifyHMAC(s Sig) error {
 	if err != nil || len(got) == 0 {
 		return ErrBadSignature
 	}
-	if !hmac.Equal(got, HMACSHA256(s.Secret, s.Base)) {
+	if !hmac.Equal(got, mac(s.Secret, s.Base)) {
 		return ErrBadSignature
 	}
 	return nil

@@ -229,6 +229,8 @@ func codeOut(raw string, d inbound.Dialect) string {
 		return "<code>" + html.EscapeString(body) + "</code>"
 	case inbound.DialectMrkdwn:
 		return "`" + mrkdwnEsc.Replace(body) + "`"
+	case inbound.DialectMrkdwnRaw:
+		return "`" + strings.ReplaceAll(body, "`", "'") + "`"
 	default:
 		return raw
 	}
@@ -288,7 +290,7 @@ func proseOut(s string, d inbound.Dialect) string {
 	s = escapeFor(s, d)
 
 	switch d {
-	case inbound.DialectMrkdwn:
+	case inbound.DialectMrkdwn, inbound.DialectMrkdwnRaw:
 		s = headRe.ReplaceAllString(s, "**$1**")
 		s = bulletRe.ReplaceAllString(s, "${1}• ")
 		s = convertEmphasis(s, "*", "_", "~")
@@ -328,9 +330,50 @@ func linkOut(label, u string, d inbound.Dialect) string {
 		return "<" + u + "|" + label + ">"
 	case inbound.DialectHTML:
 		return `<a href="` + html.EscapeString(u) + `">` + html.EscapeString(label) + `</a>`
+	case inbound.DialectMrkdwnRaw:
+		u = strings.NewReplacer("<", "%3C", ">", "%3E", "|", "%7C", " ", "%20").Replace(u)
+		label = strings.NewReplacer("|", "/", "\n", " ", "<", "(", ">", ")").Replace(label)
+		return "<" + u + "|" + label + ">"
 	case inbound.DialectMarkdown:
 		return "[" + label + "](" + u + ")"
 	default:
 		return label + " (" + u + ")"
 	}
+}
+
+// RenderBytes is Render for a platform that limits a message in bytes, not in
+// characters (UTF-8 text of other scripts takes up to four bytes a character).
+// The character limit of caps is lowered to what the text's own average width
+// allows, and a part that is still over the byte limit is cut at a character
+// boundary, so no part exceeds maxBytes.
+func RenderBytes(text string, caps inbound.Capabilities, maxBytes int) []string {
+	if strings.TrimSpace(text) == "" {
+		return nil
+	}
+	if maxBytes > 0 {
+		if n := len(text); n > utf8.RuneCountInString(text) {
+			// Formatting can only add (escapes, markers): keep a tenth in hand.
+			per := float64(n) / float64(utf8.RuneCountInString(text))
+			lim := int(float64(maxBytes) / per * 0.9)
+			lim = max(lim, 200)
+			if caps.MaxReplyChars == 0 || lim < caps.MaxReplyChars {
+				caps.MaxReplyChars = lim
+			}
+		}
+	}
+	parts := Render(text, caps)
+	if maxBytes <= 0 {
+		return parts
+	}
+	for i, p := range parts {
+		for len(p) > maxBytes {
+			cut := maxBytes
+			for cut > 0 && !utf8.RuneStart(p[cut]) {
+				cut--
+			}
+			p = p[:cut]
+		}
+		parts[i] = p
+	}
+	return parts
 }

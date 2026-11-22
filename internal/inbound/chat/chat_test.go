@@ -18,6 +18,7 @@ package chat
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -51,14 +52,14 @@ func TestFormat_NothingPingsAnyone(t *testing.T) {
 	attacks := []string{
 		"@channel look", "hey @here", "@everyone!", "<!here>", "<!channel|channel>", "<!everyone>", "<!subteam^S123|@oncall>",
 		"<@U12345>", "<@U12345|bob>", "@all", "@alice please", "(@bob)", "[@here](https://x.example)", "[ok](https://x.example/ @here)",
-		"**@channel**", "`@here`", "line one\n@here", "<at>Everyone</at>", "<users/all>", "<@personEmail:a@b.c>",
+		"**@channel**", "`@here`", "line one\n@here", "<at>Everyone</at>", "<users/all>", "<@personEmail:a@b.c>", "<at id=\"0\">Bot</at>", "<users/1234567>", "<@all>", "<@personId:Y2lzY2:x>",
 	}
-	for _, d := range []inbound.Dialect{inbound.DialectNone, inbound.DialectMrkdwn, inbound.DialectMarkdown, inbound.DialectHTML} {
+	for _, d := range []inbound.Dialect{inbound.DialectNone, inbound.DialectMrkdwn, inbound.DialectMrkdwnRaw, inbound.DialectMarkdown, inbound.DialectHTML} {
 		for _, a := range attacks {
 			got := Format(a, d)
 			plain := strings.ReplaceAll(got, zwsp, "")
 			_ = plain
-			for _, bad := range []string{"@channel", "@here", "@everyone", "@all", "<!here", "<!channel", "<!everyone", "<!subteam", "<@U", "<@personEmail", "<at>", "<users/all"} {
+			for _, bad := range []string{"@channel", "@here", "@everyone", "@all", "<!here", "<!channel", "<!everyone", "<!subteam", "<@U", "<@personEmail", "<at>", "<users/all", "<users/1234", "<at id", "<@all", "<@personId"} {
 				// Inside code the platform interprets nothing; elsewhere the raw token must be gone.
 				if strings.Contains(got, bad) && !insideCode(got, bad) {
 					t.Errorf("%q dialect %q still holds %q: %q", a, d, bad, got)
@@ -263,3 +264,91 @@ func TestParseRetryAfter(t *testing.T) {
 		}
 	}
 }
+
+func TestFormat_MrkdwnRawKeepsEntitiesAndLinks(t *testing.T) {
+	in := "# Title\n\n**bold** *it* ~~x~~ 1 < 2 & 3 > 2 `a<b`\n\n- one\n\n[docs](https://e.example/a?x=1&y=2|z) https://e.example/b\n\n```go\nif a < b {}\n```"
+	got := Format(in, inbound.DialectMrkdwnRaw)
+	for _, want := range []string{"*Title*", "*bold*", "_it_", "~x~", "1 < 2 & 3 > 2", "`a<b`", "• one", "<https://e.example/a?x=1&y=2%7Cz|docs>", "https://e.example/b", "if a < b {}"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "&amp;") || strings.Contains(got, "&lt;") {
+		t.Errorf("entities in a dialect that does not decode them: %s", got)
+	}
+}
+
+func TestRenderBytesNeverExceedsTheByteLimit(t *testing.T) {
+	caps := inbound.Capabilities{Dialect: inbound.DialectMarkdown, MaxReplyChars: 7000, MaxReplyParts: 5}
+	for name, text := range map[string]string{
+		"ascii": strings.Repeat("word ", 4000),
+		"cjk":   strings.Repeat("日本語のテキスト。", 1500),
+		"mixed": strings.Repeat("emoji 😀 and text. ", 1200),
+	} {
+		parts := RenderBytes(text, caps, 7439)
+		if len(parts) == 0 || len(parts) > 5 {
+			t.Errorf("%s: %d parts", name, len(parts))
+		}
+		for _, p := range parts {
+			if len(p) > 7439 || !utf8.ValidString(p) {
+				t.Errorf("%s: a part of %d bytes (valid=%v)", name, len(p), utf8.ValidString(p))
+			}
+		}
+	}
+	if RenderBytes("  ", caps, 100) != nil {
+		t.Error("blank text produced parts")
+	}
+}
+
+func TestTokenCache(t *testing.T) {
+	now := time.Unix(1000, 0)
+	c := &TokenCache{Now: func() time.Time { return now }}
+	n := 0
+	var fetchErr error
+	fetch := func(context.Context) (Token, time.Duration, error) {
+		n++
+		return NewToken("tok" + string(rune('0'+n))), time.Hour, fetchErr
+	}
+	get := func(conn, fp string) Token {
+		tok, err := c.Get(context.Background(), conn, fp, fetch)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return tok
+	}
+	first := get("a", "f1")
+	if again := get("a", "f1"); first.Value() != "tok1" || again.Value() != "tok1" || n != 1 {
+		t.Fatalf("a token was not reused (fetches=%d)", n)
+	}
+	if get("b", "f1").Value() != "tok2" {
+		t.Error("connections share a token")
+	}
+	now = now.Add(56 * time.Minute) // inside the five minute margin of an hour
+	if get("a", "f1").Value() != "tok3" {
+		t.Error("a token about to expire was reused")
+	}
+	if get("a", "f2").Value() != "tok4" {
+		t.Error("the credentials changed but the token was kept")
+	}
+	// A failed fetch is not cached and does not leave a token behind.
+	if _, err := c.Get(context.Background(), "a", "f3", func(context.Context) (Token, time.Duration, error) { return Token{}, 0, context.DeadlineExceeded }); err == nil {
+		t.Error("error swallowed")
+	}
+	if get("a", "f3").Value() == "" {
+		t.Error("no token after a failed fetch")
+	}
+	// A token that lives shorter than twice the margin still gets used.
+	short := &TokenCache{Now: func() time.Time { return now }}
+	if _, err := short.Get(context.Background(), "s", "f", func(context.Context) (Token, time.Duration, error) { return NewToken("x"), 4 * time.Minute, nil }); err != nil {
+		t.Fatal(err)
+	}
+	n = 0
+	if tok, _ := short.Get(context.Background(), "s", "f", fetch); tok.Value() != "x" || n != 0 {
+		t.Error("a short-lived token was refetched at once")
+	}
+	if s := fmt2(NewToken("sekrit")); strings.Contains(s, "sekrit") {
+		t.Errorf("the token prints: %s", s)
+	}
+}
+
+func fmt2(t Token) string { return fmt.Sprintf("%v %+v %#v %s", t, t, t, t) }

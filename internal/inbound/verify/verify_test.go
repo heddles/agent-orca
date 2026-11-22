@@ -318,3 +318,66 @@ func TestBearerToken(t *testing.T) {
 		}
 	}
 }
+
+func TestVerifyHMACSHA1(t *testing.T) {
+	secret, body := []byte("hook-secret"), []byte(`{"data":{"id":"m1"}}`)
+	sig := hex.EncodeToString(HMACSHA1(secret, body))
+	if err := VerifyHMACSHA1(Sig{Secret: secret, Base: body, Got: sig}); err != nil {
+		t.Fatalf("a valid signature: %v", err)
+	}
+	for name, s := range map[string]Sig{
+		"wrong secret": {Secret: []byte("other"), Base: body, Got: sig},
+		"tampered":     {Secret: secret, Base: append([]byte(" "), body...), Got: sig},
+		"empty":        {Secret: secret, Base: body, Got: ""},
+		"not hex":      {Secret: secret, Base: body, Got: "zz"},
+		"no secret":    {Secret: nil, Base: body, Got: sig},
+		// A SHA-256 signature is not accepted for the SHA-1 check, nor the reverse.
+		"sha256 value": {Secret: secret, Base: body, Got: hex.EncodeToString(HMACSHA256(secret, body))},
+	} {
+		if err := VerifyHMACSHA1(s); err == nil {
+			t.Errorf("%s accepted", name)
+		}
+	}
+	if err := VerifyHMAC(Sig{Secret: secret, Base: body, Got: sig}); err == nil {
+		t.Error("a SHA-1 signature passed the SHA-256 check")
+	}
+}
+
+func TestJWT_Endorsements(t *testing.T) {
+	priv, pub := rsaKey(t, "k1")
+	var body atomic.Value
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write(body.Load().([]byte)) }))
+	defer srv.Close()
+	set := func(endorsements ...string) {
+		raw, _ := json.Marshal(pub)
+		var m map[string]any
+		_ = json.Unmarshal(raw, &m)
+		m["endorsements"] = endorsements
+		b, _ := json.Marshal(map[string]any{"keys": []any{m}})
+		body.Store(b)
+	}
+	v, err := NewJWTVerifier(JWTConfig{JWKSURL: srv.URL, Issuers: []string{"https://issuer.example"}, Audiences: []string{"app-1"},
+		AllowPrivate: true, AllowInsecureHTTP: true, Now: func() time.Time { return epoch }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok := sign(t, jwt.SigningMethodRS256, priv, "k1", goodClaims())
+	set("webchat", "chan-a")
+	if _, err := v.VerifyEndorsed(context.Background(), tok, "chan-a"); err != nil {
+		t.Fatalf("endorsed: %v", err)
+	}
+	if _, err := v.VerifyEndorsed(context.Background(), tok, "chan-b"); !errors.Is(err, ErrNotEndorsed) {
+		t.Errorf("not endorsed: %v", err)
+	}
+	// A key set without endorsements endorses nothing.
+	v2, _ := NewJWTVerifier(JWTConfig{JWKSURL: srv.URL, Issuers: []string{"https://issuer.example"}, Audiences: []string{"app-1"},
+		AllowPrivate: true, AllowInsecureHTTP: true, Now: func() time.Time { return epoch }})
+	set()
+	if _, err := v2.VerifyEndorsed(context.Background(), tok, "chan-a"); !errors.Is(err, ErrNotEndorsed) {
+		t.Errorf("no endorsements: %v", err)
+	}
+	// Plain Verify is unaffected.
+	if _, err := v2.Verify(context.Background(), tok); err != nil {
+		t.Errorf("Verify: %v", err)
+	}
+}

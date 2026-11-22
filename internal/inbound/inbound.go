@@ -74,7 +74,10 @@ const (
 	DialectNone     Dialect = ""         // plain text
 	DialectMrkdwn   Dialect = "mrkdwn"   // *bold* _italic_ <url|label>, & < > escaped
 	DialectMarkdown Dialect = "markdown" // CommonMark-like
-	DialectHTML     Dialect = "html"     // a small HTML subset
+	// DialectMrkdwnRaw is mrkdwn on a platform that does not decode entities:
+	// *bold* _italic_ ~strike~ <url|label>, and & < > are sent as they are.
+	DialectMrkdwnRaw Dialect = "mrkdwn-raw"
+	DialectHTML      Dialect = "html" // a small HTML subset
 )
 
 // Mode is how a message was addressed to the agent.
