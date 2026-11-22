@@ -775,6 +775,18 @@ func main() {
 			os.Exit(1)
 		}
 	}
+	if pgStore != nil {
+		if days := archivedRunsRetentionDaysFromEnv(); days > 0 {
+			retention := time.Duration(days) * 24 * time.Hour
+			if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
+				return pgStore.AsPlatform().RunArchivedRunsRetention(ctx, retention, postgresql.ArchivedRunsRetentionInterval)
+			})); err != nil {
+				setupLog.Error(err, "Unable to schedule archived-run retention")
+				os.Exit(1)
+			}
+			setupLog.Info("Archived-run retention on: output and trace of older runs are emptied", "days", days)
+		}
+	}
 	// Filesystem relay (issue #34): carries ACP fs/* requests from agent pods to
 	// the workstation-side bridge. Requires the redis-backed shared state; with
 	// no relay both the internal and ACP fs endpoints fail fast with 501.
@@ -1121,6 +1133,16 @@ func evalResultRetentionDaysFromEnv() int {
 		return n
 	}
 	return 90
+}
+
+// archivedRunsRetentionDaysFromEnv is how long an archived run keeps its output
+// and execution trace (ARCHIVED_RUNS_RETENTION_DAYS; 0, the default, keeps them).
+// The summary row (status, cost, tokens, times) is always kept.
+func archivedRunsRetentionDaysFromEnv() int {
+	if n, err := strconv.Atoi(strings.TrimSpace(os.Getenv("ARCHIVED_RUNS_RETENTION_DAYS"))); err == nil && n > 0 {
+		return n
+	}
+	return 0
 }
 
 // connectionIdleExpiryFromEnv is how long a per-user MCP connection may go unused

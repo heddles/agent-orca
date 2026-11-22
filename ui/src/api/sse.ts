@@ -814,6 +814,9 @@ export interface RunHistoryDetail {
    *  only when the run was archived while the Redis stream was still
    *  available (within 24h of completion). */
   traceEntries?: TraceEntry[]
+  /** When retention emptied this run's output and trace (the cost and other
+   *  summary fields are kept). Absent for an intact run. */
+  payloadPrunedAt?: string
 }
 
 /** Fetch the full detail of a single archived run from PostgreSQL. */

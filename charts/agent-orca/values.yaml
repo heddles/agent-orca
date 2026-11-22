@@ -442,6 +442,11 @@ database:
   passwordSecret:
     name: "postgres-app"
     key: "password"
+  # Days an archived run keeps its output and execution trace. After that the
+  # leader operator empties them (ARCHIVED_RUNS_RETENTION_DAYS) and keeps the
+  # summary row, so cost totals and the history list are unchanged. 0 keeps
+  # everything for ever. Cluster-wide: there is no per-tenant setting.
+  archivedRunsRetentionDays: 0
   # Per-user OAuth connections to MCP servers (docs/mcp-oauth.md) store tokens
   # encrypted in this database. The key-encryption key (KEK) comes from a Secret
   # you create: one key per entry, the entry name is the key id and the value is 32

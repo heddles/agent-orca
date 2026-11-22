@@ -97,6 +97,30 @@ the external API surfaces. They include standard Kubernetes controller metrics
 served by the `<release>-metrics` Service and scraped by the chart's
 `ServiceMonitor`.
 
+## Archived run retention
+
+With PostgreSQL configured, every finished run is archived in `archived_runs`. The heavy part of a row is its output, raw output and execution trace (`trace_events`), which can also hold personal data a user typed or an agent read. By default nothing is ever removed. Set `ARCHIVED_RUNS_RETENTION_DAYS` (Helm `database.archivedRunsRetentionDays`, default `0`, which keeps everything) to reduce old rows.
+
+The leader operator sweeps every 6 hours (and at startup). For each archived run that finished, and was last written, more than that many days ago, it sets `output`, `raw_output` and `trace_events` to empty and stamps `payload_pruned_at`. The row itself is kept.
+
+| Stays | Is lost |
+|---|---|
+| Status, phase, restart count, timestamps | The final output and raw output |
+| `spend_usd`, cost capture, token counts | The execution trace (tokens, tool calls and results) shown on the run page |
+| Routing decisions (the cost dashboard reads the model from them) and child run references | |
+| The input, labels, agent and tenant | |
+| `run_outcomes` and feedback ratings | |
+
+- **Cost totals do not change.** The cost dashboard, the fleet view and the history list read only the columns that stay. The run page tells the user that output and trace were removed, and when (`payloadPrunedAt` on `GET /api/runs/history/{namespace}/{name}`).
+- **The input is kept.** History search and "add to dataset" need it. If the input itself is the sensitive part, retention here does not remove it.
+- **Evaluation datasets are not affected.** A case copies the run's input (redacted unless the user chose otherwise) and any reference when it is created, and keeps only the run's name for provenance. It never reads the archive again, so a case stays complete after its source run is reduced. What you can no longer do is add a reduced run to a dataset using its output as the reference (the API answers 409, as for a run with no output).
+- **Routing events have their own retention.** `--routing-events-retention` (default 30 days) deletes `routing_events` rows (metadata only, no prompts). The two do not depend on each other. A reduced run keeps its routing decisions even after its routing events are gone, and the per-run "Load full history" only shows what routing events still exist.
+- **A run archived again is reduced again.** Re-archiving writes the payload back, clears `payload_pruned_at` and moves `updated_at`, so the next sweep after the retention period empties it once more.
+- **It is cluster-wide.** There is no per-tenant override. The sweep runs in the platform scope, like routing events retention; a tenant cannot trigger or skip it.
+- The change is not reversible: PostgreSQL backups taken earlier still hold the old payloads until they expire.
+
+`agentorca_archived_runs_swept_total` counts the rows reduced. The sweep works in batches of 500 rows, so a first run over a large archive does not hold one long transaction; reclaiming the disk space of the emptied values is left to autovacuum.
+
 ## Audit logging
 
 Every authenticated external API request is written to the operator log as a

@@ -190,6 +190,12 @@ export function RunHistoryDetailView({ runId, namespace = 'default', onBack, onN
         </div>
       )}
 
+      {detail.payloadPrunedAt && (
+        <div style={dv.sectionLabel} role="note">
+          Output and trace were removed by the retention policy on {new Date(detail.payloadPrunedAt).toLocaleDateString()}. Cost and status are kept.
+        </div>
+      )}
+
       {(tab === 'output' || tab === 'details') && hasOutput && (
         <div style={dv.panel} role="region" aria-label="Output">
           <div style={dv.sectionLabel}>Final output</div>
