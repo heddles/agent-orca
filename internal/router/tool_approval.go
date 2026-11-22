@@ -191,9 +191,14 @@ func (r *Router) waitForToolApproval(ctx context.Context, td *ToolDefinition, tc
 		args = args[:toolApprovalArgsLimit] + "…"
 	}
 	callKey := randomHex(8)
-	body, _ := json.Marshal(map[string]string{
+	req := map[string]string{
 		"callKey": callKey, "tool": td.Name, "sideEffect": td.SideEffect, "arguments": args,
-	})
+	}
+	if td.BackendType == backendTypeMCP {
+		// A discovered MCP tool is not in the agent's tool list; its server is.
+		req["server"] = td.BackendRef
+	}
+	body, _ := json.Marshal(req)
 	raw, err := r.operatorCall(ctx, http.MethodPost, "tool-approval", body)
 	var st toolApprovalState
 	if err == nil {

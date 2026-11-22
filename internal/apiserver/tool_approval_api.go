@@ -84,6 +84,10 @@ type toolApprovalRequest struct {
 	Tool       string `json:"tool"`
 	SideEffect string `json:"sideEffect"`
 	Arguments  string `json:"arguments"`
+	// Server names the MCPServer a discovered MCP tool came from. Such a tool's
+	// name is not in the agent's spec.tools (which lists the server's connector
+	// Tool), so the server is what ties the call to the agent.
+	Server string `json:"server,omitempty"`
 }
 
 // toolApprovalState is the router's view of an approval.
@@ -142,7 +146,7 @@ func (s *Server) requestToolApproval(w http.ResponseWriter, r *http.Request, cal
 		return
 	}
 	// Only tools the agent has can be asked about.
-	if !slices.Contains(agent.Spec.Tools, req.Tool) {
+	if !slices.Contains(agent.Spec.Tools, req.Tool) && (req.Server == "" || !s.agentUsesServer(r.Context(), &agent, req.Server)) {
 		http.Error(w, "the agent has no such tool", http.StatusBadRequest)
 		return
 	}

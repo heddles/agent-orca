@@ -351,3 +351,35 @@ func tokenReviewAs(user string) *k8sfake.Clientset {
 	})
 	return cs
 }
+
+// A tool discovered from an MCP server is named by the server, not by the agent's
+// spec.tools (which lists the server's connector Tool). The router names the
+// server, and the approval is opened only for a server one of the agent's tools
+// belongs to.
+func TestRequestToolApprovalForADiscoveredMCPTool(t *testing.T) {
+	store := &memToolApprovals{}
+	objs := append(toolFixtures(nil),
+		&agentorcav1alpha1.Tool{ObjectMeta: metav1.ObjectMeta{
+			Name: "github-conn", Namespace: "team-a",
+			OwnerReferences: []metav1.OwnerReference{{Kind: "MCPServer", Name: "github", APIVersion: agentorcav1alpha1.GroupVersion.String(), UID: "u"}},
+		}},
+	)
+	for i := range objs {
+		if a, ok := objs[i].(*agentorcav1alpha1.Agent); ok {
+			a.Spec.Tools = append(a.Spec.Tools, "github-conn")
+		}
+	}
+	s, _ := toolServer(t, store, nil, objs...)
+
+	ok := `{"callKey":"0123456789abcdef","tool":"create_issue","server":"github","arguments":"{}"}`
+	if rec := requestTool(s, routerSA, ok); rec.Code != http.StatusOK {
+		t.Fatalf("discovered MCP tool: status %d: %s", rec.Code, rec.Body)
+	}
+	other := `{"callKey":"0123456789abcdef","tool":"create_issue","server":"someone-elses","arguments":"{}"}`
+	if rec := requestTool(s, routerSA, other); rec.Code != http.StatusBadRequest {
+		t.Errorf("a server the agent does not use: status %d, want 400", rec.Code)
+	}
+	if len(store.rows) != 1 {
+		t.Errorf("%d approvals, want 1", len(store.rows))
+	}
+}
