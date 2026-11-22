@@ -37,6 +37,19 @@ type BuilderConfig struct {
 	CheckMaxConcurrency int
 	// CheckPerUserPerHour is how many checks one user may start an hour. Default 12.
 	CheckPerUserPerHour int
+
+	// DraftProvider names the ModelProvider that writes a draft from a
+	// description. It is looked up in the caller's workspace first and then in the
+	// platform catalog (the lookup a judge uses), so a tenant that defines a
+	// provider of that name uses its own. Empty turns "Draft from a description" off.
+	DraftProvider string
+	// DraftPerUserPerHour is how many drafts one user may ask for an hour. Default 10.
+	DraftPerUserPerHour int
+	// DraftMaxCostUSD is the most one draft call may cost, estimated before the
+	// call and refused above it. Default 0.05.
+	DraftMaxCostUSD float64
+	// DraftDailyUSDPerUser is the most one user's drafts may cost in 24 hours. Default 1.
+	DraftDailyUSDPerUser float64
 }
 
 func (c BuilderConfig) checkBudget() float64 { return orFloat(c.CheckDefaultBudgetUSD, 0.25) }
@@ -46,6 +59,10 @@ func (c BuilderConfig) checkMaxBudget() float64 {
 func (c BuilderConfig) checkCases() int       { return orInt(c.CheckMaxCases, 25) }
 func (c BuilderConfig) checkConcurrency() int { return orInt(c.CheckMaxConcurrency, 2) }
 func (c BuilderConfig) checkPerHour() int     { return orInt(c.CheckPerUserPerHour, 12) }
+
+func (c BuilderConfig) draftPerHour() int     { return orInt(c.DraftPerUserPerHour, 10) }
+func (c BuilderConfig) draftMaxCost() float64 { return orFloat(c.DraftMaxCostUSD, 0.05) }
+func (c BuilderConfig) draftDaily() float64   { return orFloat(c.DraftDailyUSDPerUser, 1) }
 
 func orInt(v, def int) int {
 	if v <= 0 {
@@ -96,4 +113,46 @@ func (l *windowLimiter) allow(key string, n int, now time.Time) (time.Duration, 
 	}
 	l.hits[key] = append(kept, now)
 	return 0, true
+}
+
+// spendLedger adds up what a key has spent in a window, to hold a per-user
+// daily cap on the model calls the builder makes. Single-process, like windowLimiter.
+type spendLedger struct {
+	mu    sync.Mutex
+	spent map[string][]spendEntry
+}
+
+type spendEntry struct {
+	at  time.Time
+	usd float64
+}
+
+// total is what key spent in the last window.
+func (l *spendLedger) total(key string, window time.Duration, now time.Time) float64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	cut := now.Add(-window)
+	var sum float64
+	kept := l.spent[key][:0]
+	for _, e := range l.spent[key] {
+		if e.at.After(cut) {
+			kept = append(kept, e)
+			sum += e.usd
+		}
+	}
+	if len(kept) == 0 {
+		delete(l.spent, key)
+	} else {
+		l.spent[key] = kept
+	}
+	return sum
+}
+
+func (l *spendLedger) add(key string, usd float64, now time.Time) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.spent == nil {
+		l.spent = map[string][]spendEntry{}
+	}
+	l.spent[key] = append(l.spent[key], spendEntry{now, usd})
 }

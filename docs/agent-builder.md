@@ -11,6 +11,7 @@ readable description is `internal/apiserver/schemas/openapi-ui.yaml`.
 | `POST /api/resources/{kind}?dryRun=true`, `PUT /api/resources/{kind}/{ns}/{name}?dryRun=true` | as the real write | no (nothing is written) |
 | `POST /api/templates/{ns}/{name}/use` | builder | yes, one row per object |
 | `POST /api/builder/check` | builder | yes, one row per check |
+| `POST /api/builder/draft` | builder | yes, one row (sizes and cost, never the text) |
 | `POST /api/agents/{ns}/{name}/publish` | builder | yes |
 | `DELETE /api/agents/{ns}/{name}/publish` | builder | yes |
 
@@ -61,6 +62,40 @@ and budget caps.
   or output text.
 - Tools the draft uses are really called, as in any experiment, so a draft with a tool that changes things changes them
   once per case. Test it on a safe workspace.
+
+## Describe what you want
+
+`POST /api/builder/draft` with `{"description": "...", "namespace": "optional"}` writes a first draft of the form from plain
+words, for a person to review. It never writes an object: the answer is only fields.
+
+```
+200 {"name": "refund-helper", "namespace": "team-a", "description": "...", "instructions": "...",
+     "exampleInputs": ["..."], "connections": ["search", "tickets"], "knowledgeBases": ["policy"], "guardrail": "pii",
+     "suggestedBudgetUsd": 0.4, "aiFields": ["connections", "description", ...], "notes": ["..."], "valid": true}
+```
+
+- **The model.** `operator.builder.draftProvider` names a ModelProvider. It is found the way an evaluation judge's is
+  (`judge.KubeResolver`): in the caller's workspace first, then in the platform catalog, subject to the tenant access check, so
+  a tenant that defines a provider of that name uses its own. The call goes through the same `router.CompleteOnce` path with
+  the provider's own prices. There is no other provider code. With no provider set, or one the workspace cannot use, the
+  answer is `409 {"code": "draft_unavailable", "error": "..."}` and `GET /api/builder/options` has
+  `"draft": {"available": false, "reason": "..."}`; the UI then disables the box and shows the reason.
+- **The reply is untrusted.** The description and the list of the workspace's tool, MCP server, knowledge base and guardrail
+  names reach the model as data in blocks with a random nonce in their tags. Its reply must be one JSON object (one code
+  fence allowed, prose around it is refused, as for a judge's verdict). Only the known fields are read, anything else (a
+  `runtime`, an image, a namespace) is dropped; each field is type-checked, stripped of control characters and cut to its cap
+  (instructions 6000 bytes, description 240, five examples of 200, twelve references). A tool, MCP server, knowledge base or
+  guardrail policy survives only if the workspace has an object of that name that the caller may read (another tenant's, one in
+  another workspace, or an invented one is dropped, with a note). Text goes through the evaluation redactor, so keys, tokens,
+  e-mail addresses and card numbers do not reach the form. The name is made a DNS label and a number is added when it is
+  taken. The agent the form would send is checked by the dry-run write; `valid` and `errors` are its verdict.
+  The model never chooses the image, the model selector or the namespace.
+- **Limits** (`operator.builder.draft*`, per user, in memory on each replica): the description is 10 to 2000 characters (413
+  above); 10 drafts an hour (`429`, `Retry-After`); a call whose estimated cost, from the provider's prices, is over `$0.05` is
+  refused before it is made; and `$1` a day (a call is let in while what was spent plus its estimate fits, so the allowance can
+  be overrun by one call). The reply is capped at 1500 tokens.
+- **Privacy.** The description is redacted before it is sent, and never logged or audited: logs and the audit row hold its
+  size, the tenant, the user and the cost.
 
 ## Use a template
 

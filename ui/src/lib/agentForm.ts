@@ -160,3 +160,21 @@ export function fieldForServerError(message: string): keyof AgentForm | null {
   if (m.includes('metadata.name')) return 'name'
   return null
 }
+
+/**
+ * The form with an AI draft's fields filled in. The workspace, maintainer and model are the person's
+ * and stay as they are. Returns the new form and the form fields the draft changed, to be marked.
+ */
+export function applyDraft(form: AgentForm, d: { name: string; description: string; instructions: string; exampleInputs: string[]; connections: string[]; knowledgeBases: string[]; guardrail: string }): { form: AgentForm; fields: Array<keyof AgentForm> } {
+  const next: AgentForm = { ...form }
+  const fields: Array<keyof AgentForm> = []
+  const set = <K extends keyof AgentForm>(k: K, v: AgentForm[K], present: boolean) => { if (present) { next[k] = v; fields.push(k) } }
+  set('name', d.name, d.name !== '')
+  set('description', d.description, d.description !== '')
+  set('instructions', d.instructions, d.instructions !== '')
+  set('exampleInputs', d.exampleInputs.join('\n'), d.exampleInputs.length > 0)
+  set('connections', d.connections, d.connections.length > 0)
+  set('knowledgeBases', d.knowledgeBases, d.knowledgeBases.length > 0)
+  set('guardrail', d.guardrail, d.guardrail !== '')
+  return { form: next, fields }
+}

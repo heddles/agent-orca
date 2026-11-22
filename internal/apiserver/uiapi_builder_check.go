@@ -209,6 +209,27 @@ func (s *UIServer) agentIsPublished(r *http.Request, ns, name string) bool {
 // answered the request (a failed dry run) and reports false. On success it
 // returns the object as the server would store it, defaults applied.
 func (s *UIServer) dryRunAgent(w http.ResponseWriter, r *http.Request, ns, name string, draft json.RawMessage) (*agentorcav1alpha1.Agent, bool) {
+	rec, bad := s.runAgentDryRun(r, ns, name, draft)
+	if bad != "" {
+		jsonError(w, bad, http.StatusBadRequest)
+		return nil, false
+	}
+	if rec.status >= http.StatusBadRequest {
+		rec.finish(w)
+		return nil, false
+	}
+	var out agentorcav1alpha1.Agent
+	if err := json.Unmarshal(rec.body.Bytes(), &out); err != nil {
+		jsonError(w, "the draft could not be read back", http.StatusInternalServerError)
+		return nil, false
+	}
+	return &out, true
+}
+
+// runAgentDryRun makes the dry-run write of a draft Agent and returns the
+// buffered answer. A non-empty second value is a problem with the draft body
+// itself (the caller answers 400 with it).
+func (s *UIServer) runAgentDryRun(r *http.Request, ns, name string, draft json.RawMessage) (*dryRunWriter, string) {
 	info := crdKinds["agents"]
 	method, path := http.MethodPost, "/api/resources/agents"
 	body := draft
@@ -218,8 +239,7 @@ func (s *UIServer) dryRunAgent(w http.ResponseWriter, r *http.Request, ns, name 
 		method, path = http.MethodPut, "/api/resources/agents/"+ns+"/"+name
 		var m map[string]any
 		if json.Unmarshal(draft, &m) != nil || m == nil {
-			jsonError(w, "the draft must be an Agent object", http.StatusBadRequest)
-			return nil, false
+			return nil, "the draft must be an Agent object"
 		}
 		md, _ := m["metadata"].(map[string]any)
 		if md == nil {
@@ -241,14 +261,5 @@ func (s *UIServer) dryRunAgent(w http.ResponseWriter, r *http.Request, ns, name 
 	} else {
 		s.updateResource(rec, dr, info, ns, name)
 	}
-	if rec.status >= http.StatusBadRequest {
-		rec.finish(w)
-		return nil, false
-	}
-	var out agentorcav1alpha1.Agent
-	if err := json.Unmarshal(rec.body.Bytes(), &out); err != nil {
-		jsonError(w, "the draft could not be read back", http.StatusInternalServerError)
-		return nil, false
-	}
-	return &out, true
+	return rec, ""
 }

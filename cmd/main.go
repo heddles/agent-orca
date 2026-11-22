@@ -1138,6 +1138,10 @@ func builderConfigFromEnv() apiserver.BuilderConfig {
 	num("BUILDER_CHECK_MAX_CASES", &c.CheckMaxCases)
 	num("BUILDER_CHECK_MAX_CONCURRENCY", &c.CheckMaxConcurrency)
 	num("BUILDER_CHECK_PER_USER_PER_HOUR", &c.CheckPerUserPerHour)
+	c.DraftProvider = env("BUILDER_DRAFT_PROVIDER")
+	num("BUILDER_DRAFT_PER_USER_PER_HOUR", &c.DraftPerUserPerHour)
+	usd("BUILDER_DRAFT_MAX_COST_USD", &c.DraftMaxCostUSD)
+	usd("BUILDER_DRAFT_DAILY_USD_PER_USER", &c.DraftDailyUSDPerUser)
 	return c
 }
 

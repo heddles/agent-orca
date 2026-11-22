@@ -1466,6 +1466,38 @@ paths:
         '422': { description: The draft names things the workspace does not have }
         '429': { description: The user started too many checks this hour }
         '503': { description: Needs the PostgreSQL store and operator.evals.enabled }
+  /api/builder/draft:
+    post:
+      tags: [builder]
+      summary: Draft an agent from a plain-English description
+      description: >
+        Needs the builder role. The model named by operator.builder.draftProvider
+        (a ModelProvider found in the caller's workspace, then the platform
+        catalog, as a judge's is) writes the fields; the answer is a draft for a
+        person to review and no object is written. The model's reply is
+        untrusted: one strict JSON object, unknown fields dropped, each field
+        type-checked and size-capped, references kept only when the workspace has
+        an object of that name the caller may read, secret-like text redacted,
+        and the assembled agent checked by the dry-run write (valid, errors).
+        The description is redacted before it is sent, and never logged or
+        audited (only its size). Limits per user: drafts an hour, a cost cap per
+        call and a daily spend cap. One audit row (request, Agent) with sizes and
+        cost.
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: '#/components/schemas/BuilderDraftRequest' } }
+      responses:
+        '200':
+          description: the draft
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/BuilderDraft' } }
+        '400': { description: The description is too short, or the body is not valid }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { description: 'No model is set up for drafting (code draft_unavailable)' }
+        '413': { description: The description is too long, or the call would cost more than one draft may }
+        '429': { description: The user asked for too many drafts, or used the daily allowance }
+        '502': { description: The model could not be reached, or its answer was not usable }
   /api/templates/{namespace}/{name}/use:
     post:
       tags: [builder]

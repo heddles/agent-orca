@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Builder: Describe what you want** — `POST /api/builder/draft` (builder role) turns a plain-English description (at most
+  2000 characters) into a draft of the builder form: a name, description, instructions, example inputs, and tools, MCP
+  servers, knowledge bases and a guardrail policy chosen by name from what the workspace has. It calls the ModelProvider named
+  by `operator.builder.draftProvider` through the evaluation judge's resolver and provider (no new provider code); without one
+  the answer is `409 draft_unavailable` and `GET /api/builder/options` reports `draft.available: false`, so the UI disables the
+  box with a hint. The draft is returned for review and nothing is written. The model's reply is untrusted: one strict JSON
+  object, unknown fields dropped, fields type-checked and capped, references kept only when the caller may read an object of
+  that name in the workspace, secret-like text redacted (the description too, before it is sent), and the assembled agent
+  checked by the dry-run write. Per-user hourly count, per-call cost cap and daily spend cap. The description is never logged or
+  audited. UI: a "Describe what you want" box on a new agent that fills the form and marks the fields as "AI suggested" until
+  they are edited.
+
 - **Builder: Check with my cases** — `POST /api/builder/check` runs the agent draft on screen (saved or not) against an
   evaluation dataset and shows pass or fail, score, cost and time for each case, with a summary against the published
   version when there is one. It reuses the experiment runner: the draft is the inline `spec` of one arm of an experiment of

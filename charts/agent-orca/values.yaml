@@ -114,6 +114,17 @@ operator:
     checkMaxCases: 25
     checkMaxConcurrency: 2
     checkPerUserPerHour: 12
+    # "Describe what you want": the ModelProvider that writes a draft agent from a
+    # description (BUILDER_DRAFT_PROVIDER). It is looked up in the user's workspace
+    # first and then in the platform catalog, like an evaluation judge's, so a
+    # workspace can define its own of that name. Empty turns the feature off
+    # (the button is disabled with a hint). Also the drafts one user may ask for an
+    # hour, the most one call may cost (estimated before the call) and the most one
+    # user's drafts may cost in a day, in USD.
+    draftProvider: ""
+    draftPerUserPerHour: 10
+    draftMaxCostUSD: 0.05
+    draftDailyUSDPerUser: 1
   # extraArgs are appended to the operator container args. Use this to enable
   # optional features such as OIDC login, e.g.:
   #   extraArgs:

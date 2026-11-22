@@ -210,3 +210,9 @@ func ParsePair(reply string) (PairVerdict, error) {
 	}
 	return PairVerdict{Rationale: CleanRationale(*in.Rationale), Winner: w}, nil
 }
+
+// UnwrapObject returns the one JSON object in a model reply, with the same
+// strictness as a judge's verdict: the reply is that object, optionally inside
+// one code fence, and prose around it is refused. Other callers that read
+// structured output from a model (the builder's draft) use it.
+func UnwrapObject(reply string) ([]byte, error) { return unwrap(reply) }

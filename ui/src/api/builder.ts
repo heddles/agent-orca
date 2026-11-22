@@ -47,6 +47,30 @@ export interface BuilderOptions {
   mcpServers: OptionItem[]
   knowledgeBases: OptionItem[]
   guardrailPolicies: OptionItem[]
+  /** Whether "Describe what you want" can be offered, and why not when it cannot. */
+  draft: { available: boolean; reason?: string }
+}
+
+/** A draft of the form's fields, written by a model from a description. Nothing is saved. */
+export interface AgentDraft {
+  name: string
+  namespace: string
+  description: string
+  instructions: string
+  exampleInputs: string[]
+  /** Tool and MCP server names. */
+  connections: string[]
+  knowledgeBases: string[]
+  guardrail: string
+  /** Advice for a run budget in USD; the form has no field for it. */
+  suggestedBudgetUsd?: number
+  /** The form fields the model filled. */
+  aiFields: string[]
+  /** What was dropped or changed, in plain words. */
+  notes: string[]
+  /** The verdict of the dry-run write on the assembled agent. */
+  valid: boolean
+  errors?: string[]
 }
 
 /** A reference a template needs that the target workspace lacks, with what could stand in for it. */
@@ -191,6 +215,25 @@ export async function getBuilderOptions(): Promise<BuilderOptions> {
     mcpServers: body.mcpServers ?? [],
     knowledgeBases: body.knowledgeBases ?? [],
     guardrailPolicies: body.guardrailPolicies ?? [],
+    draft: body.draft ?? { available: false },
+  }
+}
+
+/**
+ * Asks the workspace's model for a draft from a plain-English description. 409 (code draft_unavailable) when no
+ * model is set up, 429 when the user asked too often, 413 for a long description, 502 when the model's answer was
+ * not usable. The draft is not stored: the caller shows it for review.
+ */
+export async function draftFromDescription(description: string, namespace?: string): Promise<AgentDraft> {
+  const res = await apiFetch('/api/builder/draft', {
+    method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ description, ...(namespace ? { namespace } : {}) }),
+  })
+  if (!res.ok) throw await failure(res)
+  const body = (await res.json()) as AgentDraft
+  return {
+    ...body,
+    exampleInputs: body.exampleInputs ?? [], connections: body.connections ?? [], knowledgeBases: body.knowledgeBases ?? [],
+    aiFields: body.aiFields ?? [], notes: body.notes ?? [],
   }
 }
 
