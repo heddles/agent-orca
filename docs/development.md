@@ -51,7 +51,8 @@ Multi-group layout organizes APIs by group name (e.g., `batch`, `apps`). Check t
 | [acp-api.md](acp-api.md) | Developers | ACP API reference (agent discovery, run execution, sessions) |
 | [admin-api.md](admin-api.md) | Operators | Admin API reference (tenant lifecycle management) |
 | [evaluations.md](evaluations.md) | Developers / operators | Evaluation datasets and cases, add to dataset from a run, redaction |
-| [integrations.md](integrations.md) | Builders / operators | Webhook triggers (and the chat widget): signed hooks, limits, tenancy |
+| [integrations.md](integrations.md) | Builders / operators | Webhook triggers, the chat widget and email: signed hooks, limits, tenancy |
+| [inbound-channels.md](inbound-channels.md) | Developers / operators | Inbound channels: the adapter contract, security model, where secrets live, what is not built |
 | [rate-limiting.md](rate-limiting.md) | Operators | Rate limiting, budget enforcement, quota responses |
 | [aoctl-reference.md](aoctl-reference.md) | Developers | Complete `aoctl` CLI reference (all subcommands) |
 | [observability.md](observability.md) | Operators | Health probes, Prometheus metrics, audit logging |
