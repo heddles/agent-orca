@@ -78,3 +78,29 @@ var (
 	_ inbound.Poller   = (*Adapter)(nil)
 	_ inbound.Tester   = (*Adapter)(nil)
 )
+
+// Describe lists the settings and the Secret keys, for the API and the UI.
+func (*Adapter) Describe() inbound.Descriptor {
+	return inbound.Descriptor{
+		Title:   "Email",
+		Summary: "People write to a mailbox; the agent answers by mail in the same conversation.",
+		Fields: []inbound.Field{
+			{Key: "mode", Label: "How mail arrives", Type: "enum", Required: true, Options: []string{ModeIMAP, ModeWebhook}},
+			{Key: "folder", Label: "Folder", Type: "string", Help: "IMAP mode. Default INBOX."},
+			{Key: "processedFolder", Label: "Move handled mail to", Type: "string", Help: "IMAP mode. Empty marks handled mail as read."},
+			{Key: "requireAuthResults", Label: "Require proof of the sender's domain", Type: "bool", Default: true},
+			{Key: "trustedAuthservId", Label: "Mail server name", Type: "string", Help: "The host name of your own receiving mail server."},
+			{Key: "acceptTextAttachments", Label: "Pass small text attachments", Type: "bool"},
+		},
+		SecretKeys: []inbound.SecretKey{
+			{Key: KeyFrom, Required: true, Help: "The address of the mailbox; replies come from it."},
+			{Key: KeySMTPHost, Required: true, Help: "Replies are sent over SMTP."},
+		},
+		Allow: inbound.AllowHelp{Users: "Sender addresses, exact.", Groups: "Whole domains, for example example.com."},
+		Setup: []string{
+			"Webhook mode: point your mail provider's relay at {{url}}, signed as described in docs/inbound-channels.md.",
+		},
+	}
+}
+
+var _ inbound.Describer = (*Adapter)(nil)

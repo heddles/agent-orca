@@ -342,6 +342,6 @@ func orInt(n, def int) int {
 // Masking comes first so a secret cut in half cannot slip past it.
 func (p *Pipeline) Prepare(c Connection, res Result) Result {
 	res.Text = redact.String(secretsOf(c).String(res.Text))
-	res.Text = truncateReply(res.Text, p.capabilities(c.Kind).MaxReplyChars)
+	res.Text = truncateReply(res.Text, replyLimit(p.capabilities(c.Kind)))
 	return res
 }

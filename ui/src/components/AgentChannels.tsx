@@ -1,13 +1,15 @@
 /**
- * AgentChannels — inbound channels of a published agent (docs/inbound-channels.md): today a
- * mailbox. People write to the address, the agent runs on the message and the answer is
- * mailed back. Anyone who can see the agent can read the list; builders change it. The
+ * AgentChannels — inbound channels of a published agent (docs/inbound-channels.md): a mailbox
+ * and chat platforms. People write where they already are, the agent runs on the message and
+ * the answer comes back in the same conversation. Email has its own form; every other kind is
+ * drawn from what its adapter describes (GET /api/inbound-kinds). Anyone who can see the agent can read the list; builders change it. The
  * connection names a Secret an administrator prepared: no password is typed here.
  */
 import { useCallback, useEffect, useState, type CSSProperties } from 'react'
 import {
-  createInbound, deleteInbound, describeInboundError, inboundUrl, listInbound, parseList, setInboundEnabled, testInbound,
-  type EmailAdapterConfig, type InboundConnection, type InboundTestReport,
+  createInbound, deleteInbound, describeInboundError, inboundUrl, listInbound, listInboundKinds, parseList, setInboundEnabled,
+  setupSteps, testInbound,
+  type EmailAdapterConfig, type InboundConnection, type InboundKind, type InboundTestReport,
 } from '../api/inbound'
 import { canWriteEvals, useRoles } from '../lib/access'
 import { ds, DESIGN } from '../lib/designSystem'
@@ -20,7 +22,8 @@ export function AgentChannels({ namespace, name }: { namespace: string; name: st
   const builder = canWriteEvals(useRoles())
   const [items, setItems] = useState<InboundConnection[] | null>(null)
   const [error, setError] = useState('')
-  const [creating, setCreating] = useState(false)
+  const [creating, setCreating] = useState<string | null>(null)
+  const [kinds, setKinds] = useState<InboundKind[]>([])
   const [removing, setRemoving] = useState<InboundConnection | null>(null)
   const [reports, setReports] = useState<Record<string, InboundTestReport | 'testing'>>({})
 
@@ -32,6 +35,9 @@ export function AgentChannels({ namespace, name }: { namespace: string; name: st
     return () => { live = false }
   }, [namespace, name])
   useEffect(() => load(), [load])
+  // The kinds are what the platform offers; if the list cannot be read the tab still works for email.
+  useEffect(() => { listInboundKinds().then(setKinds).catch(() => setKinds([])) }, [])
+  const chatKinds = kinds.filter((k) => k.kind !== 'email')
 
   const toggle = async (c: InboundConnection) => {
     try { await setInboundEnabled(c.id, !c.enabled); load() } catch (e) { setError(describeInboundError(e)) }
@@ -61,16 +67,31 @@ export function AgentChannels({ namespace, name }: { namespace: string; name: st
       {error && <p role="alert" style={field.error}>{error}</p>}
       {items.length === 0 && !error && <p style={s.muted}>No channels yet.</p>}
       <ul style={s.list}>
-        {items.map((c) => <ChannelCard key={c.id} c={c} builder={builder} report={reports[c.id]} onToggle={toggle} onTest={test} onDelete={setRemoving} />)}
+        {items.map((c) => <ChannelCard key={c.id} c={c} kind={kinds.find((k) => k.kind === c.kind)} builder={builder} report={reports[c.id]} onToggle={toggle} onTest={test} onDelete={setRemoving} />)}
       </ul>
-      {builder && <div><DSButton variant="primary" onClick={() => setCreating(true)}>Add a channel</DSButton></div>}
+      {builder && <div><DSButton variant="primary" onClick={() => setCreating(chatKinds.length ? '' : 'email')}>Add a channel</DSButton></div>}
 
-      {creating && (
-        <CreateDialog
+      {creating === '' && (
+        <Dialog title="Add a channel" onClose={() => setCreating(null)}>
+          <p style={s.lead}>Where should people reach this agent?</p>
+          <div style={s.row}>
+            <DSButton variant="secondary" onClick={() => setCreating('email')}>Email</DSButton>
+            {chatKinds.map((k) => (
+              <DSButton key={k.kind} variant="secondary" onClick={() => setCreating(k.kind)}>{k.descriptor.title}</DSButton>
+            ))}
+          </div>
+        </Dialog>
+      )}
+      {creating === 'email' && (
+        <CreateDialog namespace={namespace} agent={name} onClose={() => setCreating(null)} onCreated={() => { setCreating(null); load() }} />
+      )}
+      {creating && creating !== 'email' && kinds.find((k) => k.kind === creating) && (
+        <GenericCreateDialog
           namespace={namespace}
           agent={name}
-          onClose={() => setCreating(false)}
-          onCreated={() => { setCreating(false); load() }}
+          kind={kinds.find((k) => k.kind === creating)!}
+          onClose={() => setCreating(null)}
+          onCreated={() => { setCreating(null); load() }}
         />
       )}
       {removing && (
@@ -86,17 +107,19 @@ export function AgentChannels({ namespace, name }: { namespace: string; name: st
   )
 }
 
-function ChannelCard({ c, builder, report, onToggle, onTest, onDelete }: {
-  c: InboundConnection; builder: boolean; report?: InboundTestReport | 'testing'
+function ChannelCard({ c, kind, builder, report, onToggle, onTest, onDelete }: {
+  c: InboundConnection; kind?: InboundKind; builder: boolean; report?: InboundTestReport | 'testing'
   onToggle: (c: InboundConnection) => void; onTest: (c: InboundConnection) => void; onDelete: (c: InboundConnection) => void
 }) {
   const mode = c.config.adapter?.mode
   const url = inboundUrl(c.path)
+  const chat = c.kind !== 'email'
+  const steps = setupSteps(kind, url)
   return (
     <li style={s.card} aria-label={`Channel ${c.name}`}>
       <div style={s.row}>
         <strong style={{ fontSize: 13 }}>{c.name}</strong>
-        <DSChip size="sm">{c.kind === 'email' ? 'Email' : c.kind}{mode ? ` (${mode === 'imap' ? 'mailbox' : 'provider webhook'})` : ''}</DSChip>
+        <DSChip size="sm">{c.kind === 'email' ? 'Email' : (kind?.descriptor.title ?? c.kind)}{c.kind === 'email' && mode ? ` (${mode === 'imap' ? 'mailbox' : 'provider webhook'})` : ''}</DSChip>
         <DSChip size="sm" variant={c.enabled ? 'success' : 'neutral'} dot>{c.enabled ? 'On' : 'Off'}</DSChip>
       </div>
       <p style={s.muted}>
@@ -105,13 +128,23 @@ function ChannelCard({ c, builder, report, onToggle, onTest, onDelete }: {
       </p>
       {c.lastError && <p role="alert" style={field.error}>Last problem: {c.lastError}</p>}
       <p style={s.muted}>
-        May write: {[...(c.config.allowSenders ?? []), ...(c.config.allowGroups ?? []).map((g) => `anyone at ${g}`)].join(', ') || 'nobody'}
+        May write: {[...(c.config.allowSenders ?? []), ...(c.config.allowGroups ?? []).map((g) => (chat ? `anyone in ${g}` : `anyone at ${g}`))].join(', ') || (c.config.allowChannels?.length ? 'anyone in the listed channels' : 'nobody')}
+        {chat && c.config.allowChannels?.length ? `. Only in: ${c.config.allowChannels.join(', ')}` : ''}
+        {chat && c.config.modes?.length ? `. Answers: ${c.config.modes.join(', ')}` : ''}
       </p>
-      {mode === 'webhook' && (
+      {(mode === 'webhook' || chat) && (
         <div style={s.row}>
           <code style={s.code} aria-label={`URL of ${c.name}`}>{url}</code>
           <CopyButton text={url} label={`Copy URL of ${c.name}`} />
         </div>
+      )}
+      {chat && steps.length > 0 && (
+        <details>
+          <summary style={{ fontSize: 12, cursor: 'pointer' }}>Setup steps</summary>
+          <ol aria-label={`Setup steps of ${c.name}`} style={{ margin: '6px 0 0', paddingLeft: 18, fontSize: 12, color: ds.textSecondary }}>
+            {steps.map((t, i) => <li key={i}>{t}</li>)}
+          </ol>
+        </details>
       )}
       {report === 'testing' && <p role="status" style={s.muted}>Testing…</p>}
       {report && report !== 'testing' && (
@@ -230,6 +263,133 @@ function CreateDialog({ namespace, agent, onClose, onCreated }: {
       </form>
     </Dialog>
   )
+}
+
+function GenericCreateDialog({ namespace, agent, kind, onClose, onCreated }: {
+  namespace: string; agent: string; kind: InboundKind; onClose: () => void; onCreated: () => void
+}) {
+  const d = kind.descriptor
+  const offered = kind.capabilities.modes ?? []
+  const [name, setName] = useState('')
+  const [secretRef, setSecretRef] = useState('')
+  const [users, setUsers] = useState('')
+  const [groups, setGroups] = useState('')
+  const [channels, setChannels] = useState('')
+  const [modes, setModes] = useState<string[]>(offered.filter((m) => m !== 'channel'))
+  const [values, setValues] = useState<Record<string, string | boolean>>(() =>
+    Object.fromEntries((d.fields ?? []).filter((f) => f.default !== undefined).map((f) => [f.key, f.default as string | boolean])))
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const set = (k: string, v: string | boolean) => setValues((o) => ({ ...o, [k]: v }))
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    const allowSenders = parseList(users)
+    const allowGroups = parseList(groups)
+    const allowChannels = parseList(channels)
+    if (!name.trim()) { setError('Give the channel a name.'); return }
+    if (!secretRef.trim()) { setError(`Name the Secret your administrator prepared for ${d.title}.`); return }
+    if (allowSenders.length + allowGroups.length + allowChannels.length === 0) { setError('List who may write in, or which channels. Nobody is allowed by default.'); return }
+    if (offered.length > 0 && modes.length === 0) { setError('Choose at least one way of addressing the agent.'); return }
+    if (modes.includes('channel') && allowChannels.length === 0) { setError('Answering every message of a channel needs that channel on the list.'); return }
+    const adapter: Record<string, string | number | boolean> = {}
+    for (const f of d.fields ?? []) {
+      const v = values[f.key]
+      if (f.required && (v === undefined || v === '')) { setError(`${f.label} is required.`); return }
+      if (v === undefined || v === '') continue
+      if (f.type === 'int') {
+        const n = Number(v)
+        if (!Number.isFinite(n)) { setError(`${f.label} must be a number.`); return }
+        adapter[f.key] = n
+      } else adapter[f.key] = typeof v === 'string' ? v.trim() : v
+    }
+    setBusy(true)
+    setError('')
+    try {
+      await createInbound({
+        namespace, agent, name: name.trim(), kind: kind.kind, secretRef: secretRef.trim(),
+        config: { allowSenders, allowGroups, allowChannels, ...(offered.length ? { modes } : {}), adapter },
+      })
+      onCreated()
+    } catch (err) {
+      setError(describeInboundError(err))
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Dialog title={`Add a ${d.title} channel`} onClose={onClose} width={560}>
+      <form onSubmit={submit} noValidate style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        {d.summary && <p style={s.lead}>{d.summary}</p>}
+        <Field label="Name" help="For example “Support in chat”.">
+          {(p) => <input {...p} style={field.control} value={name} maxLength={80} onChange={(e) => setName(e.target.value)} />}
+        </Field>
+        <Field
+          label="Secret"
+          help={`The name of a Secret in this workspace that holds the credentials. Your administrator creates it${d.secretKeys?.length ? ` with the keys ${d.secretKeys.map((k) => k.key + (k.required ? '' : ' (optional)')).join(', ')}` : ''}; no token is typed here.`}
+        >
+          {(p) => <input {...p} style={field.control} value={secretRef} onChange={(e) => setSecretRef(e.target.value)} />}
+        </Field>
+        {(d.fields ?? []).map((f) => (
+          f.type === 'bool' ? (
+            <label key={f.key} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}>
+              <input type="checkbox" checked={values[f.key] === true} onChange={(e) => set(f.key, e.target.checked)} />
+              {f.label}
+            </label>
+          ) : (
+            <Field key={f.key} label={f.label + (f.required ? '' : ' (optional)')} help={f.help}>
+              {(p) => f.type === 'enum' ? (
+                <select {...p} style={field.control} value={String(values[f.key] ?? '')} onChange={(e) => set(f.key, e.target.value)}>
+                  <option value="">Choose…</option>
+                  {(f.options ?? []).map((o) => <option key={o} value={o}>{o}</option>)}
+                </select>
+              ) : (
+                <input {...p} style={field.control} value={String(values[f.key] ?? '')} placeholder={f.placeholder} onChange={(e) => set(f.key, e.target.value)} />
+              )}
+            </Field>
+          )
+        ))}
+        {d.allow?.users && (
+          <Field label="Who may write (user ids)" help={d.allow.users}>
+            {(p) => <textarea {...p} style={{ ...field.control, minHeight: 48 }} value={users} onChange={(e) => setUsers(e.target.value)} />}
+          </Field>
+        )}
+        {d.allow?.groups && (
+          <Field label="Who may write (whole workspaces)" help={d.allow.groups}>
+            {(p) => <textarea {...p} style={{ ...field.control, minHeight: 40 }} value={groups} onChange={(e) => setGroups(e.target.value)} />}
+          </Field>
+        )}
+        {d.allow?.channels && (
+          <Field label="Only in these channels (optional)" help={d.allow.channels}>
+            {(p) => <textarea {...p} style={{ ...field.control, minHeight: 40 }} value={channels} onChange={(e) => setChannels(e.target.value)} />}
+          </Field>
+        )}
+        {offered.length > 0 && (
+          <fieldset style={{ border: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <legend style={{ fontSize: 13, marginBottom: 4 }}>The agent answers</legend>
+            {offered.map((m) => (
+              <label key={m} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}>
+                <input type="checkbox" checked={modes.includes(m)} onChange={(e) => setModes((cur) => (e.target.checked ? [...cur, m] : cur.filter((x) => x !== m)))} />
+                {MODE_LABEL[m] ?? m}
+              </label>
+            ))}
+          </fieldset>
+        )}
+        {error && <p role="alert" style={field.error}>{error}</p>}
+        <div style={s.row}>
+          <DSButton type="submit" variant="primary" disabled={busy}>{busy ? 'Creating…' : 'Create channel'}</DSButton>
+          <DSButton type="button" variant="ghost" onClick={onClose}>Cancel</DSButton>
+        </div>
+      </form>
+    </Dialog>
+  )
+}
+
+const MODE_LABEL: Record<string, string> = {
+  direct: 'Direct messages to the bot',
+  mention: 'When the bot is mentioned in a channel',
+  command: 'Slash commands',
+  channel: 'Every message in the listed channels (no mention needed)',
 }
 
 const s: Record<string, CSSProperties> = {

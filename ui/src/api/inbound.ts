@@ -40,10 +40,43 @@ export interface EmailAdapterConfig {
 export interface InboundConfig {
   allowSenders?: string[]
   allowGroups?: string[]
+  /** Chat: the exact ids of the spaces a message may come from. */
+  allowChannels?: string[]
+  /** Chat: how the agent may be addressed (direct, mention, command, channel). */
+  modes?: string[]
   ratePerMin?: number
   senderPerHour?: number
   pollSeconds?: number
-  adapter?: EmailAdapterConfig
+  adapter?: Partial<EmailAdapterConfig> | Record<string, string | number | boolean>
+}
+
+/** One setting of an adapter, as the adapter describes it. */
+export interface InboundField {
+  key: string
+  label: string
+  type: 'string' | 'bool' | 'int' | 'enum'
+  required?: boolean
+  help?: string
+  placeholder?: string
+  options?: string[]
+  default?: string | number | boolean
+}
+
+/** What a registered kind of channel offers: its settings form, Secret keys and setup steps. */
+export interface InboundKind {
+  kind: string
+  descriptor: {
+    title: string
+    summary?: string
+    fields?: InboundField[]
+    secretKeys?: { key: string; required?: boolean; help?: string }[]
+    allow?: { users?: string; groups?: string; channels?: string }
+    /** Steps to do on the platform; {{url}} stands for the connection's receive URL. */
+    setup?: string[]
+  }
+  capabilities: { threads: boolean; dialect?: string; modes?: string[]; ackFirst?: boolean; workingIndicator?: boolean }
+  testable: boolean
+  receives: boolean
 }
 
 export interface InboundInput {
@@ -76,6 +109,9 @@ async function send<T>(url: string, method: string, body?: unknown): Promise<T> 
 export async function listInbound(namespace: string, agent: string): Promise<InboundConnection[]> {
   return (await send<InboundConnection[] | null>(`/api/inbound-connections?namespace=${enc(namespace)}&agent=${enc(agent)}`, 'GET')) ?? []
 }
+export async function listInboundKinds(): Promise<InboundKind[]> {
+  return (await send<InboundKind[] | null>('/api/inbound-kinds', 'GET')) ?? []
+}
 export const createInbound = (input: InboundInput) => send<InboundConnection>('/api/inbound-connections', 'POST', input)
 export const setInboundEnabled = (id: string, enabled: boolean) =>
   send<InboundConnection>(`/api/inbound-connections/${enc(id)}`, 'PATCH', { enabled })
@@ -85,6 +121,11 @@ export const testInbound = (id: string) => send<InboundTestReport>(`/api/inbound
 /** The full URL a provider's relay posts to, on the host the UI is served from. */
 export function inboundUrl(path: string, origin: string = window.location.origin): string {
   return `${origin}${path}`
+}
+
+/** The setup steps of a kind with the connection's receive URL filled in. */
+export function setupSteps(kind: InboundKind | undefined, url: string): string[] {
+  return (kind?.descriptor.setup ?? []).map((t) => t.split('{{url}}').join(url))
 }
 
 /** Splits text typed one per line, or comma separated, into trimmed, non-empty entries. */

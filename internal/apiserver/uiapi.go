@@ -116,6 +116,9 @@ type UIServer struct {
 	inboundConns inboundStore
 	// inboundPipe is the inbound channel pipeline; nil means the feature is off.
 	inboundPipe *inbound.Pipeline
+	// inboundAsync bounds the background handling of acknowledged-first messages.
+	inboundAsync     chan struct{}
+	inboundAsyncOnce sync.Once
 	// hooks holds the state of the unauthenticated /hooks endpoint.
 	hooks hookState
 	// conns serves the per-user MCP connection endpoints; nil means the feature is off.

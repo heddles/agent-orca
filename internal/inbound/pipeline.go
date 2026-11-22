@@ -209,8 +209,14 @@ func (p *Pipeline) Handle(ctx context.Context, c Connection, m Message, recvErr 
 	}
 
 	settings := c.Settings
-	if !settings.Allowed(m.Sender) {
-		return finish(OutcomeRejected, postgresql.InboundRejected, "sender_not_allowed", postgresql.InboundStatus{Rejected: 1})
+	caps := p.capabilities(c.Kind)
+	if m.FromBot {
+		// Another bot, an app, or our own bot: never answered, so two bots cannot
+		// keep each other talking.
+		return finish(OutcomeIgnored, postgresql.InboundIgnored, "bot_message", postgresql.InboundStatus{})
+	}
+	if why := settings.Refusal(caps, m); why != "" {
+		return finish(OutcomeRejected, postgresql.InboundRejected, why, postgresql.InboundStatus{Rejected: 1})
 	}
 	if p.Limiter != nil {
 		if _, ok := p.Limiter.Allow("inbound:"+c.ID, settings.RatePerMin); !ok {
@@ -230,7 +236,7 @@ func (p *Pipeline) Handle(ctx context.Context, c Connection, m Message, recvErr 
 		TenantID: c.TenantID, Namespace: c.Namespace, Agent: c.Agent, ConnectionID: c.ID, Kind: c.Kind,
 		Input: FormatInput(m),
 	}
-	if caps := p.capabilities(c.Kind); caps.Threads && !settings.NewThreadPerMessage && row.ThreadKey != "" {
+	if caps.Threads && !settings.NewThreadPerMessage && row.ThreadKey != "" {
 		if _, name, err := p.Store.LatestInboundRunInThread(scope, c.ID, row.ThreadKey); err == nil {
 			req.PriorRun = name
 		}
@@ -253,6 +259,7 @@ func (p *Pipeline) Handle(ctx context.Context, c Connection, m Message, recvErr 
 	}
 	_ = p.Store.RecordInboundStatus(scope, c.ID, postgresql.InboundStatus{Received: 1})
 	count(c.Kind, OutcomeStarted)
+	p.indicate(ctx, c, m)
 	return OutcomeStarted, nil
 }
 
@@ -309,6 +316,15 @@ func clip(s string, n int) string {
 	return string([]rune(s)[:n])
 }
 
+// replyLimit is the most characters of a reply the core lets through: the cap of
+// one message, times the parts the adapter splits into.
+func replyLimit(c Capabilities) int {
+	if c.MaxReplyChars <= 0 {
+		return 0
+	}
+	return c.MaxReplyChars * max(1, c.MaxReplyParts)
+}
+
 // truncateReply cuts text to max characters, with a marker.
 func truncateReply(text string, max int) string {
 	const note = "\n\n[The answer was shortened to fit this channel.]"
@@ -352,6 +368,24 @@ func (p *Pipeline) notify(ctx context.Context, c Connection, m Message, text str
 	defer cancel()
 	if err := a.Reply(rctx, c, m.Reply, Result{Text: text, Notice: true, Subject: m.Title}); err != nil {
 		slog.Warn("sending an inbound notice", "connection", c.ID, "kind", c.Kind, "err", safeErr(err, c))
+	}
+}
+
+// indicate shows that work has begun, when the adapter can: best effort, bounded,
+// never an error for the message.
+func (p *Pipeline) indicate(ctx context.Context, c Connection, m Message) {
+	a, ok := p.Registry.Get(c.Kind)
+	if !ok || !a.Capabilities().WorkingIndicator || len(m.Reply) == 0 {
+		return
+	}
+	ind, ok := a.(Indicator)
+	if !ok {
+		return
+	}
+	ictx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := ind.Working(ictx, c, m.Reply); err != nil {
+		slog.Debug("showing that work has begun", "connection", c.ID, "kind", c.Kind, "err", safeErr(err, c))
 	}
 }
 

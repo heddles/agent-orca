@@ -533,12 +533,20 @@ func TestMetricsCountOutcomesByKind(t *testing.T) {
 // The core must stay vendor neutral: a channel is named only inside its adapter's
 // package (docs/inbound-channels.md).
 func TestCoreNamesNoChannelVendor(t *testing.T) {
-	files, err := filepath.Glob("*.go")
-	if err != nil || len(files) == 0 {
-		t.Fatal(err)
+	// The core and the packages every adapter shares: only an adapter's own
+	// package names a vendor.
+	files := make([]string, 0, 32)
+	for _, dir := range []string{".", "chat", "verify"} {
+		fs, err := filepath.Glob(filepath.Join(dir, "*.go"))
+		if err != nil || len(fs) == 0 {
+			t.Fatal(dir, err)
+		}
+		files = append(files, fs...)
 	}
 	vendors := []string{"slack", "microsoft", "teams", "google", "mattermost", "webex", "discord", "telegram", "whatsapp", "twilio",
-		"gmail", "outlook", "exchange", "sendgrid", "mailgun", "postmark", "office365"}
+		"gmail", "outlook", "exchange", "sendgrid", "mailgun", "postmark", "office365",
+		"cisco", "zoom", "rocket.chat", "rocketchat", "zulip", "matrix", "element", "lark", "feishu", "dingtalk", "wechat", "line.me",
+		"azure", "entra", "bot framework", "botframework", "hangouts", "xoxb"}
 	for _, f := range files {
 		if strings.HasSuffix(f, "_test.go") {
 			continue
