@@ -62,6 +62,7 @@ import (
 	"github.com/heddles/agent-orca/internal/githubapp"
 	"github.com/heddles/agent-orca/internal/inbound"
 	inboundemail "github.com/heddles/agent-orca/internal/inbound/email"
+	inboundmm "github.com/heddles/agent-orca/internal/inbound/mattermost"
 	inboundslack "github.com/heddles/agent-orca/internal/inbound/slack"
 	"github.com/heddles/agent-orca/internal/notify"
 	"github.com/heddles/agent-orca/internal/oauth"
@@ -1212,6 +1213,7 @@ func addInboundChannels(
 	reg := inbound.NewRegistry()
 	reg.Register(&inboundemail.Adapter{})
 	reg.Register(&inboundslack.Adapter{})
+	reg.Register(&inboundmm.Adapter{})
 	bridge := uiAPI.InboundBridge()
 	pipe := &inbound.Pipeline{
 		Store: pgStore.AsPlatform(), Launcher: bridge, Runs: bridge, Registry: reg, Limiter: limiter,
