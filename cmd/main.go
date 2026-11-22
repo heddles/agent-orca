@@ -62,6 +62,7 @@ import (
 	"github.com/heddles/agent-orca/internal/githubapp"
 	"github.com/heddles/agent-orca/internal/inbound"
 	inboundemail "github.com/heddles/agent-orca/internal/inbound/email"
+	inboundgchat "github.com/heddles/agent-orca/internal/inbound/googlechat"
 	inboundmm "github.com/heddles/agent-orca/internal/inbound/mattermost"
 	inboundslack "github.com/heddles/agent-orca/internal/inbound/slack"
 	inboundteams "github.com/heddles/agent-orca/internal/inbound/teams"
@@ -1216,6 +1217,7 @@ func addInboundChannels(
 	reg.Register(&inboundslack.Adapter{})
 	reg.Register(&inboundmm.Adapter{})
 	reg.Register(&inboundteams.Adapter{})
+	reg.Register(&inboundgchat.Adapter{})
 	bridge := uiAPI.InboundBridge()
 	pipe := &inbound.Pipeline{
 		Store: pgStore.AsPlatform(), Launcher: bridge, Runs: bridge, Registry: reg, Limiter: limiter,
