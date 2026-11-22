@@ -276,8 +276,11 @@ func (s *UIServer) queueExperiment(w http.ResponseWriter, r *http.Request, store
 		return e, nil, false
 	}
 	purpose := ""
-	if created.Purpose == postgresql.PurposeGate {
+	switch created.Purpose {
+	case postgresql.PurposeGate:
 		purpose = " (publish gate)"
+	case postgresql.PurposeCheck:
+		purpose = " (builder check of a draft)"
 	}
 	s.experimentAudit(w, r, postgresql.AuditCreate, created, fmt.Sprintf("queued experiment%s on dataset %s v%d: %d arms, %d repeats, budget $%.2f",
 		purpose, d.Name, created.DatasetVersion, len(created.Arms), created.Repeats, created.BudgetUSD))

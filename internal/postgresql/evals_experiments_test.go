@@ -39,3 +39,41 @@ func TestEvalExperimentValidate(t *testing.T) {
 		}
 	}
 }
+
+func TestEvalCheckExperimentValidate(t *testing.T) {
+	spec := []byte(`{"systemPrompt":"hi"}`)
+	ok := EvalExperiment{
+		Purpose: PurposeCheck, MaxCases: 25, BudgetUSD: 0.25, CreatedBy: "ada",
+		Arms: []EvalArm{{Label: "published", Agent: "support"}, {Label: "draft", Agent: "support", Spec: spec}},
+	}
+	ok.Normalize()
+	if err := ok.Validate(EvalExperimentLimits{}); err != nil {
+		t.Fatalf("valid check refused: %v", err)
+	}
+	one := ok
+	one.Arms = ok.Arms[1:]
+	if err := one.Validate(EvalExperimentLimits{}); err != nil {
+		t.Errorf("a check with only the draft: %v", err)
+	}
+	for name, mutate := range map[string]func(*EvalExperiment){
+		"no arms":            func(e *EvalExperiment) { e.Arms = nil },
+		"three arms":         func(e *EvalExperiment) { e.Arms = append(e.Arms, EvalArm{Label: "c", Agent: "x"}) },
+		"spec with revision": func(e *EvalExperiment) { e.Arms[1].Revision = 2 },
+		"spec too big":       func(e *EvalExperiment) { e.Arms[1].Spec = make([]byte, MaxArmSpecBytes+1) },
+		"spec on a compare":  func(e *EvalExperiment) { e.Purpose = PurposeCompare },
+		"negative max":       func(e *EvalExperiment) { e.MaxCases = -1 },
+	} {
+		e := ok
+		e.Arms = append([]EvalArm(nil), ok.Arms...)
+		mutate(&e)
+		if err := e.Validate(EvalExperimentLimits{}); !errors.Is(err, ErrInvalidEval) {
+			t.Errorf("%s: err = %v", name, err)
+		}
+	}
+	// maxCases is for checks only.
+	cmp := EvalExperiment{Arms: []EvalArm{{Label: "a", Agent: "x"}, {Label: "b", Agent: "x", Revision: 1}}, BudgetUSD: 1, CreatedBy: "ada", MaxCases: 5}
+	cmp.Normalize()
+	if err := cmp.Validate(EvalExperimentLimits{}); !errors.Is(err, ErrInvalidEval) {
+		t.Errorf("maxCases on a compare: %v", err)
+	}
+}

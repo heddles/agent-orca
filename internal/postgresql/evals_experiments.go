@@ -61,6 +61,10 @@ const (
 const (
 	PurposeCompare = "compare"
 	PurposeGate    = "gate"
+	// PurposeCheck is the builder's "Check with my cases": one arm runs an
+	// unsaved draft (EvalArm.Spec), optionally beside the live agent as the
+	// baseline. Check experiments are not listed and never count for a gate.
+	PurposeCheck = "check"
 )
 
 // Limits on an experiment.
@@ -76,9 +80,11 @@ const (
 	DefaultMaxExperimentBudgetUSD = 25.0
 	// DefaultRunBudgetUSD is the per-run cap when the request names none.
 	DefaultRunBudgetUSD = 1.0
-	maxArmLabelLen      = 20
-	maxExperimentName   = 120
-	maxExperimentsList  = 200
+	// MaxArmSpecBytes is the most an arm's inline draft spec may be.
+	MaxArmSpecBytes    = 128 << 10
+	maxArmLabelLen     = 20
+	maxExperimentName  = 120
+	maxExperimentsList = 200
 )
 
 var evalObjectNameRe = regexp.MustCompile(`^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$`)
@@ -102,6 +108,9 @@ type EvalArm struct {
 	// ModelProvider runs the arm on this ModelProvider alone, through a
 	// one-provider ModelSelector made for the experiment.
 	ModelProvider string `json:"modelProvider,omitempty"`
+	// Spec is an Agent spec to run instead of a saved or live one: a draft that
+	// was never stored. Only a check experiment takes it; Revision must be 0.
+	Spec json.RawMessage `json:"spec,omitempty"`
 }
 
 // EvalExperiment is a comparison of arms over a dataset at a frozen version.
@@ -124,6 +133,8 @@ type EvalExperiment struct {
 	TimeoutSeconds int    `json:"timeoutSeconds"`
 	Concurrency    int    `json:"concurrency"`
 	Purpose        string `json:"purpose"`
+	// MaxCases, when above 0, runs only the first MaxCases cases of the dataset.
+	MaxCases int `json:"maxCases,omitempty"`
 	// CancelRequested is true once a cancel was asked for and the runner has not
 	// finished stopping the experiment.
 	CancelRequested bool `json:"cancelRequested,omitempty"`
@@ -195,8 +206,12 @@ func validMoney(v float64) bool { return v > 0 && !math.IsNaN(v) && !math.IsInf(
 // Validate reports why e cannot be stored. Call Normalize first.
 func (e EvalExperiment) Validate(l EvalExperimentLimits) error {
 	switch {
-	case len(e.Arms) < MinExperimentArms || len(e.Arms) > MaxExperimentArms:
+	case e.Purpose == PurposeCheck && (len(e.Arms) < 1 || len(e.Arms) > 2):
+		return fmt.Errorf("%w: a check takes one or two arms", ErrInvalidEval)
+	case e.Purpose != PurposeCheck && (len(e.Arms) < MinExperimentArms || len(e.Arms) > MaxExperimentArms):
 		return fmt.Errorf("%w: an experiment takes %d to %d arms", ErrInvalidEval, MinExperimentArms, MaxExperimentArms)
+	case e.MaxCases < 0 || (e.MaxCases > 0 && e.Purpose != PurposeCheck):
+		return fmt.Errorf("%w: maxCases applies to a check only", ErrInvalidEval)
 	case e.Repeats < 1 || e.Repeats > MaxExperimentRepeats:
 		return fmt.Errorf("%w: repeats must be between 1 and %d", ErrInvalidEval, MaxExperimentRepeats)
 	case e.Concurrency < 1 || e.Concurrency > MaxExperimentConcurrency:
@@ -207,13 +222,18 @@ func (e EvalExperiment) Validate(l EvalExperimentLimits) error {
 		return fmt.Errorf("%w: budgetUsd must be above 0 and at most %g", ErrInvalidEval, l.budget())
 	case !validMoney(e.RunBudgetUSD) || e.RunBudgetUSD > e.BudgetUSD:
 		return fmt.Errorf("%w: runBudgetUsd must be above 0 and at most the experiment budget", ErrInvalidEval)
-	case e.Purpose != PurposeCompare && e.Purpose != PurposeGate:
-		return fmt.Errorf("%w: purpose must be compare or gate", ErrInvalidEval)
+	case e.Purpose != PurposeCompare && e.Purpose != PurposeGate && e.Purpose != PurposeCheck:
+		return fmt.Errorf("%w: purpose must be compare, gate or check", ErrInvalidEval)
 	case len(e.Name) > maxExperimentName:
 		return fmt.Errorf("%w: name is over %d bytes", ErrInvalidEval, maxExperimentName)
 	case e.CreatedBy == "":
 		return fmt.Errorf("%w: created by is required", ErrInvalidEval)
 	}
+	return e.validateArms()
+}
+
+// validateArms checks each arm and that no two are alike.
+func (e EvalExperiment) validateArms() error {
 	labels := map[string]bool{}
 	identities := map[string]bool{}
 	for i, a := range e.Arms {
@@ -230,13 +250,21 @@ func (e EvalExperiment) Validate(l EvalExperimentLimits) error {
 		if a.ModelProvider != "" && (!evalObjectNameRe.MatchString(a.ModelProvider) || len(a.ModelProvider) > 253) {
 			return fmt.Errorf("%w: arm %q: modelProvider must be a ModelProvider name", ErrInvalidEval, a.Label)
 		}
+		if len(a.Spec) > 0 {
+			if e.Purpose != PurposeCheck || a.Revision != 0 {
+				return fmt.Errorf("%w: arm %q: an inline spec is for a check, and takes no revision", ErrInvalidEval, a.Label)
+			}
+			if len(a.Spec) > MaxArmSpecBytes {
+				return fmt.Errorf("%w: arm %q: the draft is over %d bytes", ErrInvalidEval, a.Label, MaxArmSpecBytes)
+			}
+		}
 		if a.Revision < 0 {
 			return fmt.Errorf("%w: arm %q: revision must not be negative", ErrInvalidEval, a.Label)
 		}
 		if a.Hash != "" && !hashRe.MatchString(a.Hash) {
 			return fmt.Errorf("%w: arm %q: hash must be a 64 character hex SHA-256", ErrInvalidEval, a.Label)
 		}
-		id := fmt.Sprintf("%s|%d|%s", a.Agent, a.Revision, a.ModelProvider)
+		id := fmt.Sprintf("%s|%d|%s|%t", a.Agent, a.Revision, a.ModelProvider, len(a.Spec) > 0)
 		if identities[id] {
 			return fmt.Errorf("%w: arm %q repeats another arm: the same agent, revision and model", ErrInvalidEval, a.Label)
 		}
@@ -255,6 +283,9 @@ type EvalExperimentQuery struct {
 	Namespace  string
 	DatasetID  int64
 	Status     string
+	// Purpose limits the list to one purpose. Empty lists every purpose except
+	// check, which only a caller that asks for it sees.
+	Purpose string
 	// Before is a cursor: only experiments with an ID below it.
 	Before int64
 	Limit  int
@@ -263,10 +294,10 @@ type EvalExperimentQuery struct {
 const evalExpCols = `e.id, e.tenant_id, e.namespace, e.dataset_id, e.dataset_version, e.name, e.status, e.arms,
 	e.repeats, e.budget_usd::float8, e.spent_usd::float8, e.run_budget_usd::float8, e.timeout_seconds, e.concurrency,
 	e.purpose, e.cancel_requested, e.summary, e.error,
-	(SELECT count(*) FROM eval_cases c WHERE c.dataset_id = e.dataset_id AND c.tenant_id = e.tenant_id
+	(SELECT LEAST(count(*), COALESCE(e.max_cases, 2147483647)) FROM eval_cases c WHERE c.dataset_id = e.dataset_id AND c.tenant_id = e.tenant_id
 	   AND c.added_in <= e.dataset_version AND (c.removed_in IS NULL OR c.removed_in > e.dataset_version)),
 	(SELECT count(*) FROM eval_results r WHERE r.experiment_id = e.id AND r.tenant_id = e.tenant_id),
-	e.created_by, e.created_at, e.updated_at, e.started_at, e.finished_at`
+	e.created_by, e.created_at, e.updated_at, e.started_at, e.finished_at, COALESCE(e.max_cases, 0)`
 
 func scanEvalExperiment(row interface{ Scan(...any) error }) (EvalExperiment, error) {
 	var e EvalExperiment
@@ -275,7 +306,7 @@ func scanEvalExperiment(row interface{ Scan(...any) error }) (EvalExperiment, er
 	err := row.Scan(&e.ID, &e.TenantID, &e.Namespace, &e.DatasetID, &e.DatasetVersion, &e.Name, &e.Status, &arms,
 		&e.Repeats, &e.BudgetUSD, &e.SpentUSD, &e.RunBudgetUSD, &e.TimeoutSeconds, &e.Concurrency,
 		&e.Purpose, &e.CancelRequested, &summary, &e.Error, &e.Cases, &e.ResultsDone,
-		&e.CreatedBy, &e.CreatedAt, &e.UpdatedAt, &started, &finished)
+		&e.CreatedBy, &e.CreatedAt, &e.UpdatedAt, &started, &finished, &e.MaxCases)
 	if err != nil {
 		return e, err
 	}
@@ -331,6 +362,9 @@ func (s *Store) CreateEvalExperiment(ctx context.Context, e EvalExperiment, l Ev
 		if cases == 0 {
 			return fmt.Errorf("%w: the dataset has no cases", ErrInvalidEval)
 		}
+		if e.MaxCases > 0 && cases > e.MaxCases {
+			cases = e.MaxCases
+		}
 		if cases > l.cases() {
 			return fmt.Errorf("%w: the dataset has %d cases, an experiment takes at most %d", ErrInvalidEval, cases, l.cases())
 		}
@@ -343,11 +377,11 @@ func (s *Store) CreateEvalExperiment(ctx context.Context, e EvalExperiment, l Ev
 		}
 		return tx.QueryRowContext(ctx, `
 		INSERT INTO eval_experiments (tenant_id, namespace, dataset_id, dataset_version, name, arms, repeats,
-		       budget_usd, run_budget_usd, timeout_seconds, concurrency, purpose, created_by)
-		VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12, $13)
+		       budget_usd, run_budget_usd, timeout_seconds, concurrency, purpose, created_by, max_cases)
+		VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12, $13, NULLIF($14, 0))
 		RETURNING id`,
 			tenant, e.Namespace, e.DatasetID, version, e.Name, string(arms), e.Repeats,
-			e.BudgetUSD, e.RunBudgetUSD, e.TimeoutSeconds, e.Concurrency, e.Purpose, e.CreatedBy).Scan(&id)
+			e.BudgetUSD, e.RunBudgetUSD, e.TimeoutSeconds, e.Concurrency, e.Purpose, e.CreatedBy, e.MaxCases).Scan(&id)
 	})
 	if err != nil {
 		return EvalExperiment{}, wrapEval("creating the experiment", err)
@@ -396,6 +430,11 @@ func (s *Store) ListEvalExperiments(ctx context.Context, q EvalExperimentQuery) 
 		}
 		if q.Status != "" {
 			where = append(where, "e.status = "+arg(q.Status))
+		}
+		if q.Purpose != "" {
+			where = append(where, "e.purpose = "+arg(q.Purpose))
+		} else {
+			where = append(where, "e.purpose <> 'check'")
 		}
 		if q.Before > 0 {
 			where = append(where, "e.id < "+arg(q.Before))
@@ -645,7 +684,7 @@ func (s *Store) ListEvalExperimentCases(ctx context.Context, id int64) ([]EvalCa
 			JOIN eval_experiments e ON e.dataset_id = c.dataset_id AND e.tenant_id = c.tenant_id
 			WHERE e.id = $1 AND c.added_in <= e.dataset_version AND (c.removed_in IS NULL OR c.removed_in > e.dataset_version)
 			  AND ($2::text = '*' OR c.tenant_id = $2)
-			ORDER BY c.id`, id, scope)
+			ORDER BY c.id LIMIT (SELECT COALESCE(max_cases, 2147483647) FROM eval_experiments WHERE id = $1)`, id, scope)
 		if err != nil {
 			return err
 		}

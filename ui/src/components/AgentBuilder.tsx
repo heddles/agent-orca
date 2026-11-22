@@ -7,13 +7,13 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties }
 import { Link, useNavigate, useSearchParams } from 'react-router'
 import {
   ApiError, cancelHandoff, createResource, dryRunResource, getBuilderOptions, getResource, publishAgent,
-  unpublishAgent, updateResource, type BuilderOptions, type KubeObject, type OptionItem,
+  unpublishAgent, updateResource, type AgentDraft, type BuilderOptions, type KubeObject, type OptionItem,
 } from '../api/builder'
 import { getCatalog } from '../api/catalog'
 import { gateFromPublishError, type GateDecision, type GateState } from '../api/evals'
-import { canAdminEvals, useRoles } from '../lib/access'
+import { canAdminEvals, canWriteEvals, useRoles } from '../lib/access'
 import {
-  AUTO_MODEL_SELECTOR, autoAvailable, emptyForm, fieldForServerError, formFromObject, nameProblem, objectFromForm, validateForm,
+  AUTO_MODEL_SELECTOR, applyDraft, autoAvailable, emptyForm, fieldForServerError, formFromObject, nameProblem, objectFromForm, validateForm,
   type AgentForm, type FormErrors,
 } from '../lib/agentForm'
 import { DESIGN, ds } from '../lib/designSystem'
@@ -24,8 +24,11 @@ import { parseYAML, stringifyYAML } from '../lib/yaml'
 import { publishedAgentPath, ROUTES, buildPath } from '../lib/routes'
 import { RevisionHistory } from './RevisionHistory'
 import { BuilderTestPanel } from './BuilderTestPanel'
+import { BuilderCheckPanel } from './BuilderCheckPanel'
 import { AgentQuality, GateFailure } from './AgentQuality'
-import { DuplicateDialog, ExportDialog, Field, field, useWorkspaces } from './BuilderParts'
+import { AiMark, DuplicateDialog, ExportDialog, Field, field, useWorkspaces } from './BuilderParts'
+import { DraftFromDescription } from './DraftFromDescription'
+import { KnowledgeDocuments } from './KnowledgeDocuments'
 
 const KIND = 'agents'
 
@@ -226,9 +229,23 @@ export function AgentBuilder({ namespace, name }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentJSON, readOnly, loading, yamlError])
 
-  const update = (patch: Partial<AgentForm>) => setForm((f) => ({ ...f, ...patch }))
-  const toggle = (key: 'connections' | 'knowledgeBases', value: string) =>
+  // Fields an AI draft filled and the person has not touched since; each shows an "AI suggested" mark.
+  const [aiFields, setAiFields] = useState<ReadonlySet<keyof AgentForm>>(new Set())
+  const clearAi = (keys: Array<keyof AgentForm>) => setAiFields((cur) => (keys.some((k) => cur.has(k)) ? new Set([...cur].filter((k) => !keys.includes(k))) : cur))
+  const update = (patch: Partial<AgentForm>) => {
+    clearAi(Object.keys(patch) as Array<keyof AgentForm>)
+    setForm((f) => ({ ...f, ...patch }))
+  }
+  const toggle = (key: 'connections' | 'knowledgeBases', value: string) => {
+    clearAi([key])
     setForm((f) => ({ ...f, [key]: f[key].includes(value) ? f[key].filter((v) => v !== value) : [...f[key], value] }))
+  }
+  const takeDraft = (d: AgentDraft) => {
+    if (dirty && !window.confirm('Replace what you have typed with the draft?')) return
+    const r = applyDraft(form, d)
+    setForm(r.form)
+    setAiFields(new Set(r.fields))
+  }
 
   // ── YAML view ──
   const showYAML = () => {
@@ -526,9 +543,13 @@ export function AgentBuilder({ namespace, name }: Props) {
               <fieldset disabled={readOnly} style={s.fieldset}>
                 <legend style={s.srOnly}>Agent details</legend>
 
+                {isNew && !readOnly && canWriteEvals(evalRoles) && (
+                  <DraftFromDescription namespace={form.namespace} availability={options ? options.draft : null} onDraft={takeDraft} />
+                )}
+
                 <section aria-labelledby="sec-what" style={s.section}>
                   <h2 id="sec-what" style={s.h2}>What it does</h2>
-                  <Field label="Name" help="Lower-case letters, numbers and dashes. It cannot be changed after saving." error={showErr('name')}>
+                  <Field label="Name" ai={aiFields.has('name')} help="Lower-case letters, numbers and dashes. It cannot be changed after saving." error={showErr('name')}>
                     {(p) => <input {...p} style={field.control} value={form.name} disabled={!isNew || readOnly} onChange={(e) => update({ name: e.target.value })} />}
                   </Field>
                   {isNew && (workspacesLoaded && workspaces.length !== 1) && (
@@ -542,13 +563,13 @@ export function AgentBuilder({ namespace, name }: Props) {
                       )}
                     </Field>
                   )}
-                  <Field label="Description" help="One or two sentences, so people can tell whether this is the agent they need." error={showErr('description')}>
+                  <Field label="Description" ai={aiFields.has('description')} help="One or two sentences, so people can tell whether this is the agent they need." error={showErr('description')}>
                     {(p) => <textarea {...p} rows={2} style={field.control} value={form.description} onChange={(e) => update({ description: e.target.value })} />}
                   </Field>
                   <Field label="Maintainer" help="Who people should ask about this agent.">
                     {(p) => <input {...p} style={field.control} value={form.maintainer} onChange={(e) => update({ maintainer: e.target.value })} />}
                   </Field>
-                  <Field label="Example inputs" help="Things people might ask it, one per line. They are shown as starting points.">
+                  <Field label="Example inputs" ai={aiFields.has('exampleInputs')} help="Things people might ask it, one per line. They are shown as starting points.">
                     {(p) => <textarea {...p} rows={3} style={field.control} value={form.exampleInputs} onChange={(e) => update({ exampleInputs: e.target.value })} />}
                   </Field>
                 </section>
@@ -557,6 +578,7 @@ export function AgentBuilder({ namespace, name }: Props) {
                   <h2 id="sec-instructions" style={s.h2}>Instructions</h2>
                   <Field
                     label="Instructions"
+                    ai={aiFields.has('instructions')}
                     help="Say who the agent is, what it should do, how it should answer and what it must not do. Be specific, and describe what a good answer looks like."
                     error={showErr('instructions')}
                   >
@@ -588,7 +610,7 @@ export function AgentBuilder({ namespace, name }: Props) {
                 </section>
 
                 <section aria-labelledby="sec-connections" style={s.section}>
-                  <h2 id="sec-connections" style={s.h2}>Connections</h2>
+                  <h2 id="sec-connections" style={s.h2}>Connections{aiFields.has('connections') && <> <AiMark /></>}</h2>
                   <p style={field.help}>What the agent can use to get things done. Pick only what it needs.</p>
                   {optionsError && <p role="alert" style={field.error}>The list of connections could not be loaded: {optionsError}</p>}
                   <CheckGroup legend="Tools" items={options?.tools} selected={form.connections} onToggle={(n) => toggle('connections', n)} empty="No tools are set up yet." />
@@ -599,10 +621,10 @@ export function AgentBuilder({ namespace, name }: Props) {
                 </section>
 
                 <section aria-labelledby="sec-knowledge" style={s.section}>
-                  <h2 id="sec-knowledge" style={s.h2}>Knowledge</h2>
+                  <h2 id="sec-knowledge" style={s.h2}>Knowledge{aiFields.has('knowledgeBases') && <> <AiMark /></>}</h2>
                   <p style={field.help}>
-                    Documents the agent can look things up in. Uploading documents is not available here yet. To add
-                    documents, go to <Link to={ROUTES.knowledge} style={{ color: ds.accent }}>Settings → Knowledge</Link>.
+                    Documents the agent can look things up in. You can add text, markdown and csv files to your own knowledge below. For
+                    other kinds of documents or other sources, go to <Link to={ROUTES.knowledge} style={{ color: ds.accent }}>Settings → Knowledge</Link>.
                   </p>
                   <CheckGroup
                     legend="Knowledge to use"
@@ -611,12 +633,13 @@ export function AgentBuilder({ namespace, name }: Props) {
                     onToggle={(n) => toggle('knowledgeBases', n)}
                     empty="No knowledge has been set up yet."
                   />
+                  {!readOnly && canWriteEvals(evalRoles) && <KnowledgeDocuments namespace={form.namespace} items={options?.knowledgeBases ?? []} />}
                 </section>
 
                 <section aria-labelledby="sec-safety" style={s.section}>
                   <h2 id="sec-safety" style={s.h2}>Safety</h2>
                   {(options?.guardrailPolicies?.length ?? 0) > 0 || form.guardrail ? (
-                    <Field label="Safety policy" help="Rules that check what goes into and comes out of the agent." error={showErr('guardrail')}>
+                    <Field label="Safety policy" ai={aiFields.has('guardrail')} help="Rules that check what goes into and comes out of the agent." error={showErr('guardrail')}>
                       {(p) => (
                         <select {...p} style={field.control} value={form.guardrail} onChange={(e) => update({ guardrail: e.target.value })}>
                           <option value="">None</option>
@@ -687,6 +710,17 @@ export function AgentBuilder({ namespace, name }: Props) {
             <div style={s.card}>
               <BuilderTestPanel namespace={form.namespace} name={form.name} saved={savedExists} unsavedChanges={dirty} version={version} />
             </div>
+
+            {!readOnly && (
+              <div style={s.card}>
+                <BuilderCheckPanel
+                  namespace={form.namespace}
+                  name={form.name}
+                  draft={current}
+                  blocked={yamlError ? 'Fix the YAML first.' : nameProblem(form.name) || !form.namespace ? 'Give the agent a name first.' : ''}
+                />
+              </div>
+            )}
           </aside>
         </div>
       </div>

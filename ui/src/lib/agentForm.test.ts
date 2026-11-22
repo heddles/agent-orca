@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { emptyForm, formFromObject, nameProblem, objectFromForm, validateForm } from './agentForm'
+import { applyDraft, emptyForm, formFromObject, nameProblem, objectFromForm, validateForm } from './agentForm'
 import { parseYAML, stringifyYAML } from './yaml'
 
 describe('agent form model', () => {
@@ -33,5 +33,17 @@ describe('agent form model', () => {
     expect(parseYAML('a: [1, 2]\nb: x').value).toEqual({ a: [1, 2], b: 'x' })
     expect(parseYAML('a: [').error).toBeTruthy()
     expect(parseYAML(stringifyYAML({ x: { y: ['a', 'b'] } })).value).toEqual({ x: { y: ['a', 'b'] } })
+  })
+})
+
+describe('applyDraft', () => {
+  it('fills what the draft has, keeps the workspace, maintainer and model, and reports the fields it changed', () => {
+    const form = { ...emptyForm('team-a'), maintainer: 'Support', modelSelector: 'default' }
+    const r = applyDraft(form, {
+      name: 'refund-helper', description: '', instructions: 'You help.', exampleInputs: ['a', 'b'], connections: ['search'], knowledgeBases: [], guardrail: '',
+    })
+    expect(r.form).toMatchObject({ name: 'refund-helper', namespace: 'team-a', maintainer: 'Support', modelSelector: 'default', instructions: 'You help.', exampleInputs: 'a\nb', connections: ['search'], description: '' })
+    expect(r.fields.sort()).toEqual(['connections', 'exampleInputs', 'instructions', 'name'])
+    expect(form.name).toBe('')
   })
 })

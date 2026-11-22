@@ -3,7 +3,7 @@
  * Reading needs the viewer role, writing the builder role, grading the runner
  * role. Every call answers 503 when the platform has no PostgreSQL store.
  */
-import { failure } from './builder'
+import { failure, type KubeObject } from './builder'
 import { apiFetch } from './sse'
 
 export type ReferenceKind = 'none' | 'exact' | 'example' | 'rubric'
@@ -247,6 +247,25 @@ export interface ExperimentArm {
 }
 
 export interface Interval { lo: number; hi: number }
+
+export interface CheckRequest {
+  /** The agent as it is on screen, saved or not. */
+  agent: KubeObject
+  datasetId: number
+  /** The spending limit in USD. Left out, the server's small default applies; the server also caps it. */
+  budgetUsd?: number
+  /** Run the published version beside the draft (the default). */
+  compareWithPublished?: boolean
+}
+
+export interface CheckResponse {
+  valid: boolean
+  experiment: Experiment
+  /** True when the published agent is the first arm ("published") and the draft the second ("draft"). */
+  comparedWithPublished: boolean
+  /** True when only the first cases of the dataset run. */
+  capped: boolean
+}
 
 export interface ArmSummary {
   label: string
@@ -598,4 +617,14 @@ export function describeEvalError(e: unknown): string {
     case 503: return 'Evaluations need the platform PostgreSQL store, which is not set up.'
     default: return msg
   }
+}
+
+/**
+ * Runs the draft against a dataset's cases ("Check with my cases"): nothing is saved or published. An invalid
+ * draft is a 400 whose ApiError.errors lists what is wrong; 429 when the user checked too often; 409 when too
+ * many experiments are running. Follow the experiment with getExperiment and listExperimentResults.
+ */
+export async function checkDraft(req: CheckRequest): Promise<CheckResponse> {
+  const body = await send<CheckResponse>('/api/builder/check', 'POST', req)
+  return { ...body, experiment: normalizeExperiment(body.experiment) }
 }

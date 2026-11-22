@@ -121,6 +121,15 @@ type UIServer struct {
 	widget widgetState
 	// evalLimits are the configured limits on experiments.
 	evalLimits postgresql.EvalExperimentLimits
+	// builderCfg holds the limits of the builder's helpers (check, draft, upload).
+	builderCfg BuilderConfig
+	// checkLimiter and draftLimiter hold the per-user hourly limits of the
+	// builder's check and draft endpoints; draftSpend the per-user daily spend of drafts.
+	checkLimiter, draftLimiter windowLimiter
+	draftSpend                 spendLedger
+	// draftProviders resolves the model that writes drafts (tests); nil means the
+	// judge's resolver over the cluster.
+	draftProviders draftResolver
 	// evalCfg holds the limits on evaluation datasets and cases.
 	evalCfg EvalsConfig
 	// auditUnavailable logs once that there is no PostgreSQL store to audit into.

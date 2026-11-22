@@ -6,7 +6,7 @@ import { getMe, type Me } from '../api/fleet'
 import { Dialog } from '../lib/dialog'
 import { nameProblem } from '../lib/agentForm'
 import { DESIGN, ds } from '../lib/designSystem'
-import { DSButton } from '../lib/primitives'
+import { DSButton, DSChip } from '../lib/primitives'
 import { buildPath, ROUTES } from '../lib/routes'
 
 export const field: Record<string, CSSProperties> = {
@@ -21,20 +21,27 @@ export const field: Record<string, CSSProperties> = {
   },
 }
 
+/** The mark on a field an AI draft filled in. It goes away when the person edits the field. */
+export function AiMark() {
+  return <DSChip size="sm" variant="purple">AI suggested</DSChip>
+}
+
 interface FieldProps {
   label: string
+  /** True when an AI draft filled this field and the person has not changed it. */
+  ai?: boolean
   help?: string
   error?: string
   children: (props: { id: string; 'aria-describedby'?: string; 'aria-invalid'?: true }) => ReactNode
 }
 
 /** A labelled field. The label, help text and error are tied to the control for screen readers. */
-export function Field({ label, help, error, children }: FieldProps) {
+export function Field({ label, ai, help, error, children }: FieldProps) {
   const id = useId()
   const describedBy = [help ? `${id}-help` : '', error ? `${id}-error` : ''].filter(Boolean).join(' ') || undefined
   return (
     <div style={field.wrap}>
-      <label htmlFor={id} style={field.label}>{label}</label>
+      <label htmlFor={id} style={field.label}>{label}{ai && <> <AiMark /></>}</label>
       {help && <p id={`${id}-help`} style={field.help}>{help}</p>}
       {children({ id, 'aria-describedby': describedBy, 'aria-invalid': error ? true : undefined })}
       {error && <p id={`${id}-error`} role="alert" style={field.error}>{error}</p>}

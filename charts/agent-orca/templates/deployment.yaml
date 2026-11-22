@@ -121,6 +121,30 @@ spec:
               value: {{ dig "resultRetentionDays" 90 (.Values.operator.evals | default dict) | toString | quote }}
             - name: EVALS_ALLOW_GATE_OVERRIDE
               value: {{ dig "allowGateOverride" true (.Values.operator.evals | default dict) | toString | quote }}
+            - name: BUILDER_CHECK_DEFAULT_BUDGET_USD
+              value: {{ dig "checkDefaultBudgetUSD" 0.25 (.Values.operator.builder | default dict) | toString | quote }}
+            - name: BUILDER_CHECK_MAX_BUDGET_USD
+              value: {{ dig "checkMaxBudgetUSD" 2 (.Values.operator.builder | default dict) | toString | quote }}
+            - name: BUILDER_CHECK_MAX_CASES
+              value: {{ dig "checkMaxCases" 25 (.Values.operator.builder | default dict) | toString | quote }}
+            - name: BUILDER_CHECK_MAX_CONCURRENCY
+              value: {{ dig "checkMaxConcurrency" 2 (.Values.operator.builder | default dict) | toString | quote }}
+            - name: BUILDER_CHECK_PER_USER_PER_HOUR
+              value: {{ dig "checkPerUserPerHour" 12 (.Values.operator.builder | default dict) | toString | quote }}
+            - name: BUILDER_DRAFT_PROVIDER
+              value: {{ dig "draftProvider" "" (.Values.operator.builder | default dict) | toString | quote }}
+            - name: BUILDER_DRAFT_PER_USER_PER_HOUR
+              value: {{ dig "draftPerUserPerHour" 10 (.Values.operator.builder | default dict) | toString | quote }}
+            - name: BUILDER_DRAFT_MAX_COST_USD
+              value: {{ dig "draftMaxCostUSD" 0.05 (.Values.operator.builder | default dict) | toString | quote }}
+            - name: BUILDER_DRAFT_DAILY_USD_PER_USER
+              value: {{ dig "draftDailyUSDPerUser" 1 (.Values.operator.builder | default dict) | toString | quote }}
+            - name: BUILDER_KNOWLEDGE_MAX_DOC_BYTES
+              value: {{ dig "knowledgeMaxDocBytes" 262144 (.Values.operator.builder | default dict) | toString | quote }}
+            - name: BUILDER_KNOWLEDGE_MAX_DOCS
+              value: {{ dig "knowledgeMaxDocs" 50 (.Values.operator.builder | default dict) | toString | quote }}
+            - name: BUILDER_KNOWLEDGE_MAX_TOTAL_BYTES
+              value: {{ dig "knowledgeMaxTotalBytes" 921600 (.Values.operator.builder | default dict) | toString | quote }}
             {{- if .Values.cloudProvider }}
             - name: CLOUD_PROVIDER_OVERRIDE
               value: {{ .Values.cloudProvider | quote }}

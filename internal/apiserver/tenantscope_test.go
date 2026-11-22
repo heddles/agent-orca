@@ -20,6 +20,7 @@ import (
 	"context"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -36,6 +37,10 @@ func listCRDTestScheme(t *testing.T) *runtime.Scheme {
 	s := runtime.NewScheme()
 	if err := agentorcav1alpha1.AddToScheme(s); err != nil {
 		t.Fatalf("add agentorca scheme: %v", err)
+	}
+	// The operator's client also reads and writes ConfigMaps (knowledge documents).
+	if err := corev1.AddToScheme(s); err != nil {
+		t.Fatalf("add core scheme: %v", err)
 	}
 	return s
 }
