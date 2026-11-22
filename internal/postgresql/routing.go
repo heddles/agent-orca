@@ -20,6 +20,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -229,6 +230,112 @@ func (s *Store) RoutingEventsForRun(ctx context.Context, namespace, run string, 
 	})
 	if err != nil {
 		return nil, fmt.Errorf("querying routing events: %w", err)
+	}
+	return out, nil
+}
+
+// Routing event outcome filters for RoutingEventQuery.Outcome.
+const (
+	// RoutingOutcomeOK is a served call that neither failed nor fell back.
+	RoutingOutcomeOK = "ok"
+	// RoutingOutcomeError is a call with an error class.
+	RoutingOutcomeError = "error"
+	// RoutingOutcomeFallback is a call served by a fallback after another failed.
+	RoutingOutcomeFallback = "fallback"
+)
+
+// maxRoutingEventsList bounds one page of ListRoutingEvents.
+const maxRoutingEventsList = 500
+
+// RoutingEventQuery filters ListRoutingEvents. Empty fields match everything.
+type RoutingEventQuery struct {
+	// Namespaces limits the query to these workspaces (a tenant's namespaces).
+	// Empty means every namespace the call's tenant scope can see.
+	Namespaces []string
+	Agent      string
+	Selector   string
+	// Outcome is one of the RoutingOutcome constants.
+	Outcome string
+	// IncludeShadow adds counterfactual shadow calls, which are left out by default.
+	IncludeShadow bool
+	// Since and Until bound created_at (Since inclusive, Until exclusive).
+	Since, Until time.Time
+	// Limit is clamped to 1..500, default 100.
+	Limit int
+}
+
+// ErrInvalidRoutingQuery is returned for a filter value ListRoutingEvents does not know.
+var ErrInvalidRoutingQuery = errors.New("invalid routing event query")
+
+// ListRoutingEvents returns routing events across runs, newest first, inside the
+// call's tenant scope (tenant_id filter, with row-level security underneath).
+func (s *Store) ListRoutingEvents(ctx context.Context, q RoutingEventQuery) ([]RoutingEvent, error) {
+	var outcomeCond string
+	switch q.Outcome {
+	case "":
+	case RoutingOutcomeOK:
+		outcomeCond = " AND error_class = '' AND fallback_from = ''"
+	case RoutingOutcomeError:
+		outcomeCond = " AND error_class <> ''"
+	case RoutingOutcomeFallback:
+		outcomeCond = " AND fallback_from <> ''"
+	default:
+		return nil, fmt.Errorf("%w: outcome %q", ErrInvalidRoutingQuery, q.Outcome)
+	}
+	limit := q.Limit
+	if limit < 1 {
+		limit = 100
+	}
+	limit = min(limit, maxRoutingEventsList)
+	out := []RoutingEvent{}
+	err := s.scoped(ctx, func(tx dbtx, scope string) error {
+		var since, until any
+		if !q.Since.IsZero() {
+			since = q.Since
+		}
+		if !q.Until.IsZero() {
+			until = q.Until
+		}
+		rows, err := tx.QueryContext(ctx, `
+		SELECT decision_id, COALESCE(parent_decision_id, ''), namespace, run_name, COALESCE(agent, ''), COALESCE(selector, ''),
+		       strategy, path, stage, stage_conf, provider, model, confidence, is_shadow,
+		       prompt_tokens, completion_tokens, cost_usd::float8, aux_cost_usd::float8,
+		       latency_ms, ttft_ms, finish_reason, fallback_from, error_class,
+		       tool_calls, tool_errors, tool_parse_errors, turn_index, created_at
+		FROM routing_events
+		WHERE ($1::text = '*' OR tenant_id = $1)
+		  AND (cardinality($2::text[]) = 0 OR namespace = ANY($2::text[]))
+		  AND ($3::text = '' OR agent = $3)
+		  AND ($4::text = '' OR selector = $4)
+		  AND ($5::boolean OR NOT is_shadow)
+		  AND ($6::timestamptz IS NULL OR created_at >= $6)
+		  AND ($7::timestamptz IS NULL OR created_at < $7)`+outcomeCond+`
+		ORDER BY created_at DESC, decision_id DESC
+		LIMIT $8`, scope, pgTextArray(q.Namespaces), q.Agent, q.Selector, q.IncludeShadow, since, until, limit)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = rows.Close() }()
+		for rows.Next() {
+			var e RoutingEvent
+			var ttft sql.NullInt64
+			if err := rows.Scan(&e.DecisionID, &e.ParentDecisionID, &e.Namespace, &e.RunName, &e.Agent, &e.Selector,
+				&e.Strategy, &e.Path, &e.Stage, &e.StageConf, &e.Provider, &e.Model, &e.Confidence, &e.IsShadow,
+				&e.PromptTokens, &e.CompletionTokens, &e.CostUSD, &e.AuxCostUSD,
+				&e.LatencyMS, &ttft, &e.FinishReason, &e.FallbackFrom, &e.ErrorClass,
+				&e.ToolCalls, &e.ToolErrors, &e.ToolParseErrors, &e.TurnIndex, &e.CreatedAt); err != nil {
+				return fmt.Errorf("scanning routing event: %w", err)
+			}
+			if ttft.Valid {
+				v := int(ttft.Int64)
+				e.TTFTMS = &v
+			}
+			out = append(out, e)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing routing events: %w", err)
 	}
 	return out, nil
 }

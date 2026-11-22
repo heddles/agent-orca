@@ -78,6 +78,14 @@ judge whether a routing choice was worth its cost.
   `status.routingDecisions`.
 - `GET /api/runs/{namespace}/{name}/routing-events` returns a run's full history,
   oldest first (the run page's "Load full history").
+- `GET /api/routing-events` lists decisions across runs, newest first, with the
+  filters `namespace`, `agent`, `selector`, `outcome` (`ok`, `error`, `fallback`),
+  `shadow=true`, `since`, `until` and `limit`. Both endpoints return only the
+  caller's tenant's rows: the store filters on `tenant_id` and row-level security
+  (see [tenant isolation](tenant-isolation.md#row-level-security-in-postgresql))
+  backs it, and a tenant without a namespace filter is limited to its own
+  namespaces. The retention sweep runs in the platform scope, so it still deletes
+  the old rows of every tenant.
 
 ### Controller metrics
 

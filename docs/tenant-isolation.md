@@ -125,7 +125,7 @@ names the current version. Each write sets `agentorca.io/last-modified-by` and
 tables). If the audit row cannot be written after three tries the write still
 succeeds, since it cannot be undone and a retried request would apply it twice;
 the response carries `X-Audit-Status: failed`, the event is logged in full and
-`agentorca_audit_write_failures_total` counts it. At startup the leader converts
+`agentorca_audit_write_failures_total` counts it. Besides writes, the trail records what a signed-in user says to an agent: `chat` (a turn sent to a deployment), `answer` (an answer to a run's clarification question), `feedback` (a rating of a run or one of its routing decisions) and the `approve` and `reject` decisions on approvals. Those rows hold the actor, tenant, namespace, target and ids and byte counts only, never the message, answer or comment text. `GET /api/audit?action=chat` filters them. Chat turns through the widget (anonymous visitors), the ACP API and the external task API are not in the trail yet. At startup the leader converts
 objects the old UI API made (label `app.kubernetes.io/managed-by: agent-orca`, no
 controller owner) to the annotation; ambiguous ones (workflows, Git-tracked,
 platform-shared) are logged and left alone.
