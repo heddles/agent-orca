@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Builder: add documents to knowledge** — `GET`/`PUT`/`DELETE /api/knowledge/{ns}/{name}/documents[/{file}]` let a builder add text,
+  markdown and csv documents to a UI-owned KnowledgeBase from the agent builder, with no new infrastructure: the documents are
+  keys of one UI-owned, tenant-stamped ConfigMap per knowledge base (`<kb>-docs`), added to the KnowledgeBase's
+  `ingestion.configMapRefs`, which the existing ingester reads and the controller watches. Git-owned (409), platform-shared (403),
+  other tenants' (404) and handoff-pending knowledge bases are refused; the size of a document, the number of documents and the
+  total are capped (`operator.builder.knowledge*`, total always below a ConfigMap's 1 MiB); binary and non-UTF-8 content is a 415
+  (PDF and Office files need an S3 or URL source an administrator adds). Content is stored opaque and is never returned, logged
+  or audited (the audit row has the file name and size). Removing a document does not delete text already embedded; the answer and
+  the UI say so. See `docs/agent-builder.md` for what real file upload would need.
+
 - **Builder: Describe what you want** — `POST /api/builder/draft` (builder role) turns a plain-English description (at most
   2000 characters) into a draft of the builder form: a name, description, instructions, example inputs, and tools, MCP
   servers, knowledge bases and a guardrail policy chosen by name from what the workspace has. It calls the ModelProvider named

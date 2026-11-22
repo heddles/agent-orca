@@ -142,10 +142,10 @@ describe('AgentBuilder: a new agent', () => {
     expect(m.createResource).not.toHaveBeenCalled()
   })
 
-  it('says honestly what is not available: uploads and schedules', async () => {
+  it('says honestly what is not available: other document types and schedules', async () => {
     renderBuilder('/build/new')
     await screen.findByLabelText('Name')
-    expect(screen.getByText(/Uploading documents is not available here yet/)).toBeInTheDocument()
+    expect(screen.getByText(/text, markdown and csv files to your own knowledge/)).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Settings → Knowledge' })).toHaveAttribute('href', '/settings/knowledge')
     expect(screen.getByRole('checkbox', { name: /On a schedule/ })).toBeDisabled()
     expect(screen.getByText(/Scheduled runs are not available yet/)).toBeInTheDocument()

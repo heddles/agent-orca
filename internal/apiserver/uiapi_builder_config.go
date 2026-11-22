@@ -50,6 +50,13 @@ type BuilderConfig struct {
 	DraftMaxCostUSD float64
 	// DraftDailyUSDPerUser is the most one user's drafts may cost in 24 hours. Default 1.
 	DraftDailyUSDPerUser float64
+
+	// Document upload for knowledge (uiapi_knowledge.go): the size of one
+	// document, how many a knowledge base takes, and the total size of its
+	// documents. The total is capped below a ConfigMap's 1 MiB whatever is set.
+	KnowledgeMaxDocBytes   int
+	KnowledgeMaxDocs       int
+	KnowledgeMaxTotalBytes int
 }
 
 func (c BuilderConfig) checkBudget() float64 { return orFloat(c.CheckDefaultBudgetUSD, 0.25) }

@@ -199,4 +199,31 @@ func TestBuilderEndpointsEnvtest(t *testing.T) { //nolint:gocyclo // one scenari
 	if len(audit.events) != 3 {
 		t.Errorf("a refused use wrote audit rows: %+v", audit.events)
 	}
+
+	// Knowledge documents against the real API server and webhooks: the documents
+	// ConfigMap is created, the KnowledgeBase's source list is patched and accepted
+	// by the tenant-isolation webhook, and a later upload updates the same ConfigMap.
+	must(t, c.Create(ctx, &agentorcav1alpha1.KnowledgeBase{
+		ObjectMeta: metav1.ObjectMeta{Name: "handbook", Namespace: "shared", Labels: map[string]string{tenancy.LabelTenantID: isoA},
+			Annotations: map[string]string{tenancy.AnnotationOwner: tenancy.OwnerUI}},
+		Spec: agentorcav1alpha1.KnowledgeBaseSpec{Embedding: agentorcav1alpha1.EmbeddingConfig{ModelSelectorRef: "default"}},
+	}))
+	audit.events = nil
+	if rec = send(http.MethodPut, "/api/knowledge/shared/handbook/documents/returns.md", "# Returns\nwithin 30 days"); rec.Code != http.StatusCreated {
+		t.Fatalf("upload = %d %s", rec.Code, rec.Body.String())
+	}
+	if rec = send(http.MethodPut, "/api/knowledge/shared/handbook/documents/faq.txt", "second"); rec.Code != http.StatusCreated {
+		t.Fatalf("second upload = %d %s", rec.Code, rec.Body.String())
+	}
+	var docs corev1.ConfigMap
+	must(t, c.Get(ctx, client.ObjectKey{Namespace: "shared", Name: "handbook-docs"}, &docs))
+	var kb agentorcav1alpha1.KnowledgeBase
+	must(t, c.Get(ctx, client.ObjectKey{Namespace: "shared", Name: "handbook"}, &kb))
+	if len(docs.Data) != 2 || docs.Labels[tenancy.LabelTenantID] != isoA || kb.Spec.Ingestion == nil || len(kb.Spec.Ingestion.ConfigMapRefs) != 1 ||
+		kb.Annotations[tenancy.AnnotationLastModifiedBy] != builderUser || kb.Annotations[tenancy.AnnotationOwner] != tenancy.OwnerUI {
+		t.Errorf("documents %+v, knowledge base %+v %v", docs.Data, kb.Spec.Ingestion, kb.Annotations)
+	}
+	if len(audit.events) != 2 {
+		t.Errorf("audit = %+v", audit.events)
+	}
 }

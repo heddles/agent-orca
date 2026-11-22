@@ -12,6 +12,8 @@ readable description is `internal/apiserver/schemas/openapi-ui.yaml`.
 | `POST /api/templates/{ns}/{name}/use` | builder | yes, one row per object |
 | `POST /api/builder/check` | builder | yes, one row per check |
 | `POST /api/builder/draft` | builder | yes, one row (sizes and cost, never the text) |
+| `GET /api/knowledge/{ns}/{name}/documents` | viewer | no |
+| `PUT`, `DELETE /api/knowledge/{ns}/{name}/documents/{doc}` | builder | yes, one row each (file name and size, never the text) |
 | `POST /api/agents/{ns}/{name}/publish` | builder | yes |
 | `DELETE /api/agents/{ns}/{name}/publish` | builder | yes |
 
@@ -96,6 +98,43 @@ words, for a person to review. It never writes an object: the answer is only fie
   be overrun by one call). The reply is capped at 1500 tokens.
 - **Privacy.** The description is redacted before it is sent, and never logged or audited: logs and the audit row hold its
   size, the tenant, the user and the cost.
+
+## Documents for knowledge
+
+How knowledge is ingested today ([rag.md](rag.md)): a KnowledgeBase lists sources in `spec.ingestion` (ConfigMaps, URLs, S3, MCP
+servers); an `mcp-ingester` Job reads them, extracts text (PDF, Office, HTML and plain text), chunks, embeds and upserts into the
+knowledge base's own Qdrant. The platform has no object store of its own (S3 is only a source an administrator points at a
+bucket they run) and the ingester has no upload endpoint, so a browser upload has nowhere to go without new infrastructure.
+
+The smallest safe path that needs none is a **ConfigMap source**: the Job reads the string data keys of the ConfigMaps in
+`spec.ingestion.configMapRefs`, and the controller watches those ConfigMaps, so a change re-ingests. A document added here is a
+key of one ConfigMap per knowledge base, `<kb>-docs`.
+
+- `PUT /api/knowledge/{ns}/{name}/documents/{file}` with the document as the body adds or replaces it; `DELETE` removes it;
+  `GET .../documents` lists names and sizes. The first document creates the ConfigMap (UI-owned, stamped with the tenant ID,
+  labelled `agentorca.io/knowledge-docs: <kb>`) and adds it to the knowledge base's `configMapRefs`; nothing else on the
+  KnowledgeBase changes. A ConfigMap of that name that is not ours is never touched (409).
+- **Ownership.** Only a UI-owned KnowledgeBase of the caller's tenant: Git-owned (or owned by nobody the UI knows) is a 409,
+  platform-shared a 403, another tenant's a 404, and one with a handoff to Git pending a 409. The list says
+  `editable: false` and why, so the UI shows no upload controls.
+- **Types and limits** (`operator.builder.knowledge*`): `.txt`, `.md`, `.markdown` and `.csv`, UTF-8 text without NUL bytes
+  (415 otherwise). The file name is letters, digits, dots, dashes and underscores, at most 100 characters. At most 256 KiB a
+  document, 50 documents and 900 KiB in all per knowledge base: a ConfigMap is an etcd object of at most 1 MiB, and the total
+  is capped below that whatever is configured. **PDF and Office files are not supported**: the ingester reads a ConfigMap's
+  string data only, so binary files cannot be carried; an administrator can add an S3 or URL source for those.
+- **Untrusted, opaque content.** The text is stored as it came, never parsed or sanitised by this API, never returned by any
+  endpoint (the list has names and sizes) and never rendered by the UI. It is not in logs or audit rows: a row says
+  `added document returns.md (2048 bytes) in knowledge base handbook`. Nothing scans for viruses or for sensitive data: text
+  files cannot carry executable content the platform runs, but what a document says can be quoted in an agent's answers, so
+  the UI tells people not to add what the agent's users should not see. A deployment that needs scanning puts it in front
+  of the API.
+- **Removing does not forget.** Ingestion upserts. Removing or replacing a document stops it being read next time, but the
+  chunks already embedded stay in the knowledge base's vector store until it is rebuilt. The answers say so, and so does the UI.
+
+**What real file upload (PDF, Office, large files) would need:** an object store the platform owns (or a presigned-upload flow
+into the S3 source an administrator configures) with per-tenant prefixes and quotas; the API issuing short-lived upload URLs
+and recording each object; the ingester reading those prefixes (it already reads S3); malware scanning of binaries before
+ingestion; and deletion of a removed document's chunks from Qdrant by document ID.
 
 ## Use a template
 

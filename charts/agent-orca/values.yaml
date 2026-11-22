@@ -125,6 +125,13 @@ operator:
     draftPerUserPerHour: 10
     draftMaxCostUSD: 0.05
     draftDailyUSDPerUser: 1
+    # Documents a builder adds to a UI-owned knowledge base (BUILDER_KNOWLEDGE_*):
+    # the size of one document, how many a knowledge base takes, and the total size
+    # of its documents. They live in one ConfigMap per knowledge base, so the
+    # total is capped below 1 MiB whatever is set here.
+    knowledgeMaxDocBytes: 262144
+    knowledgeMaxDocs: 50
+    knowledgeMaxTotalBytes: 921600
   # extraArgs are appended to the operator container args. Use this to enable
   # optional features such as OIDC login, e.g.:
   #   extraArgs:

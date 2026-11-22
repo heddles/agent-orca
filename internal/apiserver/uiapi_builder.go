@@ -27,6 +27,7 @@ func (s *UIServer) registerBuilderRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/agents/{ns}/{name}/publish", s.handlePublish)
 	mux.HandleFunc("/api/builder/check", s.handleBuilderCheck)
 	mux.HandleFunc("/api/builder/draft", s.handleBuilderDraft)
+	s.registerKnowledgeRoutes(mux)
 }
 
 // builderOption is one thing the builder form can offer.

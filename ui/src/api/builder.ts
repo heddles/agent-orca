@@ -257,3 +257,49 @@ export async function cancelHandoff(kind: string, namespace: string, name: strin
   const res = await apiFetch(`/api/resources/${enc(kind)}/${enc(namespace)}/${enc(name)}/handoff`, { method: 'DELETE' })
   if (!res.ok) throw await failure(res)
 }
+
+export interface KnowledgeDoc { name: string; bytes: number }
+
+export interface KnowledgeDocs {
+  documents: KnowledgeDoc[]
+  totalBytes: number
+  limits: { maxDocBytes: number; maxDocs: number; maxTotalBytes: number; types: string[] }
+  /** True when the caller may add and remove documents: the builder role on a UI-owned knowledge base. */
+  editable: boolean
+  /** Why not, in plain words, when editable is false. */
+  reason?: string
+  /** A caution about what the change did not do. */
+  warning?: string
+}
+
+const DEFAULT_DOC_LIMITS = { maxDocBytes: 262144, maxDocs: 50, maxTotalBytes: 921600, types: ['.txt', '.md', '.markdown', '.csv'] }
+
+function normalizeDocs(b: Partial<KnowledgeDocs>): KnowledgeDocs {
+  return { documents: b.documents ?? [], totalBytes: b.totalBytes ?? 0, limits: { ...DEFAULT_DOC_LIMITS, ...(b.limits ?? {}) }, editable: !!b.editable, reason: b.reason, warning: b.warning }
+}
+
+const knowledgeUrl = (ns: string, kb: string, doc?: string) =>
+  `/api/knowledge/${enc(ns)}/${enc(kb)}/documents${doc ? `/${enc(doc)}` : ''}`
+
+/** The documents of a knowledge base added here: names and sizes, never the text. */
+export async function listKnowledgeDocs(namespace: string, kb: string): Promise<KnowledgeDocs> {
+  const res = await apiFetch(knowledgeUrl(namespace, kb))
+  if (!res.ok) throw await failure(res)
+  return normalizeDocs((await res.json()) as Partial<KnowledgeDocs>)
+}
+
+/**
+ * Adds or replaces a text, markdown or csv document. 400 for a bad file name, 409 when the knowledge base is
+ * managed in Git or full, 413 over a size limit, 415 when the content is not text.
+ */
+export async function putKnowledgeDoc(namespace: string, kb: string, name: string, content: string): Promise<KnowledgeDocs> {
+  const res = await apiFetch(knowledgeUrl(namespace, kb, name), { method: 'PUT', headers: { 'Content-Type': 'text/plain; charset=utf-8' }, body: content })
+  if (!res.ok) throw await failure(res)
+  return normalizeDocs((await res.json()) as Partial<KnowledgeDocs>)
+}
+
+export async function deleteKnowledgeDoc(namespace: string, kb: string, name: string): Promise<KnowledgeDocs> {
+  const res = await apiFetch(knowledgeUrl(namespace, kb, name), { method: 'DELETE' })
+  if (!res.ok) throw await failure(res)
+  return normalizeDocs((await res.json()) as Partial<KnowledgeDocs>)
+}

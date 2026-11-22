@@ -1498,6 +1498,77 @@ paths:
         '413': { description: The description is too long, or the call would cost more than one draft may }
         '429': { description: The user asked for too many drafts, or used the daily allowance }
         '502': { description: The model could not be reached, or its answer was not usable }
+  /api/knowledge/{namespace}/{name}/documents:
+    get:
+      tags: [builder]
+      summary: List the documents added to a knowledge base from the UI
+      description: >
+        Needs the viewer role. Names and sizes only; no endpoint returns a
+        document's text. The documents are the data keys of the ConfigMap
+        {name}-docs, which is one of the knowledge base's ingestion sources.
+      parameters:
+        - { in: path, name: namespace, required: true, schema: { type: string } }
+        - { in: path, name: name, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: the documents
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/KnowledgeDocuments' } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { description: The knowledge base is not found for the caller }
+  /api/knowledge/{namespace}/{name}/documents/{document}:
+    put:
+      tags: [builder]
+      summary: Add or replace a text document in a knowledge base
+      description: >
+        Needs the builder role; audited (update, KnowledgeBase; the file name
+        and size, never the text). The body is the document as text. Only a
+        UI-owned knowledge base of the caller's tenant is changed: Git-owned or
+        otherwise unowned is 409, platform-shared 403, another tenant's 404, a
+        pending handoff to Git 409. The name is letters, digits, dots, dashes
+        and underscores ending in .txt, .md, .markdown or .csv; the content must
+        be UTF-8 text without NUL bytes (415 otherwise: PDF and Office files are
+        not supported here). Limits operator.builder.knowledge*: size of a
+        document (413), number of documents (409), total size (413, always below
+        a ConfigMap's 1 MiB). The first document creates the UI-owned,
+        tenant-stamped ConfigMap {name}-docs and lists it in
+        spec.ingestion.configMapRefs; the knowledge base re-ingests when the
+        ConfigMap changes. Replacing a document does not remove text embedded
+        from its older version.
+      parameters:
+        - { in: path, name: namespace, required: true, schema: { type: string } }
+        - { in: path, name: name, required: true, schema: { type: string } }
+        - { in: path, name: document, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          text/plain: { schema: { type: string } }
+      responses:
+        '200': { description: replaced, content: { application/json: { schema: { $ref: '#/components/schemas/KnowledgeDocuments' } } } }
+        '201': { description: added, content: { application/json: { schema: { $ref: '#/components/schemas/KnowledgeDocuments' } } } }
+        '400': { description: The file name is not accepted }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { description: The knowledge base is not found for the caller }
+        '409': { description: Not UI-owned, handoff pending, full, or the documents ConfigMap name is taken }
+        '413': { description: A size limit }
+        '415': { description: The content is not text }
+    delete:
+      tags: [builder]
+      summary: Remove a document from a knowledge base
+      description: >
+        Needs the builder role; audited. Same ownership rules as adding. The
+        document is no longer read at the next ingestion; text already embedded
+        from it stays in the knowledge base until it is rebuilt (the answer's
+        warning says so).
+      parameters:
+        - { in: path, name: namespace, required: true, schema: { type: string } }
+        - { in: path, name: name, required: true, schema: { type: string } }
+        - { in: path, name: document, required: true, schema: { type: string } }
+      responses:
+        '200': { description: removed, content: { application/json: { schema: { $ref: '#/components/schemas/KnowledgeDocuments' } } } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { description: Not found }
+        '409': { description: Not UI-owned or handoff pending }
   /api/templates/{namespace}/{name}/use:
     post:
       tags: [builder]

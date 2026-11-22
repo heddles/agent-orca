@@ -28,6 +28,7 @@ import { BuilderCheckPanel } from './BuilderCheckPanel'
 import { AgentQuality, GateFailure } from './AgentQuality'
 import { AiMark, DuplicateDialog, ExportDialog, Field, field, useWorkspaces } from './BuilderParts'
 import { DraftFromDescription } from './DraftFromDescription'
+import { KnowledgeDocuments } from './KnowledgeDocuments'
 
 const KIND = 'agents'
 
@@ -622,8 +623,8 @@ export function AgentBuilder({ namespace, name }: Props) {
                 <section aria-labelledby="sec-knowledge" style={s.section}>
                   <h2 id="sec-knowledge" style={s.h2}>Knowledge{aiFields.has('knowledgeBases') && <> <AiMark /></>}</h2>
                   <p style={field.help}>
-                    Documents the agent can look things up in. Uploading documents is not available here yet. To add
-                    documents, go to <Link to={ROUTES.knowledge} style={{ color: ds.accent }}>Settings → Knowledge</Link>.
+                    Documents the agent can look things up in. You can add text, markdown and csv files to your own knowledge below. For
+                    other kinds of documents or other sources, go to <Link to={ROUTES.knowledge} style={{ color: ds.accent }}>Settings → Knowledge</Link>.
                   </p>
                   <CheckGroup
                     legend="Knowledge to use"
@@ -632,6 +633,7 @@ export function AgentBuilder({ namespace, name }: Props) {
                     onToggle={(n) => toggle('knowledgeBases', n)}
                     empty="No knowledge has been set up yet."
                   />
+                  {!readOnly && canWriteEvals(evalRoles) && <KnowledgeDocuments namespace={form.namespace} items={options?.knowledgeBases ?? []} />}
                 </section>
 
                 <section aria-labelledby="sec-safety" style={s.section}>

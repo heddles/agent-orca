@@ -1142,6 +1142,9 @@ func builderConfigFromEnv() apiserver.BuilderConfig {
 	num("BUILDER_DRAFT_PER_USER_PER_HOUR", &c.DraftPerUserPerHour)
 	usd("BUILDER_DRAFT_MAX_COST_USD", &c.DraftMaxCostUSD)
 	usd("BUILDER_DRAFT_DAILY_USD_PER_USER", &c.DraftDailyUSDPerUser)
+	num("BUILDER_KNOWLEDGE_MAX_DOC_BYTES", &c.KnowledgeMaxDocBytes)
+	num("BUILDER_KNOWLEDGE_MAX_DOCS", &c.KnowledgeMaxDocs)
+	num("BUILDER_KNOWLEDGE_MAX_TOTAL_BYTES", &c.KnowledgeMaxTotalBytes)
 	return c
 }
 

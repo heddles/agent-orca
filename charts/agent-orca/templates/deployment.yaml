@@ -139,6 +139,12 @@ spec:
               value: {{ dig "draftMaxCostUSD" 0.05 (.Values.operator.builder | default dict) | toString | quote }}
             - name: BUILDER_DRAFT_DAILY_USD_PER_USER
               value: {{ dig "draftDailyUSDPerUser" 1 (.Values.operator.builder | default dict) | toString | quote }}
+            - name: BUILDER_KNOWLEDGE_MAX_DOC_BYTES
+              value: {{ dig "knowledgeMaxDocBytes" 262144 (.Values.operator.builder | default dict) | toString | quote }}
+            - name: BUILDER_KNOWLEDGE_MAX_DOCS
+              value: {{ dig "knowledgeMaxDocs" 50 (.Values.operator.builder | default dict) | toString | quote }}
+            - name: BUILDER_KNOWLEDGE_MAX_TOTAL_BYTES
+              value: {{ dig "knowledgeMaxTotalBytes" 921600 (.Values.operator.builder | default dict) | toString | quote }}
             {{- if .Values.cloudProvider }}
             - name: CLOUD_PROVIDER_OVERRIDE
               value: {{ .Values.cloudProvider | quote }}
