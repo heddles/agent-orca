@@ -196,6 +196,11 @@ func (s *Store) ArchiveRun(ctx context.Context, run *agentorcav1alpha1.AgentRun,
 
 	labelsJSON, _ := json.Marshal(archived.Labels)
 
+	// A re-archive (the operator archives every finished run again when it
+	// restarts) must not undo archived-run retention: a row the sweep reduced
+	// keeps its empty payload and its payload_pruned_at, and a row that has not
+	// changed keeps its updated_at, which the sweep goes by.
+	//
 	// UPSERT by composite key so re-archival updates the row. When upserting
 	// with a nil traceEventsJSON (e.g. Redis stream expired during a back-fill),
 	// the existing trace_events column is preserved rather than overwritten.
@@ -215,19 +220,32 @@ func (s *Store) ArchiveRun(ctx context.Context, run *agentorcav1alpha1.AgentRun,
 			phase = EXCLUDED.phase,
 			spend_usd = EXCLUDED.spend_usd,
 			cost_capture = EXCLUDED.cost_capture,
-			output = EXCLUDED.output,
-			raw_output = EXCLUDED.raw_output,
+			output = CASE WHEN archived_runs.payload_pruned_at IS NOT NULL
+			              THEN archived_runs.output ELSE EXCLUDED.output END,
+			raw_output = CASE WHEN archived_runs.payload_pruned_at IS NOT NULL
+			                  THEN archived_runs.raw_output ELSE EXCLUDED.raw_output END,
 			restart_count = EXCLUDED.restart_count,
 			start_time = EXCLUDED.start_time,
 			completion_time = EXCLUDED.completion_time,
 			context_used_tokens = EXCLUDED.context_used_tokens,
 			routing_decisions = EXCLUDED.routing_decisions,
 			child_run_refs = EXCLUDED.child_run_refs,
-			trace_events = CASE WHEN EXCLUDED.trace_events IS NOT NULL
+			trace_events = CASE WHEN archived_runs.payload_pruned_at IS NOT NULL
+			                    THEN archived_runs.trace_events
+			                    WHEN EXCLUDED.trace_events IS NOT NULL
 			                    THEN EXCLUDED.trace_events
 			                    ELSE archived_runs.trace_events END,
-			payload_pruned_at = NULL,
-			updated_at = EXCLUDED.updated_at
+			payload_pruned_at = archived_runs.payload_pruned_at,
+			updated_at = CASE WHEN archived_runs.payload_pruned_at IS NOT NULL
+			                    OR (archived_runs.phase IS NOT DISTINCT FROM EXCLUDED.phase
+			                        AND archived_runs.spend_usd IS NOT DISTINCT FROM EXCLUDED.spend_usd
+			                        AND archived_runs.cost_capture IS NOT DISTINCT FROM EXCLUDED.cost_capture
+			                        AND archived_runs.output IS NOT DISTINCT FROM EXCLUDED.output
+			                        AND archived_runs.raw_output IS NOT DISTINCT FROM EXCLUDED.raw_output
+			                        AND archived_runs.restart_count IS NOT DISTINCT FROM EXCLUDED.restart_count
+			                        AND archived_runs.completion_time IS NOT DISTINCT FROM EXCLUDED.completion_time
+			                        AND archived_runs.context_used_tokens IS NOT DISTINCT FROM EXCLUDED.context_used_tokens)
+			                  THEN archived_runs.updated_at ELSE EXCLUDED.updated_at END
 	`
 	now := time.Now().UTC()
 	// The archive row and the run's outcome land together: an outcome without

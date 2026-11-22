@@ -7,6 +7,8 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // archivedRow is what a test inserts as the archive of one run.
@@ -193,4 +195,58 @@ func checkReducedRunsStillServe(t *testing.T, s *Store, a, b context.Context, ca
 		t.Errorf("case after the sweep = %+v, %v", got, err)
 	}
 
+}
+
+// The operator archives every finished run again whenever it restarts, and the
+// live AgentRun still has its output. That must not undo the retention sweep:
+// a reduced run stays reduced, and a run that has not changed keeps the
+// updated_at the sweep goes by.
+func TestArchiveRunAgainKeepsRetention(t *testing.T) {
+	s, _ := appStore(t)
+	admin, err := sql.Open("pgx", os.Getenv("AGENTORCA_TEST_POSTGRES_DSN"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = admin.Close() })
+	ctx := context.Background()
+	a, plat := WithTenant(ctx, tenantA), WithPlatform(ctx)
+
+	old := time.Now().UTC().Add(-100 * 24 * time.Hour).Truncate(time.Second)
+	done := metav1.NewTime(old)
+	run := archivedRun("old-run", nil)
+	run.Status.Output = "the output"
+	run.Status.StartTime, run.Status.CompletionTime = &done, &done
+	if err := s.ArchiveRun(a, run, []byte(`[{"id":"1"}]`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.ExecContext(ctx, `UPDATE archived_runs SET updated_at = $1, created_at = $1 WHERE name = 'old-run'`, old); err != nil {
+		t.Fatal(err)
+	}
+
+	// Archived again, unchanged: it does not look freshly written.
+	if err := s.ArchiveRun(a, run, []byte(`[{"id":"1"}]`)); err != nil {
+		t.Fatal(err)
+	}
+	var updated time.Time
+	if err := admin.QueryRowContext(ctx, `SELECT updated_at FROM archived_runs WHERE name = 'old-run'`).Scan(&updated); err != nil {
+		t.Fatal(err)
+	}
+	if !updated.Equal(old) {
+		t.Errorf("re-archiving an unchanged run moved updated_at to %s, want %s", updated, old)
+	}
+
+	if n, err := s.ReduceArchivedRunsBefore(plat, time.Now().Add(-90*24*time.Hour)); err != nil || n != 1 {
+		t.Fatalf("sweep reduced %d, %v; want 1", n, err)
+	}
+	// The restart archives it again from the live run, which still has its output.
+	if err := s.ArchiveRun(a, run, []byte(`[{"id":"1"}]`)); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetRun(a, evalNSA, "old-run")
+	if err != nil || got == nil {
+		t.Fatalf("GetRun = %+v, %v", got, err)
+	}
+	if got.PayloadPrunedAt == nil || got.Output != "" || len(got.TraceEventsJSON) != 0 {
+		t.Errorf("a reduced run came back whole after being archived again: prunedAt=%v output=%q trace=%s", got.PayloadPrunedAt, got.Output, got.TraceEventsJSON)
+	}
 }

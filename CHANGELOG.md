@@ -358,6 +358,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Archived-run retention was undone by an operator restart.** The operator archives every finished run again at startup, and that
+  write put the output and trace of a run the sweep had emptied back and cleared `payload_pruned_at`; it also moved `updated_at` of
+  every run, which postponed the sweep. A reduced run now stays reduced, and an archive that changes nothing keeps `updated_at`.
+- **A schedule's result notification could be sent twice** (and the run counted twice) when the reconcile after the one that claimed
+  it read the run from a cache that had not caught up. The run is now confirmed uncounted without the cache first.
+
 - **Models served by mlx_lm.server (and other strict chat templates) reject agent-orca's requests** with
   `System message must be at the beginning.` The router sent the system prompt, built-in tool hints,
   memory, recall and compaction summaries as separate system messages. Every request to an
