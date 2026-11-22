@@ -1,6 +1,8 @@
 # UI adoption overhaul — agents for everyone, GitOps-safe
 
-## Status (2026-11-20)
+## Status (2026-11-22)
+
+Merged 2026-11-22 (main 28ed549, PRs #238-#243): S5 schedule result notifications, invoker approval fix, audit of chat/answer/feedback plus `GET /api/routing-events`, `archived_runs` retention sweep (off by default), and the builder gaps (check with my cases, draft from a description, add documents to a knowledge base: txt/md/csv via ConfigMap). The tables below are from 2026-11-20 and these items are now done. Deployed to mlx-k3s as e2e-c2176f9e (helm rev 15, migrations through 0023).
 
 Everything below is merged to `main` (head dd192e4) unless marked otherwise. The stage checklists
 further down were written as the plan and are not ticked item by item; this table is the current
@@ -29,12 +31,9 @@ against a fake provider. **Not verified live:** C4 `invoker` pause and resume, C
 warm-pod claim path for per-user servers (unit tests only; needs an http-input agent),  mlx-k3s was upgraded to `e2e-dd192e46` (operator, UI, router; main dd192e4, Helm revision 11) on 2026-11-20 with migration 0021 and the new CRD enum applied and the 90-day idle expiry on; the live checks above are still to do. Note: `helm upgrade` does not update CRDs, apply `charts/agent-orca/crds` with server-side apply.
 
 ### Remaining work, in order
-1. Schedule result notifications (S5).
-2. Slack, Teams and email triggers (U9 rest).
-3. Builder gaps: document upload, draft-from-description, "Check with my cases".
-4. `routing_events` filtering; audit of chat, answer and feedback.
-5. `archived_runs` retention caveats.
-6. Argo CD / Flux kind e2e (U2), last.
+1. Slack, Teams and email triggers (U9 rest).
+2. Argo CD / Flux e2e (U2), last. Argo CD is installed on mlx-k3s.
+3. Live checks on the cluster of the 2026-11-22 batch (approval fix, S5 delivery, audit rows, retention sweep, builder check/draft/upload). Draft needs `operator.builder.draftProvider`; S5 needs a TenantConfig notification channel.
 
 ### Known issues and decisions pending
 - Persistent `agentorca-deploy-*` pods have a placeholder run name and still fail the per-user token fetch;
