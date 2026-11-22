@@ -43,6 +43,7 @@ import (
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
 	"github.com/heddles/agent-orca/internal/checkpoint"
+	"github.com/heddles/agent-orca/internal/inbound"
 	"github.com/heddles/agent-orca/internal/postgresql"
 	"github.com/heddles/agent-orca/internal/schedule"
 	"github.com/heddles/agent-orca/internal/security"
@@ -111,6 +112,10 @@ type UIServer struct {
 	evalReviews evalReviewStore
 	// triggers overrides the webhook trigger store (tests); nil means pgStore.
 	triggers triggerStore
+	// inboundConns overrides the inbound connection store (tests); nil means pgStore.
+	inboundConns inboundStore
+	// inboundPipe is the inbound channel pipeline; nil means the feature is off.
+	inboundPipe *inbound.Pipeline
 	// hooks holds the state of the unauthenticated /hooks endpoint.
 	hooks hookState
 	// conns serves the per-user MCP connection endpoints; nil means the feature is off.
@@ -253,6 +258,7 @@ func (s *UIServer) Handler() http.Handler {
 	s.registerBuilderRoutes(mux)
 	s.registerEvalRoutes(mux)
 	s.registerTriggerRoutes(mux)
+	s.registerInboundRoutes(mux)
 	s.registerScheduleRoutes(mux)
 	s.registerConnectionRoutes(mux)
 	s.registerWidgetKeyRoutes(mux)
