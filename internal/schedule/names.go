@@ -39,6 +39,11 @@ const (
 	// AnnotationAccounted marks a finished child the schedule has counted
 	// (failures, spend), so pruning it later loses nothing.
 	AnnotationAccounted = "agentorca.io/schedule-accounted"
+	// AnnotationNotified marks a finished run whose result notification was
+	// claimed (its value is the channel): it is set in the same write as
+	// AnnotationAccounted, before the message is sent, so a run is announced at
+	// most once however often the schedule is reconciled.
+	AnnotationNotified = "agentorca.io/schedule-notified"
 	// AnnotationResumedAt is set (RFC 3339) by the API when a person resumes a
 	// Degraded schedule; the controller clears the breaker when it is newer than
 	// the moment the schedule degraded.

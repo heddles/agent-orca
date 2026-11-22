@@ -86,12 +86,80 @@ After `operator.schedule.maxConsecutiveFailures` (default 5) finished runs in a 
 
 `workflowTemplateRef` names an `AgentWorkflow` with `spec.mode: template` in the same namespace. Each tick creates an `AgentWorkflow` named `<schedule>-<unix time>` with `spec.fromTemplate` set to the template and `parameters` from the schedule (the three placeholders are substituted in the values). Timeout, budget cap and safeguards come from the template. The history limits prune these workflow instances, and their cost, from `status.totalSpendUSD`, counts toward the schedule's spend. A workflow's step runs are not counted toward the tenant's concurrent-run limit.
 
+## Result notifications
+
+The result of a run is always kept on the run. `spec.result.notify` also sends a short message to a **channel**, a destination an administrator set up on the tenant. A person who can write a schedule can pick a channel by name, but cannot create one or see where it goes.
+
+```yaml
+spec:
+  result:
+    notify:
+      channel: ops          # a name from the tenant's TenantConfig
+      on: [Failed, BreakerOpen]   # Succeeded | Failed | Skipped | BreakerOpen; default [Failed]
+      includeOutput: false  # default false
+```
+
+### Channels (administrators)
+
+Channels are in the tenant's `TenantConfig`, which only administrators and Git write: the UI can list their names and types and nothing else.
+
+```yaml
+apiVersion: agentorca.agentorca.io/v1alpha1
+kind: TenantConfig
+spec:
+  notifications:
+    channels:
+      - name: ops
+        type: slack            # webhook | slack | smtp
+        secretRef: { name: ops-slack }      # namespace defaults to the TenantConfig's
+        # insecure: false                   # allow http:// and SMTP without STARTTLS
+        # allowPrivateAddresses: false      # allow a destination on an internal address
+```
+
+The destination is in the Secret, never in the spec, because a Slack webhook URL is itself a credential:
+
+| Type | Secret keys | What is sent |
+|---|---|---|
+| `slack` | `url` (an incoming-webhook URL) | `{"text": ...}` |
+| `webhook` | `url`, `signingKey` | A JSON body signed like the [trigger webhooks](integrations.md): `X-AgentOrca-Timestamp` is the Unix time and `X-AgentOrca-Signature` is `sha256=` and the hex HMAC-SHA256 of `<timestamp>.<body>` with `signingKey` |
+| `smtp` | `host`, `port` (default 587), `from`, `to` (comma separated), optionally `username` and `password` | A plain-text email. STARTTLS is required (port 465 uses implicit TLS) |
+
+The webhook body has `schedule`, `namespace`, `agent`, `outcome`, `run`, `durationSeconds`, `costUSD`, `link`, `reason`, `time` and, only when asked for, `output`. Every message names the schedule, the agent, the outcome, the run, its duration and cost, and a link to the run in the UI. The link is built from `approvals.uiURL` (the UI address the approval messages already use) and is left out when that is empty.
+
+### When it is sent
+
+| `on` | Sent |
+|---|---|
+| `Succeeded`, `Failed` | When a run finishes, from the schedule controller. A run the `Replace` policy cancelled is not announced |
+| `BreakerOpen` | Once, when the failure breaker stops the schedule |
+| `Skipped` | Once, when the schedule's spend cap first stops it, not for every skipped tick. Quota, concurrency and missed ticks are not announced |
+
+Each run is announced **at most once**. The schedule controller claims the run in the same write that counts it (annotation `agentorca.io/schedule-notified`, whose value is the channel), before anything is sent, so a repeated reconcile, a restart or a second replica does not send it again. The cost is that a message whose delivery fails for good is not retried later.
+
+Delivery is best effort, and never touches the run. It happens in the background with a 10 second timeout per attempt and three attempts with a doubling wait; a client error (4xx other than 408 and 429), a refused address and a bad configuration are final. A failure is an event on the schedule (`NotifyFailed`) with no destination in it.
+
+If the channel is not in the tenant's `TenantConfig`, or its Secret is missing or invalid, the schedule gets the condition `NotifyReady: False` with the reason, and runs go on. No tenant, no channel.
+
+### What a message may contain
+
+- The output is added only when `includeOutput: true`. It is cut to 2000 characters. Anything that matches a secret of the channel (its URL, signing key, password, host) or a credential registered with `internal/redact` is masked first, then the text is cut. This is exact-match masking: it cannot know a secret the operator was never given, so anyone who can read the channel can read the output. Leave `includeOutput` off for private results.
+- The failure reason is treated the same way.
+- Slack text is escaped (`&`, `<`, `>`), so output cannot make a mention or a link; email headers are single-line.
+- The Secret's contents are never in a log line, an event, the status, a condition, an annotation or a message. Errors name a key, never its value.
+
+### Network safety
+
+- `https` is required for `slack` and `webhook` URLs, and STARTTLS for `smtp`, unless the channel sets `insecure: true`.
+- The address is checked when the connection is made, after DNS, so a name that resolves to an internal address (or changes after a check) is refused. Loopback, link-local (including the cloud metadata addresses), private (RFC 1918 and IPv6 ULA), carrier-grade NAT, unspecified and multicast addresses are blocked unless the channel sets `allowPrivateAddresses: true`, which an in-cluster mail relay or receiver needs.
+- Redirects are not followed, proxies are not used, and a response body is read only to a few kilobytes and never logged.
+
 ## Configuration
 
 | Helm value | Default | Meaning |
 |---|---|---|
 | `operator.schedule.minInterval` | `5m` | The shortest gap between ticks. Checked against the closest pair of firings in the coming year, so `* * * * *` and `0,1 * * * *` are both refused |
 | `operator.schedule.maxConsecutiveFailures` | `5` | The failure breaker |
+| `approvals.uiURL` | empty | The UI's public address. Also used for the run link in result notifications; empty leaves the link out |
 | `operator.leaderElection` | `true` | Keeps the controller on one replica. The deterministic run name is the safety net if it is ever off |
 
 ## API and ownership
@@ -106,6 +174,7 @@ After `operator.schedule.maxConsecutiveFailures` (default 5) finished runs in a 
 | `POST .../suspend`, `POST .../resume` | runner | Edit `spec.suspend` as the UI. Git-owned schedules answer 409: suspend them in Git. Resuming a `Degraded` schedule also clears the failure breaker |
 | `POST .../run` | runner | Run now: a normal run started by the caller, passing the same quotas |
 | `GET /api/runs?schedule=<name>` | viewer | Runs of a schedule; each run summary carries `schedule` and `trigger` |
+| `GET /api/notification-channels` | builder | The names and types of the tenant's notification channels, for the builder's "Send the result to" choice. Read-only: the Secret is never returned and `TenantConfig` is not a UI-writable kind |
 | create, update, delete | builder | A schedule whose `result.egress` has a `secretRef` needs admin, as MCPServer and Tool do (a builder may keep one an admin set) |
 
 Run now creates the run with `agentorca.io/schedule=<name>` but no owner reference and `created-by` set to the person, so it shows in My runs and is not counted in the schedule's history limits, failure streak or spend caps. Scheduled ticks (`created-by: schedule:<ns>/<name>`) are left out of My runs.
@@ -123,6 +192,6 @@ aoctl schedule list | get <name> | suspend <name> | resume <name> | run <name>
 Schedules are under **Operate > Schedules** (builder role to create and edit; the API lets a runner pause, resume and run now).
 
 - **The list** shows each schedule in words ("Every weekday at 08:00 (Europe/Berlin) runs the agent digest-agent"), its state with a plain reason (`On`, `Paused`, `Stopped after failures`, `Spend limit reached`, `Agent missing`), the next run in the schedule's zone and yours, the last result (succeeded, failed, or skipped and why), and spend today and this month. **History** lists the last runs, linking to the normal run page, and the skipped times.
-- **The builder** asks "When should this run?" with presets (every weekday, every week, every day, every hour, or a custom cron expression) and a time zone picker that defaults to the browser's, with a live list of the next five runs from the preview endpoint. "What should it do?" is the instruction, with a button that inserts `{{schedule.date}}`. "If the last run is still going" chooses skip, run anyway, or stop the old one. "Send the result to" says the app only; other destinations are an administrator's. "Spend limit" takes a per-run, per-day and per-month amount, and one is required.
+- **The builder** asks "When should this run?" with presets (every weekday, every week, every day, every hour, or a custom cron expression) and a time zone picker that defaults to the browser's, with a live list of the next five runs from the preview endpoint. "What should it do?" is the instruction, with a button that inserts `{{schedule.date}}`. "If the last run is still going" chooses skip, run anyway, or stop the old one. "Send the result to" keeps the result on the run, and lets a builder also pick one of the channels an administrator set up, with the events to be told about (a run fails or succeeds, the spend limit stops the schedule, the schedule stops after repeated failures) and a checkbox to include the output. With no channels set up it says to ask an administrator. "Spend limit" takes a per-run, per-day and per-month amount, and one is required.
 - **Git-owned schedules** open read-only with Copy YAML and Duplicate, and are paused in Git.
 - **Agents in the Fleet view** carry a clock badge with the next run and last result, and a Scheduled filter. A run started by a schedule shows a "Scheduled by" chip with the instant it was due and a **Run again now** button. Scheduled runs are left out of **My work** and have a **Started by: Schedules** filter on the Runs page.

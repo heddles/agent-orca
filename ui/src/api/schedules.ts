@@ -91,6 +91,20 @@ export const resumeSchedule = (ns: string, name: string) => call<{ status: strin
 export const runScheduleNow = (ns: string, name: string) =>
   call<{ kind: string; name: string; namespace: string }>(action(ns, name, 'run'), 'POST')
 
+/** A notification channel an administrator set up; the destination itself is never sent. */
+export interface NotificationChannel {
+  name: string
+  type: 'webhook' | 'slack' | 'smtp'
+}
+
+/** The channels of the caller's tenant (builder role); empty when there are none or the role is missing. */
+export async function listNotificationChannels(namespace = ''): Promise<NotificationChannel[]> {
+  const res = await apiFetch(`/api/notification-channels?namespace=${enc(namespace)}`)
+  if (res.status === 403) return []
+  if (!res.ok) throw await failure(res)
+  return (await res.json()) ?? []
+}
+
 export const getSchedule = (ns: string, name: string) => getResource(SCHEDULE_KIND, ns, name)
 
 export async function deleteSchedule(ns: string, name: string): Promise<void> {

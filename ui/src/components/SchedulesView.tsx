@@ -13,8 +13,8 @@ import {
 } from '../api/builder'
 import { getCatalog, type CatalogEntry } from '../api/catalog'
 import {
-  SCHEDULE_KIND, deleteSchedule, describeScheduleError, getSchedule, listScheduleRuns, listSchedules, previewSchedule,
-  resumeSchedule, runScheduleNow, suspendSchedule, type SchedulePreview, type ScheduleRun, type ScheduleSummary,
+  SCHEDULE_KIND, deleteSchedule, describeScheduleError, getSchedule, listNotificationChannels, listScheduleRuns, listSchedules, previewSchedule,
+  resumeSchedule, runScheduleNow, suspendSchedule, type NotificationChannel, type SchedulePreview, type ScheduleRun, type ScheduleSummary,
 } from '../api/schedules'
 import { canWriteEvals, useRoles } from '../lib/access'
 import { ds, DESIGN } from '../lib/designSystem'
@@ -202,12 +202,26 @@ interface FormState {
   maxPerRun: string
   maxPerDay: string
   maxPerMonth: string
+  /** Name of the channel the result is sent to; empty: only kept on the run. */
+  notifyChannel: string
+  /** Succeeded, Failed, Skipped, BreakerOpen. */
+  notifyOn: string[]
+  notifyOutput: boolean
 }
+
+/** What a channel can be told, in the words of the form. */
+export const NOTIFY_EVENTS: { value: string; label: string }[] = [
+  { value: 'Failed', label: 'A run fails' },
+  { value: 'Succeeded', label: 'A run succeeds' },
+  { value: 'Skipped', label: 'The spend limit stops the schedule' },
+  { value: 'BreakerOpen', label: 'The schedule stops after repeated failures' },
+]
 
 function emptyForm(namespace: string): FormState {
   return {
     name: '', namespace, agent: '', when: DEFAULT_WHEN, timeZone: browserTimeZone(), input: '',
     concurrency: 'Forbid', maxPerRun: '1.00', maxPerDay: '', maxPerMonth: '',
+    notifyChannel: '', notifyOn: ['Failed'], notifyOutput: false,
   }
 }
 
@@ -218,6 +232,7 @@ function formOf(obj: KubeObject): FormState {
     agent: spec.agentRef ?? '', when: whenOf(spec.schedule ?? ''), timeZone: spec.timeZone ?? 'UTC', input: spec.input ?? '',
     concurrency: spec.concurrencyPolicy ?? 'Forbid',
     maxPerRun: spec.budget?.maxUSD ?? '', maxPerDay: spec.spend?.maxUSDPerDay ?? '', maxPerMonth: spec.spend?.maxUSDPerMonth ?? '',
+    notifyChannel: spec.result?.notify?.channel ?? '', notifyOn: spec.result?.notify?.on ?? ['Failed'], notifyOutput: spec.result?.notify?.includeOutput ?? false,
   }
 }
 
@@ -234,6 +249,8 @@ export function formProblems(f: FormState, existing: boolean): Record<string, st
   for (const [k, v] of [['maxPerRun', f.maxPerRun], ['maxPerDay', f.maxPerDay], ['maxPerMonth', f.maxPerMonth]] as const) {
     if (v && (!MONEY.test(v) || Number(v) <= 0)) p[k] = 'Enter an amount in dollars, such as 1.50.'
   }
+  if (f.notifyChannel && f.notifyOn.length === 0) p.notifyOn = 'Choose at least one thing to be told about.'
+  else if (f.notifyChannel && f.notifyOutput && !f.notifyOn.some((e) => e === 'Succeeded' || e === 'Failed')) p.notifyOutput = 'Only a finished run has output: also choose "A run fails" or "A run succeeds".'
   if (!f.maxPerRun && !f.maxPerDay && !f.maxPerMonth) p.maxPerRun = 'Set a spend limit: a schedule that runs by itself needs one.'
   return p
 }
@@ -249,6 +266,7 @@ function ScheduleDialog({ target, builder, onClose, onSaved }: {
   const [obj, setObj] = useState<KubeObject | null>(null)
   const [form, setForm] = useState<FormState>(() => emptyForm(namespace))
   const [agents, setAgents] = useState<CatalogEntry[]>([])
+  const [channels, setChannels] = useState<NotificationChannel[]>([])
   const [preview, setPreview] = useState<SchedulePreview | null>(null)
   const [previewError, setPreviewError] = useState('')
   const [errors, setErrors] = useState<Record<string, string>>({})
@@ -265,6 +283,11 @@ function ScheduleDialog({ target, builder, onClose, onSaved }: {
   useEffect(() => {
     getCatalog(namespace).then((c) => setAgents(c.filter((a) => !a.template))).catch(() => setAgents([]))
   }, [namespace])
+
+  useEffect(() => {
+    if (!builder) return
+    listNotificationChannels(namespace).then(setChannels).catch(() => setChannels([]))
+  }, [builder, namespace])
 
   const cron = cronOf(form.when)
   useEffect(() => {
@@ -300,6 +323,12 @@ function ScheduleDialog({ target, builder, onClose, onSaved }: {
       if (form.maxPerDay || form.maxPerMonth) {
         spec.spend = { ...((spec.spend as object | undefined) ?? {}), maxUSDPerDay: form.maxPerDay || undefined, maxUSDPerMonth: form.maxPerMonth || undefined }
       } else delete spec.spend
+      // Keep what an administrator set on result (egress, callbacks); only notify is the form's.
+      const result = { ...((spec.result as Record<string, unknown> | undefined) ?? {}) }
+      if (form.notifyChannel) result.notify = { channel: form.notifyChannel, on: form.notifyOn, includeOutput: form.notifyOutput }
+      else delete result.notify
+      if (Object.keys(result).length > 0) spec.result = result
+      else delete spec.result
       if (isNew) {
         await createResource(SCHEDULE_KIND, { apiVersion: 'agentorca.agentorca.io/v1alpha1', kind: 'AgentSchedule', metadata: { name: form.name, namespace: form.namespace }, spec })
         onSaved(`${form.name} was created.`)
@@ -408,7 +437,35 @@ function ScheduleDialog({ target, builder, onClose, onSaved }: {
           </div>
 
           <h3 style={s.h3}>Send the result to</h3>
-          <p style={s.muted}>The result is always kept on the run, which you can open from the history. Other destinations are set up by an administrator.</p>
+          <p style={s.muted}>The result is always kept on the run, which you can open from the history. A channel sends a short message as well; channels are set up by an administrator.</p>
+          <Field label="Also send a message to" help={channels.length === 0 && !form.notifyChannel ? 'No channels are set up for your workspace yet. Ask an administrator.' : undefined}>
+            {(p) => (
+              <select {...p} style={field.control} value={form.notifyChannel} onChange={(e) => set('notifyChannel', e.target.value)}>
+                <option value="">No one: only keep it on the run</option>
+                {form.notifyChannel && !channels.some((c) => c.name === form.notifyChannel) && <option value={form.notifyChannel}>{form.notifyChannel}</option>}
+                {channels.map((c) => <option key={c.name} value={c.name}>{c.name} ({c.type})</option>)}
+              </select>
+            )}
+          </Field>
+          {form.notifyChannel && (
+            <>
+              <fieldset aria-label="Send a message when" style={{ ...s.fieldset, gap: 4 }}>
+                <legend style={s.muted}>Send a message when</legend>
+                {NOTIFY_EVENTS.map((ev) => (
+                  <label key={ev.value} style={s.radio}>
+                    <input type="checkbox" checked={form.notifyOn.includes(ev.value)}
+                      onChange={(e) => set('notifyOn', e.target.checked ? [...form.notifyOn, ev.value] : form.notifyOn.filter((x) => x !== ev.value))} /> {ev.label}
+                  </label>
+                ))}
+                {errors.notifyOn && <span role="alert" style={field.error}>{errors.notifyOn}</span>}
+              </fieldset>
+              <label style={s.radio}>
+                <input type="checkbox" checked={form.notifyOutput} onChange={(e) => set('notifyOutput', e.target.checked)} /> Include the run's output in the message
+              </label>
+              <p style={s.muted}>The output is cut to 2000 characters. Anyone who can read the channel can read it, so leave this off for private results.</p>
+              {errors.notifyOutput && <span role="alert" style={field.error}>{errors.notifyOutput}</span>}
+            </>
+          )}
 
           <h3 style={s.h3}>Spend limit</h3>
           <div style={s.row}>

@@ -82,6 +82,47 @@ func TestAgentScheduleEnvtest(t *testing.T) {
 		}
 	})
 
+	t.Run("spec.result.notify is validated and defaults to Failed", func(t *testing.T) {
+		withNotify := func(n agentorcav1alpha1.ScheduleNotify) func(*agentorcav1alpha1.AgentSchedule) {
+			return func(s *agentorcav1alpha1.AgentSchedule) {
+				s.Spec.Result = &agentorcav1alpha1.ScheduleResult{Notify: &n}
+			}
+		}
+		for name, n := range map[string]agentorcav1alpha1.ScheduleNotify{
+			"no channel":           {},
+			"unknown event":        {Channel: "ops", On: []string{"Exploded"}},
+			"output without a run": {Channel: "ops", On: []string{"BreakerOpen"}, IncludeOutput: true},
+		} {
+			if err := cl.Create(ctx, newSchedule("bad-notify", withNotify(n))); err == nil {
+				t.Errorf("%s: accepted", name)
+				_ = cl.Delete(ctx, newSchedule("bad-notify", nil))
+			}
+		}
+		good := newSchedule("good-notify", withNotify(agentorcav1alpha1.ScheduleNotify{Channel: "ops"}))
+		must(t, cl.Create(ctx, good))
+		if on := good.Spec.Result.Notify.On; len(on) != 1 || on[0] != "Failed" {
+			t.Errorf("on = %v, want the default [Failed]", on)
+		}
+		must(t, cl.Delete(ctx, good))
+		// TenantConfig takes channels, and refuses an unknown type.
+		tc := func(typ string) *agentorcav1alpha1.TenantConfig {
+			return &agentorcav1alpha1.TenantConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: "tc-notify", Namespace: "team-a"},
+				Spec: agentorcav1alpha1.TenantConfigSpec{AuthMode: "issued", AllowedNamespaces: []string{"team-a"},
+					Issued: &agentorcav1alpha1.IssuedAuthConfig{ClientID: "c", ClientSecretRef: agentorcav1alpha1.SecretKeyRef{Name: "s", Key: "k"}},
+					Notifications: &agentorcav1alpha1.TenantNotifications{Channels: []agentorcav1alpha1.NotificationChannel{
+						{Name: "ops", Type: typ, SecretRef: agentorcav1alpha1.NotificationSecretRef{Name: "hook"}},
+					}}},
+			}
+		}
+		if err := cl.Create(ctx, tc("pager")); err == nil {
+			t.Error("a channel of an unknown type was accepted")
+			_ = cl.Delete(ctx, tc("pager"))
+		}
+		must(t, cl.Create(ctx, tc("slack")))
+		must(t, cl.Delete(ctx, tc("slack")))
+	})
+
 	s := newSchedule("digest", func(s *agentorcav1alpha1.AgentSchedule) {
 		one := int32(1)
 		s.Spec.SuccessfulRunsHistoryLimit = &one
@@ -160,7 +201,7 @@ func TestAgentScheduleEnvtest(t *testing.T) {
 
 	// Deleting the schedule is what deletes its runs; the API server's garbage
 	// collector is not part of envtest, so check the owner reference that drives it.
-	if ref := metav1.GetControllerOf(&got[0]); ref == nil || ref.Kind != "AgentSchedule" || ref.Name != "digest" {
+	if ref := metav1.GetControllerOf(&got[0]); ref == nil || ref.Kind != "AgentSchedule" || ref.Name != schedName {
 		t.Fatalf("controller owner = %+v", ref)
 	}
 }

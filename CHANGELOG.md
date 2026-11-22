@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Result notifications for scheduled runs** — `AgentSchedule.spec.result.notify` (`channel`, `on` of `Succeeded`, `Failed`,
+  `Skipped`, `BreakerOpen`, default `Failed`, and `includeOutput`) sends a short message to a channel an administrator set up on
+  `TenantConfig.spec.notifications.channels` (`webhook` signed with HMAC-SHA256 like the trigger webhooks, Slack incoming
+  webhook, or SMTP with STARTTLS). The destination lives in a Secret, never in the spec. Sent once per run by the schedule
+  controller, best effort with bounded retries, never failing a run; an unknown channel sets the `NotifyReady` condition.
+  Messages carry the schedule, agent, outcome, run, duration, cost and a link built from `approvals.uiURL`; output only when
+  asked for, redacted and cut to 2000 characters. Webhook and Slack URLs and SMTP hosts are refused when they resolve to
+  loopback, link-local, metadata or private addresses unless the channel sets `allowPrivateAddresses`, and need https or
+  STARTTLS unless it sets `insecure`. New read-only `GET /api/notification-channels` (builder) feeds the schedule builder's
+  "Send the result to" field. See `docs/schedules.md`.
 - **Per-user MCP connection lifecycle** — a connection unused for 90 days (`operator.connections.idleExpiryDays`, 0 turns it
   off) is revoked at the provider (RFC 7009, best effort) and expires: tokens wiped, row kept as `expired`, and its owner is
   told to reconnect; `last_used_at` is now written at most hourly. A leader-elected job re-wraps connection tokens and OAuth

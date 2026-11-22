@@ -188,6 +188,73 @@ describe('SchedulesView', () => {
     expect(await within(d).findByText(/needs one/)).toBeInTheDocument()
   })
 
+  it('sends the result to a channel the administrator set up, with the events and output choice', async () => {
+    list = []
+    routes['GET /api/notification-channels'] = { body: [{ name: 'ops', type: 'slack' }, { name: 'mail', type: 'smtp' }] }
+    routes['POST /api/resources/agentschedules'] = { status: 201, body: stored() }
+    setup()
+    await userEvent.click(await screen.findByRole('button', { name: 'New schedule' }))
+    const d = await screen.findByRole('dialog')
+    await userEvent.type(within(d).getByLabelText('Name'), 'weekday-digest')
+    await userEvent.selectOptions(within(d).getByLabelText('Which agent?'), 'digest-agent')
+    await userEvent.type(within(d).getByLabelText('Instruction'), 'go')
+    expect(within(d).queryByLabelText('A run fails')).toBeNull()
+    const select = within(d).getByLabelText('Also send a message to')
+    await waitFor(() => expect(within(select).getByRole('option', { name: 'ops (slack)' })).toBeInTheDocument())
+    await userEvent.selectOptions(select, 'ops')
+    expect(within(d).getByLabelText('A run fails')).toBeChecked()
+    await userEvent.click(within(d).getByLabelText('A run succeeds'))
+    await userEvent.click(within(d).getByLabelText("Include the run's output in the message"))
+    await userEvent.click(within(d).getByRole('button', { name: 'Create schedule' }))
+    await waitFor(() => expect(calls.some((x) => x.method === 'POST' && x.url === '/api/resources/agentschedules')).toBe(true))
+    const post = calls.find((x) => x.method === 'POST' && x.url === '/api/resources/agentschedules')!
+    expect(post.body.spec.result).toEqual({ notify: { channel: 'ops', on: ['Failed', 'Succeeded'], includeOutput: true } })
+  })
+
+  it('refuses a channel with no event chosen, and keeps an administrator-set egress when saving', async () => {
+    const withResult = stored()
+    ;(withResult.spec as Record<string, unknown>).result = { egress: { type: 'redis' }, notify: { channel: 'ops', on: ['Failed'] } }
+    routes['GET /api/notification-channels'] = { body: [{ name: 'ops', type: 'slack' }] }
+    routes['GET /api/resources/agentschedules/team-a/weekday-digest'] = { body: withResult }
+    routes['PUT /api/resources/agentschedules/team-a/weekday-digest'] = { body: withResult }
+    setup()
+    await userEvent.click(within(await card()).getByRole('button', { name: 'Edit' }))
+    const d = await screen.findByRole('dialog')
+    expect(await within(d).findByLabelText('Also send a message to')).toHaveValue('ops')
+    await userEvent.click(within(d).getByLabelText('A run fails'))
+    await userEvent.click(within(d).getByRole('button', { name: 'Save changes' }))
+    expect(await within(d).findByText(/at least one thing/)).toBeInTheDocument()
+    expect(calls.some((x) => x.method === 'PUT')).toBe(false)
+    await userEvent.click(within(d).getByLabelText('A run fails'))
+    await userEvent.click(within(d).getByRole('button', { name: 'Save changes' }))
+    await waitFor(() => expect(calls.some((x) => x.method === 'PUT')).toBe(true))
+    expect(calls.find((x) => x.method === 'PUT')!.body.spec.result).toEqual({ egress: { type: 'redis' }, notify: { channel: 'ops', on: ['Failed'], includeOutput: false } })
+  })
+
+  it('choosing no channel removes notify and leaves the rest of result', async () => {
+    const withResult = stored()
+    ;(withResult.spec as Record<string, unknown>).result = { egress: { type: 'redis' }, notify: { channel: 'ops' } }
+    routes['GET /api/notification-channels'] = { body: [{ name: 'ops', type: 'slack' }] }
+    routes['GET /api/resources/agentschedules/team-a/weekday-digest'] = { body: withResult }
+    routes['PUT /api/resources/agentschedules/team-a/weekday-digest'] = { body: withResult }
+    setup()
+    await userEvent.click(within(await card()).getByRole('button', { name: 'Edit' }))
+    const d = await screen.findByRole('dialog')
+    await userEvent.selectOptions(await within(d).findByLabelText('Also send a message to'), '')
+    await userEvent.click(within(d).getByRole('button', { name: 'Save changes' }))
+    await waitFor(() => expect(calls.some((x) => x.method === 'PUT')).toBe(true))
+    expect(calls.find((x) => x.method === 'PUT')!.body.spec.result).toEqual({ egress: { type: 'redis' } })
+  })
+
+  it('a viewer does not ask for channels', async () => {
+    mockGetMe.mockResolvedValue(VIEWER)
+    routes['GET /api/resources/agentschedules/team-a/weekday-digest'] = { body: stored() }
+    setup()
+    await userEvent.click(within(await card()).getByRole('button', { name: 'View' }))
+    await screen.findByRole('dialog')
+    expect(calls.some((x) => x.url.startsWith('/api/notification-channels'))).toBe(false)
+  })
+
   it('edits with the version it read and shows a conflict in words', async () => {
     routes['GET /api/resources/agentschedules/team-a/weekday-digest'] = { body: stored() }
     routes['PUT /api/resources/agentschedules/team-a/weekday-digest'] = { status: 409, body: { error: 'AgentSchedule team-a/weekday-digest changed since you read it', currentResourceVersion: '9' } }
@@ -215,11 +282,17 @@ describe('SchedulesView', () => {
 })
 
 describe('formProblems', () => {
-  const ok = { name: 'a', namespace: 'x', agent: 'ag', when: { preset: 'daily' as const, hour: 8, minute: 0, weekday: 1, cron: '' }, timeZone: 'UTC', input: 'go', concurrency: 'Forbid' as const, maxPerRun: '1', maxPerDay: '', maxPerMonth: '' }
+  const ok = { name: 'a', namespace: 'x', agent: 'ag', when: { preset: 'daily' as const, hour: 8, minute: 0, weekday: 1, cron: '' }, timeZone: 'UTC', input: 'go', concurrency: 'Forbid' as const, maxPerRun: '1', maxPerDay: '', maxPerMonth: '', notifyChannel: '', notifyOn: ['Failed'], notifyOutput: false }
   it('accepts a complete form', () => expect(formProblems(ok, false)).toEqual({}))
   it('names every problem', () => {
     const p = formProblems({ ...ok, name: 'Bad Name', agent: '', input: ' ', maxPerRun: 'x', maxPerMonth: '0' }, false)
     expect(Object.keys(p).sort()).toEqual(['agent', 'input', 'maxPerMonth', 'maxPerRun', 'name'])
+  })
+  it('asks for an event, and for a finished run when the output is wanted', () => {
+    expect(formProblems({ ...ok, notifyChannel: 'ops', notifyOn: [] }, false)).toHaveProperty('notifyOn')
+    expect(formProblems({ ...ok, notifyChannel: 'ops', notifyOn: ['BreakerOpen'], notifyOutput: true }, false)).toHaveProperty('notifyOutput')
+    expect(formProblems({ ...ok, notifyChannel: 'ops', notifyOn: ['Failed'], notifyOutput: true }, false)).toEqual({})
+    expect(formProblems({ ...ok, notifyChannel: '', notifyOn: [] }, false)).toEqual({})
   })
   it('does not check the name of an existing schedule', () => expect(formProblems({ ...ok, name: 'Whatever' }, true)).toEqual({}))
 })

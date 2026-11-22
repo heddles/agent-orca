@@ -49,6 +49,7 @@ import (
 //	POST /api/schedules/{ns}/{name}/suspend     runner; UI-owned schedules only
 //	POST /api/schedules/{ns}/{name}/resume      runner; also clears a Degraded breaker
 //	POST /api/schedules/{ns}/{name}/run         runner; "Run now", same quotas
+//	GET  /api/notification-channels             builder; channel names and types, read-only
 
 // Kind names and route words used more than once.
 const (
@@ -67,6 +68,7 @@ const (
 func (s *UIServer) registerScheduleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/schedules", s.handleListSchedules)
 	mux.HandleFunc("/api/schedules/", s.handleScheduleAction)
+	mux.HandleFunc("/api/notification-channels", s.handleNotificationChannels)
 }
 
 // SetScheduleMinInterval sets the minimum interval the preview reports against.
