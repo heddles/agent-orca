@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -96,7 +97,48 @@ func (a *Adapter) Reply(ctx context.Context, c inbound.Connection, to inbound.Re
 			return err
 		}
 	}
+	a.finishReaction(ctx, c, t, res)
 	return nil
+}
+
+// Reactions that show how a request ended. The eyes reaction is added by Working
+// when the run starts; once the answer is posted it is swapped for one of these.
+const (
+	reactionWorking = "eyes"
+	reactionDone    = "white_check_mark"
+	reactionFailed  = "x"
+)
+
+// finishReaction swaps the working reaction for done or failed, when the
+// connection asks for reactions and the message is known. Best effort: the answer
+// is already posted, so a failure here (a missing reactions:write scope, a deleted
+// message, a rate limit) is never an error for the reply. A notice the core wrote
+// itself about a message it refused (busy, rate limited) never started a run, so
+// it has no working reaction to swap. The notice for a run that failed does.
+func (a *Adapter) finishReaction(ctx context.Context, c inbound.Connection, t target, res inbound.Result) {
+	cfg, err := ParseConfig(c.Config)
+	if err != nil || !cfg.WorkingReaction || t.TS == "" || t.Channel == "" || (res.Notice && !res.Failed) {
+		return
+	}
+	final := reactionDone
+	if res.Failed {
+		final = reactionFailed
+	}
+	react := func(method, name string) error {
+		_, err := a.call(ctx, c, method, map[string]string{"channel": t.Channel, "timestamp": t.TS, "name": name}, nil)
+		if err != nil && (strings.HasSuffix(err.Error(), "no_reaction") || strings.HasSuffix(err.Error(), "already_reacted")) {
+			return nil
+		}
+		return err
+	}
+	// Add the end state first, so the message is never left without a sign.
+	if err := react("reactions.add", final); err != nil {
+		slog.Debug("showing how the request ended", "connection", c.ID, "err", err)
+		return
+	}
+	if err := react("reactions.remove", reactionWorking); err != nil {
+		slog.Debug("removing the working reaction", "connection", c.ID, "err", err)
+	}
 }
 
 // Working adds the reaction, when the connection asks for it.
@@ -109,7 +151,7 @@ func (a *Adapter) Working(ctx context.Context, c inbound.Connection, to inbound.
 	if json.Unmarshal(to, &t) != nil || t.Channel == "" || t.TS == "" {
 		return nil
 	}
-	_, err = a.call(ctx, c, "reactions.add", map[string]string{"channel": t.Channel, "timestamp": t.TS, "name": "eyes"}, nil)
+	_, err = a.call(ctx, c, "reactions.add", map[string]string{"channel": t.Channel, "timestamp": t.TS, "name": reactionWorking}, nil)
 	if err != nil && strings.HasSuffix(err.Error(), "already_reacted") {
 		return nil
 	}

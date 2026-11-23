@@ -33,6 +33,8 @@ Events API over HTTPS. Socket Mode is not built.
 8. Optional **Slash Commands**: create `/agent` with the same Request URL. The bot must be a member of the channel where the command is used, because the answer is posted with `chat.postMessage`; the command itself answers the user at once with a private "Working on it".
 9. Invite the bot to a channel (`/invite @name`).
 
+Working indicator: with `workingReaction` on (settings; needs the `reactions:write` scope) the bot puts :eyes: on the question as soon as the run starts, and when it posts the answer it swaps that for :white_check_mark: (answered) or :x: (the run failed). The reactions are best effort: a missing scope, a deleted message or a rate limit never affects the answer, and if adding the end reaction fails the :eyes: stays. A message the core refused (busy, rate limited) never started a run and gets no reaction.
+
 How it behaves: a request is accepted only with a valid `X-Slack-Signature` (`v0` HMAC of `v0:<timestamp>:<body>`, five minute window, constant time). A message is identified by workspace, channel and message timestamp, so Slack's retries (`X-Slack-Retry-Num`) and the double delivery of a mentioning message (`app_mention` plus `message.channels`) start one run. Messages with a `bot_id` or any `subtype` (edits, joins, other bots), and the bot's own, are ignored. The text has its leading `@bot` removed and Slack's markup decoded. The answer is posted in the thread of the message (a direct message is one flat conversation), as `mrkdwn`, with `link_names` and unfurling off and every mention neutralised, split into at most five messages of at most 3500 characters.
 
 ## Mattermost

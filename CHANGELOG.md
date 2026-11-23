@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Slack: with `workingReaction` on, the :eyes: reaction is swapped for :white_check_mark: when the answer is posted and for :x: when the run failed.
+
 ### Added
 
 - **Chat channels: Microsoft Teams, Google Chat and Webex** — three more adapters on the chat contract, each in its own package with
