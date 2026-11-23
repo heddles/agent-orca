@@ -270,13 +270,13 @@ func TestGetRunScansTraceEvents(t *testing.T) {
 			"id", "name", "namespace", "labels", "agent_ref", "input", "parent_run_ref",
 			"prior_run_ref", "timeout_sec", "phase", "pod_name", "spend_usd", "output", "raw_output",
 			"restart_count", "start_time", "completion_time", "context_used_tokens", "max_context_tokens",
-			"tenant", "routing_decisions", "child_run_refs", "trace_events", "created_at", "updated_at", "tenant_id",
+			"tenant", "routing_decisions", "child_run_refs", "trace_events", "created_at", "updated_at", "tenant_id", "payload_pruned_at",
 		}).AddRow(
 			"default/my-run", "my-run", "default", []byte(`{}`),
 			"agent", "input", "", "", nil,
 			"Succeeded", "pod-1", "0.00", "out", "",
 			0, nil, nil, 0, 0,
-			"", nil, nil, traceJSON, time.Now(), time.Now(), "",
+			"", nil, nil, traceJSON, time.Now(), time.Now(), "", nil,
 		))
 	mock.ExpectCommit()
 

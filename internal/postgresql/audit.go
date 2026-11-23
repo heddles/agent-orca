@@ -44,6 +44,12 @@ const (
 	AuditOverride = "override"
 	// AuditExport is a dataset's cases leaving as a JSONL download.
 	AuditExport = "export"
+	// AuditChat is a user's chat turn on a deployment (the execute endpoint),
+	// AuditAnswer an answer to a run's clarification question, AuditFeedback a
+	// thumbs up or down on a run. Their rows name ids and sizes, never the text.
+	AuditChat     = "chat"
+	AuditAnswer   = "answer"
+	AuditFeedback = "feedback"
 )
 
 // MaxAuditSummaryBytes bounds the summary of an audit event.

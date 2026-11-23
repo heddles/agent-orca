@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 )
@@ -25,6 +26,20 @@ type dryRunKey struct{}
 func isDryRun(r *http.Request) bool {
 	v, _ := r.Context().Value(dryRunKey{}).(bool)
 	return v
+}
+
+// withDryRun marks ctx as a dry run: the write below it is made with dryRun=All.
+func withDryRun(ctx context.Context) context.Context {
+	return context.WithValue(ctx, dryRunKey{}, true)
+}
+
+// mustURL parses a URL that is built in code.
+func mustURL(raw string) *url.URL {
+	u, err := url.Parse(raw)
+	if err != nil {
+		panic(err)
+	}
+	return u
 }
 
 // asDryRun serves r through run as a dry run when it asks for one (?dryRun=true)

@@ -1,6 +1,7 @@
 package postgresql
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -85,6 +86,53 @@ func TestEvalExperimentsAgainstPostgres(t *testing.T) {
 	}
 
 	checkExperimentRunnerCalls(t, s, ctx, e, cases)
+}
+
+func TestEvalCheckExperimentsAgainstPostgres(t *testing.T) {
+	s, _ := appStore(t)
+	ctx := WithTenant(context.Background(), tenantA)
+	d := evalDS(ctx, t, s, evalNSA, "chk")
+	if _, _, err := s.AddEvalCases(ctx, d.ID, []EvalCase{{Input: "one"}, {Input: "two"}, {Input: "three"}}, EvalLimits{}); err != nil {
+		t.Fatal(err)
+	}
+	spec := json.RawMessage(`{"systemPrompt":"draft"}`)
+	e, err := s.CreateEvalExperiment(ctx, EvalExperiment{
+		DatasetID: d.ID, Purpose: PurposeCheck, MaxCases: 2, BudgetUSD: 0.25, CreatedBy: evalUser,
+		Arms: []EvalArm{{Label: "draft", Agent: "support", Spec: spec}},
+	}, EvalExperimentLimits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The case cap limits what the runner runs and what the view counts; the spec round-trips.
+	var gotSpec bytes.Buffer
+	if len(e.Arms) == 1 {
+		_ = json.Compact(&gotSpec, e.Arms[0].Spec) // PostgreSQL stores jsonb with its own spacing
+	}
+	if e.Purpose != PurposeCheck || e.MaxCases != 2 || e.Cases != 2 || len(e.Arms) != 1 || gotSpec.String() != string(spec) {
+		t.Fatalf("created = %+v", e)
+	}
+	if cases, err := s.ListEvalExperimentCases(ctx, e.ID); err != nil || len(cases) != 2 || cases[0].Input != "one" {
+		t.Errorf("cases = %d, %v", len(cases), err)
+	}
+	// A check is not in the default list, only in one that asks for checks.
+	if list, _ := s.ListEvalExperiments(ctx, EvalExperimentQuery{}); len(list) != 0 {
+		t.Errorf("default list holds %d checks", len(list))
+	}
+	if list, _ := s.ListEvalExperiments(ctx, EvalExperimentQuery{Purpose: PurposeCheck}); len(list) != 1 {
+		t.Errorf("check list holds %d", len(list))
+	}
+	// A cap above the dataset's size leaves every case, and a cap is checked against the experiment limit.
+	if _, err := s.CreateEvalExperiment(ctx, EvalExperiment{
+		DatasetID: d.ID, Purpose: PurposeCheck, MaxCases: 3, BudgetUSD: 0.25, CreatedBy: evalUser,
+		Arms: []EvalArm{{Label: "draft", Agent: "support", Spec: spec}},
+	}, EvalExperimentLimits{MaxCasesPerExperiment: 2}); !errors.Is(err, ErrInvalidEval) {
+		t.Errorf("a cap above the limit: %v", err)
+	}
+	// Another tenant sees nothing.
+	b := WithTenant(context.Background(), tenantB)
+	if _, err := s.GetEvalExperiment(b, e.ID); !errors.Is(err, ErrEvalNotFound) {
+		t.Errorf("tenant B reads a check: %v", err)
+	}
 }
 
 //nolint:gocyclo // one scenario, step by step

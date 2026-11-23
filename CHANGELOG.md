@@ -9,6 +9,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Builder: add documents to knowledge** — `GET`/`PUT`/`DELETE /api/knowledge/{ns}/{name}/documents[/{file}]` let a builder add text,
+  markdown and csv documents to a UI-owned KnowledgeBase from the agent builder, with no new infrastructure: the documents are
+  keys of one UI-owned, tenant-stamped ConfigMap per knowledge base (`<kb>-docs`), added to the KnowledgeBase's
+  `ingestion.configMapRefs`, which the existing ingester reads and the controller watches. Git-owned (409), platform-shared (403),
+  other tenants' (404) and handoff-pending knowledge bases are refused; the size of a document, the number of documents and the
+  total are capped (`operator.builder.knowledge*`, total always below a ConfigMap's 1 MiB); binary and non-UTF-8 content is a 415
+  (PDF and Office files need an S3 or URL source an administrator adds). Content is stored opaque and is never returned, logged
+  or audited (the audit row has the file name and size). Removing a document does not delete text already embedded; the answer and
+  the UI say so. See `docs/agent-builder.md` for what real file upload would need.
+
+- **Builder: Describe what you want** — `POST /api/builder/draft` (builder role) turns a plain-English description (at most
+  2000 characters) into a draft of the builder form: a name, description, instructions, example inputs, and tools, MCP
+  servers, knowledge bases and a guardrail policy chosen by name from what the workspace has. It calls the ModelProvider named
+  by `operator.builder.draftProvider` through the evaluation judge's resolver and provider (no new provider code); without one
+  the answer is `409 draft_unavailable` and `GET /api/builder/options` reports `draft.available: false`, so the UI disables the
+  box with a hint. The draft is returned for review and nothing is written. The model's reply is untrusted: one strict JSON
+  object, unknown fields dropped, fields type-checked and capped, references kept only when the caller may read an object of
+  that name in the workspace, secret-like text redacted (the description too, before it is sent), and the assembled agent
+  checked by the dry-run write. Per-user hourly count, per-call cost cap and daily spend cap. The description is never logged or
+  audited. UI: a "Describe what you want" box on a new agent that fills the form and marks the fields as "AI suggested" until
+  they are edited.
+
+- **Builder: Check with my cases** — `POST /api/builder/check` runs the agent draft on screen (saved or not) against an
+  evaluation dataset and shows pass or fail, score, cost and time for each case, with a summary against the published
+  version when there is one. It reuses the experiment runner: the draft is the inline `spec` of one arm of an experiment of
+  the new purpose `check` (migration `0023`, which also adds `max_cases`), validated first by the dry-run write, never saved
+  or published, hidden from the experiment list and never gate evidence. Capped by budget, cases, concurrency and checks per
+  user per hour (`operator.builder.check*`), tenant-scoped, builder role, audited. UI: a "Check with my cases" card next to
+  "Try it". See `docs/agent-builder.md`.
+
+- **Archived run retention** — `ARCHIVED_RUNS_RETENTION_DAYS` (Helm `database.archivedRunsRetentionDays`, default `0` keeps
+  everything) makes the leader operator empty the output, raw output and execution trace of archived runs older than that many
+  days, every 6 hours, in batches. The summary row stays (status, spend, tokens, times, routing decisions, input), so cost
+  totals, the fleet view and the history list are unchanged; the run page says the output and trace were removed
+  (`payloadPrunedAt`). Evaluation dataset cases copy their data when created and are not affected. Counted by
+  `agentorca_archived_runs_swept_total`. Cluster-wide, no per-tenant override. Migration `0022`. See
+  `docs/observability.md`.
+
+- **Audit of chat, answers and feedback, and a routing events list** — the audit trail (`GET /api/audit`, admin) now records a
+  signed-in user's chat turn on a deployment (`chat`), an answer to a clarification question (`answer`) and a run rating
+  (`feedback`), next to the existing approval decisions. Rows hold the actor, tenant, namespace, target and ids and byte
+  counts, never the message text. New `GET /api/routing-events` lists routing decisions across runs by `namespace`, `agent`,
+  `selector`, `outcome`, `since`, `until` and `shadow`, limited to the caller's tenant (`tenant_id` filter and row-level
+  security, as the per-run endpoint already was); the cross-tenant, filter and retention-under-RLS cases are tested against
+  PostgreSQL. No migration: `routing_events` already carried `tenant_id` and its policy (0009, 0010).
+
+- **Result notifications for scheduled runs** — `AgentSchedule.spec.result.notify` (`channel`, `on` of `Succeeded`, `Failed`,
+  `Skipped`, `BreakerOpen`, default `Failed`, and `includeOutput`) sends a short message to a channel an administrator set up on
+  `TenantConfig.spec.notifications.channels` (`webhook` signed with HMAC-SHA256 like the trigger webhooks, Slack incoming
+  webhook, or SMTP with STARTTLS). The destination lives in a Secret, never in the spec. Sent once per run by the schedule
+  controller, best effort with bounded retries, never failing a run; an unknown channel sets the `NotifyReady` condition.
+  Messages carry the schedule, agent, outcome, run, duration, cost and a link built from `approvals.uiURL`; output only when
+  asked for, redacted and cut to 2000 characters. Webhook and Slack URLs and SMTP hosts are refused when they resolve to
+  loopback, link-local, metadata or private addresses unless the channel sets `allowPrivateAddresses`, and need https or
+  STARTTLS unless it sets `insecure`. New read-only `GET /api/notification-channels` (builder) feeds the schedule builder's
+  "Send the result to" field. See `docs/schedules.md`.
 - **Per-user MCP connection lifecycle** — a connection unused for 90 days (`operator.connections.idleExpiryDays`, 0 turns it
   off) is revoked at the provider (RFC 7009, best effort) and expires: tokens wiped, row kept as `expired`, and its owner is
   told to reconnect; `last_used_at` is now written at most hourly. A leader-elected job re-wraps connection tokens and OAuth

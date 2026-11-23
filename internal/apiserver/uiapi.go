@@ -121,6 +121,15 @@ type UIServer struct {
 	widget widgetState
 	// evalLimits are the configured limits on experiments.
 	evalLimits postgresql.EvalExperimentLimits
+	// builderCfg holds the limits of the builder's helpers (check, draft, upload).
+	builderCfg BuilderConfig
+	// checkLimiter and draftLimiter hold the per-user hourly limits of the
+	// builder's check and draft endpoints; draftSpend the per-user daily spend of drafts.
+	checkLimiter, draftLimiter windowLimiter
+	draftSpend                 spendLedger
+	// draftProviders resolves the model that writes drafts (tests); nil means the
+	// judge's resolver over the cluster.
+	draftProviders draftResolver
 	// evalCfg holds the limits on evaluation datasets and cases.
 	evalCfg EvalsConfig
 	// auditUnavailable logs once that there is no PostgreSQL store to audit into.
@@ -236,6 +245,7 @@ func (s *UIServer) Handler() http.Handler {
 	mux.HandleFunc("/api/approvals", s.handleListApprovals)
 	mux.HandleFunc("/api/approvals/", s.handleApproval)
 	mux.HandleFunc("/api/audit", s.handleAudit)
+	mux.HandleFunc("/api/routing-events", s.handleRoutingEvents)
 	mux.HandleFunc("/api/resources", s.handleResourceCollection)
 	mux.HandleFunc("/api/resources/", s.handleResource)
 	mux.HandleFunc("/api/openapi.json", s.handleUIOpenAPI)
@@ -895,6 +905,8 @@ func (s *UIServer) handleAnswerRun(w http.ResponseWriter, r *http.Request, ns, r
 		"originalRun", runName,
 		"continuationRun", continuation.Name,
 		"ns", ns)
+	s.recordAudit(w, r, auditEventFor(postgresql.AuditAnswer, "AgentRun", ns, runName, "",
+		fmt.Sprintf("answered the clarification of run %s (%d bytes), continuation run %s", runName, len(req.Answer), continuation.Name)))
 	jsonResponse(w, map[string]any{
 		"status":  "ok",
 		"runName": continuation.Name,
@@ -1876,6 +1888,9 @@ func (s *UIServer) handleExecute(w http.ResponseWriter, r *http.Request, namespa
 		return
 	}
 
+	// The row names the session, run and size of the message, never its text.
+	s.recordAudit(w, r, auditEventFor(postgresql.AuditChat, "AgentDeployment", namespace, deploymentName, "",
+		fmt.Sprintf("chat turn in session %s, run %s, %d bytes of input", sessionID, run.Name, len(req.Input))))
 	jsonResponse(w, map[string]any{
 		"runName":   run.Name,
 		"sessionId": sessionID,
@@ -2500,6 +2515,7 @@ func (s *UIServer) handleGetArchivedRun(w http.ResponseWriter, r *http.Request, 
 		RoutingDecisions:  routingDecisionsToJSON(routing),
 		ChildRunRefs:      childRefs,
 		ResolvedModel:     resolvedModel,
+		PayloadPrunedAt:   formatTimePtr(archive.PayloadPrunedAt),
 	}
 
 	if s.crdClient != nil {
@@ -2596,6 +2612,8 @@ type archivedRunDetail struct {
 	MCPServers         []string              `json:"mcps,omitempty"`
 	ResolvedModel      string                `json:"resolvedModel,omitempty"`
 	TraceEntries       []traceEntryJSON      `json:"traceEntries,omitempty"`
+	// PayloadPrunedAt is set when retention emptied this run's output and trace.
+	PayloadPrunedAt string `json:"payloadPrunedAt,omitempty"`
 }
 
 func routingDecisionsToJSON(rds []agentorcav1alpha1.RoutingDecision) []routingDecisionJSON {

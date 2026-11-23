@@ -217,6 +217,79 @@ spec:
                 - clientID
                 - clientSecretRef
                 type: object
+              notifications:
+                description: |-
+                  Notifications are the places the tenant's schedules can send a message
+                  to. Administrators own this field: it is not writable from the UI, which
+                  only lists the channel names.
+                properties:
+                  channels:
+                    description: |-
+                      Channels are the named destinations an AgentSchedule's
+                      spec.result.notify.channel can pick.
+                    items:
+                      description: |-
+                        NotificationChannel is one destination. Where it goes is in a Secret, never
+                        in the spec: the URL of a Slack incoming webhook is itself a credential.
+                      properties:
+                        allowPrivateAddresses:
+                          description: |-
+                            AllowPrivateAddresses allows a destination that resolves to a loopback,
+                            link-local, private or otherwise internal address, such as a mail relay
+                            in the cluster. Default false: such addresses are refused, which keeps a
+                            channel from being pointed at the cluster's own services or at a cloud
+                            metadata endpoint.
+                          type: boolean
+                        insecure:
+                          description: |-
+                            Insecure allows an http:// URL (webhook, slack) or an SMTP server that
+                            does not offer STARTTLS. Default false: https and STARTTLS are required.
+                          type: boolean
+                        name:
+                          description: Name is what an AgentSchedule refers to.
+                          maxLength: 63
+                          pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                          type: string
+                        secretRef:
+                          description: |-
+                            SecretRef is the Secret that holds the destination.
+
+                              - webhook: url, and signingKey (the HMAC-SHA256 key; the body is signed
+                                as "<timestamp>.<body>" like the trigger webhooks, in the headers
+                                X-AgentOrca-Timestamp and X-AgentOrca-Signature).
+                              - slack: url (an incoming-webhook URL).
+                              - smtp: host, port, from and to (comma separated), and optionally
+                                username and password.
+                          properties:
+                            name:
+                              description: Name of the Secret.
+                              minLength: 1
+                              type: string
+                            namespace:
+                              description: Namespace of the Secret. Defaults to the
+                                TenantConfig's namespace.
+                              type: string
+                          required:
+                          - name
+                          type: object
+                        type:
+                          description: Type is webhook, slack or smtp.
+                          enum:
+                          - webhook
+                          - slack
+                          - smtp
+                          type: string
+                      required:
+                      - name
+                      - secretRef
+                      - type
+                      type: object
+                    maxItems: 20
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
+                type: object
               rateLimit:
                 description: RateLimit configures request rate limiting for this tenant.
                 properties:

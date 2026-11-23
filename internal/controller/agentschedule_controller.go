@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -72,6 +73,14 @@ type AgentScheduleReconciler struct {
 	// MaxConsecutiveFailures is how many finished runs in a row may fail before
 	// the schedule stops ticking; zero means schedule.DefaultMaxConsecutiveFailures.
 	MaxConsecutiveFailures int
+	// Notifier sends the result notifications of spec.result.notify. Nil turns
+	// them off: no run is claimed for a notification.
+	Notifier Notifier
+	// UIURL is the UI's public base URL, for the link to a run in a
+	// notification. Empty leaves the link out.
+	UIURL string
+
+	notifyWG sync.WaitGroup
 }
 
 // maxRequeue bounds the sleep between reconciles, so a clock step or a
@@ -270,6 +279,7 @@ func (r *AgentScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 	exhausted := r.budgetState(ctx, &s, spentDay, spentMonth)
 	r.breaker(&s)
+	r.setNotifyCondition(ctx, &s, tenant)
 
 	res := r.tick(ctx, &s, tenant, exhausted, now)
 
@@ -279,11 +289,26 @@ func (r *AgentScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}
 	}
 	// Mark the children counted only after the status that counts them is stored.
+	// The same write claims the run's notification, before anything is sent, so
+	// a run is announced at most once.
+	var jobs []notifyJob
 	for _, c := range counted {
-		if err := r.markAccounted(ctx, c); err != nil {
+		job, send := r.runNotice(&s, c)
+		send = send && r.Notifier != nil
+		claim := ""
+		if send {
+			claim = scheduleNotify(&s).Channel
+		}
+		if err := r.markAccounted(ctx, c, claim); err != nil {
 			log.Error(err, "marking a run as counted", "run", c.ref.Name)
+			continue
+		}
+		if send {
+			jobs = append(jobs, job)
 		}
 	}
+	jobs = append(jobs, r.scheduleNotices(&s, &orig.Status)...)
+	r.dispatch(ctx, &s, tenant, jobs)
 	if res.retry {
 		return ctrl.Result{RequeueAfter: retryAfter}, nil
 	}
@@ -356,13 +381,18 @@ func (r *AgentScheduleReconciler) spent(s *agentorcav1alpha1.AgentSchedule, chil
 	return day, month
 }
 
-func (r *AgentScheduleReconciler) markAccounted(ctx context.Context, c scheduleChild) error {
+// markAccounted records that c was counted. A non-empty notifyChannel also
+// records that its notification was claimed.
+func (r *AgentScheduleReconciler) markAccounted(ctx context.Context, c scheduleChild, notifyChannel string) error {
 	patch := client.MergeFrom(c.obj.DeepCopyObject().(client.Object))
 	a := c.obj.GetAnnotations()
 	if a == nil {
 		a = map[string]string{}
 	}
 	a[schedule.AnnotationAccounted] = annotationTrue
+	if notifyChannel != "" {
+		a[schedule.AnnotationNotified] = notifyChannel
+	}
 	c.obj.SetAnnotations(a)
 	return client.IgnoreNotFound(r.Patch(ctx, c.obj, patch))
 }

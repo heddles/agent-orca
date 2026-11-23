@@ -60,6 +60,7 @@ import (
 	"github.com/heddles/agent-orca/internal/evals/judge"
 	evalrunner "github.com/heddles/agent-orca/internal/evals/runner"
 	"github.com/heddles/agent-orca/internal/githubapp"
+	"github.com/heddles/agent-orca/internal/notify"
 	"github.com/heddles/agent-orca/internal/oauth"
 	"github.com/heddles/agent-orca/internal/openshell"
 	"github.com/heddles/agent-orca/internal/podbuilder"
@@ -526,6 +527,10 @@ func main() {
 		StateStore:             stateStore,
 		Audit:                  scheduleAudit,
 		MaxConsecutiveFailures: scheduleMaxFailures,
+		// Result notifications (spec.result.notify). The link in a message uses
+		// the UI address the approval messages use.
+		Notifier: &notify.Sender{},
+		UIURL:    os.Getenv("APPROVALS_UI_URL"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "AgentSchedule")
 		os.Exit(1)
@@ -770,6 +775,18 @@ func main() {
 			os.Exit(1)
 		}
 	}
+	if pgStore != nil {
+		if days := archivedRunsRetentionDaysFromEnv(); days > 0 {
+			retention := time.Duration(days) * 24 * time.Hour
+			if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
+				return pgStore.AsPlatform().RunArchivedRunsRetention(ctx, retention, postgresql.ArchivedRunsRetentionInterval)
+			})); err != nil {
+				setupLog.Error(err, "Unable to schedule archived-run retention")
+				os.Exit(1)
+			}
+			setupLog.Info("Archived-run retention on: output and trace of older runs are emptied", "days", days)
+		}
+	}
 	// Filesystem relay (issue #34): carries ACP fs/* requests from agent pods to
 	// the workstation-side bridge. Requires the redis-backed shared state; with
 	// no relay both the internal and ACP fs endpoints fail fast with 501.
@@ -858,6 +875,7 @@ func main() {
 	evalsCfg := evalsConfigFromEnv()
 	uiAPI.SetEvals(evalsCfg)
 	uiAPI.SetEvalExperimentLimits(evalExperimentLimitsFromEnv())
+	uiAPI.SetBuilder(builderConfigFromEnv())
 	// The evaluation experiment runner needs PostgreSQL. It is a manager runnable
 	// that wants leader election (the default), so one operator runs it at a time.
 	if pgStore != nil && !evalsCfg.DisableExperiments {
@@ -1100,6 +1118,36 @@ func evalExperimentLimitsFromEnv() postgresql.EvalExperimentLimits {
 	return l
 }
 
+// builderConfigFromEnv reads the limits of the agent builder's helpers (chart
+// values operator.builder.*). An unset or unreadable value keeps the default.
+func builderConfigFromEnv() apiserver.BuilderConfig {
+	var c apiserver.BuilderConfig
+	env := func(name string) string { return strings.TrimSpace(os.Getenv(name)) }
+	num := func(name string, into *int) {
+		if n, err := strconv.Atoi(env(name)); err == nil && n > 0 {
+			*into = n
+		}
+	}
+	usd := func(name string, into *float64) {
+		if v, err := strconv.ParseFloat(env(name), 64); err == nil && v > 0 {
+			*into = v
+		}
+	}
+	usd("BUILDER_CHECK_DEFAULT_BUDGET_USD", &c.CheckDefaultBudgetUSD)
+	usd("BUILDER_CHECK_MAX_BUDGET_USD", &c.CheckMaxBudgetUSD)
+	num("BUILDER_CHECK_MAX_CASES", &c.CheckMaxCases)
+	num("BUILDER_CHECK_MAX_CONCURRENCY", &c.CheckMaxConcurrency)
+	num("BUILDER_CHECK_PER_USER_PER_HOUR", &c.CheckPerUserPerHour)
+	c.DraftProvider = env("BUILDER_DRAFT_PROVIDER")
+	num("BUILDER_DRAFT_PER_USER_PER_HOUR", &c.DraftPerUserPerHour)
+	usd("BUILDER_DRAFT_MAX_COST_USD", &c.DraftMaxCostUSD)
+	usd("BUILDER_DRAFT_DAILY_USD_PER_USER", &c.DraftDailyUSDPerUser)
+	num("BUILDER_KNOWLEDGE_MAX_DOC_BYTES", &c.KnowledgeMaxDocBytes)
+	num("BUILDER_KNOWLEDGE_MAX_DOCS", &c.KnowledgeMaxDocs)
+	num("BUILDER_KNOWLEDGE_MAX_TOTAL_BYTES", &c.KnowledgeMaxTotalBytes)
+	return c
+}
+
 // evalRunnerIntervalFromEnv is how often the experiment runner polls
 // (EVALS_RUNNER_INTERVAL_SECONDS, default 5).
 func evalRunnerIntervalFromEnv() time.Duration {
@@ -1116,6 +1164,16 @@ func evalResultRetentionDaysFromEnv() int {
 		return n
 	}
 	return 90
+}
+
+// archivedRunsRetentionDaysFromEnv is how long an archived run keeps its output
+// and execution trace (ARCHIVED_RUNS_RETENTION_DAYS; 0, the default, keeps them).
+// The summary row (status, cost, tokens, times) is always kept.
+func archivedRunsRetentionDaysFromEnv() int {
+	if n, err := strconv.Atoi(strings.TrimSpace(os.Getenv("ARCHIVED_RUNS_RETENTION_DAYS"))); err == nil && n > 0 {
+		return n
+	}
+	return 0
 }
 
 // connectionIdleExpiryFromEnv is how long a per-user MCP connection may go unused

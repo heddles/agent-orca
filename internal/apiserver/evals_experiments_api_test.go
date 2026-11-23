@@ -85,6 +85,10 @@ func (f *fakeExperimentStore) ListEvalExperiments(ctx context.Context, q postgre
 		if q.Namespaces != nil && !contains(q.Namespaces, e.Namespace) {
 			continue
 		}
+		// The real store hides check experiments unless they are asked for.
+		if (q.Purpose == "" && e.Purpose == postgresql.PurposeCheck) || (q.Purpose != "" && q.Purpose != e.Purpose) {
+			continue
+		}
 		out = append(out, *e)
 		if len(out) == q.Limit {
 			break

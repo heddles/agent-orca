@@ -80,6 +80,22 @@ components:
         mcpServers: { type: array, items: { $ref: '#/components/schemas/BuilderOption' } }
         knowledgeBases: { type: array, items: { $ref: '#/components/schemas/BuilderOption' } }
         guardrailPolicies: { type: array, items: { $ref: '#/components/schemas/BuilderOption' } }
+    BuilderCheckRequest:
+      type: object
+      required: [agent, datasetId]
+      properties:
+        agent: { type: object, description: 'The draft Agent object, saved or not. It is validated by the dry-run write and never stored.' }
+        datasetId: { type: integer, description: 'A dataset in the same workspace as the draft.' }
+        budgetUsd: { type: number, description: 'The spending limit. Default operator.builder.checkDefaultBudgetUSD (0.25), at most operator.builder.checkMaxBudgetUSD (2).' }
+        compareWithPublished: { type: boolean, description: 'Default true: when the agent has an AgentDeployment, the live agent runs as the baseline arm.' }
+    BuilderCheckResponse:
+      type: object
+      required: [valid, experiment, comparedWithPublished, capped]
+      properties:
+        valid: { type: boolean }
+        experiment: { $ref: '#/components/schemas/EvalExperiment' }
+        comparedWithPublished: { type: boolean, description: 'True when the arms are "published" (baseline) then "draft"; otherwise only "draft".' }
+        capped: { type: boolean, description: 'True when only the first cases of the dataset run.' }
     CreatedRef:
       type: object
       required: [kind, namespace, name]
@@ -108,14 +124,14 @@ components:
         name: { type: string }
         status: { type: string, enum: [up, down, degraded] }
         message: { type: string }
-        latencyMs: { type: integer }
+        latencyMS: { type: integer }
     ProviderHealth:
       type: object
       properties:
         name: { type: string }
         namespace: { type: string }
         ready: { type: boolean }
-        latencyMs: { type: integer }
+        latencyMS: { type: integer }
         message: { type: string }
     SystemMetrics:
       type: object
@@ -219,6 +235,12 @@ components:
               event: { type: object, description: Discriminated trace event }
               ts: { type: string, format: date-time }
               childRunName: { type: string }
+        payloadPrunedAt:
+          type: string
+          format: date-time
+          description: >
+            Set when archived-run retention (ARCHIVED_RUNS_RETENTION_DAYS) emptied this
+            run's output and trace. Cost, status, tokens and times are kept.
     RoutingDecisionInfo:
       type: object
       properties:
@@ -492,7 +514,9 @@ components:
         datasetVersion: { type: integer, description: The dataset version the experiment runs, frozen at creation }
         name: { type: string }
         status: { type: string, enum: [queued, running, grading, awaiting_review, complete, cancelled, failed] }
-        arms: { type: array, items: { type: object, description: label, agent, revision, hash (filled when it starts), modelProvider } }
+        arms: { type: array, items: { type: object, description: 'label, agent, revision, hash (filled when it starts), modelProvider, and for a check the draft spec' } }
+        purpose: { type: string, enum: [compare, gate, check] }
+        maxCases: { type: integer, description: 'A check runs only the first maxCases cases.' }
         repeats: { type: integer }
         budgetUsd: { type: number }
         spentUsd: { type: number }
@@ -740,7 +764,7 @@ components:
         arm: { type: string }
         output: { type: string }
         toolCalls: { type: array, items: { type: string } }
-        costUsd: { type: number }
+        costUSD: { type: number }
         latencyMs: { type: integer, format: int64 }
         casePass: { type: boolean }
         createdBy: { type: string }
@@ -1408,6 +1432,143 @@ paths:
           content:
             application/json: { schema: { $ref: '#/components/schemas/BuilderOptions' } }
         '403': { $ref: '#/components/responses/Forbidden' }
+  /api/builder/check:
+    post:
+      tags: [builder]
+      summary: Check a draft agent against a dataset of test cases
+      description: >
+        Needs the builder role; audited (create, kind EvalExperiment, a
+        "builder check of a draft" summary with counts and no text). The draft
+        goes through the same dry-run write as ?dryRun=true (CRD schema,
+        webhooks, ownership, tenant checks) and is never stored; if it is
+        invalid the answer is that of a failed dry run, 4xx
+        {valid:false, errors:[...]}, and nothing is queued. A valid draft runs
+        as an arm of an experiment of purpose "check", on the existing
+        experiment runner, graders and budget caps. The budget, the number of
+        cases (the first N), the concurrency and the checks per user per hour
+        are capped by operator.builder.*. A check is hidden from the experiment
+        list and never counts for a publish gate; follow it with
+        GET /api/evals/experiments/{id}, /results and /summary. Git-owned
+        agents are refused (409), as they cannot be saved here.
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: '#/components/schemas/BuilderCheckRequest' } }
+      responses:
+        '201':
+          description: the check was queued
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/BuilderCheckResponse' } }
+        '400': { description: 'The draft is invalid (valid:false with errors), the budget is over the cap, or the dataset is in another workspace' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { description: The dataset is not found for the caller }
+        '409': { description: 'The dataset has no graders, too many experiments are running, or the agent is Git-owned' }
+        '422': { description: The draft names things the workspace does not have }
+        '429': { description: The user started too many checks this hour }
+        '503': { description: Needs the PostgreSQL store and operator.evals.enabled }
+  /api/builder/draft:
+    post:
+      tags: [builder]
+      summary: Draft an agent from a plain-English description
+      description: >
+        Needs the builder role. The model named by operator.builder.draftProvider
+        (a ModelProvider found in the caller's workspace, then the platform
+        catalog, as a judge's is) writes the fields; the answer is a draft for a
+        person to review and no object is written. The model's reply is
+        untrusted: one strict JSON object, unknown fields dropped, each field
+        type-checked and size-capped, references kept only when the workspace has
+        an object of that name the caller may read, secret-like text redacted,
+        and the assembled agent checked by the dry-run write (valid, errors).
+        The description is redacted before it is sent, and never logged or
+        audited (only its size). Limits per user: drafts an hour, a cost cap per
+        call and a daily spend cap. One audit row (request, Agent) with sizes and
+        cost.
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: '#/components/schemas/BuilderDraftRequest' } }
+      responses:
+        '200':
+          description: the draft
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/BuilderDraft' } }
+        '400': { description: The description is too short, or the body is not valid }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { description: 'No model is set up for drafting (code draft_unavailable)' }
+        '413': { description: The description is too long, or the call would cost more than one draft may }
+        '429': { description: The user asked for too many drafts, or used the daily allowance }
+        '502': { description: The model could not be reached, or its answer was not usable }
+  /api/knowledge/{namespace}/{name}/documents:
+    get:
+      tags: [builder]
+      summary: List the documents added to a knowledge base from the UI
+      description: >
+        Needs the viewer role. Names and sizes only; no endpoint returns a
+        document's text. The documents are the data keys of the ConfigMap
+        {name}-docs, which is one of the knowledge base's ingestion sources.
+      parameters:
+        - { in: path, name: namespace, required: true, schema: { type: string } }
+        - { in: path, name: name, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: the documents
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/KnowledgeDocuments' } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { description: The knowledge base is not found for the caller }
+  /api/knowledge/{namespace}/{name}/documents/{document}:
+    put:
+      tags: [builder]
+      summary: Add or replace a text document in a knowledge base
+      description: >
+        Needs the builder role; audited (update, KnowledgeBase; the file name
+        and size, never the text). The body is the document as text. Only a
+        UI-owned knowledge base of the caller's tenant is changed: Git-owned or
+        otherwise unowned is 409, platform-shared 403, another tenant's 404, a
+        pending handoff to Git 409. The name is letters, digits, dots, dashes
+        and underscores ending in .txt, .md, .markdown or .csv; the content must
+        be UTF-8 text without NUL bytes (415 otherwise: PDF and Office files are
+        not supported here). Limits operator.builder.knowledge*: size of a
+        document (413), number of documents (409), total size (413, always below
+        a ConfigMap's 1 MiB). The first document creates the UI-owned,
+        tenant-stamped ConfigMap {name}-docs and lists it in
+        spec.ingestion.configMapRefs; the knowledge base re-ingests when the
+        ConfigMap changes. Replacing a document does not remove text embedded
+        from its older version.
+      parameters:
+        - { in: path, name: namespace, required: true, schema: { type: string } }
+        - { in: path, name: name, required: true, schema: { type: string } }
+        - { in: path, name: document, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          text/plain: { schema: { type: string } }
+      responses:
+        '200': { description: replaced, content: { application/json: { schema: { $ref: '#/components/schemas/KnowledgeDocuments' } } } }
+        '201': { description: added, content: { application/json: { schema: { $ref: '#/components/schemas/KnowledgeDocuments' } } } }
+        '400': { description: The file name is not accepted }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { description: The knowledge base is not found for the caller }
+        '409': { description: Not UI-owned, handoff pending, full, or the documents ConfigMap name is taken }
+        '413': { description: A size limit }
+        '415': { description: The content is not text }
+    delete:
+      tags: [builder]
+      summary: Remove a document from a knowledge base
+      description: >
+        Needs the builder role; audited. Same ownership rules as adding. The
+        document is no longer read at the next ingestion; text already embedded
+        from it stays in the knowledge base until it is rebuilt (the answer's
+        warning says so).
+      parameters:
+        - { in: path, name: namespace, required: true, schema: { type: string } }
+        - { in: path, name: name, required: true, schema: { type: string } }
+        - { in: path, name: document, required: true, schema: { type: string } }
+      responses:
+        '200': { description: removed, content: { application/json: { schema: { $ref: '#/components/schemas/KnowledgeDocuments' } } } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { description: Not found }
+        '409': { description: Not UI-owned or handoff pending }
   /api/templates/{namespace}/{name}/use:
     post:
       tags: [builder]
@@ -1579,19 +1740,78 @@ paths:
         '200': { description: deleted }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+  /api/routing-events:
+    get:
+      tags: [runs]
+      summary: Routing decisions across the caller's runs
+      description: >
+        LLM calls the model-router made, newest first, limited to the caller's
+        tenant (tenant_id filter with row-level security underneath) and, without
+        a namespace, to the namespaces the tenant may use. Needs the viewer role.
+        Shadow (counterfactual) calls are left out unless shadow=true.
+      parameters:
+        - { in: query, name: namespace, schema: { type: string } }
+        - { in: query, name: agent, schema: { type: string } }
+        - { in: query, name: selector, schema: { type: string } }
+        - { in: query, name: outcome, description: ok is neither error nor fallback, schema: { type: string, enum: [ok, error, fallback] } }
+        - { in: query, name: shadow, schema: { type: boolean, default: false } }
+        - { in: query, name: since, description: Inclusive lower bound on the call time (RFC 3339), schema: { type: string, format: date-time } }
+        - { in: query, name: until, description: Exclusive upper bound (RFC 3339), schema: { type: string, format: date-time } }
+        - { in: query, name: limit, schema: { type: integer, minimum: 1, maximum: 500, default: 100 } }
+      responses:
+        '200':
+          description: events, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [events]
+                properties:
+                  events:
+                    type: array
+                    items:
+                      type: object
+                      required: [decisionID, provider, namespace, run]
+                      properties:
+                        decisionID: { type: string }
+                        parentDecisionID: { type: string }
+                        namespace: { type: string }
+                        run: { type: string }
+                        agent: { type: string }
+                        selector: { type: string }
+                        provider: { type: string }
+                        model: { type: string }
+                        path: { type: string }
+                        stage: { type: string }
+                        isShadow: { type: boolean }
+                        promptTokens: { type: integer }
+                        completionTokens: { type: integer }
+                        costUSD: { type: number }
+                        latencyMS: { type: integer }
+                        finishReason: { type: string }
+                        fallbackFrom: { type: string }
+                        errorClass: { type: string }
+                        createdAt: { type: string, format: date-time }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { description: Routing history needs the PostgreSQL store }
   /api/audit:
     get:
       tags: [audit]
       summary: The tenant's audit trail (admin only)
       description: >
         Changes made through the UI API and approval decisions, newest first,
-        scoped to the caller's tenant and namespaces.
+        scoped to the caller's tenant and namespaces. Also the conversation
+        actions of signed-in users: chat (a turn sent to a deployment), answer
+        (an answer to a run's clarification question) and feedback (a rating of
+        a run). Those rows carry ids and sizes only, never the message, answer
+        or comment text.
       parameters:
         - { in: query, name: kind, schema: { type: string } }
         - { in: query, name: namespace, schema: { type: string } }
         - { in: query, name: name, schema: { type: string } }
         - { in: query, name: user, schema: { type: string } }
-        - { in: query, name: action, schema: { type: string, enum: [create, update, delete, cancel, request, approve, reject] } }
+        - { in: query, name: action, schema: { type: string, enum: [create, update, delete, cancel, request, approve, reject, chat, answer, feedback] } }
         - { in: query, name: limit, schema: { type: integer, minimum: 1, maximum: 500, default: 100 } }
         - { in: query, name: cursor, description: nextCursor of the previous page, schema: { type: string } }
       responses:
@@ -2373,6 +2593,18 @@ paths:
       responses:
         '200': { description: "nextRuns (utc and local), minInterval, shortestGap and tooFrequent" }
         '400': { description: invalid expression or time zone }
+  /api/notification-channels:
+    get:
+      tags: [schedules]
+      summary: Notification channels of the caller's tenant (builder role), names and types only
+      description: >
+        The channels an administrator set up on the tenant's TenantConfig
+        (spec.notifications.channels), for the schedule builder's "Send the result to"
+        choice. Read-only: the Secret that holds a channel's destination is never
+        returned, and the UI cannot change TenantConfig.
+      responses:
+        '200': { description: "array of {name, type}; type is webhook, slack or smtp" }
+        '403': { description: needs the builder role }
   /api/schedules/{namespace}/{name}/runs:
     get:
       tags: [schedules]

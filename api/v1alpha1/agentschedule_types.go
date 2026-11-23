@@ -46,6 +46,23 @@ const (
 	// ScheduleConditionDegraded is true after too many consecutive failed runs;
 	// the schedule stops ticking until a person resumes it (or edits it).
 	ScheduleConditionDegraded = "Degraded"
+	// ScheduleConditionNotifyReady is present while spec.result.notify is set.
+	// It is false when the named channel is not in the tenant's TenantConfig or
+	// its Secret cannot be used. It never stops a run.
+	ScheduleConditionNotifyReady = "NotifyReady"
+)
+
+// Events a schedule can notify about (spec.result.notify.on).
+const (
+	// ScheduleNotifySucceeded is a run that finished successfully.
+	ScheduleNotifySucceeded = "Succeeded"
+	// ScheduleNotifyFailed is a run that failed (not one the Replace policy cancelled).
+	ScheduleNotifyFailed = "Failed"
+	// ScheduleNotifySkipped is the schedule's spend cap stopping ticks. It is
+	// sent once, when the cap is first reached, not for every skipped tick.
+	ScheduleNotifySkipped = "Skipped"
+	// ScheduleNotifyBreakerOpen is the failure breaker stopping the schedule.
+	ScheduleNotifyBreakerOpen = "BreakerOpen"
 )
 
 // Reasons a tick was skipped, as recorded in status.recentSkips.
@@ -163,6 +180,39 @@ type ScheduleResult struct {
 	// Callbacks are URLs that receive a POST when a run succeeds or fails.
 	// +optional
 	Callbacks *CallbackConfig `json:"callbacks,omitempty"`
+
+	// Notify sends a short message about each run to a channel an administrator
+	// set up on the tenant's TenantConfig (spec.notifications.channels). It is
+	// sent by the schedule controller, once per run, and never fails a run.
+	// +optional
+	Notify *ScheduleNotify `json:"notify,omitempty"`
+}
+
+// ScheduleNotify names a notification channel and what to send to it.
+// +kubebuilder:validation:XValidation:rule="!has(self.includeOutput) || !self.includeOutput || !has(self.on) || self.on.exists(e, e == 'Succeeded' || e == 'Failed')",message="includeOutput needs Succeeded or Failed in on: only a finished run has output"
+type ScheduleNotify struct {
+	// Channel is the name of a channel in the tenant's TenantConfig
+	// (spec.notifications.channels). A name that is not there sets the
+	// NotifyReady condition to false; runs are never blocked.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	Channel string `json:"channel"`
+
+	// On lists what is sent: Succeeded, Failed, Skipped (the spend cap stopped
+	// the schedule) or BreakerOpen (the failure breaker stopped it). Default
+	// Failed.
+	// +kubebuilder:validation:MaxItems=4
+	// +kubebuilder:validation:items:Enum=Succeeded;Failed;Skipped;BreakerOpen
+	// +kubebuilder:default={Failed}
+	// +listType=set
+	// +optional
+	On []string `json:"on,omitempty"`
+
+	// IncludeOutput adds the run's output text to the message, cut to 2000
+	// characters and with known secrets removed. Default false: the message
+	// carries the outcome and a link to the run only.
+	// +optional
+	IncludeOutput bool `json:"includeOutput,omitempty"`
 }
 
 // ScheduleSpendCap bounds what a schedule may spend in a day and in a month.

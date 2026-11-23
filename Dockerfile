@@ -36,6 +36,7 @@ COPY internal/executor/ internal/executor/
 COPY internal/framework/ internal/framework/
 COPY internal/githubapp/ internal/githubapp/
 COPY internal/mcp/ internal/mcp/
+COPY internal/notify/ internal/notify/
 COPY internal/oauth/ internal/oauth/
 COPY internal/openshell/ internal/openshell/
 COPY internal/podbuilder/ internal/podbuilder/

@@ -74,7 +74,13 @@ func ResolveArms(ctx context.Context, kube client.Reader, revs RevisionReader, t
 	out := make([]ResolvedArm, 0, len(arms))
 	for _, arm := range arms {
 		var spec agentorcav1alpha1.AgentSpec
-		if arm.Revision > 0 {
+		if len(arm.Spec) > 0 {
+			// A draft from the builder's check: the spec is the arm, and nothing
+			// is read from the cluster. Its references are checked like any arm's.
+			if err := json.Unmarshal(arm.Spec, &spec); err != nil {
+				return nil, &ArmError{Msg: fmt.Sprintf("arm %q: the draft cannot be read: %v", arm.Label, err)}
+			}
+		} else if arm.Revision > 0 {
 			if revs == nil {
 				return nil, &ArmError{Msg: "revisions need the PostgreSQL store"}
 			}

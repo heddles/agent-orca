@@ -8,7 +8,7 @@ const m = {
   getResource: vi.fn(), createResource: vi.fn(), updateResource: vi.fn(), dryRunResource: vi.fn(),
   getBuilderOptions: vi.fn(), publishAgent: vi.fn(), unpublishAgent: vi.fn(), duplicateResource: vi.fn(),
   exportResource: vi.fn(), cancelHandoff: vi.fn(),
-  getCatalog: vi.fn(), getAgentManifest: vi.fn(), startAgentRun: vi.fn(),
+  getCatalog: vi.fn(), getAgentManifest: vi.fn(), startAgentRun: vi.fn(), draftFromDescription: vi.fn(),
 }
 vi.mock('../api/builder', async () => {
   const actual = await vi.importActual<typeof import('../api/builder')>('../api/builder')
@@ -24,6 +24,7 @@ vi.mock('../api/builder', async () => {
     duplicateResource: (...a: unknown[]) => m.duplicateResource(...a),
     exportResource: (...a: unknown[]) => m.exportResource(...a),
     cancelHandoff: (...a: unknown[]) => m.cancelHandoff(...a),
+    draftFromDescription: (...a: unknown[]) => m.draftFromDescription(...a),
   }
 })
 vi.mock('../api/revisions', () => ({
@@ -141,10 +142,10 @@ describe('AgentBuilder: a new agent', () => {
     expect(m.createResource).not.toHaveBeenCalled()
   })
 
-  it('says honestly what is not available: uploads and schedules', async () => {
+  it('says honestly what is not available: other document types and schedules', async () => {
     renderBuilder('/build/new')
     await screen.findByLabelText('Name')
-    expect(screen.getByText(/Uploading documents is not available here yet/)).toBeInTheDocument()
+    expect(screen.getByText(/text, markdown and csv files to your own knowledge/)).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Settings → Knowledge' })).toHaveAttribute('href', '/settings/knowledge')
     expect(screen.getByRole('checkbox', { name: /On a schedule/ })).toBeDisabled()
     expect(screen.getByText(/Scheduled runs are not available yet/)).toBeInTheDocument()
@@ -545,5 +546,74 @@ describe('AgentBuilder: choosing a model', () => {
     confirm.mockReturnValue(true)
     await user.click(screen.getByRole('link', { name: 'Build' }))
     expect(await screen.findByText('build home')).toBeInTheDocument()
+  })
+})
+
+describe('AgentBuilder: describe what you want', () => {
+  const DRAFT = {
+    name: 'refund-helper', namespace: 'team-a', description: 'Answers refund questions.', instructions: 'You answer refund questions.',
+    exampleInputs: ['Where is my refund?'], connections: ['search'], knowledgeBases: ['handbook'], guardrail: 'strict', suggestedBudgetUsd: 0.4,
+    aiFields: ['name'], notes: ['The model suggested the connection "nope", which your workspace does not have, so it was left out.'], valid: true,
+  }
+  const available = { ...OPTIONS, draft: { available: true } }
+
+  it('fills the form from a description, marks what the model wrote, and saves nothing', async () => {
+    m.getBuilderOptions.mockResolvedValue(available)
+    m.draftFromDescription.mockResolvedValue(DRAFT)
+    const user = userEvent.setup()
+    renderBuilder('/build/new')
+    await user.type(await screen.findByLabelText('In your own words'), 'An assistant that answers refund questions')
+    await user.click(screen.getByRole('button', { name: 'Draft it' }))
+
+    await waitFor(() => expect(m.draftFromDescription).toHaveBeenCalledWith('An assistant that answers refund questions', 'team-a'))
+    expect(await screen.findByDisplayValue('refund-helper')).toBeInTheDocument()
+    expect(screen.getByDisplayValue('You answer refund questions.')).toBeInTheDocument()
+    expect(screen.getByDisplayValue('Where is my refund?')).toBeInTheDocument()
+    expect(screen.getByRole('checkbox', { name: /^search/ })).toBeChecked()
+    expect(screen.getByRole('checkbox', { name: /^handbook/ })).toBeChecked()
+    expect(screen.getByText(/which your workspace does not have/)).toBeInTheDocument()
+    expect(screen.getByText(/about \$0.4 at most/)).toBeInTheDocument()
+    // Each filled field carries the mark, the headings of the lists too.
+    expect(screen.getAllByText('AI suggested').length).toBeGreaterThanOrEqual(7)
+    expect(m.createResource).not.toHaveBeenCalled()
+    expect(m.updateResource).not.toHaveBeenCalled()
+
+    // Changing a field takes its mark away.
+    const before = screen.getAllByText('AI suggested').length
+    await user.type(screen.getByLabelText(/^Description/), ' More.')
+    expect(screen.getAllByText('AI suggested').length).toBe(before - 1)
+  })
+
+  it('shows a clear message and no draft when the model gave nothing usable', async () => {
+    m.getBuilderOptions.mockResolvedValue(available)
+    m.draftFromDescription.mockRejectedValue(new ApiError(502, 'the model answer was not usable'))
+    const user = userEvent.setup()
+    renderBuilder('/build/new')
+    await user.type(await screen.findByLabelText('In your own words'), 'An assistant that answers refund questions')
+    await user.click(screen.getByRole('button', { name: 'Draft it' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Try rewording')
+    expect(screen.getByLabelText('Name')).toHaveValue('')
+    expect(screen.queryByText('AI suggested')).not.toBeInTheDocument()
+  })
+
+  it('disables the box with the reason when no model is set up, and hides it without the builder role or for an existing agent', async () => {
+    m.getBuilderOptions.mockResolvedValue({ ...OPTIONS, draft: { available: false, reason: 'No model is set up for drafting.' } })
+    const first = renderBuilder('/build/new')
+    expect(await screen.findByLabelText('In your own words')).toBeDisabled()
+    expect(screen.getByText('No model is set up for drafting.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Draft it' })).toBeDisabled()
+    first.unmount()
+
+    mockRoles.current = ['viewer']
+    const second = renderBuilder('/build/new')
+    await screen.findByLabelText('Name')
+    expect(screen.queryByLabelText('In your own words')).not.toBeInTheDocument()
+    second.unmount()
+
+    mockRoles.current = ['builder']
+    m.getResource.mockResolvedValue(agent())
+    renderBuilder('/build/team-a/helper')
+    await screen.findByDisplayValue('Be helpful.')
+    expect(screen.queryByLabelText('In your own words')).not.toBeInTheDocument()
   })
 })

@@ -1,6 +1,7 @@
 package apiserver
 
 import (
+	"context"
 	"net/http"
 	"sort"
 
@@ -24,6 +25,9 @@ func (s *UIServer) registerBuilderRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/builder/options", s.handleBuilderOptions)
 	mux.HandleFunc("/api/templates/{ns}/{name}/use", s.handleUseTemplate)
 	mux.HandleFunc("/api/agents/{ns}/{name}/publish", s.handlePublish)
+	mux.HandleFunc("/api/builder/check", s.handleBuilderCheck)
+	mux.HandleFunc("/api/builder/draft", s.handleBuilderDraft)
+	s.registerKnowledgeRoutes(mux)
 }
 
 // builderOption is one thing the builder form can offer.
@@ -40,6 +44,8 @@ type builderOptions struct {
 	MCPServers        []builderOption `json:"mcpServers"`
 	KnowledgeBases    []builderOption `json:"knowledgeBases"`
 	GuardrailPolicies []builderOption `json:"guardrailPolicies"`
+	// Draft says whether "Draft from a description" can be offered.
+	Draft draftAvailability `json:"draft"`
 }
 
 // handleBuilderOptions answers GET /api/builder/options with the objects an
@@ -53,8 +59,18 @@ func (s *UIServer) handleBuilderOptions(w http.ResponseWriter, r *http.Request) 
 	if !requireRole(w, r, tenancy.RoleViewer) {
 		return
 	}
-	ctx := r.Context()
-	ns := r.URL.Query().Get("namespace")
+	out, err := s.builderOptionsFor(r.Context(), r.URL.Query().Get("namespace"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	out.Draft = s.draftAvailability(r.Context(), r.URL.Query().Get("namespace"))
+	jsonResponse(w, out)
+}
+
+// builderOptionsFor lists what an Agent can reference, from the caller's own
+// namespaces (or ns, when it is one of them) plus platform-scoped objects.
+func (s *UIServer) builderOptionsFor(ctx context.Context, ns string) (builderOptions, error) {
 	var (
 		selectors  agentorcav1alpha1.ModelSelectorList
 		tools      agentorcav1alpha1.ToolList
@@ -64,8 +80,7 @@ func (s *UIServer) handleBuilderOptions(w http.ResponseWriter, r *http.Request) 
 	)
 	for _, l := range []client.ObjectList{&selectors, &tools, &mcps, &kbs, &guardrails} {
 		if err := listCRDsMultiNamespace(ctx, s.crdClient, l, ns); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+			return builderOptions{}, err
 		}
 	}
 	out := builderOptions{
@@ -108,5 +123,5 @@ func (s *UIServer) handleBuilderOptions(w http.ResponseWriter, r *http.Request) 
 			return a.Name < b.Name
 		})
 	}
-	jsonResponse(w, out)
+	return out, nil
 }
