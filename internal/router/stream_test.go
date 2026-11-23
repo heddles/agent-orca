@@ -915,3 +915,117 @@ func TestStreamToolLoopEmitsSingleDone(t *testing.T) {
 		t.Fatalf("tool-loop run emitted %d done trace events, want exactly 1 (final turn only)", doneEvents)
 	}
 }
+
+// namedToolCallTurnSSE is a streaming turn whose model calls one tool by name
+// and then stops, with no text before it.
+func namedToolCallTurnSSE(name, args string) []byte {
+	return []byte(strings.Join([]string{
+		sseFrame(streamingChatCompletionChunk{
+			ID: "t1", Object: "chat.completion.chunk",
+			Choices: []streamChoice{{Index: 0, Delta: streamDelta{Role: "assistant"}}},
+		}),
+		sseFrame(streamingChatCompletionChunk{
+			ID: "t1", Object: "chat.completion.chunk",
+			Choices: []streamChoice{{Index: 0, Delta: streamDelta{ToolCalls: []ToolCall{{
+				Index: 0, ID: "call_1", Type: "function",
+				Function: FunctionCall{Name: name, Arguments: args},
+			}}}}},
+		}),
+		sseDone(),
+	}, ""))
+}
+
+// TestStreamingTerminalToolCallEndsStream covers a streaming turn in which a
+// built-in tool ends the run inside the router's own tool loop (_done, _fail,
+// _handoff, _clarify). The 200 + text/event-stream response is already open at
+// that point, so the turn must close the way any other turn does: a final
+// chunk carrying a finish_reason, then [DONE]. Before the fix the loop
+// recursed into HandleChatCompletions, whose terminal checks answered the
+// continuation with http.Error(410) — logged as "superfluous response.WriteHeader"
+// and written as plain text into the event stream, with no [DONE] at all.
+func TestStreamingTerminalToolCallEndsStream(t *testing.T) {
+	cases := []struct {
+		name    string
+		tool    string
+		args    string
+		wantNot string
+	}{
+		{"done", "_done", `{"output":"finished"}`, "run completed by agent"},
+		{"fail", "_fail", `{"reason":"boom"}`, "run failed by agent"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, calls := fakeProvider(t, namedToolCallTurnSSE(tc.tool, tc.args), textTurnSSE("stop"))
+			keyFile := writeKeyFile(t)
+			store := newTestStore(t)
+
+			operator := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			t.Cleanup(operator.Close)
+
+			r := newStreamingTestRouter(t, srv.URL, keyFile, store)
+			r.cfg.OperatorAPIURL = operator.URL
+
+			body := []byte(`{"model":"default","stream":true,"messages":[{"role":"user","content":"finish this"}]}`)
+			rec := &writeHeaderCountingRecorder{ResponseRecorder: httptest.NewRecorder()}
+			req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			r.HandleChatCompletions(rec, req)
+
+			out := rec.Body.String()
+			if rec.writeHeaderCalls != 1 {
+				t.Errorf("WriteHeader called %d times, want 1: the terminal tool must not re-write an open stream:\n%s",
+					rec.writeHeaderCalls, out)
+			}
+			if strings.Contains(out, tc.wantNot) {
+				t.Errorf("HTTP error text %q ended up in the event stream:\n%s", tc.wantNot, out)
+			}
+			if !strings.Contains(out, `"finish_reason":"stop"`) {
+				t.Errorf("stream has no finish_reason chunk after the terminal tool call:\n%s", out)
+			}
+			if got := strings.Count(out, "data: [DONE]"); got != 1 {
+				t.Errorf("got %d [DONE] frames, want 1:\n%s", got, out)
+			}
+			if !strings.HasSuffix(strings.TrimSpace(out), "data: [DONE]") {
+				t.Errorf("[DONE] must be the last frame:\n%s", out)
+			}
+			if n := calls.Load(); n != 1 {
+				t.Errorf("provider called %d times, want 1: the loop must not recurse after a terminal tool", n)
+			}
+		})
+	}
+}
+
+// TestContinuationAfterTerminalStateClosesStream covers the same guarantee at
+// the handler choke point, for a terminal flag set outside the tool batch: a
+// continuation must close its open stream instead of answering it with 410.
+func TestContinuationAfterTerminalStateClosesStream(t *testing.T) {
+	srv, _ := fakeProvider(t, textTurnSSE("stop"))
+	keyFile := writeKeyFile(t)
+	store := newTestStore(t)
+	r := newStreamingTestRouter(t, srv.URL, keyFile, store)
+
+	r.mu.Lock()
+	r.doneExplicit = true
+	r.mu.Unlock()
+
+	body := []byte(`{"model":"default","stream":true,"messages":[{"role":"user","content":"again"}]}`)
+	rec := &writeHeaderCountingRecorder{ResponseRecorder: httptest.NewRecorder()}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	req = req.WithContext(context.WithValue(req.Context(), continuationKey{}, true))
+	r.HandleChatCompletions(rec, req)
+
+	out := rec.Body.String()
+	// The stream was already open, so no new status may be written; the first
+	// SSE frame gives the recorder its implicit 200.
+	if rec.Code != http.StatusOK {
+		t.Errorf("status %d, want 200: a continuation must not change the response", rec.Code)
+	}
+	if strings.Contains(out, "run completed by agent") {
+		t.Errorf("terminal http.Error text written into the open stream:\n%s", out)
+	}
+	if strings.Count(out, "data: [DONE]") != 1 {
+		t.Errorf("continuation must end with exactly one [DONE], got:\n%s", out)
+	}
+}

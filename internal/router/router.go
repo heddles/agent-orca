@@ -926,10 +926,36 @@ func mergeMCPToolDefs(defs []ToolDefinition, discovered []mcp.Tool) []ToolDefini
 
 // HandleChatCompletions handles POST /v1/chat/completions.
 // This is the primary endpoint called by all OpenAI-compatible agent frameworks.
+// runStopped reports whether a built-in tool has ended the run's turn loop:
+// _done, _fail, _handoff or _clarify, or a safeguard halt. It is the same set
+// of flags the terminal checks at the top of HandleChatCompletions look at.
+func (r *Router) runStopped() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.doneExplicit || r.failedExplicit || r.loopDetected || r.handedOff || r.waitingForInput
+}
+
 func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request) { //nolint:gocyclo
 
 	if req.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Determine if this is a continuation (recursive tool-call loop within the
+	// same LLM invocation) vs. a new top-level request from the agent framework.
+	isContinuation := req.Context().Value(continuationKey{}) != nil
+
+	// A continuation reuses the ResponseWriter of the turn that recursed into
+	// it, so its SSE response is already open (200 + text/event-stream). If a
+	// built-in tool ended the run — or paused it for input — the http.Error
+	// branches below would log "superfluous response.WriteHeader" and write a
+	// plain-text line into the open event stream, leaving the agent with no
+	// finish_reason chunk and no [DONE]. Close the stream the normal way instead.
+	// This is checked before the start-up work below so a turn that is already
+	// over does not pay for a hindsight setup call.
+	if isContinuation && r.runStopped() {
+		finishStreamedTurn(w)
 		return
 	}
 
@@ -1003,10 +1029,6 @@ func (r *Router) HandleChatCompletions(w http.ResponseWriter, req *http.Request)
 	// The router has never forwarded a client's max_tokens or tool_choice;
 	// these fields exist for router-internal requests (compaction summaries).
 	chatReq.MaxTokens, chatReq.ToolChoice = 0, nil
-
-	// Determine if this is a continuation (recursive tool-call loop within the
-	// same LLM invocation) vs. a new top-level request from the agent framework.
-	isContinuation := req.Context().Value(continuationKey{}) != nil
 
 	// Prevent concurrent turn processing: if a top-level (non-continuation)
 	// request arrives while a streaming/non-streaming response is still in
