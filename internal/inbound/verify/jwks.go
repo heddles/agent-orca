@@ -86,6 +86,7 @@ type JWTVerifier struct {
 
 	mu        sync.Mutex
 	keys      map[string]jose.JSONWebKey
+	endorsed  map[string][]string // kid -> endorsements, for a key set that has them
 	fetchedAt time.Time
 	lastTry   time.Time
 }
@@ -139,9 +140,35 @@ func BearerToken(header string) (string, error) {
 // (iss, aud, exp required; nbf if present) and returns the claims. The error
 // never holds the token.
 func (v *JWTVerifier) Verify(ctx context.Context, token string) (jwt.MapClaims, error) {
-	if token == "" {
-		return nil, ErrNoToken
+	claims, _, err := v.verify(ctx, token)
+	return claims, err
+}
+
+// ErrNotEndorsed: the signing key is not endorsed for the required purpose.
+var ErrNotEndorsed = errors.New("the signing key is not endorsed for this use")
+
+// VerifyEndorsed is Verify and also requires the key that signed the token to
+// carry the endorsement (a key set that lists, per key, the purposes the key may
+// vouch for: a platform that publishes one key set for several channels).
+func (v *JWTVerifier) VerifyEndorsed(ctx context.Context, token, endorsement string) (jwt.MapClaims, error) {
+	claims, kid, err := v.verify(ctx, token)
+	if err != nil {
+		return nil, err
 	}
+	v.mu.Lock()
+	ok := slices.Contains(v.endorsed[kid], endorsement)
+	v.mu.Unlock()
+	if !ok {
+		return nil, ErrNotEndorsed
+	}
+	return claims, nil
+}
+
+func (v *JWTVerifier) verify(ctx context.Context, token string) (jwt.MapClaims, string, error) {
+	if token == "" {
+		return nil, "", ErrNoToken
+	}
+	var usedKid string
 	claims := jwt.MapClaims{}
 	parsed, err := jwt.ParseWithClaims(token, claims, func(t *jwt.Token) (any, error) {
 		kid, _ := t.Header["kid"].(string)
@@ -152,6 +179,7 @@ func (v *JWTVerifier) Verify(ctx context.Context, token string) (jwt.MapClaims, 
 		if err != nil {
 			return nil, err
 		}
+		usedKid = kid
 		return k.Key, nil
 	},
 		jwt.WithValidMethods(v.cfg.Algs),
@@ -162,18 +190,18 @@ func (v *JWTVerifier) Verify(ctx context.Context, token string) (jwt.MapClaims, 
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrUnknownKey):
-			return nil, ErrUnknownKey
+			return nil, "", ErrUnknownKey
 		case errors.Is(err, ErrKeyFetch):
-			return nil, ErrKeyFetch
+			return nil, "", ErrKeyFetch
 		}
-		return nil, fmt.Errorf("%w: %s", ErrBadJWT, reason(err))
+		return nil, "", fmt.Errorf("%w: %s", ErrBadJWT, reason(err))
 	}
 	if !parsed.Valid {
-		return nil, ErrBadJWT
+		return nil, "", ErrBadJWT
 	}
 	iss, _ := claims.GetIssuer()
 	if !slices.Contains(v.cfg.Issuers, iss) {
-		return nil, fmt.Errorf("%w: wrong issuer", ErrBadJWT)
+		return nil, "", fmt.Errorf("%w: wrong issuer", ErrBadJWT)
 	}
 	aud, _ := claims.GetAudience()
 	okAud := false
@@ -183,9 +211,9 @@ func (v *JWTVerifier) Verify(ctx context.Context, token string) (jwt.MapClaims, 
 		}
 	}
 	if !okAud {
-		return nil, fmt.Errorf("%w: wrong audience", ErrBadJWT)
+		return nil, "", fmt.Errorf("%w: wrong audience", ErrBadJWT)
 	}
-	return claims, nil
+	return claims, usedKid, nil
 }
 
 // reason names the failed check without echoing token content.
@@ -217,13 +245,13 @@ func (v *JWTVerifier) key(ctx context.Context, kid, alg string) (jose.JSONWebKey
 	if stale || !known {
 		if v.keys == nil || now.Sub(v.lastTry) >= dur(v.cfg.MinRefetch, time.Minute) {
 			v.lastTry = now
-			keys, err := v.fetch(ctx)
+			keys, endorsed, err := v.fetch(ctx)
 			if err != nil {
 				if stale {
 					return jose.JSONWebKey{}, ErrKeyFetch
 				}
 			} else {
-				v.keys, v.fetchedAt = keys, now
+				v.keys, v.endorsed, v.fetchedAt = keys, endorsed, now
 				k, known = keys[kid]
 			}
 		}
@@ -242,13 +270,13 @@ func (v *JWTVerifier) key(ctx context.Context, kid, alg string) (jose.JSONWebKey
 
 const maxJWKSBytes = 512 << 10
 
-func (v *JWTVerifier) fetch(ctx context.Context) (map[string]jose.JSONWebKey, error) {
+func (v *JWTVerifier) fetch(ctx context.Context) (map[string]jose.JSONWebKey, map[string][]string, error) {
 	timeout := dur(v.cfg.Timeout, 10*time.Second)
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, v.cfg.JWKSURL, nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	req.Header.Set("Accept", "application/json")
 	client := &http.Client{
@@ -264,19 +292,33 @@ func (v *JWTVerifier) fetch(ctx context.Context) (map[string]jose.JSONWebKey, er
 	defer client.CloseIdleConnections()
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("the key endpoint answered %d", resp.StatusCode)
+		return nil, nil, fmt.Errorf("the key endpoint answered %d", resp.StatusCode)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxJWKSBytes+1))
 	if err != nil || len(body) > maxJWKSBytes {
-		return nil, errors.New("the key set is unreadable or too large")
+		return nil, nil, errors.New("the key set is unreadable or too large")
 	}
 	var set jose.JSONWebKeySet
 	if err := json.Unmarshal(body, &set); err != nil {
-		return nil, errors.New("the key set is not valid")
+		return nil, nil, errors.New("the key set is not valid")
+	}
+	// jose ignores a key's "endorsements" member; read it from the same body.
+	var extra struct {
+		Keys []struct {
+			Kid          string   `json:"kid"`
+			Endorsements []string `json:"endorsements"`
+		} `json:"keys"`
+	}
+	_ = json.Unmarshal(body, &extra)
+	endorsed := map[string][]string{}
+	for _, k := range extra.Keys {
+		if k.Kid != "" {
+			endorsed[k.Kid] = k.Endorsements
+		}
 	}
 	out := map[string]jose.JSONWebKey{}
 	for _, k := range set.Keys {
@@ -285,7 +327,7 @@ func (v *JWTVerifier) fetch(ctx context.Context) (map[string]jose.JSONWebKey, er
 		}
 	}
 	if len(out) == 0 {
-		return nil, errors.New("the key set holds no usable key")
+		return nil, nil, errors.New("the key set holds no usable key")
 	}
-	return out, nil
+	return out, endorsed, nil
 }

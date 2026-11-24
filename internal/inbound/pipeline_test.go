@@ -546,7 +546,8 @@ func TestCoreNamesNoChannelVendor(t *testing.T) {
 	vendors := []string{"slack", "microsoft", "teams", "google", "mattermost", "webex", "discord", "telegram", "whatsapp", "twilio",
 		"gmail", "outlook", "exchange", "sendgrid", "mailgun", "postmark", "office365",
 		"cisco", "zoom", "rocket.chat", "rocketchat", "zulip", "matrix", "element", "lark", "feishu", "dingtalk", "wechat", "line.me",
-		"azure", "entra", "bot framework", "botframework", "hangouts", "xoxb"}
+		"azure", "entra", "bot framework", "botframework", "hangouts", "xoxb",
+		"msteams", "googlechat", "google chat", "gserviceaccount", "x-spark", "spark-signature", "webexapis"}
 	for _, f := range files {
 		if strings.HasSuffix(f, "_test.go") {
 			continue

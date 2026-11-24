@@ -199,7 +199,7 @@ Message bodies and subjects are not stored, not logged and not audited. The ledg
 
 ## Chat platforms
 
-Slack and Mattermost are adapters of the same [inbound channel core](inbound-channels.md): people mention the bot, message it or use a slash command, and the agent answers in the thread. Setup, scopes, Secret keys and behaviour are in [chat-channels.md](chat-channels.md); the contract for further platforms is in [inbound-channels.md](inbound-channels.md#chat-contract). `GET /api/inbound-kinds` lists the registered kinds with their settings, Secret keys and setup steps.
+Slack, Mattermost, Microsoft Teams, Google Chat and Webex are adapters of the same [inbound channel core](inbound-channels.md): people mention the bot, message it or use a slash command, and the agent answers in the thread. Setup, scopes, Secret keys and behaviour are in [chat-channels.md](chat-channels.md); the contract for further platforms is in [inbound-channels.md](inbound-channels.md#chat-contract). `GET /api/inbound-kinds` lists the registered kinds with their settings, Secret keys and setup steps.
 
 ## Chat widget
 
