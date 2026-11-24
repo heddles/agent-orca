@@ -7,9 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-- Slack: with `workingReaction` on, the :eyes: reaction is swapped for :white_check_mark: when the answer is posted and for :x: when the run failed.
+## [0.13.0] - 2026-11-23
+
+The UI-adoption release: a business-user UI on top of the same CRDs, with tenant IDs and isolation, GitOps-safe ownership,
+evaluations, triggers, schedules, per-user MCP OAuth and inbound channels. **Read [docs/upgrading-v0.13.md](docs/upgrading-v0.13.md)
+before upgrading** (seventeen database migrations, CRDs applied by hand, a network-policy label requirement). Email, Teams, Google
+Chat, Webex and Mattermost are experimental; see the "Known gaps in v0.13.0" section of [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md).
 
 ### Added
+
+- Slack: with `workingReaction` on, the :eyes: reaction is swapped for :white_check_mark: when the answer is posted and for :x: when the run failed.
 
 - **Chat channels: Microsoft Teams, Google Chat and Webex** — three more adapters on the chat contract, each in its own package with
   a descriptor, a connection test and setup steps in the Channels tab. Teams: Bot Framework activities verified as an RS256 JWT from
