@@ -60,7 +60,6 @@ import (
 	"github.com/heddles/agent-orca/internal/mcp"
 	"github.com/heddles/agent-orca/internal/openshell"
 	"github.com/heddles/agent-orca/internal/podbuilder"
-	"github.com/heddles/agent-orca/internal/postgresql"
 	"github.com/heddles/agent-orca/internal/router"
 	"github.com/heddles/agent-orca/internal/runoutput"
 	"github.com/heddles/agent-orca/internal/security"
@@ -94,7 +93,10 @@ type AgentRunReconciler struct {
 	// PostgresStore is the optional PostgreSQL archival store. When non-nil,
 	// terminal-phase AgentRuns are snapshotted here for long-term retention
 	// and historical querying by the UI.
-	PostgresStore *postgresql.Store
+	PostgresStore RunArchiveStore
+	// ArchiveDeleteGrace is how long a finished run that cannot be archived holds
+	// its deletion before it is deleted without an archive. 0 is 24 hours.
+	ArchiveDeleteGrace time.Duration
 	// TokenReviewerClusterRole is the name of the ClusterRole that grants
 	// "create tokenreviews" — injected at startup from the Helm release name.
 	// The agentrun controller binds each agent SA to this role so the
@@ -189,9 +191,14 @@ func (r *AgentRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		if err != nil {
 			return ctrl.Result{}, err
 		}
-		result, err := r.ensureCleanup(ctx, &run)
-		if retryAfter > 0 && (result.RequeueAfter == 0 || retryAfter < result.RequeueAfter) {
-			result.RequeueAfter = retryAfter
+		result := r.ensureCleanup(ctx, &run)
+		// The archive is the last step: a failure returns an error so the reconcile
+		// is retried with backoff, and nothing else here depends on it.
+		archiveResult, err := r.ensureArchived(ctx, &run)
+		for _, d := range []time.Duration{retryAfter, archiveResult.RequeueAfter} {
+			if d > 0 && (result.RequeueAfter == 0 || d < result.RequeueAfter) {
+				result.RequeueAfter = d
+			}
 		}
 		return result, err
 	}
@@ -726,9 +733,6 @@ func (r *AgentRunReconciler) handleRunSuccess(ctx context.Context, run *agentorc
 
 	// Publish result to egress sink if configured.
 	r.fireEgress(ctx, run)
-
-	// Archive terminal-phase run to PostgreSQL for historical querying.
-	r.maybeArchiveRun(run)
 
 	return ctrl.Result{}, nil
 }
@@ -1786,7 +1790,7 @@ func (r *AgentRunReconciler) buildAgentPod(
 // ensureCleanup deletes per-run resources owned by the AgentRun on terminal state.
 // Resources with ownerReferences are garbage-collected automatically; this handles
 // any resources without owner references (e.g. TracingPolicy via dynamic client).
-func (r *AgentRunReconciler) ensureCleanup(ctx context.Context, run *agentorcav1alpha1.AgentRun) (ctrl.Result, error) {
+func (r *AgentRunReconciler) ensureCleanup(ctx context.Context, run *agentorcav1alpha1.AgentRun) ctrl.Result {
 	if r.Dynamic != nil {
 		tpName := security.TracingPolicyName(run.Name)
 		_ = r.Dynamic.Resource(security.TetragonGVR).Namespace(run.Namespace).Delete(
@@ -1863,28 +1867,11 @@ func (r *AgentRunReconciler) ensureCleanup(ctx context.Context, run *agentorcav1
 	// Role, RoleBinding, NetworkPolicy, ConfigMap, Secret are owned by the AgentRun
 	// and garbage-collected automatically via ownerReferences.
 
-	// Re-archive terminal runs to PostgreSQL on every terminal reconcile. This is
-	// the restart/back-fill path: a run that went terminal just before a crash may
-	// never have completed the fire-and-forget archive in handlePodSuccess, and
-	// ensureCleanup previously didn't re-archive, so such runs vanished from the
-	// history view after a controller restart. ArchiveRun is an idempotent UPSERT
-	// (keyed by namespace/name), so this is a cheap no-op for runs already
-	// archived and a durable back-fill for the ones that were lost.
-	if r.PostgresStore != nil && postgresql.IsTerminalPhase(run.Status.Phase) {
-		archiveCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		defer cancel()
-		traceJSON := r.loadTraceEventsForArchive(archiveCtx, run)
-		if err := r.PostgresStore.ArchiveRun(archiveCtx, r.withStoredOutput(archiveCtx, run), traceJSON); err != nil {
-			logger := log.FromContext(ctx)
-			logger.Error(err, "failed to re-archive terminal run on restart", "run", run.Name, "ns", run.Namespace)
-		}
-	}
-
 	if providersPending {
 		// The gateway is still deleting the sandbox the providers are attached to.
-		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+		return ctrl.Result{RequeueAfter: 10 * time.Second}
 	}
-	return ctrl.Result{}, nil
+	return ctrl.Result{}
 }
 
 // shouldDeletePodOnCompletion reports whether a pod should be destroyed when its
@@ -1980,13 +1967,15 @@ func warmPodOverCap(pod *corev1.Pod, maxRequests int) bool {
 
 // handleRunDeletion cleans up before removing the finalizer.
 func (r *AgentRunReconciler) handleRunDeletion(ctx context.Context, run *agentorcav1alpha1.AgentRun) (ctrl.Result, error) {
-	res, err := r.ensureCleanup(ctx, run)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
+	res := r.ensureCleanup(ctx, run)
 	if res.RequeueAfter > 0 {
 		// Keep the finalizer until gateway-side cleanup completes.
 		return res, nil
+	}
+	// A finished run is archived before it goes: its answer is kept nowhere else
+	// that lasts. A database that stays down releases the deletion after the grace.
+	if ok, retry := r.archiveBeforeDelete(ctx, run); !ok {
+		return ctrl.Result{RequeueAfter: retry}, nil
 	}
 	controllerutil.RemoveFinalizer(run, agentRunFinalizer)
 	return ctrl.Result{}, r.Update(ctx, run)
@@ -2016,30 +2005,7 @@ func (r *AgentRunReconciler) failRun(ctx context.Context, run *agentorcav1alpha1
 	// Publish result to egress sink if configured.
 	r.fireEgress(ctx, run)
 
-	// Archive terminal-phase run to PostgreSQL for historical querying.
-	r.maybeArchiveRun(run)
-
 	return ctrl.Result{}, nil
-}
-
-// maybeArchiveRun snapshots a terminal-phase AgentRun to PostgreSQL if the
-// archival store is configured. Uses a non-blocking goroutine so DB latency
-// never delays reconciliation. Re-archiving is idempotent (UPSERT by name).
-// The run's Redis token stream is read at archival time so the full execution
-// trace (tokens, tool calls, tool results, etc.) is durable in PostgreSQL and
-// viewable from the history tab even after the Redis stream expires.
-func (r *AgentRunReconciler) maybeArchiveRun(run *agentorcav1alpha1.AgentRun) {
-	if r.PostgresStore == nil || !postgresql.IsTerminalPhase(run.Status.Phase) {
-		return
-	}
-	go func() {
-		archiveCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		traceJSON := r.loadTraceEventsForArchive(archiveCtx, run)
-		if err := r.PostgresStore.ArchiveRun(archiveCtx, r.withStoredOutput(archiveCtx, run), traceJSON); err != nil {
-			log.Log.Error(err, "failed to archive run to PostgreSQL", "run", run.Name, "ns", run.Namespace)
-		}
-	}()
 }
 
 // outputOf is the run's answer: kept in the state store, not in the status.
@@ -2048,19 +2014,6 @@ func (r *AgentRunReconciler) outputOf(ctx context.Context, run *agentorcav1alpha
 		return run.Status.Output
 	}
 	return runoutput.Of(ctx, r.stateFor(run), run)
-}
-
-// withStoredOutput is a copy of run carrying its answer in status.output, which
-// is what the archive reads. The live object is not touched, so the answer never
-// reaches etcd through it.
-func (r *AgentRunReconciler) withStoredOutput(ctx context.Context, run *agentorcav1alpha1.AgentRun) *agentorcav1alpha1.AgentRun {
-	out := r.outputOf(ctx, run)
-	if out == run.Status.Output {
-		return run
-	}
-	cp := run.DeepCopy()
-	cp.Status.Output = out
-	return cp
 }
 
 // loadTraceEventsForArchive reads the run's trace events from the Redis token
@@ -2689,6 +2642,7 @@ func (r *AgentRunReconciler) agentRunsForModelSelector(ctx context.Context, obj 
 // SetupWithManager sets up the controller with the Manager.
 func (r *AgentRunReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.Recorder = mgr.GetEventRecorderFor("agentrun") //nolint:staticcheck
+	r.registerArchiveGauges()
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&agentorcav1alpha1.AgentRun{}).
 		Owns(&corev1.Pod{}).

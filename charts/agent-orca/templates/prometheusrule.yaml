@@ -1,0 +1,39 @@
+{{- /*
+  Alerts on the operator's metrics. Requires the Prometheus Operator
+  (monitoring.coreos.com/v1 PrometheusRule CRD); off by default.
+*/ -}}
+{{- if and .Values.metrics.enabled .Values.metrics.prometheusRule.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "agent-orca.fullname" . }}-operator
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agent-orca.labels" . | nindent 4 }}
+    app.kubernetes.io/component: operator
+  {{- with .Values.metrics.prometheusRule.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  groups:
+    - name: agent-orca-run-archive
+      rules:
+        - alert: AgentOrcaRunsNotArchived
+          expr: agentorca_run_archive_pending > 0
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: Finished runs are not being archived to PostgreSQL
+            description: >-
+              {{ "{{ $value }}" }} finished runs have waited more than ten minutes for the archive;
+              the oldest has waited {{ "{{ with query \"agentorca_run_archive_oldest_pending_seconds\" }}{{ . | first | value | humanizeDuration }}{{ end }}" }}.
+              Their answers live only in Redis until archived. Check that PostgreSQL is reachable.
+        - alert: AgentOrcaRunArchiveAbandoned
+          expr: increase(agentorca_run_archive_total{result="abandoned"}[1h]) > 0
+          labels:
+            severity: critical
+          annotations:
+            summary: A run was deleted without being archived
+            description: A run's deletion waited out the archive grace period while PostgreSQL was unreachable, so its answer and trace are gone.
+{{- end }}

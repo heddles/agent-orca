@@ -553,6 +553,12 @@ func main() {
 		gitHubApp = app
 		setupLog.Info("GitHub App enabled for sandbox git access", "appID", app.AppID, "installationID", app.InstallationID)
 	}
+	// A nil *Store in the interface would not be nil: leave the archive unset
+	// when there is no database.
+	var runArchive controller.RunArchiveStore
+	if platformStore := pgStore.AsPlatform(); platformStore != nil {
+		runArchive = platformStore
+	}
 	if err := (&controller.AgentRunReconciler{
 		Client:                     mgr.GetClient(),
 		Scheme:                     mgr.GetScheme(),
@@ -563,7 +569,8 @@ func main() {
 		RedisPassword:              redisPassword,
 		StateStore:                 stateStore,
 		CloudProvider:              cloudProvider,
-		PostgresStore:              pgStore.AsPlatform(),
+		PostgresStore:              runArchive,
+		ArchiveDeleteGrace:         archiveDeleteGraceFromEnv(),
 		TokenReviewerClusterRole:   os.Getenv("TOKEN_REVIEWER_CLUSTER_ROLE"),
 		OperatorAPIURL:             os.Getenv("OPERATOR_API_URL"),
 		LLMRequestTimeout:          llmReqTimeout,
@@ -1321,4 +1328,13 @@ func newConnectionService(pgStore *postgresql.Store) *connections.Service {
 	}
 	setupLog.Info("Per-user MCP connections enabled", "activeKey", keys.ActiveID(), "redirectURI", redirect)
 	return svc
+}
+
+// archiveDeleteGraceFromEnv is how long a finished run's deletion waits for the
+// archive (ARCHIVE_DELETE_GRACE, a duration; default 24h).
+func archiveDeleteGraceFromEnv() time.Duration {
+	if d, err := time.ParseDuration(strings.TrimSpace(os.Getenv("ARCHIVE_DELETE_GRACE"))); err == nil && d > 0 {
+		return d
+	}
+	return controller.DefaultArchiveDeleteGrace
 }
