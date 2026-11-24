@@ -534,3 +534,61 @@ func TestConfigValidationAndDescriptor(t *testing.T) {
 		t.Error("channel mode without channels passed")
 	}
 }
+
+func TestReplySwapsTheWorkingReactionForDoneOrFailed(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		res  inbound.Result
+		want string
+	}{
+		{"answered", inbound.Result{Text: "ok"}, "white_check_mark"},
+		{"failed", inbound.Result{Text: "Sorry, that did not work.", Failed: true, Notice: true, Reason: "model error"}, "x"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeSlack(t)
+			a, c := adapter(f.srv.URL), conn(t, defaultSettings)
+			to, _ := json.Marshal(target{Channel: "C1", ThreadTS: ts1, TS: ts1})
+			if err := a.Reply(context.Background(), c, to, tc.res); err != nil {
+				t.Fatal(err)
+			}
+			if len(f.calls) != 3 {
+				t.Fatalf("calls = %d, want the post, the end reaction and the removal", len(f.calls))
+			}
+			if f.calls[1].method != "reactions.add" || f.calls[1].body["name"] != tc.want || f.calls[1].body["timestamp"] != ts1 {
+				t.Errorf("end reaction = %+v", f.calls[1])
+			}
+			if f.calls[2].method != "reactions.remove" || f.calls[2].body["name"] != "eyes" {
+				t.Errorf("removal = %+v", f.calls[2])
+			}
+		})
+	}
+}
+
+func TestReplyReactionsAreBestEffortAndOptional(t *testing.T) {
+	// A missing scope never fails the reply.
+	f := newFakeSlack(t)
+	f.script = []func(http.ResponseWriter){nil, func(w http.ResponseWriter) { _, _ = w.Write([]byte(`{"ok":false,"error":"missing_scope"}`)) }}
+	a, c := adapter(f.srv.URL), conn(t, defaultSettings)
+	to, _ := json.Marshal(target{Channel: "C1", TS: ts1})
+	if err := a.Reply(context.Background(), c, to, inbound.Result{Text: "ok"}); err != nil {
+		t.Fatalf("a failed reaction failed the reply: %v", err)
+	}
+	if len(f.calls) != 2 {
+		t.Errorf("after a failed add the working reaction must stay: calls = %d", len(f.calls))
+	}
+	// Not asked for: no reaction calls.
+	f = newFakeSlack(t)
+	a = adapter(f.srv.URL)
+	c.Config = json.RawMessage(`{"teamId":"` + team + `"}`)
+	_ = a.Reply(context.Background(), c, to, inbound.Result{Text: "ok"})
+	if len(f.calls) != 1 {
+		t.Errorf("reactions without workingReaction: calls = %d", len(f.calls))
+	}
+	// A notice from the core never started a run: nothing to swap.
+	f = newFakeSlack(t)
+	a, c = adapter(f.srv.URL), conn(t, defaultSettings)
+	_ = a.Reply(context.Background(), c, to, inbound.Result{Text: "busy", Notice: true})
+	if len(f.calls) != 1 {
+		t.Errorf("reactions on a core notice: calls = %d", len(f.calls))
+	}
+}
