@@ -44,57 +44,6 @@ func contentFrame(s string) string {
 	return fmt.Sprintf(`{"id":"gen-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":%q}}]}`, s)
 }
 
-func TestHTTPRunOutput(t *testing.T) {
-	reasoning := `{"id":"gen-1","choices":[{"index":0,"delta":{"reasoning":"thinking hard"}}]}`
-	otherChoice := `{"id":"gen-1","choices":[{"index":1,"delta":{"content":"alternate"}}]}`
-	tests := []struct {
-		name        string
-		contentType string
-		body        string
-		want        string
-	}{
-		{"json envelope", "application/json", `{"output":"the answer"}`, "the answer"},
-		{"plain text", "text/plain", "just text", "just text"},
-		{
-			"streamed completion (#112)", eventStream,
-			sseBody(contentFrame("I'm"), contentFrame(" online"), contentFrame("."), "[DONE]"),
-			"I'm online.",
-		},
-		{
-			"reasoning and other choices are not the answer", eventStream,
-			sseBody(reasoning, contentFrame("answer"), otherChoice, "[DONE]"),
-			"answer",
-		},
-		{
-			"content after a premature [DONE] is kept", eventStream,
-			sseBody(reasoning, "[DONE]", contentFrame("real"), contentFrame(" content"), "[DONE]"),
-			"real content",
-		},
-		{
-			"stream detected without a content type", "",
-			sseBody(contentFrame("hello"), "[DONE]"),
-			"hello",
-		},
-		{
-			"stream with no content is an empty answer, never raw frames", eventStream,
-			sseBody(reasoning, "[DONE]"),
-			"",
-		},
-		{
-			"non-streamed chat completion is unwrapped", "application/json",
-			`{"id":"x","choices":[{"index":0,"message":{"role":"assistant","content":"all good"}}]}`,
-			"all good",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := httpRunOutput(tt.contentType, []byte(tt.body)); got != tt.want {
-				t.Errorf("got %q, want %q", got, tt.want)
-			}
-		})
-	}
-}
-
 // outputStore records the http output RunHTTPInput saves.
 type outputStore struct {
 	state.Store

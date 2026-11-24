@@ -253,7 +253,7 @@ func TestHandleRunSuccess_HTTPFailureReasonFailsRun(t *testing.T) {
 
 // An agent that prints its streamed completion leaves SSE frames on stdout; the
 // run's output is their text, and a stream without text fails the run.
-func TestHandleRunSuccess_StdoutStreamIsReassembled(t *testing.T) {
+func TestHandleRunSuccess_StdoutGoesThroughRunOutput(t *testing.T) {
 	frame := func(content string) string {
 		return `data: {"id":"g","choices":[{"index":0,"delta":{"role":"assistant","content":"` + content + `"},"finish_reason":""}]}` + "\n\n"
 	}

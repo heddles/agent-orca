@@ -62,6 +62,7 @@ import (
 	"github.com/heddles/agent-orca/internal/podbuilder"
 	"github.com/heddles/agent-orca/internal/postgresql"
 	"github.com/heddles/agent-orca/internal/router"
+	"github.com/heddles/agent-orca/internal/runoutput"
 	"github.com/heddles/agent-orca/internal/security"
 	"github.com/heddles/agent-orca/internal/state"
 	"github.com/heddles/agent-orca/internal/tenancy"
@@ -651,17 +652,16 @@ func (r *AgentRunReconciler) handleRunSuccess(ctx context.Context, run *agentorc
 			output = httpOut
 		}
 	}
+	// raw is what the agent printed, kept for debugging; the answer is what
+	// runoutput makes of it, the same as for an http response.
+	raw := output
 	if output == "" {
-		output = agentStdout(ctx)
-		// An agent that prints its streamed completion (the reference agent does)
-		// leaves raw "data: {...}" frames on stdout; the answer is their text.
-		text, stream, failure := router.StreamAnswer(output)
-		if failure != "" {
-			return r.failRun(ctx, run, failure)
+		raw = agentStdout(ctx)
+		res := runoutput.Stdout(raw)
+		if res.Failure != "" {
+			return r.failRun(ctx, run, res.Failure)
 		}
-		if stream {
-			output = text
-		}
+		output = res.Text
 	}
 
 	// The agent's HTTP call failed (non-2xx, or an error event instead of an
@@ -672,8 +672,8 @@ func (r *AgentRunReconciler) handleRunSuccess(ctx context.Context, run *agentorc
 		}
 	}
 
-	raw := truncate(output, 4096)
-	finalOutput := truncate(output, 10240)
+	finalOutput := runoutput.Clip(output)
+	rawOutput := truncate(raw, 4096)
 
 	// Safety net: if the output looks like a question directed at the user (e.g.
 	// "Please specify the data source..."), the LLM failed to call _clarify.
@@ -707,7 +707,7 @@ func (r *AgentRunReconciler) handleRunSuccess(ctx context.Context, run *agentorc
 	patch := client.MergeFrom(run.DeepCopy())
 	run.Status.Phase = agentorcav1alpha1.AgentRunPhaseSucceeded
 	run.Status.Output = finalOutput
-	run.Status.RawOutput = raw
+	run.Status.RawOutput = rawOutput
 	// Spend is persisted by the model-router on each LLM call.
 	r.stampSpend(ctx, run)
 	now := metav1.Now()
