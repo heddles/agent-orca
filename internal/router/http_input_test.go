@@ -76,9 +76,14 @@ func TestHTTPRunOutput(t *testing.T) {
 			"hello",
 		},
 		{
-			"stream with no content keeps the raw body", eventStream,
+			"stream with no content is an empty answer, never raw frames", eventStream,
 			sseBody(reasoning, "[DONE]"),
-			sseBody(reasoning, "[DONE]"),
+			"",
+		},
+		{
+			"non-streamed chat completion is unwrapped", "application/json",
+			`{"id":"x","choices":[{"index":0,"message":{"role":"assistant","content":"all good"}}]}`,
+			"all good",
 		},
 	}
 	for _, tt := range tests {
