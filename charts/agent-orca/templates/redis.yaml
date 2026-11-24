@@ -118,7 +118,7 @@ spec:
     - metadata:
         name: data
         labels:
-          {{- include "agent-orca.labels" . | nindent 10 }}
+          {{- include "agent-orca.selectorLabels" . | nindent 10 }}
           app.kubernetes.io/component: redis
       spec:
         accessModes: ["ReadWriteOnce"]
