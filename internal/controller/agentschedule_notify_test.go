@@ -406,3 +406,45 @@ func TestNotifyFailureIsAnEventAndNeverFailsTheRun(t *testing.T) {
 		t.Error("no NotifyFailed event")
 	}
 }
+
+// lagClient is a cache that has not seen the latest write yet: a List of runs
+// answers from a frozen snapshot while frozen is set.
+type lagClient struct {
+	client.Client
+	frozen *agentorcav1alpha1.AgentRunList
+}
+
+func (l *lagClient) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	if runs, ok := list.(*agentorcav1alpha1.AgentRunList); ok && l.frozen != nil {
+		l.frozen.DeepCopyInto(runs)
+		return nil
+	}
+	return l.Client.List(ctx, list, opts...)
+}
+
+// A reconcile right after the one that counted and claimed a run can see the
+// run from a cache that has not caught up with the claim. It must not count the
+// run or send its notification a second time.
+func TestNotifyOnceWhenTheCacheLagsBehindTheClaim(t *testing.T) {
+	e, f := notifyEnv(t, &agentorcav1alpha1.ScheduleNotify{Channel: "ops"})
+	real := e.r.Client
+	lag := &lagClient{Client: real}
+	e.r.Client, e.r.APIReader = lag, real
+
+	e.tickAndFinish(10, agentorcav1alpha1.AgentRunPhaseFailed, func(r *agentorcav1alpha1.AgentRun) { r.Status.FailureReason = "boom" })
+	var snap agentorcav1alpha1.AgentRunList
+	if err := real.List(context.Background(), &snap); err != nil {
+		t.Fatal(err)
+	}
+	e.reconcile() // counts the run and claims its notification
+	lag.frozen = &snap
+	e.reconcile() // the cache still shows the run as not counted
+	e.settle()
+
+	if got := f.all(); len(got) != 1 {
+		t.Fatalf("%d notifications, want exactly 1: %+v", len(got), got)
+	}
+	if n := e.schedule().Status.ConsecutiveFailures; n != 1 {
+		t.Errorf("consecutiveFailures = %d, want 1 (the run was counted twice)", n)
+	}
+}

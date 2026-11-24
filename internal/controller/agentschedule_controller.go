@@ -79,6 +79,10 @@ type AgentScheduleReconciler struct {
 	// UIURL is the UI's public base URL, for the link to a run in a
 	// notification. Empty leaves the link out.
 	UIURL string
+	// APIReader reads without the cache. It confirms that a finished run is not
+	// counted yet before the run is counted and announced, because the cache can
+	// lag behind this reconciler's own write. Nil reads through Client.
+	APIReader client.Reader
 
 	notifyWG sync.WaitGroup
 }
@@ -267,6 +271,7 @@ func (r *AgentScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+	r.confirmUncounted(ctx, children)
 	st.Ledger = rollLedger(st.Ledger, now)
 	counted := r.account(&s, children, now)
 	children = r.prune(ctx, &s, children)
@@ -330,6 +335,33 @@ func rollLedger(l *agentorcav1alpha1.ScheduleSpendLedger, now time.Time) *agento
 		out.Month, out.MonthUSD = month, ""
 	}
 	return out
+}
+
+// confirmUncounted re-reads, without the cache, each finished child that looks
+// not counted yet, and marks it counted when it is. The reconcile that follows
+// the one that counted and claimed a run can start before the cache has the
+// annotation; without this it would count the run and announce it again.
+func (r *AgentScheduleReconciler) confirmUncounted(ctx context.Context, children []scheduleChild) {
+	reader := r.APIReader
+	if reader == nil {
+		return
+	}
+	for i := range children {
+		c := &children[i]
+		if c.state == childActive || c.accounted {
+			continue
+		}
+		fresh, ok := c.obj.DeepCopyObject().(client.Object)
+		if !ok {
+			continue
+		}
+		if err := reader.Get(ctx, client.ObjectKeyFromObject(c.obj), fresh); err != nil {
+			continue // gone, or unreadable: the cache's view stands
+		}
+		if fresh.GetAnnotations()[schedule.AnnotationAccounted] != "" {
+			c.accounted = true
+		}
+	}
 }
 
 // account counts the children that finished since the last reconcile: the
@@ -938,6 +970,9 @@ func (r *AgentScheduleReconciler) buildChild(ctx context.Context, s *agentorcav1
 func (r *AgentScheduleReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.Recorder == nil {
 		r.Recorder = mgr.GetEventRecorderFor("agentschedule") //nolint:staticcheck // same recorder API as the other controllers
+	}
+	if r.APIReader == nil {
+		r.APIReader = mgr.GetAPIReader()
 	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&agentorcav1alpha1.AgentSchedule{}).
