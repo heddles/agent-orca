@@ -391,7 +391,15 @@ func TestWidget_SessionTokens(t *testing.T) {
 	if rec := f.say(k.ID, siteA, "", "hi"); rec.Code != http.StatusUnauthorized {
 		t.Errorf("no token = %d", rec.Code)
 	}
-	if rec := f.say(k.ID, siteA, tok[:len(tok)-2]+"xx", "hi"); rec.Code != http.StatusUnauthorized {
+	// Change one character in the middle of the token to a different one. Replacing the
+	// tail is not enough: the last base64url character of an HMAC carries unused bits, so
+	// about one token in a thousand decodes to the same bytes and is rightly accepted.
+	mid := len(tok) / 2
+	repl := byte('A')
+	if tok[mid] == 'A' {
+		repl = 'B'
+	}
+	if rec := f.say(k.ID, siteA, tok[:mid]+string(repl)+tok[mid+1:], "hi"); rec.Code != http.StatusUnauthorized {
 		t.Errorf("tampered = %d", rec.Code)
 	}
 	if rec := f.say(k.ID, siteA, "garbage", "hi"); rec.Code != http.StatusUnauthorized {
