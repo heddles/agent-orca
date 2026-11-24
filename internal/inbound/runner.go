@@ -291,7 +291,8 @@ func (p *Pipeline) deliver(ctx context.Context, m postgresql.InboundMessage) {
 	switch {
 	case !state.Succeeded:
 		res = Result{Text: failureText, Failed: true, Reason: state.Reason, Notice: true}
-	case strings.TrimSpace(state.Output) == "":
+	case strings.TrimSpace(state.Output) == "", looksLikeRawStream(state.Output):
+		// Raw provider frames are never an answer to a person.
 		res = Result{Text: "The agent finished without an answer.", Notice: true}
 	}
 	res = p.Prepare(c, res)
@@ -344,4 +345,11 @@ func (p *Pipeline) Prepare(c Connection, res Result) Result {
 	res.Text = redact.String(secretsOf(c).String(res.Text))
 	res.Text = truncateReply(res.Text, replyLimit(p.capabilities(c.Kind)))
 	return res
+}
+
+// looksLikeRawStream reports whether text is a model provider's streaming
+// response (server-sent "data: {...}" frames) rather than an answer.
+func looksLikeRawStream(text string) bool {
+	t := strings.TrimSpace(text)
+	return strings.HasPrefix(t, "data: {") || strings.HasPrefix(t, "data:{")
 }

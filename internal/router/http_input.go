@@ -149,13 +149,42 @@ func httpRunFailure(status int, body []byte) string {
 	if json.Unmarshal(body, &envelope) == nil && envelope.Output != "" {
 		return ""
 	}
+	if _, ok := completionContent(body); ok {
+		return ""
+	}
 	for line := range strings.SplitSeq(text, "\n") {
 		line = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "data:"))
 		if msg := errorPayloadMessage(line); msg != "" {
 			return "agent call failed: " + msg
 		}
 	}
+	// A stream of chunks that carry no text (empty deltas, reasoning only, tool
+	// calls) is not an answer, and its frames must never reach the user.
+	if isEventStream(body) {
+		return "agent call failed: the model returned no answer"
+	}
 	return ""
+}
+
+// isEventStream reports whether body is an SSE stream of data frames.
+func isEventStream(body []byte) bool {
+	return bytes.HasPrefix(bytes.TrimSpace(body), []byte("data:"))
+}
+
+// completionContent returns the text of a non-streamed chat completion
+// ({"choices":[{"message":{"content":"..."}}]}); ok is false for any other body.
+func completionContent(body []byte) (string, bool) {
+	var c struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if json.Unmarshal(body, &c) != nil || len(c.Choices) == 0 || c.Choices[0].Message.Content == "" {
+		return "", false
+	}
+	return c.Choices[0].Message.Content, true
 }
 
 func truncateReason(s string) string {
@@ -206,7 +235,8 @@ func httpInputTimeout(cfg HTTPInputConfig) time.Duration {
 // A JSON {"output": "..."} envelope is unwrapped so it does not appear in the UI.
 // A streamed OpenAI chat completion (text/event-stream) is reassembled from its
 // delta.content chunks; storing the raw frames made status.output a wall of
-// "data: {...}" lines (#112). Anything else is returned as-is.
+// "data: {...}" lines (#112). A non-streamed chat completion is unwrapped to its
+// message content. Anything else is returned as-is.
 func httpRunOutput(contentType string, body []byte) string {
 	var envelope struct {
 		Output string `json:"output"`
@@ -216,9 +246,13 @@ func httpRunOutput(contentType string, body []byte) string {
 	}
 	if strings.HasPrefix(contentType, "text/event-stream") ||
 		bytes.HasPrefix(bytes.TrimSpace(body), []byte("data:")) {
-		if text, ok := sseContent(body); ok {
-			return text
-		}
+		// Never the raw frames: with no text in the stream there is no answer, and
+		// httpRunFailure has already marked the run failed.
+		text, _ := sseContent(body)
+		return text
+	}
+	if text, ok := completionContent(body); ok {
+		return text
 	}
 	return string(body)
 }
@@ -226,7 +260,7 @@ func httpRunOutput(contentType string, body []byte) string {
 // sseContent concatenates the choice-0 delta.content of every chat completion
 // chunk in an SSE body. Reasoning deltas are skipped: they are the model's
 // thinking, not its answer. ok is false when no chunk carried content, so the
-// caller keeps the raw body rather than storing an empty output.
+// caller can tell an empty stream from an empty answer.
 func sseContent(body []byte) (string, bool) {
 	var sb strings.Builder
 	sc := bufio.NewScanner(bytes.NewReader(body))

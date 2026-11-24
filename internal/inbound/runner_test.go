@@ -135,3 +135,17 @@ func TestPollFailuresAreRecordedWithoutSecretsAndBackOff(t *testing.T) {
 		t.Errorf("safeErr = %q", got)
 	}
 }
+
+func TestLooksLikeRawStream(t *testing.T) {
+	for in, want := range map[string]bool{
+		"data: {\"id\":\"gen-1\",\"choices\":[]}\n\ndata: {}": true,
+		"  data:{\"a\":1}":                   true,
+		"The cluster is healthy.":            false,
+		"The log says data: {x} was dropped": false,
+		"":                                   false,
+	} {
+		if got := looksLikeRawStream(in); got != want {
+			t.Errorf("looksLikeRawStream(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
