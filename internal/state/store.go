@@ -537,11 +537,18 @@ func (s *redisStore) ReadTraceEvents(ctx context.Context, key string) ([]TraceEn
 		ts := streamIDToISO(entry.ID)
 
 		if t, ok := entry.Values["t"]; ok {
+			tok := fmt.Sprint(t)
+			if strings.HasPrefix(tok, "\x00") {
+				// A child trace event an older agent-as-tool forwarder saved as a
+				// token. The child's stream is archived separately, and the NUL
+				// would make PostgreSQL reject the trace (SQLSTATE 22P05).
+				continue
+			}
 			// Token delta: accumulate into the current burst.
 			if !pendingToken {
 				pendingTS = ts
 			}
-			tokenBuf.WriteString(fmt.Sprint(t))
+			tokenBuf.WriteString(tok)
 			pendingToken = true
 			continue
 		}

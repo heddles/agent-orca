@@ -341,6 +341,32 @@ var _ = Describe("Executor", func() {
 			}, 100*time.Millisecond, 20*time.Millisecond).ShouldNot(ContainElement(""))
 		})
 
+		It("does not forward child trace events as parent tokens", func() {
+			childCh := make(chan string, 4)
+			childCh <- "before "
+			childCh <- "\x00" + `{"type":"toolCall","name":"search","arguments":"{}"}`
+			childCh <- "after"
+			childCh <- ""
+
+			store.mu.Lock()
+			store.tailChans["*"] = childCh
+			store.mu.Unlock()
+
+			req := ToolExecuteRequest{
+				Tool:        "ehr-meds-agent",
+				BackendType: "agent",
+				Arguments:   `{"task":"check"}`,
+				RunName:     parentRun,
+				Namespace:   ns,
+			}
+			_, err := exec.Dispatch(context.Background(), req)
+			Expect(err).NotTo(HaveOccurred())
+
+			Eventually(func() []string {
+				return store.savedFor(parentKey)
+			}, 500*time.Millisecond, 10*time.Millisecond).Should(Equal([]string{"before ", "after"}))
+		})
+
 		It("is a no-op when no store is configured", func() {
 			exec.store = nil
 			exec.parentTokenKey = ""
