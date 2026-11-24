@@ -2,6 +2,8 @@
 
 Every tenant-owned object and every row of tenant data carries the tenant's ID. Each layer below compares the ID, never the tenant name. The ID is assigned when a `TenantConfig` is first reconciled (see [TenantConfig](crds.md#11-tenantconfig)) and shows up as `status.tenantID`.
 
+The ID belongs to one `TenantConfig` object, so recreating it (for example after moving to another cluster) generates a new ID and hides the old data. See [Tenant migration](tenant-migration.md) to keep the ID or re-key a tenant.
+
 ## The layers
 
 | Layer | What isolates | Where |
