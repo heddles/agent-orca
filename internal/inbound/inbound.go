@@ -43,8 +43,63 @@ type Capabilities struct {
 	Attachments bool
 	// Markdown: the channel renders Markdown. Plain text is always safe.
 	Markdown bool
-	// MaxReplyChars caps a reply, in characters. Zero means no cap.
+	// MaxReplyChars caps a reply, in characters. Zero means no cap. For an adapter
+	// with MaxReplyParts above 1 it is the cap of one message.
 	MaxReplyChars int
+
+	// The rest is for chat platforms (docs/inbound-channels.md, "Chat contract").
+
+	// Dialect is the markup the channel renders (see Dialect). Empty is DialectNone.
+	// The adapter formats its replies with internal/inbound/chat.
+	Dialect Dialect
+	// MaxReplyParts is how many messages a long reply may be split into. Zero or
+	// one means the reply is cut at MaxReplyChars instead.
+	MaxReplyParts int
+	// Modes are the ways a message can be addressed to the agent that the adapter
+	// can deliver. Empty for a channel without that notion (email).
+	Modes []Mode
+	// AckFirst: the platform wants an answer to its request within seconds and
+	// retries on silence, so the receive endpoint answers at once and lets the
+	// pipeline run in the background (see Receiver).
+	AckFirst bool
+	// WorkingIndicator: the adapter implements Indicator.
+	WorkingIndicator bool
+}
+
+// Dialect is the markup a channel renders.
+type Dialect string
+
+// Dialects.
+const (
+	DialectNone     Dialect = ""         // plain text
+	DialectMrkdwn   Dialect = "mrkdwn"   // *bold* _italic_ <url|label>, & < > escaped
+	DialectMarkdown Dialect = "markdown" // CommonMark-like
+	DialectHTML     Dialect = "html"     // a small HTML subset
+)
+
+// Mode is how a message was addressed to the agent.
+type Mode string
+
+// Modes. A connection enables some of what its adapter supports (Settings.Modes).
+const (
+	// ModeDirect: a private conversation with the bot.
+	ModeDirect Mode = "direct"
+	// ModeMention: the bot was named in a shared space (@mention, trigger word).
+	ModeMention Mode = "mention"
+	// ModeCommand: a slash command.
+	ModeCommand Mode = "command"
+	// ModeChannel: any message in a space, without naming the bot. Off unless
+	// enabled, and only for the spaces on the connection's channel allow-list.
+	ModeChannel Mode = "channel"
+)
+
+// KnownMode reports whether m is one of the modes above.
+func KnownMode(m Mode) bool {
+	switch m {
+	case ModeDirect, ModeMention, ModeCommand, ModeChannel:
+		return true
+	}
+	return false
 }
 
 // Sender is who wrote a message, as the adapter established it.
@@ -52,8 +107,9 @@ type Sender struct {
 	// ID is the normalised identity the allow-list is matched against and the
 	// reply cap is counted by: an address, a user id. Required.
 	ID string
-	// Group is the larger body the sender belongs to (an email domain, a
-	// workspace). The allow-list can admit a whole group. May be empty.
+	// Group is the larger body the sender belongs to (an email domain, the
+	// workspace, tenant or organisation of a chat platform). The allow-list can
+	// admit a whole group. May be empty.
 	Group string
 	// Display is a human label for the input; it is untrusted.
 	Display string
@@ -92,7 +148,18 @@ type Message struct {
 	Attachments []AttachmentInfo
 
 	// ThreadID groups messages of one conversation; empty when the channel has none.
+	// A chat adapter builds it from the workspace, the space and the platform's
+	// thread so that two spaces never share a conversation.
 	ThreadID string
+	// Channel is the space a chat message was written in (channel, room, space,
+	// conversation id), matched against the connection's channel allow-list.
+	Channel string
+	// Mode is how the message was addressed to the agent (chat adapters).
+	Mode Mode
+	// FromBot: the author is a bot, an app or the connection's own bot. The core
+	// ignores the message; this is the loop prevention of chat, as auto-replies
+	// are for email.
+	FromBot bool
 	// MessageID is the channel's id of the message, unique per connection. It is
 	// the idempotency key.
 	MessageID string
@@ -175,6 +242,40 @@ type Receiver interface {
 	Receive(ctx context.Context, c Connection, r *http.Request) (Message, error)
 }
 
+// Response is an answer an adapter wants written to the channel's own HTTP
+// request instead of the default status: a verification challenge, or the
+// immediate text of a slash command. Returned as the error of Receive it ends the
+// request without reaching the pipeline; returned by an Acknowledger it replaces
+// the default body.
+type Response struct {
+	Status      int
+	ContentType string
+	Body        []byte
+}
+
+func (r *Response) Error() string { return "answered directly" }
+
+// Acknowledger is a Receiver that shapes what the channel's request is answered
+// with once the message is recorded (a slash command shows the sender a line at
+// once). nil means the default.
+type Acknowledger interface {
+	AckResponse(m Message, o Outcome) *Response
+}
+
+// Enricher is a Receiver that completes a message with a lookup that must not
+// hold up the answer to the platform (the thread a post belongs to). It runs in
+// the same background step as the pipeline. A failure is not fatal: the adapter
+// leaves the message as it was.
+type Enricher interface {
+	Enrich(ctx context.Context, c Connection, m *Message)
+}
+
+// Indicator is an adapter that can show that work has begun (a reaction, a typing
+// hint). Called once after the run started, best effort, bounded in time.
+type Indicator interface {
+	Working(ctx context.Context, c Connection, to ReplyTarget) error
+}
+
 // Handler takes a message into the pipeline.
 type Handler interface {
 	// Handle records and routes one message. A nil error means the message is
@@ -214,7 +315,10 @@ type Outcome string
 
 // Outcomes, also the "outcome" label of agentorca_inbound_messages_total.
 const (
-	OutcomeStarted   Outcome = "started"
+	OutcomeStarted Outcome = "started"
+	// OutcomeAccepted: acknowledged to the platform before the pipeline finished
+	// (ack-first); the outcome of the message is recorded by the pipeline.
+	OutcomeAccepted  Outcome = "accepted"
 	OutcomeDuplicate Outcome = "duplicate"
 	OutcomeRejected  Outcome = "rejected"
 	OutcomeIgnored   Outcome = "ignored"

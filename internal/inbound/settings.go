@@ -19,6 +19,7 @@ package inbound
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 )
@@ -30,6 +31,14 @@ type Settings struct {
 	AllowSenders []string `json:"allowSenders,omitempty"`
 	// AllowGroups admit every sender of a group (an email domain).
 	AllowGroups []string `json:"allowGroups,omitempty"`
+	// AllowChannels are the exact ids of the spaces (channels, rooms) a chat
+	// message may come from. When present a message from any other space is
+	// refused, whoever wrote it. With no sender or group on the list it admits
+	// everyone who can write in those spaces.
+	AllowChannels []string `json:"allowChannels,omitempty"`
+	// Modes are the ways of addressing the agent this connection answers (chat).
+	// Empty means the adapter's modes except ModeChannel, which must be named.
+	Modes []Mode `json:"modes,omitempty"`
 	// RatePerMin caps the messages a connection accepts per minute (default 30).
 	RatePerMin int `json:"ratePerMin,omitempty"`
 	// SenderPerHour caps the runs one sender can start through one connection per
@@ -64,10 +73,10 @@ func ParseSettings(raw json.RawMessage) (Settings, error) {
 			return s, fmt.Errorf("config is not valid: %w", err)
 		}
 	}
-	if len(s.AllowSenders)+len(s.AllowGroups) == 0 {
-		return s, fmt.Errorf("allowSenders or allowGroups is required: a connection admits nobody by default")
+	if len(s.AllowSenders)+len(s.AllowGroups)+len(s.AllowChannels) == 0 {
+		return s, fmt.Errorf("allowSenders, allowGroups or allowChannels is required: a connection admits nobody by default")
 	}
-	if len(s.AllowSenders)+len(s.AllowGroups) > maxAllowEntries {
+	if len(s.AllowSenders)+len(s.AllowGroups)+len(s.AllowChannels) > maxAllowEntries {
 		return s, fmt.Errorf("the allow-list has at most %d entries", maxAllowEntries)
 	}
 	for i, v := range s.AllowSenders {
@@ -80,6 +89,17 @@ func ParseSettings(raw json.RawMessage) (Settings, error) {
 		s.AllowGroups[i] = normalize(strings.TrimPrefix(strings.TrimSpace(v), "@"))
 		if s.AllowGroups[i] == "" || strings.ContainsAny(s.AllowGroups[i], "*?, \t\r\n") {
 			return s, fmt.Errorf("allowGroups holds exact names only (no wildcards): %q is not one", v)
+		}
+	}
+	for i, v := range s.AllowChannels {
+		s.AllowChannels[i] = normalize(strings.TrimPrefix(strings.TrimSpace(v), "#"))
+		if s.AllowChannels[i] == "" || strings.ContainsAny(s.AllowChannels[i], "*?, \t\r\n") {
+			return s, fmt.Errorf("allowChannels holds exact ids only (no wildcards): %q is not one", v)
+		}
+	}
+	for _, m := range s.Modes {
+		if !KnownMode(m) {
+			return s, fmt.Errorf("modes: %q is not one of direct, mention, command, channel", m)
 		}
 	}
 	if s.RatePerMin == 0 {
@@ -128,4 +148,47 @@ func (s Settings) Allowed(from Sender) bool {
 		}
 	}
 	return false
+}
+
+// modeOn reports whether a connection answers messages addressed in mode m: the
+// modes it lists, or by default those of the adapter except ModeChannel.
+func (s Settings) modeOn(caps Capabilities, m Mode) bool {
+	if len(s.Modes) > 0 {
+		return slices.Contains(s.Modes, m)
+	}
+	if m == ModeChannel {
+		return false
+	}
+	return slices.Contains(caps.Modes, m)
+}
+
+// ModeEnabled is modeOn for adapters: whether the connection answers m.
+func (s Settings) ModeEnabled(caps Capabilities, m Mode) bool { return s.modeOn(caps, m) }
+
+// Refusal is why a chat message is not admitted, as a ledger reason code; empty
+// when it is. The sender lists are an OR (an id or a member of a group, when
+// either is set); the channel list is an AND on top of them.
+func (s Settings) Refusal(caps Capabilities, m Message) string {
+	if len(caps.Modes) > 0 && !s.modeOn(caps, m.Mode) {
+		return "mode_not_enabled"
+	}
+	if len(s.AllowSenders)+len(s.AllowGroups) > 0 && !s.Allowed(m.Sender) {
+		return "sender_not_allowed"
+	}
+	if len(s.AllowSenders)+len(s.AllowGroups) == 0 && len(s.AllowChannels) == 0 {
+		return "sender_not_allowed"
+	}
+	if len(s.AllowChannels) > 0 {
+		ch := normalize(m.Channel)
+		ok := false
+		for _, a := range s.AllowChannels {
+			if ch != "" && a == ch {
+				ok = true
+			}
+		}
+		if !ok {
+			return "channel_not_allowed"
+		}
+	}
+	return ""
 }

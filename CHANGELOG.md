@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Chat channels: Slack and Mattermost, on a vendor-neutral chat layer** — the inbound core gains what chat needs: sender identity
+  (workspace, user, name), a conversation scope (space, thread), allow-lists by user, workspace and channel id (default deny, exact),
+  trigger modes (direct, mention, command, channel; the last needs listed channels), loop prevention against bots and the bot's own
+  messages, ack-first receive (the endpoint answers within two seconds and finishes in the background), an optional working
+  indicator, adapter descriptors (`GET /api/inbound-kinds`: settings schema, Secret keys, setup steps) from which the Channels tab
+  draws its form and per-connection setup instructions, a shared formatter (`internal/inbound/chat`: Markdown to mrkdwn, Markdown or
+  a small HTML subset; every mention neutralised so an agent cannot mass-ping; long answers split into several messages) and a
+  guarded HTTP client with bounded retries that honour `Retry-After`. `internal/inbound/verify` is a toolkit for signed webhooks:
+  HMAC-SHA256 over a vendor base string with a timestamp window, constant-time token comparison, and a JWKS-backed JWT verifier
+  (cached keys, rotation, strict alg/iss/aud/exp, no `none`, SSRF-guarded fetch). Chat users are not agent-orca users: runs stay
+  trigger-actor runs with no invoker. Slack: Events API (signing secret, URL verification, retries, `app_mention`, `message.im`,
+  optional `message.channels`, slash commands), threaded mrkdwn replies. Mattermost: outgoing webhooks and slash commands (token
+  compare), replies by REST with `root_id`; the server address and bot token live in the Secret. See `docs/chat-channels.md`. Not
+  built: Socket Mode, the Mattermost websocket, `requireLinkedUser`. Not tried against a real Slack or Mattermost.
+
 - **Inbound channels and the email trigger** — a business user (or a system) writes to a mailbox, an agent runs on the message,
   and the answer is mailed back in the same conversation. Email is the first adapter of a vendor-neutral core
   (`internal/inbound`, `docs/inbound-channels.md`) that chat platforms will plug into: a normalised `Message`, an `Adapter`

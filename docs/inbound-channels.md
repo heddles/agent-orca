@@ -1,6 +1,6 @@
 # Inbound channels
 
-An inbound channel lets people (or systems) start a run of one **published** agent from somewhere other than the UI, and gets the result back in the same conversation. Email is the first channel (see [integrations.md](integrations.md#email)); chat platforms are meant to be the next ones, and the core is built so that none of them is a special case.
+An inbound channel lets people (or systems) start a run of one **published** agent from somewhere other than the UI, and gets the result back in the same conversation. Email is the first channel (see [integrations.md](integrations.md#email)); chat platforms are the second kind (Slack and Mattermost are built, see [chat-channels.md](chat-channels.md)), and the core is built so that none of them is a special case.
 
 This page is the contract for an adapter, the security model, and what is not built.
 
@@ -69,9 +69,54 @@ Why a Secret and not the envelope-encrypted store of [per-user connections](mcp-
 
 The label is the guard against a confused deputy. The operator can read most Secrets; a builder can create a connection but cannot create a Secret or put a label on one. So a connection can only use a Secret an administrator made *for channels*. The mailbox host, port and login, the address replies come from, and the `insecure` and `allowPrivateAddresses` switches are all in the Secret rather than in the connection, so a builder cannot aim the operator at a host, pick the From address, or turn TLS off.
 
+## Chat contract
+
+Chat platforms differ from mail in who the sender is, where the conversation lives, how fast the platform wants an answer and how replies are drawn. The core covers that with a handful of generic pieces; an adapter fills them in and names no vendor outside its own package (`TestCoreNamesNoChannelVendor` also scans `internal/inbound/chat` and `internal/inbound/verify`).
+
+**What a chat adapter sets on the `Message`**
+
+| Field | Meaning |
+|---|---|
+| `Sender.ID`, `Sender.Group`, `Sender.Display` | the user id, the workspace / tenant / organisation id, the display name |
+| `Channel` | the space (channel, room, space, conversation) id |
+| `ThreadID` | built by the adapter from workspace, space and the platform's thread, so two spaces never share a conversation |
+| `Mode` | `direct`, `mention`, `command` or `channel` (how the agent was addressed) |
+| `FromBot` | the author is another bot, an app, an edit or our own bot: the core records the message as ignored (`bot_message`) and never answers it |
+| `MessageID` | the idempotency key: a stable id of the *message*, not of the delivery, so a retry and a second event for the same message agree |
+
+**Capabilities** an adapter declares: `Threads`, `Dialect` (`""` none, `mrkdwn`, `markdown`, `html`), `MaxReplyChars` (per message) and `MaxReplyParts`, `Modes`, `AckFirst`, `WorkingIndicator`.
+
+**Allow-lists** (all exact, no wildcards, case-insensitive): `allowSenders` (user ids), `allowGroups` (workspace ids), `allowChannels` (space ids). The sender lists are an OR (a listed user, or a member of a listed workspace); the channel list is an AND on top (a message from any other space is refused, whoever wrote it). A connection needs at least one of the three, and with only channels it admits whoever can write in those spaces. Which ids an adapter calls what is in its descriptor. Reasons in the ledger: `sender_not_allowed`, `channel_not_allowed`, `mode_not_enabled`.
+
+**Modes.** `modes` on a connection lists what the agent answers. Empty means the adapter's modes except `channel`. `channel` (every message of a space, no mention needed) must be named and needs `allowChannels`; saving it without is a 400. A mode the adapter cannot deliver is a 400.
+
+**Ack-first.** A platform wants a 200 within about three seconds and retries on silence. An adapter with `AckFirst` gets this from the receive endpoint: it verifies the request (`Receive`), then runs `Enrich` (optional lookups), the pipeline and the run launch in the background with their own context, and waits at most two seconds for them. If they finish, the answer carries the true outcome (and a failure to record the message is a 503 so the platform retries; the pipeline is idempotent). If not, the endpoint answers `200 {"status":"accepted"}` and the work goes on, retried three times on error. The one thing this can lose is a message whose recording fails after the acknowledgement, only when the database and the cluster both stay down; it is logged. At most 64 background handlings are in flight; beyond that the endpoint answers 503. The agent run itself never holds the request: the reply is sent later by the delivery loop, as for email. A direct answer to the platform is possible with `*inbound.Response` (returned as the error of `Receive`: a verification challenge) or `Acknowledger.AckResponse` (a slash command's immediate line, never a refusal notice).
+
+**Working indicator.** `Indicator.Working` is called once after the run started, best effort, five seconds at most.
+
+**Threading.** `ThreadID` maps to a conversation as for email: the next message in the thread continues the thread's latest run (`priorRunRef`).
+
+**Replies.** `chat.Render(text, caps)` (`internal/inbound/chat`) converts the agent's Markdown to the dialect and splits long text at paragraph, line or word boundaries (a code fence cut in two is closed and reopened) into at most `MaxReplyParts` messages of at most `MaxReplyChars`; beyond that the last one says it was shortened. The core cuts the text at `MaxReplyChars` times `MaxReplyParts` before the adapter sees it. Every mention is neutralised, in code spans excepted where platforms do not interpret them: `@name`, `@channel`, `@here`, `@everyone`, `@all`, `<@id>`, `<!here>`, `<!subteam^..>`, `<users/..>`, `<at>` get a zero-width space or are escaped, and links are kept only for `http` and `https`. So an agent can never mass-ping, whatever it writes. A delivery that fails half way is retried whole by the core (at least once): a part can be posted twice.
+
+**Outbound calls.** `chat.Client`: the SSRF-guarded dialer (loopback, private, link-local and metadata addresses refused after DNS unless the Secret says `allowPrivateAddresses`), no proxy, no redirects, a timeout per attempt, three attempts for transport errors, 5xx and 429, waiting for `Retry-After` when it is at most 20 seconds and otherwise returning the 429 to the core's delivery retry. Errors name the method and the platform's error code, never a body, a header, a URL or a token.
+
+**Identity.** A chat user is not an agent-orca user. The run is a trigger actor's run (`created-by: trigger:<connection id>`) with no invoker, so invoker-mode MCP servers fail closed; a test asserts it for a chat kind. The platform ids are the platform's claim, verified by its signature or token, and are used only for the allow-lists and as a label in the input. Linking a chat user to an agent-orca user (`requireLinkedUser`) is future work.
+
+**Descriptor.** An adapter implements `Describer`: title, summary, its own settings (key, label, type `string|bool|int|enum`, required, help, options), the Secret keys (with `required`), help texts for the three allow-lists, and setup steps in which `{{url}}` stands for the connection's receive URL. `GET /api/inbound-kinds` returns them with the capabilities; the Channels tab draws its form and per-connection setup instructions from them, and creating a connection checks that the Secret has the required keys (names only). `Tester.Test` is the Test button: for chat an `auth.test`-like call showing the bot and the workspace, never a secret.
+
+**Verification toolkit** (`internal/inbound/verify`), for receivers whose platform signs differently from the trigger webhooks:
+
+- `VerifyHMAC(Sig{Secret, Base, Got, Prefix, Encoding})`: HMAC-SHA256 over a base string the adapter builds (`v0:<ts>:<body>`, a bare body, ...), hex or base64, constant time; `Timestamp(ts, now, window)`.
+- `TokenEqual`, `TokenAny`, `SplitTokens`: constant-time comparison of shared tokens (both sides are hashed first, so length does not leak).
+- `JWTVerifier` (`NewJWTVerifier(JWTConfig)`, `Verify(ctx, token)`, `BearerToken(header)`): verifies a bearer JWT against a JWKS URL. Keys are cached (default one hour) and fetched through the SSRF-guarded dialer over https, without redirects. An unknown `kid` triggers one refetch, at most once per minute (key rotation without hammering the endpoint). Strict checks: the algorithm must be in the configured list (default `RS256`; `none` and HMAC algorithms are refused at construction), the key must be for that algorithm and a signing key, `exp` is required, `nbf` is honoured, `iss` must equal one of the configured issuers and `aud` contain one of the configured audiences (both required), one minute of leeway. Errors never contain the token.
+
+**Adding an adapter** needs: a package under `internal/inbound/<name>` with `Kind`, `Capabilities`, `ValidateConfig`, `Describe`, `Receive` (verify with the toolkit, return a `Message`, `*Response` or `*Rejection`), `Reply` (use `chat.Render` and `chat.Client`), `Test`, optionally `Enrich`, `AckResponse`, `Working`; one line in `addInboundChannels` (`cmd/main.go`); tests against `httptest` fakes of the platform. Nothing in the core, the API or the UI changes.
+
 ## Not built
 
-- Chat platform adapters. The core is ready for them (push receivers, polling, replies with threads and size limits); none exists.
+- Further chat adapters (Microsoft Teams, Google Chat, Webex): the chat contract below is meant to make each one small; none exists yet.
+- A per-connection `requireLinkedUser` (a chat sender must be a linked agent-orca user): future work. Today a chat user is never an agent-orca user and a run never has an invoker.
+- Socket Mode (Slack) and the bot-account websocket (Mattermost direct messages).
 - Mapping a sender to a signed-in agent-orca user. Identities in the UI API do not carry an email address, so there is nothing to match against. The core has a `Message.UserID` field for it; it would be informational only, because a run from a channel is a trigger actor's run and never a person's, and it would never grant a per-user connection.
 - IMAP IDLE (push). A poll runs every `pollSeconds` (30 to 3600, default 60).
 - Several replicas of a webhook endpoint share no replay memory (as for the trigger webhooks).

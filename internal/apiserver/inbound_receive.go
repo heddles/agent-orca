@@ -210,6 +210,7 @@ func (s *UIServer) handleInboundReceive(w http.ResponseWriter, r *http.Request) 
 	m, err := recv.Receive(ctx, c, r)
 	var authErr *inbound.AuthError
 	var rej *inbound.Rejection
+	var direct *inbound.Response
 	switch {
 	case errors.Is(err, inbound.ErrNotReceiving):
 		jsonError(w, "not found", http.StatusNotFound)
@@ -217,20 +218,123 @@ func (s *UIServer) handleInboundReceive(w http.ResponseWriter, r *http.Request) 
 	case errors.As(err, &authErr):
 		jsonError(w, authErr.Msg, http.StatusUnauthorized)
 		return
+	case errors.As(err, &direct):
+		writeInboundResponse(w, direct)
+		return
 	case err != nil && !errors.As(err, &rej):
 		jsonError(w, "the message could not be read", http.StatusBadRequest)
 		return
 	}
-	outcome, err := s.inboundPipe.Handle(ctx, c, m, err)
-	if err != nil {
-		slog.Error("handling an inbound message", "connection", id, "err", err)
-		w.Header().Set("Retry-After", strconv.Itoa(30))
-		jsonError(w, "the message could not be recorded; send it again", http.StatusServiceUnavailable)
-		return
+	var outcome inbound.Outcome
+	if a.Capabilities().AckFirst {
+		var ok bool
+		if outcome, ok = s.handleAckFirst(ctx, c, recv, m, err); !ok {
+			w.Header().Set("Retry-After", strconv.Itoa(30))
+			jsonError(w, "the message could not be recorded; send it again", http.StatusServiceUnavailable)
+			return
+		}
+	} else {
+		if enr, ok := recv.(inbound.Enricher); ok {
+			enr.Enrich(ctx, c, &m)
+		}
+		outcome, err = s.inboundPipe.Handle(ctx, c, m, err)
+		if err != nil {
+			slog.Error("handling an inbound message", "connection", id, "err", err)
+			w.Header().Set("Retry-After", strconv.Itoa(30))
+			jsonError(w, "the message could not be recorded; send it again", http.StatusServiceUnavailable)
+			return
+		}
+	}
+	if ack, ok := recv.(inbound.Acknowledger); ok {
+		if resp := ack.AckResponse(m, outcome); resp != nil {
+			writeInboundResponse(w, resp)
+			return
+		}
+	}
+	status := http.StatusAccepted
+	if a.Capabilities().AckFirst {
+		status = http.StatusOK // platforms that retry on silence look for a plain 200
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusAccepted)
+	w.WriteHeader(status)
 	_, _ = w.Write([]byte(`{"status":"` + strings.ToLower(string(outcome)) + `"}`))
+}
+
+func writeInboundResponse(w http.ResponseWriter, r *inbound.Response) {
+	status := r.Status
+	if status == 0 {
+		status = http.StatusOK
+	}
+	if r.ContentType != "" {
+		w.Header().Set("Content-Type", r.ContentType)
+	}
+	w.WriteHeader(status)
+	_, _ = w.Write(r.Body)
+}
+
+// Ack-first handling of a message. A chat platform wants its request answered
+// within about three seconds and sends it again when it is not, so the endpoint
+// never holds the request on anything that can be slow (the lookups of an
+// adapter, the database, the cluster, a notice to the sender). The work runs in
+// the background with its own bounded context; the request waits for it only
+// ackBudget, and a message the work finishes inside that time is answered with
+// its true outcome. If the work fails inside the budget the platform is told to
+// retry (the pipeline is idempotent on the message id). If it fails after the
+// budget the failure is retried here a few times and then only logged: the
+// message was acknowledged, so it is the one thing this design can lose, and
+// only when the database and the cluster both stay down.
+var ackBudget = 2 * time.Second
+
+const (
+	maxInboundAsync    = 64
+	inboundAsyncWork   = 2 * time.Minute
+	inboundAsyncTrials = 3
+)
+
+func (s *UIServer) handleAckFirst(ctx context.Context, c inbound.Connection, recv inbound.Receiver, m inbound.Message, recvErr error) (inbound.Outcome, bool) {
+	s.inboundAsyncOnce.Do(func() { s.inboundAsync = make(chan struct{}, maxInboundAsync) })
+	select {
+	case s.inboundAsync <- struct{}{}:
+	default:
+		return "", false // too much in flight: let the platform retry later
+	}
+	type result struct {
+		o   inbound.Outcome
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		defer func() { <-s.inboundAsync }()
+		bg, cancel := context.WithTimeout(context.WithoutCancel(ctx), inboundAsyncWork)
+		defer cancel()
+		if enr, ok := recv.(inbound.Enricher); ok {
+			enr.Enrich(bg, c, &m)
+		}
+		var res result
+		for i := range inboundAsyncTrials {
+			res.o, res.err = s.inboundPipe.Handle(bg, c, m, recvErr)
+			if res.err == nil || bg.Err() != nil {
+				break
+			}
+			select {
+			case <-bg.Done():
+			case <-time.After(time.Duration(i+1) * time.Second):
+			}
+		}
+		if res.err != nil {
+			slog.Error("handling an acknowledged inbound message", "connection", c.ID, "kind", c.Kind, "err", res.err)
+		}
+		done <- res
+	}()
+	select {
+	case res := <-done:
+		if res.err != nil {
+			return "", false
+		}
+		return res.o, true
+	case <-time.After(ackBudget):
+		return inbound.OutcomeAccepted, true
+	}
 }
 
 // inboundAuthPublic reports whether path is a channel endpoint that carries its

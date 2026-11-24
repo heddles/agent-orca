@@ -21,6 +21,30 @@ const MAILBOX = {
 }
 const WEBHOOK = { ...MAILBOX, id: 'inb_ffffffffffffffffffffffffffffffff', name: 'Provider', config: { allowGroups: ['corp.example'], adapter: { mode: 'webhook' } }, path: '/inbound/email/inb_ffffffffffffffffffffffffffffffff' }
 
+const CHAT_ID = 'inb_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+const SLACKISH = {
+  kind: 'chatty',
+  descriptor: {
+    title: 'Chatty',
+    summary: 'Ask the agent in a chat app.',
+    fields: [
+      { key: 'workspaceId', label: 'Workspace id', type: 'string', required: true, help: 'Find it in the app.' },
+      { key: 'reaction', label: 'Show a reaction while working', type: 'bool' },
+      { key: 'retries', label: 'Retries', type: 'int' },
+    ],
+    secretKeys: [{ key: 'botToken', required: true }, { key: 'signingSecret', required: true }],
+    allow: { users: 'Member ids.', groups: 'Workspace ids.', channels: 'Channel ids.' },
+    setup: ['Paste {{url}} into the app as the request URL.', 'Invite the bot to a channel.'],
+  },
+  capabilities: { threads: true, dialect: 'mrkdwn', modes: ['direct', 'mention', 'command', 'channel'], ackFirst: true },
+  testable: true, receives: true,
+}
+const CHATCONN = {
+  ...MAILBOX, id: CHAT_ID, name: 'Support chat', kind: 'chatty', path: `/inbound/chatty/${CHAT_ID}`,
+  config: { allowSenders: ['U1'], allowChannels: ['C1'], modes: ['mention'], adapter: { workspaceId: 'T1' } },
+}
+let kinds: unknown[]
+
 type Reply = { status: number; body?: unknown }
 let routes: Record<string, Reply>
 let current: unknown[]
@@ -29,11 +53,13 @@ const calls: { method: string; url: string; body: unknown }[] = []
 beforeEach(() => {
   calls.length = 0
   current = [MAILBOX]
+  kinds = []
   routes = {}
   mockGetMe.mockResolvedValue(BUILDER)
   vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
     const method = init?.method ?? 'GET'
     calls.push({ method, url, body: init?.body ? JSON.parse(String(init.body)) : undefined })
+    if (method === 'GET' && url === '/api/inbound-kinds') return Promise.resolve(new Response(JSON.stringify(kinds), { status: 200 }))
     if (method === 'GET' && url.startsWith('/api/inbound-connections')) return Promise.resolve(new Response(JSON.stringify(current), { status: 200 }))
     const key = Object.keys(routes).find((k) => { const [m, re] = k.split(' '); return m === method && new RegExp(re).test(url) })
     const r = key ? routes[key] : { status: 404, body: { error: 'not found' } }
@@ -160,6 +186,80 @@ describe('AgentChannels', () => {
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('{"error":"x"}', { status: 503 }))))
     setup()
     expect(await screen.findByRole('alert')).toHaveTextContent(/PostgreSQL store/)
+  })
+})
+
+describe('AgentChannels, chat platforms', () => {
+  it('shows a chat connection with its receive URL, scope and setup steps from the adapter', async () => {
+    kinds = [SLACKISH]
+    current = [CHATCONN]
+    setup()
+    const card = await screen.findByRole('listitem', { name: 'Channel Support chat' })
+    expect(await within(card).findByText('Chatty')).toBeInTheDocument()
+    expect(within(card).getByLabelText('URL of Support chat')).toHaveTextContent(`/inbound/chatty/${CHAT_ID}`)
+    expect(within(card).getByText(/U1\. Only in: C1\. Answers: mention/)).toBeInTheDocument()
+    const steps = within(card).getByLabelText('Setup steps of Support chat')
+    expect(steps).toHaveTextContent(`Paste ${window.location.origin}/inbound/chatty/${CHAT_ID} into the app`)
+  })
+
+  it('offers every registered kind and draws the form from the adapter descriptor', async () => {
+    kinds = [SLACKISH]
+    current = [CHATCONN]
+    routes['POST /api/inbound-connections'] = { status: 201, body: CHATCONN }
+    const user = userEvent.setup()
+    setup()
+    await screen.findByText('Chatty')
+    await user.click(screen.getByRole('button', { name: 'Add a channel' }))
+    await user.click(await screen.findByRole('button', { name: 'Chatty' }))
+    expect(screen.getByText(/keys botToken, signingSecret/)).toBeInTheDocument()
+    await user.type(screen.getByLabelText('Name'), 'Support chat')
+    await user.type(screen.getByLabelText('Secret'), 'chat-creds')
+    await user.type(screen.getByLabelText('Workspace id'), 'T1')
+    await user.click(screen.getByLabelText('Show a reaction while working'))
+    await user.type(screen.getByLabelText(/Only in these channels/), 'C1, C2')
+    await user.click(screen.getByLabelText('Slash commands'))
+    await user.click(screen.getByRole('button', { name: 'Create channel' }))
+    await waitFor(() => expect(calls.some((c) => c.method === 'POST')).toBe(true))
+    expect(calls.find((c) => c.method === 'POST')!.body).toEqual({
+      namespace: 'team-a', agent: 'helper', name: 'Support chat', kind: 'chatty', secretRef: 'chat-creds',
+      config: {
+        allowSenders: [], allowGroups: [], allowChannels: ['C1', 'C2'], modes: ['direct', 'mention'],
+        adapter: { workspaceId: 'T1', reaction: true },
+      },
+    })
+  })
+
+  it('checks the required setting, the allow-list and the channel mode before sending', async () => {
+    kinds = [SLACKISH]
+    current = [CHATCONN]
+    const user = userEvent.setup()
+    setup()
+    await screen.findByText('Chatty')
+    await user.click(screen.getByRole('button', { name: 'Add a channel' }))
+    await user.click(await screen.findByRole('button', { name: 'Chatty' }))
+    await user.type(screen.getByLabelText('Name'), 'x')
+    await user.type(screen.getByLabelText('Secret'), 's')
+    await user.click(screen.getByRole('button', { name: 'Create channel' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(/Nobody is allowed by default/)
+    await user.type(screen.getByLabelText(/Who may write \(user ids\)/), 'U1')
+    await user.click(screen.getByRole('button', { name: 'Create channel' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Workspace id is required.')
+    await user.type(screen.getByLabelText('Workspace id'), 'T1')
+    await user.click(screen.getByLabelText(/Every message in the listed channels/))
+    await user.click(screen.getByRole('button', { name: 'Create channel' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(/needs that channel on the list/)
+    expect(calls.some((c) => c.method === 'POST')).toBe(false)
+  })
+
+  it('tests a chat connection and shows the bot and workspace without secrets', async () => {
+    kinds = [SLACKISH]
+    current = [CHATCONN]
+    routes[`POST /api/inbound-connections/${CHAT_ID}/test`] = { status: 200, body: { ok: true, details: { bot: 'orca-bot', workspace: 'Acme' } } }
+    const user = userEvent.setup()
+    setup()
+    await user.click(await screen.findByRole('button', { name: 'Test connection' }))
+    expect(await screen.findByText('bot: orca-bot')).toBeInTheDocument()
+    expect(screen.getByText('workspace: Acme')).toBeInTheDocument()
   })
 })
 

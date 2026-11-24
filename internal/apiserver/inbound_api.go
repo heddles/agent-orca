@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/heddles/agent-orca/internal/inbound"
@@ -31,6 +32,7 @@ import (
 
 // Inbound channel connections (docs/inbound-channels.md).
 //
+//	GET    /api/inbound-kinds                  viewer: the registered kinds, their settings schema and setup steps
 //	POST   /api/inbound-connections            builder, audited: create
 //	GET    /api/inbound-connections            viewer: ?namespace=&agent=
 //	PATCH  /api/inbound-connections/{id}       builder, audited: {"enabled","config","secretRef"}
@@ -72,6 +74,7 @@ func (s *UIServer) inboundSource() inboundStore {
 }
 
 func (s *UIServer) registerInboundRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/api/inbound-kinds", s.handleInboundKinds)
 	mux.HandleFunc("/api/inbound-connections", s.handleInboundConnections)
 	mux.HandleFunc("/api/inbound-connections/{id}", s.handleInboundConnection)
 	mux.HandleFunc("/api/inbound-connections/{id}/test", s.handleInboundTest)
@@ -157,6 +160,9 @@ func (s *UIServer) checkInboundConfig(w http.ResponseWriter, kind string, cfg js
 	}
 	settings, err := inbound.ParseSettings(cfg)
 	if err == nil {
+		err = inbound.CheckSettings(a, settings)
+	}
+	if err == nil {
 		err = a.ValidateConfig(settings.Adapter)
 	}
 	if err != nil {
@@ -168,15 +174,44 @@ func (s *UIServer) checkInboundConfig(w http.ResponseWriter, kind string, cfg js
 
 // checkInboundSecret checks that the named Secret exists and carries the label
 // that lets channels use it. The answer never says what is in it.
-func (s *UIServer) checkInboundSecret(w http.ResponseWriter, ctx context.Context, ns, name string) bool {
+func (s *UIServer) checkInboundSecret(w http.ResponseWriter, ctx context.Context, kind, ns, name string) bool {
 	if name == "" || s.inboundPipe.Secrets == nil {
 		return true
 	}
-	if _, err := s.inboundPipe.Secrets(ctx, ns, name); err != nil {
+	data, err := s.inboundPipe.Secrets(ctx, ns, name)
+	if err != nil {
 		jsonError(w, fmt.Sprintf("the Secret %q is not available to channels: it must exist in %s and an administrator must label it %s=true", name, ns, inbound.SecretLabel), http.StatusBadRequest)
 		return false
 	}
+	if a, ok := s.inboundPipe.Registry.Get(kind); ok {
+		if err := inbound.CheckSecret(a, data); err != nil {
+			jsonError(w, fmt.Sprintf("the Secret %q is not usable for a %s channel: %s", name, kind, err), http.StatusBadRequest)
+			return false
+		}
+	}
 	return true
+}
+
+// handleInboundKinds lists what the registered adapters offer: the form of their
+// own settings, the keys their Secret needs, their capabilities and the steps to
+// set them up. It is what the Channels tab draws its form from.
+func (s *UIServer) handleInboundKinds(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if _, ok := s.inboundPreflight(w, r, tenancy.RoleViewer); !ok {
+		return
+	}
+	kinds := s.inboundPipe.Registry.Kinds()
+	sort.Strings(kinds)
+	out := make([]inbound.KindInfo, 0, len(kinds))
+	for _, k := range kinds {
+		if a, ok := s.inboundPipe.Registry.Get(k); ok {
+			out = append(out, inbound.Info(a))
+		}
+	}
+	jsonResponse(w, out)
 }
 
 func (s *UIServer) createInbound(w http.ResponseWriter, r *http.Request) {
@@ -213,7 +248,7 @@ func (s *UIServer) createInbound(w http.ResponseWriter, r *http.Request) {
 	if !s.checkInboundConfig(w, req.Kind, req.Config) {
 		return
 	}
-	if !s.checkInboundSecret(w, r.Context(), agent.Namespace, req.SecretRef) {
+	if !s.checkInboundSecret(w, r.Context(), req.Kind, agent.Namespace, req.SecretRef) {
 		return
 	}
 	id, err := postgresql.NewInboundID()
@@ -312,7 +347,7 @@ func (s *UIServer) patchInbound(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.SecretRef != nil {
 		*req.SecretRef = strings.TrimSpace(*req.SecretRef)
-		if !s.checkInboundSecret(w, r.Context(), cur.Namespace, *req.SecretRef) {
+		if !s.checkInboundSecret(w, r.Context(), cur.Kind, cur.Namespace, *req.SecretRef) {
 			return
 		}
 	}
