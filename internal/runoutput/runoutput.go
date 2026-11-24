@@ -34,10 +34,9 @@ import (
 	"unicode/utf8"
 )
 
-// MaxBytes caps a stored run output: the AgentRun CRD lives in etcd, so a long
-// answer is clipped there. Live consumers still get the full text from the
-// run's `done` trace event.
-const MaxBytes = 10240
+// MaxBytes caps one stored run output. It is a sanity limit, not a budget: the
+// state store keeps values zstd-compressed up to 1 MiB.
+const MaxBytes = 1 << 20
 
 // truncationMarker tells a consumer that reads only the CRD that the output was
 // clipped, instead of silently handing it a prefix.
@@ -102,11 +101,14 @@ func LooksLikeStream(text string) bool {
 
 // Clip cuts out to MaxBytes (marker included) on a rune boundary, so a
 // multi-byte character is never split.
-func Clip(out string) string {
-	if len(out) <= MaxBytes {
+func Clip(out string) string { return ClipTo(out, MaxBytes) }
+
+// ClipTo is Clip with a different limit.
+func ClipTo(out string, limit int) string {
+	if len(out) <= limit {
 		return out
 	}
-	cut := MaxBytes - len(truncationMarker)
+	cut := limit - len(truncationMarker)
 	for cut > 0 && !utf8.RuneStart(out[cut]) {
 		cut--
 	}

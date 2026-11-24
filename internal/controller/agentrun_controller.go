@@ -673,7 +673,6 @@ func (r *AgentRunReconciler) handleRunSuccess(ctx context.Context, run *agentorc
 	}
 
 	finalOutput := runoutput.Clip(output)
-	rawOutput := truncate(raw, 4096)
 
 	// Safety net: if the output looks like a question directed at the user (e.g.
 	// "Please specify the data source..."), the LLM failed to call _clarify.
@@ -687,7 +686,7 @@ func (r *AgentRunReconciler) handleRunSuccess(ctx context.Context, run *agentorc
 		patch := client.MergeFrom(run.DeepCopy())
 		now := metav1.Now()
 		run.Status.Phase = agentorcav1alpha1.AgentRunPhaseWaitingForInput
-		run.Status.ClarifyQuestion = finalOutput
+		run.Status.ClarifyQuestion = runoutput.ClipTo(finalOutput, runoutput.StatusMaxBytes)
 		run.Status.ClarifyAnswer = ""
 		run.Status.WaitingSince = &now
 		r.stampSpend(ctx, run)
@@ -704,10 +703,16 @@ func (r *AgentRunReconciler) handleRunSuccess(ctx context.Context, run *agentorc
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
+	// The answer goes to the state store, not into the status: a status write is
+	// an etcd write, and an answer can be large. Only when it cannot be stored
+	// does a clipped copy stay in status.output, so it is never lost.
+	statusOutput := runoutput.Finish(ctx, r.stateFor(run), run.Namespace, run.Name, finalOutput)
 	patch := client.MergeFrom(run.DeepCopy())
 	run.Status.Phase = agentorcav1alpha1.AgentRunPhaseSucceeded
-	run.Status.Output = finalOutput
-	run.Status.RawOutput = rawOutput
+	run.Status.Output = statusOutput
+	if statusOutput != "" {
+		run.Status.RawOutput = truncate(raw, 4096)
+	}
 	// Spend is persisted by the model-router on each LLM call.
 	r.stampSpend(ctx, run)
 	now := metav1.Now()
@@ -1869,7 +1874,7 @@ func (r *AgentRunReconciler) ensureCleanup(ctx context.Context, run *agentorcav1
 		archiveCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
 		traceJSON := r.loadTraceEventsForArchive(archiveCtx, run)
-		if err := r.PostgresStore.ArchiveRun(archiveCtx, run, traceJSON); err != nil {
+		if err := r.PostgresStore.ArchiveRun(archiveCtx, r.withStoredOutput(archiveCtx, run), traceJSON); err != nil {
 			logger := log.FromContext(ctx)
 			logger.Error(err, "failed to re-archive terminal run on restart", "run", run.Name, "ns", run.Namespace)
 		}
@@ -2031,10 +2036,31 @@ func (r *AgentRunReconciler) maybeArchiveRun(run *agentorcav1alpha1.AgentRun) {
 		archiveCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		traceJSON := r.loadTraceEventsForArchive(archiveCtx, run)
-		if err := r.PostgresStore.ArchiveRun(archiveCtx, run, traceJSON); err != nil {
+		if err := r.PostgresStore.ArchiveRun(archiveCtx, r.withStoredOutput(archiveCtx, run), traceJSON); err != nil {
 			log.Log.Error(err, "failed to archive run to PostgreSQL", "run", run.Name, "ns", run.Namespace)
 		}
 	}()
+}
+
+// outputOf is the run's answer: kept in the state store, not in the status.
+func (r *AgentRunReconciler) outputOf(ctx context.Context, run *agentorcav1alpha1.AgentRun) string {
+	if r.StateStore == nil {
+		return run.Status.Output
+	}
+	return runoutput.Of(ctx, r.stateFor(run), run)
+}
+
+// withStoredOutput is a copy of run carrying its answer in status.output, which
+// is what the archive reads. The live object is not touched, so the answer never
+// reaches etcd through it.
+func (r *AgentRunReconciler) withStoredOutput(ctx context.Context, run *agentorcav1alpha1.AgentRun) *agentorcav1alpha1.AgentRun {
+	out := r.outputOf(ctx, run)
+	if out == run.Status.Output {
+		return run
+	}
+	cp := run.DeepCopy()
+	cp.Status.Output = out
+	return cp
 }
 
 // loadTraceEventsForArchive reads the run's trace events from the Redis token
@@ -2151,7 +2177,7 @@ func (r *AgentRunReconciler) fireCallback(ctx context.Context, run *agentorcav1a
 		"taskId":    run.Name,
 		"agent":     run.Spec.AgentRef,
 		"phase":     string(run.Status.Phase),
-		"output":    run.Status.Output,
+		"output":    r.outputOf(ctx, run),
 		"spendUSD":  run.Status.SpendUSD,
 		"namespace": run.Namespace,
 	}
@@ -2691,7 +2717,7 @@ func (r *AgentRunReconciler) fireEgress(ctx context.Context, run *agentorcav1alp
 		RunID:         run.Name,
 		Agent:         run.Spec.AgentRef,
 		Phase:         string(run.Status.Phase),
-		Output:        run.Status.Output,
+		Output:        r.outputOf(ctx, run),
 		SpendUSD:      run.Status.SpendUSD,
 		FailureReason: run.Status.FailureReason,
 		Tenant:        run.Labels["agentorca.io/tenant"],

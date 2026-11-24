@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"github.com/heddles/agent-orca/internal/runoutput"
 	"strings"
 	"testing"
 	"time"
@@ -37,7 +38,11 @@ import (
 
 // testStore is a minimal state.Store stub for controller tests; only HTTP output is
 // modelled, everything else is a no-op.
-type testStore struct{ httpOutput, httpFailure string }
+type testStore struct {
+	httpOutput, httpFailure string
+	// kv records run outputs (runoutput.Scope) when non-nil.
+	kv map[string][]byte
+}
 
 func (s testStore) SaveMessages(context.Context, string, []json.RawMessage, time.Duration) error {
 	return nil
@@ -60,14 +65,17 @@ func (s testStore) LoadHTTPOutput(context.Context, string) (string, error) {
 	return s.httpOutput, nil
 }
 func (s testStore) DeleteKey(context.Context, string) error { return nil }
-func (s testStore) SaveKV(context.Context, string, string, []byte, time.Duration) error {
+func (s testStore) SaveKV(_ context.Context, scope, key string, v []byte, _ time.Duration) error {
+	if s.kv != nil {
+		s.kv[scope+"/"+key] = v
+	}
 	return nil
 }
-func (s testStore) LoadKV(_ context.Context, scope, _ string) ([]byte, error) {
+func (s testStore) LoadKV(_ context.Context, scope, key string) ([]byte, error) {
 	if scope == router.HTTPFailureScope && s.httpFailure != "" {
 		return []byte(s.httpFailure), nil
 	}
-	return nil, nil
+	return s.kv[scope+"/"+key], nil
 }
 func (s testStore) DeleteKV(context.Context, string, string) error   { return nil }
 func (s testStore) ListKV(context.Context, string) ([]string, error) { return nil, nil }
@@ -174,6 +182,7 @@ func TestCheckProgress_HTTPPeekReturnsWarmPodToIdle(t *testing.T) {
 		PodName:   "warm-1",
 	}}
 
+	kv := map[string][]byte{}
 	cl := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithStatusSubresource(&agentorcav1alpha1.AgentRun{}).
@@ -183,7 +192,7 @@ func TestCheckProgress_HTTPPeekReturnsWarmPodToIdle(t *testing.T) {
 	r := &AgentRunReconciler{
 		Client:     cl,
 		Scheme:     scheme,
-		StateStore: testStore{httpOutput: httpOut},
+		StateStore: testStore{httpOutput: httpOut, kv: kv},
 		// GetLogs is stubbed behind the kubernetes fake clientset; any error is swallowed
 		// by handlePodSuccess (httpOut takes precedence over container logs).
 		K8s: newFakeClientsetWithLogs(),
@@ -207,8 +216,12 @@ func TestCheckProgress_HTTPPeekReturnsWarmPodToIdle(t *testing.T) {
 	if gotRun.Status.Phase != agentorcav1alpha1.AgentRunPhaseSucceeded {
 		t.Fatalf("run phase = %q, want Succeeded", gotRun.Status.Phase)
 	}
-	if gotRun.Status.Output != httpOut {
-		t.Fatalf("run output = %q, want httpOut", gotRun.Status.Output)
+	// The answer is in the state store, not in etcd.
+	if gotRun.Status.Output != "" {
+		t.Fatalf("status.output = %q, want it empty: the answer belongs in the state store", gotRun.Status.Output)
+	}
+	if got := string(kv[runoutput.Scope+"/default/run-1"]); got != httpOut {
+		t.Fatalf("stored output = %q, want httpOut", got)
 	}
 }
 
@@ -270,7 +283,8 @@ func TestHandleRunSuccess_StdoutGoesThroughRunOutput(t *testing.T) {
 				Status: agentorcav1alpha1.AgentRunStatus{Phase: agentorcav1alpha1.AgentRunPhaseRunning}}
 			cl := fake.NewClientBuilder().WithScheme(scheme).
 				WithStatusSubresource(&agentorcav1alpha1.AgentRun{}).WithObjects(run).Build()
-			r := &AgentRunReconciler{Client: cl, Scheme: scheme, K8s: newFakeClientsetWithLogs()}
+			kv := map[string][]byte{}
+			r := &AgentRunReconciler{Client: cl, Scheme: scheme, K8s: newFakeClientsetWithLogs(), StateStore: testStore{kv: kv}}
 			if _, err := r.handleRunSuccess(context.Background(), run, func(context.Context) string { return tc.stdout }); err != nil {
 				t.Fatal(err)
 			}
@@ -282,8 +296,9 @@ func TestHandleRunSuccess_StdoutGoesThroughRunOutput(t *testing.T) {
 				}
 				return
 			}
-			if got.Status.Phase != agentorcav1alpha1.AgentRunPhaseSucceeded || got.Status.Output != tc.wantOutput {
-				t.Fatalf("phase=%q output=%q, want %q", got.Status.Phase, got.Status.Output, tc.wantOutput)
+			stored := string(kv[runoutput.Scope+"/default/run-s"])
+			if got.Status.Phase != agentorcav1alpha1.AgentRunPhaseSucceeded || got.Status.Output != "" || stored != tc.wantOutput {
+				t.Fatalf("phase=%q status.output=%q stored=%q, want stored %q and an empty status", got.Status.Phase, got.Status.Output, stored, tc.wantOutput)
 			}
 		})
 	}

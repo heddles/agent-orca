@@ -72,6 +72,7 @@ import (
 	"github.com/heddles/agent-orca/internal/openshell"
 	"github.com/heddles/agent-orca/internal/podbuilder"
 	"github.com/heddles/agent-orca/internal/postgresql"
+	"github.com/heddles/agent-orca/internal/runoutput"
 	"github.com/heddles/agent-orca/internal/schedule"
 	"github.com/heddles/agent-orca/internal/security"
 	"github.com/heddles/agent-orca/internal/state"
@@ -693,6 +694,7 @@ func main() {
 	}
 
 	if err := (&controller.AgentWorkflowReconciler{
+		StateStore:         stateStore,
 		Client:             mgr.GetClient(),
 		Scheme:             mgr.GetScheme(),
 		K8s:                k8sClient,
@@ -728,7 +730,7 @@ func main() {
 	}
 
 	// Start the internal API server (port 8082) for agent-to-agent communication.
-	internalAPI := apiserver.New(k8sClient, mgr.GetClient())
+	internalAPI := apiserver.New(k8sClient, mgr.GetClient()).WithStateStore(stateStore)
 	// Per-user MCP connections (docs/mcp-oauth.md): the service behind the UI
 	// endpoints and the router-facing token endpoint. nil leaves both off.
 	connService := newConnectionService(pgStore)
@@ -892,7 +894,13 @@ func main() {
 		}
 		if err := mgr.Add(evalrunner.New(pgStore.AsPlatform(), mgr.GetClient(), evalrunner.Config{
 			Interval: evalRunnerIntervalFromEnv(), Limiter: limiter,
-			Judges:              judge.KubeResolver{Reader: mgr.GetClient()},
+			Judges: judge.KubeResolver{Reader: mgr.GetClient()},
+			Outputs: func(ctx context.Context, run *agentorcav1alpha1.AgentRun) string {
+				if stateStore == nil {
+					return run.Status.Output
+				}
+				return runoutput.Of(ctx, state.ForTenantIfEnabled(stateStore, run.Labels[tenancy.LabelTenantID]), run)
+			},
 			ResultRetentionDays: evalResultRetentionDaysFromEnv(),
 		})); err != nil {
 			setupLog.Error(err, "Unable to add the evaluation experiment runner")

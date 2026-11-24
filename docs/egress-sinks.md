@@ -96,7 +96,7 @@ The `EgressResult` payload is self-contained (no HATEOAS links) and includes:
 | `runId` | AgentRun name |
 | `agent` | Agent name invoked |
 | `phase` | Terminal phase: `"Succeeded"` or `"Failed"` |
-| `output` | Final output (truncated to 10KB) |
+| `output` | Final output (up to 1 MiB) |
 | `costUSD` | Total LLM cost for this run |
 
 ## Metrics

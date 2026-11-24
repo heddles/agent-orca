@@ -20,6 +20,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/heddles/agent-orca/internal/runoutput"
+	"github.com/heddles/agent-orca/internal/state"
 	"strconv"
 	"strings"
 	"time"
@@ -48,6 +50,8 @@ type AgentWorkflowReconciler struct {
 
 	// K8s reads the logs of container steps' pods. nil leaves their output empty.
 	K8s kubernetes.Interface
+	// StateStore holds the answers of runs (runoutput). nil reads status.output.
+	StateStore state.Store
 	// Approvals stores the decisions of approval steps (the PostgreSQL store);
 	// nil makes approval steps fail with a clear reason.
 	Approvals ApprovalStore
@@ -496,13 +500,17 @@ func (r *AgentWorkflowReconciler) checkStepRun(
 		now := metav1.Now()
 		ss.Phase = agentorcav1alpha1.WorkflowStepPhaseSucceeded
 		ss.CompletionTime = &now
-		ss.Output = run.Status.Output
+		// A step output is carried in the workflow status, so it stays bounded.
+		ss.Output = runoutput.ClipTo(r.runOutput(ctx, &run), runoutput.StatusMaxBytes)
 		ss.SpendUSD = run.Status.SpendUSD
 		return ctrl.Result{}, nil
 
 	case agentorcav1alpha1.AgentRunPhaseFailed:
 		now := metav1.Now()
-		failureReason := run.Status.RawOutput
+		failureReason := run.Status.FailureReason
+		if failureReason == "" {
+			failureReason = run.Status.RawOutput
+		}
 		if failureReason == "" {
 			failureReason = fmt.Sprintf("AgentRun %s failed", ss.AgentRunRef)
 		}
@@ -725,4 +733,12 @@ func (r *AgentWorkflowReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.Pod{}).
 		Named("agentworkflow").
 		Complete(r)
+}
+
+// runOutput is a step run's answer, kept in the state store, not in its status.
+func (r *AgentWorkflowReconciler) runOutput(ctx context.Context, run *agentorcav1alpha1.AgentRun) string {
+	if r.StateStore == nil {
+		return run.Status.Output
+	}
+	return runoutput.Of(ctx, state.ForTenantIfEnabled(r.StateStore, run.Labels[tenancy.LabelTenantID]), run)
 }

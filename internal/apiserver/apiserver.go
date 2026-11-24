@@ -30,6 +30,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/heddles/agent-orca/internal/state"
 	"io"
 	"log/slog"
 	"net/http"
@@ -66,6 +67,9 @@ type Server struct {
 	shell shellsandbox.Runner
 	// approvals backs tool-call approvals (tool_approval_api.go). nil when there
 	// is no PostgreSQL store; such requests fail with 503.
+	// store holds the answers of runs (runoutput); nil keeps them in the status.
+	store state.Store
+
 	approvals ToolApprovalStore
 	// approvalNotifier tells approvers about new requests. Optional.
 	approvalNotifier ApprovalNotifier
@@ -80,6 +84,12 @@ type Server struct {
 }
 
 // New creates a new API server.
+// WithStateStore sets the state store that holds the answers of runs.
+func (s *Server) WithStateStore(store state.Store) *Server {
+	s.store = store
+	return s
+}
+
 func New(k8s kubernetes.Interface, crdClient client.Client) *Server {
 	return &Server{k8s: k8s, crdClient: crdClient}
 }
@@ -264,6 +274,9 @@ func (s *Server) getAgentRun(w http.ResponseWriter, r *http.Request, namespace, 
 		http.Error(w, fmt.Sprintf("getting AgentRun: %v", err), http.StatusNotFound)
 		return
 	}
+	// The answer is not kept in the status; callers that poll a child run read it
+	// from here. The copy is for the response only and is never written back.
+	run.Status.Output = outputOf(r.Context(), s.store, &run)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(run)
 }
@@ -393,7 +406,9 @@ func (s *Server) doneAgentRun(w http.ResponseWriter, r *http.Request, namespace,
 	patch := client.MergeFrom(run.DeepCopy())
 	now := metav1.Now()
 	run.Status.Phase = agentorcav1alpha1.AgentRunPhaseSucceeded
-	run.Status.Output = runoutput.Clip(req.Output)
+	// The answer goes to the state store, not into etcd; a clipped copy stays in the
+	// status only when it cannot be stored.
+	run.Status.Output = runoutput.Finish(r.Context(), scopedStore(s.store, &run), namespace, name, runoutput.Clip(req.Output))
 	run.Status.CompletionTime = &now
 	if err := s.crdClient.Status().Patch(r.Context(), &run, patch); err != nil {
 		http.Error(w, fmt.Sprintf("patching AgentRun status: %v", err), http.StatusInternalServerError)
