@@ -357,5 +357,5 @@ func contextWithTenant(ctx context.Context, t *TenantIdentity) context.Context {
 // isPublicEndpoint is true for the paths that carry their own authentication
 // and so are served without a session.
 func isPublicEndpoint(path string) bool {
-	return strings.HasPrefix(path, "/hooks/")
+	return strings.HasPrefix(path, "/hooks/") || inboundAuthPublic(path)
 }

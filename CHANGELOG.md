@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Inbound channels and the email trigger** — a business user (or a system) writes to a mailbox, an agent runs on the message,
+  and the answer is mailed back in the same conversation. Email is the first adapter of a vendor-neutral core
+  (`internal/inbound`, `docs/inbound-channels.md`) that chat platforms will plug into: a normalised `Message`, an `Adapter`
+  interface (`Receiver`, `Poller`, `Tester`) and registry, and shared logic for de-duplication by (connection, message id), a
+  default-deny sender allow-list, per-connection and per-sender rate limits, tenant quotas, threading by `priorRunRef`, delivery
+  of the answer with redaction and truncation by capability, and failure handling. A run is a trigger actor's run
+  (`created-by: trigger:<connection id>`), never a person's, so invoker-mode MCP servers still fail closed. Migration `0024` adds
+  `inbound_connections` and `inbound_messages` with tenant row-level security; the ledger holds digests and sizes, no message
+  text. Credentials live in an administrator-labelled Secret (`agentorca.io/inbound-secret`), never in the database or the API.
+  API: `POST/GET/PATCH/DELETE /api/inbound-connections`, `POST .../{id}/test`, and the signed `POST /inbound/{kind}/{id}`; a
+  **Channels** tab next to Triggers on the agent page. Email: IMAP polling (IMAPS or STARTTLS, password or XOAUTH2 bearer,
+  messages marked only after they were recorded) or a signed provider webhook (raw message, JSON or multipart, behind a relay),
+  replies over SMTP through `internal/notify` with `Re:` and `In-Reply-To`/`References`, required `Authentication-Results`
+  evidence from your own mail server, loop and auto-reply prevention, 1 MiB message cap, safe HTML to text, quoted-reply
+  stripping, attachment descriptors only (small text files on request). Metric `agentorca_inbound_messages_total{kind,outcome}`;
+  `operator.inbound.enabled` turns the feature off. Adds `emersion/go-imap/v2` and `go-message` (MIT). Not built: chat adapters,
+  IMAP IDLE, OAuth token refresh, user mapping. Not tried against a real mail server.
+
 - **Builder: add documents to knowledge** — `GET`/`PUT`/`DELETE /api/knowledge/{ns}/{name}/documents[/{file}]` let a builder add text,
   markdown and csv documents to a UI-owned KnowledgeBase from the agent builder, with no new infrastructure: the documents are
   keys of one UI-owned, tenant-stamped ConfigMap per knowledge base (`<kb>-docs`), added to the KnowledgeBase's

@@ -35,6 +35,7 @@ COPY internal/evals/runner/ internal/evals/runner/
 COPY internal/executor/ internal/executor/
 COPY internal/framework/ internal/framework/
 COPY internal/githubapp/ internal/githubapp/
+COPY internal/inbound/ internal/inbound/
 COPY internal/mcp/ internal/mcp/
 COPY internal/notify/ internal/notify/
 COPY internal/oauth/ internal/oauth/

@@ -1,6 +1,6 @@
 /**
  * AgentPage — one agent: what it does, a run form generated from its input
- * schema, and for published agents the chat, webhook triggers and the chat widget on further tabs.
+ * schema, and for published agents the chat, webhook triggers, channels such as email and the chat widget on further tabs.
  */
 import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { Link } from 'react-router'
@@ -16,6 +16,7 @@ import {
 } from '../lib/schemaForm'
 import { SchemaForm } from './SchemaForm'
 import { DeploymentView } from './DeploymentView'
+import { AgentChannels } from './AgentChannels'
 import { AgentTriggers } from './AgentTriggers'
 import { AgentWidget } from './AgentWidget'
 import { RequiredConnections, useInvokerIdentities, useOwnerNeedsReconnect, useRequiredConnections } from './RequiredConnections'
@@ -183,8 +184,8 @@ export function AgentPage({ namespace, name, tab, onTabChange, onNavigateToRun }
   if (!manifest) return <div role="status" style={{ padding: 24, color: ds.textMuted, fontSize: 13 }}>Loading agent…</div>
 
   const published = entry?.published ?? false
-  const active = published && (tab === 'chat' || tab === 'triggers' || tab === 'widget') ? tab : 'run'
-  const tabs = [{ key: 'run', label: 'Run' }, ...(published ? [{ key: 'chat', label: 'Chat' }, { key: 'triggers', label: 'Triggers' }, { key: 'widget', label: 'Chat widget' }] : [])]
+  const active = published && (tab === 'chat' || tab === 'triggers' || tab === 'channels' || tab === 'widget') ? tab : 'run'
+  const tabs = [{ key: 'run', label: 'Run' }, ...(published ? [{ key: 'chat', label: 'Chat' }, { key: 'triggers', label: 'Triggers' }, { key: 'channels', label: 'Channels' }, { key: 'widget', label: 'Chat widget' }] : [])]
   const examples = manifest.example_inputs ?? entry?.exampleInputs ?? []
 
   return (
@@ -230,6 +231,10 @@ export function AgentPage({ namespace, name, tab, onTabChange, onNavigateToRun }
       ) : active === 'triggers' ? (
         <div role="tabpanel" id="triggers-panel" aria-label="Triggers">
           <AgentTriggers namespace={namespace} name={name} />
+        </div>
+      ) : active === 'channels' ? (
+        <div role="tabpanel" id="channels-panel" aria-label="Channels">
+          <AgentChannels namespace={namespace} name={name} />
         </div>
       ) : active === 'widget' ? (
         <div role="tabpanel" id="widget-panel" aria-label="Chat widget">

@@ -11,6 +11,8 @@ require (
 	github.com/NVIDIA/OpenShell/sdk/go v0.0.0-20261020123705-bdb956f2cd65
 	github.com/alicebob/miniredis/v2 v2.40.0
 	github.com/coreos/go-oidc/v3 v3.21.0
+	github.com/emersion/go-imap/v2 v2.0.0-beta.9
+	github.com/emersion/go-message v0.18.2
 	github.com/gabriel-vasile/mimetype v1.4.16
 	github.com/go-jose/go-jose/v4 v4.1.4
 	github.com/golang-jwt/jwt/v5 v5.3.1
@@ -24,8 +26,10 @@ require (
 	github.com/openai/openai-go/v3 v3.82.0
 	github.com/pkoukk/tiktoken-go v0.1.8
 	github.com/prometheus/client_golang v1.25.0
+	github.com/prometheus/client_model v0.6.3
 	github.com/qdrant/go-client v1.19.4
 	github.com/redis/go-redis/v9 v9.23.0
+	github.com/robfig/cron/v3 v3.0.1
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	github.com/segmentio/kafka-go v0.4.51
 	github.com/spf13/cobra v1.10.2
@@ -60,6 +64,7 @@ require (
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/dlclark/regexp2 v1.12.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
+	github.com/emersion/go-sasl v0.0.0-20241020182733-b788ff22d5a6 // indirect
 	github.com/emicklei/go-restful/v3 v3.13.0 // indirect
 	github.com/evanphx/json-patch/v5 v5.9.11 // indirect
 	github.com/felixge/httpsnoop v1.1.0 // indirect
@@ -107,10 +112,8 @@ require (
 	github.com/philhofer/fwd v1.2.0 // indirect
 	github.com/pierrec/lz4/v4 v4.1.15 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
-	github.com/prometheus/client_model v0.6.3 // indirect
 	github.com/prometheus/common v0.72.0 // indirect
 	github.com/prometheus/procfs v0.22.0 // indirect
-	github.com/robfig/cron/v3 v3.0.1 // indirect
 	github.com/rs/xid v1.6.0 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/tetratelabs/wazero v1.12.0 // indirect

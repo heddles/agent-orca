@@ -93,6 +93,28 @@ func (s *Sender) Send(ctx context.Context, ch *Channel, msg Message) error {
 	}
 	msg = msg.Scrub(reg)
 
+	return s.retry(ctx, ch, reg, func(actx context.Context) error { return s.once(actx, ch, msg) })
+}
+
+// SendMail delivers an RFC 5322 message (the caller built it, header lines
+// CRLF-terminated) over the SMTP channel ch to its recipients, with the same
+// retries, TLS rules and address guard as Send. It is for callers that write
+// their own mail, such as the replies of an inbound email channel. The returned
+// error never contains a Secret value.
+func (s *Sender) SendMail(ctx context.Context, ch *Channel, rfc822 string) error {
+	if ch.Type != TypeSMTP {
+		return fmt.Errorf("sending to channel %q failed: not an SMTP channel", ch.Name)
+	}
+	reg := &redact.Registry{}
+	for _, v := range ch.Secrets() {
+		reg.Register(v)
+	}
+	return s.retry(ctx, ch, reg, func(actx context.Context) error { return s.smtpSend(actx, ch, rfc822) })
+}
+
+// retry runs one attempt up to Attempts times, waiting longer between tries,
+// and stops at once on a permanent error.
+func (s *Sender) retry(ctx context.Context, ch *Channel, reg *redact.Registry, once func(context.Context) error) error {
 	attempts, wait := s.Attempts, s.Backoff
 	if attempts <= 0 {
 		attempts = 3
@@ -103,7 +125,7 @@ func (s *Sender) Send(ctx context.Context, ch *Channel, msg Message) error {
 	var err error
 	for i := 0; i < attempts; i++ {
 		actx, cancel := context.WithTimeout(ctx, s.timeout())
-		err = s.once(actx, ch, msg)
+		err = once(actx)
 		cancel()
 		if err == nil {
 			return nil
@@ -259,6 +281,11 @@ func (a plainAuth) Next(_ []byte, more bool) ([]byte, error) {
 }
 
 func (s *Sender) mail(ctx context.Context, ch *Channel, msg Message) error {
+	return s.smtpSend(ctx, ch, mailBody(ch, msg))
+}
+
+// smtpSend delivers a ready message body.
+func (s *Sender) smtpSend(ctx context.Context, ch *Channel, body string) error {
 	addr := net.JoinHostPort(ch.Host, strconv.Itoa(ch.Port))
 	conn, err := dialer(ch, s.timeout()).DialContext(ctx, "tcp", addr)
 	if err != nil {
@@ -315,7 +342,7 @@ func (s *Sender) mail(ctx context.Context, ch *Channel, msg Message) error {
 	if err != nil {
 		return errors.New("the mail server refused the message")
 	}
-	if _, err := io.WriteString(w, mailBody(ch, msg)); err != nil {
+	if _, err := io.WriteString(w, body); err != nil {
 		return errors.New("writing the message failed")
 	}
 	if err := w.Close(); err != nil {
@@ -336,4 +363,13 @@ func mailBody(ch *Channel, msg Message) string {
 	b.WriteString(strings.ReplaceAll(strings.ReplaceAll(msg.text(), "\r\n", "\n"), "\n", "\r\n"))
 	b.WriteString("\r\n")
 	return b.String()
+}
+
+// GuardedDialer is a dialer that refuses, at connect time and after DNS, an
+// address a channel may not reach unless allowPrivate is set: loopback,
+// link-local (cloud metadata), private and other internal addresses. Other
+// packages that open connections on behalf of a configured destination (the
+// inbound email channel's IMAP client) use it for the same guard.
+func GuardedDialer(allowPrivate bool, timeout time.Duration) *net.Dialer {
+	return dialer(&Channel{AllowPrivate: allowPrivate}, timeout)
 }

@@ -203,6 +203,10 @@ spec:
               value: "true"
             {{- end }}
             {{- end }}
+            {{- if not .Values.operator.inbound.enabled }}
+            - name: INBOUND_CHANNELS_DISABLED
+              value: "true"
+            {{- end }}
             {{- if .Values.operator.oidc.enabled }}
             - name: OIDC_LOGIN_ENABLED
               value: "true"

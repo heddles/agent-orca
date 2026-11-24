@@ -112,6 +112,12 @@ func main() {
 		proxy.ServeHTTP(w, r)
 	})
 
+	// /inbound/* — channels that call us (a mail provider's inbound webhook). Signed
+	// like the hooks, no session: the proxy only forwards them.
+	mux.HandleFunc("/inbound/", func(w http.ResponseWriter, r *http.Request) {
+		proxy.ServeHTTP(w, r)
+	})
+
 	// /widget/* — the embeddable chat widget: its script and its API. Sessions are
 	// the widget's own (X-Widget-Session) and the operator checks the page's
 	// Origin, so the proxy only forwards.

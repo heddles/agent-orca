@@ -60,6 +60,8 @@ import (
 	"github.com/heddles/agent-orca/internal/evals/judge"
 	evalrunner "github.com/heddles/agent-orca/internal/evals/runner"
 	"github.com/heddles/agent-orca/internal/githubapp"
+	"github.com/heddles/agent-orca/internal/inbound"
+	inboundemail "github.com/heddles/agent-orca/internal/inbound/email"
 	"github.com/heddles/agent-orca/internal/notify"
 	"github.com/heddles/agent-orca/internal/oauth"
 	"github.com/heddles/agent-orca/internal/openshell"
@@ -902,6 +904,12 @@ func main() {
 			os.Exit(1)
 		}
 	}
+	if pgStore != nil && !inboundChannelsDisabled() {
+		if err := addInboundChannels(mgr, uiAPI, pgStore, externalAuth.RateLimiter()); err != nil {
+			setupLog.Error(err, "Unable to start the inbound channels")
+			os.Exit(1)
+		}
+	}
 	go func() {
 		srv := newHTTPServer(":8083", uiAPI.Handler())
 		setupLog.Info("Starting UI API server", "addr", srv.Addr, "tls", internalAPICert != "")
@@ -1184,6 +1192,32 @@ func connectionIdleExpiryFromEnv() time.Duration {
 		return time.Duration(n) * 24 * time.Hour
 	}
 	return connections.DefaultIdleAfter
+}
+
+// inboundChannelsDisabled is true when INBOUND_CHANNELS_DISABLED=true. Inbound
+// channels (docs/inbound-channels.md) are otherwise on, and do nothing until a
+// connection is created.
+func inboundChannelsDisabled() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("INBOUND_CHANNELS_DISABLED")), "true")
+}
+
+// addInboundChannels registers the channel adapters, gives the UI server the
+// pipeline (the connection API and the signed receive endpoint) and schedules
+// the leader-only runner: one IMAP poller per enabled connection and the delivery
+// of answers.
+func addInboundChannels(
+	mgr manager.Manager, uiAPI *apiserver.UIServer, pgStore *postgresql.Store, limiter inbound.Limiter,
+) error {
+	reg := inbound.NewRegistry()
+	reg.Register(&inboundemail.Adapter{})
+	bridge := uiAPI.InboundBridge()
+	pipe := &inbound.Pipeline{
+		Store: pgStore.AsPlatform(), Launcher: bridge, Runs: bridge, Registry: reg, Limiter: limiter,
+		Secrets: bridge.ReadSecret,
+	}
+	uiAPI.SetInbound(pipe)
+	setupLog.Info("Inbound channels enabled", "kinds", reg.Kinds())
+	return mgr.Add(&inbound.Runner{P: pipe})
 }
 
 // addConnectionLifecycle schedules the leader-only jobs of the per-user

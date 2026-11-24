@@ -167,6 +167,13 @@ operator:
     # (CONNECTION_IDLE_EXPIRY_DAYS). 0 turns the expiry off.
     idleExpiryDays: 90
 
+  # operator.inbound: inbound conversation channels, for example email
+  # (docs/inbound-channels.md). On by default; nothing runs until a connection is
+  # created. false turns the feature off (INBOUND_CHANNELS_DISABLED); the endpoints
+  # then answer 503. Needs the PostgreSQL store.
+  inbound:
+    enabled: true
+
   # operator.networkPolicy controls the NetworkPolicy applied to the operator pod.
   # oidcEgress grants the operator egress so it can reach its OIDC IdP(s) for JWKS
   # discovery and token introspection (the operator must reach the issuer URL). K8s

@@ -43,6 +43,8 @@ tags:
     description: Per-user OAuth connections to MCP servers (PostgreSQL store and a connection key; 503 without them). Responses never carry a token, a client secret or an authorization code
   - name: triggers
     description: Webhook triggers that start a run of an agent from outside (PostgreSQL store; 503 without it)
+  - name: inbound
+    description: Inbound conversation channels (email and later chat platforms) that start a run of a published agent from a message and reply with the result (PostgreSQL store; 503 without it)
   - name: widget
     description: Chat widget keys, and the public endpoints a page's widget calls (PostgreSQL store; 503 or 404 without it)
 components:
@@ -461,6 +463,34 @@ components:
         createdAt: { type: string, format: date-time }
         lastFiredAt: { type: string, format: date-time }
         fireCount: { type: integer }
+    InboundConnection:
+      type: object
+      required: [id, kind, name, namespace, agent, enabled, config, secretRef, createdBy, createdAt, updatedAt, receivedCount, repliedCount, rejectedCount, path]
+      properties:
+        id: { type: string }
+        tenantId: { type: string }
+        kind: { type: string, description: 'The adapter, for example email.' }
+        name: { type: string }
+        namespace: { type: string }
+        agent: { type: string }
+        enabled: { type: boolean }
+        config:
+          type: object
+          description: >
+            Non-secret settings. allowSenders (exact ids) or allowGroups (exact domains or
+            workspaces) is required: nobody is admitted by default. Also ratePerMin,
+            senderPerHour, pollSeconds (30 to 3600), newThreadPerMessage, and the adapter's own
+            settings under adapter.
+        secretRef: { type: string, description: 'Name of the Secret, in the agent namespace, that holds the credentials. An administrator labels it agentorca.io/inbound-secret=true. Never the values.' }
+        createdBy: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        lastPollAt: { type: string, format: date-time }
+        lastError: { type: string, description: Why the last poll failed, without secrets. }
+        receivedCount: { type: integer }
+        repliedCount: { type: integer }
+        rejectedCount: { type: integer }
+        path: { type: string, description: 'Where a channel that calls us posts, /inbound/{kind}/{id}.' }
     EvalGate:
       type: object
       required: [id, namespace, agent, datasetId, baselineRevision, margin, minCases, budgetUsd, enabled, updatedBy]
@@ -2925,6 +2955,143 @@ paths:
         '413': { description: The body is over 64 KiB }
         '422': { description: The body does not fit the trigger's input path }
         '429': { description: The trigger's rate limit or the tenant's quota is used up }
+  /api/inbound-connections:
+    get:
+      tags: [inbound]
+      summary: List inbound channel connections
+      description: Needs the viewer role. No secret value is returned.
+      parameters:
+        - { in: query, name: namespace, schema: { type: string } }
+        - { in: query, name: agent, schema: { type: string } }
+      responses:
+        '200':
+          description: the connections
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/InboundConnection' } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { description: Inbound channels need the PostgreSQL store }
+    post:
+      tags: [inbound]
+      summary: Create an inbound channel connection for a published agent
+      description: >
+        Needs the builder role. Audited (kind InboundConnection). The agent must be
+        published (409 otherwise) and not a template. config is validated by the adapter
+        and must name who may write in (allowSenders or allowGroups). secretRef names a
+        Secret an administrator labelled agentorca.io/inbound-secret=true; a builder never
+        sends a credential.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [namespace, agent, name, kind, config]
+              properties:
+                namespace: { type: string }
+                agent: { type: string }
+                name: { type: string, maxLength: 80 }
+                kind: { type: string }
+                secretRef: { type: string }
+                config: { type: object }
+      responses:
+        '201':
+          description: the connection
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/InboundConnection' } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: The agent is not published, a template, or the name is taken }
+  /api/inbound-connections/{id}:
+    parameters:
+      - { in: path, name: id, required: true, schema: { type: string } }
+    patch:
+      tags: [inbound]
+      summary: Enable, disable or change an inbound channel connection
+      description: Needs the builder role. Audited. Send enabled, config or secretRef; config is validated as at creation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                enabled: { type: boolean }
+                config: { type: object }
+                secretRef: { type: string }
+      responses:
+        '200':
+          description: the connection
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/InboundConnection' } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [inbound]
+      summary: Delete an inbound channel connection and its message ledger
+      description: Needs the builder role. Audited.
+      responses:
+        '204': { description: deleted }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/inbound-connections/{id}/test:
+    parameters:
+      - { in: path, name: id, required: true, schema: { type: string } }
+    post:
+      tags: [inbound]
+      summary: Test an inbound channel connection
+      description: >
+        Needs the builder role. Connects as the adapter would and reports what it found
+        (for email: whether the login works and the message counts of the folders). It
+        sends nothing and changes nothing.
+      responses:
+        '200':
+          description: the report
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  details: { type: object, additionalProperties: { type: string } }
+                  error: { type: string }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: This kind of channel cannot be tested }
+  /inbound/{kind}/{id}:
+    parameters:
+      - { in: path, name: kind, required: true, schema: { type: string } }
+      - { in: path, name: id, required: true, schema: { type: string } }
+    post:
+      tags: [inbound]
+      summary: Receive a message from a channel that calls us
+      description: >
+        No session. For the email kind this is a mail provider's inbound webhook, signed like
+        /hooks/{id}: X-AgentOrca-Timestamp (Unix seconds, within five minutes) and
+        X-AgentOrca-Signature (sha256= and the hex HMAC-SHA256 of "<timestamp>.<body>" under
+        hex(sha256(secret)), the secret being the signingSecret of the connection's Secret).
+        A recorded message is answered 202 whatever became of it (started, duplicate,
+        rejected, ignored, throttled), so the provider does not retry what policy refused.
+        An unknown, disabled or mismatching connection is 404.
+      requestBody:
+        required: true
+        content:
+          '*/*': { schema: { type: string } }
+      responses:
+        '202':
+          description: the message was recorded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, enum: [started, duplicate, rejected, ignored, throttled, failed] }
+        '400': { description: The message could not be read }
+        '401': { description: Missing or wrong timestamp or signature, or a replayed request }
+        '404': { description: No such enabled connection of this kind }
+        '503': { description: The message could not be recorded or the connection is not ready; send it again }
   /api/widget-keys:
     get:
       tags: [widget]
