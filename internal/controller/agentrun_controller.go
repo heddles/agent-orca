@@ -653,6 +653,15 @@ func (r *AgentRunReconciler) handleRunSuccess(ctx context.Context, run *agentorc
 	}
 	if output == "" {
 		output = agentStdout(ctx)
+		// An agent that prints its streamed completion (the reference agent does)
+		// leaves raw "data: {...}" frames on stdout; the answer is their text.
+		text, stream, failure := router.StreamAnswer(output)
+		if failure != "" {
+			return r.failRun(ctx, run, failure)
+		}
+		if stream {
+			output = text
+		}
 	}
 
 	// The agent's HTTP call failed (non-2xx, or an error event instead of an

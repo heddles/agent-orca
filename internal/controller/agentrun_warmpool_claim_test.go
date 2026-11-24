@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -247,5 +248,43 @@ func TestHandleRunSuccess_HTTPFailureReasonFailsRun(t *testing.T) {
 	}
 	if got.Status.FailureReason != reason {
 		t.Fatalf("FailureReason = %q, want %q", got.Status.FailureReason, reason)
+	}
+}
+
+// An agent that prints its streamed completion leaves SSE frames on stdout; the
+// run's output is their text, and a stream without text fails the run.
+func TestHandleRunSuccess_StdoutStreamIsReassembled(t *testing.T) {
+	frame := func(content string) string {
+		return `data: {"id":"g","choices":[{"index":0,"delta":{"role":"assistant","content":"` + content + `"},"finish_reason":""}]}` + "\n\n"
+	}
+	for name, tc := range map[string]struct {
+		stdout, wantOutput, wantFailure string
+	}{
+		"text after empty chunks": {stdout: frame("") + frame("") + frame("All ") + frame("good.") + "data: [DONE]\n\n", wantOutput: "All good."},
+		"plain stdout is kept":    {stdout: "just text\n", wantOutput: "just text\n"},
+		"no text is a failure":    {stdout: frame("") + frame("") + "data: [DONE]\n\n", wantFailure: "the model returned no answer"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			scheme := warmReuseScheme(t)
+			run := &agentorcav1alpha1.AgentRun{ObjectMeta: metav1.ObjectMeta{Name: "run-s", Namespace: "default"},
+				Status: agentorcav1alpha1.AgentRunStatus{Phase: agentorcav1alpha1.AgentRunPhaseRunning}}
+			cl := fake.NewClientBuilder().WithScheme(scheme).
+				WithStatusSubresource(&agentorcav1alpha1.AgentRun{}).WithObjects(run).Build()
+			r := &AgentRunReconciler{Client: cl, Scheme: scheme, K8s: newFakeClientsetWithLogs()}
+			if _, err := r.handleRunSuccess(context.Background(), run, func(context.Context) string { return tc.stdout }); err != nil {
+				t.Fatal(err)
+			}
+			var got agentorcav1alpha1.AgentRun
+			_ = cl.Get(context.Background(), client.ObjectKeyFromObject(run), &got)
+			if tc.wantFailure != "" {
+				if got.Status.Phase != agentorcav1alpha1.AgentRunPhaseFailed || !strings.Contains(got.Status.FailureReason, tc.wantFailure) {
+					t.Fatalf("phase=%q reason=%q", got.Status.Phase, got.Status.FailureReason)
+				}
+				return
+			}
+			if got.Status.Phase != agentorcav1alpha1.AgentRunPhaseSucceeded || got.Status.Output != tc.wantOutput {
+				t.Fatalf("phase=%q output=%q, want %q", got.Status.Phase, got.Status.Output, tc.wantOutput)
+			}
+		})
 	}
 }

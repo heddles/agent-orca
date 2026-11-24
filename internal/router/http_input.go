@@ -288,3 +288,18 @@ func sseContent(body []byte) (string, bool) {
 	}
 	return sb.String(), sb.Len() > 0
 }
+
+// StreamAnswer reads the output of an agent that streamed an OpenAI chat
+// completion (to a response body or to stdout) instead of printing its answer.
+// stream is false when out is not such a stream, and out is then the answer as
+// it is. For a stream, text is the reassembled answer and failure is why the
+// stream is not one: an error frame, or no text at all.
+func StreamAnswer(out string) (text string, stream bool, failure string) {
+	if !isEventStream([]byte(out)) {
+		return out, false, ""
+	}
+	if text, ok := sseContent([]byte(out)); ok {
+		return text, true, ""
+	}
+	return "", true, httpRunFailure(http.StatusOK, []byte(out))
+}
