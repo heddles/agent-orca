@@ -30,13 +30,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/heddles/agent-orca/internal/state"
 	"io"
 	"log/slog"
 	"net/http"
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/heddles/agent-orca/internal/state"
 
 	authv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"

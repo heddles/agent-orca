@@ -19,10 +19,11 @@ package controller
 import (
 	"context"
 	"encoding/json"
-	"github.com/heddles/agent-orca/internal/runoutput"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/heddles/agent-orca/internal/runoutput"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
