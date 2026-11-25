@@ -1,7 +1,7 @@
 /**
  * Route table. Every view has a URL:
  *
- *   /                                         Home (My work)
+ *   /                                         Home (widgets each user arranges)
  *   /agents                                   Agent catalog
  *   /agents/templates[/:ns/:name]             Templates (read only)
  *   /agents/details/:ns/:name                 an agent: run form, chat
@@ -39,7 +39,7 @@ import { RunHistoryDetailView } from './components/RunHistoryDetailView'
 import { SystemStatusPage } from './components/SystemStatusPage'
 import { CostDashboard } from './components/CostDashboard'
 import { SystemDashboard } from './components/SystemDashboard'
-import { MyWork } from './components/MyWork'
+import { HomeBoard } from './components/HomeBoard'
 import { AgentCatalog } from './components/AgentCatalog'
 import { AgentPage } from './components/AgentPage'
 import { TemplateDetail, TemplatesGallery } from './components/TemplatesGallery'
@@ -74,11 +74,7 @@ function HomeRoute() {
   if (legacy) return <Navigate to={legacy} replace />
   return (
     <div style={{ flex: 1, overflowY: 'auto' }}>
-      <PageHeader
-        title="My work"
-        description="What you have asked agents to do, what is waiting on you, and the results."
-      />
-      <MyWork />
+      <HomeBoard />
       <PlatformOverview onOpen={(tab) => navigate(pathForTab(tab))} />
     </div>
   )

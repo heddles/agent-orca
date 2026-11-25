@@ -22,7 +22,7 @@ vi.mock('../api/sse', async () => {
   }
 })
 
-import { MyWork } from './MyWork'
+import { NeedsYou, RecentRuns } from './MyWork'
 
 function run(over: Partial<MyRun>): MyRun {
   return {
@@ -35,7 +35,7 @@ function runs(scope: MyRuns['scope'], list: MyRun[]): MyRuns {
   return { scope, userId: 'ada', runs: list }
 }
 
-const renderHome = () => render(<MemoryRouter><MyWork /></MemoryRouter>)
+const renderHome = () => render(<MemoryRouter><NeedsYou /><RecentRuns /></MemoryRouter>)
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -122,6 +122,6 @@ describe('MyWork', () => {
   it('shows a load failure', async () => {
     mockMyRuns.mockImplementation(() => Promise.reject(new Error('HTTP 500')))
     renderHome()
-    expect(await screen.findByRole('alert')).toHaveTextContent('HTTP 500')
+    for (const alert of await screen.findAllByRole('alert')) expect(alert).toHaveTextContent('HTTP 500')
   })
 })
