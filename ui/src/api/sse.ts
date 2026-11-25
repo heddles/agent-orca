@@ -187,6 +187,10 @@ export interface AgentRunSummary {
   schedule?: string
   /** "schedule" for an unattended tick, "manual" for Run now. */
   trigger?: string
+  /** The start of what the run was asked to do. */
+  input?: string
+  /** The run that spawned this one, for a sub-run. */
+  parentRunRef?: string
 }
 
 export interface AgentSummary {
@@ -752,6 +756,9 @@ export interface RunHistorySummary {
   contextUsedTokens?: number
   /** Maximum context window size for the selected model. */
   maxContextTokens?: number
+  /** The start of what the run was asked to do. */
+  input?: string
+  parentRunRef?: string
 }
 
 export interface RunHistoryResponse {

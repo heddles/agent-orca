@@ -410,8 +410,11 @@ func (s *UIServer) handleListRuns(w http.ResponseWriter, r *http.Request) {
 		Namespace string `json:"namespace"`
 		// Trigger is "schedule" for a run an AgentSchedule started on its own,
 		// "manual" for one a person started with Run now, else empty.
-		Trigger        string `json:"trigger,omitempty"`
-		Schedule       string `json:"schedule,omitempty"`
+		Trigger      string `json:"trigger,omitempty"`
+		Schedule     string `json:"schedule,omitempty"`
+		ParentRunRef string `json:"parentRunRef,omitempty"`
+		// Input is the start of what the run was asked to do.
+		Input          string `json:"input,omitempty"`
 		AgentRef       string `json:"agentRef"`
 		Phase          string `json:"phase"`
 		SpendUSD       string `json:"spendUSD"`
@@ -429,6 +432,8 @@ func (s *UIServer) handleListRuns(w http.ResponseWriter, r *http.Request) {
 			SpendUSD:     run.Status.SpendUSD,
 			RestartCount: run.Status.RestartCount,
 			Schedule:     run.Labels[schedule.LabelSchedule],
+			ParentRunRef: run.Spec.ParentRunRef,
+			Input:        truncateRunes(run.Spec.Input, postgresql.HistoryInputChars),
 		}
 		if s.Schedule != "" {
 			s.Trigger = triggerManual

@@ -161,6 +161,29 @@ func TestMyRunsPrefersTheUsersOwnRuns(t *testing.T) {
 	}
 }
 
+// A sub-run is listed under its parent, not on Home, unless a person has to
+// answer it.
+func TestMyRunsLeavesOutSubRunsUnlessTheyWaitForAPerson(t *testing.T) {
+	s := agentsUIServer(t)
+	for name, phase := range map[string]agentorcav1alpha1.AgentRunPhase{
+		"sub-done":    agentorcav1alpha1.AgentRunPhaseSucceeded,
+		"sub-waiting": agentorcav1alpha1.AgentRunPhaseWaitingForInput,
+	} {
+		run := &agentorcav1alpha1.AgentRun{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "team-a"},
+			Spec:       agentorcav1alpha1.AgentRunSpec{AgentRef: "helper", ParentRunRef: "r1"},
+			Status:     agentorcav1alpha1.AgentRunStatus{Phase: phase},
+		}
+		if err := s.crdClient.Create(t.Context(), run); err != nil {
+			t.Fatal(err)
+		}
+	}
+	body := agentsReq(s, catalogTenant, http.MethodGet, "/api/my/runs", "").Body.String()
+	if strings.Contains(body, `"sub-done"`) || !strings.Contains(body, `"sub-waiting"`) {
+		t.Fatalf("want only the waiting sub-run: %s", body)
+	}
+}
+
 func TestPlatformTemplatesAreVisibleToEveryTenantButNeverRunnable(t *testing.T) {
 	tenancy.SetPlatformNamespaces([]string{"platform-ns"})
 	t.Cleanup(func() { tenancy.SetPlatformNamespaces(nil) })

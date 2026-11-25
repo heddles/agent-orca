@@ -22,11 +22,14 @@ import { StatusBadge } from './StatusBadge'
 import { DESIGN, ds } from '../lib/designSystem'
 import { Icon, ICON } from '../lib/icons'
 import { PageHeader, EmptyState } from '../lib/layout'
+import { channelLabel, parseRunInput, runTitle } from '../lib/runText'
+import { nestRuns } from '../lib/runTree'
+import { duration, timeAgo } from '../lib/time'
 
 const PAGE_SIZES = [25, 50, 100]
 const PHASE_OPTIONS = ['', 'Pending', 'Running', 'Succeeded', 'Failed', 'HandedOff', 'WaitingForInput']
 
-type SortKey = 'name' | 'agent' | 'phase' | 'cost' | 'started' | 'completed'
+type SortKey = 'request' | 'agent' | 'status' | 'cost' | 'started' | 'duration'
 type SortDir = 'asc' | 'desc'
 export type RunSource = 'live' | 'archived'
 type SourceFilter = '' | RunSource
@@ -34,7 +37,7 @@ type SourceFilter = '' | RunSource
 type StartedByFilter = '' | 'people' | 'schedule'
 
 /** A run from either source, tagged with where it came from. */
-type RunRow = RunHistorySummary & { source: RunSource }
+type RunRow = RunHistorySummary & { source: RunSource; trigger?: string }
 
 interface Props {
   /** Open a run's detail view: the live view or the archived one. */
@@ -141,7 +144,7 @@ export function RunsView({ onNavigateToRun, namespace = '', initialAgent = '' }:
     const liveRows: RunRow[] = live
       .filter((r) => (!phase || r.phase === phase)
         && (!agent || r.agentRef.toLowerCase().includes(agent))
-        && (!search || r.name.toLowerCase().includes(search))
+        && (!search || r.name.toLowerCase().includes(search) || (r.input ?? '').toLowerCase().includes(search))
         && (startedBy === '' || (startedBy === 'schedule') === (r.trigger === 'schedule')))
       .map((r) => ({ ...r, source: 'live' as const }))
     const allLiveKeys = new Set(live.map((r) => `${r.namespace}/${r.name}`))
@@ -168,16 +171,16 @@ export function RunsView({ onNavigateToRun, namespace = '', initialAgent = '' }:
           av = a.startTime ? new Date(a.startTime).getTime() : 0
           bv = b.startTime ? new Date(b.startTime).getTime() : 0
           break
-        case 'completed':
-          av = a.completionTime ? new Date(a.completionTime).getTime() : 0
-          bv = b.completionTime ? new Date(b.completionTime).getTime() : 0
+        case 'duration':
+          av = elapsedMs(a)
+          bv = elapsedMs(b)
           break
         case 'agent':
           av = a.agentRef; bv = b.agentRef; break
-        case 'phase':
+        case 'status':
           av = a.phase; bv = b.phase; break
         default:
-          av = a.name; bv = b.name; break
+          av = runTitle(a.input, a.name).toLowerCase(); bv = runTitle(b.input, b.name).toLowerCase(); break
       }
       if (typeof av === 'number' && typeof bv === 'number') {
         return av === bv ? 0 : av > bv ? dir : -dir
@@ -195,6 +198,15 @@ export function RunsView({ onNavigateToRun, namespace = '', initialAgent = '' }:
       setSortDir(key === 'started' ? 'desc' : 'asc')
     }
   }
+
+  const tree = useMemo(() => nestRuns(sorted), [sorted])
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const toggleExpanded = (key: string) => setExpanded((prev) => {
+    const next = new Set(prev)
+    if (!next.delete(key)) next.add(key)
+    return next
+  })
+  const manyNamespaces = new Set(runs.map((r) => r.namespace)).size > 1
 
   const filtered = Boolean(filters.phase || filters.agentRef || filters.search || sourceFilter || startedBy)
   const archivedShown = runs.filter((r) => r.source === 'archived').length
@@ -246,7 +258,7 @@ export function RunsView({ onNavigateToRun, namespace = '', initialAgent = '' }:
           <label style={s.filterLabel}>Search</label>
           <input
             type="text"
-            placeholder="Run name…"
+            placeholder="Request or run name…"
             value={filters.search}
             onChange={(e) => handleFilterChange('search', e.target.value)}
             style={{ ...s.searchInput, ...(loading ? { opacity: 0.6 } : {}) }}
@@ -349,33 +361,39 @@ export function RunsView({ onNavigateToRun, namespace = '', initialAgent = '' }:
           <table style={s.table} role="table">
             <thead>
               <tr>
-                {renderHeader('name', 'Run Name', s.th, s.sortBtn)}
+                {renderHeader('request', 'Request', s.th, s.sortBtn)}
                 {renderHeader('agent', 'Agent', s.th, s.sortBtn)}
-                {renderHeader('phase', 'Phase', s.th, s.sortBtn)}
-                {renderHeader('cost', 'Cost', { ...s.th, textAlign: 'right' }, s.sortBtn)}
+                {renderHeader('status', 'Status', s.th, s.sortBtn)}
                 {renderHeader('started', 'Started', s.th, s.sortBtn)}
-                {renderHeader('completed', 'Completed', s.th, s.sortBtn)}
-                <th style={s.th}>Source</th>
-                <th style={s.th}>Namespace</th>
-                <th style={s.th}>Context</th>
-                <th style={s.th}>Actions</th>
+                {renderHeader('duration', 'Duration', s.th, s.sortBtn)}
+                {renderHeader('cost', 'Cost', { ...s.th, textAlign: 'right' }, s.sortBtn)}
               </tr>
             </thead>
             <tbody>
               {sorted.length === 0 && (
                 <tr>
-                  <td colSpan={10} style={s.empty}>
+                  <td colSpan={6} style={s.empty}>
                     {filtered ? 'No runs match your filters.' : 'No runs found.'}
                   </td>
                 </tr>
               )}
-              {sorted.map((run) => (
-                <RunHistoryRow
-                  key={`${run.namespace}/${run.name}`}
-                  run={run}
-                  onClick={() => onNavigateToRun(run.name, run.namespace, run.source)}
-                />
-              ))}
+              {tree.map(({ run, children }) => {
+                const key = `${run.namespace}/${run.name}`
+                const open = expanded.has(key)
+                const row = (r: RunRow, nested: boolean) => (
+                  <RunHistoryRow
+                    key={`${r.namespace}/${r.name}`}
+                    run={r}
+                    nested={nested}
+                    showNamespace={manyNamespaces}
+                    onClick={() => onNavigateToRun(r.name, r.namespace, r.source)}
+                    subRuns={!nested && children.length > 0
+                      ? { count: children.length, open, onToggle: () => toggleExpanded(key) }
+                      : undefined}
+                  />
+                )
+                return [row(run, false), ...(open ? children.map((c) => row(c, true)) : [])]
+              })}
             </tbody>
           </table>
         </div>
@@ -454,53 +472,54 @@ export function RunsView({ onNavigateToRun, namespace = '', initialAgent = '' }:
   }
 }
 
-function RunHistoryRow({ run, onClick }: { run: RunRow; onClick: () => void }) {
-  const started = run.startTime ? new Date(run.startTime).toLocaleString() : '—'
-  const completed = run.completionTime ? new Date(run.completionTime).toLocaleString() : '—'
-  const contextPct = run.maxContextTokens
-    ? Math.round((run.contextUsedTokens ?? 0) / run.maxContextTokens * 100)
-    : 0
-  const contextLabel = run.maxContextTokens
-    ? `${run.contextUsedTokens?.toLocaleString() ?? 0} / ${run.maxContextTokens.toLocaleString()} (${contextPct}%)`
-    : run.contextUsedTokens
-      ? `${run.contextUsedTokens.toLocaleString()} tokens`
-      : '—'
+function elapsedMs(run: RunRow): number {
+  if (!run.startTime) return 0
+  const end = run.completionTime ? new Date(run.completionTime).getTime() : Date.now()
+  return end - new Date(run.startTime).getTime()
+}
 
+interface RowProps {
+  run: RunRow
+  onClick: () => void
+  /** A sub-run, shown under the run that spawned it. */
+  nested: boolean
+  showNamespace: boolean
+  subRuns?: { count: number; open: boolean; onToggle: () => void }
+}
+
+function RunHistoryRow({ run, onClick, nested, showNamespace, subRuns }: RowProps) {
+  const channel = parseRunInput(run.input ?? '').channel
+  const title = runTitle(run.input, run.name)
   return (
     <tr style={s.row}>
-      <td style={s.td}>
-        <button type="button" style={s.rowLink} onClick={onClick} aria-label={`View run ${run.name}`}>
-          {run.name}
+      <td style={{ ...s.td, ...s.requestCell, paddingLeft: nested ? 36 : 12 }}>
+        <button type="button" style={s.rowLink} onClick={onClick} aria-label={`View run ${run.name}`} title={title}>
+          {title}
         </button>
+        <div style={s.rowMeta}>
+          {title !== run.name && <span style={s.runName}>{run.name}</span>}
+          {channel && <span style={s.tag}>{channelLabel(channel)}</span>}
+          {run.trigger === 'schedule' && <span style={s.tag}>Scheduled</span>}
+          {run.source === 'archived' && <span style={s.tag}>Past</span>}
+          {showNamespace && <span style={s.tag}>{run.namespace}</span>}
+          {subRuns && (
+            <button type="button" style={s.subRunBtn} aria-expanded={subRuns.open} onClick={subRuns.onToggle}>
+              <Icon icon={ICON.chevronRight} size={10} ariaHidden style={subRuns.open ? { transform: 'rotate(90deg)' } : undefined} />
+              {subRuns.count} sub-run{subRuns.count === 1 ? '' : 's'}
+            </button>
+          )}
+        </div>
       </td>
       <td style={s.td}>{run.agentRef || '—'}</td>
       <td style={s.td}>
         <StatusBadge phase={run.phase} />
       </td>
+      <td style={{ ...s.td, whiteSpace: 'nowrap' }} title={run.startTime ? new Date(run.startTime).toLocaleString() : undefined}>
+        {timeAgo(run.startTime) || '—'}
+      </td>
+      <td style={{ ...s.td, whiteSpace: 'nowrap' }}>{duration(run.startTime, run.completionTime) || '—'}</td>
       <td style={{ ...s.td, textAlign: 'right' }}>
-        <span style={s.cost}>${run.spendUSD || '0.0000'}</span>
-      </td>
-      <td style={s.td}>{started}</td>
-      <td style={s.td}>{completed}</td>
-      <td style={s.td}>{run.source === 'live' ? 'Live' : 'Past'}</td>
-      <td style={s.td}>
-        <code style={s.code}>{run.namespace}</code>
-      </td>
-      <td style={s.td}>
-        <span style={{ ...s.cost, color: contextPct > 80 ? 'var(--ds-warning)' : 'var(--ds-text-secondary)' }}>
-          {contextLabel}
-        </span>
-      </td>
-      <td style={s.td}>
-        <button
-          type="button"
-          style={s.iconBtn}
-          onClick={onClick}
-          aria-label={`View ${run.name} output`}
-          title="View run detail"
-        >
-          <Icon icon={ICON.chevronRight} size={14} ariaHidden />
-        </button>
+        <span style={s.cost}>{run.spendUSD ? `$${run.spendUSD}` : '—'}</span>
       </td>
     </tr>
   )
@@ -649,10 +668,11 @@ const s: Record<string, React.CSSProperties> = {
     background: 'var(--ds-surface)',
     border: `1px solid var(--ds-border)`,
     borderRadius: DESIGN.radii.lg,
-    // Scrollable surface so the wide history table (9 columns incl. Context)
+    // Scrollable surface so the wide history table 
     // is reachable at narrow viewports instead of being clipped.
     overflow: 'auto',
-    maxHeight: '40vh',
+    // The page scrolls; the table takes the height its rows need.
+    flexShrink: 0,
     boxShadow: 'var(--ds-card-shadow)',
   },
   table: {
@@ -695,16 +715,21 @@ const s: Record<string, React.CSSProperties> = {
     transitionProperty: 'background-color',
     transitionDuration: '0.12s',
   },
+  requestCell: { width: '100%', maxWidth: 0 },
   rowLink: {
-    background: 'none',
-    border: 'none',
-    color: 'var(--ds-accent)',
-    fontSize: 12,
-    padding: 0,
-    cursor: 'pointer',
-    fontFamily: DESIGN.font.mono,
-    textAlign: 'left' as const,
-    textDecoration: 'none',
+    display: 'block', width: '100%', background: 'none', border: 'none', color: 'var(--ds-text-primary)',
+    fontSize: 13, fontWeight: 500, padding: 0, cursor: 'pointer', textAlign: 'left',
+    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+  },
+  rowMeta: { display: 'flex', alignItems: 'center', gap: 8, marginTop: 2, minWidth: 0 },
+  runName: {
+    fontFamily: DESIGN.font.mono, fontSize: 10, color: 'var(--ds-text-muted)',
+    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+  },
+  tag: { fontSize: 10, color: 'var(--ds-text-secondary)', background: 'rgba(148,163,184,.12)', padding: '1px 6px', borderRadius: DESIGN.radii.full, whiteSpace: 'nowrap' },
+  subRunBtn: {
+    display: 'inline-flex', alignItems: 'center', gap: 3, background: 'none', border: 'none', padding: 0,
+    color: 'var(--ds-accent)', fontSize: 11, cursor: 'pointer', whiteSpace: 'nowrap',
   },
   cost: {
     fontSize: 12,
@@ -751,21 +776,6 @@ const s: Record<string, React.CSSProperties> = {
     display: 'inline-flex',
     alignItems: 'center',
     gap: 4,
-  },
-  iconBtn: {
-    width: 24,
-    height: 24,
-    borderRadius: DESIGN.radii.sm,
-    border: `1px solid var(--ds-border)`,
-    background: 'transparent',
-    color: 'var(--ds-text-secondary)',
-    cursor: 'pointer',
-    display: 'inline-flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 0,
-    transitionProperty: 'background-color, color',
-    transitionDuration: '0.15s',
   },
   pagination: {
     display: 'flex',

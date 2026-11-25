@@ -106,15 +106,23 @@ type HistoryQuery struct {
 	// authorized set). Empty = all namespaces (only meaningful when the caller has
 	// cluster-wide access).
 	Namespaces []string
-	// Search matches against the run name case-insensitively.
+	// Search matches the run name or its input, case-insensitively.
 	Search string
 	// IncludeEval lists the runs of evaluation experiments too. The zero value
 	// leaves them out: they are not production traffic.
 	IncludeEval bool
 }
 
+// HistoryInputChars is how much of a run's input a list carries. It leaves room
+// for the wrapper a channel puts before the message.
+const HistoryInputChars = 600
+
 // HistoryResult is a single row in a history listing.
 type HistoryResult struct {
+	// Input is the start of the run's input, so a list can say what was asked.
+	// Empty once the retention policy has removed the payload.
+	Input          string     `json:"input,omitempty"`
+	ParentRunRef   string     `json:"parentRunRef,omitempty"`
 	Name           string     `json:"name"`
 	Namespace      string     `json:"namespace"`
 	AgentRef       string     `json:"agentRef"`
@@ -351,7 +359,7 @@ func queryHistory(ctx context.Context, tx dbtx, scope string, q HistoryQuery) (*
 		where = append(where, fmt.Sprintf("namespace IN (%s)", strings.Join(ph, ", ")))
 	}
 	if q.Search != "" {
-		where = append(where, fmt.Sprintf("name ILIKE $%d", paramN))
+		where = append(where, fmt.Sprintf("(name ILIKE $%d OR input ILIKE $%d)", paramN, paramN))
 		args = append(args, "%"+strings.ReplaceAll(q.Search, "%", "\\%")+"%")
 		paramN++
 	}
@@ -370,11 +378,12 @@ func queryHistory(ctx context.Context, tx dbtx, scope string, q HistoryQuery) (*
 	// Paginated results, newest first.
 	dataQ := fmt.Sprintf(`
 		SELECT name, namespace, agent_ref, phase, spend_usd, start_time, completion_time, tenant,
-		       context_used_tokens, max_context_tokens
+		       context_used_tokens, max_context_tokens,
+		       LEFT(COALESCE(input, ''), %d), COALESCE(parent_run_ref, '')
 		FROM archived_runs %s
 		ORDER BY COALESCE(start_time, created_at) DESC, name ASC
 		LIMIT $%d OFFSET $%d
-	`, whereClause, paramN, paramN+1)
+	`, HistoryInputChars, whereClause, paramN, paramN+1)
 	args = append(args, limit, offset)
 
 	rows, err := tx.QueryContext(ctx, dataQ, args...)
@@ -393,7 +402,8 @@ func queryHistory(ctx context.Context, tx dbtx, scope string, q HistoryQuery) (*
 		var r HistoryResult
 		if err := rows.Scan(&r.Name, &r.Namespace, &r.AgentRef, &r.Phase,
 			&r.SpendUSD, &r.StartTime, &r.CompletionTime, &r.Tenant,
-			&r.ContextUsedTokens, &r.MaxContextTokens); err != nil {
+			&r.ContextUsedTokens, &r.MaxContextTokens,
+			&r.Input, &r.ParentRunRef); err != nil {
 			return nil, fmt.Errorf("scanning run row: %w", err)
 		}
 		results = append(results, r)

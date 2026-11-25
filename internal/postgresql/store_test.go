@@ -56,8 +56,9 @@ func TestQueryHistoryBindsLimitOffsetArgs(t *testing.T) {
 			"name", "namespace", "agent_ref", "phase", "spend_usd",
 			"start_time", "completion_time", "tenant",
 			"context_used_tokens", "max_context_tokens",
+			"input", "parent_run_ref",
 		}).AddRow("run-1", "default", "my-agent", "Succeeded", "0.0123",
-			start, completed, "acme", 42, 200000))
+			start, completed, "acme", 42, 200000, "what is up?", "parent-1"))
 
 	mock.ExpectCommit()
 	s := &Store{db: db, defaultScope: PlatformScope}
@@ -77,6 +78,9 @@ func TestQueryHistoryBindsLimitOffsetArgs(t *testing.T) {
 	}
 	if r.ContextUsedTokens != 42 || r.MaxContextTokens != 200000 {
 		t.Fatalf("context tokens not scanned: used=%d max=%d", r.ContextUsedTokens, r.MaxContextTokens)
+	}
+	if r.Input != "what is up?" || r.ParentRunRef != "parent-1" {
+		t.Fatalf("input or parent not scanned: %+v", r)
 	}
 	if !r.StartTime.Equal(start) || !r.CompletionTime.Equal(completed) {
 		t.Fatalf("timestamps not scanned: start=%v comp=%v", r.StartTime, r.CompletionTime)
