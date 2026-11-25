@@ -286,7 +286,6 @@ so the UI is gated on the OIDC login (not on cluster-internal proximity).
 For programmatic callers, a federated bearer tenant also works. Google's OIDC
 issuer is `https://token.actions.githubusercontent.com` (Actions), with the user's
 login in the `actor` claim — see
-[`config/samples/dev-tenant.yaml`](config/samples/dev-tenant.yaml) and
 [enterprise-integration.md](enterprise-integration.md#github-oidc).
 
 ## Future RBAC design

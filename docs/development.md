@@ -184,6 +184,47 @@ the selector.
 - **Cost of a decision:** about 1 ms at 10 messages, 8 ms at 200, 20 ms at 500 (almost all inside the
   guest), against an LLM call of seconds. The engine adds about 110 MB of peak memory at start.
 
+## Documentation site
+
+[docs.agentorca.org](https://docs.agentorca.org) is built from the Markdown in
+`docs/` with [VitePress](https://vitepress.dev). To work on it:
+
+```bash
+cd docs
+npm ci
+npm run dev      # live preview
+npm run build    # what CI runs
+```
+
+**Adding a page.** Create `docs/<name>.md` starting with a `# Title` heading,
+which becomes its menu label. It appears under "Other" until you add it to a
+group in `docs/.vitepress/sidebar.ts`.
+
+**Writing for GitHub and the site.** Use relative links. Links to other pages
+stay on the site, and links to anything else in the repository point to GitHub
+at the published ref. The build fails on a link to a missing page or file, but
+does not check `#section` anchors. Put placeholders such as `<name>` in code
+formatting, because the site reads a bare one as an HTML tag.
+
+**Publishing.** Every pull request builds the site. A release publishes it after
+the GitHub Release is created; rerunning an older release leaves the site alone.
+To publish between releases, run the `Docs` workflow by hand:
+
+```bash
+gh workflow run docs.yml -f ref=main
+```
+
+This publishes all of `main`, including docs for unreleased features, until the
+next release replaces it.
+
+**Hosting.** GitHub Pages, with this repository setup:
+
+- Pages source is "GitHub Actions" and the custom domain is `docs.agentorca.org`
+  (set in the repository settings; a `CNAME` file has no effect).
+- DNS has a `CNAME` record from `docs.agentorca.org` to `heddles.github.io`.
+- The `github-pages` environment allows deployments from `main` and from `v*`
+  tags. GitHub allows only the default branch unless the tag rule is added.
+
 ## After Making Changes
 
 **After editing `*_types.go` or markers:**

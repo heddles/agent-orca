@@ -75,3 +75,6 @@ ui/test-results/.last-run.json
 plans/*
 graphify-out/
 **/.carto/*
+
+# Documentation site
+docs/.vitepress/cache/

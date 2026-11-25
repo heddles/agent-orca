@@ -6,6 +6,7 @@ name: Release
 #   - aoctl binaries for linux/darwin/windows x amd64/arm64 -> release assets
 #   - Helm charts (version = tag without the "v", images pinned to the tag)
 #       -> oci://ghcr.io/heddles/agent-orca/charts and release assets
+#   - the docs site (docs.yml), once the Release exists, for the newest tag only
 #   - the Release itself: the tag's annotation followed by generated notes
 #
 # The tag push is the only automatic trigger. Publishing a Release by hand used
@@ -234,3 +235,14 @@ jobs:
               --notes-file notes.md \
               --generate-notes
           fi
+
+  docs:
+    needs: release
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/docs.yml
+    with:
+      ref: ${{ inputs.tag || github.ref_name }}
+      only_newest: true

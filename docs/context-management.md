@@ -120,7 +120,7 @@ spec:
 
 The model-router performs the OAuth token exchange in-memory (RFC 8414 metadata discovery + refresh_token grant) and keeps the bearer token refreshed. No access-token Secret is mounted — only the credentials Secret. This is mutually exclusive with `auth.bearerToken` and with `stdio` transport.
 
-The operator propagates `auth` (both bearer and OAuth) to child `Tool` CRs and renders the appropriate credential files/volumes into the agent pod. See [docs/mcp-access-control.md](docs/mcp-access-control.md) for full details.
+The operator propagates `auth` (both bearer and OAuth) to child `Tool` CRs and renders the appropriate credential files/volumes into the agent pod. See [docs/mcp-access-control.md](mcp-access-control.md) for full details.
 
 ## Tool result truncation & loop guards
 

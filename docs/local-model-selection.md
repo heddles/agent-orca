@@ -72,8 +72,8 @@ helpful, complete-sounding answers to operational questions. A system prompt say
 
 **Recommended workaround**: use a frontier model (Claude Sonnet or GPT-4o) as the
 `default` ModelSelector for this demo. These models reliably follow tool-use instructions
-with complex multi-step constraints. See the deploy section in
-[demo-escalation-chain.md](demo-escalation-chain.md).
+with complex multi-step constraints. See
+[Escalation Chain](demos.md#escalation-chain) in the demo catalog.
 
 ## Recommended models by RAM
 

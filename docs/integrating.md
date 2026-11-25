@@ -123,7 +123,7 @@ result = agent.run(input="Find the latest news about LLMs")
 | `agent.save_checkpoint(data)` | Persist arbitrary state |
 | `agent.load_checkpoint()` | Restore state from last checkpoint |
 
-See [examples/agent-sdk-template/agent.py](../examples/agent-sdk-template/agent.py) for a full reference implementation.
+See the [SDK source](../pkg/python/agentorca/agentorca/agent.py) for the full implementation.
 
 ### Go SDK
 

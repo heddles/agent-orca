@@ -361,10 +361,3 @@ Fix: point `--endpoint`/`--acp-endpoint` at the right port (or set
 `AOCTL_ENDPOINT`/`AOCTL_ACP_ENDPOINT`). If you are using the committed `aoctl`
 binary at the repo root, rebuild it (`make aoctl`) — it may predate the status +
 content-type checks.
-
-## Using aoctl with Terraform
-
-For infrastructure-as-code tenant provisioning, you can use either `aoctl admin
-tenants create` or the [Terraform example](../examples/terraform/agentorca_tenant.tf).
-Both produce identical Kubernetes resources (`TenantConfig` + client-secret
-`Secret`).

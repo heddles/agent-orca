@@ -1,0 +1,101 @@
+name: Docs
+
+# The public documentation site, https://docs.agentorca.org, built from docs/
+# with VitePress and hosted on GitHub Pages.
+#   - Pull requests build the site, so a broken link or page fails before merge.
+#     No path filter: removing a source file that a page links to breaks it too.
+#   - release.yml publishes the docs of each new release.
+#   - Running this workflow by hand publishes any branch or tag that has the
+#     site, for the first publish or a docs fix between releases.
+
+on:
+  pull_request:
+  workflow_call:
+    inputs:
+      ref:
+        description: "Tag to publish"
+        type: string
+        required: true
+      only_newest:
+        description: "Skip publishing unless ref is the newest release tag"
+        type: boolean
+        default: false
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch or tag to publish, e.g. main or v0.16.0"
+        required: true
+        default: main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      publish: ${{ steps.gate.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+
+      # Re-running the release of an old tag must not put old docs back online.
+      - name: Decide whether to publish
+        id: gate
+        env:
+          REF: ${{ inputs.ref }}
+          ONLY_NEWEST: ${{ inputs.only_newest }}
+        run: |
+          publish=false
+          if [ -n "$REF" ]; then
+            publish=true
+            if [ "$ONLY_NEWEST" = true ]; then
+              newest=$(git ls-remote --tags --refs origin 'v*' | sed 's|.*refs/tags/||' |
+                grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+              if [ "$REF" != "$newest" ]; then
+                echo "::notice::Not publishing docs for $REF: the newest release is $newest."
+                publish=false
+              fi
+            fi
+          fi
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
+
+      - name: Build the site
+        working-directory: docs
+        env:
+          # Links to source files point at this ref.
+          DOCS_REF: ${{ inputs.ref }}
+        run: |
+          npm ci
+          npm run build
+
+      - uses: actions/upload-pages-artifact@v5
+        if: steps.gate.outputs.publish == 'true'
+        with:
+          path: docs/.vitepress/dist
+
+  deploy:
+    needs: build
+    if: needs.build.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5
