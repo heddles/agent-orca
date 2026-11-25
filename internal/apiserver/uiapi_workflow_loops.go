@@ -115,7 +115,7 @@ func (s *UIServer) workflowPassHistory(ctx context.Context, wf *agentorcav1alpha
 		} else if run.Name != wf.Name+"-"+step {
 			continue
 		}
-		output := outputOf(ctx, s.store, &run)
+		output := s.runAnswer(ctx, &run)
 		if len(output) > maxPassOutputBytes {
 			output = output[:maxPassOutputBytes] + "…"
 		}

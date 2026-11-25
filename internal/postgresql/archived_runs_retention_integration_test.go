@@ -189,6 +189,15 @@ func checkReducedRunsStillServe(t *testing.T, s *Store, a, b context.Context, ca
 		t.Errorf("tenant B reads tenant A's archived run")
 	}
 
+	// The answer alone, per tenant.
+	ans, err := s.GetRunAnswer(a, "shared", "new-a")
+	if err != nil || ans == nil || ans.Output != "out-new" || ans.Phase == "" || ans.CompletionTime == nil {
+		t.Errorf("GetRunAnswer = %+v, %v", ans, err)
+	}
+	if other, err := s.GetRunAnswer(b, "shared", "new-a"); err != nil || other != nil {
+		t.Errorf("tenant B reads tenant A's answer: %+v, %v", other, err)
+	}
+
 	// The dataset case copied its data and is unaffected by the sweep.
 	got, err := s.GetEvalCase(a, caseID)
 	if err != nil || got.Input != "copied input" || got.Reference != "copied reference" || got.SourceRun != "old-a" {

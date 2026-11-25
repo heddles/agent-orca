@@ -584,6 +584,32 @@ func (s *Store) GetRun(ctx context.Context, namespace, name string) (*RunArchive
 	return &r, nil
 }
 
+// RunAnswer is an archived run's answer, with what identifies which run it was.
+type RunAnswer struct {
+	Output         string
+	Phase          string
+	CompletionTime *time.Time
+}
+
+// GetRunAnswer reads only an archived run's answer; nil when the run is not
+// archived. GetRun also loads the trace, which is too much to read for a list.
+func (s *Store) GetRunAnswer(ctx context.Context, namespace, name string) (*RunAnswer, error) {
+	const q = `SELECT COALESCE(output, ''), phase, completion_time
+		FROM archived_runs WHERE id = $1 AND ($2::text = '*' OR tenant_id = $2)`
+	id := fmt.Sprintf("%s/%s", namespace, name)
+	var a RunAnswer
+	err := s.scoped(ctx, func(tx dbtx, scope string) error {
+		return tx.QueryRowContext(ctx, q, id, scope).Scan(&a.Output, &a.Phase, &a.CompletionTime)
+	})
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("loading the answer of archived run %s: %w", id, err)
+	}
+	return &a, nil
+}
+
 // ApplyMigration brings the schema up to date (see migrate.go).
 func (s *Store) ApplyMigration(ctx context.Context) error {
 	applied, err := Migrate(ctx, s.db)

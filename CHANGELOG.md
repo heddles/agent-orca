@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The bundled Redis now has `maxmemory` (384mb) and `volatile-ttl` eviction (`redis.maxmemory`, `redis.maxmemoryPolicy`).
 
 ### Fixed
+- A finished run whose answer was no longer in Redis showed no answer while it was still in the cluster. The UI API now falls back to the archived run, for the run page, Home, the chat widget and channel replies. The ACP and external task APIs do not yet.
 - UI: the Runs table sorted oldest first while showing newest first; several pages had lost their padding; inactive tabs could keep a dark underline; a run with no spend showed a bare `$`; run output now renders as markdown by default; an empty chat suggests the agent's own example inputs.
 - A question from the agent (`_clarify`) now reaches the person on every inbound channel, instead of "The agent could not complete this request." The next message in the thread is the answer and resumes the run. See [Inbound channels](docs/inbound-channels.md).
 
