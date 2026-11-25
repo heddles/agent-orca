@@ -391,7 +391,7 @@ func (s *UIServer) handleMyRuns(w http.ResponseWriter, r *http.Request) {
 			mr := myRun{
 				Name: run.Name, Namespace: run.Namespace, AgentRef: run.Spec.AgentRef,
 				Phase: string(run.Status.Phase), SpendUSD: run.Status.SpendUSD,
-				Input: truncateRunes(run.Spec.Input, postgresql.HistoryInputChars), Output: outputOf(r.Context(), s.store, run),
+				Input: truncateRunes(run.Spec.Input, postgresql.HistoryInputChars), Output: s.runAnswer(r.Context(), run),
 				ClarifyQuestion: run.Status.ClarifyQuestion,
 				CreatedBy:       run.Annotations[AnnotationCreatedBy],
 				CreatedAt:       run.CreationTimestamp.UTC().Format(time.RFC3339),

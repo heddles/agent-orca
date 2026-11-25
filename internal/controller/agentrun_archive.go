@@ -32,6 +32,7 @@ import (
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
 	"github.com/heddles/agent-orca/internal/postgresql"
+	"github.com/heddles/agent-orca/internal/runoutput"
 	"github.com/heddles/agent-orca/internal/tenancy"
 )
 
@@ -71,7 +72,7 @@ const (
 
 	// outputGone is the archived answer of a run whose stored answer expired
 	// before the run was archived.
-	outputGone = "[No answer is stored for this run: it was not in the state store when the run was archived.]"
+	outputGone = runoutput.Gone
 )
 
 var (

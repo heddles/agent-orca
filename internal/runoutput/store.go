@@ -21,6 +21,10 @@ const Scope = "run-output"
 // for as long as archived-run retention allows.
 const TTL = 30 * 24 * time.Hour
 
+// Gone is archived in place of the answer of a succeeded run whose stored answer
+// could not be found when it was archived. It is a note, not an answer.
+const Gone = "[No answer is stored for this run: it was not in the state store when the run was archived.]"
+
 // StatusMaxBytes caps the answer copied into AgentRun.status.output when no
 // state store can take it (the fallback), so status stays small.
 const StatusMaxBytes = 10240
