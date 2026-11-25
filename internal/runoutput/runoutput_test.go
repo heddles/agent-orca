@@ -1,6 +1,7 @@
 package runoutput
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -113,5 +114,32 @@ func TestClip(t *testing.T) {
 	got = Clip(strings.Repeat("é", MaxBytes))
 	if !utf8.ValidString(got) || len(got) > MaxBytes {
 		t.Fatal("clip split a multi-byte rune or exceeded the cap")
+	}
+}
+
+// The reference agent in env mode prints each token as well as each frame, with
+// no newline between, so a frame often follows text on the same line:
+// "Understooddata: {...}". Every one of those frames must still count.
+func TestStdoutFramesGluedToPrintedTokensAreKept(t *testing.T) {
+	frame := func(content string) string {
+		b, _ := json.Marshal(map[string]any{
+			"object":  "chat.completion.chunk",
+			"choices": []map[string]any{{"index": 0, "delta": map[string]any{"role": "assistant", "content": content}}},
+		})
+		return "data: " + string(b) + "\n\n"
+	}
+	var out strings.Builder
+	out.WriteString(frame("")) // the first frame has no text, so it starts a clean line
+	var printed string
+	for _, tok := range []string{"Understood", " — I'll keep", " it short.\n\n", "Quick recap: ", "data: {not a frame}", " all good."} {
+		out.WriteString(frame(tok))
+		out.WriteString(tok) // what the agent prints next to the frame
+		printed += tok
+	}
+	out.WriteString("data: [DONE]\n\n")
+
+	res := Stdout(out.String())
+	if res.Failure != "" || res.Text != printed {
+		t.Errorf("got %q (failure %q), want %q", res.Text, res.Failure, printed)
 	}
 }

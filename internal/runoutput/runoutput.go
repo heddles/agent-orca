@@ -116,7 +116,11 @@ func ClipTo(out string, limit int) string {
 }
 
 func isStream(body []byte) bool {
-	return bytes.HasPrefix(bytes.TrimSpace(body), []byte("data:"))
+	if bytes.HasPrefix(bytes.TrimSpace(body), []byte("data:")) {
+		return true
+	}
+	// Printed text can come before the first frame (see frameData).
+	return bytes.Contains(body, []byte("data: {")) && bytes.Contains(body, []byte("chat.completion.chunk"))
 }
 
 // envelopeOutput unwraps {"output": "..."}.
@@ -147,11 +151,10 @@ func streamText(body []byte) (string, bool) {
 	sc := bufio.NewScanner(bytes.NewReader(body))
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	for sc.Scan() {
-		data, found := strings.CutPrefix(sc.Text(), "data:")
+		data, found := frameData(sc.Text())
 		if !found {
 			continue
 		}
-		data = strings.TrimSpace(data)
 		// [DONE] is not a stop signal: some proxies emit a premature one after a
 		// reasoning block and then stream the real content.
 		if data == "[DONE]" {
@@ -168,6 +171,30 @@ func streamText(body []byte) (string, bool) {
 		}
 	}
 	return sb.String(), sb.Len() > 0
+}
+
+// frameData returns the payload of the server-sent frame on a line. An agent
+// that prints its tokens as well as the frames (the reference agent does, in
+// env mode) leaves a token in front of the next frame with no newline between
+// them, "Understooddata: {...}", so a frame is looked for after any text. The
+// text before it is the same content the frame carries and is dropped.
+func frameData(line string) (string, bool) {
+	if d, ok := strings.CutPrefix(line, "data:"); ok {
+		if d = strings.TrimSpace(d); d == "[DONE]" || json.Valid([]byte(d)) {
+			return d, true
+		}
+	}
+	for from := 0; ; {
+		i := strings.Index(line[from:], "data: {")
+		if i < 0 {
+			return "", false
+		}
+		i += from
+		if d := strings.TrimSpace(line[i+len("data:"):]); json.Valid([]byte(d)) {
+			return d, true
+		}
+		from = i + 1
+	}
 }
 
 // completionText returns the text of a non-streamed chat completion.
