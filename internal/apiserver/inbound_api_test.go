@@ -225,7 +225,7 @@ func newInboundFixture(t *testing.T) *inboundFixture {
 	reg := inbound.NewRegistry()
 	reg.Register(&chanAdapter{})
 	br := f.s.InboundBridge()
-	f.s.inboundPipe = &inbound.Pipeline{Store: f.store, Launcher: br, Runs: br, Registry: reg, Secrets: br.ReadSecret}
+	f.s.inboundPipe = &inbound.Pipeline{Store: f.store, Launcher: br, Runs: br, Resumer: br, Registry: reg, Secrets: br.ReadSecret}
 	for name, labels := range map[string]map[string]string{
 		"creds":    {inbound.SecretLabel: inbound.SecretLabelValue},
 		"unlabled": nil,
@@ -499,7 +499,7 @@ func TestInbound_LaunchChecksTheAgentAndTheTenant(t *testing.T) {
 	_ = f.c.Get(context.Background(), clientKey(first.Name), &done)
 	done.Status.Phase = agentorcav1alpha1.AgentRunPhaseSucceeded
 	done.Status.Output = "the answer"
-	if err := f.c.Update(context.Background(), &done); err != nil {
+	if err := f.c.Status().Update(context.Background(), &done); err != nil {
 		t.Fatal(err)
 	}
 	third, _ := br.Launch(context.Background(), next)
@@ -536,4 +536,64 @@ func TestInbound_SecretMustBeLabelled(t *testing.T) {
 
 func clientKey(name string) client.ObjectKey {
 	return client.ObjectKey{Namespace: "shared", Name: name}
+}
+
+func TestInbound_AnAnswerResumesAWaitingRunOfTheConnection(t *testing.T) {
+	f := newInboundFixture(t)
+	br := f.s.InboundBridge()
+	conn := "inb_" + strings.Repeat("a", 32)
+	first, err := br.Launch(context.Background(), inbound.LaunchRequest{TenantID: isoA, Namespace: "shared", Agent: inboundAgent, ConnectionID: conn, Kind: "chan", Input: "restart it"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resume := func(connID, answer string) (inbound.RunRef, bool) {
+		ref, ok, err := br.Resume(context.Background(), inbound.ResumeRequest{TenantID: isoA, ConnectionID: connID, Run: first, Answer: answer})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ref, ok
+	}
+	if _, ok := resume(conn, "staging"); ok {
+		t.Fatal("resumed a run that was not waiting")
+	}
+
+	var run agentorcav1alpha1.AgentRun
+	_ = f.c.Get(context.Background(), clientKey(first.Name), &run)
+	run.Status.Phase = agentorcav1alpha1.AgentRunPhaseWaitingForInput
+	run.Status.ClarifyQuestion = "Which cluster?"
+	if err := f.c.Status().Update(context.Background(), &run); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := br.RunState(context.Background(), "shared", first.Name)
+	if !st.Waiting || st.Question != "Which cluster?" || st.Done {
+		t.Fatalf("a waiting run is %+v", st)
+	}
+	if _, ok := resume("inb_"+strings.Repeat("b", 32), "staging"); ok {
+		t.Fatal("another connection answered the run")
+	}
+	if _, ok := resume(conn, "  "); ok {
+		t.Fatal("an empty answer resumed the run")
+	}
+
+	ref, ok := resume(conn, "staging")
+	if !ok {
+		t.Fatal("the connection's own waiting run was not resumed")
+	}
+	var cont agentorcav1alpha1.AgentRun
+	if err := f.c.Get(context.Background(), clientKey(ref.Name), &cont); err != nil {
+		t.Fatal(err)
+	}
+	if cont.Spec.PriorRunRef != first.Name || cont.Labels[LabelTriggerID] != conn {
+		t.Errorf("continuation = %+v", cont.Spec)
+	}
+	if cont.Annotations[AnnotationCreatedBy] != TriggerActorPrefix+conn {
+		t.Errorf("the continuation lost the trigger actor: %v", cont.Annotations)
+	}
+	st, _ = br.RunState(context.Background(), "shared", first.Name)
+	if !st.Continued {
+		t.Errorf("the original run is %+v, want Continued", st)
+	}
+	if _, ok := resume(conn, "again"); ok {
+		t.Error("answered the same question twice")
+	}
 }

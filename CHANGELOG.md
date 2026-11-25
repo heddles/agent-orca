@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Run archival is one retried step. The reconcile of a finished run archives it, retries with backoff while PostgreSQL is down, and records an `Archived` condition. A finished run is not deleted before it is archived, up to `database.archiveDeleteGrace` (default 24h). See [Run archival](docs/run-archival.md). After an upgrade every finished run without the condition is archived once.
 - The bundled Redis now has `maxmemory` (384mb) and `volatile-ttl` eviction (`redis.maxmemory`, `redis.maxmemoryPolicy`).
 
+### Fixed
+- A question from the agent (`_clarify`) now reaches the person on every inbound channel, instead of "The agent could not complete this request." The next message in the thread is the answer and resumes the run. See [Inbound channels](docs/inbound-channels.md).
+
 ### Added
 - Metrics `agentorca_run_archive_*` and an optional PrometheusRule (`metrics.prometheusRule.enabled`).
 

@@ -276,16 +276,19 @@ func (p *Pipeline) deliver(ctx context.Context, m postgresql.InboundMessage) {
 	case !state.Found:
 		giveUp("run_gone", OutcomeReplyFailed, postgresql.InboundStatus{})
 		return
+	case state.Continued:
+		// Answered before the question went out: the continuation replies.
+		p.settle(scope, sc, m, rkey)
+		return
+	case state.Waiting:
+		// The run asks the person something: the question is the reply, and the
+		// person's next message in the thread answers it (Handle).
+		p.reply(ctx, scope, sc, m, rkey, rt, Result{Text: state.Question, Notice: true})
+		return
 	case !state.Done:
 		if p.now().Sub(m.ReceivedAt) > orDur(p.ReplyTimeout, 2*time.Hour) {
 			giveUp("run_timeout", OutcomeReplyFailed, postgresql.InboundStatus{})
 		}
-		return
-	}
-	c, err := p.Resolve(ctx, sc)
-	a, ok := p.Registry.Get(sc.Kind)
-	if err != nil || !ok || !sc.Enabled {
-		p.backoff(rkey, rt, func() { giveUp("reply_unavailable", OutcomeReplyFailed, postgresql.InboundStatus{}) })
 		return
 	}
 	res := Result{Text: state.Output, Subject: ""}
@@ -296,13 +299,42 @@ func (p *Pipeline) deliver(ctx context.Context, m postgresql.InboundMessage) {
 		// Raw provider frames are never an answer to a person.
 		res = Result{Text: "The agent finished without an answer.", Notice: true}
 	}
+	p.reply(ctx, scope, sc, m, rkey, rt, res)
+}
+
+// settle closes a message without a reply.
+func (p *Pipeline) settle(scope context.Context, sc postgresql.InboundConnection, m postgresql.InboundMessage, rkey string) {
+	if err := p.Store.UpdateInboundMessage(scope, m.ConnectionID, m.MessageKey, postgresql.InboundUpdate{Status: postgresql.InboundReplied, ClearTarget: true}); err != nil {
+		slog.Warn("recording an inbound reply", "connection", sc.ID, "err", err)
+		return
+	}
+	p.mu.Lock()
+	delete(p.retry, rkey)
+	p.mu.Unlock()
+}
+
+// reply sends res to the person and closes the message, or backs off.
+func (p *Pipeline) reply(ctx, scope context.Context, sc postgresql.InboundConnection, m postgresql.InboundMessage, rkey string, rt replyRetry, res Result) {
+	giveUp := func(reason string) {
+		_ = p.Store.UpdateInboundMessage(scope, m.ConnectionID, m.MessageKey, postgresql.InboundUpdate{Status: postgresql.InboundFailed, Reason: reason, ClearTarget: true})
+		p.mu.Lock()
+		delete(p.retry, rkey)
+		p.mu.Unlock()
+		count(sc.Kind, OutcomeReplyFailed)
+	}
+	c, err := p.Resolve(ctx, sc)
+	a, ok := p.Registry.Get(sc.Kind)
+	if err != nil || !ok || !sc.Enabled {
+		p.backoff(rkey, rt, func() { giveUp("reply_unavailable") })
+		return
+	}
 	res = p.Prepare(c, res)
 	rctx, cancel := context.WithTimeout(ctx, time.Minute)
 	err = a.Reply(rctx, c, m.ReplyTarget, res)
 	cancel()
 	if err != nil {
 		slog.Warn("delivering an inbound reply failed", "connection", sc.ID, "kind", sc.Kind, "err", safeErr(err, c))
-		p.backoff(rkey, rt, func() { giveUp("reply_failed", OutcomeReplyFailed, postgresql.InboundStatus{}) })
+		p.backoff(rkey, rt, func() { giveUp("reply_failed") })
 		return
 	}
 	status := postgresql.InboundReplied
