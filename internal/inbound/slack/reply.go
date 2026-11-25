@@ -70,6 +70,29 @@ func (a *Adapter) call(ctx context.Context, c inbound.Connection, method string,
 	return resp.Header, nil
 }
 
+// CompleteConfig looks up the workspace of the bot token with auth.test.
+func (a *Adapter) CompleteConfig(ctx context.Context, c inbound.Connection) (json.RawMessage, error) {
+	cfg, err := ParseConfig(c.Config)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.TeamID == "" {
+		ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		var who struct {
+			TeamID string `json:"team_id"`
+		}
+		if _, err := a.call(ctx, c, "auth.test", nil, &who); err != nil {
+			return nil, err
+		}
+		if !teamRe.MatchString(who.TeamID) {
+			return nil, errors.New("auth.test: Slack did not say which workspace the token is for")
+		}
+		cfg.TeamID = who.TeamID
+	}
+	return json.Marshal(cfg)
+}
+
 // safeCode keeps a Slack error code to what one looks like.
 func safeCode(s string) string {
 	if s == "" || len(s) > 64 || strings.ContainsAny(s, " \n\t\"'<>") {

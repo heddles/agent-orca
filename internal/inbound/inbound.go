@@ -308,6 +308,14 @@ type Tester interface {
 	Test(ctx context.Context, c Connection) TestReport
 }
 
+// Completer is an adapter that can look up some of its own settings with the
+// connection's credentials, so nobody has to type them. It returns the adapter's
+// settings with those filled in; what is already set is kept.
+type Completer interface {
+	Adapter
+	CompleteConfig(ctx context.Context, c Connection) (json.RawMessage, error)
+}
+
 // AuthError is a request the adapter could not authenticate.
 type AuthError struct{ Msg string }
 

@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- Channel setup: the platform's steps are shown before the form; a channel can be saved without a Secret so its address exists while the app is being set up; the Slack workspace id is looked up from the bot token; and each channel says why messages were refused in the last 24 hours.
+
+### Added
+- `operator.inbound.publicURL` (`INBOUND_PUBLIC_URL`): the https address chat services reach this installation at, used for the webhook addresses shown in the UI.
+
+### Changed
 - UI: Home is now a board of widgets each person can arrange (add, remove, reorder, full or half width): waiting for you, latest scheduled reports, problems, ask an agent, recent runs, coming up and agent health. The layout is saved in the browser.
 - UI: runs are titled with what was asked instead of their generated name, channel wrappers are folded away, and sub-runs are grouped under their parent. `GET /api/runs` and `GET /api/runs/history` now return the first 600 characters of each run's input and its parent run, history search matches the input, and `GET /api/my/runs` leaves out sub-runs that are not waiting for an answer.
 - A finished run's answer is no longer written to the AgentRun status (etcd). It is kept in Redis (30 days) and in the archived run in PostgreSQL, and the 10 KB limit is now 1 MiB. Older runs still show their answers.

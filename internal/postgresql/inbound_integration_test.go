@@ -21,7 +21,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -249,5 +251,45 @@ func TestInboundMessagesAgainstPostgres(t *testing.T) {
 	_ = raw.QueryRow(`SELECT count(*) FROM inbound_messages WHERE tenant_id = $1`, tenantA).Scan(&left)
 	if left != 0 {
 		t.Errorf("ledger rows left after delete = %d", left)
+	}
+}
+
+// The refusal counts say why a channel is turning messages away, per tenant.
+func TestInboundRefusalsAgainstPostgres(t *testing.T) {
+	s, _ := appStore(t)
+	a := WithTenant(context.Background(), tenantA)
+	b := WithTenant(context.Background(), tenantB)
+	const conn, other = "inb_00000000000000000000000000000002", "inb_00000000000000000000000000000003"
+	for i, m := range []struct{ conn, status, reason string }{
+		{conn, InboundRejected, "sender_not_allowed"},
+		{conn, InboundRejected, "sender_not_allowed"},
+		{conn, InboundRejected, "channel_not_allowed"},
+		{conn, InboundIgnored, "workspace_mismatch"},
+		{conn, InboundIgnored, "bot_message"},
+		{conn, InboundReplied, ""},
+		{other, InboundRejected, "sender_rate"},
+	} {
+		key := HashKey(fmt.Sprint(i))
+		if ok, err := s.ClaimInboundMessage(a, InboundMessage{ConnectionID: m.conn, MessageKey: key}); err != nil || !ok {
+			t.Fatalf("claim %d = %v, %v", i, ok, err)
+		}
+		if err := s.UpdateInboundMessage(a, m.conn, key, InboundUpdate{Status: m.status, Reason: m.reason}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	hourAgo := time.Now().Add(-time.Hour)
+	got, err := s.InboundRefusals(a, []string{conn}, hourAgo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]map[string]int{conn: {"sender_not_allowed": 2, "channel_not_allowed": 1, "workspace_mismatch": 1}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("refusals = %v, want %v", got, want)
+	}
+	if got, err := s.InboundRefusals(b, []string{conn, other}, hourAgo); err != nil || len(got) != 0 {
+		t.Errorf("another tenant sees %v, %v", got, err)
+	}
+	if got, err := s.InboundRefusals(a, []string{conn}, time.Now().Add(time.Hour)); err != nil || len(got) != 0 {
+		t.Errorf("outside the window: %v, %v", got, err)
 	}
 }

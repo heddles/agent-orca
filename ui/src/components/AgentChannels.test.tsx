@@ -213,7 +213,7 @@ describe('AgentChannels, chat platforms', () => {
     await user.click(await screen.findByRole('button', { name: 'Chatty' }))
     expect(screen.getByText(/keys botToken, signingSecret/)).toBeInTheDocument()
     await user.type(screen.getByLabelText('Name'), 'Support chat')
-    await user.type(screen.getByLabelText('Secret'), 'chat-creds')
+    await user.type(screen.getByLabelText('Secret (can be added later)'), 'chat-creds')
     await user.type(screen.getByLabelText('Workspace id'), 'T1')
     await user.click(screen.getByLabelText('Show a reaction while working'))
     await user.type(screen.getByLabelText(/Only in these channels/), 'C1, C2')
@@ -238,7 +238,7 @@ describe('AgentChannels, chat platforms', () => {
     await user.click(screen.getByRole('button', { name: 'Add a channel' }))
     await user.click(await screen.findByRole('button', { name: 'Chatty' }))
     await user.type(screen.getByLabelText('Name'), 'x')
-    await user.type(screen.getByLabelText('Secret'), 's')
+    await user.type(screen.getByLabelText('Secret (can be added later)'), 's')
     await user.click(screen.getByRole('button', { name: 'Create channel' }))
     expect(await screen.findByRole('alert')).toHaveTextContent(/Nobody is allowed by default/)
     await user.type(screen.getByLabelText(/Who may write \(user ids\)/), 'U1')
@@ -249,6 +249,87 @@ describe('AgentChannels, chat platforms', () => {
     await user.click(screen.getByRole('button', { name: 'Create channel' }))
     expect(await screen.findByRole('alert')).toHaveTextContent(/needs that channel on the list/)
     expect(calls.some((c) => c.method === 'POST')).toBe(false)
+  })
+
+  it('shows the platform steps before asking for anything', async () => {
+    kinds = [SLACKISH]
+    current = []
+    const user = userEvent.setup()
+    setup()
+    await user.click(await screen.findByRole('button', { name: 'Add a channel' }))
+    await user.click(await screen.findByRole('button', { name: 'Chatty' }))
+    const steps = screen.getByRole('list', { name: 'Steps on Chatty' })
+    expect(steps).toHaveTextContent('Paste (the address shown once the channel is created) into the app')
+    expect(steps).toHaveTextContent('Invite the bot to a channel.')
+    expect(steps.compareDocumentPosition(screen.getByLabelText('Name')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('creates a draft without a Secret, so the address exists before the app does', async () => {
+    kinds = [SLACKISH]
+    current = []
+    routes['POST /api/inbound-connections'] = { status: 201, body: { ...CHATCONN, secretRef: '' } }
+    const user = userEvent.setup()
+    setup()
+    await user.click(await screen.findByRole('button', { name: 'Add a channel' }))
+    await user.click(await screen.findByRole('button', { name: 'Chatty' }))
+    await user.type(screen.getByLabelText('Name'), 'x')
+    await user.type(screen.getByLabelText('Workspace id'), 'T1')
+    await user.type(screen.getByLabelText(/Who may write \(user ids\)/), 'U1')
+    await user.click(screen.getByRole('button', { name: 'Create channel' }))
+    await waitFor(() => expect(calls.some((c) => c.method === 'POST')).toBe(true))
+    expect(calls.find((c) => c.method === 'POST')!.body).toMatchObject({ secretRef: '' })
+  })
+
+  it('says a draft is not ready, keeps its steps open and takes the Secret later', async () => {
+    kinds = [SLACKISH]
+    current = [{ ...CHATCONN, secretRef: '' }]
+    routes[`PATCH /api/inbound-connections/${CHAT_ID}`] = { status: 200, body: CHATCONN }
+    const user = userEvent.setup()
+    setup()
+    const card = await screen.findByRole('listitem', { name: 'Channel Support chat' })
+    expect(within(card).getByText('Not ready')).toBeInTheDocument()
+    expect(within(card).queryByRole('button', { name: 'Test connection' })).not.toBeInTheDocument()
+    await waitFor(() => expect(within(card).getByLabelText('Setup steps of Support chat').closest('details')).toHaveAttribute('open'))
+    await user.type(within(card).getByLabelText('Secret'), 'chat-creds')
+    await user.click(within(card).getByRole('button', { name: 'Add credentials' }))
+    await waitFor(() => expect(calls.find((c) => c.method === 'PATCH')?.body).toEqual({ secretRef: 'chat-creds' }))
+  })
+
+  it('shows why adding credentials was refused', async () => {
+    kinds = [SLACKISH]
+    current = [{ ...CHATCONN, secretRef: '' }]
+    routes[`PATCH /api/inbound-connections/${CHAT_ID}`] = { status: 400, body: { error: 'the credentials were not accepted: auth.test: invalid_auth' } }
+    const user = userEvent.setup()
+    setup()
+    const card = await screen.findByRole('listitem', { name: 'Channel Support chat' })
+    await user.type(within(card).getByLabelText('Secret'), 'wrong')
+    await user.click(within(card).getByRole('button', { name: 'Add credentials' }))
+    expect(await within(card).findByRole('alert')).toHaveTextContent('invalid_auth')
+  })
+
+  it('uses the configured public address, and warns when there is none', async () => {
+    kinds = [SLACKISH]
+    current = [{ ...CHATCONN, url: `https://hooks.example.com/inbound/chatty/${CHAT_ID}` }]
+    const first = setup()
+    let card = await screen.findByRole('listitem', { name: 'Channel Support chat' })
+    expect(within(card).getByLabelText('URL of Support chat')).toHaveTextContent(`https://hooks.example.com/inbound/chatty/${CHAT_ID}`)
+    expect(within(card).getByLabelText('Setup steps of Support chat')).toHaveTextContent('Paste https://hooks.example.com/')
+    expect(within(card).queryByText(/address you are using now/)).not.toBeInTheDocument()
+    first.unmount()
+    current = [CHATCONN]
+    setup()
+    card = await screen.findByRole('listitem', { name: 'Channel Support chat' })
+    expect(within(card).getByText(/address you are using now/)).toBeInTheDocument()
+  })
+
+  it('says why messages were refused', async () => {
+    kinds = [SLACKISH]
+    current = [{ ...CHATCONN, refused: { sender_not_allowed: 2, channel_not_allowed: 1, something_new: 4 } }]
+    setup()
+    const list = await screen.findByRole('list', { name: 'Messages refused in the last 24 hours' })
+    expect(list).toHaveTextContent('2: the sender is not allowed')
+    expect(list).toHaveTextContent('1: that channel is not on the list')
+    expect(list).toHaveTextContent('4: something_new')
   })
 
   it('tests a chat connection and shows the bot and workspace without secrets', async () => {

@@ -512,13 +512,16 @@ func TestTestReportsBotAndWorkspaceWithoutSecrets(t *testing.T) {
 
 func TestConfigValidationAndDescriptor(t *testing.T) {
 	a := &Adapter{}
-	for _, bad := range []string{``, `{}`, `{"teamId":"x"}`, `{"teamId":"T0TEAM","unknown":1}`, `{"teamId":"t0team"}`} {
+	for _, bad := range []string{`{"teamId":"x"}`, `{"teamId":"T0TEAM","unknown":1}`, `{"teamId":"t0team"}`} {
 		if a.ValidateConfig(json.RawMessage(bad)) == nil {
 			t.Errorf("%q accepted", bad)
 		}
 	}
-	if err := a.ValidateConfig(json.RawMessage(`{"teamId":"T0TEAM"}`)); err != nil {
-		t.Error(err)
+	// The id may be absent: it is looked up once there are credentials.
+	for _, ok := range []string{``, `{}`, `{"teamId":"T0TEAM"}`} {
+		if err := a.ValidateConfig(json.RawMessage(ok)); err != nil {
+			t.Error(ok, err)
+		}
 	}
 	d := a.Describe()
 	if d.Title != "Slack" || len(d.Setup) == 0 || !strings.Contains(strings.Join(d.Setup, " "), "{{url}}") || len(d.SecretKeys) != 2 {

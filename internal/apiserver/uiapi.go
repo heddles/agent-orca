@@ -86,6 +86,8 @@ type UIServer struct {
 	// pgStore is the optional PostgreSQL archival store for completed runs.
 	// When nil, run history endpoints return 503.
 	pgStore *postgresql.Store
+	// inboundPublicURL is where channels reach us (SetInboundPublicURL).
+	inboundPublicURL string
 	// approvals overrides the approvals store (tests); nil means pgStore.
 	approvals approvalStore
 	// costArchive overrides the archive read by /api/costs (tests); nil means pgStore.

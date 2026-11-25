@@ -298,7 +298,7 @@ type logoCacheEntry struct {
 //     image load at an arbitrary tracker host or an HTTP endpoint.
 func defaultLogoResolver(ctx context.Context, issuerURL string) string {
 	issuer, err := url.Parse(issuerURL)
-	if err != nil || !issuer.IsAbs() || issuer.Scheme != "https" || issuer.Host == "" {
+	if err != nil || !issuer.IsAbs() || issuer.Scheme != schemeHTTPS || issuer.Host == "" {
 		// Non-HTTPS issuers (e.g. local dev) get the inline icon, never an image.
 		return ""
 	}
@@ -379,7 +379,7 @@ func resolveLogoFromDiscovery(ctx context.Context, issuer *url.URL) string {
 // could escape the inline style / url() context — are accepted.
 func safeLogoURL(issuer *url.URL, logoURL string) bool {
 	u, err := url.Parse(logoURL)
-	if err != nil || !u.IsAbs() || u.Scheme != "https" || u.Host == "" {
+	if err != nil || !u.IsAbs() || u.Scheme != schemeHTTPS || u.Host == "" {
 		return false
 	}
 	// The logo must stay on the issuer's own origin so a crafted discovery

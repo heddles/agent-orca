@@ -17,13 +17,17 @@ limitations under the License.
 package apiserver
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/heddles/agent-orca/internal/inbound"
 	"github.com/heddles/agent-orca/internal/postgresql"
@@ -57,6 +61,36 @@ type inboundStore interface {
 	GetInboundConnection(ctx context.Context, id string) (postgresql.InboundConnection, error)
 	UpdateInboundConnection(ctx context.Context, id string, p postgresql.InboundPatch) (postgresql.InboundConnection, error)
 	DeleteInboundConnection(ctx context.Context, id string) (postgresql.InboundConnection, error)
+	InboundRefusals(ctx context.Context, connectionIDs []string, since time.Time) (map[string]map[string]int, error)
+}
+
+const schemeHTTPS = "https"
+
+// refusalWindow is how far back a connection's refused messages are counted.
+const refusalWindow = 24 * time.Hour
+
+// SetInboundPublicURL sets the address channels reach this installation at, for
+// example https://hooks.example.com. It is often not the one people open the UI
+// with. Empty leaves the UI to use its own address.
+func (s *UIServer) SetInboundPublicURL(raw string) error {
+	base, err := parseInboundPublicURL(raw)
+	if err != nil {
+		return err
+	}
+	s.inboundPublicURL = base
+	return nil
+}
+
+func parseInboundPublicURL(raw string) (string, error) {
+	raw = strings.TrimRight(strings.TrimSpace(raw), "/")
+	if raw == "" {
+		return "", nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != schemeHTTPS || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return "", fmt.Errorf("the inbound public URL must be like https://hooks.example.com, without a query or credentials")
+	}
+	return raw, nil
 }
 
 // SetInbound enables the inbound channels: p is the pipeline the operator also
@@ -122,10 +156,18 @@ type inboundView struct {
 	postgresql.InboundConnection
 	// Path is where a channel that calls us posts: the address to give the provider.
 	Path string `json:"path"`
+	// URL is Path on the configured public address; empty when none is set.
+	URL string `json:"url,omitempty"`
+	// Refused counts the messages refused in the last 24 hours, by reason code.
+	Refused map[string]int `json:"refused,omitempty"`
 }
 
-func inboundViewOf(c postgresql.InboundConnection) inboundView {
-	return inboundView{InboundConnection: c, Path: "/inbound/" + c.Kind + "/" + c.ID}
+func (s *UIServer) inboundViewOf(c postgresql.InboundConnection) inboundView {
+	v := inboundView{InboundConnection: c, Path: "/inbound/" + c.Kind + "/" + c.ID}
+	if s.inboundPublicURL != "" {
+		v.URL = s.inboundPublicURL + v.Path
+	}
+	return v
 }
 
 func (s *UIServer) handleInboundConnections(w http.ResponseWriter, r *http.Request) {
@@ -214,6 +256,46 @@ func (s *UIServer) handleInboundKinds(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, out)
 }
 
+// completeInboundConfig lets the adapter fill in settings it can look up with
+// the credentials, and returns the config to store. Without credentials, or for
+// an adapter that looks nothing up, cfg comes back unchanged.
+func (s *UIServer) completeInboundConfig(
+	w http.ResponseWriter, ctx context.Context, sc postgresql.InboundConnection,
+) (json.RawMessage, bool) {
+	a, _ := s.inboundPipe.Registry.Get(sc.Kind)
+	completer, ok := a.(inbound.Completer)
+	if !ok || sc.SecretRef == "" || s.inboundPipe.Secrets == nil {
+		return sc.Config, true
+	}
+	c, err := s.inboundPipe.Resolve(ctx, sc)
+	if err != nil {
+		jsonError(w, "the credentials could not be used: "+err.Error(), http.StatusBadRequest)
+		return nil, false
+	}
+	filled, err := completer.CompleteConfig(ctx, c)
+	if err != nil {
+		jsonError(w, "the credentials were not accepted: "+err.Error(), http.StatusBadRequest)
+		return nil, false
+	}
+	var whole map[string]json.RawMessage
+	if len(sc.Config) > 0 {
+		if err := json.Unmarshal(sc.Config, &whole); err != nil {
+			jsonError(w, "config is not valid", http.StatusBadRequest)
+			return nil, false
+		}
+	}
+	if whole == nil {
+		whole = map[string]json.RawMessage{}
+	}
+	whole["adapter"] = filled
+	out, err := json.Marshal(whole)
+	if err != nil {
+		jsonError(w, "saving the settings failed", http.StatusInternalServerError)
+		return nil, false
+	}
+	return out, true
+}
+
 func (s *UIServer) createInbound(w http.ResponseWriter, r *http.Request) {
 	store, ok := s.inboundPreflight(w, r, tenancy.RoleBuilder)
 	if !ok {
@@ -256,10 +338,17 @@ func (s *UIServer) createInbound(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "creating the id failed", http.StatusInternalServerError)
 		return
 	}
-	c, err := store.CreateInboundConnection(pgScope(r.Context()), postgresql.InboundConnection{
+	draft := postgresql.InboundConnection{
 		ID: id, Kind: req.Kind, Name: req.Name, Namespace: agent.Namespace, Agent: agent.Name,
 		Config: req.Config, SecretRef: strings.TrimSpace(req.SecretRef), CreatedBy: actorOf(r.Context()),
-	})
+	}
+	if t, ok := TenantFromContext(r.Context()); ok && t != nil {
+		draft.TenantID = t.TenantID
+	}
+	if draft.Config, ok = s.completeInboundConfig(w, r.Context(), draft); !ok {
+		return
+	}
+	c, err := store.CreateInboundConnection(pgScope(r.Context()), draft)
 	if err != nil {
 		inboundFail(w, "creating the connection", err)
 		return
@@ -268,7 +357,7 @@ func (s *UIServer) createInbound(w http.ResponseWriter, r *http.Request) {
 		fmt.Sprintf("created %s channel %q", c.Kind, c.Name)))
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(inboundViewOf(c))
+	_ = json.NewEncoder(w).Encode(s.inboundViewOf(c))
 }
 
 func (s *UIServer) listInbound(w http.ResponseWriter, r *http.Request) {
@@ -294,9 +383,20 @@ func (s *UIServer) listInbound(w http.ResponseWriter, r *http.Request) {
 		inboundFail(w, "listing connections", err)
 		return
 	}
+	ids := make([]string, 0, len(list))
+	for _, c := range list {
+		ids = append(ids, c.ID)
+	}
+	refused, err := store.InboundRefusals(pgScope(r.Context()), ids, time.Now().Add(-refusalWindow))
+	if err != nil {
+		// The list is still useful without the counts.
+		slog.Warn("counting refused messages", "err", err)
+	}
 	out := make([]inboundView, 0, len(list))
 	for _, c := range list {
-		out = append(out, inboundViewOf(c))
+		v := s.inboundViewOf(c)
+		v.Refused = refused[c.ID]
+		out = append(out, v)
 	}
 	jsonResponse(w, out)
 }
@@ -351,6 +451,22 @@ func (s *UIServer) patchInbound(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if req.Config != nil || req.SecretRef != nil {
+		next := cur
+		if req.Config != nil {
+			next.Config = *req.Config
+		}
+		if req.SecretRef != nil {
+			next.SecretRef = *req.SecretRef
+		}
+		filled, ok := s.completeInboundConfig(w, r.Context(), next)
+		if !ok {
+			return
+		}
+		if req.Config != nil || !bytes.Equal(filled, cur.Config) {
+			req.Config = &filled
+		}
+	}
 	c, err := store.UpdateInboundConnection(pgScope(r.Context()), cur.ID, postgresql.InboundPatch{Enabled: req.Enabled, Config: req.Config, SecretRef: req.SecretRef})
 	if err != nil {
 		inboundFail(w, "updating the connection", err)
@@ -364,7 +480,7 @@ func (s *UIServer) patchInbound(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.recordAudit(w, r, auditEventFor(postgresql.AuditUpdate, kindInbound, c.Namespace, c.Agent, c.ID, fmt.Sprintf("%s %s channel %q", what, c.Kind, c.Name)))
-	jsonResponse(w, inboundViewOf(c))
+	jsonResponse(w, s.inboundViewOf(c))
 }
 
 func (s *UIServer) deleteInbound(w http.ResponseWriter, r *http.Request) {

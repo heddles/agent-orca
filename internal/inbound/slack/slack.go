@@ -65,8 +65,9 @@ const (
 type Config struct {
 	// TeamID is the workspace (or enterprise) the connection serves, T... or E...
 	// Events from any other workspace the app is installed in are ignored: the
-	// bot token is that of one workspace.
-	TeamID string `json:"teamId"`
+	// bot token is that of one workspace. It is looked up from the bot token
+	// (CompleteConfig); while it is empty every message is ignored.
+	TeamID string `json:"teamId,omitempty"`
 	// WorkingReaction adds an eyes reaction to the message once the run started
 	// (needs the reactions:write scope).
 	WorkingReaction bool `json:"workingReaction,omitempty"`
@@ -78,14 +79,14 @@ var teamRe = regexp.MustCompile(`^[TEW][A-Z0-9]{2,30}$`)
 func ParseConfig(raw json.RawMessage) (Config, error) {
 	var c Config
 	if len(raw) == 0 {
-		return c, errors.New("adapter settings are required: set adapter.teamId")
+		return c, nil
 	}
 	dec := json.NewDecoder(strings.NewReader(string(raw)))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&c); err != nil {
 		return c, fmt.Errorf("adapter settings: %w", err)
 	}
-	if !teamRe.MatchString(c.TeamID) {
+	if c.TeamID != "" && !teamRe.MatchString(c.TeamID) {
 		return c, errors.New("adapter.teamId must be the id of the workspace, like T0123ABCD")
 	}
 	return c, nil
@@ -152,8 +153,8 @@ func (*Adapter) Describe() inbound.Descriptor {
 		Title:   "Slack",
 		Summary: "People mention the bot, message it, or use a slash command; the agent answers in the thread.",
 		Fields: []inbound.Field{
-			{Key: "teamId", Label: "Workspace id", Type: "string", Required: true, Placeholder: "T0123ABCD",
-				Help: "Shown by the Test button, or in the Slack URL of your workspace. Events from other workspaces are ignored."},
+			{Key: "teamId", Label: "Workspace id", Type: "string", Placeholder: "T0123ABCD",
+				Help: "Leave empty: it is looked up from the bot token. Events from other workspaces are ignored."},
 			{Key: "workingReaction", Label: "React with eyes while working", Type: "bool", Help: "Needs the reactions:write scope."},
 		},
 		SecretKeys: []inbound.SecretKey{
@@ -169,7 +170,7 @@ func (*Adapter) Describe() inbound.Descriptor {
 			"Create an app at api.slack.com/apps (from scratch) in your workspace.",
 			"OAuth & Permissions, Bot Token Scopes: app_mentions:read, chat:write, im:history (direct messages), commands (slash command), channels:history and groups:history only for the channel mode, reactions:write for the reaction. Install the app and copy the Bot User OAuth Token.",
 			"Basic Information: copy the Signing Secret.",
-			"Ask your administrator to create a Secret with the keys botToken and signingSecret, labelled agentorca.io/inbound-secret=true, and name it above.",
+			"Ask your administrator to create a Secret with the keys botToken and signingSecret, labelled agentorca.io/inbound-secret=true, and give its name to this channel.",
 			"Event Subscriptions: turn on, Request URL {{url}} (it must show Verified; save this channel first), subscribe the bot to app_mention, message.im and, for the channel mode, message.channels.",
 			"App Home: allow messages from the Messages tab, for direct messages.",
 			"Slash Commands, if wanted: create /agent with the Request URL {{url}}. The bot must be a member of the channel the command is used in.",
@@ -184,4 +185,5 @@ var (
 	_ inbound.Describer    = (*Adapter)(nil)
 	_ inbound.Acknowledger = (*Adapter)(nil)
 	_ inbound.Indicator    = (*Adapter)(nil)
+	_ inbound.Completer    = (*Adapter)(nil)
 )

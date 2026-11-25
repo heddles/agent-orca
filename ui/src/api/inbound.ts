@@ -26,6 +26,10 @@ export interface InboundConnection {
   rejectedCount: number
   /** Where a channel that calls us posts, for the webhook mode. */
   path: string
+  /** path on the configured public address; absent when none is configured. */
+  url?: string
+  /** Messages refused in the last 24 hours, by reason code. */
+  refused?: Record<string, number>
 }
 
 export interface EmailAdapterConfig {
@@ -115,6 +119,8 @@ export async function listInboundKinds(): Promise<InboundKind[]> {
 export const createInbound = (input: InboundInput) => send<InboundConnection>('/api/inbound-connections', 'POST', input)
 export const setInboundEnabled = (id: string, enabled: boolean) =>
   send<InboundConnection>(`/api/inbound-connections/${enc(id)}`, 'PATCH', { enabled })
+export const setInboundSecret = (id: string, secretRef: string) =>
+  send<InboundConnection>(`/api/inbound-connections/${enc(id)}`, 'PATCH', { secretRef })
 export const deleteInbound = (id: string) => send<void>(`/api/inbound-connections/${enc(id)}`, 'DELETE')
 export const testInbound = (id: string) => send<InboundTestReport>(`/api/inbound-connections/${enc(id)}/test`, 'POST')
 
@@ -127,6 +133,18 @@ export function inboundUrl(path: string, origin: string = window.location.origin
 export function setupSteps(kind: InboundKind | undefined, url: string): string[] {
   return (kind?.descriptor.setup ?? []).map((t) => t.split('{{url}}').join(url))
 }
+
+const REFUSALS: Record<string, string> = {
+  sender_not_allowed: 'the sender is not allowed',
+  channel_not_allowed: 'that channel is not on the list',
+  mode_not_enabled: 'the agent does not answer messages sent that way',
+  connection_rate: 'too many messages to this channel at once',
+  sender_rate: 'one sender reached the hourly limit',
+  workspace_mismatch: 'it came from a different workspace than this channel’s',
+}
+
+/** A refusal reason code in plain words; an unknown code is shown as it is. */
+export const refusalText = (code: string) => REFUSALS[code] ?? code
 
 /** Splits text typed one per line, or comma separated, into trimmed, non-empty entries. */
 export function parseList(text: string): string[] {

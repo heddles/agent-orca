@@ -181,7 +181,7 @@ func (*Adapter) Describe() inbound.Descriptor {
 		Setup: []string{
 			"Integrations, Bot Accounts: create a bot, copy its access token, and add the bot to the team and to the channels it should answer in.",
 			"Integrations, Outgoing Webhooks: add one with the callback URL {{url}}, either a trigger word (for example @agent) or no trigger word for one channel. Copy its token. Or Slash Commands: add one with the request URL {{url}}, method POST, and copy its token.",
-			"Ask your administrator to create a Secret with baseUrl, botToken and tokens (and allowPrivateAddresses=true for a private server), labelled agentorca.io/inbound-secret=true, and name it above.",
+			"Ask your administrator to create a Secret with baseUrl, botToken and tokens (and allowPrivateAddresses=true for a private server), labelled agentorca.io/inbound-secret=true, and give its name to this channel.",
 			"The Mattermost server must be able to reach this address: set the server's AllowedUntrustedInternalConnections if it is on a private network.",
 			"Press Test connection.",
 		},

@@ -3,12 +3,13 @@
  * and chat platforms. People write where they already are, the agent runs on the message and
  * the answer comes back in the same conversation. Email has its own form; every other kind is
  * drawn from what its adapter describes (GET /api/inbound-kinds). Anyone who can see the agent can read the list; builders change it. The
- * connection names a Secret an administrator prepared: no password is typed here.
+ * connection names a Secret an administrator prepared: no password is typed here. A channel can
+ * be saved without one, so that its web address exists while the app is being set up.
  */
 import { useCallback, useEffect, useState, type CSSProperties } from 'react'
 import {
-  createInbound, deleteInbound, describeInboundError, inboundUrl, listInbound, listInboundKinds, parseList, setInboundEnabled,
-  setupSteps, testInbound,
+  createInbound, deleteInbound, describeInboundError, inboundUrl, listInbound, listInboundKinds, parseList, refusalText,
+  setInboundEnabled, setInboundSecret, setupSteps, testInbound,
   type EmailAdapterConfig, type InboundConnection, type InboundKind, type InboundTestReport,
 } from '../api/inbound'
 import { canWriteEvals, useRoles } from '../lib/access'
@@ -67,7 +68,7 @@ export function AgentChannels({ namespace, name }: { namespace: string; name: st
       {error && <p role="alert" style={field.error}>{error}</p>}
       {items.length === 0 && !error && <p style={s.muted}>No channels yet.</p>}
       <ul style={s.list}>
-        {items.map((c) => <ChannelCard key={c.id} c={c} kind={kinds.find((k) => k.kind === c.kind)} builder={builder} report={reports[c.id]} onToggle={toggle} onTest={test} onDelete={setRemoving} />)}
+        {items.map((c) => <ChannelCard key={c.id} c={c} kind={kinds.find((k) => k.kind === c.kind)} builder={builder} report={reports[c.id]} onToggle={toggle} onTest={test} onDelete={setRemoving} onChanged={load} />)}
       </ul>
       {builder && <div><DSButton variant="primary" onClick={() => setCreating(chatKinds.length ? '' : 'email')}>Add a channel</DSButton></div>}
 
@@ -107,20 +108,26 @@ export function AgentChannels({ namespace, name }: { namespace: string; name: st
   )
 }
 
-function ChannelCard({ c, kind, builder, report, onToggle, onTest, onDelete }: {
+function ChannelCard({ c, kind, builder, report, onToggle, onTest, onDelete, onChanged }: {
   c: InboundConnection; kind?: InboundKind; builder: boolean; report?: InboundTestReport | 'testing'
   onToggle: (c: InboundConnection) => void; onTest: (c: InboundConnection) => void; onDelete: (c: InboundConnection) => void
+  onChanged: () => void
 }) {
   const mode = c.config.adapter?.mode
-  const url = inboundUrl(c.path)
+  const url = c.url ?? inboundUrl(c.path)
   const chat = c.kind !== 'email'
   const steps = setupSteps(kind, url)
+  // Without credentials a channel cannot check or answer anything.
+  const draft = !c.secretRef
+  const refused = Object.entries(c.refused ?? {}).sort((a, b) => b[1] - a[1])
   return (
     <li style={s.card} aria-label={`Channel ${c.name}`}>
       <div style={s.row}>
         <strong style={{ fontSize: 13 }}>{c.name}</strong>
         <DSChip size="sm">{c.kind === 'email' ? 'Email' : (kind?.descriptor.title ?? c.kind)}{c.kind === 'email' && mode ? ` (${mode === 'imap' ? 'mailbox' : 'provider webhook'})` : ''}</DSChip>
-        <DSChip size="sm" variant={c.enabled ? 'success' : 'neutral'} dot>{c.enabled ? 'On' : 'Off'}</DSChip>
+        {draft
+          ? <DSChip size="sm" variant="warning" dot>Not ready</DSChip>
+          : <DSChip size="sm" variant={c.enabled ? 'success' : 'neutral'} dot>{c.enabled ? 'On' : 'Off'}</DSChip>}
       </div>
       <p style={s.muted}>
         {c.receivedCount} received, {c.repliedCount} answered, {c.rejectedCount} refused.
@@ -138,8 +145,23 @@ function ChannelCard({ c, kind, builder, report, onToggle, onTest, onDelete }: {
           <CopyButton text={url} label={`Copy URL of ${c.name}`} />
         </div>
       )}
+      {(mode === 'webhook' || chat) && !c.url && (
+        <p style={s.muted}>
+          This is the address you are using now. If the other service reaches agent-orca at a different one, use that
+          instead. An administrator can set it as <code>operator.inbound.publicURL</code>.
+        </p>
+      )}
+      {draft && builder && <AddSecret c={c} kind={kind} onAdded={onChanged} />}
+      {refused.length > 0 && (
+        <div style={s.muted}>
+          Refused in the last 24 hours:
+          <ul aria-label="Messages refused in the last 24 hours" style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+            {refused.map(([code, n]) => <li key={code}>{n}: {refusalText(code)}</li>)}
+          </ul>
+        </div>
+      )}
       {chat && steps.length > 0 && (
-        <details>
+        <details open={draft}>
           <summary style={{ fontSize: 12, cursor: 'pointer' }}>Setup steps</summary>
           <ol aria-label={`Setup steps of ${c.name}`} style={{ margin: '6px 0 0', paddingLeft: 18, fontSize: 12, color: ds.textSecondary }}>
             {steps.map((t, i) => <li key={i}>{t}</li>)}
@@ -160,12 +182,47 @@ function ChannelCard({ c, kind, builder, report, onToggle, onTest, onDelete }: {
       {builder && (
         <div style={s.row}>
           <DSButton size="sm" variant="secondary" onClick={() => onToggle(c)}>{c.enabled ? 'Disable' : 'Enable'}</DSButton>
-          <DSButton size="sm" variant="secondary" onClick={() => onTest(c)}>Test connection</DSButton>
+          {!draft && <DSButton size="sm" variant="secondary" onClick={() => onTest(c)}>Test connection</DSButton>}
           <DSButton size="sm" variant="ghost" onClick={() => onDelete(c)}>Delete</DSButton>
         </div>
       )}
     </li>
   )
+}
+
+function AddSecret({ c, kind, onAdded }: { c: InboundConnection; kind?: InboundKind; onAdded: () => void }) {
+  const [secretRef, setSecretRef] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!secretRef.trim()) { setError('Name the Secret your administrator prepared.'); return }
+    setBusy(true)
+    setError('')
+    try {
+      await setInboundSecret(c.id, secretRef.trim())
+      onAdded()
+    } catch (err) {
+      setError(describeInboundError(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <form onSubmit={submit} noValidate style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <Field label="Secret" help={secretHelp(kind)}>
+        {(p) => <input {...p} style={field.control} value={secretRef} onChange={(e) => setSecretRef(e.target.value)} />}
+      </Field>
+      {error && <p role="alert" style={field.error}>{error}</p>}
+      <div><DSButton type="submit" size="sm" variant="primary" disabled={busy}>{busy ? 'Checking…' : 'Add credentials'}</DSButton></div>
+    </form>
+  )
+}
+
+function secretHelp(kind: InboundKind | undefined): string {
+  const keys = kind?.descriptor.secretKeys
+  const named = keys?.length ? ` with the keys ${keys.map((k) => k.key + (k.required ? '' : ' (optional)')).join(', ')}` : ''
+  return `The name of a Secret in this workspace that holds the credentials. Your administrator creates it${named}; no token is typed here.`
 }
 
 function CreateDialog({ namespace, agent, onClose, onCreated }: {
@@ -288,7 +345,6 @@ function GenericCreateDialog({ namespace, agent, kind, onClose, onCreated }: {
     const allowGroups = parseList(groups)
     const allowChannels = parseList(channels)
     if (!name.trim()) { setError('Give the channel a name.'); return }
-    if (!secretRef.trim()) { setError(`Name the Secret your administrator prepared for ${d.title}.`); return }
     if (allowSenders.length + allowGroups.length + allowChannels.length === 0) { setError('List who may write in, or which channels. Nobody is allowed by default.'); return }
     if (offered.length > 0 && modes.length === 0) { setError('Choose at least one way of addressing the agent.'); return }
     if (modes.includes('channel') && allowChannels.length === 0) { setError('Answering every message of a channel needs that channel on the list.'); return }
@@ -321,13 +377,18 @@ function GenericCreateDialog({ namespace, agent, kind, onClose, onCreated }: {
     <Dialog title={`Add a ${d.title} channel`} onClose={onClose} width={560}>
       <form onSubmit={submit} noValidate style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
         {d.summary && <p style={s.lead}>{d.summary}</p>}
+        {(d.setup?.length ?? 0) > 0 && (
+          <details open>
+            <summary style={{ fontSize: 13, cursor: 'pointer' }}>Before you start: what you will do</summary>
+            <ol aria-label={`Steps on ${d.title}`} style={{ margin: '6px 0 0', paddingLeft: 18, fontSize: 12, color: ds.textSecondary, maxHeight: 180, overflowY: 'auto' }}>
+              {setupSteps(kind, '(the address shown once the channel is created)').map((t, i) => <li key={i}>{t}</li>)}
+            </ol>
+          </details>
+        )}
         <Field label="Name" help="For example “Support in chat”.">
           {(p) => <input {...p} style={field.control} value={name} maxLength={80} onChange={(e) => setName(e.target.value)} />}
         </Field>
-        <Field
-          label="Secret"
-          help={`The name of a Secret in this workspace that holds the credentials. Your administrator creates it${d.secretKeys?.length ? ` with the keys ${d.secretKeys.map((k) => k.key + (k.required ? '' : ' (optional)')).join(', ')}` : ''}; no token is typed here.`}
-        >
+        <Field label="Secret (can be added later)" help={`${secretHelp(kind)} Leave it empty if the app does not exist yet: creating the channel gives you the address to set it up with.`}>
           {(p) => <input {...p} style={field.control} value={secretRef} onChange={(e) => setSecretRef(e.target.value)} />}
         </Field>
         {(d.fields ?? []).map((f) => (

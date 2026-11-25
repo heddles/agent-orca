@@ -14,8 +14,9 @@ All adapters answer as a trigger actor: the chat user is not an agent-orca user,
    kubectl -n team-a label secret chat-creds agentorca.io/inbound-secret=true
    ```
 
-3. On the agent page, tab **Channels**, **Add a channel**, choose the platform, name the Secret, fill the settings and list who may write. The channel card then shows the receive URL and the platform's setup steps with that URL filled in. **Test connection** shows the bot and the workspace.
-4. The receive URL is `https://<your agent-orca host>/inbound/<kind>/<connection id>`. The platform must be able to reach it; the UI proxy forwards `/inbound/*` without a session.
+3. On the agent page, tab **Channels**, **Add a channel** and choose the platform. The form first lists what you will do on the platform. Fill the settings and list who may write. The Secret may be left empty if the app does not exist yet: the channel is saved as **Not ready**, which gives it its receive URL. The card shows the platform's steps with that URL filled in, and takes the Secret's name once it exists. **Test connection** then shows the bot and the workspace.
+4. The receive URL is `https://<public host>/inbound/<kind>/<connection id>`. The platform must be able to reach it; the UI proxy forwards `/inbound/*` without a session. When that host differs from the one people open the UI with, set `operator.inbound.publicURL` (env `INBOUND_PUBLIC_URL`) so the UI shows the right address.
+5. The card counts the messages refused in the last 24 hours by reason: sender not allowed, channel not listed, way of addressing not enabled, rate limits, and another workspace. No message or sender is kept.
 
 **Who may write.** Nobody by default. List user ids (`allowSenders`), workspace ids (`allowGroups`) and/or channel ids (`allowChannels`); see the contract for how they combine. By default the agent answers direct messages, mentions and slash commands. Answering every message of a channel (`modes` containing `channel`) needs the channels on the list.
 
@@ -27,7 +28,7 @@ Events API over HTTPS. Socket Mode is not built.
 2. **OAuth & Permissions**, Bot Token Scopes: `app_mentions:read`, `chat:write`, `im:history` (direct messages), `commands` (slash command); `channels:history` and `groups:history` only if you enable the `channel` mode; `reactions:write` for the optional eyes reaction. Install to the workspace and copy the **Bot User OAuth Token** (`xoxb-...`; a user token is refused).
 3. **Basic Information**: copy the **Signing Secret**.
 4. Secret keys: `botToken`, `signingSecret` (as above).
-5. In agent-orca add the channel. Settings: `teamId` (the workspace id, `T...`; the Test button shows it; events from other workspaces are ignored) and optionally `workingReaction`. Ids: users `U...` (profile, Copy member ID), channels `C...` (channel details), direct messages `D...`.
+5. In agent-orca add the channel, or add the Secret to the one you saved earlier. The workspace id (`teamId`) is looked up from the bot token; events from other workspaces are ignored, and so is every event until the id is known. Optionally set `workingReaction`. Ids: users `U...` (profile, Copy member ID), channels `C...` (channel details), direct messages `D...`.
 6. **Event Subscriptions**: on, Request URL = the receive URL (Slack sends a challenge, which agent-orca answers after verifying the signature, so save the channel first), subscribe the bot to `app_mention`, `message.im` and, for the `channel` mode, `message.channels` (and `message.groups`).
 7. **App Home**: tick "Allow users to send Slash commands and messages from the messages tab".
 8. Optional **Slash Commands**: create `/agent` with the same Request URL. The bot must be a member of the channel where the command is used, because the answer is posted with `chat.postMessage`; the command itself answers the user at once with a private "Working on it".
