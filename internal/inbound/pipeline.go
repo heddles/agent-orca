@@ -45,6 +45,8 @@ type Store interface {
 	ListInboundConnections(ctx context.Context, namespaces []string, agent string) ([]postgresql.InboundConnection, error)
 	GetInboundConnection(ctx context.Context, id string) (postgresql.InboundConnection, error)
 	DeleteInboundMessagesBefore(ctx context.Context, cutoff time.Time) (int64, error)
+	ReceiveInboundPairing(ctx context.Context, p postgresql.InboundPairing) (bool, error)
+	DeleteExpiredInboundPairings(ctx context.Context) error
 }
 
 // LaunchRequest asks for a run of the connection's agent.
@@ -146,7 +148,9 @@ type Pipeline struct {
 	Registry  *Registry
 	Limiter   Limiter
 	Secrets   SecretReader
-	Now       func() time.Time
+	// Credentials opens the credentials entered in the UI for a connection.
+	Credentials func(c postgresql.InboundConnection) (map[string][]byte, error)
+	Now         func() time.Time
 
 	// ReplyTimeout gives up on a run that has not finished (default 2 hours).
 	ReplyTimeout time.Duration
@@ -239,6 +243,13 @@ func (p *Pipeline) Handle(ctx context.Context, c Connection, m Message, recvErr 
 		// Another bot, an app, or our own bot: never answered, so two bots cannot
 		// keep each other talking.
 		return finish(OutcomeIgnored, postgresql.InboundIgnored, "bot_message", postgresql.InboundStatus{})
+	}
+	// A one-time pairing code comes before the allow-list: it is how a person
+	// gets onto it. A wrong or spent code is an ordinary message.
+	if matched, err := p.pairingMessage(ctx, c, m, caps); err != nil {
+		return OutcomeFailed, fmt.Errorf("receiving a pairing: %w", err)
+	} else if matched {
+		return finish(OutcomeIgnored, postgresql.InboundIgnored, "pairing", postgresql.InboundStatus{})
 	}
 	if why := settings.Refusal(caps, m); why != "" {
 		return finish(OutcomeRejected, postgresql.InboundRejected, why, postgresql.InboundStatus{Rejected: 1})
@@ -394,7 +405,17 @@ func (p *Pipeline) Resolve(ctx context.Context, sc postgresql.InboundConnection)
 		return c, err
 	}
 	c.Settings, c.Config = settings, settings.Adapter
-	if sc.SecretRef != "" && p.Secrets != nil {
+	switch {
+	case len(sc.CredentialsEnc) > 0:
+		if p.Credentials == nil {
+			return c, errors.New("this installation cannot read stored credentials: the connection encryption key is not set up")
+		}
+		data, err := p.Credentials(sc)
+		if err != nil {
+			return c, err
+		}
+		c.Secret = data
+	case sc.SecretRef != "" && p.Secrets != nil:
 		data, err := p.Secrets(ctx, sc.Namespace, sc.SecretRef)
 		if err != nil {
 			return c, err

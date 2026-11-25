@@ -36,6 +36,14 @@ type LifecycleStore interface {
 	RewrapConnection(ctx context.Context, id int64, activeKeyID string, fn func(postgresql.MCPConnection) (*postgresql.MCPConnection, error)) (bool, error)
 	ListOAuthAppsToRewrap(ctx context.Context, activeKeyID string, afterID int64, limit int) ([]int64, error)
 	RewrapOAuthApp(ctx context.Context, id int64, activeKeyID string, fn func(postgresql.MCPOAuthApp) (*postgresql.MCPOAuthApp, error)) (bool, error)
+	ListInboundCredentialsToRewrap(ctx context.Context, activeKeyID string) ([]string, error)
+	RewrapInboundCredentials(ctx context.Context, id, activeKeyID string, fn func(postgresql.InboundConnection) (keyID string, sealed []byte, err error)) (bool, error)
+}
+
+// InboundCredentialsAAD binds a chat channel's stored credentials to its tenant
+// and connection. They are sealed under the same keyring as the connections.
+func InboundCredentialsAAD(tenantID, connectionID string) []byte {
+	return AAD("inbound_credentials", tenantID, connectionID)
 }
 
 // Lifecycle runs the background jobs of the connections: expiring idle
@@ -193,6 +201,7 @@ func (l *Lifecycle) RotateKeys(ctx context.Context) (RotateResult, error) {
 	l.sweep(ctx, &res, func(after int64) ([]int64, error) {
 		return l.Store.ListOAuthAppsToRewrap(ctx, active, after, l.batch())
 	}, func(id int64) (bool, error) { return l.Store.RewrapOAuthApp(ctx, id, active, l.rewrapApp) })
+	l.rotateInbound(ctx, &res, active)
 	if ctx.Err() != nil {
 		return res, ctx.Err()
 	}
@@ -234,6 +243,38 @@ func (l *Lifecycle) sweep(ctx context.Context, res *RotateResult, list func(afte
 				res.Rewrapped++
 				rotationRows.WithLabelValues("rewrapped").Inc()
 			}
+		}
+	}
+}
+
+// rotateInbound re-wraps the credentials of chat channels, which sit under the
+// same keys. There are few, and they are named by text ids, so they are listed
+// at once.
+func (l *Lifecycle) rotateInbound(ctx context.Context, res *RotateResult, active string) {
+	ids, err := l.Store.ListInboundCredentialsToRewrap(ctx, active)
+	if err != nil {
+		slog.Error("listing channel credentials to re-wrap failed", "err", err)
+		res.Failed++
+		rotationRows.WithLabelValues("failed").Inc()
+		return
+	}
+	for _, id := range ids {
+		if ctx.Err() != nil {
+			return
+		}
+		ran, err := l.Store.RewrapInboundCredentials(ctx, id, active, func(c postgresql.InboundConnection) (string, []byte, error) {
+			return l.Svc.Keys.Rewrap(c.CredentialsKeyID, c.CredentialsEnc, InboundCredentialsAAD(c.TenantID, c.ID))
+		})
+		switch {
+		case err != nil:
+			res.Failed++
+			rotationRows.WithLabelValues("failed").Inc()
+			slog.Error("re-wrapping channel credentials failed", "connection", id, "err", err)
+		case !ran:
+			res.Skipped++
+		default:
+			res.Rewrapped++
+			rotationRows.WithLabelValues("rewrapped").Inc()
 		}
 	}
 }

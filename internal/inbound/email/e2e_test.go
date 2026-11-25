@@ -196,3 +196,9 @@ func TestEndToEndThroughTheCore(t *testing.T) {
 		t.Errorf("a redelivered mail started a run: %v, %d", err, len(l.reqs))
 	}
 }
+
+func (s *memStore) ReceiveInboundPairing(context.Context, postgresql.InboundPairing) (bool, error) {
+	return false, nil
+}
+
+func (s *memStore) DeleteExpiredInboundPairings(context.Context) error { return nil }

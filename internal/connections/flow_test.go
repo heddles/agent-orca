@@ -48,6 +48,8 @@ type memStore struct {
 	flows map[string]postgresql.MCPOAuthFlow
 	apps  map[string]postgresql.MCPOAuthApp
 	conns map[string]postgresql.MCPConnection
+	// inbound are channel credentials, for the rotation job.
+	inbound map[string]postgresql.InboundConnection
 }
 
 func newMemStore() *memStore {

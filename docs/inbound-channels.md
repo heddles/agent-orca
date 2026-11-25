@@ -69,11 +69,28 @@ The audit trail (`audit_events`, kind `InboundConnection`) records who created, 
 
 ## Where secrets live
 
-Credentials are **never** in `inbound_connections` and never go through the API. A connection holds `secretRef`, the name of a Kubernetes Secret in the agent's namespace, and the operator reads it when it needs it. The Secret must carry the label `agentorca.io/inbound-secret: "true"`.
+A connection gets its credentials in one of two ways.
 
-Why a Secret and not the envelope-encrypted store of [per-user connections](mcp-oauth.md): that store holds tokens a *person* obtained through a consent flow in the UI, one per user. A mailbox login is a credential an *administrator* provisions for the platform, and this is how notification channels already work (`TenantConfig.spec.notifications`: the destination is in a Secret the UI cannot write). Using Secrets means the platform's secret tooling (rotation, External Secrets, sealed secrets, RBAC) applies, nothing needs a new key ring, and a database dump holds no mail credential.
+**Entered in the UI** (guided setup, below). Only an **administrator** can enter or replace them. They are envelope encrypted under the [connection keyring](mcp-oauth.md) (`database.connectionKeySecret`), bound to the tenant and the connection so a sealed value copied to another row does not open, and stored in `inbound_connections.credentials_enc`. No API returns them, the audit log records only that they were replaced, and the key rotation job re-wraps them with the rest. Without the keyring this is unavailable. This does mean credentials pass through the UI API once, and a database dump together with the key would reveal them; an installation that must keep them out of both should use a Secret.
 
-The label is the guard against a confused deputy. The operator can read most Secrets; a builder can create a connection but cannot create a Secret or put a label on one. So a connection can only use a Secret an administrator made *for channels*. The mailbox host, port and login, the address replies come from, and the `insecure` and `allowPrivateAddresses` switches are all in the Secret rather than in the connection, so a builder cannot aim the operator at a host, pick the From address, or turn TLS off.
+**A Kubernetes Secret.** The connection holds `secretRef`, the name of a Secret in the agent's namespace, and the operator reads it when it needs it. The Secret must carry the label `agentorca.io/inbound-secret: "true"`. Naming a Secret drops any stored credentials, and storing credentials forgets the Secret.
+
+Secrets keep the platform's secret tooling (rotation, External Secrets, sealed secrets, RBAC) in charge, and leave no credential in the database.
+
+The label is the guard against a confused deputy. The operator can read most Secrets; a builder can create a connection but cannot create a Secret or put a label on one. So a connection can only use a Secret an administrator made *for channels*. The mailbox host, port and login, the address replies come from, and the `insecure` and `allowPrivateAddresses` switches are all in the Secret rather than in the connection, so a builder cannot aim the operator at a host, pick the From address, or turn TLS off. The same holds for credentials entered in the UI, which only an administrator can do.
+
+## Guided setup
+
+A chat channel's card has **Continue setup** (later **Setup and pairing**), which opens four steps.
+
+1. **Public address.** The receive URL, on `operator.inbound.publicURL` when set. Nothing inside the cluster can prove the platform can reach it; step 4 does.
+2. **Create the app.** An adapter that implements `SetupLinker` (Slack) gives a link that opens the platform with the app's settings filled in, only when a public URL is configured. Otherwise the adapter's setup steps are shown.
+3. **Credentials**, entered by an administrator (above), or a Secret.
+4. **Pairing.** A builder gets a six-character code, valid for ten minutes, and sends `pair <code>` to the bot. A message that is exactly that is handled **before the allow-list**, and only if the connection is waiting for that code: the sender's id, the channel and where to reply are recorded, and the bot answers that the code arrived. Nothing starts a run. A builder then approves, which adds the sender to `allowSenders` (and the channel to `allowChannels`, if the message came from a channel and the connection lists channels) and replies in the chat, or discards it. A code works once; only its digest is stored; a new code replaces the old one; wrong codes are ordinary messages; attempts are rate limited per connection. The sender's id is kept only until approval, discard or expiry.
+
+While waiting, the UI says which part is failing from `lastRequestAt` and `lastAuthError`: nothing is reaching the address, requests are refused (and why), or messages arrive without the code.
+
+A chat channel may be saved with empty allow-lists. It then admits nobody.
 
 ## Chat contract
 
@@ -92,7 +109,7 @@ Chat platforms differ from mail in who the sender is, where the conversation liv
 
 **Capabilities** an adapter declares: `Threads`, `Dialect` (`""` none, `mrkdwn`, `mrkdwn-raw` (mrkdwn without entity escaping), `markdown`, `html`), `MaxReplyChars` (per message) and `MaxReplyParts`, `Modes`, `AckFirst`, `WorkingIndicator`.
 
-**Allow-lists** (all exact, no wildcards, case-insensitive): `allowSenders` (user ids), `allowGroups` (workspace ids), `allowChannels` (space ids). The sender lists are an OR (a listed user, or a member of a listed workspace); the channel list is an AND on top (a message from any other space is refused, whoever wrote it). A connection needs at least one of the three, and with only channels it admits whoever can write in those spaces. Which ids an adapter calls what is in its descriptor. Reasons in the ledger: `sender_not_allowed`, `channel_not_allowed`, `mode_not_enabled`.
+**Allow-lists** (all exact, no wildcards, case-insensitive; all empty means nobody): `allowSenders` (user ids), `allowGroups` (workspace ids), `allowChannels` (space ids). The sender lists are an OR (a listed user, or a member of a listed workspace); the channel list is an AND on top (a message from any other space is refused, whoever wrote it). A connection needs at least one of the three, and with only channels it admits whoever can write in those spaces. Which ids an adapter calls what is in its descriptor. Reasons in the ledger: `sender_not_allowed`, `channel_not_allowed`, `mode_not_enabled`.
 
 **Modes.** `modes` on a connection lists what the agent answers. Empty means the adapter's modes except `channel`. `channel` (every message of a space, no mention needed) must be named and needs `allowChannels`; saving it without is a 400. A mode the adapter cannot deliver is a 400.
 

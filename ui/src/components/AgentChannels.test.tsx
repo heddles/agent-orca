@@ -229,7 +229,7 @@ describe('AgentChannels, chat platforms', () => {
     })
   })
 
-  it('checks the required setting, the allow-list and the channel mode before sending', async () => {
+  it('checks the required setting and the channel mode before sending, and needs no list', async () => {
     kinds = [SLACKISH]
     current = [CHATCONN]
     const user = userEvent.setup()
@@ -239,9 +239,7 @@ describe('AgentChannels, chat platforms', () => {
     await user.click(await screen.findByRole('button', { name: 'Chatty' }))
     await user.type(screen.getByLabelText('Name'), 'x')
     await user.type(screen.getByLabelText('Secret (can be added later)'), 's')
-    await user.click(screen.getByRole('button', { name: 'Create channel' }))
-    expect(await screen.findByRole('alert')).toHaveTextContent(/Nobody is allowed by default/)
-    await user.type(screen.getByLabelText(/Who may write \(user ids\)/), 'U1')
+    expect(screen.getByText(/Nobody may write until they are on the list/)).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Create channel' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('Workspace id is required.')
     await user.type(screen.getByLabelText('Workspace id'), 'T1')
@@ -280,7 +278,7 @@ describe('AgentChannels, chat platforms', () => {
     expect(calls.find((c) => c.method === 'POST')!.body).toMatchObject({ secretRef: '' })
   })
 
-  it('says a draft is not ready, keeps its steps open and takes the Secret later', async () => {
+  it('says a draft is not ready, offers the guided setup and still takes a Secret', async () => {
     kinds = [SLACKISH]
     current = [{ ...CHATCONN, secretRef: '' }]
     routes[`PATCH /api/inbound-connections/${CHAT_ID}`] = { status: 200, body: CHATCONN }
@@ -289,10 +287,50 @@ describe('AgentChannels, chat platforms', () => {
     const card = await screen.findByRole('listitem', { name: 'Channel Support chat' })
     expect(within(card).getByText('Not ready')).toBeInTheDocument()
     expect(within(card).queryByRole('button', { name: 'Test connection' })).not.toBeInTheDocument()
-    await waitFor(() => expect(within(card).getByLabelText('Setup steps of Support chat').closest('details')).toHaveAttribute('open'))
+    expect(await within(card).findByRole('button', { name: 'Continue setup' })).toBeInTheDocument()
+    await user.click(within(card).getByText('Use a Kubernetes Secret instead'))
     await user.type(within(card).getByLabelText('Secret'), 'chat-creds')
     await user.click(within(card).getByRole('button', { name: 'Add credentials' }))
     await waitFor(() => expect(calls.find((c) => c.method === 'PATCH')?.body).toEqual({ secretRef: 'chat-creds' }))
+  })
+
+  it('opens the guided setup as soon as a chat channel is created', async () => {
+    kinds = [SLACKISH]
+    current = []
+    routes['POST /api/inbound-connections'] = { status: 201, body: { ...CHATCONN, secretRef: '' } }
+    const user = userEvent.setup()
+    setup()
+    await user.click(await screen.findByRole('button', { name: 'Add a channel' }))
+    await user.click(await screen.findByRole('button', { name: 'Chatty' }))
+    await user.type(screen.getByLabelText('Name'), 'x')
+    await user.type(screen.getByLabelText('Workspace id'), 'T1')
+    current = [{ ...CHATCONN, secretRef: '' }]
+    await user.click(screen.getByRole('button', { name: 'Create channel' }))
+    expect(await screen.findByRole('group', { name: 'Set up Support chat' })).toBeInTheDocument()
+  })
+
+  it('opens the guided setup on the card', async () => {
+    kinds = [SLACKISH]
+    current = [{ ...CHATCONN, secretRef: '', credentials: '', canStoreCredentials: true }]
+    const user = userEvent.setup()
+    setup()
+    const card = await screen.findByRole('listitem', { name: 'Channel Support chat' })
+    await user.click(await within(card).findByRole('button', { name: 'Continue setup' }))
+    expect(within(card).getByRole('group', { name: 'Set up Support chat' })).toBeInTheDocument()
+  })
+
+  it('counts stored credentials as ready, and a chat channel allowing nobody as not ready', async () => {
+    kinds = [SLACKISH]
+    current = [{ ...CHATCONN, secretRef: '', credentials: 'stored' }]
+    const first = setup()
+    let card = await screen.findByRole('listitem', { name: 'Channel Support chat' })
+    expect(within(card).getByText('On')).toBeInTheDocument()
+    expect(within(card).getByRole('button', { name: 'Test connection' })).toBeInTheDocument()
+    first.unmount()
+    current = [{ ...CHATCONN, config: { modes: ['direct'] } }]
+    setup()
+    card = await screen.findByRole('listitem', { name: 'Channel Support chat' })
+    expect(within(card).getByText('Not ready')).toBeInTheDocument()
   })
 
   it('shows why adding credentials was refused', async () => {

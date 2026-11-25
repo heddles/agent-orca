@@ -481,3 +481,54 @@ agentorca_mcp_connections{status="needs_reauth"} 1
 		t.Errorf("series on error = %d", n)
 	}
 }
+
+// Channel credentials, for the rotation job: rows by id.
+func (m *memStore) ListInboundCredentialsToRewrap(_ context.Context, active string) ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var ids []string
+	for id, c := range m.inbound {
+		if c.CredentialsKeyID != active {
+			ids = append(ids, id)
+		}
+	}
+	return ids, nil
+}
+
+func (m *memStore) RewrapInboundCredentials(_ context.Context, id, _ string, fn func(postgresql.InboundConnection) (string, []byte, error)) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c := m.inbound[id]
+	keyID, sealed, err := fn(c)
+	if err != nil {
+		return false, err
+	}
+	c.CredentialsKeyID, c.CredentialsEnc = keyID, sealed
+	m.inbound[id] = c
+	return true, nil
+}
+
+func TestRotateKeysMovesChannelCredentials(t *testing.T) {
+	h := newHarness(t)
+	old := twoKeyRing(t, "k1")
+	plain := []byte(`{"botToken":"x"}`)
+	keyID, sealed, err := old.Seal(plain, InboundCredentialsAAD("tnt_a", "inb_1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.store.inbound = map[string]postgresql.InboundConnection{
+		"inb_1": {ID: "inb_1", TenantID: "tnt_a", CredentialsKeyID: keyID, CredentialsEnc: sealed},
+	}
+	h.svc.Keys = twoKeyRing(t, "k2")
+	if _, err := h.lifecycle().RotateKeys(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got := h.store.inbound["inb_1"]
+	if got.CredentialsKeyID != "k2" {
+		t.Fatalf("key = %s, want k2", got.CredentialsKeyID)
+	}
+	opened, err := h.svc.Keys.Open(got.CredentialsKeyID, got.CredentialsEnc, InboundCredentialsAAD("tnt_a", "inb_1"))
+	if err != nil || string(opened) != string(plain) {
+		t.Fatalf("open after rotation = %q, %v", opened, err)
+	}
+}

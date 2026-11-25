@@ -61,10 +61,13 @@ func (f *fakeAdapter) Receive(context.Context, Connection, *http.Request) (Messa
 }
 
 type fakeStore struct {
-	mu    sync.Mutex
-	msgs  []*postgresql.InboundMessage
-	conns map[string]postgresql.InboundConnection
-	stat  map[string]postgresql.InboundStatus
+	// pairingHash is the code the connection waits for; paired is who sent it.
+	pairingHash string
+	paired      *postgresql.InboundPairing
+	mu          sync.Mutex
+	msgs        []*postgresql.InboundMessage
+	conns       map[string]postgresql.InboundConnection
+	stat        map[string]postgresql.InboundStatus
 }
 
 func newFakeStore() *fakeStore {
@@ -259,8 +262,17 @@ func (f *fixture) handle(m Message, err error) Outcome {
 }
 
 func TestAllowListIsDefaultDeny(t *testing.T) {
-	if _, err := ParseSettings([]byte(`{}`)); err == nil {
+	// A channel without chat modes (email) cannot be saved without a list, and
+	// whatever a stored one holds, an empty list admits nobody.
+	empty, err := ParseSettings([]byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckSettings(&fakeAdapter{}, empty); err == nil {
 		t.Error("a connection with no allow-list was accepted")
+	}
+	if why := empty.Refusal(Capabilities{}, msg("0", "anyone@corp.example", "corp.example")); why != "sender_not_allowed" {
+		t.Errorf("an empty allow-list gave %q, want sender_not_allowed", why)
 	}
 	f := newFixture(t)
 	if o := f.handle(msg("1", "mallory@evil.example", "evil.example"), nil); o != OutcomeRejected {
@@ -646,3 +658,16 @@ func TestAnAnsweredRunStaysSilent(t *testing.T) {
 		t.Errorf("row = %+v", m)
 	}
 }
+
+// The pipeline's pairing calls: one code per connection, used once.
+func (f *fakeStore) ReceiveInboundPairing(_ context.Context, p postgresql.InboundPairing) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.pairingHash == "" || f.pairingHash != p.CodeHash || f.paired != nil {
+		return false, nil
+	}
+	f.paired = &p
+	return true, nil
+}
+
+func (f *fakeStore) DeleteExpiredInboundPairings(context.Context) error { return nil }

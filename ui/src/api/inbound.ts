@@ -1,8 +1,8 @@
 /**
  * Client for inbound channel connections (docs/inbound-channels.md): a mailbox, and later chat
  * platforms, that start a run of a published agent from a message and send the result back.
- * Listing needs the viewer role; creating, changing, testing and deleting the builder role. A
- * connection never carries a credential: it names a Secret an administrator prepared.
+ * Listing needs the viewer role; creating, changing, testing, pairing and deleting the builder
+ * role; entering credentials the admin role. No answer ever carries a credential.
  */
 import { failure } from './builder'
 import { apiFetch } from './sse'
@@ -30,6 +30,32 @@ export interface InboundConnection {
   url?: string
   /** Messages refused in the last 24 hours, by reason code. */
   refused?: Record<string, number>
+  /** Where the credentials are: entered here ("stored"), a Secret, or none yet. Never their values. */
+  credentials?: 'stored' | 'secret' | ''
+  canStoreCredentials?: boolean
+  /** Creates the platform's app with this channel's settings filled in. */
+  setupLink?: string
+  /** The last request that passed the adapter's check, and the last refusal. */
+  lastRequestAt?: string
+  lastAuthError?: string
+  lastAuthErrorAt?: string
+}
+
+export interface InboundPairing {
+  id: string
+  /** Only in the answer that made it. */
+  code?: string
+  status: 'waiting' | 'received'
+  expiresAt: string
+  senderId?: string
+  senderName?: string
+  channelId?: string
+  direct?: boolean
+}
+
+export interface ApprovedPairing {
+  replySent: boolean
+  replyError?: string
 }
 
 export interface EmailAdapterConfig {
@@ -121,6 +147,13 @@ export const setInboundEnabled = (id: string, enabled: boolean) =>
   send<InboundConnection>(`/api/inbound-connections/${enc(id)}`, 'PATCH', { enabled })
 export const setInboundSecret = (id: string, secretRef: string) =>
   send<InboundConnection>(`/api/inbound-connections/${enc(id)}`, 'PATCH', { secretRef })
+export const setInboundCredentials = (id: string, values: Record<string, string>) =>
+  send<InboundConnection>(`/api/inbound-connections/${enc(id)}/credentials`, 'PUT', { values })
+const pairings = (id: string) => `/api/inbound-connections/${enc(id)}/pairings`
+export const createPairing = (id: string) => send<InboundPairing>(pairings(id), 'POST')
+export const getPairing = (id: string, pairing: string) => send<InboundPairing>(`${pairings(id)}/${enc(pairing)}`, 'GET')
+export const approvePairing = (id: string, pairing: string) => send<ApprovedPairing>(`${pairings(id)}/${enc(pairing)}/approve`, 'POST')
+export const discardPairing = (id: string, pairing: string) => send<void>(`${pairings(id)}/${enc(pairing)}`, 'DELETE')
 export const deleteInbound = (id: string) => send<void>(`/api/inbound-connections/${enc(id)}`, 'DELETE')
 export const testInbound = (id: string) => send<InboundTestReport>(`/api/inbound-connections/${enc(id)}/test`, 'POST')
 
