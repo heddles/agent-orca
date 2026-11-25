@@ -116,7 +116,8 @@ export function RunHistoryDetailView({ runId, namespace = 'default', onBack, onN
         <div style={{ minWidth: 0 }}>
           <h1 style={dv.title}>{runTitle(detail.input, detail.name)}</h1>
           <div style={dv.subtitle}>
-            {detail.agentRef} · {detail.name} · {detail.namespace}
+            {detail.agentRef} · {detail.namespace}
+            {runTitle(detail.input, detail.name) !== detail.name && <> · <span>{detail.name}</span></>}
           </div>
         </div>
       </div>
