@@ -344,6 +344,12 @@ func (e *Executor) executeAgentTool(ctx context.Context, req ToolExecuteRequest)
 					// done sentinel from child — do not forward; parent has its own sentinel
 					return
 				}
+				if strings.HasPrefix(token, "\x00") {
+					// Child trace event (TailTokens marker). The UI and archive read
+					// these from the child's own stream. Re-saved as a parent token it
+					// would surface as a parent event and archive with a NUL byte.
+					continue
+				}
 				if err := e.store.SaveToken(forwardCtx, e.parentTokenKey, token); err != nil {
 					slog.Warn("failed to forward child token to parent stream", "childKey", childTokenKey, "err", err)
 					return
