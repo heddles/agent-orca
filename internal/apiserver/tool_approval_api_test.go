@@ -156,6 +156,8 @@ func TestRequestToolApprovalOpensAnApprovalFromThePolicy(t *testing.T) {
 		ApproverGroups: []string{"release-managers"}, Timeout: &metav1.Duration{Duration: 10 * time.Minute},
 	}
 	s, cl := toolServer(t, store, notifier, toolFixtures(policy)...)
+	prompter := &countingNotifier{}
+	s.WithApprovalPrompter(prompter)
 
 	// The router can send anything; groups and timeout still come from the policy.
 	rec := requestTool(s, routerSA,
@@ -185,6 +187,9 @@ func TestRequestToolApprovalOpensAnApprovalFromThePolicy(t *testing.T) {
 	if d.Tool != "deploy" || d.SideEffect != "actuate" || d.Arguments != `{"env":"prod"}` || d.Agent != "coder" {
 		t.Errorf("details = %+v", d)
 	}
+	if len(prompter.got) != 1 {
+		t.Errorf("%d channel prompts, want 1", len(prompter.got))
+	}
 	if len(notifier.got) != 1 {
 		t.Errorf("%d notifications, want 1", len(notifier.got))
 	}
@@ -196,7 +201,7 @@ func TestRequestToolApprovalOpensAnApprovalFromThePolicy(t *testing.T) {
 
 	// The same call asked again is the same approval, and nobody is notified twice.
 	again := decodeState(t, requestTool(s, routerSA, goodToolBody))
-	if again.ID != st.ID || len(store.rows) != 1 || len(notifier.got) != 1 {
+	if again.ID != st.ID || len(store.rows) != 1 || len(notifier.got) != 1 || len(prompter.got) != 1 {
 		t.Errorf("repeat: id %s vs %s, %d rows, %d notifications", again.ID, st.ID, len(store.rows), len(notifier.got))
 	}
 }

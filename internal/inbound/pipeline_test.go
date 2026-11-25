@@ -134,6 +134,17 @@ func (f *fakeStore) LatestInboundRunInThread(_ context.Context, conn, thread str
 	return "", "", nil
 }
 
+func (f *fakeStore) FindRunningInboundMessage(_ context.Context, ns, run string) (postgresql.InboundMessage, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := len(f.msgs) - 1; i >= 0; i-- {
+		if m := f.msgs[i]; m.RunNamespace == ns && m.RunName == run && m.Status == postgresql.InboundRunning {
+			return *m, true, nil
+		}
+	}
+	return postgresql.InboundMessage{}, false, nil
+}
+
 func (f *fakeStore) CountInboundBySender(_ context.Context, conn, sender string, _ time.Time) (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A question from the agent (`_clarify`) now reaches the person on every inbound channel, instead of "The agent could not complete this request." The next message in the thread is the answer and resumes the run. See [Inbound channels](docs/inbound-channels.md).
 
 ### Added
+- Tool-call approvals in the chat thread. When a run started by an inbound channel waits for an approver, the thread is told, and a sender listed in the connection's new `approvers` setting can reply `approve` or `deny`. Requests limited to approver groups stay console-only. See [Inbound channels](docs/inbound-channels.md).
 - Metrics `agentorca_run_archive_*` and an optional PrometheusRule (`metrics.prometheusRule.enabled`).
 
 ## [Unreleased]
