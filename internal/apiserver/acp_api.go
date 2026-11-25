@@ -1455,62 +1455,11 @@ func (s *ACPServer) resumeACPRun(w http.ResponseWriter, r *http.Request, run *ag
 		return
 	}
 
-	// Build continuation input. If the model-router checkpointed the prior run,
-	// the continuation's model-router will load it via PriorRunRef and inject the
-	// answer at startup. If no checkpoint exists (controller safety-net path),
-	// bake the Q&A into the input so the continuation has full context.
-	continuationInput := run.Spec.Input
-	if s.store != nil {
-		checkpointKey := fmt.Sprintf("agentorca/runs/%s/state", run.Name)
-		if msgs, lerr := runState(s.store, run).LoadMessages(r.Context(), checkpointKey); lerr != nil || len(msgs) == 0 {
-			continuationInput = fmt.Sprintf(
-				"%s\n\n---\nPrevious attempt asked: %s\nHuman answered: %s\n---\nPlease proceed with the above information.", //nolint:lll
-				run.Spec.Input, run.Status.ClarifyQuestion, req.AwaitResume.Answer)
-		}
-	}
-
-	// Create a continuation AgentRun that loads the original's checkpoint via
-	// PriorRunRef. Inherit the original's labels (deployment, session, source) so
-	// the controller claims a warm pod for it.
-	continuation := &agentorcav1alpha1.AgentRun{
-		ObjectMeta: metav1.ObjectMeta{
-			GenerateName: run.Name + "-cont-",
-			Namespace:    run.Namespace,
-			Labels:       run.Labels, // shallow copy — inherits deployment/session/source
-		},
-		Spec: agentorcav1alpha1.AgentRunSpec{
-			AgentRef:        run.Spec.AgentRef,
-			Input:           continuationInput,
-			Timeout:         run.Spec.Timeout,
-			RestartPolicy:   run.Spec.RestartPolicy,
-			PriorRunRef:     run.Name,
-			WorkflowSandbox: run.Spec.WorkflowSandbox,
-		},
-	}
-	// Same person's run: keep the invoker (docs/mcp-oauth.md).
-	if by := run.Annotations[AnnotationCreatedBy]; by != "" {
-		continuation.Annotations = map[string]string{AnnotationCreatedBy: by}
-	}
-	if err := s.crdClient.Create(r.Context(), continuation); err != nil {
-		writeACPError(w, "server_error", fmt.Sprintf("creating continuation run: %s", err), http.StatusInternalServerError)
+	continuation, err := resumeWithAnswer(r.Context(), s.crdClient, s.store, run, req.AwaitResume.Answer)
+	if err != nil {
+		writeACPError(w, "server_error", err.Error(), http.StatusInternalServerError)
 		return
 	}
-
-	// Store the answer under the CONTINUATION run's name so its model-router
-	// (which starts fresh) finds it during initialization / ClaimRun.
-	if s.store != nil {
-		answerKey := fmt.Sprintf("clarify-answer:%s:%s", run.Namespace, continuation.Name)
-		if err := runState(s.store, continuation).SaveAnswer(r.Context(), answerKey, req.AwaitResume.Answer, 1*time.Hour); err != nil {
-			slog.Warn("failed to save ACP clarify answer", "run", continuation.Name, "err", err)
-		}
-	}
-
-	// Mark the original run as Succeeded with a forward pointer to the continuation.
-	origPatch := client.MergeFrom(run.DeepCopy())
-	run.Status.Phase = agentorcav1alpha1.AgentRunPhaseSucceeded
-	run.Status.ClarifyAnswer = req.AwaitResume.Answer
-	run.Status.ContinuationRunRef = continuation.Name
-	_ = s.crdClient.Status().Patch(r.Context(), run, origPatch)
 
 	// Advance the session checkpoint so the next turn chains to the continuation.
 	sessionID := run.Labels["agentorca.io/session"]

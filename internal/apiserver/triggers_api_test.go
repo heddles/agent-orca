@@ -158,7 +158,7 @@ func newHookFixture(t *testing.T) *hookFixture {
 		hookAgent("shared", "tmpl", map[string]string{LabelTemplate: templateMarker}),
 		&agentorcav1alpha1.AgentDeployment{ObjectMeta: metav1.ObjectMeta{Name: "support-dep", Namespace: "shared", Labels: map[string]string{tenancy.LabelTenantID: isoA}}, Spec: agentorcav1alpha1.AgentDeploymentSpec{AgentRef: "support"}},
 		&agentorcav1alpha1.AgentDeployment{ObjectMeta: metav1.ObjectMeta{Name: "tmpl-dep", Namespace: "shared"}, Spec: agentorcav1alpha1.AgentDeploymentSpec{AgentRef: "tmpl"}},
-	).Build()
+	).WithStatusSubresource(&agentorcav1alpha1.AgentRun{}).Build()
 	f := &hookFixture{t: t, c: cl, store: newFakeTriggerStore(), audit: &fakeAudit{}, now: time.Unix(1_800_000_000, 0)}
 	f.s = &UIServer{crdClient: cl, triggers: f.store, audit: f.audit}
 	f.s.hooks.now = func() time.Time { return f.now }

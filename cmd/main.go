@@ -1237,7 +1237,7 @@ func addInboundChannels(
 	reg.Register(&inboundwebex.Adapter{})
 	bridge := uiAPI.InboundBridge()
 	pipe := &inbound.Pipeline{
-		Store: pgStore.AsPlatform(), Launcher: bridge, Runs: bridge, Registry: reg, Limiter: limiter,
+		Store: pgStore.AsPlatform(), Launcher: bridge, Runs: bridge, Resumer: bridge, Registry: reg, Limiter: limiter,
 		Secrets: bridge.ReadSecret,
 	}
 	uiAPI.SetInbound(pipe)
