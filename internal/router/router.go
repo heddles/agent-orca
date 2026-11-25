@@ -3225,8 +3225,10 @@ func (r *Router) executeSpawn(ctx context.Context, args string) string {
 	slog.Info("spawned child AgentRun", "parent", r.cfg.RunName, "child", childName, "agent", p.AgentRef)
 
 	// Poll until the child reaches a terminal phase.
-	pollURL := fmt.Sprintf("%s/agentrun/%s/%s/status", r.cfg.OperatorAPIURL, r.cfg.RunNamespace, childName)
+	// The operator serves the AgentRun, status included, at GET /agentrun/{ns}/{name}.
+	pollURL := fmt.Sprintf("%s/agentrun/%s/%s", r.cfg.OperatorAPIURL, r.cfg.RunNamespace, childName)
 	deadline := time.Now().Add(timeout)
+	var lastPollErr string
 	pollInterval := 2 * time.Second
 
 	for time.Now().Before(deadline) {
@@ -3240,6 +3242,14 @@ func (r *Router) executeSpawn(ctx context.Context, args string) string {
 
 		getResp, err := http.DefaultClient.Do(getReq)
 		if err != nil {
+			lastPollErr = err.Error()
+			continue
+		}
+		if getResp.StatusCode != http.StatusOK {
+			// A routing or auth error must not look like a slow child.
+			_ = getResp.Body.Close()
+			lastPollErr = fmt.Sprintf("polling child AgentRun returned HTTP %d", getResp.StatusCode)
+			slog.Warn("spawn poll failed", "child", childName, "status", getResp.StatusCode)
 			continue
 		}
 		var child struct {
@@ -3253,8 +3263,10 @@ func (r *Router) executeSpawn(ctx context.Context, args string) string {
 		decodeErr := json.NewDecoder(getResp.Body).Decode(&child)
 		_ = getResp.Body.Close()
 		if decodeErr != nil {
+			lastPollErr = fmt.Sprintf("decoding child AgentRun: %v", decodeErr)
 			continue
 		}
+		lastPollErr = ""
 
 		switch child.Status.Phase {
 		case "Succeeded":
@@ -3286,8 +3298,12 @@ func (r *Router) executeSpawn(ctx context.Context, args string) string {
 		}
 	}
 
+	msg := fmt.Sprintf("spawn timed out after %s", timeout)
+	if lastPollErr != "" {
+		msg += " (last poll error: " + lastPollErr + ")"
+	}
 	result, _ := json.Marshal(map[string]string{
-		"error":     fmt.Sprintf("spawn timed out after %s", timeout),
+		"error":     msg,
 		"child_run": childName,
 	})
 	return string(result)
