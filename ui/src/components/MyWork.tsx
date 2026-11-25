@@ -1,8 +1,8 @@
 /**
- * MyWork — Home. What the signed-in user has running or finished, anything
- * waiting on them (agent questions and approvals), and the outputs, with
- * feedback thumbs. Runs are the user's own when they record who started them;
- * otherwise the team's recent runs are shown and the page says so.
+ * The Home widgets about the signed-in user's own work: what is waiting on them
+ * (agent questions and approvals) and their recent runs, with feedback thumbs.
+ * Runs are the user's own when they record who started them; otherwise the
+ * team's recent runs are shown and the widget says so.
  */
 import { useCallback, useEffect, useState, type CSSProperties } from 'react'
 import { Link, useNavigate } from 'react-router'
@@ -12,7 +12,7 @@ import { getMyRuns, type MyRun, type MyRuns } from '../api/catalog'
 import { DSButton } from '../lib/primitives'
 import { ds, DESIGN } from '../lib/designSystem'
 import { ICON } from '../lib/icons'
-import { EmptyState, Section } from '../lib/layout'
+import { EmptyState } from '../lib/layout'
 import { liveRunPath, ROUTES, agentDetailsPath } from '../lib/routes'
 import { useNamespace } from '../lib/namespace'
 import { ApprovalsView } from './ApprovalsView'
@@ -37,12 +37,13 @@ export function phaseText(phase: string): string {
   }
 }
 
-export function MyWork() {
+const RECENT_SHOWN = 5
+
+/** The signed-in user's recent runs, or the team's, refreshed while shown. */
+function useMyRuns() {
   const { namespace } = useNamespace()
   const [data, setData] = useState<MyRuns | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const navigate = useNavigate()
-  const [pendingApprovals, setPendingApprovals] = useState<number | null>(null)
 
   const load = useCallback(() => {
     getMyRuns(namespace)
@@ -56,50 +57,63 @@ export function MyWork() {
     return () => clearInterval(id)
   }, [load])
 
+  return { data, error, load }
+}
+
+/** Agent questions and approvals that need a person. */
+export function NeedsYou() {
+  const { data, error, load } = useMyRuns()
+  const navigate = useNavigate()
+  const [pendingApprovals, setPendingApprovals] = useState<number | null>(null)
   const questions = (data?.runs ?? []).filter((r) => r.phase === 'WaitingForInput' && r.clarifyQuestion)
   const nothingWaiting = questions.length === 0 && pendingApprovals === 0
 
   return (
     <div>
-      <Section title="Waiting for you">
-        {questions.length > 0 && (
-          <ul style={s.list} aria-label="Questions from agents">
-            {questions.map((r) => <li key={`${r.namespace}/${r.name}`}><QuestionCard run={r} onAnswered={load} /></li>)}
-          </ul>
-        )}
-        <div style={{ marginTop: questions.length > 0 ? 12 : 0 }}>
-          <ApprovalsView embedded onPendingChange={setPendingApprovals} onNavigateToRun={(runName, ns) => navigate(liveRunPath(ns, runName))} />
-        </div>
-        {data && nothingWaiting && (
-          <p style={s.quiet}>Nothing is waiting for you. Questions from agents and requests for approval show up here.</p>
-        )}
-      </Section>
+      {error && <div role="alert" style={s.error}>Could not load agent questions: {error}</div>}
+      {questions.length > 0 && (
+        <ul style={s.list} aria-label="Questions from agents">
+          {questions.map((r) => <li key={`${r.namespace}/${r.name}`}><QuestionCard run={r} onAnswered={load} /></li>)}
+        </ul>
+      )}
+      <div style={{ marginTop: questions.length > 0 ? 12 : 0 }}>
+        <ApprovalsView embedded onPendingChange={setPendingApprovals} onNavigateToRun={(runName, ns) => navigate(liveRunPath(ns, runName))} />
+      </div>
+      {data && nothingWaiting && (
+        <p style={s.quiet}>Nothing is waiting for you. Questions from agents and requests for approval show up here.</p>
+      )}
+    </div>
+  )
+}
 
-      <Section title="Your recent runs">
-        {error && <div role="alert" style={s.error}>Could not load your runs: {error}</div>}
-        {!data && !error && <div role="status" style={s.quiet}>Loading your runs…</div>}
-        {data && data.runs.length === 0 && (
-          <EmptyState
-            icon={ICON.runs}
-            title="You have not run anything yet"
-            action={<Link to={ROUTES.agents} style={s.link}>Browse agents</Link>}
-          >
-            Pick an agent, fill in what you want done, and the result will appear here.
-          </EmptyState>
-        )}
-        {data && data.runs.length > 0 && (
-          <>
-            <p role="status" style={s.scope}>
-              {data.scope === 'user'
-                ? 'Runs you started.'
-                : 'Showing your team’s recent runs. Runs you start from the agent page will be listed as yours.'}
-            </p>
-            <ul style={s.list} aria-label="Recent runs">
-              {data.runs.map((r) => <li key={`${r.namespace}/${r.name}`}><RunCard run={r} /></li>)}
-            </ul>
-          </>
-        )}
-      </Section>
+export function RecentRuns() {
+  const { data, error } = useMyRuns()
+  return (
+    <div>
+      {error && <div role="alert" style={s.error}>Could not load your runs: {error}</div>}
+      {!data && !error && <div role="status" style={s.quiet}>Loading your runs…</div>}
+      {data && data.runs.length === 0 && (
+        <EmptyState
+          icon={ICON.runs}
+          title="You have not run anything yet"
+          action={<Link to={ROUTES.agents} style={s.link}>Browse agents</Link>}
+        >
+          Pick an agent, fill in what you want done, and the result will appear here.
+        </EmptyState>
+      )}
+      {data && data.runs.length > 0 && (
+        <>
+          <p role="status" style={s.scope}>
+            {data.scope === 'user'
+              ? 'Runs you started.'
+              : 'Showing your team’s recent runs. Runs you start from the agent page will be listed as yours.'}
+          </p>
+          <ul style={s.list} aria-label="Recent runs">
+            {data.runs.slice(0, RECENT_SHOWN).map((r) => <li key={`${r.namespace}/${r.name}`}><RunCard run={r} /></li>)}
+          </ul>
+          <p style={s.more}><Link to={ROUTES.runs} style={s.link}>All runs</Link></p>
+        </>
+      )}
     </div>
   )
 }
@@ -193,10 +207,11 @@ function RunCard({ run }: { run: MyRun }) {
 }
 
 const s: Record<string, CSSProperties> = {
-  list: { listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 10, maxWidth: 860 },
+  list: { listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 10 },
+  more: { margin: '10px 0 0' },
   card: {
     display: 'flex', flexDirection: 'column', gap: 8, padding: 14, background: ds.surface,
-    border: '1px solid var(--ds-border)', borderRadius: DESIGN.radii.xl, boxShadow: 'var(--ds-card-shadow)',
+    border: '1px solid var(--ds-border)', borderRadius: DESIGN.radii.lg, minWidth: 0,
   },
   cardHead: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: 13, color: ds.textPrimary },
   cardFoot: { display: 'flex', gap: 14, alignItems: 'center' },

@@ -14,7 +14,7 @@ vi.mock('./api/fleet', () => ({ getMe: () => mockGetMe() }))
 vi.mock('./components/FleetView', () => ({ FleetView: () => <div>view:fleet</div> }))
 vi.mock('./components/SchedulesView', () => ({ SchedulesView: () => <div>view:schedules</div> }))
 vi.mock('./components/SystemDashboard', () => ({ SystemDashboard: () => <div>view:overview</div> }))
-vi.mock('./components/MyWork', () => ({ MyWork: () => <div>view:home</div> }))
+vi.mock('./components/HomeBoard', () => ({ HomeBoard: () => <div>view:home</div> }))
 vi.mock('./components/AgentCatalog', () => ({ AgentCatalog: () => <div>view:catalog</div> }))
 vi.mock('./components/AgentPage', () => ({
   AgentPage: (p: { namespace: string; name: string; tab: string }) => <div>view:agent {p.namespace}/{p.name} tab:{p.tab}</div>,

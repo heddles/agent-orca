@@ -8,11 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- UI: Home is now a board of widgets each person can arrange (add, remove, reorder, full or half width): waiting for you, latest scheduled reports, problems, ask an agent, recent runs, coming up and agent health. The layout is saved in the browser.
+- UI: runs are titled with what was asked instead of their generated name, channel wrappers are folded away, and sub-runs are grouped under their parent. `GET /api/runs` and `GET /api/runs/history` now return the first 600 characters of each run's input and its parent run, history search matches the input, and `GET /api/my/runs` leaves out sub-runs that are not waiting for an answer.
 - A finished run's answer is no longer written to the AgentRun status (etcd). It is kept in Redis (30 days) and in the archived run in PostgreSQL, and the 10 KB limit is now 1 MiB. Older runs still show their answers.
 - Run archival is one retried step. The reconcile of a finished run archives it, retries with backoff while PostgreSQL is down, and records an `Archived` condition. A finished run is not deleted before it is archived, up to `database.archiveDeleteGrace` (default 24h). See [Run archival](docs/run-archival.md). After an upgrade every finished run without the condition is archived once.
 - The bundled Redis now has `maxmemory` (384mb) and `volatile-ttl` eviction (`redis.maxmemory`, `redis.maxmemoryPolicy`).
 
 ### Fixed
+- UI: the Runs table sorted oldest first while showing newest first; several pages had lost their padding; inactive tabs could keep a dark underline; a run with no spend showed a bare `$`; run output now renders as markdown by default; an empty chat suggests the agent's own example inputs.
 - A question from the agent (`_clarify`) now reaches the person on every inbound channel, instead of "The agent could not complete this request." The next message in the thread is the answer and resumes the run. See [Inbound channels](docs/inbound-channels.md).
 
 ### Added

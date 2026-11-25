@@ -113,7 +113,7 @@ checks still apply. A child whose parent has no invoker (a scheduled run) has no
 **Pausing for a connection.** If a tool call is refused with `connection_required` (for example the user
 disconnected during the run), the model gets a tool error it can relay ("the github account is not
 connected ... do not retry") and the run moves to `WaitingForInput` with the card "This agent needs your
-github account. Connect it under Connections, then answer here to continue." The run page and My work show
+github account. Connect it under Connections, then answer here to continue." The run page and Home show
 a Connect link next to it. Answering resumes the run through the ordinary clarification path; the
 continuation keeps the original `created-by`. A child run cannot ask a human, so it returns the error to its
 caller instead. Before a run starts, `GET /api/me/connections/required?agent=ns/name` lists the invoker
