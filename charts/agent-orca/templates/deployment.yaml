@@ -180,6 +180,8 @@ spec:
                   key: {{ .Values.database.passwordSecret.key | quote }}
             - name: POSTGRES_DSN
               value: {{ .Values.database.dsn | quote }}
+            - name: ARCHIVE_DELETE_GRACE
+              value: {{ .Values.database.archiveDeleteGrace | default "24h" | quote }}
             - name: ARCHIVED_RUNS_RETENTION_DAYS
               value: {{ .Values.database.archivedRunsRetentionDays | default 0 | toString | quote }}
             {{- end }}

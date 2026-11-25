@@ -265,6 +265,14 @@ redis:
     enabled: true
     size: 8Gi
     storageClass: ""
+  # Redis holds finished runs' answers (30 days) and traces (24 hours) until they
+  # are archived to PostgreSQL. maxmemory keeps Redis below the container limit so
+  # it refuses or evicts instead of being OOM-killed; keep it at about 75% of
+  # resources.limits.memory. With volatile-ttl the keys closest to expiry go first:
+  # traces (24 hours) before answers (30 days). An answer that cannot be stored is
+  # kept, clipped to 10 KB, in the run's status.
+  maxmemory: 384mb
+  maxmemoryPolicy: volatile-ttl
   resources:
     requests:
       cpu: 100m
@@ -483,6 +491,11 @@ database:
   # summary row, so cost totals and the history list are unchanged. 0 keeps
   # everything for ever. Cluster-wide: there is no per-tenant setting.
   archivedRunsRetentionDays: 0
+  # A finished run is archived to this database before its AgentRun is deleted
+  # (docs/run-archival.md). When the database stays unreachable the deletion waits
+  # this long (ARCHIVE_DELETE_GRACE), then goes ahead without an archive and says
+  # so in an event and the agentorca_run_archive_total{result="abandoned"} metric.
+  archiveDeleteGrace: 24h
   # Per-user OAuth connections to MCP servers (docs/mcp-oauth.md) store tokens
   # encrypted in this database. The key-encryption key (KEK) comes from a Secret
   # you create: one key per entry, the entry name is the key id and the value is 32
@@ -529,6 +542,10 @@ metrics:
     scrapeTimeout: 10s
     relabelings: []
     metricRelabelings: []
+    additionalLabels: {}
+  # Alerts on the operator's metrics (Prometheus Operator PrometheusRule CRD).
+  prometheusRule:
+    enabled: false
     additionalLabels: {}
   modelRouter:
     # Prometheus Operator PodMonitor for the model-router sidecar metrics
