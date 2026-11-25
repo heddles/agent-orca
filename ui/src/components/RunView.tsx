@@ -24,6 +24,7 @@ import { RunRequest } from './RunRequest'
 import { channelLabel, parseRunInput, runTitle } from '../lib/runText'
 import { agentDetailsPath } from '../lib/routes'
 import { timeAgo } from '../lib/time'
+import { useRunTrace } from '../lib/useRunTrace'
 import { OutputCard } from './OutputCard'
 import { TraceAccordion } from './TraceAccordion'
 import { RouterAccordion } from './RouterAccordion'
@@ -187,6 +188,7 @@ export function RunView({
   const hasChildren = (detail?.childRunRefs?.length ?? 0) > 0
 
   const output = streamOutput || detail?.output || ''
+  const trace = useRunTrace(namespace, runId, entries, viewTab === 'trace' && detail !== null && !isRunning)
 
   const elapsed = (() => {
     if (!detail?.startTime) return null
@@ -374,7 +376,13 @@ export function RunView({
         </div>
       ) : viewTab === 'trace' ? (
         <div id="trace-panel" role="tabpanel" style={{ flex: 1, overflowY: 'auto' }}>
-          <TraceAccordion entries={entries} streaming={isRunning} markdown={markdown} feedbackRun={{ namespace, runName: runId }} />
+          {trace.lost && (
+            <p role="note" style={s.empty}>
+              This run no longer has a detailed trace: the live copy is gone and the archive has none.
+              Only what is recorded on the run, such as model routing, can be shown.
+            </p>
+          )}
+          <TraceAccordion entries={trace.entries} streaming={isRunning} markdown={markdown} feedbackRun={{ namespace, runName: runId }} />
           {detail && detail.routingDecisions.length > 0 && (
             <RouterAccordion
               decisions={detail.routingDecisions}

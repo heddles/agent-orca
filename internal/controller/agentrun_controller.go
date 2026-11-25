@@ -2036,6 +2036,12 @@ func (r *AgentRunReconciler) loadTraceEventsForArchive(ctx context.Context, run 
 		log.Log.Error(err, "failed to read trace events for archival", "run", run.Name, "ns", run.Namespace)
 		return nil
 	}
+	// Without the run's own stream there is no trace to write. Returning nil
+	// keeps whatever the archive already has: the events added below come from
+	// the run object, and a trace of only those would replace a full one.
+	if len(parentEvents) == 0 {
+		return nil
+	}
 	entries = parentEvents
 
 	// Read each child run's trace events (agent-as-tool), tagging them so the
