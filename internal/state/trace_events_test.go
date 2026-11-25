@@ -285,6 +285,45 @@ func TestRedisReadTraceEventsEmptyStream(t *testing.T) {
 	}
 }
 
+// TestRedisReadTraceEventsSkipsForwardedTraceMarkers verifies that a child trace
+// event an older agent-as-tool forwarder saved as a "\x00"-prefixed token is
+// dropped, so the archived trace carries no NUL byte (issue #260).
+func TestRedisReadTraceEventsSkipsForwardedTraceMarkers(t *testing.T) {
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("starting miniredis: %v", err)
+	}
+	defer mr.Close()
+
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	store := &redisStore{client: rdb}
+
+	key := "tokens:default:parent-run"
+	ctx := context.Background()
+
+	addXAdd(t, rdb, key, "t", "Hello")
+	addXAdd(t, rdb, key, "t", "\x00"+`{"type":"toolCall","name":"search","arguments":"{}"}`)
+	addXAdd(t, rdb, key, "t", " world")
+
+	entries, err := store.ReadTraceEvents(ctx, key)
+	if err != nil {
+		t.Fatalf("ReadTraceEvents: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 token burst, got %d entries", len(entries))
+	}
+	if strings.Contains(string(entries[0].Event), `\u0000`) {
+		t.Errorf("archived event contains an escaped NUL: %s", entries[0].Event)
+	}
+	var tokEvent map[string]any
+	if err := json.Unmarshal(entries[0].Event, &tokEvent); err != nil {
+		t.Fatalf("unmarshal entry 0: %v", err)
+	}
+	if tokEvent["content"] != "Hello world" {
+		t.Errorf("expected content 'Hello world', got %q", tokEvent["content"])
+	}
+}
+
 // TestRedisReadTraceEventsLargeTokenBurst verifies that 500 individual token
 // deltas are consolidated into a single TraceEntry, keeping the archival
 // footprint small even for very long outputs.
