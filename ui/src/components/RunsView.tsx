@@ -156,7 +156,7 @@ export function RunsView({ onNavigateToRun, namespace = '', initialAgent = '' }:
   // re-querying the server for a column click).
   const sorted = useMemo(() => {
     const rows = [...runs]
-    const dir = sortDir === 'desc' ? 1 : -1
+    const dir = sortDir === 'asc' ? 1 : -1
     rows.sort((a, b) => {
       let av: string | number, bv: string | number
       switch (sortKey) {
@@ -719,7 +719,7 @@ const s: Record<string, React.CSSProperties> = {
     fontSize: 16,
     fontWeight: 500,
     color: 'var(--ds-text-secondary)',
-    margin: `${DESIGN.space.md} 0 4px`,
+    margin: `${DESIGN.space.md}px 0 4px`,
   },
   emptyBody: {
     fontSize: 13,

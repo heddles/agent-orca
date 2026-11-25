@@ -40,7 +40,7 @@ export function RunHistoryDetailView({ runId, namespace = 'default', onBack, onN
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [tab, setTab] = useState<DetailTab>('details')
-  const [markdown, setMarkdown] = useState(false)
+  const [markdown, setMarkdown] = useState(true)
 
   useEffect(() => {
     let cancelled = false
@@ -395,7 +395,7 @@ const dv: Record<string, React.CSSProperties> = {
   root: {
     flex: 1,
     overflowY: 'auto',
-    padding: `${DESIGN.space.xl} ${DESIGN.space.xxl}`,
+    padding: `${DESIGN.space.xl}px ${DESIGN.space.xxl}px`,
     display: 'flex',
     flexDirection: 'column',
     gap: DESIGN.space.lg,
@@ -627,7 +627,7 @@ const dv: Record<string, React.CSSProperties> = {
   },
   tabActive: {
     color: 'var(--ds-accent)',
-    borderBottomColor: 'var(--ds-accent)',
+    borderBottom: '2px solid var(--ds-accent)',
     fontWeight: 600,
   },
   tabDot: {

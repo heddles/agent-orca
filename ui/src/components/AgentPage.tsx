@@ -242,7 +242,7 @@ export function AgentPage({ namespace, name, tab, onTabChange, onNavigateToRun }
         </div>
       ) : (
         <div role="tabpanel" id="chat-panel" aria-label="Chat" style={{ flex: 1, minHeight: 480, display: 'flex' }}>
-          <DeploymentView namespace={namespace} name={entry?.deployment ?? name} onNavigateToRun={onNavigateToRun} />
+          <DeploymentView namespace={namespace} name={entry?.deployment ?? name} onNavigateToRun={onNavigateToRun} examplePrompts={examples} />
         </div>
       )}
     </Page>

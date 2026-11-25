@@ -355,7 +355,7 @@ const tab = {
   } as CSSProperties,
   tabActive: {
     color: ds.accent,
-    borderBottomColor: ds.accent,
+    borderBottom: `2px solid ${ds.accent}`,
     fontWeight: 600,
   } as CSSProperties,
   tabFocusHint: {

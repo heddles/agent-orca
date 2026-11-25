@@ -429,7 +429,7 @@ export function AgentBuilder({ namespace, name }: Props) {
 
       <div style={s.body}>
         {banner && (
-          <div role="status" style={{ ...s.banner, borderColor: ds.warning }}>
+          <div role="status" style={{ ...s.banner, border: `1px solid ${ds.warning}` }}>
             <strong>{banner}</strong>
             <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
               <DSButton type="button" size="sm" onClick={copyYAML}>{copied ? 'Copied' : 'Copy YAML'}</DSButton>
@@ -438,7 +438,7 @@ export function AgentBuilder({ namespace, name }: Props) {
           </div>
         )}
         {!readOnly && handoff?.pending && (
-          <div role="status" style={{ ...s.banner, borderColor: ds.warning }}>
+          <div role="status" style={{ ...s.banner, border: `1px solid ${ds.warning}` }}>
             <strong>Being handed over to Git.</strong>{' '}
             You can keep editing here until {handoff.expires ? new Date(handoff.expires).toLocaleString() : 'the handoff expires'}.
             <div style={{ marginTop: 8 }}>
@@ -448,14 +448,14 @@ export function AgentBuilder({ namespace, name }: Props) {
         )}
         {handoffMsg && <p role="status" style={field.help}>{handoffMsg}</p>}
         {conflict && (
-          <div role="alert" style={{ ...s.banner, borderColor: ds.error }}>
+          <div role="alert" style={{ ...s.banner, border: `1px solid ${ds.error}` }}>
             <strong>Someone changed this agent.</strong>{' '}
             Your edits are still here and have not been saved. Reload to get the latest version; that replaces what you have on screen.
             <div style={{ marginTop: 8 }}><DSButton type="button" size="sm" onClick={reload}>Reload</DSButton></div>
           </div>
         )}
         {saveErrors.length > 0 && (
-          <div role="alert" style={{ ...s.banner, borderColor: ds.error }}>
+          <div role="alert" style={{ ...s.banner, border: `1px solid ${ds.error}` }}>
             <strong>This could not be saved.</strong>
             <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>{saveErrors.map((m) => <li key={m}>{m}</li>)}</ul>
           </div>
@@ -776,7 +776,7 @@ function CheckGroup({ legend, items, selected, onToggle, empty }: {
           {items.map((it) => {
             const on = selected.includes(it.name)
             return (
-              <label key={`${it.namespace}/${it.name}`} style={{ ...s.optionCard, borderColor: on ? ds.accent : 'var(--ds-border)' }}>
+              <label key={`${it.namespace}/${it.name}`} style={{ ...s.optionCard, border: `1px solid ${on ? ds.accent : 'var(--ds-border)'}` }}>
                 <input type="checkbox" checked={on} onChange={() => onToggle(it.name)} />
                 <span style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                   <span style={{ fontSize: 13, fontWeight: 600 }}>{it.name}</span>

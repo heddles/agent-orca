@@ -281,7 +281,7 @@ const s: Record<string, React.CSSProperties> = {
   root: {
     flex: 1,
     overflowY: 'auto',
-    padding: `${DESIGN.space.xl} ${DESIGN.space.xxl}`,
+    padding: `${DESIGN.space.xl}px ${DESIGN.space.xxl}px`,
     display: 'flex',
     flexDirection: 'column',
     gap: DESIGN.space.xxl,

@@ -324,7 +324,7 @@ const s: Record<string, CSSProperties> = {
     height: 32, padding: '0 12px', borderRadius: 6, border: '1px solid var(--ds-border)', background: 'transparent',
     color: ds.textSecondary, fontSize: 12, cursor: 'pointer',
   },
-  windowBtnOn: { borderColor: ds.accent, color: ds.textPrimary, fontWeight: 600 },
+  windowBtnOn: { border: `1px solid ${ds.accent}`, color: ds.textPrimary, fontWeight: 600 },
   table: { width: '100%', borderCollapse: 'collapse', fontSize: 13 },
   th: { padding: '6px 10px', borderBottom: '1px solid var(--ds-border)', whiteSpace: 'nowrap' },
   sortBtn: {

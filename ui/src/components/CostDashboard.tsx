@@ -327,7 +327,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   heading: { margin: 0, fontSize: 20, fontWeight: 700 },
   scopeToggle: { display: 'flex', gap: 4 },
-  scopeActive: { borderColor: 'var(--ds-accent)', color: 'var(--ds-text-primary)', fontWeight: 600 },
+  scopeActive: { border: '1px solid var(--ds-accent)', color: 'var(--ds-text-primary)', fontWeight: 600 },
   scopeLabel: { fontSize: 12, color: 'var(--ds-text-muted)', marginBottom: 16 },
   note: { marginBottom: 12 },
   banner: {

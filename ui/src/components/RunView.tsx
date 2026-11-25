@@ -58,7 +58,7 @@ export function RunView({
   const [runAgainError, setRunAgainError] = useState('')
   const [entries, setEntries] = useState<TraceEntry[]>([])
   const [streamOutput, setStreamOutput] = useState('')
-  const [markdown, setMarkdown] = useState(false)
+  const [markdown, setMarkdown] = useState(true)
   const [viewTab, setViewTab] = useState<'details' | 'trace' | 'children'>('details')
   const [childDetails, setChildDetails] = useState<AgentRunSummary[]>([])
   const counter = useRef(0)
@@ -263,7 +263,9 @@ export function RunView({
               <span style={s.liveText}>Live</span>
             </div>
           )}
-          <div style={s.chip}><Icon icon={ICON.cost} size={12} /> <span style={s.chipVal}>${detail?.spendUSD ?? '0.0000'}</span></div>
+          {detail?.spendUSD && (
+            <div style={s.chip} title="Spend (USD)"><span style={s.chipVal}>${detail.spendUSD}</span></div>
+          )}
           {isRunning && (
             <button
               type="button"
@@ -426,7 +428,7 @@ const s: Record<string, React.CSSProperties> = {
   root: {
     flex: 1,
     overflowY: 'auto',
-    padding: `${DESIGN.space.xl} ${DESIGN.space.xxl}`,
+    padding: `${DESIGN.space.xl}px ${DESIGN.space.xxl}px`,
     display: 'flex',
     flexDirection: 'column',
     gap: DESIGN.space.xl,
@@ -564,7 +566,7 @@ const s: Record<string, React.CSSProperties> = {
   },
   tabActive: {
     color: 'var(--ds-accent)',
-    borderBottomColor: 'var(--ds-accent)',
+    borderBottom: '2px solid var(--ds-accent)',
   },
   childList: {
     display: 'flex',

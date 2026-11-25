@@ -397,7 +397,7 @@ const s: Record<string, React.CSSProperties> = {
   },
   itemActive: {
     background: 'rgba(59,130,246,.1)',
-    borderColor: 'rgba(59,130,246,.25)',
+    border: '1px solid rgba(59,130,246,.25)',
   },
   itemName: {
     fontSize: 12,
