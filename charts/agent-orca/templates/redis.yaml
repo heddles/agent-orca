@@ -69,6 +69,12 @@ spec:
             - $(REDIS_PASSWORD)
             - --appendonly
             - "yes"
+            {{- with .Values.redis.maxmemory }}
+            - --maxmemory
+            - {{ . | quote }}
+            - --maxmemory-policy
+            - {{ $.Values.redis.maxmemoryPolicy | default "volatile-ttl" | quote }}
+            {{- end }}
           env:
             - name: REDIS_PASSWORD
               valueFrom:

@@ -72,6 +72,7 @@ import (
 	"github.com/heddles/agent-orca/internal/openshell"
 	"github.com/heddles/agent-orca/internal/podbuilder"
 	"github.com/heddles/agent-orca/internal/postgresql"
+	"github.com/heddles/agent-orca/internal/runoutput"
 	"github.com/heddles/agent-orca/internal/schedule"
 	"github.com/heddles/agent-orca/internal/security"
 	"github.com/heddles/agent-orca/internal/state"
@@ -552,6 +553,12 @@ func main() {
 		gitHubApp = app
 		setupLog.Info("GitHub App enabled for sandbox git access", "appID", app.AppID, "installationID", app.InstallationID)
 	}
+	// A nil *Store in the interface would not be nil: leave the archive unset
+	// when there is no database.
+	var runArchive controller.RunArchiveStore
+	if platformStore := pgStore.AsPlatform(); platformStore != nil {
+		runArchive = platformStore
+	}
 	if err := (&controller.AgentRunReconciler{
 		Client:                     mgr.GetClient(),
 		Scheme:                     mgr.GetScheme(),
@@ -562,7 +569,8 @@ func main() {
 		RedisPassword:              redisPassword,
 		StateStore:                 stateStore,
 		CloudProvider:              cloudProvider,
-		PostgresStore:              pgStore.AsPlatform(),
+		PostgresStore:              runArchive,
+		ArchiveDeleteGrace:         archiveDeleteGraceFromEnv(),
 		TokenReviewerClusterRole:   os.Getenv("TOKEN_REVIEWER_CLUSTER_ROLE"),
 		OperatorAPIURL:             os.Getenv("OPERATOR_API_URL"),
 		LLMRequestTimeout:          llmReqTimeout,
@@ -693,6 +701,7 @@ func main() {
 	}
 
 	if err := (&controller.AgentWorkflowReconciler{
+		StateStore:         stateStore,
 		Client:             mgr.GetClient(),
 		Scheme:             mgr.GetScheme(),
 		K8s:                k8sClient,
@@ -728,7 +737,7 @@ func main() {
 	}
 
 	// Start the internal API server (port 8082) for agent-to-agent communication.
-	internalAPI := apiserver.New(k8sClient, mgr.GetClient())
+	internalAPI := apiserver.New(k8sClient, mgr.GetClient()).WithStateStore(stateStore)
 	// Per-user MCP connections (docs/mcp-oauth.md): the service behind the UI
 	// endpoints and the router-facing token endpoint. nil leaves both off.
 	connService := newConnectionService(pgStore)
@@ -892,7 +901,13 @@ func main() {
 		}
 		if err := mgr.Add(evalrunner.New(pgStore.AsPlatform(), mgr.GetClient(), evalrunner.Config{
 			Interval: evalRunnerIntervalFromEnv(), Limiter: limiter,
-			Judges:              judge.KubeResolver{Reader: mgr.GetClient()},
+			Judges: judge.KubeResolver{Reader: mgr.GetClient()},
+			Outputs: func(ctx context.Context, run *agentorcav1alpha1.AgentRun) string {
+				if stateStore == nil {
+					return run.Status.Output
+				}
+				return runoutput.Of(ctx, state.ForTenantIfEnabled(stateStore, run.Labels[tenancy.LabelTenantID]), run)
+			},
 			ResultRetentionDays: evalResultRetentionDaysFromEnv(),
 		})); err != nil {
 			setupLog.Error(err, "Unable to add the evaluation experiment runner")
@@ -910,7 +925,7 @@ func main() {
 		}
 	}
 	if pgStore != nil && !inboundChannelsDisabled() {
-		if err := addInboundChannels(mgr, uiAPI, pgStore, externalAuth.RateLimiter()); err != nil {
+		if err := addInboundChannels(mgr, uiAPI, internalAPI, pgStore, externalAuth.RateLimiter()); err != nil {
 			setupLog.Error(err, "Unable to start the inbound channels")
 			os.Exit(1)
 		}
@@ -1211,7 +1226,8 @@ func inboundChannelsDisabled() bool {
 // the leader-only runner: one IMAP poller per enabled connection and the delivery
 // of answers.
 func addInboundChannels(
-	mgr manager.Manager, uiAPI *apiserver.UIServer, pgStore *postgresql.Store, limiter inbound.Limiter,
+	mgr manager.Manager, uiAPI *apiserver.UIServer, internalAPI *apiserver.Server,
+	pgStore *postgresql.Store, limiter inbound.Limiter,
 ) error {
 	reg := inbound.NewRegistry()
 	reg.Register(&inboundemail.Adapter{})
@@ -1222,9 +1238,13 @@ func addInboundChannels(
 	reg.Register(&inboundwebex.Adapter{})
 	bridge := uiAPI.InboundBridge()
 	pipe := &inbound.Pipeline{
-		Store: pgStore.AsPlatform(), Launcher: bridge, Runs: bridge, Registry: reg, Limiter: limiter,
+		Store: pgStore.AsPlatform(), Launcher: bridge, Runs: bridge, Resumer: bridge, Registry: reg, Limiter: limiter,
 		Secrets: bridge.ReadSecret,
 	}
+	pipe.Approvals = pgStore.AsPlatform()
+	// A tool call that waits for an approver is also asked in the thread of the
+	// run's channel message (docs/inbound-channels.md).
+	internalAPI.WithApprovalPrompter(pipe)
 	uiAPI.SetInbound(pipe)
 	setupLog.Info("Inbound channels enabled", "kinds", reg.Kinds())
 	return mgr.Add(&inbound.Runner{P: pipe})
@@ -1313,4 +1333,13 @@ func newConnectionService(pgStore *postgresql.Store) *connections.Service {
 	}
 	setupLog.Info("Per-user MCP connections enabled", "activeKey", keys.ActiveID(), "redirectURI", redirect)
 	return svc
+}
+
+// archiveDeleteGraceFromEnv is how long a finished run's deletion waits for the
+// archive (ARCHIVE_DELETE_GRACE, a duration; default 24h).
+func archiveDeleteGraceFromEnv() time.Duration {
+	if d, err := time.ParseDuration(strings.TrimSpace(os.Getenv("ARCHIVE_DELETE_GRACE"))); err == nil && d > 0 {
+		return d
+	}
+	return controller.DefaultArchiveDeleteGrace
 }

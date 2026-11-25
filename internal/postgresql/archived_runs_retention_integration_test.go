@@ -250,3 +250,29 @@ func TestArchiveRunAgainKeepsRetention(t *testing.T) {
 		t.Errorf("a reduced run came back whole after being archived again: prunedAt=%v output=%q trace=%s", got.PayloadPrunedAt, got.Output, got.TraceEventsJSON)
 	}
 }
+
+// An answer is not kept in the AgentRun status any more, so a run archived again
+// after its stored answer expired carries none. That must not erase the output
+// the archive already holds.
+func TestArchiveRunWithoutOutputKeepsTheArchivedOutput(t *testing.T) {
+	s, _ := appStore(t)
+	ctx := context.Background()
+	a := WithTenant(ctx, tenantA)
+
+	run := archivedRun("kept-output", nil)
+	run.Status.Output = "the answer"
+	if err := s.ArchiveRun(a, run, nil); err != nil {
+		t.Fatal(err)
+	}
+	run.Status.Output = ""
+	if err := s.ArchiveRun(a, run, nil); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetRun(a, evalNSA, "kept-output")
+	if err != nil || got == nil {
+		t.Fatalf("GetRun = %+v, %v", got, err)
+	}
+	if got.Output != "the answer" {
+		t.Errorf("output after an empty re-archive = %q, want %q", got.Output, "the answer")
+	}
+}

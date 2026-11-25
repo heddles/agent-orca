@@ -142,8 +142,6 @@ func (r *AgentRunReconciler) ensureSpendStamped(ctx context.Context, run *agento
 		if err := r.Status().Patch(ctx, run, client.MergeFrom(before)); err != nil {
 			return 0, fmt.Errorf("patching spend: %w", err)
 		}
-		// The archive row was written before the spend was known; refresh it.
-		r.maybeArchiveRun(run)
 	}
 
 	if costCaptureIncomplete(run) && run.Status.CompletionTime != nil &&

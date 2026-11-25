@@ -527,7 +527,7 @@ func (s *UIServer) handleRunOrStream(w http.ResponseWriter, r *http.Request) {
 		AgentRef:              run.Spec.AgentRef,
 		Input:                 run.Spec.Input,
 		Phase:                 string(run.Status.Phase),
-		Output:                run.Status.Output,
+		Output:                outputOf(r.Context(), s.store, &run),
 		SpendUSD:              run.Status.SpendUSD,
 		RestartCount:          run.Status.RestartCount,
 		LastRestartReason:     run.Status.LastRestartReason,
@@ -617,7 +617,7 @@ func (s *UIServer) handleStream(w http.ResponseWriter, r *http.Request, ns, runN
 		if phase == "Succeeded" {
 			writeSSE(w, map[string]any{
 				"type":   "finalOutput",
-				"output": run.Status.Output,
+				"output": outputOf(ctx, s.store, run),
 			})
 			flusher.Flush()
 			return true
@@ -842,58 +842,10 @@ func (s *UIServer) handleAnswerRun(w http.ResponseWriter, r *http.Request, ns, r
 		return
 	}
 
-	continuationInput := run.Spec.Input
-	hasCheckpoint := false
-	if s.store != nil {
-		checkpointKey := fmt.Sprintf("agentorca/runs/%s/state", runName)
-		if msgs, err := runState(s.store, &run).LoadMessages(r.Context(), checkpointKey); err == nil && len(msgs) > 0 {
-			hasCheckpoint = true
-		}
-	}
-	if !hasCheckpoint {
-		continuationInput = fmt.Sprintf(
-			"%s\n\n---\nPrevious attempt asked: %s\nHuman answered: %s\n---\nPlease proceed with the above information.",
-			run.Spec.Input, run.Status.ClarifyQuestion, req.Answer)
-	}
-
-	continuation := &agentorcav1alpha1.AgentRun{
-		ObjectMeta: metav1.ObjectMeta{
-			GenerateName: runName + "-cont-",
-			Namespace:    ns,
-			Labels:       run.Labels,
-		},
-		Spec: agentorcav1alpha1.AgentRunSpec{
-			AgentRef:        run.Spec.AgentRef,
-			Input:           continuationInput,
-			Timeout:         run.Spec.Timeout,
-			RestartPolicy:   run.Spec.RestartPolicy,
-			PriorRunRef:     runName,
-			WorkflowSandbox: run.Spec.WorkflowSandbox,
-		},
-	}
-	// The continuation is the same person's run: it keeps the invoker, so a
-	// "connect your account" pause resumes with the connection just made.
-	if by := run.Annotations[AnnotationCreatedBy]; by != "" {
-		continuation.Annotations = map[string]string{AnnotationCreatedBy: by}
-	}
-	if err := s.crdClient.Create(r.Context(), continuation); err != nil {
-		http.Error(w, fmt.Sprintf("creating continuation run: %v", err), http.StatusInternalServerError)
+	continuation, err := resumeWithAnswer(r.Context(), s.crdClient, s.store, &run, req.Answer)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
-	}
-
-	if s.store != nil {
-		answerKey := fmt.Sprintf("clarify-answer:%s:%s", ns, continuation.Name)
-		if err := runState(s.store, continuation).SaveAnswer(r.Context(), answerKey, req.Answer, 1*time.Hour); err != nil {
-			slog.Warn("saving clarify answer to state store", "err", err)
-		}
-	}
-
-	patch := client.MergeFrom(run.DeepCopy())
-	run.Status.Phase = agentorcav1alpha1.AgentRunPhaseSucceeded
-	run.Status.ClarifyAnswer = req.Answer
-	run.Status.ContinuationRunRef = continuation.Name
-	if err := s.crdClient.Status().Patch(r.Context(), &run, patch); err != nil {
-		slog.Warn("patching original run with continuation ref", "err", err)
 	}
 
 	if sessionID := run.Labels["agentorca.io/session"]; sessionID != "" && s.checkpoint != nil {

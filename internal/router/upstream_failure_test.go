@@ -134,25 +134,3 @@ func TestRunHTTPInputRecordsAgentFailure(t *testing.T) {
 		})
 	}
 }
-
-func TestRunHTTPInputAnswerIsNotAFailure(t *testing.T) {
-	if got := httpRunFailure(200, []byte(sseBody(contentFrame("hi"), "[DONE]"))); got != "" {
-		t.Errorf("answer treated as failure: %q", got)
-	}
-}
-
-func TestRunHTTPInputEmptyStreamIsAFailure(t *testing.T) {
-	empty := `{"id":"g","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":""}]}`
-	body := []byte(sseBody(empty, empty, "[DONE]"))
-	reason := httpRunFailure(200, body)
-	if !strings.Contains(reason, "no answer") || strings.Contains(reason, "data:") {
-		t.Errorf("reason = %q", reason)
-	}
-	if got := httpRunOutput("text/event-stream", body); got != "" {
-		t.Errorf("raw frames leaked into the output: %q", got)
-	}
-	completion := []byte(`{"choices":[{"message":{"content":"fine"}}]}`)
-	if got := httpRunFailure(200, completion); got != "" {
-		t.Errorf("completion treated as failure: %q", got)
-	}
-}

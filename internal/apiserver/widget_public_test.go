@@ -497,7 +497,7 @@ func (f *widgetFixture) markDone(name, output, spend string) {
 	f.t.Helper()
 	r := f.run(name)
 	r.Status.Phase, r.Status.Output, r.Status.SpendUSD = agentorcav1alpha1.AgentRunPhaseSucceeded, output, spend
-	if err := f.c.Update(context.Background(), &r); err != nil {
+	if err := f.c.Status().Update(context.Background(), &r); err != nil {
 		f.t.Fatal(err)
 	}
 }
@@ -542,7 +542,7 @@ func TestWidget_PollingIsPerSessionAndSavesTheAnswerOnce(t *testing.T) {
 	r := f.run(name)
 	r.Status.Phase = agentorcav1alpha1.AgentRunPhaseFailed
 	r.Status.Output = "secret internals"
-	if err := f.c.Update(context.Background(), &r); err != nil {
+	if err := f.c.Status().Update(context.Background(), &r); err != nil {
 		t.Fatal(err)
 	}
 	rec := poll(k.ID, tok)

@@ -134,6 +134,17 @@ func (f *fakeStore) LatestInboundRunInThread(_ context.Context, conn, thread str
 	return "", "", nil
 }
 
+func (f *fakeStore) FindRunningInboundMessage(_ context.Context, ns, run string) (postgresql.InboundMessage, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := len(f.msgs) - 1; i >= 0; i-- {
+		if m := f.msgs[i]; m.RunNamespace == ns && m.RunName == run && m.Status == postgresql.InboundRunning {
+			return *m, true, nil
+		}
+	}
+	return postgresql.InboundMessage{}, false, nil
+}
+
 func (f *fakeStore) CountInboundBySender(_ context.Context, conn, sender string, _ time.Time) (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -559,5 +570,79 @@ func TestCoreNamesNoChannelVendor(t *testing.T) {
 				t.Errorf("%s mentions %q: vendor names belong in an adapter package", f, v)
 			}
 		}
+	}
+}
+
+type fakeResumer struct {
+	mu   sync.Mutex
+	reqs []ResumeRequest
+	ok   bool
+}
+
+func (f *fakeResumer) Resume(_ context.Context, r ResumeRequest) (RunRef, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reqs = append(f.reqs, r)
+	return RunRef{Namespace: r.Run.Namespace, Name: r.Run.Name + "-cont"}, f.ok, nil
+}
+
+func TestAClarifyingQuestionIsTheReplyAndTheNextMessageIsTheAnswer(t *testing.T) {
+	f := newFixture(t)
+	res := &fakeResumer{ok: true}
+	f.p.Resumer = res
+
+	f.handle(msg("m1", "alice@example.com", "example.com"), nil)
+	f.r.state = RunState{Found: true, Waiting: true, Question: "Which cluster should I restart?"}
+	f.p.DeliverPending(context.Background())
+	if len(f.ad.replies) != 1 || f.ad.replies[0].Text != "Which cluster should I restart?" || f.ad.replies[0].Failed {
+		t.Fatalf("the question was not delivered as the reply: %+v", f.ad.replies)
+	}
+	if m := f.st.msgs[0]; m.Status != postgresql.InboundReplied {
+		t.Errorf("row = %+v", m)
+	}
+	f.p.DeliverPending(context.Background())
+	if len(f.ad.replies) != 1 {
+		t.Error("the question was sent twice")
+	}
+
+	// The person answers in the thread: the waiting run is resumed, no new run.
+	ans := msg("m2", "alice@example.com", "example.com")
+	ans.Text = "the staging one"
+	if o := f.handle(ans, nil); o != OutcomeStarted {
+		t.Fatalf("answer = %v", o)
+	}
+	if len(f.l.reqs) != 1 {
+		t.Errorf("the answer launched a new run: %d launches", len(f.l.reqs))
+	}
+	if len(res.reqs) != 1 || res.reqs[0].Answer != "the staging one" || res.reqs[0].Run.Name != "run-b" {
+		t.Errorf("resume = %+v", res.reqs)
+	}
+	if got := f.st.msgs[1]; got.Status != postgresql.InboundRunning || got.RunName != res.reqs[0].Run.Name+"-cont" {
+		t.Errorf("the answer is not tracking the continuation: %+v", got)
+	}
+}
+
+func TestAnAnswerToARunThatNoLongerWaitsStartsANewRun(t *testing.T) {
+	f := newFixture(t)
+	f.p.Resumer = &fakeResumer{ok: false}
+	f.handle(msg("m1", "alice@example.com", "example.com"), nil)
+	f.r.state = RunState{Found: true, Waiting: true, Question: "which?"}
+	f.handle(msg("m2", "alice@example.com", "example.com"), nil)
+	if len(f.l.reqs) != 2 {
+		t.Errorf("launches = %d, want 2", len(f.l.reqs))
+	}
+}
+
+func TestAnAnsweredRunStaysSilent(t *testing.T) {
+	f := newFixture(t)
+	f.handle(msg("m1", "alice@example.com", "example.com"), nil)
+	// The person answered before the question went out: the continuation replies.
+	f.r.state = RunState{Found: true, Done: true, Succeeded: true, Continued: true}
+	f.p.DeliverPending(context.Background())
+	if len(f.ad.replies) != 0 {
+		t.Errorf("replied for a run that was continued: %+v", f.ad.replies)
+	}
+	if m := f.st.msgs[0]; m.Status != postgresql.InboundReplied {
+		t.Errorf("row = %+v", m)
 	}
 }

@@ -36,7 +36,8 @@ import (
 	"slices"
 	"strings"
 	"time"
-	"unicode/utf8"
+
+	"github.com/heddles/agent-orca/internal/state"
 
 	authv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -50,6 +51,7 @@ import (
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
 	"github.com/heddles/agent-orca/internal/acpfs"
 	"github.com/heddles/agent-orca/internal/rag"
+	"github.com/heddles/agent-orca/internal/runoutput"
 	"github.com/heddles/agent-orca/internal/security"
 	"github.com/heddles/agent-orca/internal/shellsandbox"
 	"github.com/heddles/agent-orca/internal/tenancy"
@@ -66,9 +68,14 @@ type Server struct {
 	shell shellsandbox.Runner
 	// approvals backs tool-call approvals (tool_approval_api.go). nil when there
 	// is no PostgreSQL store; such requests fail with 503.
+	// store holds the answers of runs (runoutput); nil keeps them in the status.
+	store state.Store
+
 	approvals ToolApprovalStore
 	// approvalNotifier tells approvers about new requests. Optional.
 	approvalNotifier ApprovalNotifier
+	// approvalPrompter asks in the chat thread of a channel run. Optional.
+	approvalPrompter ApprovalNotifier
 	// routingEvents stores routing telemetry (routing_events_api.go). nil drops
 	// posted events.
 	routingEvents RoutingEventStore
@@ -80,6 +87,12 @@ type Server struct {
 }
 
 // New creates a new API server.
+// WithStateStore sets the state store that holds the answers of runs.
+func (s *Server) WithStateStore(store state.Store) *Server {
+	s.store = store
+	return s
+}
+
 func New(k8s kubernetes.Interface, crdClient client.Client) *Server {
 	return &Server{k8s: k8s, crdClient: crdClient}
 }
@@ -264,6 +277,9 @@ func (s *Server) getAgentRun(w http.ResponseWriter, r *http.Request, namespace, 
 		http.Error(w, fmt.Sprintf("getting AgentRun: %v", err), http.StatusNotFound)
 		return
 	}
+	// The answer is not kept in the status; callers that poll a child run read it
+	// from here. The copy is for the response only and is never written back.
+	run.Status.Output = outputOf(r.Context(), s.store, &run)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(run)
 }
@@ -368,28 +384,6 @@ func (s *Server) loopDetectedAgentRun(w http.ResponseWriter, r *http.Request, na
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// maxRunOutputBytes caps AgentRun.Status.Output: the CRD lives in etcd, so a
-// long _done payload is clipped there. The untruncated text still reaches live
-// consumers through the run's `done` trace event.
-const maxRunOutputBytes = 10240
-
-// runOutputTruncationMarker tells a consumer that reads only the CRD that the
-// output was clipped, instead of silently handing it a prefix.
-const runOutputTruncationMarker = "\n\n[output truncated]"
-
-// truncateRunOutput clips out to maxRunOutputBytes (marker included) on a rune
-// boundary so a multi-byte character is never split.
-func truncateRunOutput(out string) string {
-	if len(out) <= maxRunOutputBytes {
-		return out
-	}
-	cut := maxRunOutputBytes - len(runOutputTruncationMarker)
-	for cut > 0 && !utf8.RuneStart(out[cut]) {
-		cut--
-	}
-	return out[:cut] + runOutputTruncationMarker
-}
-
 // doneAgentRun marks an AgentRun as Succeeded with the agent's explicit output.
 // Called by the model-router sidecar when the _done built-in tool is invoked.
 func (s *Server) doneAgentRun(w http.ResponseWriter, r *http.Request, namespace, name string) {
@@ -415,7 +409,9 @@ func (s *Server) doneAgentRun(w http.ResponseWriter, r *http.Request, namespace,
 	patch := client.MergeFrom(run.DeepCopy())
 	now := metav1.Now()
 	run.Status.Phase = agentorcav1alpha1.AgentRunPhaseSucceeded
-	run.Status.Output = truncateRunOutput(req.Output)
+	// The answer goes to the state store, not into etcd; a clipped copy stays in the
+	// status only when it cannot be stored.
+	run.Status.Output = runoutput.Finish(r.Context(), scopedStore(s.store, &run), namespace, name, runoutput.Clip(req.Output))
 	run.Status.CompletionTime = &now
 	if err := s.crdClient.Status().Patch(r.Context(), &run, patch); err != nil {
 		http.Error(w, fmt.Sprintf("patching AgentRun status: %v", err), http.StatusInternalServerError)

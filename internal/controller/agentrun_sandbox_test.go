@@ -362,9 +362,7 @@ func TestEnsureCleanup_DeletesSandbox(t *testing.T) {
 	name := run.Status.SandboxName
 	r, _ := sandboxReconciler(t, gw, run)
 
-	if _, err := r.ensureCleanup(context.Background(), run); err != nil {
-		t.Fatalf("ensureCleanup: %v", err)
-	}
+	r.ensureCleanup(context.Background(), run)
 	if _, ok := gw.sandboxes[name]; ok {
 		t.Fatal("the gateway retains completed sandboxes, so cleanup must delete it")
 	}
@@ -527,9 +525,7 @@ func TestEnsureSandbox_StaticToolCredentials(t *testing.T) {
 
 		// The run ending revokes the credential.
 		run.Status.Phase = agentorcav1alpha1.AgentRunPhaseSucceeded
-		if _, err := r.ensureCleanup(context.Background(), run); err != nil {
-			t.Fatal(err)
-		}
+		r.ensureCleanup(context.Background(), run)
 		if len(gw.providers) != 0 {
 			t.Fatalf("providers after cleanup = %v", gw.providers)
 		}
@@ -580,9 +576,9 @@ func TestRunCleanup_RetriesWhileProviderAttached(t *testing.T) {
 	gw.providerConflicts = 1
 	r, cl := sandboxReconciler(t, gw, run)
 
-	res, err := r.ensureCleanup(context.Background(), run)
-	if err != nil || res.RequeueAfter == 0 {
-		t.Fatalf("ensureCleanup = %+v, %v; want a requeue while the provider is attached", res, err)
+	res := r.ensureCleanup(context.Background(), run)
+	if res.RequeueAfter == 0 {
+		t.Fatalf("ensureCleanup = %+v; want a requeue while the provider is attached", res)
 	}
 
 	// A deleted AgentRun keeps its finalizer until the provider is gone.

@@ -17,6 +17,10 @@ limitations under the License.
 package apiserver
 
 import (
+	"context"
+
+	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
+	"github.com/heddles/agent-orca/internal/runoutput"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/heddles/agent-orca/internal/state"
@@ -41,4 +45,22 @@ func tenantIDOf(obj client.Object) string {
 		return ""
 	}
 	return obj.GetLabels()[tenancy.LabelTenantID]
+}
+
+// outputOf is a run's answer. It is kept in the state store, not in the run's
+// status (see runoutput); a run from before that, or one the store could not
+// take, still has it in status.output. store may be nil.
+func outputOf(ctx context.Context, store state.Store, run *agentorcav1alpha1.AgentRun) string {
+	if store == nil {
+		return run.Status.Output
+	}
+	return runoutput.Of(ctx, runState(store, run), run)
+}
+
+// scopedStore is runState that stays nil when there is no store.
+func scopedStore(store state.Store, obj client.Object) state.Store {
+	if store == nil {
+		return nil
+	}
+	return runState(store, obj)
 }

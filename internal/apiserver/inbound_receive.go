@@ -136,13 +136,44 @@ func (b *InboundBridge) RunState(ctx context.Context, ns, name string) (inbound.
 	st := inbound.RunState{Found: true}
 	switch run.Status.Phase {
 	case agentorcav1alpha1.AgentRunPhaseSucceeded:
-		st.Done, st.Succeeded, st.Output = true, true, run.Status.Output
+		st.Done, st.Succeeded, st.Output = true, true, outputOf(ctx, b.s.store, &run)
+		st.Continued = run.Status.ContinuationRunRef != ""
 	case agentorcav1alpha1.AgentRunPhaseFailed:
 		st.Done, st.Reason = true, "the run failed"
 	case agentorcav1alpha1.AgentRunPhaseWaitingForInput:
-		st.Done, st.Reason = true, "the run is waiting for input"
+		st.Waiting, st.Question = true, run.Status.ClarifyQuestion
 	}
 	return st, nil
+}
+
+// Resume answers a run of this connection that is waiting for input. The run
+// must be the connection's own and in the connection's tenant, so a message in
+// one channel cannot answer a run that another started. It reports false when
+// the run no longer waits (answered elsewhere, timed out): the message is then
+// handled as a new one.
+func (b *InboundBridge) Resume(ctx context.Context, r inbound.ResumeRequest) (inbound.RunRef, bool, error) {
+	s := b.s
+	identity, ok := s.tenantForHook(r.TenantID)
+	if !ok {
+		return inbound.RunRef{}, false, nil
+	}
+	var run agentorcav1alpha1.AgentRun
+	if err := s.crdClient.Get(ctx, client.ObjectKey{Namespace: r.Run.Namespace, Name: r.Run.Name}, &run); err != nil {
+		if apierrors.IsNotFound(err) {
+			return inbound.RunRef{}, false, nil
+		}
+		return inbound.RunRef{}, false, err
+	}
+	if run.Labels[LabelTriggerID] != r.ConnectionID || run.Labels[tenancy.LabelTenantID] != identity.TenantID ||
+		run.Status.Phase != agentorcav1alpha1.AgentRunPhaseWaitingForInput || strings.TrimSpace(r.Answer) == "" {
+		return inbound.RunRef{}, false, nil
+	}
+	cont, err := resumeWithAnswer(ctx, s.crdClient, s.store, &run, r.Answer)
+	if err != nil {
+		return inbound.RunRef{}, false, err
+	}
+	slog.Info("inbound answer resumed a run", "connection", r.ConnectionID, "run", run.Name, "continuation", cont.Name)
+	return inbound.RunRef{Namespace: cont.Namespace, Name: cont.Name}, true, nil
 }
 
 // ReadSecret reads the Secret of a connection. It refuses a Secret that lacks the

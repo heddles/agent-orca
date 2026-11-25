@@ -20,7 +20,6 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
-	"unicode/utf8"
 )
 
 // completedOutput returns the concatenated part content of the run.completed
@@ -135,34 +134,5 @@ func TestTerminalTraceOutput(t *testing.T) {
 		if got := terminalTraceOutput(in); got != want {
 			t.Errorf("terminalTraceOutput(%s) = %q, want %q", in, got, want)
 		}
-	}
-}
-
-func TestTruncateRunOutput(t *testing.T) {
-	if got := truncateRunOutput("short"); got != "short" {
-		t.Fatalf("short output changed: %q", got)
-	}
-	exact := strings.Repeat("a", maxRunOutputBytes)
-	if got := truncateRunOutput(exact); got != exact {
-		t.Fatal("output at exactly the cap must not be truncated")
-	}
-
-	long := strings.Repeat("a", maxRunOutputBytes+500)
-	got := truncateRunOutput(long)
-	if len(got) > maxRunOutputBytes {
-		t.Fatalf("len = %d, want <= %d", len(got), maxRunOutputBytes)
-	}
-	if !strings.HasSuffix(got, runOutputTruncationMarker) {
-		t.Fatalf("truncated output must say it was clipped, got tail %q", got[len(got)-30:])
-	}
-
-	// A multi-byte rune straddling the cut must not be split.
-	multi := strings.Repeat("é", maxRunOutputBytes) // 2 bytes per rune
-	got = truncateRunOutput(multi)
-	if !utf8.ValidString(got) {
-		t.Fatal("truncation split a multi-byte rune")
-	}
-	if len(got) > maxRunOutputBytes {
-		t.Fatalf("len = %d, want <= %d", len(got), maxRunOutputBytes)
 	}
 }

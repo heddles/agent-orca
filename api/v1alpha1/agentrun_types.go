@@ -364,13 +364,16 @@ type AgentRunStatus struct {
 	// +optional
 	SpendUSD string `json:"spendUSD,omitempty"`
 
-	// Output is the agent's final output captured from pod stdout.
-	// Truncated to 10KB; full output is in the checkpoint store.
+	// Output is the agent's final output. It is no longer written here: a status
+	// write is an etcd write, and an answer can be large. The answer is kept in the
+	// state store and the archived run, and the API returns it (GET /api/runs/...).
+	// Output is set only on runs from before that change, and on a run whose answer
+	// could not be stored (then clipped to 10KB).
 	// +optional
 	Output string `json:"output,omitempty"`
 
-	// RawOutput is the raw pod stdout, useful for debugging.
-	// Truncated to 4KB.
+	// RawOutput is the raw pod stdout, useful for debugging. Truncated to 4KB, and
+	// written only when Output is (see Output).
 	// +optional
 	RawOutput string `json:"rawOutput,omitempty"`
 

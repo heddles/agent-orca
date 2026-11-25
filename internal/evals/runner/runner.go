@@ -111,6 +111,9 @@ type Limiter interface {
 
 // Config tunes the runner. The zero value takes the defaults.
 type Config struct {
+	// Outputs returns a finished run's answer, which is not kept in its status.
+	// nil reads status.output.
+	Outputs func(ctx context.Context, run *agentorcav1alpha1.AgentRun) string
 	// Owner names this runner in leases. Default: the host name, so a restarted
 	// pod takes its experiments back at once.
 	Owner string

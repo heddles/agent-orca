@@ -298,7 +298,7 @@ func (r *AgentScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// a run is announced at most once.
 	var jobs []notifyJob
 	for _, c := range counted {
-		job, send := r.runNotice(&s, c)
+		job, send := r.runNotice(ctx, &s, c)
 		send = send && r.Notifier != nil
 		claim := ""
 		if send {

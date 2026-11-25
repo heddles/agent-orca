@@ -89,11 +89,34 @@ type RunState struct {
 	Succeeded bool
 	Output    string
 	Reason    string
+	// Waiting: the run paused to ask the person a question (Question). It is
+	// neither done nor failed: the question is the reply, and the person's next
+	// message in the thread is the answer.
+	Waiting  bool
+	Question string
+	// Continued: the person answered, and a continuation run carries on. The
+	// run has nothing to say of its own.
+	Continued bool
 }
 
 // RunReader reads a run.
 type RunReader interface {
 	RunState(ctx context.Context, ns, name string) (RunState, error)
+}
+
+// Resumer answers a run that is waiting for input. It reports false when the
+// run is not one it may resume for this connection (not waiting any more, or
+// not the connection's own), and then the message is handled as a new one.
+type Resumer interface {
+	Resume(ctx context.Context, r ResumeRequest) (RunRef, bool, error)
+}
+
+// ResumeRequest answers the question of a waiting run.
+type ResumeRequest struct {
+	TenantID     string
+	ConnectionID string
+	Run          RunRef
+	Answer       string
 }
 
 // SecretReader reads the Secret of a connection. It must refuse a Secret the
@@ -115,13 +138,15 @@ type Limiter interface {
 
 // Pipeline is the shared logic between an adapter and an AgentRun.
 type Pipeline struct {
-	Store    Store
-	Launcher Launcher
-	Runs     RunReader
-	Registry *Registry
-	Limiter  Limiter
-	Secrets  SecretReader
-	Now      func() time.Time
+	Store     Store
+	Launcher  Launcher
+	Runs      RunReader
+	Approvals ApprovalStore // optional: without it a reply never decides a tool call
+	Resumer   Resumer       // optional: without it a reply to a question starts a new run
+	Registry  *Registry
+	Limiter   Limiter
+	Secrets   SecretReader
+	Now       func() time.Time
 
 	// ReplyTimeout gives up on a run that has not finished (default 2 hours).
 	ReplyTimeout time.Duration
@@ -146,7 +171,7 @@ func (p *Pipeline) now() time.Time {
 
 var messagesTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 	Name: "agentorca_inbound_messages_total",
-	Help: "Inbound channel messages by adapter kind and outcome (started, duplicate, rejected, ignored, throttled, failed, replied, reply_failed).",
+	Help: "Inbound channel messages by adapter kind and outcome (started, duplicate, rejected, ignored, throttled, failed, replied, reply_failed, decided).",
 }, []string{"kind", "outcome"})
 
 func init() { ctrlmetrics.Registry.MustRegister(messagesTotal) }
@@ -241,7 +266,11 @@ func (p *Pipeline) Handle(ctx context.Context, c Connection, m Message, recvErr 
 			req.PriorRun = name
 		}
 	}
-	run, err := p.Launcher.Launch(ctx, req)
+	if reply, ok := p.decide(ctx, c, m, req.PriorRun); ok {
+		p.notify(ctx, c, m, reply)
+		return finish(OutcomeDecided, postgresql.InboundReplied, "approval", postgresql.InboundStatus{})
+	}
+	run, err := p.start(ctx, c, m, req)
 	var le *LaunchError
 	switch {
 	case errors.As(err, &le) && le.Busy:
@@ -261,6 +290,24 @@ func (p *Pipeline) Handle(ctx context.Context, c Connection, m Message, recvErr 
 	count(c.Kind, OutcomeStarted)
 	p.indicate(ctx, c, m)
 	return OutcomeStarted, nil
+}
+
+// start answers the run the thread is waiting on, or launches a new one. A run
+// that asked a question is answered by the message that follows it; the
+// message that follows a finished run is a new run that continues from it.
+func (p *Pipeline) start(ctx context.Context, c Connection, m Message, req LaunchRequest) (RunRef, error) {
+	if req.PriorRun != "" && p.Resumer != nil {
+		if st, err := p.Runs.RunState(ctx, c.Namespace, req.PriorRun); err == nil && st.Waiting {
+			ref, ok, err := p.Resumer.Resume(ctx, ResumeRequest{
+				TenantID: c.TenantID, ConnectionID: c.ID,
+				Run: RunRef{Namespace: c.Namespace, Name: req.PriorRun}, Answer: clip(m.Text, MaxInputChars),
+			})
+			if err != nil || ok {
+				return ref, err
+			}
+		}
+	}
+	return p.Launcher.Launch(ctx, req)
 }
 
 func (p *Pipeline) capabilities(kind string) Capabilities {

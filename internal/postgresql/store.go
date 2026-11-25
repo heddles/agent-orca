@@ -221,9 +221,11 @@ func (s *Store) ArchiveRun(ctx context.Context, run *agentorcav1alpha1.AgentRun,
 			spend_usd = EXCLUDED.spend_usd,
 			cost_capture = EXCLUDED.cost_capture,
 			output = CASE WHEN archived_runs.payload_pruned_at IS NOT NULL
-			              THEN archived_runs.output ELSE EXCLUDED.output END,
+			              THEN archived_runs.output
+			              ELSE COALESCE(NULLIF(EXCLUDED.output, ''), archived_runs.output) END,
 			raw_output = CASE WHEN archived_runs.payload_pruned_at IS NOT NULL
-			                  THEN archived_runs.raw_output ELSE EXCLUDED.raw_output END,
+			                  THEN archived_runs.raw_output
+			                  ELSE COALESCE(NULLIF(EXCLUDED.raw_output, ''), archived_runs.raw_output) END,
 			restart_count = EXCLUDED.restart_count,
 			start_time = EXCLUDED.start_time,
 			completion_time = EXCLUDED.completion_time,
@@ -240,8 +242,8 @@ func (s *Store) ArchiveRun(ctx context.Context, run *agentorcav1alpha1.AgentRun,
 			                    OR (archived_runs.phase IS NOT DISTINCT FROM EXCLUDED.phase
 			                        AND archived_runs.spend_usd IS NOT DISTINCT FROM EXCLUDED.spend_usd
 			                        AND archived_runs.cost_capture IS NOT DISTINCT FROM EXCLUDED.cost_capture
-			                        AND archived_runs.output IS NOT DISTINCT FROM EXCLUDED.output
-			                        AND archived_runs.raw_output IS NOT DISTINCT FROM EXCLUDED.raw_output
+			                        AND archived_runs.output IS NOT DISTINCT FROM COALESCE(NULLIF(EXCLUDED.output, ''), archived_runs.output)
+			                        AND archived_runs.raw_output IS NOT DISTINCT FROM COALESCE(NULLIF(EXCLUDED.raw_output, ''), archived_runs.raw_output)
 			                        AND archived_runs.restart_count IS NOT DISTINCT FROM EXCLUDED.restart_count
 			                        AND archived_runs.completion_time IS NOT DISTINCT FROM EXCLUDED.completion_time
 			                        AND archived_runs.context_used_tokens IS NOT DISTINCT FROM EXCLUDED.context_used_tokens)
@@ -266,6 +268,12 @@ func (s *Store) ArchiveRun(ctx context.Context, run *agentorcav1alpha1.AgentRun,
 }
 
 func archiveRun(ctx context.Context, tx dbtx, q string, run *agentorcav1alpha1.AgentRun, archived RunArchive, labelsJSON []byte, now time.Time) error {
+	// PostgreSQL refuses NUL (see nul.go); a run holding one would never archive.
+	labelsJSON = stripNULJSON(labelsJSON)
+	archived.RoutingDecisionsJSON = stripNULJSON(archived.RoutingDecisionsJSON)
+	archived.ChildRunRefsJSON = stripNULJSON(archived.ChildRunRefsJSON)
+	archived.TraceEventsJSON = stripNULJSON(archived.TraceEventsJSON)
+	archived.Input, archived.Output, archived.RawOutput = stripNUL(archived.Input), stripNUL(archived.Output), stripNUL(archived.RawOutput)
 	_, err := tx.ExecContext(ctx, q,
 		archived.ID, archived.Name, archived.Namespace, labelsJSON,
 		archived.AgentRef, archived.Input, archived.ParentRunRef,
