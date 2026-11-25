@@ -22,6 +22,7 @@
  *   /settings/models[/:ns/:name]              model selection
  *   /settings/connections/{mcp,tools}/:ns/:name   MCP servers and tools
  *   /settings/knowledge[/:ns/:name]           knowledge bases
+ *   /settings/chat-apps                       chat apps agents share (Slack)
  *
  * `/?tab=<old tab>` is redirected to the matching route (approval
  * notifications still send `/?tab=approvals`).
@@ -40,6 +41,7 @@ import { SystemStatusPage } from './components/SystemStatusPage'
 import { CostDashboard } from './components/CostDashboard'
 import { SystemDashboard } from './components/SystemDashboard'
 import { HomeBoard } from './components/HomeBoard'
+import { ChatApps } from './components/ChatApps'
 import { AgentCatalog } from './components/AgentCatalog'
 import { AgentPage } from './components/AgentPage'
 import { TemplateDetail, TemplatesGallery } from './components/TemplatesGallery'
@@ -404,6 +406,7 @@ function SettingsLayout() {
           { to: ROUTES.models, label: 'Model selection' },
           { to: ROUTES.connections, label: 'Connections' },
           { to: ROUTES.knowledge, label: 'Knowledge' },
+          { to: ROUTES.chatApps, label: 'Chat apps' },
         ]}
       />
       <Outlet />
@@ -505,6 +508,7 @@ export function AppRoutes() {
             <Route path="mcp/:ns/:name" element={<ConfigDetailRoute />} />
             <Route path="tools/:ns/:name" element={<ConfigDetailRoute />} />
           </Route>
+          <Route path="chat-apps" element={<ChatApps />} />
           <Route path="knowledge" element={<SettingsSection title="Knowledge" tabs={[{ tab: 'knowledgebases' }]} />}>
             <Route index element={<SettingsIndex icon={ICON.knowledgebase}>Knowledge is the documents an agent can look things up in. Pick one to see how much is indexed.</SettingsIndex>} />
             <Route path=":ns/:name" element={<ConfigDetailRoute />} />

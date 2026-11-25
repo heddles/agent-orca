@@ -19,6 +19,7 @@ import { Dialog } from '../lib/dialog'
 import { DSButton, DSChip } from '../lib/primitives'
 import { Field, field } from './BuilderParts'
 import { CopyButton } from './AgentTriggers'
+import { AgentChatApps } from './AgentChatApps'
 import { ChannelSetup } from './ChannelSetup'
 
 export function AgentChannels({ namespace, name }: { namespace: string; name: string }) {
@@ -63,6 +64,8 @@ export function AgentChannels({ namespace, name }: { namespace: string; name: st
   if (items === null) return <div role="status" style={{ padding: 24, color: ds.textMuted, fontSize: 13 }}>Loading channels…</div>
 
   return (
+    <>
+    <AgentChatApps namespace={namespace} name={name} kinds={kinds} />
     <section aria-label="Channels" style={s.wrap}>
       <p style={s.lead}>
         A channel lets people write to this agent where they already are. For email, people write to an address and the agent
@@ -109,6 +112,7 @@ export function AgentChannels({ namespace, name }: { namespace: string; name: st
         </Dialog>
       )}
     </section>
+    </>
   )
 }
 

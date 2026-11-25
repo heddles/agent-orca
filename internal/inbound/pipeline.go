@@ -99,6 +99,8 @@ type RunState struct {
 	// Continued: the person answered, and a continuation run carries on. The
 	// run has nothing to say of its own.
 	Continued bool
+	// Agent is the agent the run is of.
+	Agent string
 }
 
 // RunReader reads a run.
@@ -148,6 +150,9 @@ type Pipeline struct {
 	Registry  *Registry
 	Limiter   Limiter
 	Secrets   SecretReader
+	// Routes lists the agents of a shared chat app; without it such an app
+	// answers nothing.
+	Routes RouteStore
 	// Credentials opens the credentials entered in the UI for a connection.
 	Credentials func(c postgresql.InboundConnection) (map[string][]byte, error)
 	Now         func() time.Time
@@ -251,7 +256,14 @@ func (p *Pipeline) Handle(ctx context.Context, c Connection, m Message, recvErr 
 	} else if matched {
 		return finish(OutcomeIgnored, postgresql.InboundIgnored, "pairing", postgresql.InboundStatus{})
 	}
-	if why := settings.Refusal(caps, m); why != "" {
+	// On a shared app the message picks the agent, and everything below is
+	// checked against that agent's lists.
+	c, why, err := p.admit(ctx, c, &m, caps, row.ThreadKey)
+	if err != nil {
+		return OutcomeFailed, fmt.Errorf("routing the message: %w", err)
+	}
+	settings = c.Settings
+	if why != "" {
 		return finish(OutcomeRejected, postgresql.InboundRejected, why, postgresql.InboundStatus{Rejected: 1})
 	}
 	if p.Limiter != nil {
@@ -273,9 +285,7 @@ func (p *Pipeline) Handle(ctx context.Context, c Connection, m Message, recvErr 
 		Input: FormatInput(m),
 	}
 	if caps.Threads && !settings.NewThreadPerMessage && row.ThreadKey != "" {
-		if _, name, err := p.Store.LatestInboundRunInThread(scope, c.ID, row.ThreadKey); err == nil {
-			req.PriorRun = name
-		}
+		req.PriorRun = p.priorRun(ctx, c, row.ThreadKey)
 	}
 	if reply, ok := p.decide(ctx, c, m, req.PriorRun); ok {
 		p.notify(ctx, c, m, reply)

@@ -92,6 +92,28 @@ While waiting, the UI says which part is failing from `lastRequestAt` and `lastA
 
 A chat channel may be saved with empty allow-lists. It then admits nobody.
 
+## Shared chat apps
+
+One bot, several agents. An **administrator** connects the app once (Settings, Chat apps) with the guided setup; it has no agent of its own. **Builders** then add published agents from each agent's Channels tab. Slack is the platform with this setup today; the routing itself names no vendor. Existing per-agent channels are unchanged and keep their receive URLs.
+
+**A route** is one agent's share of an app: the **places** it answers in (channel ids, and direct messages), who **may ask** it, and who of those **may approve** its tool calls from the chat. Agents may share any place. People are admitted per agent only: the app's own lists admit and approve nobody.
+
+**Which agent answers** a message, among those in the place it was written:
+
+1. the one whose name starts the message (`net-chat why is it slow`, `net-chat: why`); the name is removed from what the agent receives;
+2. else, in a thread, the one that answered there last (all direct messages with a bot are one thread, so a follow-up stays with the agent you were talking to);
+3. else the place's **default**.
+
+If no agent answers in the place the message is refused (`no_agent_here`). Everything after this is checked against the chosen agent's lists: the allow-list, who may approve, and the run itself. A message carries on, answers or approves an earlier run in the thread **only if that run is of the same agent**: naming another agent never gives its approvers a say over this one's tool calls. So if a thread has moved to another agent while a call still waits, decide it in the console, or name the agent whose run was last in the thread.
+
+**Defaults.** The first agent added to a place is its default; adding another changes nothing for people already writing there. Only an administrator can move a default, direct messages included. When the default agent is removed from a place, the agent that has been there longest takes over.
+
+**Roles.** Connecting, credentials, testing, disabling and disconnecting an app: admin. Adding, changing and removing an agent's route: builder, for a published agent in a namespace of theirs. Moving a default: admin. Reading: viewer.
+
+**Pairing.** From an agent's tab a builder's code adds the sender, and the channel (or direct messages) it came from, to that agent's route. An administrator's code from the app's setup only makes the person known, so builders can pick them by name. Where the adapter can (`Directory`), channels are picked by name; Slack needs `channels:read`, `groups:read` and `users:read`, which the setup link asks for.
+
+**Not built:** answering every message of a channel without a mention (with several agents that would start a run per message); shared apps with a Kubernetes Secret (they use stored credentials, so need the connection keyring); a shared setup for platforms other than Slack.
+
 ## Chat contract
 
 Chat platforms differ from mail in who the sender is, where the conversation lives, how fast the platform wants an answer and how replies are drawn. The core covers that with a handful of generic pieces; an adapter fills them in and names no vendor outside its own package (`TestCoreNamesNoChannelVendor` also scans `internal/inbound/chat` and `internal/inbound/verify`).

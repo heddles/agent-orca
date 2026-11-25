@@ -1243,7 +1243,7 @@ func addInboundChannels(
 	bridge := uiAPI.InboundBridge()
 	pipe := &inbound.Pipeline{
 		Store: pgStore.AsPlatform(), Launcher: bridge, Runs: bridge, Resumer: bridge, Registry: reg, Limiter: limiter,
-		Secrets: bridge.ReadSecret, Credentials: bridge.OpenCredentials,
+		Secrets: bridge.ReadSecret, Credentials: bridge.OpenCredentials, Routes: pgStore.AsPlatform(),
 	}
 	pipe.Approvals = pgStore.AsPlatform()
 	// A tool call that waits for an approver is also asked in the thread of the

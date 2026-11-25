@@ -50,6 +50,7 @@ export interface InboundPairing {
   senderId?: string
   senderName?: string
   channelId?: string
+  channelName?: string
   direct?: boolean
 }
 
@@ -150,7 +151,8 @@ export const setInboundSecret = (id: string, secretRef: string) =>
 export const setInboundCredentials = (id: string, values: Record<string, string>) =>
   send<InboundConnection>(`/api/inbound-connections/${enc(id)}/credentials`, 'PUT', { values })
 const pairings = (id: string) => `/api/inbound-connections/${enc(id)}/pairings`
-export const createPairing = (id: string) => send<InboundPairing>(pairings(id), 'POST')
+/** route: on a shared chat app, the agent the person is for; without it, the app itself (admin). */
+export const createPairing = (id: string, route?: { namespace: string; agent: string }) => send<InboundPairing>(pairings(id), 'POST', route)
 export const getPairing = (id: string, pairing: string) => send<InboundPairing>(`${pairings(id)}/${enc(pairing)}`, 'GET')
 export const approvePairing = (id: string, pairing: string) => send<ApprovedPairing>(`${pairings(id)}/${enc(pairing)}/approve`, 'POST')
 export const discardPairing = (id: string, pairing: string) => send<void>(`${pairings(id)}/${enc(pairing)}`, 'DELETE')
@@ -174,6 +176,7 @@ const REFUSALS: Record<string, string> = {
   connection_rate: 'too many messages to this channel at once',
   sender_rate: 'one sender reached the hourly limit',
   workspace_mismatch: 'it came from a different workspace than this channel’s',
+  no_agent_here: 'no agent answers in that place',
 }
 
 /** A refusal reason code in plain words; an unknown code is shown as it is. */

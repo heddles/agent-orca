@@ -211,7 +211,10 @@ type pairingView struct {
 	SenderID   string `json:"senderId,omitempty"`
 	SenderName string `json:"senderName,omitempty"`
 	ChannelID  string `json:"channelId,omitempty"`
-	Direct     bool   `json:"direct,omitempty"`
+	// ChannelName is filled when the platform can name it.
+	ChannelName string `json:"channelName,omitempty"`
+	Agent       string `json:"agent,omitempty"`
+	Direct      bool   `json:"direct,omitempty"`
 }
 
 func pairingViewOf(p postgresql.InboundPairing) pairingView {
@@ -240,9 +243,31 @@ func (s *UIServer) handleInboundPairings(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
+	var req struct {
+		// Namespace and Agent: on a shared app, the agent the person is for.
+		Namespace string `json:"namespace"`
+		Agent     string `json:"agent"`
+	}
+	if r.ContentLength != 0 && !readJSONBody(w, r, maxInboundBody, &req) {
+		return
+	}
 	cur, ok := s.ownedInbound(w, r, store)
 	if !ok {
 		return
+	}
+	switch {
+	case !cur.Shared() && req.Agent != "":
+		jsonError(w, "this channel belongs to one agent", http.StatusBadRequest)
+		return
+	case cur.Shared() && req.Agent == "":
+		// A code for the app itself makes someone known to every builder.
+		if !requireRole(w, r, tenancy.RoleAdmin) {
+			return
+		}
+	case cur.Shared():
+		if !s.routeAgent(w, r, req.Namespace, req.Agent) {
+			return
+		}
 	}
 	if a, known := s.inboundPipe.Registry.Get(cur.Kind); !known || len(a.Capabilities().Modes) == 0 {
 		jsonError(w, "pairing is for chat channels", http.StatusConflict)
@@ -265,6 +290,7 @@ func (s *UIServer) handleInboundPairings(w http.ResponseWriter, r *http.Request)
 	p := postgresql.InboundPairing{
 		ID: id, TenantID: cur.TenantID, ConnectionID: cur.ID, CodeHash: inbound.PairingHash(cur.ID, code),
 		CreatedBy: actorOf(r.Context()), ExpiresAt: time.Now().Add(inbound.PairingTTL),
+		Namespace: req.Namespace, Agent: req.Agent,
 	}
 	if err := store.CreateInboundPairing(pgScope(r.Context()), p); err != nil {
 		inboundFail(w, "creating the code", err)
@@ -290,6 +316,14 @@ func (s *UIServer) handleInboundPairing(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
+	held, err := store.GetInboundPairing(pgScope(r.Context()), cur.ID, r.PathValue("pairing"))
+	if err != nil {
+		pairingFail(w, "reading the code", err)
+		return
+	}
+	if cur.Shared() && held.Agent == "" && !requireRole(w, r, tenancy.RoleAdmin) {
+		return
+	}
 	if r.Method == http.MethodDelete {
 		if _, err := store.TakeInboundPairing(pgScope(r.Context()), cur.ID, r.PathValue("pairing")); err != nil {
 			pairingFail(w, "discarding the code", err)
@@ -298,12 +332,12 @@ func (s *UIServer) handleInboundPairing(w http.ResponseWriter, r *http.Request) 
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	p, err := store.GetInboundPairing(pgScope(r.Context()), cur.ID, r.PathValue("pairing"))
-	if err != nil {
-		pairingFail(w, "reading the code", err)
-		return
+	v := pairingViewOf(held)
+	if held.ReceivedAt != nil {
+		v.SenderName, v.ChannelName = s.pairingNames(r.Context(), cur, held)
 	}
-	jsonResponse(w, pairingViewOf(p))
+	v.Agent = held.Agent
+	jsonResponse(w, v)
 }
 
 // allowSender adds the sender (and, for a message from a channel when the
@@ -371,6 +405,14 @@ func (s *UIServer) handleInboundPairingApprove(w http.ResponseWriter, r *http.Re
 		jsonError(w, "nobody has sent the code yet", http.StatusConflict)
 		return
 	}
+	if err == nil && cur.Shared() {
+		if p.Agent == "" && !requireRole(w, r, tenancy.RoleAdmin) {
+			return
+		}
+		if p.Agent != "" && !s.routeAgent(w, r, p.Namespace, p.Agent) {
+			return
+		}
+	}
 	if err == nil {
 		// Taken before the change, so two approvals cannot both act.
 		p, err = store.TakeInboundPairing(pgScope(r.Context()), cur.ID, p.ID)
@@ -379,18 +421,24 @@ func (s *UIServer) handleInboundPairingApprove(w http.ResponseWriter, r *http.Re
 		pairingFail(w, "approving", err)
 		return
 	}
-	config, err := allowSender(cur.Config, p)
-	if err != nil {
-		jsonError(w, "the channel's settings could not be changed", http.StatusInternalServerError)
-		return
-	}
-	if !s.checkInboundConfig(w, cur.Kind, config) {
-		return
-	}
-	c, err := store.UpdateInboundConnection(pgScope(r.Context()), cur.ID, postgresql.InboundPatch{Config: &config})
-	if err != nil {
-		inboundFail(w, "allowing the sender", err)
-		return
+	var c postgresql.InboundConnection
+	if cur.Shared() {
+		if c, ok = s.approveShared(w, r, store, cur, p); !ok {
+			return
+		}
+	} else {
+		config, err := allowSender(cur.Config, p)
+		if err != nil {
+			jsonError(w, "the channel's settings could not be changed", http.StatusInternalServerError)
+			return
+		}
+		if !s.checkInboundConfig(w, cur.Kind, config) {
+			return
+		}
+		if c, err = store.UpdateInboundConnection(pgScope(r.Context()), cur.ID, postgresql.InboundPatch{Config: &config}); err != nil {
+			inboundFail(w, "allowing the sender", err)
+			return
+		}
 	}
 	s.recordAudit(w, r, auditEventFor(postgresql.AuditUpdate, kindInbound, c.Namespace, c.Agent, c.ID,
 		fmt.Sprintf("allowed a paired sender on %s channel %q", c.Kind, c.Name)))
