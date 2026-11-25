@@ -30,31 +30,31 @@ export function OutputCard({ output, streaming, markdown, feedbackRun }: Props) 
 
   return (
     <div style={s.card}>
-      <button type="button" style={s.header} onClick={() => setOpen((o) => !o)}
-           aria-expanded={open} aria-controls="output-body"
-      >
-        <div style={s.title}>
-          {streaming ? (
-            <>
-              <PulseDot />
-              <span>Streaming output</span>
-            </>
-          ) : (
-            <>
-              <Icon icon={ICON.output} size={14} strokeWidth={1.5} />
-              <span>AI Output</span>
-            </>
-          )}
-        </div>
-        <div style={s.actions}>
-          <button type="button" style={s.iconBtn} onClick={(e) => { e.stopPropagation(); copy() }} aria-label="Copy output" title="Copy output">
-            {copied ? <Icon icon={ICON.save} size={14} /> : <Icon icon={ICON.copy} size={14} />}
-          </button>
+      <div style={s.header}>
+        <button type="button" style={s.toggle} onClick={() => setOpen((o) => !o)}
+             aria-expanded={open} aria-controls="output-body"
+        >
           <Icon icon={ICON.chevronRight} size={11} style={{ ...s.chevron, transform: open ? 'rotate(90deg)' : undefined }} />
-        </div>
-      </button>
+          <span style={s.title}>
+            {streaming ? (
+              <>
+                <PulseDot />
+                <span>Streaming output</span>
+              </>
+            ) : (
+              <>
+                <Icon icon={ICON.output} size={14} strokeWidth={1.5} />
+                <span>AI Output</span>
+              </>
+            )}
+          </span>
+        </button>
+        <button type="button" style={s.iconBtn} onClick={copy} aria-label="Copy output" title="Copy output">
+          {copied ? <Icon icon={ICON.save} size={14} /> : <Icon icon={ICON.copy} size={14} />}
+        </button>
+      </div>
       {open && (
-        <div id="output-body" style={{ ...s.body, color: streaming ? 'var(--ds-text-secondary)' : 'var(--ds-text-primary)' }}>
+        <div id="output-body" style={{ ...s.body, ...(markdown ? { whiteSpace: 'normal' } : {}), color: streaming ? 'var(--ds-text-secondary)' : 'var(--ds-text-primary)' }}>
           {markdown ? (
             <div style={s.mdWrap} className="ao-md">
               <Markdown remarkPlugins={[remarkGfm]}>{output}</Markdown>
@@ -110,6 +110,14 @@ const s: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
+    gap: 8,
+  },
+  toggle: {
+    flex: 1,
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    padding: 0,
     cursor: 'pointer',
     userSelect: 'none',
     background: 'transparent',
@@ -117,9 +125,6 @@ const s: Record<string, React.CSSProperties> = {
     color: 'inherit',
     font: 'inherit',
     textAlign: 'left',
-    transitionProperty: 'border-color, background-color',
-    transitionDuration: '0.15s',
-    transitionTimingFunction: 'ease',
   },
   title: {
     fontSize: 11,
@@ -131,7 +136,6 @@ const s: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     gap: 8,
   },
-  actions: { display: 'flex', gap: 6, alignItems: 'center' },
   chevron: {
     fontSize: 11,
     color: 'var(--ds-text-secondary)',

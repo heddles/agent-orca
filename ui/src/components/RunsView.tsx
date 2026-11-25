@@ -221,10 +221,12 @@ export function RunsView({ onNavigateToRun, namespace = '', initialAgent = '' }:
 
   return (
     <div style={s.root}>
-      <PageHeader
-        title="Runs"
-        description="Every run of your agents, running now and finished. Open one to see its output, cost and what the agent did."
-      />
+      <div style={{ margin: `0 -${DESIGN.space.xl}px`, flexShrink: 0 }}>
+        <PageHeader
+          title="Runs"
+          description="Every run of your agents, running now and finished. Open one to see its output, cost and what the agent did."
+        />
+      </div>
       {notConfigured && (
         <div role="note" style={s.note}>
           Past runs are not being kept, so only runs still in the cluster are listed. A platform admin
@@ -515,7 +517,7 @@ const s: Record<string, React.CSSProperties> = {
   root: {
     flex: 1,
     overflowY: 'auto',
-    padding: `0 ${DESIGN.space.xl} ${DESIGN.space.xl}`,
+    padding: `0 ${DESIGN.space.xl}px ${DESIGN.space.xl}px`,
     display: 'flex',
     flexDirection: 'column',
     gap: DESIGN.space.lg,
