@@ -720,7 +720,7 @@ func (s *ExternalAPIServer) runToTaskResponse(run *agentorcav1alpha1.AgentRun) T
 		ID:       run.Name,
 		Agent:    run.Spec.AgentRef,
 		Status:   string(run.Status.Phase),
-		Output:   run.Status.Output,
+		Output:   outputOf(context.Background(), s.store, run),
 		SpendUSD: run.Status.SpendUSD,
 		Links: &TaskLinks{
 			Self:   "/v1/tasks/" + run.Name,

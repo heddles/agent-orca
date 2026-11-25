@@ -23,6 +23,7 @@ COPY internal/podbuilder/ internal/podbuilder/
 COPY internal/ratelimit/ internal/ratelimit/
 COPY internal/redact/ internal/redact/
 COPY internal/router/ internal/router/
+COPY internal/runoutput/ internal/runoutput/
 COPY internal/security/*.go internal/security/
 COPY internal/state/ internal/state/
 COPY internal/tenancy/ internal/tenancy/

@@ -1119,15 +1119,16 @@ func (s *ACPServer) handleListRunEvents(w http.ResponseWriter, r *http.Request, 
 		},
 	})
 
+	runOutput := outputOf(r.Context(), s.store, run)
 	// Output message if run succeeded
-	if run.Status.Phase == agentorcav1alpha1.AgentRunPhaseSucceeded && run.Status.Output != "" {
+	if run.Status.Phase == agentorcav1alpha1.AgentRunPhaseSucceeded && runOutput != "" {
 		events = append(events, ACPMessageCreatedEvent{
 			Type: "message.created",
 			Message: ACPMessage{
 				Role: "agent",
 				Parts: []ACPMessagePart{{
 					ContentType: "text/plain",
-					Content:     run.Status.Output,
+					Content:     runOutput,
 				}},
 			},
 		})
@@ -1137,7 +1138,7 @@ func (s *ACPServer) handleListRunEvents(w http.ResponseWriter, r *http.Request, 
 				Role: "agent",
 				Parts: []ACPMessagePart{{
 					ContentType: "text/plain",
-					Content:     run.Status.Output,
+					Content:     runOutput,
 				}},
 			},
 		})
@@ -1262,12 +1263,13 @@ func (s *ACPServer) getACPRun(w http.ResponseWriter, r *http.Request, run *agent
 		CreatedAt: run.CreationTimestamp.Format(time.RFC3339),
 	}
 
-	if run.Status.Phase == agentorcav1alpha1.AgentRunPhaseSucceeded && run.Status.Output != "" {
+	runOutput := outputOf(r.Context(), s.store, run)
+	if run.Status.Phase == agentorcav1alpha1.AgentRunPhaseSucceeded && runOutput != "" {
 		resp.Output = []ACPMessage{{
 			Role: "agent",
 			Parts: []ACPMessagePart{{
 				ContentType: "text/plain",
-				Content:     run.Status.Output,
+				Content:     runOutput,
 			}},
 		}}
 		if run.Status.CompletionTime != nil {

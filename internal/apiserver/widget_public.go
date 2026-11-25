@@ -415,8 +415,8 @@ func (s *UIServer) handleWidgetRun(w http.ResponseWriter, r *http.Request) {
 	}
 	switch run.Status.Phase {
 	case agentorcav1alpha1.AgentRunPhaseSucceeded:
-		s.widgetFinish(ctx, k, tok.Session, run.Name, run.Status.Output)
-		jsonResponse(w, map[string]string{"phase": widgetPhaseDone, "output": run.Status.Output})
+		s.widgetFinish(ctx, k, tok.Session, run.Name, outputOf(ctx, s.store, &run))
+		jsonResponse(w, map[string]string{"phase": widgetPhaseDone, "output": outputOf(ctx, s.store, &run)})
 	case agentorcav1alpha1.AgentRunPhaseWaitingForInput:
 		out := run.Status.ClarifyQuestion
 		s.widgetFinish(ctx, k, tok.Session, run.Name, out)

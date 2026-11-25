@@ -344,7 +344,7 @@ graph LR
 |---|---|
 | `phase` | Current lifecycle phase |
 | `spendUSD` | Cumulative USD spend for this run |
-| `output` | Agent output (truncated to 10 KB) |
+| `output` | Not written on new runs: the answer is kept in the state store and the archived run, and the API returns it. Set only on older runs and on a run whose answer could not be stored (clipped to 10 KB) |
 | `routingDecisions` | The most recent 100 model selection choices (provider, strategy, reason, confidence, decision ID, deciding path, task stage). `routingDecisionsTotal` counts every decision, including those that rolled off. |
 | `childRunRefs` | Sub-agent AgentRuns spawned via tools |
 | `checkpointRef` | Storage key for conversation state |

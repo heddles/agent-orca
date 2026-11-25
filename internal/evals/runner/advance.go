@@ -321,7 +321,7 @@ func (r *Runner) record(ctx context.Context, st *state, s slot, run *agentorcav1
 	res := postgresql.EvalResult{
 		CaseID: &c.ID, Arm: s.arm, Repeat: s.repeat, Phase: phase, Error: reason, CreatedBy: runnerUser,
 		RunNamespace: run.Namespace, RunName: run.Name,
-		Output:  trimOutput(run.Status.Output),
+		Output:  trimOutput(r.output(ctx, run)),
 		CostUSD: parseUSD(run.Status.SpendUSD),
 	}
 	for _, cond := range run.Status.Conditions {
@@ -638,4 +638,12 @@ func (r *Runner) cancel(ctx context.Context, e postgresql.EvalExperiment) error 
 	}
 	r.cleanup(ctx, e)
 	return r.finish(ctx, e, postgresql.ExperimentCancelled, sum, "")
+}
+
+// output is a finished run's answer.
+func (r *Runner) output(ctx context.Context, run *agentorcav1alpha1.AgentRun) string {
+	if r.cfg.Outputs != nil {
+		return r.cfg.Outputs(ctx, run)
+	}
+	return run.Status.Output
 }

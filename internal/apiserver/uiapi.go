@@ -527,7 +527,7 @@ func (s *UIServer) handleRunOrStream(w http.ResponseWriter, r *http.Request) {
 		AgentRef:              run.Spec.AgentRef,
 		Input:                 run.Spec.Input,
 		Phase:                 string(run.Status.Phase),
-		Output:                run.Status.Output,
+		Output:                outputOf(r.Context(), s.store, &run),
 		SpendUSD:              run.Status.SpendUSD,
 		RestartCount:          run.Status.RestartCount,
 		LastRestartReason:     run.Status.LastRestartReason,
@@ -617,7 +617,7 @@ func (s *UIServer) handleStream(w http.ResponseWriter, r *http.Request, ns, runN
 		if phase == "Succeeded" {
 			writeSSE(w, map[string]any{
 				"type":   "finalOutput",
-				"output": run.Status.Output,
+				"output": outputOf(ctx, s.store, run),
 			})
 			flusher.Flush()
 			return true

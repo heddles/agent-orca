@@ -136,7 +136,7 @@ func (b *InboundBridge) RunState(ctx context.Context, ns, name string) (inbound.
 	st := inbound.RunState{Found: true}
 	switch run.Status.Phase {
 	case agentorcav1alpha1.AgentRunPhaseSucceeded:
-		st.Done, st.Succeeded, st.Output = true, true, run.Status.Output
+		st.Done, st.Succeeded, st.Output = true, true, outputOf(ctx, b.s.store, &run)
 	case agentorcav1alpha1.AgentRunPhaseFailed:
 		st.Done, st.Reason = true, "the run failed"
 	case agentorcav1alpha1.AgentRunPhaseWaitingForInput:

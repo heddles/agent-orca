@@ -7,6 +7,10 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/heddles/agent-orca/internal/runoutput"
+	"github.com/heddles/agent-orca/internal/state"
+	"github.com/heddles/agent-orca/internal/tenancy"
+
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -105,7 +109,7 @@ func (r *AgentScheduleReconciler) setNotifyCondition(ctx context.Context, s *age
 // runNotice builds the message for a finished run, or false when the run is not
 // announced: a run the Replace policy cancelled, an outcome the schedule did not
 // ask for, or a run that is not a plain AgentRun.
-func (r *AgentScheduleReconciler) runNotice(s *agentorcav1alpha1.AgentSchedule, c scheduleChild) (notifyJob, bool) {
+func (r *AgentScheduleReconciler) runNotice(ctx context.Context, s *agentorcav1alpha1.AgentSchedule, c scheduleChild) (notifyJob, bool) {
 	n := scheduleNotify(s)
 	run, ok := c.obj.(*agentorcav1alpha1.AgentRun)
 	if n == nil || !ok || c.replaced {
@@ -130,6 +134,9 @@ func (r *AgentScheduleReconciler) runNotice(s *agentorcav1alpha1.AgentSchedule, 
 	}
 	if n.IncludeOutput {
 		msg.Output = run.Status.Output
+		if r.StateStore != nil {
+			msg.Output = runoutput.Of(ctx, state.ForTenantIfEnabled(r.StateStore, run.Labels[tenancy.LabelTenantID]), run)
+		}
 	}
 	return notifyJob{event: event, msg: msg}, true
 }

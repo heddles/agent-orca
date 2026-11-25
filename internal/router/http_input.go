@@ -17,7 +17,6 @@ limitations under the License.
 package router
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -26,9 +25,9 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"strings"
 	"time"
 
+	"github.com/heddles/agent-orca/internal/runoutput"
 	"github.com/heddles/agent-orca/internal/state"
 )
 
@@ -104,14 +103,17 @@ func RunHTTPInput(ctx context.Context, cfg HTTPInputConfig, store state.Store) e
 		return fmt.Errorf("reading http input response: %w", err)
 	}
 
-	output := httpRunOutput(resp.Header.Get("Content-Type"), respBody)
-	// A failed agent call is a failed run, not an answer: record why before the
-	// output, because the controller acts on the output as soon as it appears.
-	if reason := httpRunFailure(resp.StatusCode, respBody); reason != "" {
-		if err := store.SaveKV(ctx, HTTPFailureScope, cfg.RunName, []byte(reason), time.Hour); err != nil {
+	// The same interpretation as every other output path: an answer, or why there
+	// is none. A failed agent call is a failed run, not an answer: record why
+	// before the output, because the controller acts on the output as soon as it
+	// appears.
+	result := runoutput.Interpret(resp.StatusCode, respBody)
+	output := result.Text
+	if result.Failure != "" {
+		if err := store.SaveKV(ctx, HTTPFailureScope, cfg.RunName, []byte(result.Failure), time.Hour); err != nil {
 			slog.Error("saving http failure reason", "err", err)
 		}
-		output = reason
+		output = result.Failure
 	}
 	if err := store.SaveHTTPOutput(ctx, cfg.RunName, output); err != nil {
 		return fmt.Errorf("saving http output: %w", err)
@@ -125,100 +127,6 @@ func RunHTTPInput(ctx context.Context, cfg HTTPInputConfig, store state.Store) e
 // it to end the run Failed instead of Succeeded with the error as output.
 const HTTPFailureScope = "http-failure"
 
-// httpRunFailure returns why an agent's response is a failure, or "" when it is
-// an answer: a non-2xx status, or a 2xx body that carries an error and no
-// content (an SSE error event, or the legacy `data: [DONE]` + `{"error":...}`).
-func httpRunFailure(status int, body []byte) string {
-	text := strings.TrimSpace(string(body))
-	if status < 200 || status > 299 {
-		reason := fmt.Sprintf("agent returned HTTP %d", status)
-		if msg := errorPayloadMessage(text); msg != "" {
-			return reason + ": " + msg
-		}
-		if text != "" {
-			return reason + ": " + truncateReason(text)
-		}
-		return reason
-	}
-	if _, hasContent := sseContent(body); hasContent {
-		return ""
-	}
-	var envelope struct {
-		Output string `json:"output"`
-	}
-	if json.Unmarshal(body, &envelope) == nil && envelope.Output != "" {
-		return ""
-	}
-	if _, ok := completionContent(body); ok {
-		return ""
-	}
-	for line := range strings.SplitSeq(text, "\n") {
-		line = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "data:"))
-		if msg := errorPayloadMessage(line); msg != "" {
-			return "agent call failed: " + msg
-		}
-	}
-	// A stream of chunks that carry no text (empty deltas, reasoning only, tool
-	// calls) is not an answer, and its frames must never reach the user.
-	if isEventStream(body) {
-		return "agent call failed: the model returned no answer"
-	}
-	return ""
-}
-
-// isEventStream reports whether body is an SSE stream of data frames.
-func isEventStream(body []byte) bool {
-	return bytes.HasPrefix(bytes.TrimSpace(body), []byte("data:"))
-}
-
-// completionContent returns the text of a non-streamed chat completion
-// ({"choices":[{"message":{"content":"..."}}]}); ok is false for any other body.
-func completionContent(body []byte) (string, bool) {
-	var c struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if json.Unmarshal(body, &c) != nil || len(c.Choices) == 0 || c.Choices[0].Message.Content == "" {
-		return "", false
-	}
-	return c.Choices[0].Message.Content, true
-}
-
-func truncateReason(s string) string {
-	if len(s) > 500 {
-		return s[:500] + "..."
-	}
-	return s
-}
-
-// errorPayloadMessage extracts the message from {"error":"..."} or
-// {"error":{"message":"..."}}; "" when s is not such a payload.
-func errorPayloadMessage(s string) string {
-	if !strings.HasPrefix(s, "{") {
-		return ""
-	}
-	var p struct {
-		Error json.RawMessage `json:"error"`
-	}
-	if json.Unmarshal([]byte(s), &p) != nil || len(p.Error) == 0 {
-		return ""
-	}
-	var str string
-	if json.Unmarshal(p.Error, &str) == nil {
-		return str
-	}
-	var obj struct {
-		Message string `json:"message"`
-	}
-	if json.Unmarshal(p.Error, &obj) == nil && obj.Message != "" {
-		return obj.Message
-	}
-	return string(p.Error)
-}
-
 // httpInputTimeout returns the deadline the model-router imposes when waiting for an
 // agent's HTTP handler to respond to a run. The previous hard-coded 60s was far too
 // short for LLM agents performing many sequential reasoning/tool calls and routinely
@@ -229,62 +137,4 @@ func httpInputTimeout(cfg HTTPInputConfig) time.Duration {
 		return time.Duration(cfg.TimeoutSeconds) * time.Second
 	}
 	return 30 * time.Minute
-}
-
-// httpRunOutput turns an http-mode agent's response body into the run output.
-// A JSON {"output": "..."} envelope is unwrapped so it does not appear in the UI.
-// A streamed OpenAI chat completion (text/event-stream) is reassembled from its
-// delta.content chunks; storing the raw frames made status.output a wall of
-// "data: {...}" lines (#112). A non-streamed chat completion is unwrapped to its
-// message content. Anything else is returned as-is.
-func httpRunOutput(contentType string, body []byte) string {
-	var envelope struct {
-		Output string `json:"output"`
-	}
-	if json.Unmarshal(body, &envelope) == nil && envelope.Output != "" {
-		return envelope.Output
-	}
-	if strings.HasPrefix(contentType, "text/event-stream") ||
-		bytes.HasPrefix(bytes.TrimSpace(body), []byte("data:")) {
-		// Never the raw frames: with no text in the stream there is no answer, and
-		// httpRunFailure has already marked the run failed.
-		text, _ := sseContent(body)
-		return text
-	}
-	if text, ok := completionContent(body); ok {
-		return text
-	}
-	return string(body)
-}
-
-// sseContent concatenates the choice-0 delta.content of every chat completion
-// chunk in an SSE body. Reasoning deltas are skipped: they are the model's
-// thinking, not its answer. ok is false when no chunk carried content, so the
-// caller can tell an empty stream from an empty answer.
-func sseContent(body []byte) (string, bool) {
-	var sb strings.Builder
-	sc := bufio.NewScanner(bytes.NewReader(body))
-	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-	for sc.Scan() {
-		data, found := strings.CutPrefix(sc.Text(), "data:")
-		if !found {
-			continue
-		}
-		data = strings.TrimSpace(data)
-		if data == "[DONE]" {
-			// Not a stop signal: some proxies emit a premature [DONE] after a
-			// reasoning block and then stream the real content.
-			continue
-		}
-		var chunk streamingChatCompletionChunk
-		if json.Unmarshal([]byte(data), &chunk) != nil {
-			continue
-		}
-		for _, c := range chunk.Choices {
-			if c.Index == 0 {
-				sb.WriteString(c.Delta.Content)
-			}
-		}
-	}
-	return sb.String(), sb.Len() > 0
 }

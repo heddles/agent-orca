@@ -764,7 +764,7 @@ func (s *UIServer) loadCapturedRun(r *http.Request, store evalStore, ns, name st
 			}
 			phase := run.Status.Phase
 			return capturedRun{
-				input: run.Spec.Input, output: run.Status.Output, agent: run.Spec.AgentRef,
+				input: run.Spec.Input, output: outputOf(r.Context(), s.store, &run), agent: run.Spec.AgentRef,
 				finished: phase == agentorcav1alpha1.AgentRunPhaseSucceeded || phase == agentorcav1alpha1.AgentRunPhaseFailed,
 			}, true
 		}
