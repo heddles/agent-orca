@@ -100,6 +100,24 @@ describe('HomeBoard', () => {
     expect(screen.getByRole('link', { name: 'Open run' })).toHaveAttribute('href', '/runs/history/team-a/old')
   })
 
+  it('takes the answer from the archive when the live run no longer carries it', async () => {
+    mockSchedules.mockResolvedValue([schedule({ lastResult: { status: 'succeeded', run: 'r2' } })])
+    mockGetRun.mockResolvedValue({ input: 'Daily report', output: '' })
+    mockArchived.mockResolvedValue({ input: 'Daily report', output: 'Kept in the archive.' })
+    renderHome()
+    expect(await screen.findByText('Kept in the archive.')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Open run' })).toHaveAttribute('href', '/runs/live/team-a/r2')
+  })
+
+  it('still links to a live run that has no answer anywhere', async () => {
+    mockSchedules.mockResolvedValue([schedule({ lastResult: { status: 'failed', run: 'r3', reason: 'timed out' } })])
+    mockGetRun.mockResolvedValue({ input: 'Daily report' })
+    mockArchived.mockRejectedValue(new Error('503'))
+    renderHome()
+    expect(await screen.findByRole('link', { name: 'Open run' })).toHaveAttribute('href', '/runs/live/team-a/r3')
+    expect(screen.getByText('timed out')).toBeInTheDocument()
+  })
+
   it('lists the last day’s failed runs and broken schedules', async () => {
     const run = (name: string, hours: number) => ({
       name, namespace: 'team-a', agentRef: 'coder', phase: 'Failed', spendUSD: '', restartCount: 0,

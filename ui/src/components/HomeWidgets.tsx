@@ -125,14 +125,23 @@ const REPORTS_SHOWN = 3
 
 interface Report { title: string; output: string; path: string }
 
-/** The run behind a schedule's last result; it may have moved to the archive. */
+/**
+ * The run behind a schedule's last result. It may have left the cluster, and a
+ * run still there can come back without its answer, so the archive is the
+ * second source for both.
+ */
 async function loadReport(namespace: string, run: string): Promise<Report> {
-  try {
-    const d = await getRun(run, namespace)
-    return { title: runTitle(d.input, run), output: d.output ?? '', path: liveRunPath(namespace, run) }
-  } catch {
-    const d = await getRunHistoryDetail(namespace, run)
-    return { title: runTitle(d.input, run), output: d.output ?? '', path: archivedRunPath(namespace, run) }
+  const live = await getRun(run, namespace).catch(() => null)
+  if (live?.output) return { title: runTitle(live.input, run), output: live.output, path: liveRunPath(namespace, run) }
+  const archived = await getRunHistoryDetail(namespace, run).catch((e: unknown) => {
+    if (live) return null
+    throw e
+  })
+  const found = live ?? archived!
+  return {
+    title: runTitle(found.input, run),
+    output: archived?.output ?? '',
+    path: live ? liveRunPath(namespace, run) : archivedRunPath(namespace, run),
   }
 }
 
