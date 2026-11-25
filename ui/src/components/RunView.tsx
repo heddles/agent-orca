@@ -20,6 +20,10 @@ import {
 } from '../api/sse'
 import { STREAM_EVENT_TYPE } from '../contracts/events'
 import { StatusBadge } from './StatusBadge'
+import { RunRequest } from './RunRequest'
+import { channelLabel, parseRunInput, runTitle } from '../lib/runText'
+import { agentDetailsPath } from '../lib/routes'
+import { timeAgo } from '../lib/time'
 import { OutputCard } from './OutputCard'
 import { TraceAccordion } from './TraceAccordion'
 import { RouterAccordion } from './RouterAccordion'
@@ -190,13 +194,8 @@ export function RunView({
     return `${Math.round((end.getTime() - new Date(detail.startTime).getTime()) / 1000)}s`
   })()
 
-  const agentRelTime = (() => {
-    if (!detail?.startTime) return ''
-    const diff = Math.round((Date.now() - new Date(detail.startTime).getTime()) / 1000)
-    if (diff < 60) return `${diff}s ago`
-    if (diff < 3600) return `${Math.round(diff / 60)}m ago`
-    return `${Math.round(diff / 3600)}h ago`
-  })()
+  const title = runTitle(detail?.input, runId)
+  const channel = parseRunInput(detail?.input ?? '').channel
 
   return (
     <div style={s.root}>
@@ -227,10 +226,14 @@ export function RunView({
 
       {/* Header */}
       <div style={s.header}>
-        <div>
-          <div style={s.title}>{runId}</div>
+        <div style={{ flex: '1 1 320px', minWidth: 0 }}>
+          <h1 style={s.title}>{title}</h1>
           <div style={s.subtitle}>
-            {detail?.agentRef ?? '…'} · {agentRelTime} · {namespace}
+            {detail
+              ? <Link to={agentDetailsPath(namespace, detail.agentRef)} style={s.subtitleLink}>{detail.agentRef}</Link>
+              : '…'}
+            {[timeAgo(detail?.startTime), channel && `from ${channelLabel(channel)}`, title !== runId && runId, namespace]
+              .filter(Boolean).map((part) => ` · ${part}`).join('')}
           </div>
           {detail?.schedule && (
             <div style={{ marginTop: 6 }}>
@@ -411,13 +414,7 @@ export function RunView({
             />
           )}
 
-          {/* Input section */}
-          {detail?.input && (
-            <div style={s.inputSection}>
-              <div style={s.inputLabel}>Input prompt</div>
-              <div style={s.inputText}>{detail.input}</div>
-            </div>
-          )}
+          {detail?.input && <RunRequest input={detail.input} />}
         </div>
       )}
     </div>
@@ -428,10 +425,10 @@ const s: Record<string, React.CSSProperties> = {
   root: {
     flex: 1,
     overflowY: 'auto',
-    padding: `${DESIGN.space.xl}px ${DESIGN.space.xxl}px`,
+    padding: `${DESIGN.space.md}px ${DESIGN.space.xl}px ${DESIGN.space.xl}px`,
     display: 'flex',
     flexDirection: 'column',
-    gap: DESIGN.space.xl,
+    gap: DESIGN.space.lg,
   },
   breadcrumb: {
     display: 'flex',
@@ -507,17 +504,23 @@ const s: Record<string, React.CSSProperties> = {
     gap: 12,
   },
   title: {
+    margin: 0,
     fontSize: DESIGN.font.size.heading,
     fontWeight: 700,
     color: 'var(--ds-text-primary)',
-    lineHeight: 1.1,
-    textWrap: 'balance' as const,
+    lineHeight: 1.3,
+    display: '-webkit-box',
+    WebkitLineClamp: 2,
+    WebkitBoxOrient: 'vertical',
+    overflow: 'hidden',
+    wordBreak: 'break-word',
   },
   subtitle: {
-    fontSize: 11,
+    fontSize: 12,
     color: 'var(--ds-text-secondary)',
     marginTop: 4,
   },
+  subtitleLink: { color: 'var(--ds-accent)', textDecoration: 'none' },
   stats: {
     display: 'flex',
     alignItems: 'center',
@@ -647,28 +650,6 @@ const s: Record<string, React.CSSProperties> = {
     lineHeight: 1.5,
     whiteSpace: 'pre-wrap',
     fontVariantNumeric: 'tabular-nums',
-  },
-  inputSection: {
-    background: 'var(--ds-surface)',
-    border: `1px solid var(--ds-border)`,
-    borderRadius: DESIGN.radii.lg,
-    padding: '12px 16px',
-  },
-  inputLabel: {
-    fontSize: 11,
-    fontWeight: 600,
-    textTransform: 'uppercase',
-    letterSpacing: '0.08em',
-    color: 'var(--ds-text-secondary)',
-    marginBottom: 8,
-  },
-  inputText: {
-    fontSize: 13,
-    color: 'var(--ds-text-secondary)',
-    fontStyle: 'italic',
-    lineHeight: 1.5,
-    whiteSpace: 'pre-wrap',
-    wordBreak: 'break-word',
   },
   clarifyCard: {
     background: 'var(--ds-trace-warning-bg)',

@@ -20,6 +20,8 @@ import { getRunHistoryDetail, type RunHistoryDetail, type TraceEntry } from '../
 import { OutputCard } from './OutputCard'
 import { RouterAccordion } from './RouterAccordion'
 import { StatusBadge } from './StatusBadge'
+import { RunRequest } from './RunRequest'
+import { runTitle } from '../lib/runText'
 import { TraceAccordion } from './TraceAccordion'
 import { DESIGN } from '../lib/designSystem'
 import { Icon, ICON } from '../lib/icons'
@@ -111,10 +113,11 @@ export function RunHistoryDetailView({ runId, namespace = 'default', onBack, onN
           <Icon icon={ICON.chevronRight} size={12} ariaHidden style={{ transform: 'rotate(180deg)' }} />
           History
         </button>
-        <div>
-          <div style={dv.title}>{detail.name}</div>
+        <div style={{ minWidth: 0 }}>
+          <h1 style={dv.title}>{runTitle(detail.input, detail.name)}</h1>
           <div style={dv.subtitle}>
-            {detail.agentRef} · {detail.namespace} · {detail.podName}
+            {detail.agentRef} · {detail.namespace}
+            {runTitle(detail.input, detail.name) !== detail.name && <> · <span>{detail.name}</span></>}
           </div>
         </div>
       </div>
@@ -229,13 +232,7 @@ export function RunHistoryDetailView({ runId, namespace = 'default', onBack, onN
         </div>
       )}
 
-      {/* Input prompt */}
-      {detail.input && (
-        <div style={dv.panel} role="region" aria-label="Input">
-          <div style={dv.sectionLabel}>Input prompt</div>
-          <pre style={dv.inputBox}>{detail.input}</pre>
-        </div>
-      )}
+      {detail.input && <RunRequest input={detail.input} />}
     </div>
   )
 }
@@ -424,7 +421,10 @@ const dv: Record<string, React.CSSProperties> = {
     fontWeight: 700,
     color: 'var(--ds-text-primary)',
     margin: 0,
-    lineHeight: 1.1,
+    lineHeight: 1.3,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
   },
   subtitle: {
     fontSize: 11,
@@ -533,19 +533,6 @@ const dv: Record<string, React.CSSProperties> = {
     textTransform: 'uppercase',
     letterSpacing: '0.06em',
     marginBottom: 8,
-  },
-  inputBox: {
-    background: 'var(--ds-bg)',
-    border: `1px solid var(--ds-border)`,
-    borderRadius: DESIGN.radii.md,
-    padding: 12,
-    fontSize: 12,
-    fontFamily: DESIGN.font.mono,
-    color: 'var(--ds-text-primary)',
-    whiteSpace: 'pre-wrap' as const,
-    wordBreak: 'break-word' as const,
-    margin: 0,
-    lineHeight: 1.5,
   },
   panel: {
     background: 'var(--ds-surface)',

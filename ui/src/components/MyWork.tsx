@@ -15,9 +15,11 @@ import { ICON } from '../lib/icons'
 import { EmptyState, Section } from '../lib/layout'
 import { liveRunPath, ROUTES, agentDetailsPath } from '../lib/routes'
 import { useNamespace } from '../lib/namespace'
-import { ApprovalsView, formatRelative } from './ApprovalsView'
+import { ApprovalsView } from './ApprovalsView'
+import { timeAgo } from '../lib/time'
 import { OutputCard } from './OutputCard'
 import { StatusBadge } from './StatusBadge'
+import { channelLabel, parseRunInput, plainPreview, runTitle } from '../lib/runText'
 
 const ACTIVE = new Set(['Pending', 'Running', 'WaitingForInput'])
 const POLL_MS = 5000
@@ -151,20 +153,24 @@ function RunCard({ run }: { run: MyRun }) {
   const finished = !ACTIVE.has(run.phase)
   const panelId = `run-${run.namespace}-${run.name}-output`
   const cost = Number(run.spendUSD)
+  const channel = parseRunInput(run.input).channel
+  const preview = run.output ? plainPreview(run.output.slice(0, 600)) : ''
   return (
     <div style={s.card}>
       <div style={s.cardHead}>
-        <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-          <Link to={agentDetailsPath(run.namespace, run.agentRef)} style={s.agent}>{run.agentRef}</Link>
-          <StatusBadge phase={run.phase} pulse={ACTIVE.has(run.phase)} />
-          <span style={s.statusText}>{phaseText(run.phase)}</span>
-        </span>
+        <Link to={liveRunPath(run.namespace, run.name)} style={s.title}>{runTitle(run.input, run.name)}</Link>
         <span style={s.meta}>
           {run.spendUSD && Number.isFinite(cost) ? `$${cost.toFixed(2)} · ` : ''}
-          {formatRelative(run.completionTime ?? run.createdAt)}
+          {timeAgo(run.completionTime ?? run.createdAt)}
         </span>
       </div>
-      {run.input && <p style={s.input}>{run.input}</p>}
+      <div style={s.tags}>
+        <StatusBadge phase={run.phase} pulse={ACTIVE.has(run.phase)} />
+        <span style={s.statusText}>{phaseText(run.phase)}</span>
+        <Link to={agentDetailsPath(run.namespace, run.agentRef)} style={s.agent}>{run.agentRef}</Link>
+        {channel && <span style={s.statusText}>from {channelLabel(channel)}</span>}
+      </div>
+      {preview && !open && <p style={s.preview}>{preview}</p>}
       <div style={s.cardFoot}>
         {run.output && (
           <button type="button" style={s.toggle} aria-expanded={open} aria-controls={panelId} onClick={() => setOpen((o) => !o)}>
@@ -194,10 +200,12 @@ const s: Record<string, CSSProperties> = {
   },
   cardHead: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: 13, color: ds.textPrimary },
   cardFoot: { display: 'flex', gap: 14, alignItems: 'center' },
-  agent: { fontWeight: 600, color: ds.textPrimary, textDecoration: 'none', fontSize: 14 },
+  title: { fontWeight: 600, color: ds.textPrimary, textDecoration: 'none', fontSize: 14, flex: '1 1 0', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  tags: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
+  agent: { color: ds.textSecondary, textDecoration: 'underline', fontSize: 12 },
   statusText: { fontSize: 12, color: ds.textSecondary },
   meta: { fontSize: 11, color: ds.textMuted, fontVariantNumeric: 'tabular-nums' },
-  input: { margin: 0, fontSize: 13, color: ds.textSecondary, overflowWrap: 'anywhere', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' },
+  preview: { margin: 0, fontSize: 13, color: ds.textSecondary, lineHeight: 1.45, overflowWrap: 'anywhere', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' },
   question: { margin: 0, fontSize: 14, color: ds.textPrimary },
   link: { color: ds.accent, fontSize: 12, textDecoration: 'none' },
   toggle: { background: 'transparent', border: 'none', color: ds.accent, fontSize: 12, cursor: 'pointer', padding: 0 },

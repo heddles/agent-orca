@@ -12,6 +12,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
+	"github.com/heddles/agent-orca/internal/postgresql"
 	"github.com/heddles/agent-orca/internal/schedule"
 	"github.com/heddles/agent-orca/internal/tenancy"
 )
@@ -379,13 +380,18 @@ func (s *UIServer) handleMyRuns(w http.ResponseWriter, r *http.Request) {
 			if strings.HasPrefix(run.Annotations[AnnotationCreatedBy], schedule.ActorPrefix) {
 				continue
 			}
+			// A sub-run is part of its parent's work and is listed under it,
+			// unless it is waiting for a person to answer.
+			if run.Spec.ParentRunRef != "" && run.Status.Phase != agentorcav1alpha1.AgentRunPhaseWaitingForInput {
+				continue
+			}
 			if mine && run.Annotations[AnnotationCreatedBy] != userID {
 				continue
 			}
 			mr := myRun{
 				Name: run.Name, Namespace: run.Namespace, AgentRef: run.Spec.AgentRef,
 				Phase: string(run.Status.Phase), SpendUSD: run.Status.SpendUSD,
-				Input: truncateRunes(run.Spec.Input, 400), Output: outputOf(r.Context(), s.store, run),
+				Input: truncateRunes(run.Spec.Input, postgresql.HistoryInputChars), Output: outputOf(r.Context(), s.store, run),
 				ClarifyQuestion: run.Status.ClarifyQuestion,
 				CreatedBy:       run.Annotations[AnnotationCreatedBy],
 				CreatedAt:       run.CreationTimestamp.UTC().Format(time.RFC3339),
