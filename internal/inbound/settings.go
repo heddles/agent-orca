@@ -36,6 +36,10 @@ type Settings struct {
 	// refused, whoever wrote it. With no sender or group on the list it admits
 	// everyone who can write in those spaces.
 	AllowChannels []string `json:"allowChannels,omitempty"`
+	// Approvers are the exact sender ids that may approve or deny a tool call of
+	// a run of this connection by replying in the thread. They must also be
+	// admitted by the allow-list. Empty: approvals are decided in the console.
+	Approvers []string `json:"approvers,omitempty"`
 	// Modes are the ways of addressing the agent this connection answers (chat).
 	// Empty means the adapter's modes except ModeChannel, which must be named.
 	Modes []Mode `json:"modes,omitempty"`
@@ -97,6 +101,15 @@ func ParseSettings(raw json.RawMessage) (Settings, error) {
 			return s, fmt.Errorf("allowChannels holds exact ids only (no wildcards): %q is not one", v)
 		}
 	}
+	if len(s.Approvers) > maxAllowEntries {
+		return s, fmt.Errorf("approvers has at most %d entries", maxAllowEntries)
+	}
+	for i, v := range s.Approvers {
+		s.Approvers[i] = normalize(v)
+		if s.Approvers[i] == "" || strings.ContainsAny(s.Approvers[i], "*?, \t\r\n") {
+			return s, fmt.Errorf("approvers holds exact ids only: %q is not one", v)
+		}
+	}
 	for _, m := range s.Modes {
 		if !KnownMode(m) {
 			return s, fmt.Errorf("modes: %q is not one of direct, mention, command, channel", m)
@@ -121,6 +134,12 @@ func ParseSettings(raw json.RawMessage) (Settings, error) {
 		return s, fmt.Errorf("pollSeconds must be between %d and %d", MinPollSeconds, MaxPollSeconds)
 	}
 	return s, nil
+}
+
+// CanApprove reports whether the sender is one of the connection's approvers.
+func (s Settings) CanApprove(from Sender) bool {
+	id := normalize(from.ID)
+	return id != "" && slices.Contains(s.Approvers, id)
 }
 
 // PollEvery is the polling interval.

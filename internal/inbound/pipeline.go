@@ -138,14 +138,15 @@ type Limiter interface {
 
 // Pipeline is the shared logic between an adapter and an AgentRun.
 type Pipeline struct {
-	Store    Store
-	Launcher Launcher
-	Runs     RunReader
-	Resumer  Resumer // optional: without it a reply to a question starts a new run
-	Registry *Registry
-	Limiter  Limiter
-	Secrets  SecretReader
-	Now      func() time.Time
+	Store     Store
+	Launcher  Launcher
+	Runs      RunReader
+	Approvals ApprovalStore // optional: without it a reply never decides a tool call
+	Resumer   Resumer       // optional: without it a reply to a question starts a new run
+	Registry  *Registry
+	Limiter   Limiter
+	Secrets   SecretReader
+	Now       func() time.Time
 
 	// ReplyTimeout gives up on a run that has not finished (default 2 hours).
 	ReplyTimeout time.Duration
@@ -170,7 +171,7 @@ func (p *Pipeline) now() time.Time {
 
 var messagesTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 	Name: "agentorca_inbound_messages_total",
-	Help: "Inbound channel messages by adapter kind and outcome (started, duplicate, rejected, ignored, throttled, failed, replied, reply_failed).",
+	Help: "Inbound channel messages by adapter kind and outcome (started, duplicate, rejected, ignored, throttled, failed, replied, reply_failed, decided).",
 }, []string{"kind", "outcome"})
 
 func init() { ctrlmetrics.Registry.MustRegister(messagesTotal) }
@@ -264,6 +265,10 @@ func (p *Pipeline) Handle(ctx context.Context, c Connection, m Message, recvErr 
 		if _, name, err := p.Store.LatestInboundRunInThread(scope, c.ID, row.ThreadKey); err == nil {
 			req.PriorRun = name
 		}
+	}
+	if reply, ok := p.decide(ctx, c, m, req.PriorRun); ok {
+		p.notify(ctx, c, m, reply)
+		return finish(OutcomeDecided, postgresql.InboundReplied, "approval", postgresql.InboundStatus{})
 	}
 	run, err := p.start(ctx, c, m, req)
 	var le *LaunchError

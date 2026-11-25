@@ -74,6 +74,8 @@ type Server struct {
 	approvals ToolApprovalStore
 	// approvalNotifier tells approvers about new requests. Optional.
 	approvalNotifier ApprovalNotifier
+	// approvalPrompter asks in the chat thread of a channel run. Optional.
+	approvalPrompter ApprovalNotifier
 	// routingEvents stores routing telemetry (routing_events_api.go). nil drops
 	// posted events.
 	routingEvents RoutingEventStore

@@ -490,6 +490,26 @@ func (s *Store) LatestInboundRunInThread(ctx context.Context, connectionID, thre
 	return ns, name, wrapInbound("finding the thread", err)
 }
 
+// FindRunningInboundMessage returns the message whose answer a run will be, with
+// the reply target the adapter needs: for telling the thread something while the
+// run is still working. found is false once the message is answered.
+func (s *Store) FindRunningInboundMessage(ctx context.Context, namespace, runName string) (m InboundMessage, found bool, err error) {
+	err = s.scoped(ctx, func(tx dbtx, scope string) error {
+		row := tx.QueryRowContext(ctx, `
+			SELECT `+inboundMsgCols+` FROM inbound_messages m
+			WHERE m.run_namespace = $1 AND m.run_name = $2 AND m.status = 'running'
+			  AND ($3::text = '*' OR m.tenant_id = $3)
+			ORDER BY m.received_at DESC LIMIT 1`, namespace, runName, scope)
+		var serr error
+		m, serr = scanInboundMsg(row)
+		return serr
+	})
+	if errors.Is(err, sql.ErrNoRows) {
+		return InboundMessage{}, false, nil
+	}
+	return m, err == nil, wrapInbound("finding the message of a run", err)
+}
+
 // CountInboundBySender counts the messages of one sender that started a run
 // since the given time: the basis of the per-sender cap.
 func (s *Store) CountInboundBySender(ctx context.Context, connectionID, senderHash string, since time.Time) (int, error) {

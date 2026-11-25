@@ -925,7 +925,7 @@ func main() {
 		}
 	}
 	if pgStore != nil && !inboundChannelsDisabled() {
-		if err := addInboundChannels(mgr, uiAPI, pgStore, externalAuth.RateLimiter()); err != nil {
+		if err := addInboundChannels(mgr, uiAPI, internalAPI, pgStore, externalAuth.RateLimiter()); err != nil {
 			setupLog.Error(err, "Unable to start the inbound channels")
 			os.Exit(1)
 		}
@@ -1226,7 +1226,8 @@ func inboundChannelsDisabled() bool {
 // the leader-only runner: one IMAP poller per enabled connection and the delivery
 // of answers.
 func addInboundChannels(
-	mgr manager.Manager, uiAPI *apiserver.UIServer, pgStore *postgresql.Store, limiter inbound.Limiter,
+	mgr manager.Manager, uiAPI *apiserver.UIServer, internalAPI *apiserver.Server,
+	pgStore *postgresql.Store, limiter inbound.Limiter,
 ) error {
 	reg := inbound.NewRegistry()
 	reg.Register(&inboundemail.Adapter{})
@@ -1240,6 +1241,10 @@ func addInboundChannels(
 		Store: pgStore.AsPlatform(), Launcher: bridge, Runs: bridge, Resumer: bridge, Registry: reg, Limiter: limiter,
 		Secrets: bridge.ReadSecret,
 	}
+	pipe.Approvals = pgStore.AsPlatform()
+	// A tool call that waits for an approver is also asked in the thread of the
+	// run's channel message (docs/inbound-channels.md).
+	internalAPI.WithApprovalPrompter(pipe)
 	uiAPI.SetInbound(pipe)
 	setupLog.Info("Inbound channels enabled", "kinds", reg.Kinds())
 	return mgr.Add(&inbound.Runner{P: pipe})

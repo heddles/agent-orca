@@ -78,6 +78,14 @@ func (s *Server) WithApprovals(store ToolApprovalStore, notifier ApprovalNotifie
 	return s
 }
 
+// WithApprovalPrompter gives the server a second notifier, told of a new tool
+// approval after the first: the one that asks in the chat thread of a run an
+// inbound channel started. It returns s for chaining.
+func (s *Server) WithApprovalPrompter(n ApprovalNotifier) *Server {
+	s.approvalPrompter = n
+	return s
+}
+
 // toolApprovalRequest is the body of POST .../tool-approval.
 type toolApprovalRequest struct {
 	CallKey    string `json:"callKey"`
@@ -193,6 +201,11 @@ func (s *Server) requestToolApproval(w http.ResponseWriter, r *http.Request, cal
 		if s.approvalNotifier != nil {
 			if err := s.approvalNotifier.NotifyApproval(r.Context(), stored); err != nil {
 				slog.Error("notifying approvers", "approval", stored.ID, "err", err)
+			}
+		}
+		if s.approvalPrompter != nil {
+			if err := s.approvalPrompter.NotifyApproval(r.Context(), stored); err != nil {
+				slog.Warn("asking for the approval in the channel thread", "approval", stored.ID, "err", err)
 			}
 		}
 	}

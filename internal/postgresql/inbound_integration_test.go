@@ -186,6 +186,15 @@ func TestInboundMessagesAgainstPostgres(t *testing.T) {
 	if _, name, _ := s.LatestInboundRunInThread(a, conn, ""); name != "" {
 		t.Error("an empty thread key matched")
 	}
+	if got, ok, err := s.FindRunningInboundMessage(a, "ns", itRun); err != nil || !ok || got.MessageKey != m.MessageKey || string(got.ReplyTarget) != `{"to": "a"}` {
+		t.Errorf("running message = %+v, %v, %v", got, ok, err)
+	}
+	if _, ok, _ := s.FindRunningInboundMessage(b, "ns", itRun); ok {
+		t.Error("tenant B found the running message")
+	}
+	if _, ok, _ := s.FindRunningInboundMessage(a, "ns", "no-such-run"); ok {
+		t.Error("found a message of no run")
+	}
 	n, err := s.CountInboundBySender(a, conn, m.SenderHash, time.Now().Add(-time.Hour))
 	if err != nil || n != 1 {
 		t.Errorf("sender count = %d, %v", n, err)
