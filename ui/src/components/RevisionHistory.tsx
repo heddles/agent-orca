@@ -202,7 +202,7 @@ export function RevisionHistory({
                 const on = r.revision === selected
                 return (
                   <li key={r.revision}>
-                    <button type="button" aria-current={on ? 'true' : undefined} onClick={() => select(r.revision)} style={{ ...st.row, borderColor: on ? ds.accent : 'var(--ds-border)' }}>
+                    <button type="button" aria-current={on ? 'true' : undefined} onClick={() => select(r.revision)} style={{ ...st.row, border: `1px solid ${on ? ds.accent : 'var(--ds-border)'}` }}>
                       <span style={{ fontWeight: 600 }}>Version {r.revision}</span>
                       <span style={st.meta}>
                         {r.userId} · <Time iso={r.createdAt} />

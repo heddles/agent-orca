@@ -70,6 +70,20 @@ describe('RunsView', () => {
     expect(screen.getByRole('note')).toHaveTextContent(/Past runs are not being kept/)
   })
 
+  it('sorts newest first by default, and oldest first when reversed', async () => {
+    listRuns.mockResolvedValue([
+      run('older', 'Succeeded', { startTime: '2026-11-01T10:00:00Z' }),
+      run('newer', 'Succeeded', { startTime: '2026-11-03T10:00:00Z' }),
+    ])
+    listRunHistory.mockResolvedValue({ runs: [run('middle', 'Succeeded', { startTime: '2026-11-02T10:00:00Z' })], total: 1, limit: 50, offset: 0 })
+    render(<RunsView onNavigateToRun={vi.fn()} />)
+    await screen.findByRole('button', { name: 'View run newer' })
+    const order = () => screen.getAllByRole('button', { name: /^View run / }).map((b) => b.getAttribute('aria-label')!.slice('View run '.length))
+    expect(order()).toEqual(['newer', 'middle', 'older'])
+    await userEvent.click(screen.getByRole('button', { name: 'Sort by Started' }))
+    expect(order()).toEqual(['older', 'middle', 'newer'])
+  })
+
   it('tells a new user what to do when there are no runs', async () => {
     listRuns.mockResolvedValue([])
     listRunHistory.mockResolvedValue({ runs: null, total: 0, limit: 50, offset: 0 })

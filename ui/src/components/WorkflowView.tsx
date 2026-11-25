@@ -518,7 +518,7 @@ const s: Record<string, React.CSSProperties> = {
   root: {
     flex: 1,
     overflowY: 'auto',
-    padding: `${DESIGN.space.xl} ${DESIGN.space.xxl}`,
+    padding: `${DESIGN.space.xl}px ${DESIGN.space.xxl}px`,
     display: 'flex',
     flexDirection: 'column',
     gap: DESIGN.space.xl,
@@ -612,7 +612,7 @@ const s: Record<string, React.CSSProperties> = {
     gap: 4,
   },
   stepCardActive: {
-    borderColor: 'var(--ds-accent)',
+    border: '1px solid var(--ds-accent)',
     background: 'rgba(59,130,246,.08)',
     boxShadow: '0 0 0 2px rgba(59,130,246,.15)',
   },

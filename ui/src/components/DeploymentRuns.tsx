@@ -146,7 +146,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   runBtnActive: {
     background: 'var(--ds-bg)',
-    borderColor: 'var(--ds-accent)',
+    border: '1px solid var(--ds-accent)',
     color: 'var(--ds-text-primary)',
   },
   dot: {

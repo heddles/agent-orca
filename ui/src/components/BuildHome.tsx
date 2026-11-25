@@ -13,7 +13,7 @@ const linkButton: CSSProperties = {
   display: 'inline-block', padding: '6px 14px', fontSize: 12, borderRadius: DESIGN.radii.md, textDecoration: 'none',
   border: '1px solid var(--ds-border)', color: ds.textPrimary, background: ds.surface,
 }
-const primaryLink: CSSProperties = { ...linkButton, background: ds.accent, color: '#fff', borderColor: ds.accent }
+const primaryLink: CSSProperties = { ...linkButton, background: ds.accent, color: '#fff', border: `1px solid ${ds.accent}` }
 
 export function BuildHome() {
   const { namespace } = useNamespace()

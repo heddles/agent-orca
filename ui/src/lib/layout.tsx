@@ -201,7 +201,7 @@ const s: Record<string, CSSProperties> = {
     padding: '8px 12px', fontSize: 13, fontWeight: 500, color: ds.textSecondary, textDecoration: 'none',
     borderBottom: '2px solid transparent', marginBottom: -1,
   },
-  subNavItemActive: { color: ds.accent, borderBottomColor: 'var(--ds-accent)' },
+  subNavItemActive: { color: ds.accent, borderBottom: '2px solid var(--ds-accent)' },
   masterDetail: { flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0 },
   listPane: {
     width: 260, flexShrink: 0, borderRight: '1px solid var(--ds-border)', display: 'flex',

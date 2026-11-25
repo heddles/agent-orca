@@ -31,6 +31,8 @@ interface Props {
   namespace: string
   name: string
   onNavigateToRun?: (runName: string, namespace: string) => void
+  /** The agent's own example inputs, offered as starting points in an empty chat. */
+  examplePrompts?: string[]
 }
 
 interface PendingRun {
@@ -48,13 +50,6 @@ interface LocalMessage {
 
 const SESSION_KEY_PREFIX = 'agentorca-chat-session:'
 const MSGS_KEY_PREFIX = 'agentorca-chat-msgs:'
-
-/** Quick-prompt suggestions shown in the empty chat state (better-writing §11). */
-const QUICK_PROMPTS = [
-  'Summarize the key features of agent-orca',
-  'What model is selected and why?',
-  'Show me the cost breakdown',
-]
 
 function msgsKey(ns: string, n: string, sid: string) {
   return `${MSGS_KEY_PREFIX}${ns}/${n}:${sid}`
@@ -92,7 +87,7 @@ function fromChatMessages(msgs: ChatMessage[]): LocalMessage[] {
   })
 }
 
-export function DeploymentView({ namespace, name, onNavigateToRun }: Props) {
+export function DeploymentView({ namespace, name, onNavigateToRun, examplePrompts = [] }: Props) {
   const [deployment, setDeployment] = useState<AgentDeploymentDetail | null>(null)
   const [messages, setMessages] = useState<LocalMessage[]>([])
   const [input, setInput] = useState('')
@@ -641,9 +636,11 @@ export function DeploymentView({ namespace, name, onNavigateToRun }: Props) {
         {messages.length === 0 && !pending && (
           <div style={s.empty}>
             <div style={s.emptyTitle}>Start chatting with <strong>{name}</strong></div>
-            <p style={s.emptySubtitle}>Send a message to begin. Or try one of these prompts:</p>
+            <p style={s.emptySubtitle}>
+              {examplePrompts.length > 0 ? 'Send a message to begin. Or try one of these prompts:' : 'Send a message to begin.'}
+            </p>
             <div style={s.quickPrompts}>
-              {QUICK_PROMPTS.map((p) => (
+              {examplePrompts.map((p) => (
                 <button
                   key={p}
                   type="button"
@@ -953,12 +950,12 @@ const s: Record<string, React.CSSProperties> = {
   },
   tabActive: {
     color: 'var(--ds-accent)',
-    borderBottomColor: 'var(--ds-accent)',
+    borderBottom: '2px solid var(--ds-accent)',
   },
   runsList: {
     flex: 1,
     overflowY: 'auto',
-    padding: `${DESIGN.space.md} ${DESIGN.space.xxl}`,
+    padding: `${DESIGN.space.md}px ${DESIGN.space.xxl}px`,
     display: 'flex',
     flexDirection: 'column',
     gap: 6,
@@ -983,7 +980,7 @@ const s: Record<string, React.CSSProperties> = {
   },
   runCardActive: {
     background: 'var(--ds-surface)',
-    borderColor: 'var(--ds-accent-border)',
+    border: '1px solid var(--ds-accent-border)',
   },
   runCardHeader: {
     display: 'flex',
@@ -1035,7 +1032,7 @@ const s: Record<string, React.CSSProperties> = {
     flex: 1,
     minHeight: 0,
     overflowY: 'auto',
-    padding: `${DESIGN.space.xxl} ${DESIGN.space.xxl}`,
+    padding: `${DESIGN.space.xxl}px ${DESIGN.space.xxl}px`,
     display: 'flex',
     flexDirection: 'column',
     gap: DESIGN.space.xl,
