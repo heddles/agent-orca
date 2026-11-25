@@ -147,8 +147,11 @@ func runOnce(out *sseWriter, input string) error {
 		_, _ = fmt.Fprintf(out, "data: %s\n\n", data)
 		out.flush()
 
-		// Also print to stdout for agent logs.
-		if len(chunk.Choices) > 0 && chunk.Choices[0].Delta.Content != "" {
+		// Also print to stdout for agent logs. In env mode the frames already go
+		// to stdout, and a printed token with no newline would be glued to the
+		// next frame, so nothing is printed then.
+		_, toStdout := out.ResponseWriter.(*streamWriter)
+		if !toStdout && len(chunk.Choices) > 0 && chunk.Choices[0].Delta.Content != "" {
 			fmt.Print(chunk.Choices[0].Delta.Content)
 		}
 	}
