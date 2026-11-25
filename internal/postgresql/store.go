@@ -268,6 +268,12 @@ func (s *Store) ArchiveRun(ctx context.Context, run *agentorcav1alpha1.AgentRun,
 }
 
 func archiveRun(ctx context.Context, tx dbtx, q string, run *agentorcav1alpha1.AgentRun, archived RunArchive, labelsJSON []byte, now time.Time) error {
+	// PostgreSQL refuses NUL (see nul.go); a run holding one would never archive.
+	labelsJSON = stripNULJSON(labelsJSON)
+	archived.RoutingDecisionsJSON = stripNULJSON(archived.RoutingDecisionsJSON)
+	archived.ChildRunRefsJSON = stripNULJSON(archived.ChildRunRefsJSON)
+	archived.TraceEventsJSON = stripNULJSON(archived.TraceEventsJSON)
+	archived.Input, archived.Output, archived.RawOutput = stripNUL(archived.Input), stripNUL(archived.Output), stripNUL(archived.RawOutput)
 	_, err := tx.ExecContext(ctx, q,
 		archived.ID, archived.Name, archived.Namespace, labelsJSON,
 		archived.AgentRef, archived.Input, archived.ParentRunRef,
