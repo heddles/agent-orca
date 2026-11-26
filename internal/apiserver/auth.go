@@ -80,7 +80,7 @@ type TenantIdentity struct {
 	// authorized to access (spec.allowedNamespaces). Agent/run lookups resolve to
 	// the resource's own namespace within this set; lists span the whole set.
 	Namespaces []string
-	// AllowedAgents is the list of agents this tenant may invoke. Nil means all.
+	// AllowedAgents is the list of agents this tenant may invoke. Empty means all.
 	AllowedAgents []string
 
 	// UserID is the authenticated user's stable identifier (e.g. the IdP sub or

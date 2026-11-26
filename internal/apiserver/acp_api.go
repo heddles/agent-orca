@@ -24,7 +24,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -450,12 +449,8 @@ func (s *ACPServer) handleListAgents(w http.ResponseWriter, r *http.Request) {
 	// Filter by allowed agents if specified
 	var filteredAgents []agentorcav1alpha1.Agent
 	for _, agent := range agentList.Items {
-		if tenant.AllowedAgents != nil && len(tenant.AllowedAgents) > 0 { //nolint:staticcheck
-
-			found := slices.Contains(tenant.AllowedAgents, agent.Name)
-			if !found {
-				continue
-			}
+		if !tenantCanAccessAgent(tenant, agent.Name) {
+			continue
 		}
 		filteredAgents = append(filteredAgents, agent)
 	}
@@ -877,13 +872,9 @@ func (s *ACPServer) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check if tenant is allowed to access this agent
-	if tenant.AllowedAgents != nil && len(tenant.AllowedAgents) > 0 { //nolint:staticcheck
-
-		found := slices.Contains(tenant.AllowedAgents, req.AgentName)
-		if !found {
-			writeACPError(w, "unauthorized", "agent not allowed for tenant", http.StatusForbidden)
-			return
-		}
+	if !tenantCanAccessAgent(tenant, req.AgentName) {
+		writeACPError(w, "unauthorized", "agent not allowed for tenant", http.StatusForbidden)
+		return
 	}
 
 	// Resolve the agent to the namespace it actually lives in (authorized).

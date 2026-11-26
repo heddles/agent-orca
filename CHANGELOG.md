@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Tenant `allowedAgents`: an empty list now allows every agent on every API.** With no agents listed (omitted or `[]`), a tenant may use every agent in its allowed namespaces; with agents listed, only those. Before, the External Task API refused every agent for `[]` while the ACP API and scheduled runs allowed them all, and the field's description said `[]` allowed none. If you relied on `[]` to refuse all agents on the External Task API, it no longer does; it never did on the ACP API or schedules.
+
 ### Added
 - A public documentation site at https://docs.agentorca.org, built from `docs/` and published with each release. See [Documentation site](docs/development.md#documentation-site).
 

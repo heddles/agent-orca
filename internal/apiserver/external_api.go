@@ -24,7 +24,6 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -333,7 +332,7 @@ func (s *ExternalAPIServer) createTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check if the tenant is allowed to invoke this agent.
-	if tenant.AllowedAgents != nil && !slices.Contains(tenant.AllowedAgents, req.Agent) {
+	if !tenantCanAccessAgent(tenant, req.Agent) {
 		http.Error(w, fmt.Sprintf(`{"error":"agent %q is not allowed for this tenant"}`, req.Agent), http.StatusForbidden)
 		return
 	}

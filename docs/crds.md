@@ -599,7 +599,7 @@ Each tenant also gets a generated ID (`status.tenantID`) that isolates its objec
 | `issued` | `clientID` and `clientSecretRef` |
 | `federated` | `issuerURL`, `clientID`, `matchClaim`/`matchValue`, `redirectURI`, `scopes` and `claimMappings` (user ID, groups, email) |
 | `allowedNamespaces` | Namespaces the tenant may reach |
-| `allowedAgents` | Agents visible to the tenant. Discovery is limited to this list |
+| `allowedAgents` | Agents the tenant may see and run. Omitted or empty: every agent in the allowed namespaces. Otherwise only those listed |
 | `rateLimit` | `requestsPerMinute` and `concurrentRuns` |
 | `budgetPerDayUSD` | Daily spend cap |
 
