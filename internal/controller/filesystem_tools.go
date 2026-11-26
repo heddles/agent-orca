@@ -51,3 +51,14 @@ func shellToolCfg(sh *agentorcav1alpha1.ShellAccessSpec) (*router.ShellConfig, [
 	cfg := &router.ShellConfig{MaxTimeoutSeconds: int(sh.MaxTimeoutSeconds)}
 	return cfg, cfg.ToolDefinitions()
 }
+
+// terminalToolCfg resolves Agent.spec.terminal into the model-router's local
+// terminal configuration plus the local_exec tool definition to inject into
+// every chat request. Returns (nil, nil) when the Agent has no local terminal.
+func terminalToolCfg(t *agentorcav1alpha1.TerminalAccessSpec) (*router.TerminalConfig, []router.ToolDefinition) {
+	if t == nil {
+		return nil, nil
+	}
+	cfg := &router.TerminalConfig{MaxTimeoutSeconds: int(t.MaxTimeoutSeconds)}
+	return cfg, cfg.ToolDefinitions()
+}

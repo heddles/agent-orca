@@ -120,6 +120,14 @@ spec:
   shell:
     {{- toYaml .shell | nindent 4 }}
   {{- end }}
+  {{- if hasKey . "terminal" }}
+  {{/* local_exec tool (spec.terminal): commands on the user's computer through
+      the ACP bridge. `terminal: {}` enables it with the defaults. */}}
+  {{- if not (kindIs "invalid" .terminal) }}
+  terminal:
+    {{- toYaml .terminal | nindent 4 }}
+  {{- end }}
+  {{- end }}
   {{- if .memory }}
   memory:
     {{- toYaml .memory | nindent 4 }}

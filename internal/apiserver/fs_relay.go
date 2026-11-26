@@ -17,6 +17,7 @@ limitations under the License.
 package apiserver
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -25,6 +26,7 @@ import (
 	"strconv"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
@@ -37,7 +39,9 @@ import (
 // calls into requests here; the workstation-side ACP bridge answers them via
 // the mirrored ACP API endpoints in acp_fs.go.
 //
-// Auth is TokenReview via handleAgentRun (pod SA token). The relay is
+// Auth is TokenReview via handleAgentRun (pod SA token), and the token must be
+// that of the run's own agent: these requests act on the user's computer, so no
+// other pod may send them or read their answers. The relay is
 // capability-gated: it is only wired when the operator was started with a
 // shared state store backing it; with no relay, fs requests are answered 501s.
 
@@ -55,7 +59,7 @@ func (s *Server) SetFilesystemRelay(relay acpfs.Relay) {
 }
 
 // enqueueFSRequest handles POST /agentrun/{ns}/{run}/fs from the model-router.
-func (s *Server) enqueueFSRequest(w http.ResponseWriter, r *http.Request, namespace, runName string) {
+func (s *Server) enqueueFSRequest(w http.ResponseWriter, r *http.Request, caller, namespace, runName string) {
 	if !s.fsRelayOK(w) {
 		return
 	}
@@ -69,6 +73,10 @@ func (s *Server) enqueueFSRequest(w http.ResponseWriter, r *http.Request, namesp
 	var run agentorcav1alpha1.AgentRun
 	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: runName, Namespace: namespace}, &run); err != nil {
 		http.Error(w, fmt.Sprintf("getting AgentRun: %v", err), http.StatusNotFound)
+		return
+	}
+	if !s.callerRunsAgentOf(r.Context(), caller, &run) {
+		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
 
@@ -85,6 +93,11 @@ func (s *Server) enqueueFSRequest(w http.ResponseWriter, r *http.Request, namesp
 	switch req.Method {
 	case acpfs.MethodReadTextFile, acpfs.MethodWriteTextFile, acpfs.MethodListDir:
 		// relayable
+	case acpfs.MethodRunTerminal:
+		if status, msg := s.terminalAllowed(r.Context(), &run); status != 0 {
+			http.Error(w, msg, status)
+			return
+		}
 	default:
 		http.Error(w, fmt.Sprintf("method %q is not a relayable fs method", req.Method), http.StatusBadRequest)
 		return
@@ -105,12 +118,48 @@ func (s *Server) enqueueFSRequest(w http.ResponseWriter, r *http.Request, namesp
 	_ = json.NewEncoder(w).Encode(created)
 }
 
+// terminalAllowed decides whether a command from this run may be relayed. It
+// returns (0, "") if so. The agent must declare a local terminal, and the run
+// must have been started by a bridge whose editor offers one: otherwise nothing
+// would ever answer, and the agent is better told at once.
+func (s *Server) terminalAllowed(ctx context.Context, run *agentorcav1alpha1.AgentRun) (int, string) {
+	var agent agentorcav1alpha1.Agent
+	if err := s.crdClient.Get(ctx, client.ObjectKey{Name: run.Spec.AgentRef, Namespace: run.Namespace}, &agent); err != nil {
+		slog.Warn("looking up the agent of a terminal request", "run", run.Name, "ns", run.Namespace, "err", err)
+		return http.StatusInternalServerError, "looking up the run's agent"
+	}
+	if agent.Spec.Terminal == nil {
+		return http.StatusForbidden, "this agent was not given a local terminal (Agent.spec.terminal)"
+	}
+	if run.Annotations[AnnotationLocalTerminal] != claimTrue {
+		return http.StatusConflict, "no editor terminal is connected to this run, so commands cannot run on the " +
+			"user's computer. local_exec only works when the user is talking to you from an editor that offers " +
+			"a terminal, through `aoctl acp serve`. Do not retry; use your other tools, or tell the user " +
+			"which command to run"
+	}
+	return 0, ""
+}
+
 // takeFSResponse handles GET /agentrun/{ns}/{run}/fs/{id} from the
 // model-router. Returns 200 with the response once available, 204 while still
 // pending (after an optional ?wait=<seconds> long poll), and 410 once the
 // request has expired (or the run deleted) without an answer.
-func (s *Server) takeFSResponse(w http.ResponseWriter, r *http.Request, namespace, runName, requestID string) {
+func (s *Server) takeFSResponse(w http.ResponseWriter, r *http.Request, caller, namespace, runName, requestID string) {
 	if !s.fsRelayOK(w) {
+		return
+	}
+	var run agentorcav1alpha1.AgentRun
+	if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: runName, Namespace: namespace}, &run); err != nil {
+		if apierrors.IsNotFound(err) {
+			http.Error(w, "the run no longer exists", http.StatusGone)
+			return
+		}
+		slog.Warn("looking up the run of an fs response", "run", runName, "ns", namespace, "err", err)
+		http.Error(w, "looking up the run", http.StatusInternalServerError)
+		return
+	}
+	if !s.callerRunsAgentOf(r.Context(), caller, &run) {
+		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
 	wait := fsWait(0) // no long poll unless ?wait= is passed
@@ -141,6 +190,17 @@ func (s *Server) takeFSResponse(w http.ResponseWriter, r *http.Request, namespac
 		case <-time.After(defaultFSPollInterval):
 		}
 	}
+}
+
+// callerRunsAgentOf reports whether caller, a TokenReview user name, is the
+// ServiceAccount of the run's agent.
+func (s *Server) callerRunsAgentOf(ctx context.Context, caller string, run *agentorcav1alpha1.AgentRun) bool {
+	var agent agentorcav1alpha1.Agent
+	if err := s.crdClient.Get(ctx, client.ObjectKey{Name: run.Spec.AgentRef, Namespace: run.Namespace}, &agent); err != nil {
+		slog.Warn("looking up the agent of an fs request", "run", run.Name, "ns", run.Namespace, "err", err)
+		return false
+	}
+	return caller == "system:serviceaccount:"+run.Namespace+":"+agentServiceAccount(&agent)
 }
 
 // fsRelayOK guards both fs handlers, writing the unified unavailable response.

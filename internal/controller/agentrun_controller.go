@@ -1118,6 +1118,11 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 	shellCfg, shellDefs := shellToolCfg(agent.Spec.Shell)
 	toolDefs = append(toolDefs, shellDefs...)
 
+	// local_exec: shell commands on the user's computer through the ACP bridge,
+	// gated by Agent.spec.terminal.
+	terminalCfg, terminalDefs := terminalToolCfg(agent.Spec.Terminal)
+	toolDefs = append(toolDefs, terminalDefs...)
+
 	// Resolve KnowledgeBases from Agent spec.
 	var kbConfigs []router.KnowledgeBaseConfig
 	for _, kbName := range agent.Spec.KnowledgeBases {
@@ -1325,6 +1330,7 @@ func (r *AgentRunReconciler) buildRouterConfig( //nolint:gocyclo
 		Hindsight:                  hindsightConfig(agent, r.HindsightURL),
 		Filesystem:                 fsCfg,
 		Shell:                      shellCfg,
+		Terminal:                   terminalCfg,
 	}
 	applyRunRoutingIdentity(cfg, run, selector.Name, time.Now())
 	if agent.Spec.Runtime.InputMode == "http" {

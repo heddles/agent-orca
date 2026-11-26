@@ -58,7 +58,42 @@ const (
 	MethodReadTextFile  = "fs/read_text_file"
 	MethodWriteTextFile = "fs/write_text_file"
 	MethodListDir       = "fs/list_dir"
+	// MethodRunTerminal is an agent-orca extension too: one request covering a
+	// whole command. The bridge asks the user to approve it, runs it with ACP's
+	// terminal/* methods and answers with a TerminalResult.
+	MethodRunTerminal = "terminal/run"
 )
+
+// TerminalParams are the parameters of a MethodRunTerminal request.
+type TerminalParams struct {
+	// Command is a shell script, run by the editor's shell.
+	Command string `json:"command"`
+	// WorkDir is the folder to start in, inside the workspace. Empty means the
+	// workspace root.
+	WorkDir string `json:"workDir,omitempty"`
+	// TimeoutSeconds is how long the command may run once approved. The bridge
+	// stops it after that.
+	TimeoutSeconds int `json:"timeoutSeconds"`
+}
+
+// TerminalResult is the bridge's answer to a MethodRunTerminal request.
+type TerminalResult struct {
+	// ExitCode is nil when the command was ended by a signal or was stopped.
+	ExitCode *int   `json:"exitCode,omitempty"`
+	Signal   string `json:"signal,omitempty"`
+	// Output is the end of the combined output.
+	Output    string `json:"output"`
+	Truncated bool   `json:"truncated,omitempty"`
+	TimedOut  bool   `json:"timedOut,omitempty"`
+	// WorkDir and OS describe the computer the command ran on.
+	WorkDir string `json:"workDir,omitempty"`
+	OS      string `json:"os,omitempty"`
+}
+
+// TerminalApprovalWindow is how long the bridge waits for the user to approve a
+// command. The pod waits this long plus the command's timeout, which together
+// stay below RelayTTL.
+const TerminalApprovalWindow = 5 * time.Minute
 
 // Request is a single fs/* method call from an agent pod awaiting a
 // workstation-side (bridge) response.

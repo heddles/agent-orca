@@ -247,6 +247,11 @@ type Config struct {
 	// in a sandbox the operator keeps for the run. Populated by the operator
 	// from Agent.spec.shell.
 	Shell *ShellConfig `json:"shell,omitempty"`
+
+	// Terminal enables the built-in local_exec tool, which runs shell commands
+	// on the user's computer through the ACP bridge. Populated by the operator
+	// from Agent.spec.terminal.
+	Terminal *TerminalConfig `json:"terminal,omitempty"`
 }
 
 // ProviderConfig is a fully-resolved LLM provider ready for dispatch.
