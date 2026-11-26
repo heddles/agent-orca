@@ -133,7 +133,7 @@ Each KnowledgeBase gets its own instance (`kb-qdrant-<name>`) with a 10Gi PVC, 2
 - **Image**: `qdrant/qdrant:v1.17.1` (configurable via Helm: `qdrant.image.repository` / `qdrant.image.tag`)
 - **Protocol**: gRPC on port 6334, HTTP on port 6333 (diagnostics)
 - **Go client**: `github.com/qdrant/go-client v1.17.1`
-- **Wrapper**: [internal/rag/qdrant.go](internal/rag/qdrant.go) — `CreateCollection`, `Upsert`, `Query`, `ScrollAndOffset`, `GetCollectionInfo`
+- **Wrapper**: [internal/rag/qdrant.go](../internal/rag/qdrant.go) — `CreateCollection`, `Upsert`, `Query`, `ScrollAndOffset`, `GetCollectionInfo`
 - **Distance metric**: Cosine
 - **Batch size**: 100 points per upsert, 250 points per scroll page
 - **Security**: Non-root user (1000), read-only root filesystem, no API key (cluster-internal only, no ingress)

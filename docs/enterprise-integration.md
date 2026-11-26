@@ -332,9 +332,8 @@ alternatives if you'd rather scope by org or repository — just swap
 > TenantConfig pointing at that proxy's issuer (not GitHub's). See
 > [ui-proxy.md](ui-proxy.md) and [auth.md](auth.md) for the BFF layout.
 
-A ready-to-apply dev sample lives at [`config/samples/dev-tenant.yaml`](../config/samples/dev-tenant.yaml),
-and [`hack/dev-tenant-oidc.sh`](../hack/dev-tenant-oidc.sh) verifies that every API
-surface rejects unauthenticated requests (401) and accepts an authenticated one.
+A sample federated tenant for local development is at
+[`config/samples/keycloak/dev-tenant-keycloak.yaml`](../config/samples/keycloak/dev-tenant-keycloak.yaml).
 
 ### Mode 3: Kubernetes SA tokens (in-cluster)
 

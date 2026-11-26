@@ -1,6 +1,6 @@
 # Agent Images
 
-An **agent image** is an OCI container whose entrypoint runs an [agent loop](#the-core-contract)
+An **agent image** is an OCI container whose entrypoint runs an [agent loop](#the-core-contract-what-an-agent-image-must-do)
 against the **model-router sidecar**. The operator launches one pod per `AgentRun`
 (or one replica set for an `AgentDeployment`) and injects the configuration it needs
 to reach the model-router — so a compliant image typically doesn't need any of its own
@@ -119,7 +119,7 @@ surface the results it receives:
 ## Checkpoints, spend, and resume (the state the image relies on)
 
 State is persisted to Redis under `agentorca/runs/<run>/state` by the model-router's
-`state.Store` (see [README → How session state works](README.md#how-session-state-works-two-layers)).
+`state.Store` (see [README → How session state works](../README.md#how-session-state-works-two-layers)).
 The image doesn't manage this, but it's why images can be stateless/restartable:
 
 - **Messages** are saved on a checkpoint cadence (`AgentRunCheckpointEvery`) and on

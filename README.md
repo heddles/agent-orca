@@ -99,6 +99,8 @@ If you'd rather read before running, the in-depth developer guides are linked in
 
 ## Documentation
 
+These guides are also published, for the latest release, at [docs.agentorca.org](https://docs.agentorca.org).
+
 In-depth guides, organized by audience. **Developers** start with the first block; **Operators** with the CRD/auth/observability rows.
 
 | Doc | Audience | What it covers |

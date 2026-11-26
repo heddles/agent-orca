@@ -145,17 +145,6 @@ aoctl admin tenants rotate-secret acme --token $SA_TOKEN
 aoctl admin tenants delete acme --token $SA_TOKEN
 ```
 
-## Using Terraform
-
-For infrastructure-as-code, you can provision tenants using the
-[Terraform example](../examples/terraform/agentorca_tenant.tf) instead of the
-admin API. Both approaches produce identical Kubernetes resources.
-
-```bash
-terraform init
-terraform apply -var="tenant_name=acme" -var="client_id=acme-client"
-```
-
 ## Rate limiting & budget
 
 When creating a tenant, set `rateLimit` and `budgetPerDayUSD` to control
