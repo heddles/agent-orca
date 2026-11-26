@@ -154,8 +154,12 @@ func (s *acpStdioServer) Serve(ctx context.Context) error {
 			idStr := string(*msg.ID)
 			if ch := s.takePending(idStr); ch != nil {
 				ch <- msg
-				continue
+			} else {
+				// An answer that arrived after we stopped waiting (a cancelled
+				// turn, a timeout). A response is never answered.
+				_, _ = fmt.Fprintf(s.stderr, "acp: dropping a late response (id %s)\n", idStr)
 			}
+			continue
 		}
 		req := jsonrpcRequest{
 			JSONRPC: msg.JSONRPC,

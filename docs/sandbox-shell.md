@@ -1,5 +1,8 @@
 # Sandbox shell (`sandbox_exec`)
 
+To run commands on the user's own computer instead, see
+[Local terminal](local-terminal.md).
+
 An Agent with `spec.shell` gets a built-in `sandbox_exec` tool that runs shell commands in
 an isolated [OpenShell](openshell-sandbox.md) sandbox. The model asks for a command; the
 operator creates the run's sandbox on the first call, runs the command, and deletes the

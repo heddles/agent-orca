@@ -153,7 +153,9 @@ Additional properties:
   elicitation support) — a failed prompt never proceeds unapproved, and an
   accepted form approves the write regardless of the form content shape.
 - **No shell, no exec.** The surface is strictly list-dir, read-text and
-  write-text; there is no command execution via `fs/*`.
+  write-text; there is no command execution via `fs/*`. Running commands is a
+  separate setting with its own approval, [`local_exec`](local-terminal.md),
+  which shares this relay. A command is not limited to the workspace roots.
 
 ## Tool reference (what the LLM sees)
 

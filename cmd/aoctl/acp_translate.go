@@ -252,7 +252,9 @@ const (
 
 // ACP tool-call statuses (per the ACP spec).
 const (
+	acpToolStatusPending    = "pending"
 	acpToolStatusInProgress = "in_progress"
+	acpToolStatusFailed     = "failed"
 	acpToolStatusCompleted  = "completed"
 )
 
@@ -389,6 +391,8 @@ type acpToolCallContent struct {
 	Path    string  `json:"path,omitempty"`
 	OldText *string `json:"oldText,omitempty"`
 	NewText string  `json:"newText,omitempty"`
+	// terminal variant: an editor terminal whose output the entry shows.
+	TerminalID string `json:"terminalId,omitempty"`
 }
 
 type acpToolCallUpdate struct {
@@ -656,10 +660,12 @@ func (c *Client) CancelACPRun(ctx context.Context, runID string) error {
 // run ID going forward. Returns the continuation run ID (empty if none was
 // returned by the server).
 func (c *Client) ResumeRun( //nolint:revive
-	ctx context.Context, runID, answer string,
+	ctx context.Context, runID, answer string, caps *ACPRunClientCapabilities,
 ) (continuationRunID string, err error) {
 	body, err := json.Marshal(map[string]any{
 		"await_resume": map[string]any{"answer": answer},
+		// The continuation is a new run: say again what this bridge can do.
+		"client_capabilities": caps,
 	})
 	if err != nil {
 		return "", err

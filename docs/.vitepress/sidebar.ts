@@ -25,7 +25,7 @@ const groups: { text: string; pages: string[] }[] = [
     text: 'Tools and sandboxes',
     pages: [
       'openshell-sandbox', 'sandbox-shell', 'agent-run-tools',
-      'filesystem-access', 'tool-side-effects', 'mcp-apps',
+      'local-terminal', 'filesystem-access', 'tool-side-effects', 'mcp-apps',
       'mcp-access-control', 'mcp-oauth',
     ],
   },

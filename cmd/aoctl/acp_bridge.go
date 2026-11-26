@@ -56,7 +56,8 @@ const acpProtocolVersion uint16 = 1
 // guardrails, provider fallbacks, MCP discovery) stream to the editor as
 // session updates during the turn instead of the client showing only a
 // spinner until the final response arrives.
-const acpBridgeVersion = "0.3.0"
+// 0.4.0: local_exec — approved commands run in the editor's terminal.
+const acpBridgeVersion = "0.4.0"
 
 // acpSession is the live state for one Zed session.
 type acpSession struct {
@@ -70,6 +71,11 @@ type acpSession struct {
 	// --fs-remember-approval active: subsequent writes in this session skip
 	// the per-write elicitation.
 	WritesAllowed bool
+
+	// terminalSeen holds the terminal requests already taken up, and
+	// allowedCommands the folder+command pairs the user chose to always allow.
+	terminalSeen    map[string]bool
+	allowedCommands map[string]bool
 
 	// traceToolSeq numbers trace-relayed tool calls so every call gets a
 	// unique ACP toolCallId even when the same tool runs twice in a session
@@ -116,6 +122,10 @@ type acpBridge struct {
 	// fsOpts carries the workstation-side fs policy knobs (--fs-roots,
 	// --fs-require-approval).
 	fsOpts fsBridgeOptions
+	// terminalDisabled is --no-terminal; editorTerminal is whether the editor
+	// said at initialize that it can run commands. Guarded by mu.
+	terminalDisabled bool
+	editorTerminal   bool
 
 	mu       sync.Mutex
 	sessions map[string]*acpSession
@@ -206,9 +216,27 @@ func handleInitialize(ctx context.Context, b *acpBridge, req jsonrpcRequest) (an
 		return nil, fmt.Errorf("fetching agent manifest for %q via ACP API (%s): %w — "+
 			"ensure --acp-endpoint points to the agent-orca ACP API host root", b.agentName, b.client.ACP, err)
 	}
+	var caps struct {
+		Terminal bool `json:"terminal"`
+	}
+	if len(p.ClientCapabilities) > 0 {
+		_ = json.Unmarshal(p.ClientCapabilities, &caps)
+	}
 	b.mu.Lock()
 	b.manifest = man
+	b.editorTerminal = caps.Terminal
+	disabled := b.terminalDisabled
 	b.mu.Unlock()
+	if man.Terminal != nil {
+		switch {
+		case disabled:
+			b.srv.logf("acp: the agent has local_exec, but --no-terminal is set: commands will be refused\n")
+		case !caps.Terminal:
+			b.srv.logf("acp: the agent has local_exec, but this editor offers no terminal: commands will be refused\n")
+		default:
+			b.srv.logf("acp: local_exec is available; every command will ask for your approval\n")
+		}
+	}
 
 	version := p.ProtocolVersion
 	if version == 0 || version != acpProtocolVersion {
@@ -318,8 +346,9 @@ func handleSessionPrompt(ctx context.Context, b *acpBridge, req jsonrpcRequest) 
 		runID = existingID
 	} else {
 		run, err := b.client.CreateAgentRun(ctx, b.agentName, ACPRunRequest{
-			Input:     toAgentOrcaInput(p.Prompt),
-			SessionID: sessionID,
+			Input:              toAgentOrcaInput(p.Prompt),
+			SessionID:          sessionID,
+			ClientCapabilities: b.runCapabilities(),
 		})
 		if err != nil {
 			b.srv.respondErr(req.ID, -32001, "create run: "+err.Error())
@@ -335,22 +364,30 @@ func handleSessionPrompt(ctx context.Context, b *acpBridge, req jsonrpcRequest) 
 	// it would drop the cwd and break the fs/* relay's workspace confinement.
 	runCtx, cancel := context.WithCancel(ctx)
 	turn := b.registerRun(sessionID, runID, cancel)
-	defer func() {
-		cancel() // release the context on completion (or cancellation)
-		b.releaseRun(sessionID, turn)
-	}()
+	watching := make(chan struct{})
+	stopWatching := func() {
+		cancel()
+		<-watching // a command still running has been stopped and answered
+	}
+	defer b.releaseRun(sessionID, turn)
 
 	// Start the fs/* relay watcher (issue #34) before the run starts: fs tool
 	// calls fire mid-turn. It follows continuation runs via the session record
 	// (awaiting→resume chains a new run under the same session) and dies with
-	// the run context via the defer above.
-	go b.watchFSSession(runCtx, sessionID)
+	// the run context. stopWatching waits for it, so the turn's reply is sent
+	// only after any command still running has been stopped.
+	go func() {
+		defer close(watching)
+		b.watchFSSession(runCtx, sessionID)
+	}()
+	defer stopWatching()
 
 	stopReason := b.awaitCompletion(runCtx, runID, sessionID)
 	if normalized := normalizeStopReason(stopReason); normalized != stopReason {
 		b.srv.logf("acp: run %s ended with invalid stopReason %q, sending %q\n", runID, stopReason, normalized)
 		stopReason = normalized
 	}
+	stopWatching()
 	b.srv.respond(req.ID, acpPromptResponse{StopReason: stopReason})
 	return promptHandled{}, nil
 }
@@ -997,7 +1034,7 @@ func (b *acpBridge) handleAwaitingRun(
 	}
 
 	answer, _ := elicit.Content["answer"].(string)
-	continuationID, err := b.client.ResumeRun(ctx, runID, answer)
+	continuationID, err := b.client.ResumeRun(ctx, runID, answer, b.runCapabilities())
 	if err != nil {
 		b.srv.logf("acp: resume run %s: %v\n", runID, err)
 		return "", false
@@ -1035,7 +1072,7 @@ func (b *acpBridge) tryResumeAwaiting(ctx context.Context, sessionID string, pro
 	}
 	answer := strings.Join(parts, "\n")
 
-	continuationID, err := b.client.ResumeRun(ctx, sess.RunID, answer)
+	continuationID, err := b.client.ResumeRun(ctx, sess.RunID, answer, b.runCapabilities())
 	if err != nil {
 		b.srv.logf("acp: resume awaiting run %s: %v\n", sess.RunID, err)
 		return "", false

@@ -27,6 +27,15 @@ This is the consolidated tracker for known issues in agent-orca. Each entry link
 
 ---
 
+## Local terminal
+
+- [`local_exec`](local-terminal.md) is tested with a simulated editor that starts
+  commands the way Zed's source does. It has not been tried in a real editor.
+- If the editor or `aoctl` goes away during a turn, the agent learns only when
+  the call's time runs out (5 minutes plus the command's timeout).
+- No background or interactive commands.
+- It relies on ACP version 1; the version 2 preview removes client terminals.
+
 ## Known gaps in v0.13.0
 
 Recorded at the v0.13.0 release (2026-11-23). These are not GitHub issues yet: promote one to an issue (and a row in the table above) when someone picks it up. "Severity" is the effect on a user, not the effort to fix.

@@ -314,6 +314,20 @@ write in a session, then auto-allows the rest of that session. See
 [filesystem-access.md](filesystem-access.md) for the full security model and
 the Agent CRD policy knobs.
 
+#### Local terminal (`local_exec`)
+
+When the served agent has `spec.terminal`, the bridge also runs the commands the
+agent asks for on your computer, in the editor's terminal. It asks you to
+approve each one, and nothing on the server can turn that off. To refuse all
+commands on this computer:
+
+```bash
+aoctl acp serve --agent senior-programmer --no-terminal
+```
+
+A command is not limited to the workspace the way file access is. See
+[local-terminal.md](local-terminal.md) before approving.
+
 #### `aoctl acp setup --editor zed`
 
 `setup` writes a Zed `agent_servers` entry to `~/.config/zed/settings.json`

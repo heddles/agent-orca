@@ -1,0 +1,26 @@
+# Sample Agent CR with a local terminal: the agent gets a built-in local_exec
+# tool that runs commands on the user's computer, through the editor connected
+# by `aoctl acp serve`. The user approves every command.
+# See docs/local-terminal.md.
+apiVersion: agentorca.agentorca.io/v1alpha1
+kind: Agent
+metadata:
+  name: local-programmer
+  namespace: default
+spec:
+  modelSelectorRef: default
+  runtime:
+    ociRef: "python:3.12-slim"
+    framework: openai-compatible
+    command: ["sleep"]
+    args: ["infinity"]
+  systemPrompt: >-
+    You are a programmer working in the user's editor. Read and edit files with
+    the fs_* tools. Use local_exec to build, test and inspect their checkout,
+    one clear command at a time.
+  filesystem:
+    mode: readWrite
+    writeApproval: true
+  terminal:
+    maxTimeoutSeconds: 600
+  tools: []
