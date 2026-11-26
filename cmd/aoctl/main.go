@@ -1714,7 +1714,7 @@ Obtain one via 'kubectl create token agentorca-admin -n agent-orca-system' or th
 	adminCreate.Flags().StringSliceVar(&s.allowedNamespaces, "namespace", nil,
 		"authorized namespace for the tenant's agents (repeatable; at least one required)")
 	adminCreate.Flags().StringVar(&s.clientID, "client-id", "", "OAuth2 client ID")
-	adminCreate.Flags().StringSliceVar(&s.allowedAgents, "allowed-agents", nil, "comma-separated list of allowed agent names") //nolint:lll
+	adminCreate.Flags().StringSliceVar(&s.allowedAgents, "allowed-agents", nil, "comma-separated list of allowed agent names (default: all agents in the namespaces)") //nolint:lll
 
 	adminCreate.Flags().IntVar(&s.rpm, "rpm", 0, "max task submissions per minute (0 = unlimited)")
 	adminCreate.Flags().IntVar(&s.concurrent, "concurrent", 0, "max concurrent runs (0 = unlimited)")

@@ -111,7 +111,12 @@ func MachineRoles(machineDefault string) []string {
 }
 
 // AgentAllowed reports whether a tenant's spec.allowedAgents lets it run the
-// named agent. A nil or empty list allows every agent in the tenant's namespaces.
+// named agent. With no agents listed (the field omitted or empty), every agent
+// in the tenant's namespaces is allowed. With agents listed, only those are.
+// Every check of a tenant's allow list goes through here.
 func AgentAllowed(allowed []string, name string) bool {
-	return len(allowed) == 0 || slices.Contains(allowed, name)
+	if len(allowed) == 0 {
+		return true
+	}
+	return slices.Contains(allowed, name)
 }

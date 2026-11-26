@@ -56,9 +56,9 @@ type TenantConfigSpec struct {
 	// +kubebuilder:validation:MinItems=1
 	AllowedNamespaces []string `json:"allowedNamespaces"`
 
-	// AllowedAgents restricts which agents this tenant may invoke.
-	// An empty list means no agents are allowed; omitting the field allows all agents
-	// in the allowed namespaces.
+	// AllowedAgents restricts which agents this tenant may invoke. With no agents
+	// listed (the field omitted or empty), every agent in the allowed namespaces is
+	// allowed. With agents listed, only those are allowed.
 	// +optional
 	AllowedAgents []string `json:"allowedAgents,omitempty"`
 

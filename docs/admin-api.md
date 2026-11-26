@@ -66,7 +66,7 @@ Create a new tenant. This writes a `TenantConfig` CRD and a client-secret
 | `allowedNamespaces` | []string | yes | Namespaces the tenant is authorized to access; agents/runs are resolved to their namespace within this set |
 | `clientID` | string | yes | OAuth2 client ID |
 | `clientSecret` | string | no | Initial client secret (auto-generated if omitted) |
-| `allowedAgents` | []string | no | Agent names this tenant can access |
+| `allowedAgents` | []string | no | Agent names this tenant can access. Omitted or empty: every agent in the allowed namespaces. Otherwise only those listed |
 | `rateLimit.requestsPerMinute` | int | no | Max task submissions per minute (0 = unlimited) |
 | `rateLimit.concurrentRuns` | int | no | Max concurrent runs (0 = unlimited) |
 | `budgetPerDayUSD` | string | no | Daily spend ceiling in USD |
