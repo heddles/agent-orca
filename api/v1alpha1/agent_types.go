@@ -112,6 +112,27 @@ type AgentSpec struct {
 	// Nil (the default) gives the agent no shell.
 	// +optional
 	Shell *ShellAccessSpec `json:"shell,omitempty"`
+
+	// Terminal gives the agent a built-in local_exec tool that runs shell
+	// commands on the user's own computer, through the terminal of the editor
+	// connected by `aoctl acp serve`. Unlike spec.shell, nothing confines the
+	// command: it runs with the user's own permissions. The bridge therefore asks
+	// the user to approve every command, and no cluster setting can turn that
+	// off. The tool only works on runs started from an editor that offers a
+	// terminal. Nil (the default) gives the agent no local terminal.
+	// +optional
+	Terminal *TerminalAccessSpec `json:"terminal,omitempty"`
+}
+
+// TerminalAccessSpec configures the local_exec tool of an Agent.
+type TerminalAccessSpec struct {
+	// MaxTimeoutSeconds caps how long one command may run. A call may ask for
+	// less; the default for a call that does not ask is 120 seconds.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=1200
+	// +kubebuilder:default=600
+	// +optional
+	MaxTimeoutSeconds int32 `json:"maxTimeoutSeconds,omitempty"`
 }
 
 // ShellAccessSpec configures the sandbox_exec tool of an Agent.

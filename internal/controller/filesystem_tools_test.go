@@ -77,3 +77,16 @@ func TestShellToolCfg(t *testing.T) {
 		t.Fatalf("expected the sandbox_exec definition, got %+v", defs)
 	}
 }
+
+func TestTerminalToolCfg(t *testing.T) {
+	if cfg, defs := terminalToolCfg(nil); cfg != nil || defs != nil {
+		t.Fatalf("an Agent without spec.terminal gets no tool, got (%+v, %d defs)", cfg, len(defs))
+	}
+	cfg, defs := terminalToolCfg(&agentorcav1alpha1.TerminalAccessSpec{MaxTimeoutSeconds: 300})
+	if cfg == nil || cfg.MaxTimeoutSeconds != 300 {
+		t.Fatalf("the cap must reach the router, got %+v", cfg)
+	}
+	if len(defs) != 1 || defs[0].Name != "local_exec" {
+		t.Fatalf("expected the local_exec definition, got %+v", defs)
+	}
+}

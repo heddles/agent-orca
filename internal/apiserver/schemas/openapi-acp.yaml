@@ -107,6 +107,24 @@ components:
         metadata: { $ref: '#/components/schemas/ACPAgentMetadata' }
         status: { $ref: '#/components/schemas/ACPAgentStatus' }
         filesystem: { $ref: '#/components/schemas/ACPFilesystemPolicy' }
+        terminal: { $ref: '#/components/schemas/ACPTerminalPolicy' }
+    ACPTerminalPolicy:
+      type: object
+      description: >-
+        Projection of Agent.spec.terminal for the `aoctl acp serve` bridge.
+        Absent when the agent has no local_exec tool. Approval is not part of
+        the policy: the bridge always asks the user.
+      required: [maxTimeoutSeconds]
+      properties:
+        maxTimeoutSeconds: { type: integer }
+    ACPRunClientCapabilities:
+      type: object
+      description: >-
+        What the caller can do for this run (agent-orca extension).
+      properties:
+        terminal:
+          type: boolean
+          description: The caller's editor can run commands for local_exec.
     ACPFilesystemPolicy:
       type: object
       description: >-
@@ -156,6 +174,7 @@ components:
         session_id: { type: string }
         session: { $ref: '#/components/schemas/ACPSession' }
         mode: { $ref: '#/components/schemas/ACPRunMode' }
+        client_capabilities: { $ref: '#/components/schemas/ACPRunClientCapabilities' }
     ACPSession:
       type: object
       required: [id]

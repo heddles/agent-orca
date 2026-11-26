@@ -21,7 +21,8 @@ import (
 // is marked Succeeded with a pointer to the continuation. Every way a person
 // can answer (the UI, ACP, a chat channel) goes through here, so they all
 // resume a run the same way.
-func resumeWithAnswer(ctx context.Context, c client.Client, store state.Store, run *agentorcav1alpha1.AgentRun, answer string) (*agentorcav1alpha1.AgentRun, error) {
+func resumeWithAnswer(ctx context.Context, c client.Client, store state.Store, run *agentorcav1alpha1.AgentRun, answer string,
+	opts ...func(*agentorcav1alpha1.AgentRun)) (*agentorcav1alpha1.AgentRun, error) {
 	input := run.Spec.Input
 	hasCheckpoint := false
 	if store != nil {
@@ -57,6 +58,9 @@ func resumeWithAnswer(ctx context.Context, c client.Client, store state.Store, r
 	// pause resumes with the connection just made.
 	if by := run.Annotations[AnnotationCreatedBy]; by != "" {
 		continuation.Annotations = map[string]string{AnnotationCreatedBy: by}
+	}
+	for _, opt := range opts {
+		opt(continuation)
 	}
 	if err := c.Create(ctx, continuation); err != nil {
 		return nil, fmt.Errorf("creating continuation run: %w", err)

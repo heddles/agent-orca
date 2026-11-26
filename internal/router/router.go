@@ -2458,7 +2458,8 @@ func (r *Router) dispatchToolCall(ctx context.Context, tc ToolCall) string { //n
 	fsRelayedTool := tc.Function.Name == fsToolNameRead || tc.Function.Name == "_fs_read_text_file" ||
 		tc.Function.Name == fsToolNameWrite || tc.Function.Name == "_fs_write_text_file" ||
 		tc.Function.Name == fsToolNameList || tc.Function.Name == "_fs_list_dir" ||
-		tc.Function.Name == sandboxExecToolName || tc.Function.Name == "_"+sandboxExecToolName
+		tc.Function.Name == sandboxExecToolName || tc.Function.Name == "_"+sandboxExecToolName ||
+		tc.Function.Name == localExecToolName || tc.Function.Name == "_"+localExecToolName
 	switch tc.Function.Name {
 	case "_handoff", "handoff":
 		result = r.executeHandoff(toolCtx, tc.Function.Arguments)
@@ -2510,6 +2511,8 @@ func (r *Router) dispatchToolCall(ctx context.Context, tc ToolCall) string { //n
 		result = r.executeFSWrite(ctx, tc.Function.Arguments)
 	case sandboxExecToolName, "_" + sandboxExecToolName:
 		result = r.executeSandboxExec(ctx, tc.Function.Arguments)
+	case localExecToolName, "_" + localExecToolName:
+		result = r.executeLocalExec(ctx, tc.Function.Arguments)
 	default:
 		// Find the tool definition.
 		found := false

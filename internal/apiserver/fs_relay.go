@@ -17,6 +17,7 @@ limitations under the License.
 package apiserver
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -85,6 +86,11 @@ func (s *Server) enqueueFSRequest(w http.ResponseWriter, r *http.Request, namesp
 	switch req.Method {
 	case acpfs.MethodReadTextFile, acpfs.MethodWriteTextFile, acpfs.MethodListDir:
 		// relayable
+	case acpfs.MethodRunTerminal:
+		if status, msg := s.terminalAllowed(r.Context(), &run); status != 0 {
+			http.Error(w, msg, status)
+			return
+		}
 	default:
 		http.Error(w, fmt.Sprintf("method %q is not a relayable fs method", req.Method), http.StatusBadRequest)
 		return
@@ -103,6 +109,28 @@ func (s *Server) enqueueFSRequest(w http.ResponseWriter, r *http.Request, namesp
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(created)
+}
+
+// terminalAllowed decides whether a command from this run may be relayed. It
+// returns (0, "") if so. The agent must declare a local terminal, and the run
+// must have been started by a bridge whose editor offers one: otherwise nothing
+// would ever answer, and the agent is better told at once.
+func (s *Server) terminalAllowed(ctx context.Context, run *agentorcav1alpha1.AgentRun) (int, string) {
+	var agent agentorcav1alpha1.Agent
+	if err := s.crdClient.Get(ctx, client.ObjectKey{Name: run.Spec.AgentRef, Namespace: run.Namespace}, &agent); err != nil {
+		slog.Warn("looking up the agent of a terminal request", "run", run.Name, "ns", run.Namespace, "err", err)
+		return http.StatusInternalServerError, "looking up the run's agent"
+	}
+	if agent.Spec.Terminal == nil {
+		return http.StatusForbidden, "this agent was not given a local terminal (Agent.spec.terminal)"
+	}
+	if run.Annotations[AnnotationLocalTerminal] != claimTrue {
+		return http.StatusConflict, "no editor terminal is connected to this run, so commands cannot run on the " +
+			"user's computer. local_exec only works when the user is talking to you from an editor that offers " +
+			"a terminal, through `aoctl acp serve`. Do not retry; use your other tools, or tell the user " +
+			"which command to run"
+	}
+	return 0, ""
 }
 
 // takeFSResponse handles GET /agentrun/{ns}/{run}/fs/{id} from the

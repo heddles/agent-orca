@@ -215,6 +215,33 @@ type ACPRunCreateRequest struct {
 	SessionID string       `json:"session_id,omitempty"`
 	Session   *ACPSession  `json:"session,omitempty"`
 	Mode      ACPRunMode   `json:"mode,omitempty"`
+	// ClientCapabilities says what the caller can do for this run. It is an
+	// agent-orca extension sent by `aoctl acp serve`.
+	ClientCapabilities *ACPRunClientCapabilities `json:"client_capabilities,omitempty"`
+}
+
+// ACPRunClientCapabilities are the things a run's caller offers to do for it.
+type ACPRunClientCapabilities struct {
+	// Terminal: the caller's editor can run commands, so local_exec has
+	// somewhere to go.
+	Terminal bool `json:"terminal,omitempty"`
+}
+
+// AnnotationLocalTerminal marks a run whose caller offers an editor terminal.
+// It only lets the run's commands be offered to that caller; running one still
+// takes the user's approval on their computer.
+const AnnotationLocalTerminal = "agentorca.io/local-terminal"
+
+// markLocalTerminal records on a run that its caller offers a terminal, if the
+// caller said so and the agent has one.
+func markLocalTerminal(run *agentorcav1alpha1.AgentRun, caps *ACPRunClientCapabilities, agent *agentorcav1alpha1.Agent) {
+	if caps == nil || !caps.Terminal || agent.Spec.Terminal == nil {
+		return
+	}
+	if run.Annotations == nil {
+		run.Annotations = map[string]string{}
+	}
+	run.Annotations[AnnotationLocalTerminal] = claimTrue
 }
 
 // ACPAwaitRequest describes what the client should provide next when a run is
@@ -297,6 +324,28 @@ type ACPAgentManifest struct {
 	// means the agent has no filesystem tools; the bridge's aoctl-side flags
 	// layer on top of this (they can only narrow, never widen, this policy).
 	Filesystem *ACPFilesystemPolicy `json:"filesystem,omitempty"`
+
+	// Terminal is set when the agent has the local_exec tool
+	// (Agent.spec.terminal), so the bridge should serve its commands.
+	Terminal *ACPTerminalPolicy `json:"terminal,omitempty"`
+}
+
+// ACPTerminalPolicy is the agent's local terminal policy. Approval is not part
+// of it: the bridge always asks the user.
+type ACPTerminalPolicy struct {
+	MaxTimeoutSeconds int32 `json:"maxTimeoutSeconds"`
+}
+
+// terminalManifestPolicy projects Agent.spec.terminal onto the manifest.
+func terminalManifestPolicy(t *agentorcav1alpha1.TerminalAccessSpec) *ACPTerminalPolicy {
+	if t == nil {
+		return nil
+	}
+	limit := t.MaxTimeoutSeconds
+	if limit <= 0 {
+		limit = 600
+	}
+	return &ACPTerminalPolicy{MaxTimeoutSeconds: limit}
 }
 
 // ACPFilesystemPolicy mirrors Agent.spec.filesystem for bridge-side policy
@@ -473,6 +522,7 @@ func (s *ACPServer) handleListAgents(w http.ResponseWriter, r *http.Request) {
 			GuardrailPolicy:    agent.Spec.GuardrailPolicyRef,
 			ClarifyAvailable:   !agent.Spec.DisableClarify,
 			Filesystem:         filesystemManifestPolicy(agent.Spec.Filesystem),
+			Terminal:           terminalManifestPolicy(agent.Spec.Terminal),
 		}
 		for _, kb := range agent.Spec.KnowledgeBaseRefs {
 			manifest.KnowledgeBases = append(manifest.KnowledgeBases, kb.Name)
@@ -562,6 +612,7 @@ func (s *ACPServer) writeAgentManifest(w http.ResponseWriter, r *http.Request, a
 	manifest.GuardrailPolicy = agent.Spec.GuardrailPolicyRef
 	manifest.ClarifyAvailable = !agent.Spec.DisableClarify
 	manifest.Filesystem = filesystemManifestPolicy(agent.Spec.Filesystem)
+	manifest.Terminal = terminalManifestPolicy(agent.Spec.Terminal)
 
 	// Build input/output schemas from the agent's tools.
 	manifest.InputSchema = buildInputSchema(manifest.AllowedTools)
@@ -578,6 +629,9 @@ func (s *ACPServer) writeAgentManifest(w http.ResponseWriter, r *http.Request, a
 type ACPAgentRunRequest struct {
 	Input     []ACPMessage `json:"input"`
 	SessionID string       `json:"session_id,omitempty"`
+	// ClientCapabilities is as on ACPRunCreateRequest. This is the endpoint
+	// `aoctl acp serve` starts runs with.
+	ClientCapabilities *ACPRunClientCapabilities `json:"client_capabilities,omitempty"`
 }
 
 // handleAgentRun creates a new AgentRun for the given agent, validating input
@@ -664,6 +718,7 @@ func (s *ACPServer) handleAgentRun(w http.ResponseWriter, r *http.Request, tenan
 	}
 	// Enable warm-pod claiming + context chaining.
 	s.enrichACPRunForWarmPods(r.Context(), run, agent.Name, sessionID)
+	markLocalTerminal(run, req.ClientCapabilities, agent)
 
 	if err := s.crdClient.Create(r.Context(), run); err != nil {
 		slog.Error("creating ACP agent run", "err", err)
@@ -932,6 +987,7 @@ func (s *ACPServer) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 	// Enable warm-pod claiming + context chaining via the deployment that owns
 	// this agent. Falls back to one-shot pod path if no deployment exists.
 	s.enrichACPRunForWarmPods(r.Context(), run, req.AgentName, sessionID)
+	markLocalTerminal(run, req.ClientCapabilities, agent)
 
 	if err := s.crdClient.Create(r.Context(), run); err != nil {
 		slog.Error("creating ACP run", "err", err)
@@ -1435,6 +1491,9 @@ func (s *ACPServer) resumeACPRun(w http.ResponseWriter, r *http.Request, run *ag
 		AwaitResume struct {
 			Answer string `json:"answer,omitempty"`
 		} `json:"await_resume"`
+		// ClientCapabilities is repeated on resume: the continuation is a new
+		// run, and only the caller resuming it knows what it can do.
+		ClientCapabilities *ACPRunClientCapabilities `json:"client_capabilities,omitempty"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
 		writeACPError(w, "invalid_input", fmt.Sprintf("invalid JSON: %s", err), http.StatusBadRequest)
@@ -1446,7 +1505,19 @@ func (s *ACPServer) resumeACPRun(w http.ResponseWriter, r *http.Request, run *ag
 		return
 	}
 
-	continuation, err := resumeWithAnswer(r.Context(), s.crdClient, s.store, run, req.AwaitResume.Answer)
+	var opts []func(*agentorcav1alpha1.AgentRun)
+	if req.ClientCapabilities != nil && req.ClientCapabilities.Terminal {
+		var agent agentorcav1alpha1.Agent
+		if err := s.crdClient.Get(r.Context(), client.ObjectKey{Name: run.Spec.AgentRef, Namespace: run.Namespace}, &agent); err != nil {
+			// The run still resumes; its commands will be refused with a reason.
+			slog.Warn("looking up the agent of a resumed run", "run", run.Name, "err", err)
+		} else {
+			opts = append(opts, func(next *agentorcav1alpha1.AgentRun) {
+				markLocalTerminal(next, req.ClientCapabilities, &agent)
+			})
+		}
+	}
+	continuation, err := resumeWithAnswer(r.Context(), s.crdClient, s.store, run, req.AwaitResume.Answer, opts...)
 	if err != nil {
 		writeACPError(w, "server_error", err.Error(), http.StatusInternalServerError)
 		return
