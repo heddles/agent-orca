@@ -60,7 +60,8 @@ Recorded at the v0.13.0 release (2026-11-23). These are not GitHub issues yet: p
 | Schedule notifications | They cannot alert only when something is wrong: `on` selects the run's outcome (Succeeded, Failed, Skipped, BreakerOpen), not what the agent found. A report is sent on every run. |
 | Knowledge upload | Text, markdown and CSV only, through a ConfigMap (256 KiB a document, 900 KiB in all). No PDF or Office files. Removing a document does not remove text already embedded. A `.pdf` name answers 400, not 415. |
 | Slack | Socket Mode is not built: the Events API needs a public HTTPS URL. |
-| Mattermost | No direct messages (they need the bot websocket) and no working indicator. |
+| Mattermost | No direct messages (they need the bot websocket). |
+| Chat progress | Reactions are shown on Slack and Mattermost only. A delegated run's approval shows as waiting but is not announced in the thread. |
 | Webex | If the message fetch after the acknowledgement fails, the message is recorded as ignored and lost: the enrichment step cannot ask for a retry. |
 | Email | No IMAP IDLE, no OAuth token refresh for the mailbox, no mapping of a sender to a UI user (UI identities carry no email address), no rejection notice to a sender. |
 | Chat users | They are not agent-orca users: a chat run has no invoker, so invoker-mode servers fail closed for it. Linking a chat user to a UI user is future work. |

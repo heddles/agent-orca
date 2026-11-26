@@ -64,7 +64,12 @@ const (
 type Config struct {
 	// TeamID, when set, restricts the connection to one team (its id, 26 characters).
 	TeamID string `json:"teamId,omitempty"`
+	// WorkingReaction shows each request's progress as a reaction on its post.
+	// On unless set to false.
+	WorkingReaction *bool `json:"workingReaction,omitempty"`
 }
+
+func (c Config) reactions() bool { return c.WorkingReaction == nil || *c.WorkingReaction }
 
 var idRe = regexp.MustCompile(`^[a-z0-9]{26}$`)
 
@@ -143,12 +148,12 @@ func (a *Adapter) api(allowPrivate bool) *chat.Client {
 func (*Adapter) Kind() string { return Kind }
 
 // Capabilities: threads, markdown, long answers split into up to five posts,
-// outgoing webhooks and slash commands, acknowledged first. No working indicator.
+// outgoing webhooks and slash commands, acknowledged first, with progress reactions.
 func (*Adapter) Capabilities() inbound.Capabilities {
 	return inbound.Capabilities{
 		Threads: true, Markdown: true, Dialect: inbound.DialectMarkdown, MaxReplyChars: maxReplyChars, MaxReplyParts: maxReplyParts,
 		Modes:    []inbound.Mode{inbound.ModeMention, inbound.ModeCommand, inbound.ModeChannel},
-		AckFirst: true,
+		AckFirst: true, WorkingIndicator: true,
 	}
 }
 
@@ -165,6 +170,8 @@ func (*Adapter) Describe() inbound.Descriptor {
 		Summary: "An outgoing webhook (trigger word) or a slash command starts the agent; the answer is posted as a bot in the thread.",
 		Fields: []inbound.Field{
 			{Key: "teamId", Label: "Team id", Type: "string", Help: "Optional. Restricts the connection to one team."},
+			{Key: "workingReaction", Label: "Show progress with reactions", Type: "bool", Default: true,
+				Help: "On the post: eyes while working, a raised hand when approval is needed, then a check mark or a cross. Slash commands have no post to react to."},
 		},
 		SecretKeys: []inbound.SecretKey{
 			{Key: KeyBaseURL, Required: true, Help: "https://chat.example.com. In the Secret so that the bot token can only go there."},
@@ -194,4 +201,5 @@ var (
 	_ inbound.Describer    = (*Adapter)(nil)
 	_ inbound.Acknowledger = (*Adapter)(nil)
 	_ inbound.Enricher     = (*Adapter)(nil)
+	_ inbound.Indicator    = (*Adapter)(nil)
 )

@@ -275,12 +275,6 @@ type Enricher interface {
 	Enrich(ctx context.Context, c Connection, m *Message)
 }
 
-// Indicator is an adapter that can show that work has begun (a reaction, a typing
-// hint). Called once after the run started, best effort, bounded in time.
-type Indicator interface {
-	Working(ctx context.Context, c Connection, to ReplyTarget) error
-}
-
 // Handler takes a message into the pipeline.
 type Handler interface {
 	// Handle records and routes one message. A nil error means the message is

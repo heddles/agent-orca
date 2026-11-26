@@ -82,6 +82,67 @@ func (a *Adapter) Reply(ctx context.Context, c inbound.Connection, to inbound.Re
 	return nil
 }
 
+// reactions is how a request's progress looks on its post.
+var reactions = map[inbound.Progress]string{
+	inbound.ProgressWorking:  "eyes",
+	inbound.ProgressApproval: "raised_hand",
+	inbound.ProgressQuestion: "question",
+	inbound.ProgressDone:     "white_check_mark",
+	inbound.ProgressFailed:   "x",
+}
+
+// Show swaps the bot's reaction on the sender's post, unless the connection
+// turned reactions off. A slash command has no post to react to.
+func (a *Adapter) Show(ctx context.Context, c inbound.Connection, to inbound.ReplyTarget, from, now inbound.Progress) error {
+	cfg, err := ParseConfig(c.Config)
+	if err != nil || !cfg.reactions() {
+		return nil
+	}
+	var t target
+	if json.Unmarshal(to, &t) != nil || t.Root == "" {
+		return nil
+	}
+	cr, err := ParseCredentials(c.Secret)
+	if err != nil {
+		return err
+	}
+	// A reaction belongs to a user, so the bot needs its own id.
+	bot, err := a.botID(ctx, c.ID, cr)
+	if err != nil {
+		return fmt.Errorf("reading the bot account: %w", err)
+	}
+	// Add before removing, so a failure never leaves the post without a sign.
+	if name := reactions[now]; name != "" {
+		if err := a.do(ctx, cr, http.MethodPost, "/api/v4/reactions", map[string]string{"user_id": bot, "post_id": t.Root, "emoji_name": name}, nil); err != nil {
+			return fmt.Errorf("adding a reaction: %w", err)
+		}
+	}
+	if name := reactions[from]; name != "" {
+		path := "/api/v4/users/" + url.PathEscape(bot) + "/posts/" + url.PathEscape(t.Root) + "/reactions/" + name
+		if err := a.do(ctx, cr, http.MethodDelete, path, nil, nil); err != nil {
+			return fmt.Errorf("removing a reaction: %w", err)
+		}
+	}
+	return nil
+}
+
+func (a *Adapter) botID(ctx context.Context, connectionID string, cr Credentials) (string, error) {
+	if id, ok := a.botIDs.Load(connectionID); ok {
+		return id.(string), nil
+	}
+	var me struct {
+		ID string `json:"id"`
+	}
+	if err := a.get(ctx, cr, "/api/v4/users/me", &me); err != nil {
+		return "", err
+	}
+	if me.ID == "" {
+		return "", errors.New("the server did not say who the bot is")
+	}
+	a.botIDs.Store(connectionID, me.ID)
+	return me.ID, nil
+}
+
 // Test reads the bot's own account (and the team, if configured). It posts nothing.
 func (a *Adapter) Test(ctx context.Context, c inbound.Connection) inbound.TestReport {
 	cfg, err := ParseConfig(c.Config)

@@ -24,7 +24,7 @@ func (f *fakeApprovals) ListApprovals(_ context.Context, q postgresql.ApprovalQu
 	defer f.mu.Unlock()
 	var out []postgresql.Approval
 	for _, a := range f.pending {
-		if a.RunName == q.RunName && a.Namespace == q.Namespace && a.Status == q.Status {
+		if (q.RunName == "" || a.RunName == q.RunName) && a.Namespace == q.Namespace && a.Status == q.Status {
 			out = append(out, a)
 		}
 	}

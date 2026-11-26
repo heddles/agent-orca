@@ -83,7 +83,7 @@ func TestCompleteConfigLooksUpTheWorkspaceID(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg, err := ParseConfig(got)
-	if err != nil || cfg.TeamID != "T0FOUND" || !cfg.WorkingReaction {
+	if err != nil || cfg.TeamID != "T0FOUND" || !cfg.reactions() {
 		t.Fatalf("config = %s (%v), want the id added and the rest kept", got, err)
 	}
 

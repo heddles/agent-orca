@@ -696,7 +696,7 @@ func TestErrorsNeverHoldSecretsTokensOrText(t *testing.T) {
 func TestWorkingIndicatorSendsTypingOnlyWhenAsked(t *testing.T) {
 	w := newWorld(t)
 	a, c := w.adapter(), conn(t, defaultSettings, false)
-	if err := a.Working(context.Background(), c, replyTarget(w, convChan+";messageid=5", "5")); err != nil {
+	if err := a.Show(context.Background(), c, replyTarget(w, convChan+";messageid=5", "5"), inbound.ProgressNone, inbound.ProgressWorking); err != nil {
 		t.Fatal(err)
 	}
 	cl := w.connCalls[0]
@@ -705,7 +705,7 @@ func TestWorkingIndicatorSendsTypingOnlyWhenAsked(t *testing.T) {
 	}
 	c.Config = json.RawMessage(`{}`)
 	n := len(w.connCalls)
-	_ = a.Working(context.Background(), c, replyTarget(w, convDM, ""))
+	_ = a.Show(context.Background(), c, replyTarget(w, convDM, ""), inbound.ProgressNone, inbound.ProgressWorking)
 	if len(w.connCalls) != n {
 		t.Error("typing sent although not asked for")
 	}

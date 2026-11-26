@@ -277,32 +277,37 @@ func (p *Pipeline) deliver(ctx context.Context, m postgresql.InboundMessage) {
 	case err != nil:
 		return
 	case !state.Found:
+		p.showStored(ctx, sc, m, ProgressFailed)
 		giveUp("run_gone", OutcomeReplyFailed, postgresql.InboundStatus{})
 		return
 	case state.Continued:
 		// Answered before the question went out: the continuation replies.
+		p.showStored(ctx, sc, m, ProgressNone)
 		p.settle(scope, sc, m, rkey)
 		return
 	case state.Waiting:
 		// The run asks the person something: the question is the reply, and the
 		// person's next message in the thread answers it (Handle).
-		p.reply(ctx, scope, sc, m, rkey, rt, Result{Text: state.Question, Notice: true})
+		p.reply(ctx, scope, sc, m, rkey, rt, Result{Text: state.Question, Notice: true}, ProgressQuestion)
 		return
 	case !state.Done:
 		if p.now().Sub(m.ReceivedAt) > orDur(p.ReplyTimeout, 2*time.Hour) {
+			p.showStored(ctx, sc, m, ProgressFailed)
 			giveUp("run_timeout", OutcomeReplyFailed, postgresql.InboundStatus{})
+			return
 		}
+		p.trackApproval(ctx, scope, sc, m)
 		return
 	}
-	res := Result{Text: state.Output, Subject: ""}
+	res, end := Result{Text: state.Output, Subject: ""}, ProgressDone
 	switch {
 	case !state.Succeeded:
-		res = Result{Text: failureText, Failed: true, Reason: state.Reason, Notice: true}
+		res, end = Result{Text: failureText, Failed: true, Reason: state.Reason, Notice: true}, ProgressFailed
 	case strings.TrimSpace(state.Output) == "", runoutput.LooksLikeStream(state.Output):
 		// Raw provider frames are never an answer to a person.
-		res = Result{Text: "The agent finished without an answer.", Notice: true}
+		res, end = Result{Text: "The agent finished without an answer.", Notice: true}, ProgressFailed
 	}
-	p.reply(ctx, scope, sc, m, rkey, rt, res)
+	p.reply(ctx, scope, sc, m, rkey, rt, res, end)
 }
 
 // settle closes a message without a reply.
@@ -316,8 +321,9 @@ func (p *Pipeline) settle(scope context.Context, sc postgresql.InboundConnection
 	p.mu.Unlock()
 }
 
-// reply sends res to the person and closes the message, or backs off.
-func (p *Pipeline) reply(ctx, scope context.Context, sc postgresql.InboundConnection, m postgresql.InboundMessage, rkey string, rt replyRetry, res Result) {
+// reply sends res to the person and closes the message, or backs off. end is what
+// the message shows once res is delivered.
+func (p *Pipeline) reply(ctx, scope context.Context, sc postgresql.InboundConnection, m postgresql.InboundMessage, rkey string, rt replyRetry, res Result, end Progress) {
 	giveUp := func(reason string) {
 		_ = p.Store.UpdateInboundMessage(scope, m.ConnectionID, m.MessageKey, postgresql.InboundUpdate{Status: postgresql.InboundFailed, Reason: reason, ClearTarget: true})
 		p.mu.Lock()
@@ -337,9 +343,13 @@ func (p *Pipeline) reply(ctx, scope context.Context, sc postgresql.InboundConnec
 	cancel()
 	if err != nil {
 		slog.Warn("delivering an inbound reply failed", "connection", sc.ID, "kind", sc.Kind, "err", safeErr(err, c))
-		p.backoff(rkey, rt, func() { giveUp("reply_failed") })
+		p.backoff(rkey, rt, func() {
+			p.show(ctx, c, m.ReplyTarget, Progress(m.Progress), ProgressFailed)
+			giveUp("reply_failed")
+		})
 		return
 	}
+	p.show(ctx, c, m.ReplyTarget, Progress(m.Progress), end)
 	status := postgresql.InboundReplied
 	if err := p.Store.UpdateInboundMessage(scope, m.ConnectionID, m.MessageKey, postgresql.InboundUpdate{Status: status, ClearTarget: true}); err != nil {
 		slog.Warn("recording an inbound reply", "connection", sc.ID, "err", err)

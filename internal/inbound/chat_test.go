@@ -18,6 +18,7 @@ package inbound
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -29,14 +30,20 @@ import (
 type chatAdapter struct {
 	fakeAdapter
 	mu2     sync.Mutex
-	working int
+	changes []string // "from>now"
 }
 
-func (c *chatAdapter) Working(context.Context, Connection, ReplyTarget) error {
+func (c *chatAdapter) Show(_ context.Context, _ Connection, _ ReplyTarget, from, now Progress) error {
 	c.mu2.Lock()
 	defer c.mu2.Unlock()
-	c.working++
+	c.changes = append(c.changes, string(from)+">"+string(now))
 	return nil
+}
+
+func (c *chatAdapter) shown() []string {
+	c.mu2.Lock()
+	defer c.mu2.Unlock()
+	return slices.Clone(c.changes)
 }
 
 func chatFixture(t *testing.T, settings string) (*fixture, *chatAdapter) {
@@ -176,8 +183,8 @@ func TestChat_WorkingIndicatorAfterStart(t *testing.T) {
 	f, ca := chatFixture(t, `{"allowSenders":["U1"]}`)
 	f.handle(chatMsg("1", "U1", "T1", "C1", ModeMention), nil)
 	f.handle(chatMsg("2", "U2", "T1", "C1", ModeMention), nil) // rejected: no indicator
-	if ca.working != 1 {
-		t.Errorf("indicator shown %d times, want 1", ca.working)
+	if got := ca.shown(); len(got) != 1 || got[0] != ">working" {
+		t.Errorf("shown = %q, want working once", got)
 	}
 }
 

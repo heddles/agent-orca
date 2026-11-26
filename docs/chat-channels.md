@@ -27,16 +27,32 @@ For Slack, the guided setup on the channel's card ([inbound-channels.md](inbound
 Events API over HTTPS. Socket Mode is not built.
 
 1. api.slack.com/apps, Create New App, From scratch, pick the workspace.
-2. **OAuth & Permissions**, Bot Token Scopes: `app_mentions:read`, `chat:write`, `im:history` (direct messages), `commands` (slash command); `channels:history` and `groups:history` only if you enable the `channel` mode; `reactions:write` for the optional eyes reaction. Install to the workspace and copy the **Bot User OAuth Token** (`xoxb-...`; a user token is refused).
+2. **OAuth & Permissions**, Bot Token Scopes: `app_mentions:read`, `chat:write`, `im:history` (direct messages), `commands` (slash command); `channels:history` and `groups:history` only if you enable the `channel` mode; `reactions:write` for the progress reactions. Install to the workspace and copy the **Bot User OAuth Token** (`xoxb-...`; a user token is refused).
 3. **Basic Information**: copy the **Signing Secret**.
 4. Secret keys: `botToken`, `signingSecret` (as above).
-5. In agent-orca add the channel, or add the Secret to the one you saved earlier. The workspace id (`teamId`) is looked up from the bot token; events from other workspaces are ignored, and so is every event until the id is known. Optionally set `workingReaction`. Ids: users `U...` (profile, Copy member ID), channels `C...` (channel details), direct messages `D...`.
+5. In agent-orca add the channel, or add the Secret to the one you saved earlier. The workspace id (`teamId`) is looked up from the bot token; events from other workspaces are ignored, and so is every event until the id is known. Progress reactions are on by default (see below). Ids: users `U...` (profile, Copy member ID), channels `C...` (channel details), direct messages `D...`.
 6. **Event Subscriptions**: on, Request URL = the receive URL (Slack sends a challenge, which agent-orca answers after verifying the signature, so save the channel first), subscribe the bot to `app_mention`, `message.im` and, for the `channel` mode, `message.channels` (and `message.groups`).
 7. **App Home**: tick "Allow users to send Slash commands and messages from the messages tab".
 8. Optional **Slash Commands**: create `/agent` with the same Request URL. The bot must be a member of the channel where the command is used, because the answer is posted with `chat.postMessage`; the command itself answers the user at once with a private "Working on it".
 9. Invite the bot to a channel (`/invite @name`).
 
-Working indicator: with `workingReaction` on (settings; needs the `reactions:write` scope) the bot puts :eyes: on the question as soon as the run starts, and when it posts the answer it swaps that for :white_check_mark: (answered) or :x: (the run failed). The reactions are best effort: a missing scope, a deleted message or a rate limit never affects the answer, and if adding the end reaction fails the :eyes: stays. A message the core refused (busy, rate limited) never started a run and gets no reaction.
+#### Progress reactions
+
+Slack and Mattermost show where each request stands as a reaction from the bot on the sender's message. A message shows one at a time.
+
+| Reaction | Meaning |
+|---|---|
+| :eyes: | The agent is working on it. |
+| :raised_hand: | An approval is pending on the run, or on a run it delegated to: a tool call, more budget or network access. Back to :eyes: once decided, in the chat or in the console. |
+| :question: | The agent asked the sender something. The sender's next message in the thread answers it, and gets its own reactions. |
+| :white_check_mark: | The answer was delivered. |
+| :x: | No answer: the run failed, ended with nothing to say, timed out or disappeared, the answer could not be posted, or no run could start (agent busy or unavailable). |
+
+Senders who are refused get no reaction, and a slash command has no message to react to. The change to and from :raised_hand: takes a few seconds. Only tool-call approvals are also announced, and decidable, in the thread; a delegated run's, a budget's or a network access approval is decided in the console.
+
+Reactions are on unless a connection sets `workingReaction` to `false` (a shared app has no setting: they are on). Slack needs the `reactions:write` scope, which the setup link asks for; an app made earlier needs the scope added and the app reinstalled. They are best effort: a missing permission, a deleted message or a rate limit never affects the answer.
+
+Not shown elsewhere: Microsoft Teams shows "typing" when `typingIndicator` is on. Google Chat lets only a signed-in user add reactions, not an app, and Webex has no reaction API that we found.
 
 How it behaves: a request is accepted only with a valid `X-Slack-Signature` (`v0` HMAC of `v0:<timestamp>:<body>`, five minute window, constant time). A message is identified by workspace, channel and message timestamp, so Slack's retries (`X-Slack-Retry-Num`) and the double delivery of a mentioning message (`app_mention` plus `message.channels`) start one run. Messages with a `bot_id` or any `subtype` (edits, joins, other bots), and the bot's own, are ignored. The text has its leading `@bot` removed and Slack's markup decoded. The answer is posted in the thread of the message (a direct message is one flat conversation), as `mrkdwn`, with `link_names` and unfurling off and every mention neutralised, split into at most five messages of at most 3500 characters.
 
@@ -144,7 +160,7 @@ Not verified against the real service: the webhook payload field names and the `
 | Outbound auth | bot token | bot token | OAuth2 client credentials, cached | service-account JWT grant, cached | bot token |
 | Secret keys | `botToken`, `signingSecret` | `baseUrl`, `botToken`, `tokens` | `appId`, `appPassword`, `tenantId` | `serviceAccountKey` | `botToken`, `webhookSecret` |
 | Group for allow-list | workspace id | team id | tenant id | email domain | email domain |
-| Working indicator | reaction | none | typing | none | none |
+| Progress shown | reactions | reactions | typing | none | none |
 | Not built | Socket Mode | websocket, DMs | emulator, managed identity, cards, files | add-on format, sync reply, cards | attachments, Government host |
 
 ## Limits and what is not built
