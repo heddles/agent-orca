@@ -8,7 +8,10 @@ import type { DefaultTheme } from 'vitepress'
 const groups: { text: string; pages: string[] }[] = [
   {
     text: 'Getting started',
-    pages: ['demos', 'local-model-selection', 'redis', 'KNOWN_ISSUES'],
+    pages: [
+      'installation', 'architecture', 'demos', 'local-model-selection', 'redis',
+      'KNOWN_ISSUES',
+    ],
   },
   {
     text: 'Building agents',

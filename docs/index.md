@@ -5,13 +5,13 @@ AI agents. You declare agents, route them to a model, give them tools, and run
 them as one-off jobs or long-running services, with checkpoints, cost tracking,
 guardrails and retrieval built in.
 
-To install it and talk to your first agent, follow the
-[Quick Start](../README.md#quick-start).
+To install it, follow the [installation guide](installation.md).
 
 ## Where to go next
 
 | If you want to | Read |
 |---|---|
+| See how the parts fit together | [Architecture](architecture.md) |
 | Understand the resources agents are made of | [CRDs](crds.md) |
 | See working examples | [Demo catalog](demos.md) |
 | Run an agent in a sandbox | [Sandboxed agents](openshell-sandbox.md) |

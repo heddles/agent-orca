@@ -5,3 +5,5 @@
 
 # Vendored upstream code: not ours to count in language statistics.
 third_party/** linguist-vendored
+# Screen recordings for the README.
+assets/*.gif filter=lfs diff=lfs merge=lfs -text

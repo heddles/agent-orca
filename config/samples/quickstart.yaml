@@ -1,0 +1,27 @@
+# A first agent to chat with after the quick start (docs/installation.md).
+# It uses the "default" ModelSelector from the model-providers chart.
+apiVersion: agentorca.agentorca.io/v1alpha1
+kind: Agent
+metadata:
+  name: quickstart
+  namespace: agent-orca-system
+spec:
+  modelSelectorRef: default
+  systemPrompt: |
+    You are a helpful assistant running on agent-orca.
+    Answer clearly and briefly.
+  runtime:
+    ociRef: ghcr.io/heddles/agent-orca/openai-reference:latest
+    framework: openai-compatible
+---
+apiVersion: agentorca.agentorca.io/v1alpha1
+kind: AgentDeployment
+metadata:
+  name: quickstart
+  namespace: agent-orca-system
+spec:
+  agentRef: quickstart
+  inputSource:
+    type: chat
+  replicas: 1
+  warmPoolSize: 1
