@@ -241,7 +241,7 @@ func (*Adapter) Describe() inbound.Descriptor {
 		Setup: []string{
 			"In Google Cloud, pick or create a project and enable the Google Chat API. Note the project number (Dashboard).",
 			"IAM & Admin, Service Accounts: create a service account for the app and a JSON key for it. No project role is needed: the Chat app is added to spaces, it does not use the project's resources.",
-			"Ask your administrator to create a Secret with the key serviceAccountKey holding that JSON file, labelled agentorca.io/inbound-secret=true, and name it above. For example: kubectl -n NAMESPACE create secret generic gchat-creds --from-file=serviceAccountKey=./key.json; kubectl -n NAMESPACE label secret gchat-creds agentorca.io/inbound-secret=true",
+			"Ask your administrator to create a Secret with the key serviceAccountKey holding that JSON file, labelled agentorca.io/inbound-secret=true, and give its name to this channel. For example: kubectl -n NAMESPACE create secret generic gchat-creds --from-file=serviceAccountKey=./key.json; kubectl -n NAMESPACE label secret gchat-creds agentorca.io/inbound-secret=true",
 			"Google Chat API, Configuration: untick \"Build this Chat app as a Workspace add-on\" (only the Chat app event format is understood), set the app name and description, tick \"Receive 1:1 messages\" and \"Join spaces and group conversations\".",
 			"Connection settings: choose HTTP endpoint URL and enter {{url}} as the endpoint (save this channel first). Authentication Audience: Project Number, or HTTP endpoint URL (then the audience below is that same URL). Enter the same choice in the settings of this channel.",
 			"Visibility: make the app available to the people or the domain that should use it, then save.",

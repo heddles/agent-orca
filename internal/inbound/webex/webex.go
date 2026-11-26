@@ -165,7 +165,7 @@ func (*Adapter) Describe() inbound.Descriptor {
 		Setup: []string{
 			"Create a bot at developer.webex.com (My Webex Apps, Create a Bot). Copy its access token; it is shown once.",
 			"Choose a long random string as the webhook secret.",
-			"Ask your administrator to create a Secret with the keys botToken and webhookSecret, labelled agentorca.io/inbound-secret=true, and name it above. For example: kubectl -n NAMESPACE create secret generic webex-creds --from-literal=botToken=... --from-literal=webhookSecret=...; kubectl -n NAMESPACE label secret webex-creds agentorca.io/inbound-secret=true",
+			"Ask your administrator to create a Secret with the keys botToken and webhookSecret, labelled agentorca.io/inbound-secret=true, and give its name to this channel. For example: kubectl -n NAMESPACE create secret generic webex-creds --from-literal=botToken=... --from-literal=webhookSecret=...; kubectl -n NAMESPACE label secret webex-creds agentorca.io/inbound-secret=true",
 			"Create the webhook with the bot's token: curl -X POST https://webexapis.com/v1/webhooks -H \"Authorization: Bearer $BOT_TOKEN\" -H \"Content-Type: application/json\" -d '{\"name\":\"agent-orca\",\"targetUrl\":\"{{url}}\",\"resource\":\"messages\",\"event\":\"created\",\"secret\":\"$WEBHOOK_SECRET\"}' (save this channel first so the URL exists). Do not set a filter: the bot only receives its direct messages and the messages that mention it.",
 			"Add the bot to a space (or message it directly). In a group space, @mention it.",
 			"Press Test connection: it calls the Webex API as the bot and shows its name; nothing is sent to a space.",

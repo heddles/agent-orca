@@ -208,6 +208,9 @@ spec:
             {{- if not .Values.operator.inbound.enabled }}
             - name: INBOUND_CHANNELS_DISABLED
               value: "true"
+            {{- else if .Values.operator.inbound.publicURL }}
+            - name: INBOUND_PUBLIC_URL
+              value: {{ .Values.operator.inbound.publicURL | quote }}
             {{- end }}
             {{- if .Values.operator.oidc.enabled }}
             - name: OIDC_LOGIN_ENABLED

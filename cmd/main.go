@@ -1246,6 +1246,10 @@ func addInboundChannels(
 	// run's channel message (docs/inbound-channels.md).
 	internalAPI.WithApprovalPrompter(pipe)
 	uiAPI.SetInbound(pipe)
+	if err := uiAPI.SetInboundPublicURL(os.Getenv("INBOUND_PUBLIC_URL")); err != nil {
+		// Not fatal: channels work, the UI just shows the address people browse to.
+		setupLog.Error(err, "ignoring INBOUND_PUBLIC_URL")
+	}
 	setupLog.Info("Inbound channels enabled", "kinds", reg.Kinds())
 	return mgr.Add(&inbound.Runner{P: pipe})
 }

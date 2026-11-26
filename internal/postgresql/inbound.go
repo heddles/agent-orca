@@ -524,6 +524,41 @@ func (s *Store) CountInboundBySender(ctx context.Context, connectionID, senderHa
 	return n, wrapInbound("counting inbound messages", err)
 }
 
+// InboundRefusals counts, per connection and reason, the messages refused since
+// the given time: those policy rejected, and those from another workspace, which
+// is what a wrong workspace id looks like. It holds counts only.
+func (s *Store) InboundRefusals(ctx context.Context, connectionIDs []string, since time.Time) (map[string]map[string]int, error) {
+	out := map[string]map[string]int{}
+	if len(connectionIDs) == 0 {
+		return out, nil
+	}
+	err := s.scoped(ctx, func(tx dbtx, scope string) error {
+		rows, err := tx.QueryContext(ctx, `
+			SELECT m.connection_id, m.reason, count(*) FROM inbound_messages m
+			WHERE m.connection_id = ANY($1) AND m.received_at >= $2
+			  AND (m.status = 'rejected' OR (m.status = 'ignored' AND m.reason = 'workspace_mismatch'))
+			  AND ($3::text = '*' OR m.tenant_id = $3)
+			GROUP BY m.connection_id, m.reason`, pgTextArray(connectionIDs), since, scope)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = rows.Close() }()
+		for rows.Next() {
+			var id, reason string
+			var n int
+			if err := rows.Scan(&id, &reason, &n); err != nil {
+				return err
+			}
+			if out[id] == nil {
+				out[id] = map[string]int{}
+			}
+			out[id][reason] = n
+		}
+		return rows.Err()
+	})
+	return out, wrapInbound("counting refused messages", err)
+}
+
 // DeleteInboundMessagesBefore removes ledger rows older than cutoff that are no
 // longer pending, and returns how many. Run on the platform scope.
 func (s *Store) DeleteInboundMessagesBefore(ctx context.Context, cutoff time.Time) (int64, error) {

@@ -125,7 +125,7 @@ func (a *Adapter) event(c inbound.Connection, cfg Config, env envelope, size int
 	}
 	own, _ := a.botIDs.Load(c.ID)
 	user := ev.User
-	if team != cfg.TeamID {
+	if cfg.TeamID == "" || team != cfg.TeamID {
 		return ignored(env.EventID, user, size, "workspace_mismatch")
 	}
 	var mode inbound.Mode
@@ -186,7 +186,7 @@ func (a *Adapter) command(cfg Config, body []byte) (inbound.Message, error) {
 		return inbound.Message{}, err
 	}
 	team, user, channel, trigger := f.Get("team_id"), f.Get("user_id"), f.Get("channel_id"), f.Get("trigger_id")
-	if team != cfg.TeamID {
+	if cfg.TeamID == "" || team != cfg.TeamID {
 		return ignored("cmd:"+trigger, user, len(body), "workspace_mismatch")
 	}
 	if user == "" || channel == "" || trigger == "" {
