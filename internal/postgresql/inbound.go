@@ -397,18 +397,20 @@ type InboundMessage struct {
 	RunName      string
 	// ReplyTarget is set only while a reply is pending.
 	ReplyTarget json.RawMessage
-	ReceivedAt  time.Time
-	UpdatedAt   time.Time
+	// Progress is what the message shows on the platform (internal/inbound).
+	Progress   string
+	ReceivedAt time.Time
+	UpdatedAt  time.Time
 }
 
 const inboundMsgCols = `m.id, m.tenant_id, m.connection_id, m.message_key, m.thread_key, m.sender_hash, m.size_bytes, m.status,
-	m.reason, m.run_namespace, m.run_name, m.reply_target, m.received_at, m.updated_at`
+	m.reason, m.run_namespace, m.run_name, m.reply_target, m.progress, m.received_at, m.updated_at`
 
 func scanInboundMsg(row interface{ Scan(...any) error }) (InboundMessage, error) {
 	var m InboundMessage
 	var rt []byte
 	err := row.Scan(&m.ID, &m.TenantID, &m.ConnectionID, &m.MessageKey, &m.ThreadKey, &m.SenderHash, &m.SizeBytes, &m.Status,
-		&m.Reason, &m.RunNamespace, &m.RunName, &rt, &m.ReceivedAt, &m.UpdatedAt)
+		&m.Reason, &m.RunNamespace, &m.RunName, &rt, &m.Progress, &m.ReceivedAt, &m.UpdatedAt)
 	m.ReplyTarget = json.RawMessage(rt)
 	return m, err
 }
@@ -458,6 +460,8 @@ type InboundUpdate struct {
 	RunName      string
 	ReplyTarget  json.RawMessage
 	ClearTarget  bool
+	// Progress is kept as it is when empty.
+	Progress string
 }
 
 // UpdateInboundMessage sets the outcome of a message.
@@ -472,9 +476,10 @@ func (s *Store) UpdateInboundMessage(ctx context.Context, connectionID, messageK
 			  run_namespace = CASE WHEN $6 <> '' THEN $6 ELSE run_namespace END,
 			  run_name = CASE WHEN $7 <> '' THEN $7 ELSE run_name END,
 			  reply_target = CASE WHEN $9 THEN NULL WHEN $8::jsonb IS NOT NULL THEN $8::jsonb ELSE reply_target END,
+			  progress = CASE WHEN $10 <> '' THEN $10 ELSE progress END,
 			  updated_at = now()
 			WHERE connection_id = $1 AND message_key = $2 AND ($3::text = '*' OR tenant_id = $3)`,
-			connectionID, messageKey, scope, u.Status, u.Reason, u.RunNamespace, u.RunName, target, u.ClearTarget)
+			connectionID, messageKey, scope, u.Status, u.Reason, u.RunNamespace, u.RunName, target, u.ClearTarget, u.Progress)
 		return err
 	}))
 }

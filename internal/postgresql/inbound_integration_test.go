@@ -191,6 +191,15 @@ func TestInboundMessagesAgainstPostgres(t *testing.T) {
 	if got, ok, err := s.FindRunningInboundMessage(a, "ns", itRun); err != nil || !ok || got.MessageKey != m.MessageKey || string(got.ReplyTarget) != `{"to": "a"}` {
 		t.Errorf("running message = %+v, %v, %v", got, ok, err)
 	}
+	// What the message shows is kept until another state replaces it.
+	for _, step := range []struct{ set, want string }{{"working", "working"}, {"", "working"}, {"approval", "approval"}} {
+		if err := s.UpdateInboundMessage(a, conn, m.MessageKey, InboundUpdate{Status: InboundRunning, Progress: step.set}); err != nil {
+			t.Fatal(err)
+		}
+		if got, _, err := s.FindRunningInboundMessage(a, "ns", itRun); err != nil || got.Progress != step.want || len(got.ReplyTarget) == 0 {
+			t.Errorf("after %q: progress %q, target %s, %v", step.set, got.Progress, got.ReplyTarget, err)
+		}
+	}
 	if _, ok, _ := s.FindRunningInboundMessage(b, "ns", itRun); ok {
 		t.Error("tenant B found the running message")
 	}

@@ -156,10 +156,11 @@ func (a *Adapter) Reply(ctx context.Context, c inbound.Connection, to inbound.Re
 	return nil
 }
 
-// Working shows "typing" when the connection asks for it.
-func (a *Adapter) Working(ctx context.Context, c inbound.Connection, to inbound.ReplyTarget) error {
+// Show sends "typing" when work starts and the connection asks for it. A bot
+// cannot react through this API, so the other states are not shown.
+func (a *Adapter) Show(ctx context.Context, c inbound.Connection, to inbound.ReplyTarget, from, now inbound.Progress) error {
 	cfg, err := ParseConfig(c.Config)
-	if err != nil || !cfg.TypingIndicator {
+	if err != nil || !cfg.TypingIndicator || from != inbound.ProgressNone || now != inbound.ProgressWorking {
 		return nil
 	}
 	var t target

@@ -21,7 +21,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -131,32 +130,28 @@ func (a *Adapter) Reply(ctx context.Context, c inbound.Connection, to inbound.Re
 			return err
 		}
 	}
-	a.finishReaction(ctx, c, t, res)
 	return nil
 }
 
-// Reactions that show how a request ended. The eyes reaction is added by Working
-// when the run starts; once the answer is posted it is swapped for one of these.
-const (
-	reactionWorking = "eyes"
-	reactionDone    = "white_check_mark"
-	reactionFailed  = "x"
-)
+// reactions is how a request's progress looks on its message.
+var reactions = map[inbound.Progress]string{
+	inbound.ProgressWorking:  "eyes",
+	inbound.ProgressApproval: "raised_hand",
+	inbound.ProgressQuestion: "question",
+	inbound.ProgressDone:     "white_check_mark",
+	inbound.ProgressFailed:   "x",
+}
 
-// finishReaction swaps the working reaction for done or failed, when the
-// connection asks for reactions and the message is known. Best effort: the answer
-// is already posted, so a failure here (a missing reactions:write scope, a deleted
-// message, a rate limit) is never an error for the reply. A notice the core wrote
-// itself about a message it refused (busy, rate limited) never started a run, so
-// it has no working reaction to swap. The notice for a run that failed does.
-func (a *Adapter) finishReaction(ctx context.Context, c inbound.Connection, t target, res inbound.Result) {
+// Show swaps the reaction on the sender's message, unless the connection turned
+// reactions off. A slash command has no message to react to.
+func (a *Adapter) Show(ctx context.Context, c inbound.Connection, to inbound.ReplyTarget, from, now inbound.Progress) error {
 	cfg, err := ParseConfig(c.Config)
-	if err != nil || !cfg.WorkingReaction || t.TS == "" || t.Channel == "" || (res.Notice && !res.Failed) {
-		return
+	if err != nil || !cfg.reactions() {
+		return nil
 	}
-	final := reactionDone
-	if res.Failed {
-		final = reactionFailed
+	var t target
+	if json.Unmarshal(to, &t) != nil || t.Channel == "" || t.TS == "" {
+		return nil
 	}
 	react := func(method, name string) error {
 		_, err := a.call(ctx, c, method, map[string]string{"channel": t.Channel, "timestamp": t.TS, "name": name}, nil)
@@ -165,31 +160,16 @@ func (a *Adapter) finishReaction(ctx context.Context, c inbound.Connection, t ta
 		}
 		return err
 	}
-	// Add the end state first, so the message is never left without a sign.
-	if err := react("reactions.add", final); err != nil {
-		slog.Debug("showing how the request ended", "connection", c.ID, "err", err)
-		return
+	// Add before removing, so a failure never leaves the message without a sign.
+	if name := reactions[now]; name != "" {
+		if err := react("reactions.add", name); err != nil {
+			return err
+		}
 	}
-	if err := react("reactions.remove", reactionWorking); err != nil {
-		slog.Debug("removing the working reaction", "connection", c.ID, "err", err)
+	if name := reactions[from]; name != "" {
+		return react("reactions.remove", name)
 	}
-}
-
-// Working adds the reaction, when the connection asks for it.
-func (a *Adapter) Working(ctx context.Context, c inbound.Connection, to inbound.ReplyTarget) error {
-	cfg, err := ParseConfig(c.Config)
-	if err != nil || !cfg.WorkingReaction {
-		return nil
-	}
-	var t target
-	if json.Unmarshal(to, &t) != nil || t.Channel == "" || t.TS == "" {
-		return nil
-	}
-	_, err = a.call(ctx, c, "reactions.add", map[string]string{"channel": t.Channel, "timestamp": t.TS, "name": reactionWorking}, nil)
-	if err != nil && strings.HasSuffix(err.Error(), "already_reacted") {
-		return nil
-	}
-	return err
+	return nil
 }
 
 // Test calls auth.test: it shows the bot and the workspace and sends nothing.
@@ -222,7 +202,11 @@ func (a *Adapter) Test(ctx context.Context, c inbound.Connection) inbound.TestRe
 	details["workspaceId"] = who.TeamID
 	if scopes := hdr.Get("X-OAuth-Scopes"); scopes != "" {
 		details["scopes"] = scopes
-		for _, need := range []string{"chat:write", "app_mentions:read"} {
+		needs := []string{"chat:write", "app_mentions:read"}
+		if cfg.reactions() {
+			needs = append([]string{"reactions:write"}, needs...)
+		}
+		for _, need := range needs {
 			if !strings.Contains(","+strings.ReplaceAll(scopes, " ", "")+",", ","+need+",") {
 				details["warning"] = "the token lacks the " + need + " scope"
 			}

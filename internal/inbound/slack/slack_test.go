@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -460,24 +461,6 @@ func TestApiErrorsNameTheCodeNeverTheTokenOrText(t *testing.T) {
 	}
 }
 
-func TestWorkingReaction(t *testing.T) {
-	f := newFakeSlack(t)
-	a, c := adapter(f.srv.URL), conn(t, defaultSettings)
-	to, _ := json.Marshal(target{Channel: "C1", TS: ts1})
-	if err := a.Working(context.Background(), c, to); err != nil {
-		t.Fatal(err)
-	}
-	if f.calls[0].method != "reactions.add" || f.calls[0].body["name"] != "eyes" || f.calls[0].body["timestamp"] != ts1 {
-		t.Errorf("call = %+v", f.calls[0])
-	}
-	c.Config = json.RawMessage(`{"teamId":"` + team + `"}`)
-	f.calls = nil
-	_ = a.Working(context.Background(), c, to)
-	if len(f.calls) != 0 {
-		t.Error("a reaction was added although the connection did not ask for it")
-	}
-}
-
 func TestTestReportsBotAndWorkspaceWithoutSecrets(t *testing.T) {
 	f := newFakeSlack(t)
 	a, c := adapter(f.srv.URL), conn(t, defaultSettings)
@@ -538,60 +521,64 @@ func TestConfigValidationAndDescriptor(t *testing.T) {
 	}
 }
 
-func TestReplySwapsTheWorkingReactionForDoneOrFailed(t *testing.T) {
+func TestShowSwapsReactions(t *testing.T) {
+	to, _ := json.Marshal(target{Channel: "C1", ThreadTS: ts1, TS: ts1})
 	for _, tc := range []struct {
-		name string
-		res  inbound.Result
-		want string
+		from, now inbound.Progress
+		want      []string
 	}{
-		{"answered", inbound.Result{Text: "ok"}, "white_check_mark"},
-		{"failed", inbound.Result{Text: "Sorry, that did not work.", Failed: true, Notice: true, Reason: "model error"}, "x"},
+		{inbound.ProgressNone, inbound.ProgressWorking, []string{"reactions.add eyes"}},
+		{inbound.ProgressWorking, inbound.ProgressApproval, []string{"reactions.add raised_hand", "reactions.remove eyes"}},
+		{inbound.ProgressApproval, inbound.ProgressWorking, []string{"reactions.add eyes", "reactions.remove raised_hand"}},
+		{inbound.ProgressWorking, inbound.ProgressDone, []string{"reactions.add white_check_mark", "reactions.remove eyes"}},
+		{inbound.ProgressApproval, inbound.ProgressFailed, []string{"reactions.add x", "reactions.remove raised_hand"}},
+		{inbound.ProgressWorking, inbound.ProgressQuestion, []string{"reactions.add question", "reactions.remove eyes"}},
+		{inbound.ProgressWorking, inbound.ProgressNone, []string{"reactions.remove eyes"}},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			f := newFakeSlack(t)
-			a, c := adapter(f.srv.URL), conn(t, defaultSettings)
-			to, _ := json.Marshal(target{Channel: "C1", ThreadTS: ts1, TS: ts1})
-			if err := a.Reply(context.Background(), c, to, tc.res); err != nil {
-				t.Fatal(err)
+		f := newFakeSlack(t)
+		a, c := adapter(f.srv.URL), conn(t, defaultSettings)
+		// Reactions are on unless a connection turns them off.
+		c.Config = json.RawMessage(`{"teamId":"` + team + `"}`)
+		if err := a.Show(context.Background(), c, to, tc.from, tc.now); err != nil {
+			t.Fatal(err)
+		}
+		got := make([]string, 0, len(f.calls))
+		for _, call := range f.calls {
+			if call.body["timestamp"] != ts1 || call.body["channel"] != "C1" {
+				t.Errorf("call = %+v", call)
 			}
-			if len(f.calls) != 3 {
-				t.Fatalf("calls = %d, want the post, the end reaction and the removal", len(f.calls))
-			}
-			if f.calls[1].method != "reactions.add" || f.calls[1].body["name"] != tc.want || f.calls[1].body["timestamp"] != ts1 {
-				t.Errorf("end reaction = %+v", f.calls[1])
-			}
-			if f.calls[2].method != "reactions.remove" || f.calls[2].body["name"] != "eyes" {
-				t.Errorf("removal = %+v", f.calls[2])
-			}
-		})
+			got = append(got, call.method+" "+call.body["name"].(string))
+		}
+		if !slices.Equal(got, tc.want) {
+			t.Errorf("%q>%q: %q, want %q", tc.from, tc.now, got, tc.want)
+		}
 	}
 }
 
-func TestReplyReactionsAreBestEffortAndOptional(t *testing.T) {
-	// A missing scope never fails the reply.
+func TestShowKeepsTheOldSignWhenTheNewOneFails(t *testing.T) {
 	f := newFakeSlack(t)
-	f.script = []func(http.ResponseWriter){nil, func(w http.ResponseWriter) { _, _ = w.Write([]byte(`{"ok":false,"error":"missing_scope"}`)) }}
+	f.script = []func(http.ResponseWriter){func(w http.ResponseWriter) { _, _ = w.Write([]byte(`{"ok":false,"error":"missing_scope"}`)) }}
 	a, c := adapter(f.srv.URL), conn(t, defaultSettings)
 	to, _ := json.Marshal(target{Channel: "C1", TS: ts1})
-	if err := a.Reply(context.Background(), c, to, inbound.Result{Text: "ok"}); err != nil {
-		t.Fatalf("a failed reaction failed the reply: %v", err)
+	err := a.Show(context.Background(), c, to, inbound.ProgressWorking, inbound.ProgressDone)
+	if err == nil || !strings.Contains(err.Error(), "missing_scope") || len(f.calls) != 1 {
+		t.Errorf("err = %v, calls = %d", err, len(f.calls))
 	}
-	if len(f.calls) != 2 {
-		t.Errorf("after a failed add the working reaction must stay: calls = %d", len(f.calls))
+}
+
+func TestShowDoesNothingWhenOffOrWithoutAMessage(t *testing.T) {
+	f := newFakeSlack(t)
+	a, c := adapter(f.srv.URL), conn(t, defaultSettings)
+	c.Config = json.RawMessage(`{"teamId":"` + team + `","workingReaction":false}`)
+	to, _ := json.Marshal(target{Channel: "C1", TS: ts1})
+	command, _ := json.Marshal(target{Channel: "C1"})
+	_ = a.Show(context.Background(), c, to, inbound.ProgressNone, inbound.ProgressWorking)
+	_ = a.Show(context.Background(), conn(t, defaultSettings), command, inbound.ProgressNone, inbound.ProgressWorking)
+	// A reply posts the answer and reacts to nothing: the core says when to.
+	if err := a.Reply(context.Background(), conn(t, defaultSettings), to, inbound.Result{Text: "ok"}); err != nil {
+		t.Fatal(err)
 	}
-	// Not asked for: no reaction calls.
-	f = newFakeSlack(t)
-	a = adapter(f.srv.URL)
-	c.Config = json.RawMessage(`{"teamId":"` + team + `"}`)
-	_ = a.Reply(context.Background(), c, to, inbound.Result{Text: "ok"})
-	if len(f.calls) != 1 {
-		t.Errorf("reactions without workingReaction: calls = %d", len(f.calls))
-	}
-	// A notice from the core never started a run: nothing to swap.
-	f = newFakeSlack(t)
-	a, c = adapter(f.srv.URL), conn(t, defaultSettings)
-	_ = a.Reply(context.Background(), c, to, inbound.Result{Text: "busy", Notice: true})
-	if len(f.calls) != 1 {
-		t.Errorf("reactions on a core notice: calls = %d", len(f.calls))
+	if len(f.calls) != 1 || f.calls[0].method != "chat.postMessage" {
+		t.Errorf("calls = %+v", f.calls)
 	}
 }

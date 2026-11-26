@@ -68,10 +68,12 @@ type Config struct {
 	// bot token is that of one workspace. It is looked up from the bot token
 	// (CompleteConfig); while it is empty every message is ignored.
 	TeamID string `json:"teamId,omitempty"`
-	// WorkingReaction adds an eyes reaction to the message once the run started
-	// (needs the reactions:write scope).
-	WorkingReaction bool `json:"workingReaction,omitempty"`
+	// WorkingReaction shows each request's progress as a reaction on its message
+	// (needs the reactions:write scope). On unless set to false.
+	WorkingReaction *bool `json:"workingReaction,omitempty"`
 }
+
+func (c Config) reactions() bool { return c.WorkingReaction == nil || *c.WorkingReaction }
 
 var teamRe = regexp.MustCompile(`^[TEW][A-Z0-9]{2,30}$`)
 
@@ -155,7 +157,8 @@ func (*Adapter) Describe() inbound.Descriptor {
 		Fields: []inbound.Field{
 			{Key: "teamId", Label: "Workspace id", Type: "string", Placeholder: "T0123ABCD",
 				Help: "Leave empty: it is looked up from the bot token. Events from other workspaces are ignored."},
-			{Key: "workingReaction", Label: "React with eyes while working", Type: "bool", Help: "Needs the reactions:write scope."},
+			{Key: "workingReaction", Label: "Show progress with reactions", Type: "bool", Default: true,
+				Help: "On the message: eyes while working, a raised hand when approval is needed, then a check mark or a cross. Needs the reactions:write scope."},
 		},
 		SecretKeys: []inbound.SecretKey{
 			{Key: KeyBotToken, Required: true, Help: "The Bot User OAuth Token (xoxb-...)."},
@@ -168,7 +171,7 @@ func (*Adapter) Describe() inbound.Descriptor {
 		},
 		Setup: []string{
 			"Create an app at api.slack.com/apps (from scratch) in your workspace.",
-			"OAuth & Permissions, Bot Token Scopes: app_mentions:read, chat:write, im:history (direct messages), commands (slash command), channels:history and groups:history only for the channel mode, reactions:write for the reaction. Install the app and copy the Bot User OAuth Token.",
+			"OAuth & Permissions, Bot Token Scopes: app_mentions:read, chat:write, im:history (direct messages), commands (slash command), channels:history and groups:history only for the channel mode, reactions:write for the progress reactions. Install the app and copy the Bot User OAuth Token.",
 			"Basic Information: copy the Signing Secret.",
 			"Ask your administrator to create a Secret with the keys botToken and signingSecret, labelled agentorca.io/inbound-secret=true, and give its name to this channel.",
 			"Event Subscriptions: turn on, Request URL {{url}} (it must show Verified; save this channel first), subscribe the bot to app_mention, message.im and, for the channel mode, message.channels.",

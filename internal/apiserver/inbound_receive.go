@@ -133,7 +133,7 @@ func (b *InboundBridge) RunState(ctx context.Context, ns, name string) (inbound.
 		}
 		return inbound.RunState{}, err
 	}
-	st := inbound.RunState{Found: true, Agent: run.Spec.AgentRef}
+	st := inbound.RunState{Found: true, Agent: run.Spec.AgentRef, Parent: run.Spec.ParentRunRef}
 	switch run.Status.Phase {
 	case agentorcav1alpha1.AgentRunPhaseSucceeded:
 		st.Done, st.Succeeded, st.Output = true, true, b.s.runAnswer(ctx, &run)

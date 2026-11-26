@@ -86,6 +86,8 @@ type Launcher interface {
 
 // RunState is how a run stands.
 type RunState struct {
+	// Parent is the run that delegated this one, in the same namespace.
+	Parent    string
 	Found     bool
 	Done      bool
 	Succeeded bool
@@ -296,20 +298,23 @@ func (p *Pipeline) Handle(ctx context.Context, c Connection, m Message, recvErr 
 	switch {
 	case errors.As(err, &le) && le.Busy:
 		p.notify(ctx, c, m, "The agent is busy right now. Please try again later.")
+		p.show(ctx, c, m.Reply, ProgressNone, ProgressFailed)
 		return finish(OutcomeFailed, postgresql.InboundFailed, "busy", postgresql.InboundStatus{})
 	case errors.As(err, &le) && le.Gone:
+		p.show(ctx, c, m.Reply, ProgressNone, ProgressFailed)
 		return finish(OutcomeFailed, postgresql.InboundFailed, "agent_unavailable", postgresql.InboundStatus{})
 	case err != nil:
 		return OutcomeFailed, fmt.Errorf("starting the run: %w", err)
 	}
 	if err := p.Store.UpdateInboundMessage(scope, c.ID, key, postgresql.InboundUpdate{
 		Status: postgresql.InboundRunning, RunNamespace: run.Namespace, RunName: run.Name, ReplyTarget: m.Reply,
+		Progress: string(ProgressWorking),
 	}); err != nil {
 		slog.Warn("recording an inbound run", "connection", c.ID, "run", run.Name, "err", err)
 	}
 	_ = p.Store.RecordInboundStatus(scope, c.ID, postgresql.InboundStatus{Received: 1})
 	count(c.Kind, OutcomeStarted)
-	p.indicate(ctx, c, m)
+	p.begin(ctx, c, m, run)
 	return OutcomeStarted, nil
 }
 
@@ -446,24 +451,6 @@ func (p *Pipeline) notify(ctx context.Context, c Connection, m Message, text str
 	defer cancel()
 	if err := a.Reply(rctx, c, m.Reply, Result{Text: text, Notice: true, Subject: m.Title}); err != nil {
 		slog.Warn("sending an inbound notice", "connection", c.ID, "kind", c.Kind, "err", safeErr(err, c))
-	}
-}
-
-// indicate shows that work has begun, when the adapter can: best effort, bounded,
-// never an error for the message.
-func (p *Pipeline) indicate(ctx context.Context, c Connection, m Message) {
-	a, ok := p.Registry.Get(c.Kind)
-	if !ok || !a.Capabilities().WorkingIndicator || len(m.Reply) == 0 {
-		return
-	}
-	ind, ok := a.(Indicator)
-	if !ok {
-		return
-	}
-	ictx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	if err := ind.Working(ictx, c, m.Reply); err != nil {
-		slog.Debug("showing that work has begun", "connection", c.ID, "kind", c.Kind, "err", safeErr(err, c))
 	}
 }
 

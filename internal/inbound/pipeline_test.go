@@ -102,6 +102,9 @@ func (f *fakeStore) UpdateInboundMessage(_ context.Context, conn, key string, u 
 		return nil
 	}
 	m.Status, m.Reason = u.Status, u.Reason
+	if u.Progress != "" {
+		m.Progress = u.Progress
+	}
 	if u.RunName != "" {
 		m.RunNamespace, m.RunName = u.RunNamespace, u.RunName
 	}
