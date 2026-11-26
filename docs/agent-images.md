@@ -119,7 +119,7 @@ surface the results it receives:
 ## Checkpoints, spend, and resume (the state the image relies on)
 
 State is persisted to Redis under `agentorca/runs/<run>/state` by the model-router's
-`state.Store` (see [README → How session state works](../README.md#how-session-state-works-two-layers)).
+`state.Store` (see [How session state works](architecture.md#how-session-state-works)).
 The image doesn't manage this, but it's why images can be stateless/restartable:
 
 - **Messages** are saved on a checkpoint cadence (`AgentRunCheckpointEvery`) and on

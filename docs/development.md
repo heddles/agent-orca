@@ -45,7 +45,9 @@ Multi-group layout organizes APIs by group name (e.g., `batch`, `apps`). Check t
 
 | Doc | Audience | What it covers |
 |---|---|---|
-| [README.md](../README.md) | All | High-level overview, quickstart, API endpoint table |
+| [README.md](../README.md) | All | Project overview and quick start |
+| [installation.md](installation.md) | All | Local setup and installing the Helm chart |
+| [architecture.md](architecture.md) | All | Components, ports, API surfaces and session state |
 | [integrating.md](integrating.md) | Developers / integrators | End-to-end integration guide (CLI, SDKs, ACP API, observability) |
 | [openapi-spec.md](openapi-spec.md) | Developers | OpenAPI contract reference (external + ACP specs) |
 | [acp-api.md](acp-api.md) | Developers | ACP API reference (agent discovery, run execution, sessions) |

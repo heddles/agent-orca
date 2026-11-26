@@ -12,6 +12,16 @@ make aoctl                   # builds bin/aoctl
 go install ./cmd/aoctl       # or install from any checked-out tree
 ```
 
+On macOS, Gatekeeper may stop an editor from launching a binary you built. Sign
+it locally and put it on your `PATH`:
+
+```bash
+xattr -d com.apple.quarantine bin/aoctl   # fails harmlessly if not quarantined
+codesign --force --sign - bin/aoctl
+sudo cp bin/aoctl /usr/local/bin/aoctl    # Apple Silicon: /opt/homebrew/bin
+aoctl version
+```
+
 ## Global flags
 
 These flags are available on every subcommand:
