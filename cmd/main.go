@@ -925,7 +925,11 @@ func main() {
 		}
 	}
 	if pgStore != nil && !inboundChannelsDisabled() {
-		if err := addInboundChannels(mgr, uiAPI, internalAPI, pgStore, externalAuth.RateLimiter()); err != nil {
+		var inboundKeys *connections.Keyring
+		if connService != nil {
+			inboundKeys = connService.Keys
+		}
+		if err := addInboundChannels(mgr, uiAPI, internalAPI, pgStore, externalAuth.RateLimiter(), inboundKeys); err != nil {
 			setupLog.Error(err, "Unable to start the inbound channels")
 			os.Exit(1)
 		}
@@ -1227,7 +1231,7 @@ func inboundChannelsDisabled() bool {
 // of answers.
 func addInboundChannels(
 	mgr manager.Manager, uiAPI *apiserver.UIServer, internalAPI *apiserver.Server,
-	pgStore *postgresql.Store, limiter inbound.Limiter,
+	pgStore *postgresql.Store, limiter inbound.Limiter, keys *connections.Keyring,
 ) error {
 	reg := inbound.NewRegistry()
 	reg.Register(&inboundemail.Adapter{})
@@ -1239,13 +1243,14 @@ func addInboundChannels(
 	bridge := uiAPI.InboundBridge()
 	pipe := &inbound.Pipeline{
 		Store: pgStore.AsPlatform(), Launcher: bridge, Runs: bridge, Resumer: bridge, Registry: reg, Limiter: limiter,
-		Secrets: bridge.ReadSecret,
+		Secrets: bridge.ReadSecret, Credentials: bridge.OpenCredentials,
 	}
 	pipe.Approvals = pgStore.AsPlatform()
 	// A tool call that waits for an approver is also asked in the thread of the
 	// run's channel message (docs/inbound-channels.md).
 	internalAPI.WithApprovalPrompter(pipe)
 	uiAPI.SetInbound(pipe)
+	uiAPI.SetInboundKeys(keys)
 	if err := uiAPI.SetInboundPublicURL(os.Getenv("INBOUND_PUBLIC_URL")); err != nil {
 		// Not fatal: channels work, the UI just shows the address people browse to.
 		setupLog.Error(err, "ignoring INBOUND_PUBLIC_URL")

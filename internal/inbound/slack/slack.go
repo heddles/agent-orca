@@ -186,4 +186,5 @@ var (
 	_ inbound.Acknowledger = (*Adapter)(nil)
 	_ inbound.Indicator    = (*Adapter)(nil)
 	_ inbound.Completer    = (*Adapter)(nil)
+	_ inbound.SetupLinker  = (*Adapter)(nil)
 )

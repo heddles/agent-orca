@@ -56,6 +56,9 @@ type Settings struct {
 	Adapter json.RawMessage `json:"adapter,omitempty"`
 }
 
+// refusedSender is the ledger reason for a sender who is not allowed.
+const refusedSender = "sender_not_allowed"
+
 // Defaults and bounds.
 const (
 	DefaultRatePerMin    = 30
@@ -76,9 +79,6 @@ func ParseSettings(raw json.RawMessage) (Settings, error) {
 		if err := json.Unmarshal(raw, &s); err != nil {
 			return s, fmt.Errorf("config is not valid: %w", err)
 		}
-	}
-	if len(s.AllowSenders)+len(s.AllowGroups)+len(s.AllowChannels) == 0 {
-		return s, fmt.Errorf("allowSenders, allowGroups or allowChannels is required: a connection admits nobody by default")
 	}
 	if len(s.AllowSenders)+len(s.AllowGroups)+len(s.AllowChannels) > maxAllowEntries {
 		return s, fmt.Errorf("the allow-list has at most %d entries", maxAllowEntries)
@@ -192,10 +192,10 @@ func (s Settings) Refusal(caps Capabilities, m Message) string {
 		return "mode_not_enabled"
 	}
 	if len(s.AllowSenders)+len(s.AllowGroups) > 0 && !s.Allowed(m.Sender) {
-		return "sender_not_allowed"
+		return refusedSender
 	}
 	if len(s.AllowSenders)+len(s.AllowGroups) == 0 && len(s.AllowChannels) == 0 {
-		return "sender_not_allowed"
+		return refusedSender
 	}
 	if len(s.AllowChannels) > 0 {
 		ch := normalize(m.Channel)

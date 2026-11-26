@@ -316,6 +316,13 @@ type Completer interface {
 	CompleteConfig(ctx context.Context, c Connection) (json.RawMessage, error)
 }
 
+// SetupLinker is an adapter whose platform can create the app from a link with
+// the settings filled in, including where to send events (receiveURL).
+type SetupLinker interface {
+	Adapter
+	SetupLink(name, receiveURL string) string
+}
+
 // AuthError is a request the adapter could not authenticate.
 type AuthError struct{ Msg string }
 

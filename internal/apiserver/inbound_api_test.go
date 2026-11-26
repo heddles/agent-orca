@@ -40,13 +40,17 @@ import (
 // fakeInboundStore keeps rows per tenant like the real store's scope does. It
 // serves both the API and the pipeline.
 type fakeInboundStore struct {
-	mu    sync.Mutex
-	conns map[string]*postgresql.InboundConnection
-	msgs  map[string]*postgresql.InboundMessage
+	mu       sync.Mutex
+	pairings map[string]*postgresql.InboundPairing
+	conns    map[string]*postgresql.InboundConnection
+	msgs     map[string]*postgresql.InboundMessage
 }
 
 func newFakeInboundStore() *fakeInboundStore {
-	return &fakeInboundStore{conns: map[string]*postgresql.InboundConnection{}, msgs: map[string]*postgresql.InboundMessage{}}
+	return &fakeInboundStore{
+		conns: map[string]*postgresql.InboundConnection{}, msgs: map[string]*postgresql.InboundMessage{},
+		pairings: map[string]*postgresql.InboundPairing{},
+	}
 }
 
 func visibleTo(ctx context.Context, tenant string) bool {

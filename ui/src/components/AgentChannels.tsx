@@ -3,8 +3,9 @@
  * and chat platforms. People write where they already are, the agent runs on the message and
  * the answer comes back in the same conversation. Email has its own form; every other kind is
  * drawn from what its adapter describes (GET /api/inbound-kinds). Anyone who can see the agent can read the list; builders change it. The
- * connection names a Secret an administrator prepared: no password is typed here. A channel can
- * be saved without one, so that its web address exists while the app is being set up.
+ * channel can be saved without credentials, so that its web address exists while the app is being
+ * set up. Chat channels then have a guided setup (ChannelSetup); a Secret an administrator
+ * prepared works too.
  */
 import { useCallback, useEffect, useState, type CSSProperties } from 'react'
 import {
@@ -18,12 +19,15 @@ import { Dialog } from '../lib/dialog'
 import { DSButton, DSChip } from '../lib/primitives'
 import { Field, field } from './BuilderParts'
 import { CopyButton } from './AgentTriggers'
+import { ChannelSetup } from './ChannelSetup'
 
 export function AgentChannels({ namespace, name }: { namespace: string; name: string }) {
   const builder = canWriteEvals(useRoles())
   const [items, setItems] = useState<InboundConnection[] | null>(null)
   const [error, setError] = useState('')
   const [creating, setCreating] = useState<string | null>(null)
+  // The chat channel just made, whose setup opens at once.
+  const [fresh, setFresh] = useState('')
   const [kinds, setKinds] = useState<InboundKind[]>([])
   const [removing, setRemoving] = useState<InboundConnection | null>(null)
   const [reports, setReports] = useState<Record<string, InboundTestReport | 'testing'>>({})
@@ -68,7 +72,7 @@ export function AgentChannels({ namespace, name }: { namespace: string; name: st
       {error && <p role="alert" style={field.error}>{error}</p>}
       {items.length === 0 && !error && <p style={s.muted}>No channels yet.</p>}
       <ul style={s.list}>
-        {items.map((c) => <ChannelCard key={c.id} c={c} kind={kinds.find((k) => k.kind === c.kind)} builder={builder} report={reports[c.id]} onToggle={toggle} onTest={test} onDelete={setRemoving} onChanged={load} />)}
+        {items.map((c) => <ChannelCard key={c.id} c={c} kind={kinds.find((k) => k.kind === c.kind)} builder={builder} report={reports[c.id]} onToggle={toggle} onTest={test} onDelete={setRemoving} onChanged={load} openSetup={c.id === fresh} />)}
       </ul>
       {builder && <div><DSButton variant="primary" onClick={() => setCreating(chatKinds.length ? '' : 'email')}>Add a channel</DSButton></div>}
 
@@ -92,7 +96,7 @@ export function AgentChannels({ namespace, name }: { namespace: string; name: st
           agent={name}
           kind={kinds.find((k) => k.kind === creating)!}
           onClose={() => setCreating(null)}
-          onCreated={() => { setCreating(null); load() }}
+          onCreated={(id) => { setCreating(null); setFresh(id); load() }}
         />
       )}
       {removing && (
@@ -108,24 +112,28 @@ export function AgentChannels({ namespace, name }: { namespace: string; name: st
   )
 }
 
-function ChannelCard({ c, kind, builder, report, onToggle, onTest, onDelete, onChanged }: {
+function ChannelCard({ c, kind, builder, report, onToggle, onTest, onDelete, onChanged, openSetup }: {
   c: InboundConnection; kind?: InboundKind; builder: boolean; report?: InboundTestReport | 'testing'
   onToggle: (c: InboundConnection) => void; onTest: (c: InboundConnection) => void; onDelete: (c: InboundConnection) => void
   onChanged: () => void
+  openSetup: boolean
 }) {
   const mode = c.config.adapter?.mode
   const url = c.url ?? inboundUrl(c.path)
   const chat = c.kind !== 'email'
   const steps = setupSteps(kind, url)
   // Without credentials a channel cannot check or answer anything.
-  const draft = !c.secretRef
+  const draft = !c.credentials && !c.secretRef
+  const [guided, setGuided] = useState(openSetup)
+  // Until someone is allowed, nothing the channel receives is answered.
+  const nobody = chat && !c.config.allowSenders?.length && !c.config.allowGroups?.length && !c.config.allowChannels?.length
   const refused = Object.entries(c.refused ?? {}).sort((a, b) => b[1] - a[1])
   return (
     <li style={s.card} aria-label={`Channel ${c.name}`}>
       <div style={s.row}>
         <strong style={{ fontSize: 13 }}>{c.name}</strong>
         <DSChip size="sm">{c.kind === 'email' ? 'Email' : (kind?.descriptor.title ?? c.kind)}{c.kind === 'email' && mode ? ` (${mode === 'imap' ? 'mailbox' : 'provider webhook'})` : ''}</DSChip>
-        {draft
+        {draft || nobody
           ? <DSChip size="sm" variant="warning" dot>Not ready</DSChip>
           : <DSChip size="sm" variant={c.enabled ? 'success' : 'neutral'} dot>{c.enabled ? 'On' : 'Off'}</DSChip>}
       </div>
@@ -151,7 +159,20 @@ function ChannelCard({ c, kind, builder, report, onToggle, onTest, onDelete, onC
           instead. An administrator can set it as <code>operator.inbound.publicURL</code>.
         </p>
       )}
-      {draft && builder && <AddSecret c={c} kind={kind} onAdded={onChanged} />}
+      {chat && kind && builder && !guided && (
+        <div>
+          <DSButton size="sm" variant={draft || nobody ? 'primary' : 'secondary'} onClick={() => setGuided(true)}>
+            {draft || nobody ? 'Continue setup' : 'Setup and pairing'}
+          </DSButton>
+        </div>
+      )}
+      {guided && kind && <ChannelSetup c={c} kind={kind} onChanged={onChanged} onClose={() => setGuided(false)} />}
+      {draft && builder && !guided && (
+        <details>
+          <summary style={{ fontSize: 12, cursor: 'pointer' }}>Use a Kubernetes Secret instead</summary>
+          <AddSecret c={c} kind={kind} onAdded={onChanged} />
+        </details>
+      )}
       {refused.length > 0 && (
         <div style={s.muted}>
           Refused in the last 24 hours:
@@ -160,8 +181,8 @@ function ChannelCard({ c, kind, builder, report, onToggle, onTest, onDelete, onC
           </ul>
         </div>
       )}
-      {chat && steps.length > 0 && (
-        <details open={draft}>
+      {chat && steps.length > 0 && !guided && (
+        <details>
           <summary style={{ fontSize: 12, cursor: 'pointer' }}>Setup steps</summary>
           <ol aria-label={`Setup steps of ${c.name}`} style={{ margin: '6px 0 0', paddingLeft: 18, fontSize: 12, color: ds.textSecondary }}>
             {steps.map((t, i) => <li key={i}>{t}</li>)}
@@ -323,7 +344,7 @@ function CreateDialog({ namespace, agent, onClose, onCreated }: {
 }
 
 function GenericCreateDialog({ namespace, agent, kind, onClose, onCreated }: {
-  namespace: string; agent: string; kind: InboundKind; onClose: () => void; onCreated: () => void
+  namespace: string; agent: string; kind: InboundKind; onClose: () => void; onCreated: (id: string) => void
 }) {
   const d = kind.descriptor
   const offered = kind.capabilities.modes ?? []
@@ -345,7 +366,6 @@ function GenericCreateDialog({ namespace, agent, kind, onClose, onCreated }: {
     const allowGroups = parseList(groups)
     const allowChannels = parseList(channels)
     if (!name.trim()) { setError('Give the channel a name.'); return }
-    if (allowSenders.length + allowGroups.length + allowChannels.length === 0) { setError('List who may write in, or which channels. Nobody is allowed by default.'); return }
     if (offered.length > 0 && modes.length === 0) { setError('Choose at least one way of addressing the agent.'); return }
     if (modes.includes('channel') && allowChannels.length === 0) { setError('Answering every message of a channel needs that channel on the list.'); return }
     const adapter: Record<string, string | number | boolean> = {}
@@ -362,11 +382,11 @@ function GenericCreateDialog({ namespace, agent, kind, onClose, onCreated }: {
     setBusy(true)
     setError('')
     try {
-      await createInbound({
+      const made = await createInbound({
         namespace, agent, name: name.trim(), kind: kind.kind, secretRef: secretRef.trim(),
         config: { allowSenders, allowGroups, allowChannels, ...(offered.length ? { modes } : {}), adapter },
       })
-      onCreated()
+      onCreated(made?.id ?? '')
     } catch (err) {
       setError(describeInboundError(err))
       setBusy(false)
@@ -410,6 +430,13 @@ function GenericCreateDialog({ namespace, agent, kind, onClose, onCreated }: {
             </Field>
           )
         ))}
+        <p style={s.muted}>
+          Nobody may write until they are on the list. After creating the channel, send a one-time code from {d.title} to
+          add yourself, or list ids here.
+        </p>
+        <details>
+          <summary style={{ fontSize: 13, cursor: 'pointer' }}>List people and channels by id (optional)</summary>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 8 }}>
         {d.allow?.users && (
           <Field label="Who may write (user ids)" help={d.allow.users}>
             {(p) => <textarea {...p} style={{ ...field.control, minHeight: 48 }} value={users} onChange={(e) => setUsers(e.target.value)} />}
@@ -425,6 +452,8 @@ function GenericCreateDialog({ namespace, agent, kind, onClose, onCreated }: {
             {(p) => <textarea {...p} style={{ ...field.control, minHeight: 40 }} value={channels} onChange={(e) => setChannels(e.target.value)} />}
           </Field>
         )}
+          </div>
+        </details>
         {offered.length > 0 && (
           <fieldset style={{ border: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
             <legend style={{ fontSize: 13, marginBottom: 4 }}>The agent answers</legend>

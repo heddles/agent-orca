@@ -140,3 +140,75 @@ func TestInbound_SettingsAreLookedUpOnceThereAreCredentials(t *testing.T) {
 		t.Errorf("%d connections after a refused create, want 2", len(list))
 	}
 }
+
+func (f *fakeInboundStore) SetInboundCredentials(ctx context.Context, id, keyID string, sealed []byte, config json.RawMessage) (postgresql.InboundConnection, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	c, ok := f.conns[id]
+	if !ok || !visibleTo(ctx, c.TenantID) {
+		return postgresql.InboundConnection{}, postgresql.ErrInboundNotFound
+	}
+	c.CredentialsKeyID, c.CredentialsEnc, c.Config, c.SecretRef = keyID, sealed, config, ""
+	return *c, nil
+}
+
+func (f *fakeInboundStore) RecordInboundRequest(_ context.Context, id, authError string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if c, ok := f.conns[id]; ok {
+		now := time.Now()
+		c.LastAuthError = authError
+		if authError == "" {
+			c.LastRequestAt = &now
+		}
+	}
+	return nil
+}
+
+func (f *fakeInboundStore) CreateInboundPairing(_ context.Context, p postgresql.InboundPairing) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for id, o := range f.pairings {
+		if o.ConnectionID == p.ConnectionID {
+			delete(f.pairings, id)
+		}
+	}
+	f.pairings[p.ID] = &p
+	return nil
+}
+
+func (f *fakeInboundStore) ReceiveInboundPairing(_ context.Context, in postgresql.InboundPairing) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, p := range f.pairings {
+		if p.ConnectionID == in.ConnectionID && p.CodeHash == in.CodeHash && p.ReceivedAt == nil && time.Now().Before(p.ExpiresAt) {
+			now := time.Now()
+			p.ReceivedAt, p.SenderID, p.SenderName, p.ChannelID, p.Mode, p.ReplyTarget = &now, in.SenderID, in.SenderName, in.ChannelID, in.Mode, in.ReplyTarget
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (f *fakeInboundStore) pairing(connectionID, id string, take bool) (postgresql.InboundPairing, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	p, ok := f.pairings[id]
+	if !ok || p.ConnectionID != connectionID {
+		return postgresql.InboundPairing{}, postgresql.ErrPairingNotFound
+	}
+	if take {
+		delete(f.pairings, id)
+	}
+	return *p, nil
+}
+
+func (f *fakeInboundStore) GetInboundPairing(_ context.Context, connectionID, id string) (postgresql.InboundPairing, error) {
+	return f.pairing(connectionID, id, false)
+}
+
+func (f *fakeInboundStore) TakeInboundPairing(_ context.Context, connectionID, id string) (postgresql.InboundPairing, error) {
+	return f.pairing(connectionID, id, true)
+}
+
+func (f *fakeInboundStore) DeleteExpiredInboundPairings(context.Context) error { return nil }

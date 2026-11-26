@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Channel setup: the platform's steps are shown before the form; a channel can be saved without a Secret so its address exists while the app is being set up; the Slack workspace id is looked up from the bot token; and each channel says why messages were refused in the last 24 hours.
 
 ### Added
+- Guided setup for chat channels: administrators can enter a channel's credentials in the UI (stored encrypted under the connection keyring, never returned, covered by key rotation); a one-time pairing code sent from the chat adds a person; the setup says whether requests are arriving or being refused; and Slack apps can be created from a link with the settings filled in. A chat channel may now be saved with empty allow-lists, which admit nobody. Migration 0025.
 - `operator.inbound.publicURL` (`INBOUND_PUBLIC_URL`): the https address chat services reach this installation at, used for the webhook addresses shown in the UI.
 
 ### Changed

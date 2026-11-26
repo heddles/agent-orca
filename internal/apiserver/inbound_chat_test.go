@@ -162,7 +162,6 @@ func TestInboundChat_KindsEndpointAndSettingsChecks(t *testing.T) {
 	}
 	// A kind that does not describe itself is still listed; the viewer role is enough.
 	for name, cfg := range map[string]string{
-		"no allow-list at all":           `{"modes":["direct"]}`,
 		"another mode the adapter lacks": `{"allowSenders":["U1"],"modes":["channel"]}`,
 		"channel mode not offered":       `{"allowSenders":["U1"],"modes":["channel"]}`,
 		"wildcard channel":               `{"allowChannels":["*"]}`,
@@ -170,6 +169,11 @@ func TestInboundChat_KindsEndpointAndSettingsChecks(t *testing.T) {
 		if rec := f.create(cfg); rec.Code != http.StatusBadRequest {
 			t.Errorf("%s = %d %s", name, rec.Code, rec.Body)
 		}
+	}
+	// A chat channel may be saved before anyone is on its list: pairing adds the
+	// first person. Until then it admits nobody (internal/inbound tests).
+	if rec := f.create(`{"modes":["direct"]}`); rec.Code != http.StatusCreated {
+		t.Errorf("a chat channel with an empty list = %d %s", rec.Code, rec.Body)
 	}
 	rec = f.api(idFor(tenancy.RoleBuilder, isoA), http.MethodPost, "/api/inbound-connections",
 		`{"namespace":"shared","agent":"support","name":"mailish","kind":"chan","secretRef":"creds","config":{"allowSenders":["a"],"allowChannels":["C1"]}}`)

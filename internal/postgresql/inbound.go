@@ -78,6 +78,16 @@ type InboundConnection struct {
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
 
+	// CredentialsEnc are credentials entered in the UI, sealed under the key
+	// CredentialsKeyID. Neither ever leaves the operator.
+	CredentialsEnc   []byte `json:"-"`
+	CredentialsKeyID string `json:"-"`
+	// LastRequestAt is when the channel last made a request that passed the
+	// adapter's check; LastAuthError is why the last one that did not was refused.
+	LastRequestAt   *time.Time `json:"lastRequestAt,omitempty"`
+	LastAuthError   string     `json:"lastAuthError,omitempty"`
+	LastAuthErrorAt *time.Time `json:"lastAuthErrorAt,omitempty"`
+
 	LastPollAt    *time.Time `json:"lastPollAt,omitempty"`
 	LastError     string     `json:"lastError,omitempty"`
 	ReceivedCount int64      `json:"receivedCount"`
@@ -136,14 +146,24 @@ func (c InboundConnection) Validate() error {
 }
 
 const inboundCols = `c.id, c.tenant_id, c.kind, c.name, c.namespace, c.agent, c.enabled, c.config, c.secret_ref, c.created_by,
-	c.created_at, c.updated_at, c.last_poll_at, c.last_error, c.received_count, c.replied_count, c.rejected_count`
+	c.created_at, c.updated_at, c.last_poll_at, c.last_error, c.received_count, c.replied_count, c.rejected_count,
+	c.credentials_enc, c.credentials_key_id, c.last_request_at, c.last_auth_error, c.last_auth_error_at`
 
 func scanInbound(row interface{ Scan(...any) error }) (InboundConnection, error) {
 	var c InboundConnection
 	var cfg []byte
-	var polled sql.NullTime
+	var polled, requested, refused sql.NullTime
 	err := row.Scan(&c.ID, &c.TenantID, &c.Kind, &c.Name, &c.Namespace, &c.Agent, &c.Enabled, &cfg, &c.SecretRef, &c.CreatedBy,
-		&c.CreatedAt, &c.UpdatedAt, &polled, &c.LastError, &c.ReceivedCount, &c.RepliedCount, &c.RejectedCount)
+		&c.CreatedAt, &c.UpdatedAt, &polled, &c.LastError, &c.ReceivedCount, &c.RepliedCount, &c.RejectedCount,
+		&c.CredentialsEnc, &c.CredentialsKeyID, &requested, &c.LastAuthError, &refused)
+	if requested.Valid {
+		v := requested.Time
+		c.LastRequestAt = &v
+	}
+	if refused.Valid {
+		v := refused.Time
+		c.LastAuthErrorAt = &v
+	}
 	c.Config = json.RawMessage(cfg)
 	if polled.Valid {
 		v := polled.Time
@@ -294,9 +314,11 @@ func (s *Store) UpdateInboundConnection(ctx context.Context, id string, p Inboun
 			return err
 		}
 		c, err = scanInbound(tx.QueryRowContext(ctx, `
-			UPDATE inbound_connections c SET enabled = $3, config = $4::jsonb, secret_ref = $5, updated_at = now()
+			UPDATE inbound_connections c SET enabled = $3, config = $4::jsonb, secret_ref = $5, updated_at = now(),
+			  credentials_enc = CASE WHEN $6 THEN NULL ELSE credentials_enc END,
+			  credentials_key_id = CASE WHEN $6 THEN '' ELSE credentials_key_id END
 			WHERE c.id = $1 AND ($2::text = '*' OR c.tenant_id = $2) RETURNING `+inboundCols,
-			id, scope, cur.Enabled, string(configOrEmpty(cur.Config)), cur.SecretRef))
+			id, scope, cur.Enabled, string(configOrEmpty(cur.Config)), cur.SecretRef, p.SecretRef != nil && cur.SecretRef != ""))
 		return err
 	})
 	if err != nil {
@@ -313,6 +335,9 @@ func (s *Store) DeleteInboundConnection(ctx context.Context, id string) (Inbound
 		c, err = scanInbound(tx.QueryRowContext(ctx,
 			`DELETE FROM inbound_connections c WHERE c.id = $1 AND ($2::text = '*' OR c.tenant_id = $2) RETURNING `+inboundCols, id, scope))
 		if err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `DELETE FROM inbound_pairings WHERE tenant_id = $1 AND connection_id = $2`, c.TenantID, id); err != nil {
 			return err
 		}
 		_, err = tx.ExecContext(ctx, `DELETE FROM inbound_messages WHERE tenant_id = $1 AND connection_id = $2`, c.TenantID, id)

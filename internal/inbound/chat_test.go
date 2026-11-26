@@ -71,8 +71,14 @@ func chatMsg(id, user, team, channel string, mode Mode) Message {
 }
 
 func TestChat_AllowListsAreDefaultDenyAndExact(t *testing.T) {
-	if _, err := ParseSettings([]byte(`{"modes":["direct"]}`)); err == nil {
-		t.Error("settings with no allow-list at all were accepted")
+	// A chat channel may be saved before anyone is paired to it. It admits nobody.
+	empty, err := ParseSettings([]byte(`{"modes":["direct"]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	chatCaps := Capabilities{Modes: []Mode{ModeDirect}}
+	if why := empty.Refusal(chatCaps, chatMsg("0", "U1", "T1", "C1", ModeDirect)); why != "sender_not_allowed" {
+		t.Errorf("an empty allow-list gave %q, want sender_not_allowed", why)
 	}
 	for _, bad := range []string{`{"allowChannels":["*"]}`, `{"allowChannels":["C1,C2"]}`, `{"allowSenders":["U1"],"modes":["shout"]}`} {
 		if _, err := ParseSettings([]byte(bad)); err == nil {

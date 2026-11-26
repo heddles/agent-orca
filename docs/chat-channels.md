@@ -6,6 +6,8 @@ All adapters answer as a trigger actor: the chat user is not an agent-orca user,
 
 ## Common steps
 
+For Slack, the guided setup on the channel's card ([inbound-channels.md](inbound-channels.md#guided-setup)) is the short way: create the channel, use the link that creates the app with its settings filled in, have an administrator paste the bot token and signing secret, and send the pairing code. The steps below are the manual way, with a Kubernetes Secret.
+
 1. Publish the agent.
 2. An administrator creates the Secret in the agent's namespace and labels it. The credentials never go through the API or the database:
 

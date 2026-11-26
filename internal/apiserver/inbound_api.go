@@ -45,8 +45,9 @@ import (
 //	POST   /inbound/{kind}/{id}                signed by the channel, no session (inbound_receive.go)
 //
 // A connection is for a published agent. Its credentials are in a Secret an
-// administrator labelled (inbound.SecretLabel); the API never accepts or returns
-// a secret value.
+// administrator labelled (inbound.SecretLabel), or were entered by an
+// administrator and are stored encrypted (inbound_guided.go). The API never
+// returns a secret value.
 
 const (
 	kindInbound    = "InboundConnection"
@@ -62,6 +63,11 @@ type inboundStore interface {
 	UpdateInboundConnection(ctx context.Context, id string, p postgresql.InboundPatch) (postgresql.InboundConnection, error)
 	DeleteInboundConnection(ctx context.Context, id string) (postgresql.InboundConnection, error)
 	InboundRefusals(ctx context.Context, connectionIDs []string, since time.Time) (map[string]map[string]int, error)
+	SetInboundCredentials(ctx context.Context, id, keyID string, sealed []byte, config json.RawMessage) (postgresql.InboundConnection, error)
+	RecordInboundRequest(ctx context.Context, id, authError string) error
+	CreateInboundPairing(ctx context.Context, p postgresql.InboundPairing) error
+	GetInboundPairing(ctx context.Context, connectionID, id string) (postgresql.InboundPairing, error)
+	TakeInboundPairing(ctx context.Context, connectionID, id string) (postgresql.InboundPairing, error)
 }
 
 const schemeHTTPS = "https"
@@ -112,6 +118,10 @@ func (s *UIServer) registerInboundRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/inbound-connections", s.handleInboundConnections)
 	mux.HandleFunc("/api/inbound-connections/{id}", s.handleInboundConnection)
 	mux.HandleFunc("/api/inbound-connections/{id}/test", s.handleInboundTest)
+	mux.HandleFunc("/api/inbound-connections/{id}/credentials", s.handleInboundCredentials)
+	mux.HandleFunc("/api/inbound-connections/{id}/pairings", s.handleInboundPairings)
+	mux.HandleFunc("/api/inbound-connections/{id}/pairings/{pairing}", s.handleInboundPairing)
+	mux.HandleFunc("/api/inbound-connections/{id}/pairings/{pairing}/approve", s.handleInboundPairingApprove)
 	mux.HandleFunc("/inbound/{kind}/{id}", s.handleInboundReceive)
 }
 
@@ -160,12 +170,35 @@ type inboundView struct {
 	URL string `json:"url,omitempty"`
 	// Refused counts the messages refused in the last 24 hours, by reason code.
 	Refused map[string]int `json:"refused,omitempty"`
+	// Credentials says where they are: "stored" (entered in the UI), "secret"
+	// (a Kubernetes Secret) or "" (none yet). They are never returned.
+	Credentials string `json:"credentials"`
+	// CanStore: this installation can keep credentials entered in the UI.
+	CanStore bool `json:"canStoreCredentials"`
+	// SetupLink creates the platform's app with this channel's settings filled in.
+	SetupLink string `json:"setupLink,omitempty"`
 }
 
 func (s *UIServer) inboundViewOf(c postgresql.InboundConnection) inboundView {
 	v := inboundView{InboundConnection: c, Path: "/inbound/" + c.Kind + "/" + c.ID}
 	if s.inboundPublicURL != "" {
 		v.URL = s.inboundPublicURL + v.Path
+	}
+	switch {
+	case len(c.CredentialsEnc) > 0:
+		v.Credentials = credentialsStored
+	case c.SecretRef != "":
+		v.Credentials = credentialsSecret
+	}
+	v.CanStore = s.inboundKeys != nil
+	// The app must be told where to send events, so the link needs the real
+	// public address: a guess from the browser's address could be unreachable.
+	if s.inboundPipe != nil && v.URL != "" {
+		if a, ok := s.inboundPipe.Registry.Get(c.Kind); ok {
+			if l, ok := a.(inbound.SetupLinker); ok {
+				v.SetupLink = l.SetupLink(c.Name, v.URL)
+			}
+		}
 	}
 	return v
 }
@@ -264,7 +297,7 @@ func (s *UIServer) completeInboundConfig(
 ) (json.RawMessage, bool) {
 	a, _ := s.inboundPipe.Registry.Get(sc.Kind)
 	completer, ok := a.(inbound.Completer)
-	if !ok || sc.SecretRef == "" || s.inboundPipe.Secrets == nil {
+	if !ok || (len(sc.CredentialsEnc) == 0 && (sc.SecretRef == "" || s.inboundPipe.Secrets == nil)) {
 		return sc.Config, true
 	}
 	c, err := s.inboundPipe.Resolve(ctx, sc)
@@ -458,6 +491,9 @@ func (s *UIServer) patchInbound(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.SecretRef != nil {
 			next.SecretRef = *req.SecretRef
+			if next.SecretRef != "" {
+				next.CredentialsEnc, next.CredentialsKeyID = nil, ""
+			}
 		}
 		filled, ok := s.completeInboundConfig(w, r.Context(), next)
 		if !ok {

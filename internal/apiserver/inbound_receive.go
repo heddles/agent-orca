@@ -247,15 +247,18 @@ func (s *UIServer) handleInboundReceive(w http.ResponseWriter, r *http.Request) 
 		jsonError(w, "not found", http.StatusNotFound)
 		return
 	case errors.As(err, &authErr):
+		s.noteInboundRequest(r.Context(), sc, authErr.Msg)
 		jsonError(w, authErr.Msg, http.StatusUnauthorized)
 		return
 	case errors.As(err, &direct):
+		s.noteInboundRequest(r.Context(), sc, "") // the platform's address check
 		writeInboundResponse(w, direct)
 		return
 	case err != nil && !errors.As(err, &rej):
 		jsonError(w, "the message could not be read", http.StatusBadRequest)
 		return
 	}
+	s.noteInboundRequest(r.Context(), sc, "")
 	var outcome inbound.Outcome
 	if a.Capabilities().AckFirst {
 		var ok bool

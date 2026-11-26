@@ -103,6 +103,9 @@ func (r *Runner) Start(ctx context.Context) error {
 			if _, err := r.P.Store.DeleteInboundMessagesBefore(pctx, r.P.now().Add(-orDur(r.Retention, 30*24*time.Hour))); err != nil {
 				slog.Warn("pruning the inbound ledger", "err", err)
 			}
+			if err := r.P.Store.DeleteExpiredInboundPairings(pctx); err != nil {
+				slog.Warn("pruning pairings", "err", err)
+			}
 		}
 	}
 }

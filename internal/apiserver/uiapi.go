@@ -43,6 +43,7 @@ import (
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
 	"github.com/heddles/agent-orca/internal/checkpoint"
+	"github.com/heddles/agent-orca/internal/connections"
 	"github.com/heddles/agent-orca/internal/inbound"
 	"github.com/heddles/agent-orca/internal/postgresql"
 	"github.com/heddles/agent-orca/internal/schedule"
@@ -88,6 +89,11 @@ type UIServer struct {
 	pgStore *postgresql.Store
 	// inboundPublicURL is where channels reach us (SetInboundPublicURL).
 	inboundPublicURL string
+	// inboundKeys seals channel credentials entered in the UI; nil when the
+	// connection encryption key is not set up.
+	inboundKeys *connections.Keyring
+	// inboundSeen spaces out writes about refused requests, per connection.
+	inboundSeen sync.Map
 	// approvals overrides the approvals store (tests); nil means pgStore.
 	approvals approvalStore
 	// costArchive overrides the archive read by /api/costs (tests); nil means pgStore.
