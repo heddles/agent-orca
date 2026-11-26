@@ -59,6 +59,7 @@ beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
     const method = init?.method ?? 'GET'
     calls.push({ method, url, body: init?.body ? JSON.parse(String(init.body)) : undefined })
+    if (method === 'GET' && url === '/api/chat-apps') return Promise.resolve(new Response('[]', { status: 200 }))
     if (method === 'GET' && url === '/api/inbound-kinds') return Promise.resolve(new Response(JSON.stringify(kinds), { status: 200 }))
     if (method === 'GET' && url.startsWith('/api/inbound-connections')) return Promise.resolve(new Response(JSON.stringify(current), { status: 200 }))
     const key = Object.keys(routes).find((k) => { const [m, re] = k.split(' '); return m === method && new RegExp(re).test(url) })

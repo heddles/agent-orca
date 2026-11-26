@@ -28,6 +28,7 @@ export const ROUTES = {
   /** "Connect your account": the user's own connections to MCP servers; also the OAuth callback landing page. */
   myConnections: '/connections',
   knowledge: '/settings/knowledge',
+  chatApps: '/settings/chat-apps',
 } as const
 
 /** An evaluation dataset. */

@@ -42,6 +42,7 @@ import (
 type fakeInboundStore struct {
 	mu       sync.Mutex
 	pairings map[string]*postgresql.InboundPairing
+	routes   map[string][]postgresql.InboundRoute
 	conns    map[string]*postgresql.InboundConnection
 	msgs     map[string]*postgresql.InboundMessage
 }
@@ -50,6 +51,7 @@ func newFakeInboundStore() *fakeInboundStore {
 	return &fakeInboundStore{
 		conns: map[string]*postgresql.InboundConnection{}, msgs: map[string]*postgresql.InboundMessage{},
 		pairings: map[string]*postgresql.InboundPairing{},
+		routes:   map[string][]postgresql.InboundRoute{},
 	}
 }
 

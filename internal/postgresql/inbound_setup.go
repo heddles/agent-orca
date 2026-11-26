@@ -126,6 +126,9 @@ type InboundPairing struct {
 	CodeHash     string
 	CreatedBy    string
 	ExpiresAt    time.Time
+	// Namespace and Agent: on a shared chat app, the route the sender joins.
+	Namespace string
+	Agent     string
 	// The rest is empty until a message with the code arrives.
 	ReceivedAt  *time.Time
 	SenderID    string
@@ -139,14 +142,14 @@ type InboundPairing struct {
 var ErrPairingNotFound = errors.New("the pairing was not found or has expired")
 
 const pairingCols = `p.id, p.tenant_id, p.connection_id, p.created_by, p.expires_at, p.received_at, p.sender_id, p.sender_name,
-	p.channel_id, p.mode, p.reply_target`
+	p.channel_id, p.mode, p.reply_target, p.namespace, p.agent`
 
 func scanPairing(row interface{ Scan(...any) error }) (InboundPairing, error) {
 	var p InboundPairing
 	var received sql.NullTime
 	var target []byte
 	err := row.Scan(&p.ID, &p.TenantID, &p.ConnectionID, &p.CreatedBy, &p.ExpiresAt, &received, &p.SenderID, &p.SenderName,
-		&p.ChannelID, &p.Mode, &target)
+		&p.ChannelID, &p.Mode, &target, &p.Namespace, &p.Agent)
 	if received.Valid {
 		v := received.Time
 		p.ReceivedAt = &v
@@ -175,8 +178,8 @@ func (s *Store) CreateInboundPairing(ctx context.Context, p InboundPairing) erro
 			return err
 		}
 		_, err = tx.ExecContext(ctx, `
-			INSERT INTO inbound_pairings (id, tenant_id, connection_id, code_hash, created_by, expires_at)
-			VALUES ($1, $2, $3, $4, $5, $6)`, p.ID, tenant, p.ConnectionID, p.CodeHash, p.CreatedBy, p.ExpiresAt)
+			INSERT INTO inbound_pairings (id, tenant_id, connection_id, code_hash, created_by, expires_at, namespace, agent)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, p.ID, tenant, p.ConnectionID, p.CodeHash, p.CreatedBy, p.ExpiresAt, p.Namespace, p.Agent)
 		return err
 	}))
 }

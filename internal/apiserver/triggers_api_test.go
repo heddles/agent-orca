@@ -143,6 +143,7 @@ type hookFixture struct {
 	now   time.Time
 }
 
+//nolint:unparam // the namespace is part of what a reader of the fixture needs to see
 func hookAgent(ns, name string, labels map[string]string) *agentorcav1alpha1.Agent {
 	l := map[string]string{tenancy.LabelTenantID: isoA}
 	maps.Copy(l, labels)

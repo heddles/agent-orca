@@ -122,6 +122,7 @@ func (s *UIServer) registerInboundRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/inbound-connections/{id}/pairings", s.handleInboundPairings)
 	mux.HandleFunc("/api/inbound-connections/{id}/pairings/{pairing}", s.handleInboundPairing)
 	mux.HandleFunc("/api/inbound-connections/{id}/pairings/{pairing}/approve", s.handleInboundPairingApprove)
+	s.registerChatAppRoutes(mux)
 	mux.HandleFunc("/inbound/{kind}/{id}", s.handleInboundReceive)
 }
 
@@ -442,7 +443,7 @@ func (s *UIServer) ownedInbound(w http.ResponseWriter, r *http.Request, store in
 		return postgresql.InboundConnection{}, false
 	}
 	c, err := store.GetInboundConnection(pgScope(r.Context()), id)
-	if err == nil && !namespaceAllowed(r.Context(), c.Namespace) {
+	if err == nil && !c.Shared() && !namespaceAllowed(r.Context(), c.Namespace) {
 		err = postgresql.ErrInboundNotFound
 	}
 	if err != nil {
@@ -450,6 +451,12 @@ func (s *UIServer) ownedInbound(w http.ResponseWriter, r *http.Request, store in
 		return postgresql.InboundConnection{}, false
 	}
 	return c, true
+}
+
+// requireAdminForShared: a chat app several agents share is the platform's, so
+// changing it is an administrator's job.
+func requireAdminForShared(w http.ResponseWriter, r *http.Request, c postgresql.InboundConnection) bool {
+	return !c.Shared() || requireRole(w, r, tenancy.RoleAdmin)
 }
 
 func (s *UIServer) patchInbound(w http.ResponseWriter, r *http.Request) {
@@ -470,7 +477,11 @@ func (s *UIServer) patchInbound(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cur, ok := s.ownedInbound(w, r, store)
-	if !ok {
+	if !ok || !requireAdminForShared(w, r, cur) {
+		return
+	}
+	if cur.Shared() && (req.Config != nil || req.SecretRef != nil) {
+		jsonError(w, "a shared chat app takes its credentials from the guided setup, and its people and places from its agents", http.StatusConflict)
 		return
 	}
 	if req.Config != nil {
@@ -525,7 +536,7 @@ func (s *UIServer) deleteInbound(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cur, ok := s.ownedInbound(w, r, store)
-	if !ok {
+	if !ok || !requireAdminForShared(w, r, cur) {
 		return
 	}
 	c, err := store.DeleteInboundConnection(pgScope(r.Context()), cur.ID)
@@ -548,7 +559,7 @@ func (s *UIServer) handleInboundTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cur, ok := s.ownedInbound(w, r, store)
-	if !ok {
+	if !ok || !requireAdminForShared(w, r, cur) {
 		return
 	}
 	a, known := s.inboundPipe.Registry.Get(cur.Kind)

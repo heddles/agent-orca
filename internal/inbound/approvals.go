@@ -164,6 +164,8 @@ func (p *Pipeline) NotifyApproval(ctx context.Context, a postgresql.Approval) er
 	if err != nil || !ok {
 		return err
 	}
+	// On a shared app, who may approve is the run's agent's list.
+	c = p.routeOfRun(ctx, c, a.Namespace, a.RunName)
 	res := p.Prepare(c, Result{Text: approvalPrompt(a, c.Settings), Notice: true})
 	rctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()

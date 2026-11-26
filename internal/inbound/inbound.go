@@ -222,6 +222,8 @@ type Connection struct {
 	Settings Settings
 	Config   json.RawMessage
 	Secret   Secret
+	// routed: this is a shared connection as one agent's route sees it.
+	routed bool
 }
 
 // Adapter speaks one channel's protocol.
@@ -321,6 +323,22 @@ type Completer interface {
 type SetupLinker interface {
 	Adapter
 	SetupLink(name, receiveURL string) string
+}
+
+// Place is a channel of a chat platform.
+type Place struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// Member: the bot is in it, which most platforms need before it hears anything.
+	Member bool `json:"member"`
+}
+
+// Directory is an adapter that can name channels and people, so that nobody has
+// to look up ids.
+type Directory interface {
+	Adapter
+	ListPlaces(ctx context.Context, c Connection) ([]Place, error)
+	PersonName(ctx context.Context, c Connection, id string) (string, error)
 }
 
 // AuthError is a request the adapter could not authenticate.

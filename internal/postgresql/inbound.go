@@ -127,7 +127,7 @@ func HashKey(parts ...string) string {
 // Validate reports why c cannot be stored.
 func (c InboundConnection) Validate() error {
 	switch {
-	case c.Namespace == "" || !evalObjectNameRe.MatchString(c.Agent):
+	case !c.Shared() && (c.Namespace == "" || !evalObjectNameRe.MatchString(c.Agent)):
 		return fmt.Errorf("%w: a connection belongs to a namespace and an agent", ErrInvalidInbound)
 	case strings.TrimSpace(c.Name) == "" || len(c.Name) > maxInboundNameLen:
 		return fmt.Errorf("%w: name is required and at most %d characters", ErrInvalidInbound, maxInboundNameLen)
@@ -336,6 +336,11 @@ func (s *Store) DeleteInboundConnection(ctx context.Context, id string) (Inbound
 			`DELETE FROM inbound_connections c WHERE c.id = $1 AND ($2::text = '*' OR c.tenant_id = $2) RETURNING `+inboundCols, id, scope))
 		if err != nil {
 			return err
+		}
+		for _, table := range []string{"inbound_routes", "inbound_places"} {
+			if _, err = tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE tenant_id = $1 AND connection_id = $2`, c.TenantID, id); err != nil {
+				return err
+			}
 		}
 		if _, err = tx.ExecContext(ctx, `DELETE FROM inbound_pairings WHERE tenant_id = $1 AND connection_id = $2`, c.TenantID, id); err != nil {
 			return err

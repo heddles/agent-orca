@@ -26,12 +26,14 @@ interface Props {
   /** Reads the connection again: credentials and live status come from it. */
   onChanged: () => void
   onClose: () => void
+  /** A shared chat app: the test makes the sender known to every builder. */
+  shared?: boolean
   /** For tests: how often to ask, and how long before explaining a silence. */
   pollMs?: number
   patienceMs?: number
 }
 
-export function ChannelSetup({ c, kind, onChanged, onClose, pollMs = POLL_MS, patienceMs = PATIENCE_MS }: Props) {
+export function ChannelSetup({ c, kind, onChanged, onClose, shared = false, pollMs = POLL_MS, patienceMs = PATIENCE_MS }: Props) {
   const title = kind.descriptor.title
   const url = c.url ?? inboundUrl(c.path)
   const [appMade, setAppMade] = useState(Boolean(c.credentials))
@@ -77,7 +79,10 @@ export function ChannelSetup({ c, kind, onChanged, onClose, pollMs = POLL_MS, pa
           <Credentials c={c} kind={kind} onSaved={onChanged} />
         </Step>
         <Step n={4} title="Send a test message" done={false} locked={!ready}>
-          <Pairing c={c} title={title} onChanged={onChanged} pollMs={pollMs} patienceMs={patienceMs} />
+          <Pairing c={c} title={title} onChanged={onChanged} pollMs={pollMs} patienceMs={patienceMs} appWide={shared}
+            intro={shared
+              ? `Sending a one-time code from ${title} shows that messages arrive. It lets builders pick you by name; agents choose their own people.`
+              : undefined} />
         </Step>
       </ol>
     </div>
@@ -180,8 +185,13 @@ function silence(c: InboundConnection, since: number, title: string): string {
   return `No request from ${title} has reached the address. Check that event delivery is on and the address is verified in ${title}, and that it can be reached from there.`
 }
 
-function Pairing({ c, title, onChanged, pollMs, patienceMs }: {
-  c: InboundConnection; title: string; onChanged: () => void; pollMs: number; patienceMs: number
+/** The one-time code: make it, wait for it to arrive, and approve its sender. */
+export function Pairing({ c, title, onChanged, pollMs = POLL_MS, patienceMs = PATIENCE_MS, route, intro, appWide = false }: {
+  c: InboundConnection; title: string; onChanged: () => void; pollMs?: number; patienceMs?: number
+  route?: { namespace: string; agent: string }
+  intro?: string
+  /** Approving makes the sender known to a shared app, and allows nothing yet. */
+  appWide?: boolean
 }) {
   const [pairing, setPairing] = useState<InboundPairing | null>(null)
   const [madeAt, setMadeAt] = useState(0)
@@ -215,7 +225,7 @@ function Pairing({ c, title, onChanged, pollMs, patienceMs }: {
   const start = () => run(async () => {
     setDone(null)
     setSlow(false)
-    setPairing(await createPairing(c.id))
+    setPairing(await createPairing(c.id, route))
     setMadeAt(Date.now())
   })
   const approve = () => run(async () => {
@@ -232,13 +242,13 @@ function Pairing({ c, title, onChanged, pollMs, patienceMs }: {
   return (
     <div style={s.form}>
       <p style={s.text}>
-        Sending a one-time code from {title} shows that messages arrive, and adds you to the people who may write.
+        {intro ?? `Sending a one-time code from ${title} shows that messages arrive, and adds you to the people who may write.`}
       </p>
       {done && (
         <p role="status" style={done.replySent ? s.ok : s.warn}>
           {done.replySent
-            ? 'Connected. The sender is allowed, and the bot replied to them.'
-            : `The sender is allowed, but the bot could not reply: ${done.replyError ?? 'unknown error'}`}
+            ? `Connected. The sender is ${appWide ? 'added' : 'allowed'}, and the bot replied to them.`
+            : `The sender is ${appWide ? 'added' : 'allowed'}, but the bot could not reply: ${done.replyError ?? 'unknown error'}`}
         </p>
       )}
       {pairing && waiting && (
@@ -253,8 +263,9 @@ function Pairing({ c, title, onChanged, pollMs, patienceMs }: {
       {pairing && !waiting && (
         <div style={s.confirm}>
           <p style={s.text}>
-            <strong>{who}</strong> sent the code {pairing.direct ? 'in a direct message' : `from channel ${pairing.channelId}`}. Allow
-            this person?{!pairing.direct && ' If this channel limits where it answers, that channel is added too.'}
+            <strong>{who}</strong> sent the code {pairing.direct ? 'in a direct message' : `from ${pairing.channelName || `channel ${pairing.channelId}`}`}.
+            {' '}{appWide ? 'Add this person?' : route ? `Let this person ask ${route.agent} there?` : 'Allow this person?'}
+            {!pairing.direct && !appWide && !route && ' If this channel limits where it answers, that channel is added too.'}
           </p>
           <div style={s.row}>
             <DSButton size="sm" variant="primary" disabled={busy} onClick={approve}>Allow this person</DSButton>

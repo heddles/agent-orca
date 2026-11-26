@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -33,17 +34,27 @@ import (
 // call posts a JSON body to a Web API method and returns the decoded answer.
 // Errors name the method and Slack's error code, never the token or the text.
 func (a *Adapter) call(ctx context.Context, c inbound.Connection, method string, payload any, out any) (http.Header, error) {
-	token := strings.TrimSpace(c.Secret.Get(KeyBotToken))
-	if token == "" {
-		return nil, fmt.Errorf("the Secret has no %q key", KeyBotToken)
-	}
 	var body []byte
 	if payload != nil {
 		body, _ = json.Marshal(payload)
 	}
+	return a.send(ctx, c, method, "application/json; charset=utf-8", body, out)
+}
+
+// form is call for the methods that take form arguments only.
+func (a *Adapter) form(ctx context.Context, c inbound.Connection, method string, args url.Values, out any) error {
+	_, err := a.send(ctx, c, method, "application/x-www-form-urlencoded", []byte(args.Encode()), out)
+	return err
+}
+
+func (a *Adapter) send(ctx context.Context, c inbound.Connection, method, contentType string, body []byte, out any) (http.Header, error) {
+	token := strings.TrimSpace(c.Secret.Get(KeyBotToken))
+	if token == "" {
+		return nil, fmt.Errorf("the Secret has no %q key", KeyBotToken)
+	}
 	resp, err := a.api().Do(ctx, http.MethodPost, a.base()+"/"+method, http.Header{
 		"Authorization": {"Bearer " + token},
-		"Content-Type":  {"application/json; charset=utf-8"},
+		"Content-Type":  {contentType},
 	}, body)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", method, err)

@@ -187,4 +187,5 @@ var (
 	_ inbound.Indicator    = (*Adapter)(nil)
 	_ inbound.Completer    = (*Adapter)(nil)
 	_ inbound.SetupLinker  = (*Adapter)(nil)
+	_ inbound.Directory    = (*Adapter)(nil)
 )
