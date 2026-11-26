@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,6 +29,7 @@ import (
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
 	"github.com/heddles/agent-orca/internal/acpfs"
+	"github.com/heddles/agent-orca/internal/security"
 )
 
 // fsTestRun creates a run owned by the test tenant in tenant-acme.
@@ -40,8 +42,12 @@ func fsTestRun(name string) *agentorcav1alpha1.AgentRun {
 				"agentorca.io/tenant": "acme",
 			},
 		},
+		Spec: agentorcav1alpha1.AgentRunSpec{AgentRef: terminalAgentName},
 	}
 }
+
+// fsCaller is the TokenReview user of the pods running fsTestRun's agent.
+var fsCaller = "system:serviceaccount:tenant-acme:" + security.AgentSAName(terminalAgentName)
 
 // fsTestServer builds an ACPServer with an in-memory fs relay and a run.
 func fsTestServer(t *testing.T, relay acpfs.Relay, run *agentorcav1alpha1.AgentRun) *ACPServer {
@@ -195,13 +201,13 @@ func TestACPFSPending_LongPollReturnsWhenRequestArrives(t *testing.T) {
 }
 
 func TestInternalFS_NoRelayReturns501(t *testing.T) {
-	s := newACPServer(t, fsTestRun("pod-run-1"))
+	s := newACPServer(t, fsTestRun("pod-run-1"), terminalAgent(nil))
 	srv := &Server{crdClient: s.crdClient}
 
 	req := httptest.NewRequest(http.MethodPost, "/agentrun/tenant-acme/pod-run-1/fs",
 		bytes.NewBufferString(`{"method":"fs/read_text_file","params":{"path":"a.go"}}`))
 	rec := httptest.NewRecorder()
-	srv.enqueueFSRequest(rec, req, "tenant-acme", "pod-run-1")
+	srv.enqueueFSRequest(rec, req, fsCaller, "tenant-acme", "pod-run-1")
 	if rec.Code != http.StatusNotImplemented {
 		t.Fatalf("expected 501 without relay, got %d", rec.Code)
 	}
@@ -209,14 +215,14 @@ func TestInternalFS_NoRelayReturns501(t *testing.T) {
 
 func TestInternalFS_EnqueueTakeFlow(t *testing.T) {
 	relay := acpfs.NewMemRelay()
-	s := newACPServer(t, fsTestRun("pod-run-1"))
+	s := newACPServer(t, fsTestRun("pod-run-1"), terminalAgent(nil))
 	srv := &Server{crdClient: s.crdClient, fsRelay: relay}
 
 	// Unknown run → 404 (no relay entry created).
 	req := httptest.NewRequest(http.MethodPost, "/agentrun/tenant-acme/nope/fs",
 		bytes.NewBufferString(`{"method":"fs/read_text_file","params":{"path":"a.go"}}`))
 	rec := httptest.NewRecorder()
-	srv.enqueueFSRequest(rec, req, "tenant-acme", "nope")
+	srv.enqueueFSRequest(rec, req, fsCaller, "tenant-acme", "nope")
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 for unknown run, got %d", rec.Code)
 	}
@@ -225,7 +231,7 @@ func TestInternalFS_EnqueueTakeFlow(t *testing.T) {
 	req = httptest.NewRequest(http.MethodPost, "/agentrun/tenant-acme/pod-run-1/fs",
 		bytes.NewBufferString(`{"method":"fs/read_text_file","params":{"path":"a.go"}}`))
 	rec = httptest.NewRecorder()
-	srv.enqueueFSRequest(rec, req, "tenant-acme", "pod-run-1")
+	srv.enqueueFSRequest(rec, req, fsCaller, "tenant-acme", "pod-run-1")
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -237,7 +243,7 @@ func TestInternalFS_EnqueueTakeFlow(t *testing.T) {
 	req = httptest.NewRequest(http.MethodPost, "/agentrun/tenant-acme/pod-run-1/fs",
 		bytes.NewBufferString(`{"method":"fs/evil","params":{}}`))
 	rec = httptest.NewRecorder()
-	srv.enqueueFSRequest(rec, req, "tenant-acme", "pod-run-1")
+	srv.enqueueFSRequest(rec, req, fsCaller, "tenant-acme", "pod-run-1")
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for non-fs method, got %d", rec.Code)
 	}
@@ -251,13 +257,13 @@ func TestInternalFS_EnqueueTakeFlow(t *testing.T) {
 	}
 	req = httptest.NewRequest(http.MethodGet, "/agentrun/tenant-acme/pod-run-1/fs/"+created.ID, nil)
 	rec = httptest.NewRecorder()
-	srv.takeFSResponse(rec, req, "tenant-acme", "pod-run-1", created.ID)
+	srv.takeFSResponse(rec, req, fsCaller, "tenant-acme", "pod-run-1", created.ID)
 	if rec.Code != http.StatusOK || rec.Body.String() != `{"id":"`+created.ID+`","result":{"content":"x"}}`+"\n" {
 		t.Fatalf("expected the response body, got %d: %s", rec.Code, rec.Body.String())
 	}
 	req = httptest.NewRequest(http.MethodGet, "/agentrun/tenant-acme/pod-run-1/fs/"+created.ID, nil)
 	rec = httptest.NewRecorder()
-	srv.takeFSResponse(rec, req, "tenant-acme", "pod-run-1", created.ID)
+	srv.takeFSResponse(rec, req, fsCaller, "tenant-acme", "pod-run-1", created.ID)
 	if rec.Code != http.StatusGone {
 		t.Fatalf("expected 410 after take, got %d", rec.Code)
 	}
@@ -265,7 +271,7 @@ func TestInternalFS_EnqueueTakeFlow(t *testing.T) {
 
 func TestInternalFS_TakeNoWaitPendingReturns204(t *testing.T) {
 	relay := acpfs.NewMemRelay()
-	s := newACPServer(t, fsTestRun("pod-run-1"))
+	s := newACPServer(t, fsTestRun("pod-run-1"), terminalAgent(nil))
 	srv := &Server{crdClient: s.crdClient, fsRelay: relay}
 
 	created, err := relay.Enqueue(t.Context(), "tenant-acme:pod-run-1", acpfs.EnqueueRequest{
@@ -276,9 +282,58 @@ func TestInternalFS_TakeNoWaitPendingReturns204(t *testing.T) {
 	}
 	req := httptest.NewRequest(http.MethodGet, "/agentrun/tenant-acme/pod-run-1/fs/"+created.ID, nil)
 	rec := httptest.NewRecorder()
-	srv.takeFSResponse(rec, req, "tenant-acme", "pod-run-1", created.ID)
+	srv.takeFSResponse(rec, req, fsCaller, "tenant-acme", "pod-run-1", created.ID)
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("expected 204 while pending, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// Only the pods of a run's own agent may send requests to the user's computer
+// or read what came back.
+func TestInternalFS_OnlyTheRunsAgentMayUseTheRelay(t *testing.T) {
+	relay := acpfs.NewMemRelay()
+	run := fsTestRun("pod-run-1")
+	run.Annotations = map[string]string{AnnotationLocalTerminal: claimTrue}
+	s := newACPServer(t, run, terminalAgent(&agentorcav1alpha1.TerminalAccessSpec{}))
+	srv := &Server{crdClient: s.crdClient, fsRelay: relay}
+	created, err := relay.Enqueue(t.Context(), "tenant-acme:pod-run-1", acpfs.EnqueueRequest{Method: acpfs.MethodRunTerminal})
+	if err != nil {
+		t.Fatal("enqueue:", err)
+	}
+	if err := relay.Respond(t.Context(), "tenant-acme:pod-run-1", created.ID,
+		&acpfs.Response{Result: json.RawMessage(`{"output":"secret"}`)}); err != nil {
+		t.Fatal("respond:", err)
+	}
+
+	for name, caller := range map[string]string{
+		"another agent":                 "system:serviceaccount:tenant-acme:" + security.AgentSAName("other"),
+		"same name, other namespace":    "system:serviceaccount:tenant-other:" + security.AgentSAName(terminalAgentName),
+		"not a service account":         "someone",
+		"a prefix of the agent account": fsCaller[:len(fsCaller)-1],
+	} {
+		t.Run(name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/agentrun/tenant-acme/pod-run-1/fs",
+				bytes.NewBufferString(`{"method":"terminal/run","params":{"command":"ls"}}`))
+			srv.enqueueFSRequest(rec, req, caller, "tenant-acme", "pod-run-1")
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("enqueue = %d, want 403", rec.Code)
+			}
+			rec = httptest.NewRecorder()
+			req = httptest.NewRequest(http.MethodGet, "/agentrun/tenant-acme/pod-run-1/fs/"+created.ID, nil)
+			srv.takeFSResponse(rec, req, caller, "tenant-acme", "pod-run-1", created.ID)
+			if rec.Code != http.StatusForbidden || strings.Contains(rec.Body.String(), "secret") {
+				t.Fatalf("take = %d %s, want 403", rec.Code, rec.Body.String())
+			}
+		})
+	}
+
+	// The refused takes did not use up the answer.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/agentrun/tenant-acme/pod-run-1/fs/"+created.ID, nil)
+	srv.takeFSResponse(rec, req, fsCaller, "tenant-acme", "pod-run-1", created.ID)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "secret") {
+		t.Fatalf("take by the run's agent = %d %s", rec.Code, rec.Body.String())
 	}
 }
 

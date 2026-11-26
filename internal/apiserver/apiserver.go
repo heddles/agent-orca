@@ -174,9 +174,9 @@ func (s *Server) handleAgentRun(w http.ResponseWriter, r *http.Request) { //noli
 	case r.Method == http.MethodPost && len(parts) == 3 && parts[2] == "shadow-results":
 		s.recordShadowResult(w, r, caller, namespace, parts[1])
 	case r.Method == http.MethodPost && len(parts) == 3 && parts[2] == "fs":
-		s.enqueueFSRequest(w, r, namespace, parts[1])
+		s.enqueueFSRequest(w, r, caller, namespace, parts[1])
 	case r.Method == http.MethodGet && len(parts) == 4 && parts[2] == "fs":
-		s.takeFSResponse(w, r, namespace, parts[1], parts[3])
+		s.takeFSResponse(w, r, caller, namespace, parts[1], parts[3])
 	case r.Method == http.MethodPost && len(parts) == 3 && parts[2] == shellRoute:
 		s.startShellJob(w, r, caller, namespace, parts[1])
 	case r.Method == http.MethodGet && len(parts) == 4 && parts[2] == shellRoute:

@@ -49,7 +49,7 @@ func TestInternalTerminalGating(t *testing.T) {
 			rec := httptest.NewRecorder()
 			req := httptest.NewRequest(http.MethodPost, "/agentrun/tenant-acme/run-1/fs",
 				bytes.NewBufferString(`{"method":"terminal/run","params":{"command":"ls"}}`))
-			srv.enqueueFSRequest(rec, req, "tenant-acme", "run-1")
+			srv.enqueueFSRequest(rec, req, fsCaller, "tenant-acme", "run-1")
 			if rec.Code != tc.want {
 				t.Fatalf("status = %d (%s), want %d", rec.Code, rec.Body.String(), tc.want)
 			}
