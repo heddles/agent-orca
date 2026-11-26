@@ -24,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -73,7 +74,7 @@ type fsBridgeOptions struct {
 // polling quietly — the pod side surfaces a clear error instead of timing out.
 func (b *acpBridge) watchFSSession(ctx context.Context, sessionID string) {
 	fsPolicy := b.fsPolicy()
-	if fsPolicy == nil {
+	if fsPolicy == nil && b.terminalPolicy() == nil {
 		// The manifest is cached from initialize: a bridge process started
 		// before the agent gained spec.filesystem never polls, and pod-side fs
 		// calls sit pending until the router's fs timeout. Make that visible.
@@ -81,7 +82,13 @@ func (b *acpBridge) watchFSSession(ctx context.Context, sessionID string) {
 			"restart the editor agent so a fresh bridge picks it up\n")
 		return
 	}
-	b.srv.logf("acp: filesystem relay active (mode %s) — polling fs requests\n", fsPolicy.Mode)
+	if fsPolicy != nil {
+		b.srv.logf("acp: filesystem relay active (mode %s) — polling fs requests\n", fsPolicy.Mode)
+	}
+	// Commands run beside the loop: one can take minutes, and file requests
+	// must not wait for it. Cancelling ctx stops them, and they are waited for.
+	var commands sync.WaitGroup
+	defer commands.Wait()
 	ticker := time.NewTicker(fsPollInterval)
 	defer ticker.Stop()
 	for {
@@ -114,6 +121,13 @@ func (b *acpBridge) watchFSSession(ctx context.Context, sessionID string) {
 			// Pass the session this watcher belongs to directly: reverse-mapping
 			// run→session per request would race with session record updates
 			// (new prompt / re-sent session/new) and orphan the answer.
+			if reqs[i].Method == acpMethodTerminalRun {
+				if b.claimTerminalRequest(sessionID, runID, reqs[i].ID) {
+					fr := reqs[i]
+					commands.Go(func() { b.serveTerminalRequest(ctx, sessionID, runID, fr) })
+				}
+				continue
+			}
 			b.serveFSRequest(ctx, sessionID, runID, reqs[i], fsPolicy)
 		}
 		select {
@@ -143,6 +157,11 @@ func (b *acpBridge) serveFSRequest(
 	ctx context.Context, sessionID, runID string, fr acpfsRelayRequest, policy *ACPFSPolicy,
 ) {
 	isWrite := fr.Method == acpMethodFSWrite
+
+	if policy == nil {
+		b.respondFSErr(ctx, runID, fr.ID, -32002, "this agent has no filesystem access")
+		return
+	}
 
 	switch fr.Method {
 	case acpMethodFSRead, acpMethodFSList, acpMethodFSWrite:

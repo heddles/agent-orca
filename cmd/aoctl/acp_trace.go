@@ -124,6 +124,12 @@ func parseACPTraceEvent(data string) (acpTraceEvent, bool) {
 // intercepted by the stream consumer (emitFinalOutput) because they need the
 // per-attempt stream state.
 func (b *acpBridge) handleTraceEvent(ev acpTraceEvent, sessionID string) {
+	// A command the bridge serves has its own tool call, with the approval and
+	// the live terminal; the trace's copy would show it twice.
+	if (ev.Type == "toolCall" || ev.Type == "toolResult") && ev.BackendType == "builtin" &&
+		strings.TrimPrefix(ev.Name, "_") == localExecToolName && b.terminalPolicy() != nil {
+		return
+	}
 	switch ev.Type {
 	case "toolCall":
 		b.emitTraceToolCall(sessionID, ev)

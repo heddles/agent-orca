@@ -97,6 +97,9 @@ This is the command to put in your editor's agent_servers config. Use
 		"after the first approved write, auto-allow subsequent writes in the same "+
 			"session without re-prompting (default; opt out with --fs-remember-approval=false, "+
 			"or use --fs-require-approval to keep confirming every write)")
+	serve.Flags().BoolVar(&s.noTerminal, "no-terminal", false,
+		"never run commands on this computer, even for an agent that has local_exec "+
+			"(otherwise each command asks for your approval first)")
 
 	setup := &cobra.Command{
 		Use:   "setup",
@@ -175,6 +178,7 @@ func (s *settings) runACPServe() error {
 		rememberApproval: s.fsRememberApproval,
 	}
 	bridge := newACPBridgeWithOptions(srv, client, s.agent, fsOpts)
+	bridge.terminalDisabled = s.noTerminal
 	srv.handler = bridge
 
 	_, _ = fmt.Fprintf(s.errw,
