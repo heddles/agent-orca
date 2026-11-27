@@ -31,6 +31,21 @@ export function destinationText(n: { channel?: string; slack?: SlackTarget } | u
   return ''
 }
 
+/** What Run now does about reports, said on the button. */
+export function runNowHint(targetKind: string, notify: ScheduleNotifyView | undefined): string | undefined {
+  if (targetKind !== 'agent' || !notify) return undefined
+  return `Starts a run now. Like a timed run, it can send a report to ${destinationText(notify)}.`
+}
+
+/** What to say once Run now has started a run. */
+export function runNowMessage(name: string, notify: ScheduleNotifyView | undefined, reportOn: string[] | undefined): string {
+  const started = `Started a run of ${name}.`
+  if (!reportOn?.length || !notify) return started
+  if (notify.problem) return `${started} Its report cannot be sent: ${notify.problem}`
+  const when = reportOn.length > 1 ? 'When it succeeds or fails' : reportOn[0] === 'Failed' ? 'Only if it fails' : 'Only if it succeeds'
+  return `${started} ${when}, a report goes to ${destinationText(notify)}.`
+}
+
 /** What was chosen here, and what Git says instead. */
 const overrideText = (o: NonNullable<ScheduleNotifyView['override']>) =>
   `changed here by ${o.setBy}. Git says ${destinationText(o.git)}.`

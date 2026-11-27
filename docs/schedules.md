@@ -173,6 +173,8 @@ The webhook body has `schedule`, `namespace`, `agent`, `outcome`, `run`, `durati
 | `BreakerOpen` | Once, when the failure breaker stops the schedule |
 | `Skipped` | Once, when the schedule's spend cap first stops it, not for every skipped tick. Quota, concurrency and missed ticks are not announced |
 
+Timed runs and **Run now** runs are both reported, which makes Run now the way to test a destination. Run now runs started before this behaviour was added are not reported.
+
 Each run is announced **at most once**. The schedule controller claims the run in the same write that counts it (annotation `agentorca.io/schedule-notified`, whose value is the channel, or `slack:<app>/<channelID>`), before anything is sent, so a repeated reconcile, a restart or a second replica does not send it again. The cost is that a message whose delivery fails for good is not retried later.
 
 Delivery is best effort, and never touches the run. It happens in the background with a 10 second timeout per attempt and three attempts with a doubling wait; a client error (4xx other than 408 and 429), a refused address and a bad configuration are final. A failure is an event on the schedule (`NotifyFailed`) with no destination in it.
@@ -217,7 +219,7 @@ If the channel is not in the tenant's `TenantConfig`, or its Secret is missing o
 | `PUT`, `DELETE .../destination` | admin | Choose the Slack channel of a schedule not owned by the UI, or go back to Git's. `PUT` takes `{app, channelID, channelName}`. 409 for a UI-owned schedule or one without `result.notify`, 422 for an app that cannot be used, 503 without the database |
 | create, update, delete | builder | Changing `result.notify` needs admin. A schedule whose `result.egress` has a `secretRef` needs admin, as MCPServer and Tool do (a builder may keep one an admin set) |
 
-Run now creates the run with `agentorca.io/schedule=<name>` but no owner reference and `created-by` set to the person, so it shows in My runs and is not counted in the schedule's history limits, failure streak or spend caps. Scheduled ticks (`created-by: schedule:<ns>/<name>`) are left out of My runs.
+Run now creates the run with `agentorca.io/schedule=<name>` but no owner reference and `created-by` set to the person, so it shows in My runs and is not counted in the schedule's history limits, failure streak or spend caps. An agent run is still [reported](#result-notifications) like a timed one: to the same destination, with the same `on` and `includeOutput`. The API marks it `agentorca.io/schedule-report=requested`, which the controller turns into `handled` when the run finishes, and answers with `reportOn`, the outcomes that will be reported. The controller reports a marked run only if its agent and tenant are the schedule's. A runner can therefore cause a report to be sent to the schedule's destination, but cannot choose the destination. Runs of a workflow template are not reported. Scheduled ticks (`created-by: schedule:<ns>/<name>`) are left out of My runs.
 
 Audit rows: `create`, `update`, `delete` on `AgentSchedule` as for other kinds, plus `suspend` and `resume`; Run now is `request` on `AgentRun`.
 

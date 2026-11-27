@@ -98,6 +98,33 @@ describe('SchedulesView', () => {
       '/api/schedules/team-a/weekday-digest/suspend', '/api/schedules/team-a/weekday-digest/run'])
   })
 
+  it('says before and after Run now where the report goes', async () => {
+    list = [summary({ notify: { slack: { app: 'orca-bot', channelID: 'C0REPORTS', channelName: '#reports' } } })]
+    routes['POST /run'] = { status: 202, body: { kind: 'AgentRun', name: 'weekday-digest-m-x', namespace: 'team-a', reportOn: ['Succeeded', 'Failed'] } }
+    setup()
+    const button = within(await card()).getByRole('button', { name: 'Run now' })
+    expect(button).toHaveAttribute('title', expect.stringContaining('#reports (C0REPORTS), through the app orca-bot'))
+    await userEvent.click(button)
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(
+      'Started a run of weekday-digest. When it succeeds or fails, a report goes to Slack channel #reports (C0REPORTS), through the app orca-bot.'))
+  })
+
+  it('says when Run now only reports a failure', async () => {
+    list = [summary({ notify: { channel: 'home-slack' } })]
+    routes['POST /run'] = { status: 202, body: { kind: 'AgentRun', name: 'weekday-digest-m-x', namespace: 'team-a', reportOn: ['Failed'] } }
+    setup()
+    await userEvent.click(within(await card()).getByRole('button', { name: 'Run now' }))
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Only if it fails, a report goes to the notification channel home-slack.'))
+  })
+
+  it('warns after Run now that the report cannot be sent', async () => {
+    list = [summary({ notify: { channel: 'home-slack', problem: 'the Secret of channel "home-slack" was not found' } })]
+    routes['POST /run'] = { status: 202, body: { kind: 'AgentRun', name: 'weekday-digest-m-x', namespace: 'team-a', reportOn: ['Failed'] } }
+    setup()
+    await userEvent.click(within(await card()).getByRole('button', { name: 'Run now' }))
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Its report cannot be sent: the Secret of channel "home-slack" was not found'))
+  })
+
   it('shows a quota refusal from Run now in words', async () => {
     routes['POST /run'] = { status: 429, body: { error: 'concurrent run limit (1) reached' } }
     setup()

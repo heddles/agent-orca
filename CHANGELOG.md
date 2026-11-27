@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The Schedules page shows where each schedule sends its messages, why when they cannot be sent, and whether the destination comes from Git or was changed in the UI.
 
 ### Changed
+
+- **Run now** on an agent schedule now sends the schedule's report, to the same
+  destination and on the same outcomes as a timed run; the button and the
+  message after it say where it goes. It still does not count toward the failure
+  streak, spend caps or history limits.
 - **Only an admin can change where a schedule sends messages** (`result.notify`, including the events and `includeOutput`) in the UI and its API; builders could before. A builder can still edit the rest of a schedule, and a copy a builder makes has no destination. Schedules written from Git or straight to Kubernetes are unaffected.
 
 ### Security

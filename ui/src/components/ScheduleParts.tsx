@@ -71,7 +71,8 @@ export function ScheduledByChip({ schedule, trigger, scheduledFor, onRunAgain, b
         {manual ? 'Run now from' : 'Scheduled by'} <Link to={ROUTES.schedules} style={{ color: ds.accent, marginLeft: 4 }}>{schedule}</Link>
         {scheduledFor && !manual ? ` · due ${new Date(scheduledFor).toLocaleString()}` : ''}
       </DSChip>
-      {onRunAgain && <DSButton size="sm" variant="secondary" disabled={busy} onClick={onRunAgain}>{busy ? 'Starting…' : 'Run again now'}</DSButton>}
+      {onRunAgain && <DSButton size="sm" variant="secondary" disabled={busy} onClick={onRunAgain}
+        title="Starts a run now. Like a timed run, it sends the schedule's report, if it has one.">{busy ? 'Starting…' : 'Run again now'}</DSButton>}
     </span>
   )
 }

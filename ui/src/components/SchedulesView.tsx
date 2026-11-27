@@ -30,7 +30,7 @@ import { stringifyYAML } from '../lib/yaml'
 import { Field, field } from './BuilderParts'
 import { CopyButton } from './AgentTriggers'
 import { lastResultText, ScheduleStateChip } from './ScheduleParts'
-import { ChangeChannelDialog, DestinationFields, DestinationLine, VIA_SLACK, destinationText, slackProblem, type DestinationForm } from './ScheduleDestination'
+import { ChangeChannelDialog, DestinationFields, DestinationLine, VIA_SLACK, destinationText, runNowHint, runNowMessage, slackProblem, type DestinationForm } from './ScheduleDestination'
 
 export function SchedulesView() {
   const { namespace } = useNamespace()
@@ -54,9 +54,9 @@ export function SchedulesView() {
   }, [namespace])
   useEffect(() => load(), [load])
 
-  const act = async (what: () => Promise<unknown>, done: string) => {
+  const act = async <T,>(what: () => Promise<T>, done: string | ((result: T) => string)) => {
     setNotice('')
-    try { await what(); setNotice(done); setError(''); load() } catch (e) { setError(describeScheduleError(e)) }
+    try { const result = await what(); setNotice(typeof done === 'function' ? done(result) : done); setError(''); load() } catch (e) { setError(describeScheduleError(e)) }
   }
 
   if (rows === null) return <div role="status" style={{ padding: 24, color: ds.textMuted, fontSize: 13 }}>Loading schedules…</div>
@@ -110,7 +110,8 @@ export function SchedulesView() {
                 {r.state === 'degraded' && !git && (
                   <DSButton size="sm" variant="primary" onClick={() => act(() => resumeSchedule(r.namespace, r.name), `${r.name} will run at its next time.`)}>Start again</DSButton>
                 )}
-                <DSButton size="sm" variant="secondary" onClick={() => act(() => runScheduleNow(r.namespace, r.name), `Started a run of ${r.name}.`)}>Run now</DSButton>
+                <DSButton size="sm" variant="secondary" title={runNowHint(r.targetKind, r.notify)}
+                  onClick={() => act(() => runScheduleNow(r.namespace, r.name), (run) => runNowMessage(r.name, r.notify, run.reportOn))}>Run now</DSButton>
                 {admin && git && r.targetKind === 'agent' && r.notify && (
                   <DSButton size="sm" variant="secondary" onClick={() => setRouting(r)}>Change channel</DSButton>
                 )}

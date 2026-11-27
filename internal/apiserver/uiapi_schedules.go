@@ -576,6 +576,8 @@ func toUIBody(obj client.Object) (*unstructured.Unstructured, error) {
 // schedule's settings, started by the caller. It is labelled for the schedule
 // but not owned by it, so it is not counted in the schedule's history limits,
 // failure streak or spend caps, and it passes the tenant's quotas like any run.
+// An agent run is reported like a timed one; reportOn in the answer says on
+// which outcomes, and is absent when nothing will be sent.
 func (s *UIServer) runScheduleNow(w http.ResponseWriter, r *http.Request, sc *agentorcav1alpha1.AgentSchedule) {
 	if !requireRole(w, r, tenancy.RoleRunner) {
 		return
@@ -613,6 +615,7 @@ func (s *UIServer) runScheduleNow(w http.ResponseWriter, r *http.Request, sc *ag
 
 	var created client.Object
 	var kind string
+	var reportOn []string
 	if sc.Spec.WorkflowTemplateRef != "" {
 		var tpl agentorcav1alpha1.AgentWorkflow
 		if err := s.crdClient.Get(ctx, client.ObjectKey{Namespace: sc.Namespace, Name: sc.Spec.WorkflowTemplateRef}, &tpl); err != nil || tpl.Spec.Mode != agentorcav1alpha1.WorkflowModeTemplate {
@@ -662,6 +665,9 @@ func (s *UIServer) runScheduleNow(w http.ResponseWriter, r *http.Request, sc *ag
 		if res := sc.Spec.Result; res != nil {
 			run.Spec.Egress, run.Spec.Callbacks = res.Egress.DeepCopy(), res.Callbacks.DeepCopy()
 		}
+		if reportOn = runOutcomesReported(sc); len(reportOn) > 0 {
+			run.Annotations[schedule.AnnotationReport] = schedule.ReportRequested
+		}
 		created, kind = run, "AgentRun"
 	}
 	if err := s.crdClient.Create(ctx, created); err != nil {
@@ -671,7 +677,33 @@ func (s *UIServer) runScheduleNow(w http.ResponseWriter, r *http.Request, sc *ag
 	s.recordAudit(w, r, auditEventFor(postgresql.AuditRequest, kind, created.GetNamespace(), created.GetName(), created.GetResourceVersion(),
 		fmt.Sprintf("ran AgentSchedule %s/%s now", sc.Namespace, sc.Name)))
 	w.WriteHeader(http.StatusAccepted)
-	jsonResponse(w, map[string]string{"kind": kind, "name": created.GetName(), "namespace": created.GetNamespace()})
+	jsonResponse(w, runNowResponse{Kind: kind, Name: created.GetName(), Namespace: created.GetNamespace(), ReportOn: reportOn})
+}
+
+type runNowResponse struct {
+	Kind      string   `json:"kind"`
+	Name      string   `json:"name"`
+	Namespace string   `json:"namespace"`
+	ReportOn  []string `json:"reportOn,omitempty"`
+}
+
+// runOutcomesReported is the run outcomes the schedule sends a report for. The
+// other events of result.notify are about the schedule, not one run.
+func runOutcomesReported(sc *agentorcav1alpha1.AgentSchedule) []string {
+	if sc.Spec.Result == nil || sc.Spec.Result.Notify == nil {
+		return nil
+	}
+	on := sc.Spec.Result.Notify.On
+	if len(on) == 0 {
+		return []string{agentorcav1alpha1.ScheduleNotifyFailed}
+	}
+	var out []string
+	for _, e := range on {
+		if e == agentorcav1alpha1.ScheduleNotifySucceeded || e == agentorcav1alpha1.ScheduleNotifyFailed {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // scheduleWriteGate applies the role rules the CRUD path cannot express: only

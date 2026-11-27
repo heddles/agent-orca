@@ -35,6 +35,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
@@ -313,10 +314,7 @@ func (r *AgentScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		send = send && (destErr != nil || r.canDeliver(dest))
 		claim := ""
 		if send {
-			claim = dest.Destination()
-			if destErr != nil {
-				claim = "unknown"
-			}
+			claim = claimOf(dest, destErr)
 		}
 		if err := r.markAccounted(ctx, c, claim); err != nil {
 			log.Error(err, "marking a run as counted", "run", c.ref.Name)
@@ -327,7 +325,11 @@ func (r *AgentScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}
 	}
 	jobs = append(jobs, r.scheduleNotices(&s, &orig.Status)...)
-	r.dispatch(ctx, &s, tenant, dest, destErr, jobs)
+	requested, reportErr := r.requestedReports(ctx, &s, dest, destErr)
+	r.dispatch(ctx, &s, tenant, dest, destErr, append(jobs, requested...))
+	if reportErr != nil {
+		return ctrl.Result{}, reportErr
+	}
 	if res.retry {
 		return ctrl.Result{RequeueAfter: retryAfter}, nil
 	}
@@ -995,6 +997,7 @@ func (r *AgentScheduleReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&agentorcav1alpha1.AgentSchedule{}).
 		Owns(&agentorcav1alpha1.AgentRun{}).
 		Owns(&agentorcav1alpha1.AgentWorkflow{}).
+		Watches(&agentorcav1alpha1.AgentRun{}, handler.EnqueueRequestsFromMapFunc(scheduleOfRequestedReport)).
 		Named("agentschedule").
 		Complete(r)
 }

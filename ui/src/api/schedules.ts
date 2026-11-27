@@ -114,8 +114,9 @@ export async function chooseDestination(ns: string, name: string, to: SlackTarge
 export const resetDestination = (ns: string, name: string) => call<{ status: string }>(action(ns, name, 'destination'), 'DELETE')
 export const suspendSchedule = (ns: string, name: string) => call<{ status: string }>(action(ns, name, 'suspend'), 'POST')
 export const resumeSchedule = (ns: string, name: string) => call<{ status: string }>(action(ns, name, 'resume'), 'POST')
+/** reportOn is the outcomes the run is reported on; absent when nothing will be sent. */
 export const runScheduleNow = (ns: string, name: string) =>
-  call<{ kind: string; name: string; namespace: string }>(action(ns, name, 'run'), 'POST')
+  call<{ kind: string; name: string; namespace: string; reportOn?: ('Succeeded' | 'Failed')[] }>(action(ns, name, 'run'), 'POST')
 
 /** A notification channel an administrator set up; the destination itself is never sent. */
 export interface NotificationChannel {
