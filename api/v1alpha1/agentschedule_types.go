@@ -216,8 +216,9 @@ type ScheduleNotify struct {
 	// +optional
 	On []string `json:"on,omitempty"`
 
-	// IncludeOutput adds the run's output text to the message, cut to 2000
-	// characters and with known secrets removed. Default false: the message
+	// IncludeOutput adds the run's output text to the message, with known secrets
+	// removed: all of it through a Slack chat app (slack), the first 2000
+	// characters to a channel of the tenant. Default false: the message
 	// carries the outcome and a link to the run only.
 	// +optional
 	IncludeOutput bool `json:"includeOutput,omitempty"`

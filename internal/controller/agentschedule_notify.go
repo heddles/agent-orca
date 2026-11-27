@@ -36,9 +36,10 @@ type Notifier interface {
 type ChatPoster interface {
 	// CheckApp says whether the app can be used. The error is safe to show.
 	CheckApp(ctx context.Context, tenantID, kind, app string) error
-	// PostToApp posts to a place the app can write in. render makes the text,
-	// masking the secrets it is given. The error is safe to show.
-	PostToApp(ctx context.Context, tenantID, kind, app, place string, render func(*redact.Registry) string) error
+	// PostToApp posts a report to a place the app can write in. render makes the
+	// header, in the platform's markup, and the body, in Markdown, masking the
+	// secrets it is given. The error is safe to show.
+	PostToApp(ctx context.Context, tenantID, kind, app, place string, render func(*redact.Registry) (header, body string)) error
 }
 
 // chatKindSlack is the chat platform of spec.result.notify.slack.
@@ -120,9 +121,7 @@ func (r *AgentScheduleReconciler) resolveDestination(ctx context.Context, n *age
 	}
 	app, place := t.App, t.ChannelID
 	return func(ctx context.Context, m notify.Message) error {
-		return r.Chat.PostToApp(ctx, tenantID, chatKindSlack, app, place, func(secrets *redact.Registry) string {
-			return m.Scrub(secrets).SlackText()
-		})
+		return r.Chat.PostToApp(ctx, tenantID, chatKindSlack, app, place, m.SlackReport)
 	}, "", nil
 }
 

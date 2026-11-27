@@ -119,6 +119,7 @@ This uses a [shared chat app](inbound-channels.md) already connected to the tena
 
 - The app must be **invited to the channel**. It needs the `chat:write` scope; picking channels by name in the UI also needs `channels:read` and `groups:read`. An app created from the UI's setup link has all three.
 - No agent has to answer in the channel, and the app's lists of people and places do not limit reports.
+- The whole report is posted in the channel. The output's Markdown is formatted for Slack as the app's chat replies are: headings, bold, lists, links and code. Slack has no tables, so a table is shown as an aligned code block. A long report is split into messages of at most 3500 characters, at a paragraph or line break where there is one, about one a second; two reports to the same channel do not interleave. After 40 messages (about 140,000 characters), the rest is cut and the last message says so.
 - Only apps of the schedule's own tenant are looked up. Anyone who can write schedules straight to Kubernetes can name any of that tenant's apps and any channel the app is in.
 - Renaming or deleting the app breaks the reference; so does turning it off. The schedule then has `NotifyReady: False` with the reason.
 - `NotifyReady` does not call Slack. A channel the app was not invited to shows up when a message is sent, as a `NotifyFailed` event on the schedule.
@@ -177,13 +178,15 @@ Timed runs and **Run now** runs are both reported, which makes Run now the way t
 
 Each run is announced **at most once**. The schedule controller claims the run in the same write that counts it (annotation `agentorca.io/schedule-notified`, whose value is the channel, or `slack:<app>/<channelID>`), before anything is sent, so a repeated reconcile, a restart or a second replica does not send it again. The cost is that a message whose delivery fails for good is not retried later.
 
+A report of several messages that fails part way stays partly posted. The `NotifyFailed` event says how many messages arrived; the same happens if the operator restarts while posting, without the event.
+
 Delivery is best effort, and never touches the run. It happens in the background with a 10 second timeout per attempt and three attempts with a doubling wait; a client error (4xx other than 408 and 429), a refused address and a bad configuration are final. A failure is an event on the schedule (`NotifyFailed`) with no destination in it.
 
 If the channel is not in the tenant's `TenantConfig`, or its Secret is missing or invalid, the schedule gets the condition `NotifyReady: False` with the reason, and runs go on. No tenant, no channel.
 
 ### What a message may contain
 
-- The output is added only when `includeOutput: true`. It is cut to 2000 characters. Anything that matches a secret of the channel (its URL, signing key, password, host) or a credential registered with `internal/redact` is masked first, then the text is cut. This is exact-match masking: it cannot know a secret the operator was never given, so anyone who can read the channel can read the output. Leave `includeOutput` off for private results.
+- The output is added only when `includeOutput: true`. **Through a Slack chat app (`slack`), all of it is sent**; to a tenant `channel` of any type, it is cut to 2000 characters and says that it was shortened (a failure reason is cut the same way for both). Anything that matches a secret of the channel (its URL, signing key, password, host) or a credential registered with `internal/redact` is masked first, then the text is cut. This is exact-match masking: it cannot know a secret the operator was never given, so anyone who can read the channel can read the output. Leave `includeOutput` off for private results.
 - The failure reason is treated the same way.
 - Slack text is escaped (`&`, `<`, `>`), so output cannot make a mention or a link; email headers are single-line.
 - The Secret's contents are never in a log line, an event, the status, a condition, an annotation or a message. Errors name a key, never its value.

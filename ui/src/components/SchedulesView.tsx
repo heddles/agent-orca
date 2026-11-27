@@ -487,7 +487,9 @@ function ScheduleDialog({ target, builder, admin, summary, onClose, onSaved }: {
                 <label style={s.radio}>
                   <input type="checkbox" checked={form.notifyOutput} onChange={(e) => set('notifyOutput', e.target.checked)} /> Include the run's output in the message
                 </label>
-                <p style={s.muted}>The output is cut to 2000 characters. Anyone who can read the channel can read it, so leave this off for private results.</p>
+                <p style={s.muted}>{form.notifyChannel === VIA_SLACK
+                  ? 'The whole output is sent; a long one takes several messages.'
+                  : 'The output is cut to 2000 characters.'} Anyone who can read the channel can read it, so leave this off for private results.</p>
                 {errors.notifyOutput && <span role="alert" style={field.error}>{errors.notifyOutput}</span>}
               </>
             )}

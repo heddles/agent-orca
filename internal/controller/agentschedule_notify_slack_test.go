@@ -32,12 +32,13 @@ func (f *fakeChat) CheckApp(_ context.Context, tenant, kind, app string) error {
 	return f.missing
 }
 
-func (f *fakeChat) PostToApp(_ context.Context, tenant, kind, app, place string, render func(*redact.Registry) string) error {
+func (f *fakeChat) PostToApp(_ context.Context, tenant, kind, app, place string, render func(*redact.Registry) (string, string)) error {
 	secrets := &redact.Registry{}
 	secrets.Register("xoxb-the-bot-token-value")
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.posts = append(f.posts, chatPost{tenant, kind, app, place, render(secrets)})
+	header, body := render(secrets)
+	f.posts = append(f.posts, chatPost{tenant, kind, app, place, header + "\n" + body})
 	return nil
 }
 
@@ -73,8 +74,9 @@ func TestNotifyThroughASlackAppPostsOnceToTheChosenChannel(t *testing.T) {
 	if p.tenant != schedTenant || p.kind != "slack" || p.app != "orca-bot" || p.place != "C0REPORTS" {
 		t.Errorf("posted to %+v", p)
 	}
-	if !strings.Contains(p.text, "all good &lt;!channel&gt;") || strings.Contains(p.text, "<!channel>") {
-		t.Errorf("the output must not be able to mention anyone: %q", p.text)
+	// The body is still Markdown: the app formats it and makes mentions inert.
+	if !strings.Contains(p.text, "all good <!channel>") {
+		t.Errorf("text = %q", p.text)
 	}
 	if strings.Contains(p.text, "xoxb-the-bot-token-value") {
 		t.Errorf("the app's token was posted: %q", p.text)
@@ -127,5 +129,20 @@ func TestNotifySlackWithoutChatAppsClaimsNothing(t *testing.T) {
 	cond := meta.FindStatusCondition(e.schedule().Status.Conditions, agentorcav1alpha1.ScheduleConditionNotifyReady)
 	if cond == nil || cond.Reason != "ChatUnavailable" {
 		t.Errorf("NotifyReady = %+v", cond)
+	}
+}
+
+// The report through a chat app carries all of the run's output.
+func TestNotifyThroughASlackAppSendsTheWholeOutput(t *testing.T) {
+	e, _ := notifyEnv(t, slackNotify())
+	chat := &fakeChat{}
+	e.r.Chat = chat
+	long := strings.Repeat("a line of the report\n", 400) + "THE LAST LINE" // about 8,400 characters
+	e.tickAndFinish(9, agentorcav1alpha1.AgentRunPhaseSucceeded, func(r *agentorcav1alpha1.AgentRun) { r.Status.Output = long })
+	e.reconcile()
+	e.settle()
+	got := chat.all()
+	if len(got) != 1 || !strings.Contains(got[0].text, "THE LAST LINE") {
+		t.Fatalf("the end of the output was lost: %d posts", len(got))
 	}
 }

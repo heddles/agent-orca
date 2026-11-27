@@ -30,11 +30,14 @@ import (
 
 // Poster is an adapter that can start a message in a place, not only reply.
 type Poster interface {
-	// Post sends text, already in the platform's markup, to a place.
-	Post(ctx context.Context, c Connection, place, text string) error
+	// Post sends a report to a place, as as many messages as it takes. header is
+	// already in the platform's markup; body is Markdown, which the adapter
+	// formats and makes unable to mention anyone.
+	Post(ctx context.Context, c Connection, place, header, body string) error
 }
 
-const postTimeout = time.Minute
+// postTimeout bounds a whole report: a long one is many messages, paced.
+const postTimeout = 5 * time.Minute
 
 // sharedApp finds a tenant's shared app by name, ready to use.
 func (p *Pipeline) sharedApp(ctx context.Context, tenantID, kind, app string) (Connection, Poster, error) {
@@ -74,16 +77,18 @@ func (p *Pipeline) CheckApp(ctx context.Context, tenantID, kind, app string) err
 	return err
 }
 
-// PostToApp posts to a place through a tenant's shared app. render makes the
-// text and must mask the secrets it is given. The error is safe to show.
-func (p *Pipeline) PostToApp(ctx context.Context, tenantID, kind, app, place string, render func(*redact.Registry) string) error {
+// PostToApp posts a report to a place through a tenant's shared app. render
+// makes its header and body and must mask the secrets it is given. The error is
+// safe to show.
+func (p *Pipeline) PostToApp(ctx context.Context, tenantID, kind, app, place string, render func(*redact.Registry) (header, body string)) error {
 	ctx, cancel := context.WithTimeout(ctx, postTimeout)
 	defer cancel()
 	c, poster, err := p.sharedApp(ctx, tenantID, kind, app)
 	if err != nil {
 		return err
 	}
-	if err := poster.Post(ctx, c, place, render(secretsOf(c))); err != nil {
+	header, body := render(secretsOf(c))
+	if err := poster.Post(ctx, c, place, header, body); err != nil {
 		return fmt.Errorf("posting through the chat app %q failed: %s", app, safeErr(err, c))
 	}
 	return nil

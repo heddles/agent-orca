@@ -31,6 +31,7 @@ limitations under the License.
 package slack
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -53,10 +54,16 @@ const (
 )
 
 const (
-	defaultAPI     = "https://slack.com/api"
-	maxBody        = 1 << 20
-	maxReplyChars  = 3500
-	maxReplyParts  = 5
+	defaultAPI    = "https://slack.com/api"
+	maxBody       = 1 << 20
+	maxReplyChars = 3500
+	maxReplyParts = 5
+	// maxReportParts stops output that has run away from flooding a channel:
+	// about 140,000 characters, far above a report meant to be read.
+	maxReportParts = 40
+	// reportPause is between a report's messages: Slack takes about one message
+	// a second in a channel.
+	reportPause    = 1100 * time.Millisecond
 	signatureWait  = 5 * time.Minute
 	maxClientBytes = 512 << 10
 )
@@ -102,7 +109,10 @@ type Adapter struct {
 	Client *chat.Client
 	// Now is the clock; nil is time.Now.
 	Now func() time.Time
+	// Pause waits between the messages of a report; nil sleeps (tests).
+	Pause func(ctx context.Context, d time.Duration) error
 
+	posting    sync.Map // connection id and channel -> *sync.Mutex
 	clientOnce sync.Once
 	client     *chat.Client
 	botIDs     sync.Map // connection id -> bot user id, learned from auth.test and events

@@ -16,8 +16,8 @@ type postingAdapter struct {
 	fail          error
 }
 
-func (p *postingAdapter) Post(_ context.Context, _ Connection, place, text string) error {
-	p.places, p.texts = append(p.places, place), append(p.texts, text)
+func (p *postingAdapter) Post(_ context.Context, _ Connection, place, header, body string) error {
+	p.places, p.texts = append(p.places, place), append(p.texts, header+" "+body)
 	return p.fail
 }
 
@@ -39,7 +39,7 @@ func TestPostToAppStaysInsideTheTenant(t *testing.T) {
 	app("c", "t-1", "off-bot", false)
 	// An agent's own channel is not a shared app, whatever its name.
 	f.st.conns["d"] = postgresql.InboundConnection{ID: "d", TenantID: "t-1", Kind: "fake", Name: "own-channel", Namespace: "ns", Agent: "a", Enabled: true}
-	render := func(r *redact.Registry) string { return r.String("report " + token) }
+	render := func(r *redact.Registry) (string, string) { return "report", r.String("with " + token) }
 	ctx := context.Background()
 
 	for name, tc := range map[string]struct{ tenant, app, want string }{

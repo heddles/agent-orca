@@ -298,6 +298,9 @@ describe('SchedulesView', () => {
     const picker = await within(d).findByRole('combobox', { name: 'Slack channel' })
     expect(within(picker).getByRole('option', { name: '#other (invite the app first)' })).toBeInTheDocument()
     await userEvent.selectOptions(picker, 'C0REPORTS')
+    if (!(within(d).getByLabelText("Include the run's output in the message") as HTMLInputElement).checked) {
+      expect(within(d).getByText(/The whole output is sent; a long one takes several messages\./)).toBeInTheDocument()
+    }
     await userEvent.click(within(d).getByRole('button', { name: 'Save changes' }))
     await waitFor(() => expect(calls.some((x) => x.method === 'PUT')).toBe(true))
     expect(calls.find((x) => x.method === 'PUT')!.body.spec.result).toEqual({

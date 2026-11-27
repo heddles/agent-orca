@@ -352,3 +352,59 @@ func TestTokenCache(t *testing.T) {
 }
 
 func fmt2(t Token) string { return fmt.Sprintf("%v %+v %#v %s", t, t, t, t) }
+
+// Slack has no tables: one is shown as an aligned code block.
+func TestRenderShowsTablesAsAlignedBlocksForSlack(t *testing.T) {
+	caps := inbound.Capabilities{Dialect: inbound.DialectMrkdwn, MaxReplyChars: 3500, MaxReplyParts: 5}
+	in := "Before\n\n| Name | Status |\n|:-----|-------:|\n| **router** | [up](https://e.example/r) |\n| `nas` \\| old | <!here> |\n\nAfter"
+	want := "Before\n\n```\nName      | Status\n----------+-------------------------\nrouter    | up (https://e.example/r)\nnas | old | &lt;!here&gt;\n```\n\nAfter"
+	got := Render(in, caps)
+	if len(got) != 1 || got[0] != want {
+		t.Errorf("got  %q\nwant %q", got, want)
+	}
+	// Inside a code block the text is left alone, and so is a lone pipe.
+	for _, keep := range []string{"```\n| a | b |\n|---|---|\n```", "run a | grep b\nthen stop"} {
+		if got := Render(keep, caps); len(got) != 1 || got[0] != keep {
+			t.Errorf("%q became %q", keep, got)
+		}
+	}
+	// A platform that renders Markdown keeps its tables.
+	md := inbound.Capabilities{Dialect: inbound.DialectMarkdown, MaxReplyChars: 3500}
+	if got := Render(in, md); !strings.Contains(strings.Join(got, ""), "| Name | Status |") {
+		t.Errorf("markdown got %q", got)
+	}
+}
+
+func TestFormatABoldHeadingHasNoStrayMarkers(t *testing.T) {
+	if got := Format("## **Summary** of today", inbound.DialectMrkdwn); got != "*Summary of today*" {
+		t.Errorf("got %q", got)
+	}
+}
+
+// A table too long for one message is cut between rows, each piece a block.
+func TestRenderCutsALongTableBetweenRows(t *testing.T) {
+	var in strings.Builder
+	in.WriteString("# Spend\n\n| Item | Amount |\n|---|---|\n")
+	for i := range 200 {
+		fmt.Fprintf(&in, "| item %03d | $%d.00 |\n", i, i)
+	}
+	in.WriteString("\n**Done**")
+	got := Render(in.String(), inbound.Capabilities{Dialect: inbound.DialectMrkdwn, MaxReplyChars: 900, MaxReplyParts: 40})
+	rows := 0
+	for _, p := range got {
+		if strings.Count(p, "```")%2 != 0 {
+			t.Errorf("a block is left open: %q", p)
+		}
+		for line := range strings.SplitSeq(p, "\n") {
+			if strings.HasPrefix(line, "item ") {
+				if !strings.Contains(line, " | $") {
+					t.Errorf("a row was cut: %q", line)
+				}
+				rows++
+			}
+		}
+	}
+	if rows != 200 || !strings.HasSuffix(got[len(got)-1], "*Done*") {
+		t.Errorf("%d rows in %d messages", rows, len(got))
+	}
+}

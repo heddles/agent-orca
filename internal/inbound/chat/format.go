@@ -39,6 +39,10 @@ func Render(text string, caps inbound.Capabilities) []string {
 	if strings.TrimSpace(text) == "" {
 		return nil
 	}
+	if caps.Dialect == inbound.DialectMrkdwn {
+		// Before splitting, so a long table is cut like any other code block.
+		text = tablesAsBlocks(text)
+	}
 	limit := caps.MaxReplyChars
 	if limit <= 0 {
 		return []string{Format(text, caps.Dialect)}
@@ -291,11 +295,11 @@ func proseOut(s string, d inbound.Dialect) string {
 
 	switch d {
 	case inbound.DialectMrkdwn, inbound.DialectMrkdwnRaw:
-		s = headRe.ReplaceAllString(s, "**$1**")
+		s = boldHeadings(s)
 		s = bulletRe.ReplaceAllString(s, "${1}• ")
 		s = convertEmphasis(s, "*", "_", "~")
 	case inbound.DialectHTML:
-		s = headRe.ReplaceAllString(s, "**$1**")
+		s = boldHeadings(s)
 		s = bulletRe.ReplaceAllString(s, "${1}• ")
 		s = boldRe.ReplaceAllString(s, "<b>${1}${2}</b>")
 		s = italicRe.ReplaceAllString(s, "${1}<i>${2}</i>")
@@ -309,6 +313,14 @@ func proseOut(s string, d inbound.Dialect) string {
 		s = strings.Replace(s, "\x00"+strconv.Itoa(i)+"\x00", h, 1)
 	}
 	return s
+}
+
+// boldHeadings makes each heading a bold line. Bold already inside one is
+// dropped, so that the markers do not nest.
+func boldHeadings(s string) string {
+	return headRe.ReplaceAllStringFunc(s, func(m string) string {
+		return "**" + strings.ReplaceAll(headRe.FindStringSubmatch(m)[1], "**", "") + "**"
+	})
 }
 
 // convertEmphasis rewrites Markdown emphasis to a dialect that writes bold with

@@ -14,6 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- A scheduled report through a **Slack chat app** now carries all of the run's
+  output, formatted for Slack and split into several messages, instead of the
+  first 2000 characters in a code block. Reports to a tenant channel keep the
+  limit and now say when they were shortened. Tables in Slack, chat replies
+  included, are shown as aligned code blocks.
 - **Run now** on an agent schedule now sends the schedule's report, to the same
   destination and on the same outcomes as a timed run; the button and the
   message after it say where it goes. It still does not count toward the failure
