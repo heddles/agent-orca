@@ -15,6 +15,7 @@ import type { ScheduleSummary } from '../api/schedules'
 
 const me = (roles: string[]) => ({ userId: 'u', groups: [], tenant: { id: 't', name: 'T' }, workspaces: [{ name: 'A', namespace: 'team-a', primary: true }], roles })
 const BUILDER = me(['viewer', 'runner', 'builder'])
+const ADMIN = me(['viewer', 'runner', 'builder', 'admin'])
 const VIEWER = me(['viewer'])
 
 const ui = { owner: 'ui', editable: true, handoff: { pending: false } }
@@ -189,6 +190,7 @@ describe('SchedulesView', () => {
   })
 
   it('sends the result to a channel the administrator set up, with the events and output choice', async () => {
+    mockGetMe.mockResolvedValue(ADMIN)
     list = []
     routes['GET /api/notification-channels'] = { body: [{ name: 'ops', type: 'slack' }, { name: 'mail', type: 'smtp' }] }
     routes['POST /api/resources/agentschedules'] = { status: 201, body: stored() }
@@ -212,6 +214,7 @@ describe('SchedulesView', () => {
   })
 
   it('refuses a channel with no event chosen, and keeps an administrator-set egress when saving', async () => {
+    mockGetMe.mockResolvedValue(ADMIN)
     const withResult = stored()
     ;(withResult.spec as Record<string, unknown>).result = { egress: { type: 'redis' }, notify: { channel: 'ops', on: ['Failed'] } }
     routes['GET /api/notification-channels'] = { body: [{ name: 'ops', type: 'slack' }] }
@@ -232,6 +235,7 @@ describe('SchedulesView', () => {
   })
 
   it('choosing no channel removes notify and leaves the rest of result', async () => {
+    mockGetMe.mockResolvedValue(ADMIN)
     const withResult = stored()
     ;(withResult.spec as Record<string, unknown>).result = { egress: { type: 'redis' }, notify: { channel: 'ops' } }
     routes['GET /api/notification-channels'] = { body: [{ name: 'ops', type: 'slack' }] }
@@ -244,6 +248,70 @@ describe('SchedulesView', () => {
     await userEvent.click(within(d).getByRole('button', { name: 'Save changes' }))
     await waitFor(() => expect(calls.some((x) => x.method === 'PUT')).toBe(true))
     expect(calls.find((x) => x.method === 'PUT')!.body.spec.result).toEqual({ egress: { type: 'redis' } })
+  })
+
+  it('an admin sends reports to a Slack channel picked from a connected app', async () => {
+    mockGetMe.mockResolvedValue(ADMIN)
+    routes['GET /api/chat-apps$'] = { body: [{ id: 'inb_1', name: 'orca-bot', kind: 'slack', canListPlaces: true }, { id: 'inb_2', name: 'mm', kind: 'mattermost', canListPlaces: false }] }
+    routes['GET /api/chat-apps/inb_1/places'] = { body: [{ id: 'C0REPORTS', name: '#reports', member: true }, { id: 'C0OTHER', name: '#other', member: false }] }
+    const withResult = stored()
+    ;(withResult.spec as Record<string, unknown>).result = { notify: { channel: 'ops', on: ['Failed'] } }
+    routes['GET /api/resources/agentschedules/team-a/weekday-digest'] = { body: withResult }
+    routes['PUT /api/resources/agentschedules/team-a/weekday-digest'] = { body: withResult }
+    setup()
+    await userEvent.click(within(await card()).getByRole('button', { name: 'Edit' }))
+    const d = await screen.findByRole('dialog')
+    await userEvent.selectOptions(await within(d).findByLabelText('Also send a message to'), '__slack__')
+    await userEvent.click(within(d).getByRole('button', { name: 'Save changes' }))
+    expect(await within(d).findByText(/Choose a channel \(its ID|Choose the Slack app and channel/)).toBeInTheDocument()
+    expect(calls.some((x) => x.method === 'PUT')).toBe(false)
+    // The only Slack app is chosen for them; the Mattermost one is not offered.
+    await waitFor(() => expect(within(d).getByLabelText('Slack app')).toHaveValue('orca-bot'))
+    expect(within(d).queryByRole('option', { name: 'mm' })).toBeNull()
+    const picker = await within(d).findByRole('combobox', { name: 'Slack channel' })
+    expect(within(picker).getByRole('option', { name: '#other (invite the app first)' })).toBeInTheDocument()
+    await userEvent.selectOptions(picker, 'C0REPORTS')
+    await userEvent.click(within(d).getByRole('button', { name: 'Save changes' }))
+    await waitFor(() => expect(calls.some((x) => x.method === 'PUT')).toBe(true))
+    expect(calls.find((x) => x.method === 'PUT')!.body.spec.result).toEqual({
+      notify: { slack: { app: 'orca-bot', channelID: 'C0REPORTS', channelName: '#reports' }, on: ['Failed'], includeOutput: false },
+    })
+  })
+
+  it('a builder cannot change where reports go, and saving keeps it as it was', async () => {
+    const notify = { slack: { app: 'orca-bot', channelID: 'C0REPORTS', channelName: '#reports' }, on: ['Succeeded'] }
+    const withResult = stored()
+    ;(withResult.spec as Record<string, unknown>).result = { notify }
+    routes['GET /api/resources/agentschedules/team-a/weekday-digest'] = { body: withResult }
+    routes['PUT /api/resources/agentschedules/team-a/weekday-digest'] = { body: withResult }
+    setup()
+    await userEvent.click(within(await card()).getByRole('button', { name: 'Edit' }))
+    const d = await screen.findByRole('dialog')
+    expect(within(d).getByText(/Only an admin can change where reports go/)).toBeInTheDocument()
+    expect(await within(d).findByLabelText('Also send a message to')).toBeDisabled()
+    expect(within(d).getByText(/#reports \(C0REPORTS\), through the app orca-bot/)).toBeInTheDocument()
+    await userEvent.click(within(d).getByRole('button', { name: 'Save changes' }))
+    await waitFor(() => expect(calls.some((x) => x.method === 'PUT')).toBe(true))
+    expect(calls.find((x) => x.method === 'PUT')!.body.spec.result).toEqual({ notify })
+    expect(calls.some((x) => x.url.startsWith('/api/chat-apps'))).toBe(false)
+  })
+
+  it('says on the card and in the editor that a Git-managed destination is changed in Git, even to an admin', async () => {
+    mockGetMe.mockResolvedValue(ADMIN)
+    list = [summary({ ownership: { owner: 'git', editable: false, handoff: { pending: false } } as ScheduleSummary['ownership'], notify: { channel: 'home-slack', problem: 'the Secret of channel "home-slack" was not found' } })]
+    const git = stored('git')
+    ;(git.spec as Record<string, unknown>).result = { notify: { channel: 'home-slack' } }
+    routes['GET /api/resources/agentschedules/team-a/weekday-digest'] = { body: git }
+    setup()
+    const c = await card()
+    expect(within(c).getByText(/the notification channel home-slack/)).toBeInTheDocument()
+    expect(within(c).getByText(/set in Git, change it there/)).toBeInTheDocument()
+    expect(within(c).getByText(/Messages cannot be sent: the Secret/)).toBeInTheDocument()
+    await userEvent.click(within(c).getByRole('button', { name: 'View' }))
+    const d = await screen.findByRole('dialog')
+    expect(within(d).getByText(/can only be changed in Git/)).toBeInTheDocument()
+    expect(within(d).getByLabelText('Also send a message to')).toBeDisabled()
+    expect(calls.some((x) => x.url.startsWith('/api/chat-apps'))).toBe(false)
   })
 
   it('a viewer does not ask for channels', async () => {
@@ -282,7 +350,7 @@ describe('SchedulesView', () => {
 })
 
 describe('formProblems', () => {
-  const ok = { name: 'a', namespace: 'x', agent: 'ag', when: { preset: 'daily' as const, hour: 8, minute: 0, weekday: 1, cron: '' }, timeZone: 'UTC', input: 'go', concurrency: 'Forbid' as const, maxPerRun: '1', maxPerDay: '', maxPerMonth: '', notifyChannel: '', notifyOn: ['Failed'], notifyOutput: false }
+  const ok = { name: 'a', namespace: 'x', agent: 'ag', when: { preset: 'daily' as const, hour: 8, minute: 0, weekday: 1, cron: '' }, timeZone: 'UTC', input: 'go', concurrency: 'Forbid' as const, maxPerRun: '1', maxPerDay: '', maxPerMonth: '', notifyChannel: '', slackApp: '', slackChannelID: '', slackChannelName: '', notifyOn: ['Failed'], notifyOutput: false }
   it('accepts a complete form', () => expect(formProblems(ok, false)).toEqual({}))
   it('names every problem', () => {
     const p = formProblems({ ...ok, name: 'Bad Name', agent: '', input: ' ', maxPerRun: 'x', maxPerMonth: '0' }, false)

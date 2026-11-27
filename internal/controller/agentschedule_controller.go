@@ -75,6 +75,8 @@ type AgentScheduleReconciler struct {
 	MaxConsecutiveFailures int
 	// Notifier sends the result notifications of spec.result.notify. Nil turns
 	// them off: no run is claimed for a notification.
+	// Chat posts spec.result.notify.slack; nil when chat apps are not available.
+	Chat     ChatPoster
 	Notifier Notifier
 	// UIURL is the UI's public base URL, for the link to a run in a
 	// notification. Empty leaves the link out.
@@ -299,10 +301,10 @@ func (r *AgentScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	var jobs []notifyJob
 	for _, c := range counted {
 		job, send := r.runNotice(ctx, &s, c)
-		send = send && r.Notifier != nil
+		send = send && r.canDeliver(&s)
 		claim := ""
 		if send {
-			claim = scheduleNotify(&s).Channel
+			claim = scheduleNotify(&s).Destination()
 		}
 		if err := r.markAccounted(ctx, c, claim); err != nil {
 			log.Error(err, "marking a run as counted", "run", c.ref.Name)

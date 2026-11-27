@@ -89,9 +89,12 @@ func TestAgentScheduleEnvtest(t *testing.T) {
 			}
 		}
 		for name, n := range map[string]agentorcav1alpha1.ScheduleNotify{
-			"no channel":           {},
-			"unknown event":        {Channel: "ops", On: []string{"Exploded"}},
-			"output without a run": {Channel: "ops", On: []string{"BreakerOpen"}, IncludeOutput: true},
+			"no channel":                   {},
+			"unknown event":                {Channel: "ops", On: []string{"Exploded"}},
+			"output without a run":         {Channel: "ops", On: []string{"BreakerOpen"}, IncludeOutput: true},
+			"channel and slack":            {Channel: "ops", Slack: &agentorcav1alpha1.ScheduleSlackTarget{App: "bot", ChannelID: "C0123"}},
+			"slack without app":            {Slack: &agentorcav1alpha1.ScheduleSlackTarget{ChannelID: "C0123"}},
+			"slack channel name for an id": {Slack: &agentorcav1alpha1.ScheduleSlackTarget{App: "bot", ChannelID: "#reports"}},
 		} {
 			if err := cl.Create(ctx, newSchedule("bad-notify", withNotify(n))); err == nil {
 				t.Errorf("%s: accepted", name)
@@ -104,6 +107,11 @@ func TestAgentScheduleEnvtest(t *testing.T) {
 			t.Errorf("on = %v, want the default [Failed]", on)
 		}
 		must(t, cl.Delete(ctx, good))
+		viaApp := newSchedule("slack-notify", withNotify(agentorcav1alpha1.ScheduleNotify{
+			Slack: &agentorcav1alpha1.ScheduleSlackTarget{App: "orca-bot", ChannelID: "C0123456789"},
+		}))
+		must(t, cl.Create(ctx, viaApp))
+		must(t, cl.Delete(ctx, viaApp))
 		// TenantConfig takes channels, and refuses an unknown type.
 		tc := func(typ string) *agentorcav1alpha1.TenantConfig {
 			return &agentorcav1alpha1.TenantConfig{

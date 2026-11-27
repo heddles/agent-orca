@@ -19,11 +19,13 @@ package apiserver
 import (
 	"fmt"
 	"net/http"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -120,6 +122,28 @@ type scheduleSummary struct {
 	Active              []string           `json:"active"`
 	RecentSkips         []scheduleSkipView `json:"recentSkips"`
 	Ownership           ownershipView      `json:"ownership"`
+	// Notify is where messages about the schedule go; absent when nowhere.
+	Notify *scheduleNotifyView `json:"notify,omitempty"`
+}
+
+// scheduleNotifyView names a schedule's destination. It holds no credential.
+type scheduleNotifyView struct {
+	// Channel is a channel of the TenantConfig; empty with Slack.
+	Channel string                                 `json:"channel,omitempty"`
+	Slack   *agentorcav1alpha1.ScheduleSlackTarget `json:"slack,omitempty"`
+	// Problem is why messages cannot be sent there, when they cannot.
+	Problem string `json:"problem,omitempty"`
+}
+
+func notifyViewOf(sc *agentorcav1alpha1.AgentSchedule) *scheduleNotifyView {
+	if sc.Spec.Result == nil || sc.Spec.Result.Notify == nil {
+		return nil
+	}
+	v := &scheduleNotifyView{Channel: sc.Spec.Result.Notify.Channel, Slack: sc.Spec.Result.Notify.Slack}
+	if c := meta.FindStatusCondition(sc.Status.Conditions, agentorcav1alpha1.ScheduleConditionNotifyReady); c != nil && c.Status == metav1.ConditionFalse {
+		v.Problem = c.Message
+	}
+	return v
 }
 
 func utcTime(t *metav1.Time) string {
@@ -206,6 +230,7 @@ func (s *UIServer) summarize(r *http.Request, sc *agentorcav1alpha1.AgentSchedul
 		ConsecutiveFailures: sc.Status.ConsecutiveFailures,
 		Active:              []string{}, RecentSkips: []scheduleSkipView{}, LastResult: scheduleResult{Status: "none"},
 		Ownership: s.ownershipOf(r.Context(), sc, kindAgentSchedule),
+		Notify:    notifyViewOf(sc),
 	}
 	if sc.Status.NextScheduleTime != nil {
 		if loc, err := time.LoadLocation(zone); err == nil {
@@ -618,13 +643,22 @@ func (s *UIServer) runScheduleNow(w http.ResponseWriter, r *http.Request, sc *ag
 	jsonResponse(w, map[string]string{"kind": kind, "name": created.GetName(), "namespace": created.GetNamespace()})
 }
 
-// scheduleWriteGate applies the role rule the CRUD path cannot express: a
-// schedule that sends results to an egress sink with credentials needs the
-// admin role, as for MCPServer and Tool. Keeping a secretRef an admin already
-// set is allowed. It answers 403 and returns false when the caller may not write.
+// scheduleWriteGate applies the role rules the CRUD path cannot express: only
+// an admin may change where a schedule sends messages and what they hold
+// (result.notify), and a schedule that sends results to an egress sink with
+// credentials needs the admin role, as for MCPServer and Tool. Keeping what is
+// already set is allowed. It answers 403 and returns false when the caller may
+// not write. existing is nil for a new schedule.
 func scheduleWriteGate(w http.ResponseWriter, r *http.Request, body *unstructured.Unstructured, existing *agentorcav1alpha1.AgentSchedule) bool {
+	if hasRole(r.Context(), tenancy.RoleAdmin) {
+		return true
+	}
+	if !sameNotify(body, existing) {
+		http.Error(w, `{"error":"changing where a schedule sends its reports, or what they hold (result.notify), needs the admin role in your tenant"}`, http.StatusForbidden)
+		return false
+	}
 	ref, found, _ := unstructured.NestedMap(body.Object, "spec", "result", "egress", "secretRef")
-	if !found || len(ref) == 0 || hasRole(r.Context(), tenancy.RoleAdmin) {
+	if !found || len(ref) == 0 {
 		return true
 	}
 	if existing != nil && existing.Spec.Result != nil && existing.Spec.Result.Egress != nil && existing.Spec.Result.Egress.SecretRef != nil {
@@ -636,4 +670,38 @@ func scheduleWriteGate(w http.ResponseWriter, r *http.Request, body *unstructure
 	}
 	http.Error(w, `{"error":"sending results to a sink with credentials (result.egress.secretRef) needs the admin role in your tenant"}`, http.StatusForbidden)
 	return false
+}
+
+// sameNotify reports whether body leaves result.notify as existing has it. A
+// body that cannot be read counts as a change.
+func sameNotify(body *unstructured.Unstructured, existing *agentorcav1alpha1.AgentSchedule) bool {
+	var next, prev *agentorcav1alpha1.ScheduleNotify
+	value, found, err := unstructured.NestedFieldNoCopy(body.Object, "spec", "result", "notify")
+	if err != nil {
+		return false
+	}
+	if found && value != nil {
+		m, ok := value.(map[string]any)
+		if !ok {
+			return false
+		}
+		next = &agentorcav1alpha1.ScheduleNotify{}
+		if runtime.DefaultUnstructuredConverter.FromUnstructuredWithValidation(m, next, true) != nil {
+			return false
+		}
+	}
+	if existing != nil && existing.Spec.Result != nil {
+		prev = existing.Spec.Result.Notify.DeepCopy()
+	}
+	// The order of "on" and an omitted default say the same thing.
+	for _, n := range []*agentorcav1alpha1.ScheduleNotify{next, prev} {
+		if n == nil {
+			continue
+		}
+		if len(n.On) == 0 {
+			n.On = []string{agentorcav1alpha1.ScheduleNotifyFailed}
+		}
+		slices.Sort(n.On)
+	}
+	return equality.Semantic.DeepEqual(next, prev)
 }

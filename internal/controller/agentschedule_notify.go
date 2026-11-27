@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/heddles/agent-orca/internal/redact"
 	"github.com/heddles/agent-orca/internal/runoutput"
 	"github.com/heddles/agent-orca/internal/state"
 	"github.com/heddles/agent-orca/internal/tenancy"
@@ -25,6 +26,60 @@ import (
 // Notifier delivers a notification. *notify.Sender is one.
 type Notifier interface {
 	Send(ctx context.Context, ch *notify.Channel, msg notify.Message) error
+}
+
+// ChatPoster posts through a tenant's shared chat app. *inbound.Pipeline is one.
+type ChatPoster interface {
+	// CheckApp says whether the app can be used. The error is safe to show.
+	CheckApp(ctx context.Context, tenantID, kind, app string) error
+	// PostToApp posts to a place the app can write in. render makes the text,
+	// masking the secrets it is given. The error is safe to show.
+	PostToApp(ctx context.Context, tenantID, kind, app, place string, render func(*redact.Registry) string) error
+}
+
+// chatKindSlack is the chat platform of spec.result.notify.slack.
+const chatKindSlack = "slack"
+
+// deliverFunc sends one notification to a resolved destination.
+type deliverFunc func(context.Context, notify.Message) error
+
+// canDeliver reports whether this operator can send the schedule's kind of
+// notification at all. Without that, a run is not claimed as announced.
+func (r *AgentScheduleReconciler) canDeliver(s *agentorcav1alpha1.AgentSchedule) bool {
+	if n := scheduleNotify(s); n != nil && n.Slack != nil {
+		return r.Chat != nil
+	}
+	return r.Notifier != nil
+}
+
+// resolveDestination finds where the schedule's notifications go. The error is
+// safe to show.
+func (r *AgentScheduleReconciler) resolveDestination(ctx context.Context, s *agentorcav1alpha1.AgentSchedule, tenant *agentorcav1alpha1.TenantConfig) (deliverFunc, string, error) {
+	t := scheduleNotify(s).Slack
+	if t == nil {
+		ch, reason, err := r.resolveChannel(ctx, s, tenant)
+		if err != nil {
+			return nil, reason, err
+		}
+		return func(ctx context.Context, m notify.Message) error { return r.Notifier.Send(ctx, ch, m) }, "", nil
+	}
+	if tenant == nil {
+		return nil, "NoTenant", fmt.Errorf("no TenantConfig owns this schedule, so there are no chat apps")
+	}
+	if r.Chat == nil {
+		return nil, "ChatUnavailable", fmt.Errorf("chat apps are not available on this installation: they need the database")
+	}
+	// Only the schedule's own tenant's apps are looked at.
+	tenantID := tenancy.TenantIDOf(tenant)
+	if err := r.Chat.CheckApp(ctx, tenantID, chatKindSlack, t.App); err != nil {
+		return nil, "ChatAppUnavailable", err
+	}
+	app, place := t.App, t.ChannelID
+	return func(ctx context.Context, m notify.Message) error {
+		return r.Chat.PostToApp(ctx, tenantID, chatKindSlack, app, place, func(secrets *redact.Registry) string {
+			return m.Scrub(secrets).SlackText()
+		})
+	}, "", nil
 }
 
 // notifyJob is a notification to send once the schedule's status is stored.
@@ -92,7 +147,7 @@ func (r *AgentScheduleReconciler) setNotifyCondition(ctx context.Context, s *age
 		meta.RemoveStatusCondition(&s.Status.Conditions, agentorcav1alpha1.ScheduleConditionNotifyReady)
 		return
 	}
-	_, reason, err := r.resolveChannel(ctx, s, tenant)
+	_, reason, err := r.resolveDestination(ctx, s, tenant)
 	c := metav1.Condition{
 		Type: agentorcav1alpha1.ScheduleConditionNotifyReady, Status: metav1.ConditionTrue, Reason: "ChannelResolved", ObservedGeneration: s.Generation,
 	}
@@ -192,11 +247,11 @@ func (r *AgentScheduleReconciler) scheduleLink() string {
 // retries, must not hold up the schedule's own work. The result is an event on
 // the schedule; a failure never touches a run.
 func (r *AgentScheduleReconciler) dispatch(ctx context.Context, s *agentorcav1alpha1.AgentSchedule, tenant *agentorcav1alpha1.TenantConfig, jobs []notifyJob) {
-	if len(jobs) == 0 || r.Notifier == nil {
+	if len(jobs) == 0 || !r.canDeliver(s) {
 		return
 	}
 	log := logf.FromContext(ctx)
-	ch, _, err := r.resolveChannel(ctx, s, tenant)
+	deliver, _, err := r.resolveDestination(ctx, s, tenant)
 	if err != nil {
 		log.Info("not sending a notification", "schedule", s.Name, "reason", err.Error())
 		if r.Recorder != nil {
@@ -208,7 +263,7 @@ func (r *AgentScheduleReconciler) dispatch(ctx context.Context, s *agentorcav1al
 	bg := context.WithoutCancel(ctx)
 	r.notifyWG.Go(func() {
 		for _, j := range jobs {
-			if err := r.Notifier.Send(bg, ch, j.msg); err != nil {
+			if err := deliver(bg, j.msg); err != nil {
 				// The error is already free of Secret values.
 				log.Info("notification failed", "schedule", sc.Name, "event", j.event, "run", j.msg.Run, "error", err.Error())
 				if r.Recorder != nil {

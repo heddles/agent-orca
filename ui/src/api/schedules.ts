@@ -40,6 +40,23 @@ export interface ScheduleSummary {
   active: string[]
   recentSkips: { time: string; reason: string; message?: string }[]
   ownership: Ownership
+  /** Where messages about the schedule go; absent when nowhere. */
+  notify?: ScheduleNotifyView
+}
+
+/** A Slack channel reached through one of the tenant's chat apps. */
+export interface SlackTarget {
+  app: string
+  channelID: string
+  channelName?: string
+}
+
+export interface ScheduleNotifyView {
+  /** A notification channel of the TenantConfig; absent with slack. */
+  channel?: string
+  slack?: SlackTarget
+  /** Why messages cannot be sent there, when they cannot. */
+  problem?: string
 }
 
 export interface SchedulePreview {

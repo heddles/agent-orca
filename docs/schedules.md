@@ -88,7 +88,9 @@ After `operator.schedule.maxConsecutiveFailures` (default 5) finished runs in a 
 
 ## Result notifications
 
-The result of a run is always kept on the run. `spec.result.notify` also sends a short message to a **channel**, a destination an administrator set up on the tenant. A person who can write a schedule can pick a channel by name, but cannot create one or see where it goes.
+The result of a run is always kept on the run. `spec.result.notify` also sends a short message to one of two destinations: a **channel** an administrator set up on the tenant, or a **Slack channel through a connected app**. Set exactly one of `channel` and `slack`.
+
+**In the UI and its API, only an admin can change where messages go or what they hold.** Any change to `result.notify` needs the admin role: choosing, changing or removing the destination, the events, or `includeOutput`. A builder can still edit the rest of such a schedule, and duplicating a schedule copies its destination only for an admin. Changing the agent or the instruction changes what gets sent there and stays a builder's edit. A schedule managed in Git is changed only in Git; the UI shows its destination and says so. Writes made straight to Kubernetes are governed by Kubernetes RBAC.
 
 ```yaml
 spec:
@@ -98,6 +100,30 @@ spec:
       on: [Failed, BreakerOpen]   # Succeeded | Failed | Skipped | BreakerOpen; default [Failed]
       includeOutput: false  # default false
 ```
+
+### Slack, through a connected app
+
+```yaml
+spec:
+  result:
+    notify:
+      slack:
+        app: orca-bot           # the name of a shared app (Settings, Chat apps)
+        channelID: C0123456789  # Slack's id of the channel, from the channel's details
+        channelName: "#reports" # optional; a label for the UI, not used to send
+      on: [Succeeded, Failed]
+      includeOutput: true
+```
+
+This uses a [shared chat app](inbound-channels.md) already connected to the tenant, so no webhook is needed for each channel. Notes:
+
+- The app must be **invited to the channel**. It needs the `chat:write` scope; picking channels by name in the UI also needs `channels:read` and `groups:read`. An app created from the UI's setup link has all three.
+- No agent has to answer in the channel, and the app's lists of people and places do not limit reports.
+- Only apps of the schedule's own tenant are looked up. Anyone who can write schedules straight to Kubernetes can name any of that tenant's apps and any channel the app is in.
+- Renaming or deleting the app breaks the reference; so does turning it off. The schedule then has `NotifyReady: False` with the reason.
+- `NotifyReady` does not call Slack. A channel the app was not invited to shows up when a message is sent, as a `NotifyFailed` event on the schedule.
+- The message looks like the incoming-webhook one, and output cannot mention anyone or make a link. Requests are retried as chat replies are, so a lost connection can post a message twice.
+- It needs the database, as chat channels do.
 
 ### Channels (administrators)
 
@@ -134,7 +160,7 @@ The webhook body has `schedule`, `namespace`, `agent`, `outcome`, `run`, `durati
 | `BreakerOpen` | Once, when the failure breaker stops the schedule |
 | `Skipped` | Once, when the schedule's spend cap first stops it, not for every skipped tick. Quota, concurrency and missed ticks are not announced |
 
-Each run is announced **at most once**. The schedule controller claims the run in the same write that counts it (annotation `agentorca.io/schedule-notified`, whose value is the channel), before anything is sent, so a repeated reconcile, a restart or a second replica does not send it again. The cost is that a message whose delivery fails for good is not retried later.
+Each run is announced **at most once**. The schedule controller claims the run in the same write that counts it (annotation `agentorca.io/schedule-notified`, whose value is the channel, or `slack:<app>/<channelID>`), before anything is sent, so a repeated reconcile, a restart or a second replica does not send it again. The cost is that a message whose delivery fails for good is not retried later.
 
 Delivery is best effort, and never touches the run. It happens in the background with a 10 second timeout per attempt and three attempts with a doubling wait; a client error (4xx other than 408 and 429), a refused address and a bad configuration are final. A failure is an event on the schedule (`NotifyFailed`) with no destination in it.
 
@@ -175,7 +201,7 @@ If the channel is not in the tenant's `TenantConfig`, or its Secret is missing o
 | `POST .../run` | runner | Run now: a normal run started by the caller, passing the same quotas |
 | `GET /api/runs?schedule=<name>` | viewer | Runs of a schedule; each run summary carries `schedule` and `trigger` |
 | `GET /api/notification-channels` | builder | The names and types of the tenant's notification channels, for the builder's "Send the result to" choice. Read-only: the Secret is never returned and `TenantConfig` is not a UI-writable kind |
-| create, update, delete | builder | A schedule whose `result.egress` has a `secretRef` needs admin, as MCPServer and Tool do (a builder may keep one an admin set) |
+| create, update, delete | builder | Changing `result.notify` needs admin. A schedule whose `result.egress` has a `secretRef` needs admin, as MCPServer and Tool do (a builder may keep one an admin set) |
 
 Run now creates the run with `agentorca.io/schedule=<name>` but no owner reference and `created-by` set to the person, so it shows in My runs and is not counted in the schedule's history limits, failure streak or spend caps. Scheduled ticks (`created-by: schedule:<ns>/<name>`) are left out of My runs.
 
@@ -192,6 +218,7 @@ aoctl schedule list | get <name> | suspend <name> | resume <name> | run <name>
 Schedules are under **Operate > Schedules** (builder role to create and edit; the API lets a runner pause, resume and run now).
 
 - **The list** shows each schedule in words ("Every weekday at 08:00 (Europe/Berlin) runs the agent digest-agent"), its state with a plain reason (`On`, `Paused`, `Stopped after failures`, `Spend limit reached`, `Agent missing`), the next run in the schedule's zone and yours, the last result (succeeded, failed, or skipped and why), and spend today and this month. **History** lists the last runs, linking to the normal run page, and the skipped times.
-- **The builder** asks "When should this run?" with presets (every weekday, every week, every day, every hour, or a custom cron expression) and a time zone picker that defaults to the browser's, with a live list of the next five runs from the preview endpoint. "What should it do?" is the instruction, with a button that inserts `{{schedule.date}}`. "If the last run is still going" chooses skip, run anyway, or stop the old one. "Send the result to" keeps the result on the run, and lets a builder also pick one of the channels an administrator set up, with the events to be told about (a run fails or succeeds, the spend limit stops the schedule, the schedule stops after repeated failures) and a checkbox to include the output. With no channels set up it says to ask an administrator. "Spend limit" takes a per-run, per-day and per-month amount, and one is required.
-- **Git-owned schedules** open read-only with Copy YAML and Duplicate, and are paused in Git.
+- **The builder** asks "When should this run?" with presets (every weekday, every week, every day, every hour, or a custom cron expression) and a time zone picker that defaults to the browser's, with a live list of the next five runs from the preview endpoint. "What should it do?" is the instruction, with a button that inserts `{{schedule.date}}`. "If the last run is still going" chooses skip, run anyway, or stop the old one. "Send the result to" keeps the result on the run, and lets an admin also pick a tenant channel, or a Slack app and one of its channels (by name, or by ID when the app cannot list them), with the events to be told about (a run fails or succeeds, the spend limit stops the schedule, the schedule stops after repeated failures) and a checkbox to include the output. Everyone else sees the destination but cannot change it. "Spend limit" takes a per-run, per-day and per-month amount, and one is required.
+- **Git-owned schedules** open read-only with Copy YAML and Duplicate, and are paused in Git. Their card and editor say that where reports go is changed in Git (`spec.result.notify`).
+- Each agent schedule's card says where it sends messages, and why when they cannot be sent.
 - **Agents in the Fleet view** carry a clock badge with the next run and last result, and a Scheduled filter. A run started by a schedule shows a "Scheduled by" chip with the instant it was due and a **Run again now** button. Scheduled runs are left out of **Your recent runs** on Home (the **Latest reports** widget shows what they produced) and have a **Started by: Schedules** filter on the Runs page.

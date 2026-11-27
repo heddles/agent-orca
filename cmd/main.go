@@ -530,7 +530,7 @@ func main() {
 	if pgStore != nil {
 		scheduleAudit = pgStore.AsPlatform()
 	}
-	if err := (&controller.AgentScheduleReconciler{
+	schedules := &controller.AgentScheduleReconciler{
 		Client: mgr.GetClient(), Scheme: mgr.GetScheme(),
 		StateStore:             stateStore,
 		Audit:                  scheduleAudit,
@@ -539,7 +539,8 @@ func main() {
 		// the UI address the approval messages use.
 		Notifier: &notify.Sender{},
 		UIURL:    os.Getenv("APPROVALS_UI_URL"),
-	}).SetupWithManager(mgr); err != nil {
+	}
+	if err := schedules.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "AgentSchedule")
 		os.Exit(1)
 	}
@@ -929,10 +930,14 @@ func main() {
 		if connService != nil {
 			inboundKeys = connService.Keys
 		}
-		if err := addInboundChannels(mgr, uiAPI, internalAPI, pgStore, externalAuth.RateLimiter(), inboundKeys); err != nil {
+		chatPipe, err := addInboundChannels(mgr, uiAPI, internalAPI, pgStore, externalAuth.RateLimiter(), inboundKeys)
+		if err != nil {
 			setupLog.Error(err, "Unable to start the inbound channels")
 			os.Exit(1)
 		}
+		// Schedules can post their reports through a shared chat app. Set before
+		// the manager starts, so no reconcile sees it change.
+		schedules.Chat = chatPipe
 	}
 	go func() {
 		srv := newHTTPServer(":8083", uiAPI.Handler())
@@ -1232,7 +1237,7 @@ func inboundChannelsDisabled() bool {
 func addInboundChannels(
 	mgr manager.Manager, uiAPI *apiserver.UIServer, internalAPI *apiserver.Server,
 	pgStore *postgresql.Store, limiter inbound.Limiter, keys *connections.Keyring,
-) error {
+) (*inbound.Pipeline, error) {
 	reg := inbound.NewRegistry()
 	reg.Register(&inboundemail.Adapter{})
 	reg.Register(&inboundslack.Adapter{})
@@ -1256,7 +1261,7 @@ func addInboundChannels(
 		setupLog.Error(err, "ignoring INBOUND_PUBLIC_URL")
 	}
 	setupLog.Info("Inbound channels enabled", "kinds", reg.Kinds())
-	return mgr.Add(&inbound.Runner{P: pipe})
+	return pipe, mgr.Add(&inbound.Runner{P: pipe})
 }
 
 // addConnectionLifecycle schedules the leader-only jobs of the per-user

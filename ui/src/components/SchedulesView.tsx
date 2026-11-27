@@ -16,7 +16,7 @@ import {
   SCHEDULE_KIND, deleteSchedule, describeScheduleError, getSchedule, listNotificationChannels, listScheduleRuns, listSchedules, previewSchedule,
   resumeSchedule, runScheduleNow, suspendSchedule, type NotificationChannel, type SchedulePreview, type ScheduleRun, type ScheduleSummary,
 } from '../api/schedules'
-import { canWriteEvals, useRoles } from '../lib/access'
+import { canRouteReports, canWriteEvals, useRoles } from '../lib/access'
 import { ds, DESIGN } from '../lib/designSystem'
 import { Dialog } from '../lib/dialog'
 import { ICON } from '../lib/icons'
@@ -30,10 +30,13 @@ import { stringifyYAML } from '../lib/yaml'
 import { Field, field } from './BuilderParts'
 import { CopyButton } from './AgentTriggers'
 import { lastResultText, ScheduleStateChip } from './ScheduleParts'
+import { DestinationFields, DestinationLine, SLACK_CHANNEL_ID, VIA_SLACK, type DestinationForm } from './ScheduleDestination'
 
 export function SchedulesView() {
   const { namespace } = useNamespace()
-  const builder = canWriteEvals(useRoles())
+  const roles = useRoles()
+  const builder = canWriteEvals(roles)
+  const admin = canRouteReports(roles)
   const [rows, setRows] = useState<ScheduleSummary[] | null>(null)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
@@ -93,6 +96,7 @@ export function SchedulesView() {
                 <span>{r.nextRun ? <>Next run <strong>{formatIn(r.nextRun, r.timeZone)}</strong> ({r.timeZone}){r.nextRunLocal && r.timeZone !== browserTimeZone() ? <>, <span title={r.nextRun}>{formatIn(r.nextRun, browserTimeZone())} for you</span></> : null}</> : 'No run planned'}</span>
                 <span>{lastResultText(r)}</span>
                 <span>Spent ${r.spentTodayUSD || '0'} today, ${r.spentMonthUSD || '0'} this month</span>
+                {r.targetKind === 'agent' && <DestinationLine notify={r.notify} git={git} />}
               </div>
               <div style={s.row}>
                 {!r.suspended ? (
@@ -124,6 +128,7 @@ export function SchedulesView() {
         <ScheduleDialog
           target={editing}
           builder={builder}
+          admin={admin}
           onClose={() => setEditing(null)}
           onSaved={(msg) => { setEditing(null); setNotice(msg); load() }}
         />
@@ -191,7 +196,7 @@ function History({ schedule }: { schedule: ScheduleSummary }) {
 
 // ── The builder section ──────────────────────────────────────────────────────
 
-interface FormState {
+interface FormState extends DestinationForm {
   name: string
   namespace: string
   agent: string
@@ -202,8 +207,6 @@ interface FormState {
   maxPerRun: string
   maxPerDay: string
   maxPerMonth: string
-  /** Name of the channel the result is sent to; empty: only kept on the run. */
-  notifyChannel: string
   /** Succeeded, Failed, Skipped, BreakerOpen. */
   notifyOn: string[]
   notifyOutput: boolean
@@ -221,7 +224,7 @@ function emptyForm(namespace: string): FormState {
   return {
     name: '', namespace, agent: '', when: DEFAULT_WHEN, timeZone: browserTimeZone(), input: '',
     concurrency: 'Forbid', maxPerRun: '1.00', maxPerDay: '', maxPerMonth: '',
-    notifyChannel: '', notifyOn: ['Failed'], notifyOutput: false,
+    notifyChannel: '', slackApp: '', slackChannelID: '', slackChannelName: '', notifyOn: ['Failed'], notifyOutput: false,
   }
 }
 
@@ -232,7 +235,9 @@ function formOf(obj: KubeObject): FormState {
     agent: spec.agentRef ?? '', when: whenOf(spec.schedule ?? ''), timeZone: spec.timeZone ?? 'UTC', input: spec.input ?? '',
     concurrency: spec.concurrencyPolicy ?? 'Forbid',
     maxPerRun: spec.budget?.maxUSD ?? '', maxPerDay: spec.spend?.maxUSDPerDay ?? '', maxPerMonth: spec.spend?.maxUSDPerMonth ?? '',
-    notifyChannel: spec.result?.notify?.channel ?? '', notifyOn: spec.result?.notify?.on ?? ['Failed'], notifyOutput: spec.result?.notify?.includeOutput ?? false,
+    notifyChannel: spec.result?.notify?.slack ? VIA_SLACK : spec.result?.notify?.channel ?? '',
+    slackApp: spec.result?.notify?.slack?.app ?? '', slackChannelID: spec.result?.notify?.slack?.channelID ?? '',
+    slackChannelName: spec.result?.notify?.slack?.channelName ?? '', notifyOn: spec.result?.notify?.on ?? ['Failed'], notifyOutput: spec.result?.notify?.includeOutput ?? false,
   }
 }
 
@@ -249,15 +254,17 @@ export function formProblems(f: FormState, existing: boolean): Record<string, st
   for (const [k, v] of [['maxPerRun', f.maxPerRun], ['maxPerDay', f.maxPerDay], ['maxPerMonth', f.maxPerMonth]] as const) {
     if (v && (!MONEY.test(v) || Number(v) <= 0)) p[k] = 'Enter an amount in dollars, such as 1.50.'
   }
+  if (f.notifyChannel === VIA_SLACK && (!f.slackApp || !SLACK_CHANNEL_ID.test(f.slackChannelID))) p.slack = f.slackApp ? 'Choose a channel (its ID looks like C0123456789).' : 'Choose the Slack app and channel.'
   if (f.notifyChannel && f.notifyOn.length === 0) p.notifyOn = 'Choose at least one thing to be told about.'
   else if (f.notifyChannel && f.notifyOutput && !f.notifyOn.some((e) => e === 'Succeeded' || e === 'Failed')) p.notifyOutput = 'Only a finished run has output: also choose "A run fails" or "A run succeeds".'
   if (!f.maxPerRun && !f.maxPerDay && !f.maxPerMonth) p.maxPerRun = 'Set a spend limit: a schedule that runs by itself needs one.'
   return p
 }
 
-function ScheduleDialog({ target, builder, onClose, onSaved }: {
+function ScheduleDialog({ target, builder, admin, onClose, onSaved }: {
   target: { ns: string; name: string } | 'new'
   builder: boolean
+  admin: boolean
   onClose: () => void
   onSaved: (message: string) => void
 }) {
@@ -303,11 +310,15 @@ function ScheduleDialog({ target, builder, onClose, onSaved }: {
 
   const git = !isNew && obj !== null && obj.ownership?.owner !== 'ui'
   const readOnly = !builder || git
+  const canRoute = !readOnly && admin
   const set = <K extends keyof FormState>(k: K, v: FormState[K]) => setForm((f) => ({ ...f, [k]: v }))
+  const setDestination = useCallback((change: Partial<DestinationForm>) => setForm((f) => ({ ...f, ...change })), [])
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
     const p = formProblems(form, !isNew)
+    // What the caller cannot change is not theirs to fix.
+    if (!admin) { delete p.slack; delete p.notifyOn; delete p.notifyOutput }
     setErrors(p)
     setFailure('')
     if (Object.keys(p).length > 0) return
@@ -323,10 +334,16 @@ function ScheduleDialog({ target, builder, onClose, onSaved }: {
       if (form.maxPerDay || form.maxPerMonth) {
         spec.spend = { ...((spec.spend as object | undefined) ?? {}), maxUSDPerDay: form.maxPerDay || undefined, maxUSDPerMonth: form.maxPerMonth || undefined }
       } else delete spec.spend
-      // Keep what an administrator set on result (egress, callbacks); only notify is the form's.
+      // Keep what an administrator set on result (egress, callbacks). Only an admin
+      // may change notify, so for anyone else it goes back as it was read.
       const result = { ...((spec.result as Record<string, unknown> | undefined) ?? {}) }
-      if (form.notifyChannel) result.notify = { channel: form.notifyChannel, on: form.notifyOn, includeOutput: form.notifyOutput }
-      else delete result.notify
+      if (admin) {
+        const to = form.notifyChannel === VIA_SLACK
+          ? { slack: { app: form.slackApp, channelID: form.slackChannelID, ...(form.slackChannelName ? { channelName: form.slackChannelName } : {}) } }
+          : { channel: form.notifyChannel }
+        if (form.notifyChannel) result.notify = { ...to, on: form.notifyOn, includeOutput: form.notifyOutput }
+        else delete result.notify
+      }
       if (Object.keys(result).length > 0) spec.result = result
       else delete spec.result
       if (isNew) {
@@ -437,35 +454,31 @@ function ScheduleDialog({ target, builder, onClose, onSaved }: {
           </div>
 
           <h3 style={s.h3}>Send the result to</h3>
-          <p style={s.muted}>The result is always kept on the run, which you can open from the history. A channel sends a short message as well; channels are set up by an administrator.</p>
-          <Field label="Also send a message to" help={channels.length === 0 && !form.notifyChannel ? 'No channels are set up for your workspace yet. Ask an administrator.' : undefined}>
-            {(p) => (
-              <select {...p} style={field.control} value={form.notifyChannel} onChange={(e) => set('notifyChannel', e.target.value)}>
-                <option value="">No one: only keep it on the run</option>
-                {form.notifyChannel && !channels.some((c) => c.name === form.notifyChannel) && <option value={form.notifyChannel}>{form.notifyChannel}</option>}
-                {channels.map((c) => <option key={c.name} value={c.name}>{c.name} ({c.type})</option>)}
-              </select>
+          <p style={s.muted}>The result is always kept on the run, which you can open from the history. A channel gets a short message as well.</p>
+          {git && <p role="status" style={s.warn}>This schedule is managed in Git, so where its reports go can only be changed in Git: edit <code>spec.result.notify</code> there.</p>}
+          {!git && !admin && <p style={s.muted}>Only an admin can change where reports go and what they include.</p>}
+          <fieldset disabled={!canRoute} aria-label="Report destination" style={s.fieldset}>
+            <DestinationFields form={form} channels={channels} editable={canRoute} error={errors.slack} onChange={setDestination} />
+            {form.notifyChannel && (
+              <>
+                <fieldset aria-label="Send a message when" style={{ ...s.fieldset, gap: 4 }}>
+                  <legend style={s.muted}>Send a message when</legend>
+                  {NOTIFY_EVENTS.map((ev) => (
+                    <label key={ev.value} style={s.radio}>
+                      <input type="checkbox" checked={form.notifyOn.includes(ev.value)}
+                        onChange={(e) => set('notifyOn', e.target.checked ? [...form.notifyOn, ev.value] : form.notifyOn.filter((x) => x !== ev.value))} /> {ev.label}
+                    </label>
+                  ))}
+                  {errors.notifyOn && <span role="alert" style={field.error}>{errors.notifyOn}</span>}
+                </fieldset>
+                <label style={s.radio}>
+                  <input type="checkbox" checked={form.notifyOutput} onChange={(e) => set('notifyOutput', e.target.checked)} /> Include the run's output in the message
+                </label>
+                <p style={s.muted}>The output is cut to 2000 characters. Anyone who can read the channel can read it, so leave this off for private results.</p>
+                {errors.notifyOutput && <span role="alert" style={field.error}>{errors.notifyOutput}</span>}
+              </>
             )}
-          </Field>
-          {form.notifyChannel && (
-            <>
-              <fieldset aria-label="Send a message when" style={{ ...s.fieldset, gap: 4 }}>
-                <legend style={s.muted}>Send a message when</legend>
-                {NOTIFY_EVENTS.map((ev) => (
-                  <label key={ev.value} style={s.radio}>
-                    <input type="checkbox" checked={form.notifyOn.includes(ev.value)}
-                      onChange={(e) => set('notifyOn', e.target.checked ? [...form.notifyOn, ev.value] : form.notifyOn.filter((x) => x !== ev.value))} /> {ev.label}
-                  </label>
-                ))}
-                {errors.notifyOn && <span role="alert" style={field.error}>{errors.notifyOn}</span>}
-              </fieldset>
-              <label style={s.radio}>
-                <input type="checkbox" checked={form.notifyOutput} onChange={(e) => set('notifyOutput', e.target.checked)} /> Include the run's output in the message
-              </label>
-              <p style={s.muted}>The output is cut to 2000 characters. Anyone who can read the channel can read it, so leave this off for private results.</p>
-              {errors.notifyOutput && <span role="alert" style={field.error}>{errors.notifyOutput}</span>}
-            </>
-          )}
+          </fieldset>
 
           <h3 style={s.h3}>Spend limit</h3>
           <div style={s.row}>

@@ -188,15 +188,23 @@ type ScheduleResult struct {
 	Notify *ScheduleNotify `json:"notify,omitempty"`
 }
 
-// ScheduleNotify names a notification channel and what to send to it.
+// ScheduleNotify says where messages about a schedule go and what to send.
+// +kubebuilder:validation:XValidation:rule="has(self.channel) != has(self.slack)",message="set exactly one of channel and slack"
 // +kubebuilder:validation:XValidation:rule="!has(self.includeOutput) || !self.includeOutput || !has(self.on) || self.on.exists(e, e == 'Succeeded' || e == 'Failed')",message="includeOutput needs Succeeded or Failed in on: only a finished run has output"
 type ScheduleNotify struct {
 	// Channel is the name of a channel in the tenant's TenantConfig
 	// (spec.notifications.channels). A name that is not there sets the
 	// NotifyReady condition to false; runs are never blocked.
+	// Set exactly one of channel and slack.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=63
-	Channel string `json:"channel"`
+	// +optional
+	Channel string `json:"channel,omitempty"`
+
+	// Slack posts to a Slack channel through a connected chat app, instead of a
+	// channel of the TenantConfig.
+	// +optional
+	Slack *ScheduleSlackTarget `json:"slack,omitempty"`
 
 	// On lists what is sent: Succeeded, Failed, Skipped (the spend cap stopped
 	// the schedule) or BreakerOpen (the failure breaker stopped it). Default
@@ -213,6 +221,36 @@ type ScheduleNotify struct {
 	// carries the outcome and a link to the run only.
 	// +optional
 	IncludeOutput bool `json:"includeOutput,omitempty"`
+}
+
+// ScheduleSlackTarget is a Slack channel reached through one of the tenant's
+// shared chat apps (UI: Settings, Chat apps).
+type ScheduleSlackTarget struct {
+	// App is the name of a shared Slack app of the schedule's tenant. A name
+	// that is not there, or an app that is turned off, sets the NotifyReady
+	// condition to false; runs are never blocked.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=80
+	App string `json:"app"`
+
+	// ChannelID is Slack's id of the channel, such as C0123456789. The app must
+	// be a member of the channel.
+	// +kubebuilder:validation:Pattern=`^[CG][A-Z0-9]{2,30}$`
+	ChannelID string `json:"channelID"`
+
+	// ChannelName is shown in the UI instead of the id. It is a label only: the
+	// message goes to channelID.
+	// +kubebuilder:validation:MaxLength=100
+	// +optional
+	ChannelName string `json:"channelName,omitempty"`
+}
+
+// Destination identifies where the notifications go.
+func (n *ScheduleNotify) Destination() string {
+	if n.Slack != nil {
+		return "slack:" + n.Slack.App + "/" + n.Slack.ChannelID
+	}
+	return n.Channel
 }
 
 // ScheduleSpendCap bounds what a schedule may spend in a day and in a month.

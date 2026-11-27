@@ -98,9 +98,9 @@ func (m Message) text() string {
 	return t
 }
 
-// slackText is the message in Slack's mrkdwn: &, < and > are escaped, so output
+// SlackText is the message in Slack's mrkdwn: &, < and > are escaped, so output
 // cannot make a mention or a link.
-func (m Message) slackText() string {
+func (m Message) SlackText() string {
 	esc := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;").Replace
 	lines := m.lines()
 	for i := range lines {
