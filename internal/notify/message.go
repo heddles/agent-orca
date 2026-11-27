@@ -9,8 +9,13 @@ import (
 	"github.com/heddles/agent-orca/internal/redact"
 )
 
-// MaxOutput is the most characters of a run's output a message carries.
+// MaxOutput is the most characters of a run's output, or of a reason, that a
+// message to a channel of the tenant carries. A report through a chat app
+// carries all of the output (SlackReport).
 const MaxOutput = 2000
+
+// shortened ends text that was cut to MaxOutput, so a reader knows.
+const shortened = "…\n[Shortened. The full output is on the run.]"
 
 // Message is what a notification says.
 type Message struct {
@@ -39,23 +44,43 @@ type Message struct {
 // cut to MaxOutput characters. Masking comes first so a secret cut in half
 // cannot slip past it.
 func (m Message) Scrub(extra *redact.Registry) Message {
+	m = m.mask(extra)
+	m.Reason = truncate(m.Reason, MaxOutput)
+	m.Output = truncate(m.Output, MaxOutput)
+	return m
+}
+
+// mask hides the known secrets in the reason and the output.
+func (m Message) mask(extra *redact.Registry) Message {
 	clean := func(s string) string {
 		s = redact.String(s)
 		if extra != nil {
 			s = extra.String(s)
 		}
-		return truncate(s, MaxOutput)
+		return s
 	}
 	m.Reason = clean(m.Reason)
 	m.Output = clean(m.Output)
 	return m
 }
 
+// SlackReport is the message for a chat app, which can post as many messages as
+// it takes: header is the facts about the run, ready in Slack's mrkdwn, and
+// output is all of the run's output, still in Markdown, for the app to format.
+// Known secrets are masked in both. The output is not escaped: whatever posts it
+// must format it so that it cannot make a mention.
+func (m Message) SlackReport(extra *redact.Registry) (header, output string) {
+	m = m.mask(extra)
+	m.Reason = truncate(m.Reason, MaxOutput)
+	output, m.Output = m.Output, ""
+	return m.SlackText(), output
+}
+
 func truncate(s string, n int) string {
 	if utf8.RuneCountInString(s) <= n {
 		return s
 	}
-	return string([]rune(s)[:n]) + "…"
+	return string([]rune(s)[:n]) + shortened
 }
 
 func (m Message) subject() string {
@@ -98,9 +123,9 @@ func (m Message) text() string {
 	return t
 }
 
-// slackText is the message in Slack's mrkdwn: &, < and > are escaped, so output
+// SlackText is the message in Slack's mrkdwn: &, < and > are escaped, so output
 // cannot make a mention or a link.
-func (m Message) slackText() string {
+func (m Message) SlackText() string {
 	esc := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;").Replace
 	lines := m.lines()
 	for i := range lines {

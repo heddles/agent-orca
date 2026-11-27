@@ -44,6 +44,13 @@ const (
 	// AnnotationAccounted, before the message is sent, so a run is announced at
 	// most once however often the schedule is reconciled.
 	AnnotationNotified = "agentorca.io/schedule-notified"
+	// AnnotationReport asks the schedule to report a run it does not own (Run
+	// now) the way it reports its own. Only the API sets it, as ReportRequested;
+	// the schedule controller makes it ReportHandled in the same write as the
+	// claim, so the run is announced at most once.
+	AnnotationReport = "agentorca.io/schedule-report"
+	ReportRequested  = "requested"
+	ReportHandled    = "handled"
 	// AnnotationResumedAt is set (RFC 3339) by the API when a person resumes a
 	// Degraded schedule; the controller clears the breaker when it is newer than
 	// the moment the schedule degraded.

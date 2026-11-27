@@ -126,7 +126,7 @@ func (a *Adapter) Reply(ctx context.Context, c inbound.Connection, to inbound.Re
 		if t.ThreadTS != "" {
 			msg["thread_ts"] = t.ThreadTS
 		}
-		if _, err := a.call(ctx, c, "chat.postMessage", msg, nil); err != nil {
+		if _, err := a.call(ctx, c, methodPostMessage, msg, nil); err != nil {
 			return err
 		}
 	}

@@ -18,12 +18,15 @@ package apiserver
 
 import (
 	"fmt"
+	"log/slog"
 	"net/http"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -49,6 +52,7 @@ import (
 //	POST /api/schedules/{ns}/{name}/suspend     runner; UI-owned schedules only
 //	POST /api/schedules/{ns}/{name}/resume      runner; also clears a Degraded breaker
 //	POST /api/schedules/{ns}/{name}/run         runner; "Run now", same quotas
+//	PUT, DELETE /api/schedules/{ns}/{name}/destination  admin: see uiapi_schedule_destination.go
 //	GET  /api/notification-channels             builder; channel names and types, read-only
 
 // Kind names and route words used more than once.
@@ -120,6 +124,42 @@ type scheduleSummary struct {
 	Active              []string           `json:"active"`
 	RecentSkips         []scheduleSkipView `json:"recentSkips"`
 	Ownership           ownershipView      `json:"ownership"`
+	// Notify is where messages about the schedule go; absent when nowhere.
+	Notify *scheduleNotifyView `json:"notify,omitempty"`
+}
+
+// scheduleNotifyView names a schedule's destination. It holds no credential.
+type scheduleNotifyView struct {
+	// Channel is a channel of the TenantConfig; empty with Slack.
+	Channel string                                 `json:"channel,omitempty"`
+	Slack   *agentorcav1alpha1.ScheduleSlackTarget `json:"slack,omitempty"`
+	// Problem is why messages cannot be sent there, when they cannot.
+	Problem string `json:"problem,omitempty"`
+	// Override says the destination above was chosen in the UI; Git is then
+	// what the schedule's own spec says.
+	Override *scheduleOverrideView `json:"override,omitempty"`
+}
+
+type scheduleOverrideView struct {
+	SetBy string               `json:"setBy"`
+	SetAt string               `json:"setAt"`
+	Git   scheduleNotifyTarget `json:"git"`
+}
+
+type scheduleNotifyTarget struct {
+	Channel string                                 `json:"channel,omitempty"`
+	Slack   *agentorcav1alpha1.ScheduleSlackTarget `json:"slack,omitempty"`
+}
+
+func notifyViewOf(sc *agentorcav1alpha1.AgentSchedule) *scheduleNotifyView {
+	if sc.Spec.Result == nil || sc.Spec.Result.Notify == nil {
+		return nil
+	}
+	v := &scheduleNotifyView{Channel: sc.Spec.Result.Notify.Channel, Slack: sc.Spec.Result.Notify.Slack}
+	if c := meta.FindStatusCondition(sc.Status.Conditions, agentorcav1alpha1.ScheduleConditionNotifyReady); c != nil && c.Status == metav1.ConditionFalse {
+		v.Problem = c.Message
+	}
+	return v
 }
 
 func utcTime(t *metav1.Time) string {
@@ -206,6 +246,7 @@ func (s *UIServer) summarize(r *http.Request, sc *agentorcav1alpha1.AgentSchedul
 		ConsecutiveFailures: sc.Status.ConsecutiveFailures,
 		Active:              []string{}, RecentSkips: []scheduleSkipView{}, LastResult: scheduleResult{Status: "none"},
 		Ownership: s.ownershipOf(r.Context(), sc, kindAgentSchedule),
+		Notify:    notifyViewOf(sc),
 	}
 	if sc.Status.NextScheduleTime != nil {
 		if loc, err := time.LoadLocation(zone); err == nil {
@@ -274,10 +315,16 @@ func (s *UIServer) handleListSchedules(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	chosen, chosenErr := s.chosenDestinations(r.Context())
+	if chosenErr != nil {
+		slog.Error("listing chosen schedule destinations", "err", chosenErr)
+	}
 	out := make([]scheduleSummary, 0, len(list.Items))
 	for i := range list.Items {
 		sc := &list.Items[i]
-		out = append(out, s.summarize(r, sc, children[sc.Namespace+"/"+sc.Name]))
+		sum := s.summarize(r, sc, children[sc.Namespace+"/"+sc.Name])
+		s.applyChosenDestination(r.Context(), sc, sum.Notify, chosen, chosenErr)
+		out = append(out, sum)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Namespace != out[j].Namespace {
@@ -304,7 +351,14 @@ func (s *UIServer) handleScheduleAction(w http.ResponseWriter, r *http.Request) 
 	if action == schedActionRuns {
 		want = http.MethodGet
 	}
-	if action != schedActionRuns && action != "suspend" && action != "resume" && action != actionRun {
+	if action == schedActionDestination {
+		if r.Method == http.MethodDelete {
+			want = http.MethodDelete
+		} else {
+			want = http.MethodPut
+		}
+	}
+	if action != schedActionRuns && action != "suspend" && action != "resume" && action != actionRun && action != schedActionDestination {
 		http.NotFound(w, r)
 		return
 	}
@@ -330,6 +384,8 @@ func (s *UIServer) handleScheduleAction(w http.ResponseWriter, r *http.Request) 
 		s.setSuspend(w, r, &sc, false)
 	case actionRun:
 		s.runScheduleNow(w, r, &sc)
+	case schedActionDestination:
+		s.handleScheduleDestination(w, r, &sc)
 	}
 }
 
@@ -520,6 +576,8 @@ func toUIBody(obj client.Object) (*unstructured.Unstructured, error) {
 // schedule's settings, started by the caller. It is labelled for the schedule
 // but not owned by it, so it is not counted in the schedule's history limits,
 // failure streak or spend caps, and it passes the tenant's quotas like any run.
+// An agent run is reported like a timed one; reportOn in the answer says on
+// which outcomes, and is absent when nothing will be sent.
 func (s *UIServer) runScheduleNow(w http.ResponseWriter, r *http.Request, sc *agentorcav1alpha1.AgentSchedule) {
 	if !requireRole(w, r, tenancy.RoleRunner) {
 		return
@@ -557,6 +615,7 @@ func (s *UIServer) runScheduleNow(w http.ResponseWriter, r *http.Request, sc *ag
 
 	var created client.Object
 	var kind string
+	var reportOn []string
 	if sc.Spec.WorkflowTemplateRef != "" {
 		var tpl agentorcav1alpha1.AgentWorkflow
 		if err := s.crdClient.Get(ctx, client.ObjectKey{Namespace: sc.Namespace, Name: sc.Spec.WorkflowTemplateRef}, &tpl); err != nil || tpl.Spec.Mode != agentorcav1alpha1.WorkflowModeTemplate {
@@ -606,6 +665,9 @@ func (s *UIServer) runScheduleNow(w http.ResponseWriter, r *http.Request, sc *ag
 		if res := sc.Spec.Result; res != nil {
 			run.Spec.Egress, run.Spec.Callbacks = res.Egress.DeepCopy(), res.Callbacks.DeepCopy()
 		}
+		if reportOn = runOutcomesReported(sc); len(reportOn) > 0 {
+			run.Annotations[schedule.AnnotationReport] = schedule.ReportRequested
+		}
 		created, kind = run, "AgentRun"
 	}
 	if err := s.crdClient.Create(ctx, created); err != nil {
@@ -615,16 +677,51 @@ func (s *UIServer) runScheduleNow(w http.ResponseWriter, r *http.Request, sc *ag
 	s.recordAudit(w, r, auditEventFor(postgresql.AuditRequest, kind, created.GetNamespace(), created.GetName(), created.GetResourceVersion(),
 		fmt.Sprintf("ran AgentSchedule %s/%s now", sc.Namespace, sc.Name)))
 	w.WriteHeader(http.StatusAccepted)
-	jsonResponse(w, map[string]string{"kind": kind, "name": created.GetName(), "namespace": created.GetNamespace()})
+	jsonResponse(w, runNowResponse{Kind: kind, Name: created.GetName(), Namespace: created.GetNamespace(), ReportOn: reportOn})
 }
 
-// scheduleWriteGate applies the role rule the CRUD path cannot express: a
-// schedule that sends results to an egress sink with credentials needs the
-// admin role, as for MCPServer and Tool. Keeping a secretRef an admin already
-// set is allowed. It answers 403 and returns false when the caller may not write.
+type runNowResponse struct {
+	Kind      string   `json:"kind"`
+	Name      string   `json:"name"`
+	Namespace string   `json:"namespace"`
+	ReportOn  []string `json:"reportOn,omitempty"`
+}
+
+// runOutcomesReported is the run outcomes the schedule sends a report for. The
+// other events of result.notify are about the schedule, not one run.
+func runOutcomesReported(sc *agentorcav1alpha1.AgentSchedule) []string {
+	if sc.Spec.Result == nil || sc.Spec.Result.Notify == nil {
+		return nil
+	}
+	on := sc.Spec.Result.Notify.On
+	if len(on) == 0 {
+		return []string{agentorcav1alpha1.ScheduleNotifyFailed}
+	}
+	var out []string
+	for _, e := range on {
+		if e == agentorcav1alpha1.ScheduleNotifySucceeded || e == agentorcav1alpha1.ScheduleNotifyFailed {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// scheduleWriteGate applies the role rules the CRUD path cannot express: only
+// an admin may change where a schedule sends messages and what they hold
+// (result.notify), and a schedule that sends results to an egress sink with
+// credentials needs the admin role, as for MCPServer and Tool. Keeping what is
+// already set is allowed. It answers 403 and returns false when the caller may
+// not write. existing is nil for a new schedule.
 func scheduleWriteGate(w http.ResponseWriter, r *http.Request, body *unstructured.Unstructured, existing *agentorcav1alpha1.AgentSchedule) bool {
+	if hasRole(r.Context(), tenancy.RoleAdmin) {
+		return true
+	}
+	if !sameNotify(body, existing) {
+		http.Error(w, `{"error":"changing where a schedule sends its reports, or what they hold (result.notify), needs the admin role in your tenant"}`, http.StatusForbidden)
+		return false
+	}
 	ref, found, _ := unstructured.NestedMap(body.Object, "spec", "result", "egress", "secretRef")
-	if !found || len(ref) == 0 || hasRole(r.Context(), tenancy.RoleAdmin) {
+	if !found || len(ref) == 0 {
 		return true
 	}
 	if existing != nil && existing.Spec.Result != nil && existing.Spec.Result.Egress != nil && existing.Spec.Result.Egress.SecretRef != nil {
@@ -636,4 +733,38 @@ func scheduleWriteGate(w http.ResponseWriter, r *http.Request, body *unstructure
 	}
 	http.Error(w, `{"error":"sending results to a sink with credentials (result.egress.secretRef) needs the admin role in your tenant"}`, http.StatusForbidden)
 	return false
+}
+
+// sameNotify reports whether body leaves result.notify as existing has it. A
+// body that cannot be read counts as a change.
+func sameNotify(body *unstructured.Unstructured, existing *agentorcav1alpha1.AgentSchedule) bool {
+	var next, prev *agentorcav1alpha1.ScheduleNotify
+	value, found, err := unstructured.NestedFieldNoCopy(body.Object, "spec", "result", "notify")
+	if err != nil {
+		return false
+	}
+	if found && value != nil {
+		m, ok := value.(map[string]any)
+		if !ok {
+			return false
+		}
+		next = &agentorcav1alpha1.ScheduleNotify{}
+		if runtime.DefaultUnstructuredConverter.FromUnstructuredWithValidation(m, next, true) != nil {
+			return false
+		}
+	}
+	if existing != nil && existing.Spec.Result != nil {
+		prev = existing.Spec.Result.Notify.DeepCopy()
+	}
+	// The order of "on" and an omitted default say the same thing.
+	for _, n := range []*agentorcav1alpha1.ScheduleNotify{next, prev} {
+		if n == nil {
+			continue
+		}
+		if len(n.On) == 0 {
+			n.On = []string{agentorcav1alpha1.ScheduleNotifyFailed}
+		}
+		slices.Sort(n.On)
+	}
+	return equality.Semantic.DeepEqual(next, prev)
 }

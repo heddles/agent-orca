@@ -209,7 +209,7 @@ func cleanErr(err error) error {
 func (s *Sender) post(ctx context.Context, ch *Channel, msg Message) error {
 	var payload any
 	if ch.Type == TypeSlack {
-		payload = map[string]string{"text": msg.slackText()}
+		payload = map[string]string{"text": msg.SlackText()}
 	} else {
 		payload = msg.payload()
 	}

@@ -40,6 +40,25 @@ export interface ScheduleSummary {
   active: string[]
   recentSkips: { time: string; reason: string; message?: string }[]
   ownership: Ownership
+  /** Where messages about the schedule go; absent when nowhere. */
+  notify?: ScheduleNotifyView
+}
+
+/** A Slack channel reached through one of the tenant's chat apps. */
+export interface SlackTarget {
+  app: string
+  channelID: string
+  channelName?: string
+}
+
+export interface ScheduleNotifyView {
+  /** A notification channel of the TenantConfig; absent with slack. */
+  channel?: string
+  slack?: SlackTarget
+  /** Why messages cannot be sent there, when they cannot. */
+  problem?: string
+  /** Set when the destination above was chosen here in place of the one in Git. */
+  override?: { setBy: string; setAt: string; git: { channel?: string; slack?: SlackTarget } }
 }
 
 export interface SchedulePreview {
@@ -86,10 +105,18 @@ export async function listScheduleRuns(namespace: string, name: string, before =
 }
 
 const action = (ns: string, name: string, what: string) => `/api/schedules/${enc(ns)}/${enc(name)}/${what}`
+/** Sends the reports of a Git-managed schedule to a channel chosen here (admin). The schedule itself is not changed. */
+export async function chooseDestination(ns: string, name: string, to: SlackTarget): Promise<void> {
+  const res = await apiFetch(action(ns, name, 'destination'), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(to) })
+  if (!res.ok) throw await failure(res)
+}
+/** Goes back to the destination in Git (admin). */
+export const resetDestination = (ns: string, name: string) => call<{ status: string }>(action(ns, name, 'destination'), 'DELETE')
 export const suspendSchedule = (ns: string, name: string) => call<{ status: string }>(action(ns, name, 'suspend'), 'POST')
 export const resumeSchedule = (ns: string, name: string) => call<{ status: string }>(action(ns, name, 'resume'), 'POST')
+/** reportOn is the outcomes the run is reported on; absent when nothing will be sent. */
 export const runScheduleNow = (ns: string, name: string) =>
-  call<{ kind: string; name: string; namespace: string }>(action(ns, name, 'run'), 'POST')
+  call<{ kind: string; name: string; namespace: string; reportOn?: ('Succeeded' | 'Failed')[] }>(action(ns, name, 'run'), 'POST')
 
 /** A notification channel an administrator set up; the destination itself is never sent. */
 export interface NotificationChannel {

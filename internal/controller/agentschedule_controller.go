@@ -35,6 +35,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
@@ -76,6 +77,12 @@ type AgentScheduleReconciler struct {
 	// Notifier sends the result notifications of spec.result.notify. Nil turns
 	// them off: no run is claimed for a notification.
 	Notifier Notifier
+	// Chat posts spec.result.notify.slack; nil when chat apps are not available.
+	Chat ChatPoster
+	// Destinations holds the channels chosen in the UI; nil without a database.
+	// OwnDetect decides which schedules are the UI's own, as in the API.
+	Destinations DestinationStore
+	OwnDetect    tenancy.DetectOptions
 	// UIURL is the UI's public base URL, for the link to a run in a
 	// notification. Empty leaves the link out.
 	UIURL string
@@ -248,6 +255,10 @@ func (r *AgentScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	log := logf.FromContext(ctx)
 	var s agentorcav1alpha1.AgentSchedule
 	if err := r.Get(ctx, req.NamespacedName, &s); err != nil {
+		if apierrors.IsNotFound(err) && r.Destinations != nil {
+			// A later schedule of the same name must not inherit the choice.
+			return ctrl.Result{}, r.Destinations.DeleteScheduleDestinationsOf(ctx, req.Namespace, req.Name)
+		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	if !s.DeletionTimestamp.IsZero() {
@@ -284,7 +295,8 @@ func (r *AgentScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 	exhausted := r.budgetState(ctx, &s, spentDay, spentMonth)
 	r.breaker(&s)
-	r.setNotifyCondition(ctx, &s, tenant)
+	dest, destErr := r.destinationOf(ctx, &s, tenant)
+	r.setNotifyCondition(ctx, &s, tenant, dest, destErr)
 
 	res := r.tick(ctx, &s, tenant, exhausted, now)
 
@@ -299,10 +311,10 @@ func (r *AgentScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	var jobs []notifyJob
 	for _, c := range counted {
 		job, send := r.runNotice(ctx, &s, c)
-		send = send && r.Notifier != nil
+		send = send && (destErr != nil || r.canDeliver(dest))
 		claim := ""
 		if send {
-			claim = scheduleNotify(&s).Channel
+			claim = claimOf(dest, destErr)
 		}
 		if err := r.markAccounted(ctx, c, claim); err != nil {
 			log.Error(err, "marking a run as counted", "run", c.ref.Name)
@@ -313,9 +325,16 @@ func (r *AgentScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}
 	}
 	jobs = append(jobs, r.scheduleNotices(&s, &orig.Status)...)
-	r.dispatch(ctx, &s, tenant, jobs)
+	requested, reportErr := r.requestedReports(ctx, &s, dest, destErr)
+	r.dispatch(ctx, &s, tenant, dest, destErr, append(jobs, requested...))
+	if reportErr != nil {
+		return ctrl.Result{}, reportErr
+	}
 	if res.retry {
 		return ctrl.Result{RequeueAfter: retryAfter}, nil
+	}
+	if r.overridable(&s) && (res.after <= 0 || res.after > overrideRefresh) {
+		res.after = overrideRefresh
 	}
 	return ctrl.Result{RequeueAfter: res.after}, nil
 }
@@ -978,6 +997,7 @@ func (r *AgentScheduleReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&agentorcav1alpha1.AgentSchedule{}).
 		Owns(&agentorcav1alpha1.AgentRun{}).
 		Owns(&agentorcav1alpha1.AgentWorkflow{}).
+		Watches(&agentorcav1alpha1.AgentRun{}, handler.EnqueueRequestsFromMapFunc(scheduleOfRequestedReport)).
 		Named("agentschedule").
 		Complete(r)
 }

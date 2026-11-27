@@ -218,7 +218,10 @@ func TestOutputIsRedactedAndTruncated(t *testing.T) {
 	if strings.Contains(out, "super-secret-signing-key") || strings.Contains(out, srv.URL) {
 		t.Errorf("the channel's own secrets are in the output: %.120s", out)
 	}
-	if n := len([]rune(out)); n > MaxOutput+1 {
+	if !strings.HasSuffix(out, shortened) {
+		t.Errorf("a shortened output does not say so: ...%q", out[len(out)-40:])
+	}
+	if n := len([]rune(out)); n > MaxOutput+len([]rune(shortened)) {
 		t.Errorf("output is %d characters, want at most %d", n, MaxOutput)
 	}
 	if strings.Contains(body["reason"].(string), "super-secret-signing-key") {
@@ -481,5 +484,19 @@ func TestScrubMasksBeforeItCuts(t *testing.T) {
 	got := Message{Output: strings.Repeat("a", MaxOutput-5) + secret}.Scrub(reg)
 	if strings.Contains(got.Output, "straddling") {
 		t.Fatal("a partial secret is in the output")
+	}
+}
+
+func TestSlackReportKeepsTheWholeOutputAndMasksIt(t *testing.T) {
+	reg := &redact.Registry{}
+	reg.Register("a-registered-secret-value")
+	m := sampleMsg()
+	m.Output = strings.Repeat("x", 3*MaxOutput) + " a-registered-secret-value THE END"
+	header, output := m.SlackReport(reg)
+	if !strings.HasSuffix(output, "THE END") || strings.Contains(output, "a-registered-secret-value") {
+		t.Errorf("output ends %q", output[len(output)-60:])
+	}
+	if strings.Contains(header, "xxx") {
+		t.Errorf("the output is in the header: %q", header)
 	}
 }

@@ -305,6 +305,14 @@ func (s *UIServer) duplicateResource(w http.ResponseWriter, r *http.Request, inf
 	}
 	obj.SetName(req.Name)
 	obj.SetNamespace(ns)
+	// Choosing where a schedule's reports go is an admin's: a builder's copy
+	// does not take the source's destination with it.
+	if info.gvk == kindAgentSchedule && !hasRole(r.Context(), tenancy.RoleAdmin) {
+		unstructured.RemoveNestedField(obj.Object, "spec", "result", "notify")
+		if res, ok, _ := unstructured.NestedMap(obj.Object, "spec", "result"); ok && len(res) == 0 {
+			unstructured.RemoveNestedField(obj.Object, "spec", "result")
+		}
+	}
 	tenancy.StripGitTracking(obj, s.ownDetect)
 	tenancy.ClearHandoff(obj)
 	if !s.prepareNew(w, r, obj) {

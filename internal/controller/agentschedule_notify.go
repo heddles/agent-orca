@@ -2,11 +2,14 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"slices"
 	"strings"
+	"time"
 
+	"github.com/heddles/agent-orca/internal/redact"
 	"github.com/heddles/agent-orca/internal/runoutput"
 	"github.com/heddles/agent-orca/internal/state"
 	"github.com/heddles/agent-orca/internal/tenancy"
@@ -20,11 +23,106 @@ import (
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
 	"github.com/heddles/agent-orca/internal/notify"
+	"github.com/heddles/agent-orca/internal/postgresql"
+	"github.com/heddles/agent-orca/internal/schedule"
 )
 
 // Notifier delivers a notification. *notify.Sender is one.
 type Notifier interface {
 	Send(ctx context.Context, ch *notify.Channel, msg notify.Message) error
+}
+
+// ChatPoster posts through a tenant's shared chat app. *inbound.Pipeline is one.
+type ChatPoster interface {
+	// CheckApp says whether the app can be used. The error is safe to show.
+	CheckApp(ctx context.Context, tenantID, kind, app string) error
+	// PostToApp posts a report to a place the app can write in. render makes the
+	// header, in the platform's markup, and the body, in Markdown, masking the
+	// secrets it is given. The error is safe to show.
+	PostToApp(ctx context.Context, tenantID, kind, app, place string, render func(*redact.Registry) (header, body string)) error
+}
+
+// chatKindSlack is the chat platform of spec.result.notify.slack.
+const chatKindSlack = "slack"
+
+// deliverFunc sends one notification to a resolved destination.
+type deliverFunc func(context.Context, notify.Message) error
+
+// DestinationStore holds the channels administrators chose in the UI.
+// *postgresql.Store is one.
+type DestinationStore interface {
+	GetScheduleDestination(ctx context.Context, tenantID, namespace, name string) (postgresql.ScheduleDestination, bool, error)
+	DeleteScheduleDestinationsOf(ctx context.Context, namespace, name string) error
+}
+
+// overrideRefresh is how soon a schedule that may have a saved choice is looked
+// at again, so that its NotifyReady condition follows a change in the UI.
+const overrideRefresh = time.Minute
+
+// errDestinationUnknown is shown when the saved choice cannot be read.
+var errDestinationUnknown = errors.New("the channel chosen in the UI could not be read, so nothing is sent: the destination in Git may no longer be the right one")
+
+// overridable reports whether a channel chosen in the UI can replace this
+// schedule's destination: it has one, and it is not edited in the UI itself.
+func (r *AgentScheduleReconciler) overridable(s *agentorcav1alpha1.AgentSchedule) bool {
+	return r.Destinations != nil && scheduleNotify(s) != nil && tenancy.Detect(s, r.OwnDetect).Owner != tenancy.OwnerUI
+}
+
+// destinationOf is the schedule's notify settings with the destination that is
+// in force: the one chosen in the UI when there is one, else the spec's. On an
+// error the destination is unknown and nothing may be sent; the settings
+// returned then say only which events were asked for.
+func (r *AgentScheduleReconciler) destinationOf(ctx context.Context, s *agentorcav1alpha1.AgentSchedule, tenant *agentorcav1alpha1.TenantConfig) (*agentorcav1alpha1.ScheduleNotify, error) {
+	n := scheduleNotify(s)
+	if tenant == nil || !r.overridable(s) {
+		return n, nil
+	}
+	d, found, err := r.Destinations.GetScheduleDestination(ctx, tenancy.TenantIDOf(tenant), s.Namespace, s.Name)
+	if err != nil {
+		logf.FromContext(ctx).Error(err, "reading the chosen destination", "schedule", s.Name)
+		return n, errDestinationUnknown
+	}
+	if !found {
+		return n, nil
+	}
+	return schedule.WithSlackDestination(n, agentorcav1alpha1.ScheduleSlackTarget{App: d.App, ChannelID: d.ChannelID, ChannelName: d.ChannelName}), nil
+}
+
+// canDeliver reports whether this operator can send the schedule's kind of
+// notification at all. Without that, a run is not claimed as announced.
+func (r *AgentScheduleReconciler) canDeliver(n *agentorcav1alpha1.ScheduleNotify) bool {
+	if n != nil && n.Slack != nil {
+		return r.Chat != nil
+	}
+	return r.Notifier != nil
+}
+
+// resolveDestination makes the sender for n, the destination in force. The
+// error is safe to show.
+func (r *AgentScheduleReconciler) resolveDestination(ctx context.Context, n *agentorcav1alpha1.ScheduleNotify, tenant *agentorcav1alpha1.TenantConfig) (deliverFunc, string, error) {
+	t := n.Slack
+	if t == nil {
+		ch, reason, err := r.resolveChannel(ctx, n.Channel, tenant)
+		if err != nil {
+			return nil, reason, err
+		}
+		return func(ctx context.Context, m notify.Message) error { return r.Notifier.Send(ctx, ch, m) }, "", nil
+	}
+	if tenant == nil {
+		return nil, "NoTenant", fmt.Errorf("no TenantConfig owns this schedule, so there are no chat apps")
+	}
+	if r.Chat == nil {
+		return nil, "ChatUnavailable", fmt.Errorf("chat apps are not available on this installation: they need the database")
+	}
+	// Only the schedule's own tenant's apps are looked at.
+	tenantID := tenancy.TenantIDOf(tenant)
+	if err := r.Chat.CheckApp(ctx, tenantID, chatKindSlack, t.App); err != nil {
+		return nil, "ChatAppUnavailable", err
+	}
+	app, place := t.App, t.ChannelID
+	return func(ctx context.Context, m notify.Message) error {
+		return r.Chat.PostToApp(ctx, tenantID, chatKindSlack, app, place, m.SlackReport)
+	}, "", nil
 }
 
 // notifyJob is a notification to send once the schedule's status is stored.
@@ -50,21 +148,20 @@ func scheduleNotify(s *agentorcav1alpha1.AgentSchedule) *agentorcav1alpha1.Sched
 
 // resolveChannel finds the schedule's channel in the tenant's TenantConfig and
 // reads its Secret. The error is safe to show: it names keys, never values.
-func (r *AgentScheduleReconciler) resolveChannel(ctx context.Context, s *agentorcav1alpha1.AgentSchedule, tenant *agentorcav1alpha1.TenantConfig) (*notify.Channel, string, error) {
-	n := scheduleNotify(s)
+func (r *AgentScheduleReconciler) resolveChannel(ctx context.Context, name string, tenant *agentorcav1alpha1.TenantConfig) (*notify.Channel, string, error) {
 	if tenant == nil {
 		return nil, "NoTenant", fmt.Errorf("no TenantConfig owns this schedule, so there are no notification channels")
 	}
 	var def *agentorcav1alpha1.NotificationChannel
 	if tenant.Spec.Notifications != nil {
 		for i := range tenant.Spec.Notifications.Channels {
-			if tenant.Spec.Notifications.Channels[i].Name == n.Channel {
+			if tenant.Spec.Notifications.Channels[i].Name == name {
 				def = &tenant.Spec.Notifications.Channels[i]
 			}
 		}
 	}
 	if def == nil {
-		return nil, "ChannelNotFound", fmt.Errorf("the tenant has no notification channel %q: an administrator adds it to the TenantConfig", n.Channel)
+		return nil, "ChannelNotFound", fmt.Errorf("the tenant has no notification channel %q: an administrator adds it to the TenantConfig", name)
 	}
 	ns := def.SecretRef.Namespace
 	if ns == "" {
@@ -73,13 +170,13 @@ func (r *AgentScheduleReconciler) resolveChannel(ctx context.Context, s *agentor
 	var sec corev1.Secret
 	if err := r.Get(ctx, client.ObjectKey{Namespace: ns, Name: def.SecretRef.Name}, &sec); err != nil {
 		if apierrors.IsNotFound(err) {
-			return nil, "SecretNotFound", fmt.Errorf("the Secret of channel %q was not found", n.Channel)
+			return nil, "SecretNotFound", fmt.Errorf("the Secret of channel %q was not found", name)
 		}
-		return nil, "SecretUnreadable", fmt.Errorf("the Secret of channel %q could not be read", n.Channel)
+		return nil, "SecretUnreadable", fmt.Errorf("the Secret of channel %q could not be read", name)
 	}
 	ch, err := notify.FromSecret(def.Name, def.Type, def.Insecure, def.AllowPrivateAddresses, sec.Data)
 	if err != nil {
-		return nil, "SecretInvalid", fmt.Errorf("channel %q: %w", n.Channel, err)
+		return nil, "SecretInvalid", fmt.Errorf("channel %q: %w", name, err)
 	}
 	return ch, "", nil
 }
@@ -87,12 +184,16 @@ func (r *AgentScheduleReconciler) resolveChannel(ctx context.Context, s *agentor
 // setNotifyCondition keeps the NotifyReady condition: present while
 // spec.result.notify is set, true when the channel resolves. It never blocks a
 // run, and the message never holds a Secret value.
-func (r *AgentScheduleReconciler) setNotifyCondition(ctx context.Context, s *agentorcav1alpha1.AgentSchedule, tenant *agentorcav1alpha1.TenantConfig) {
-	if scheduleNotify(s) == nil {
+func (r *AgentScheduleReconciler) setNotifyCondition(ctx context.Context, s *agentorcav1alpha1.AgentSchedule, tenant *agentorcav1alpha1.TenantConfig,
+	dest *agentorcav1alpha1.ScheduleNotify, destErr error) {
+	if dest == nil {
 		meta.RemoveStatusCondition(&s.Status.Conditions, agentorcav1alpha1.ScheduleConditionNotifyReady)
 		return
 	}
-	_, reason, err := r.resolveChannel(ctx, s, tenant)
+	reason, err := "DestinationUnreadable", destErr
+	if err == nil {
+		_, reason, err = r.resolveDestination(ctx, dest, tenant)
+	}
 	c := metav1.Condition{
 		Type: agentorcav1alpha1.ScheduleConditionNotifyReady, Status: metav1.ConditionTrue, Reason: "ChannelResolved", ObservedGeneration: s.Generation,
 	}
@@ -191,12 +292,17 @@ func (r *AgentScheduleReconciler) scheduleLink() string {
 // dispatch sends the notifications in the background: a slow receiver, with its
 // retries, must not hold up the schedule's own work. The result is an event on
 // the schedule; a failure never touches a run.
-func (r *AgentScheduleReconciler) dispatch(ctx context.Context, s *agentorcav1alpha1.AgentSchedule, tenant *agentorcav1alpha1.TenantConfig, jobs []notifyJob) {
-	if len(jobs) == 0 || r.Notifier == nil {
+func (r *AgentScheduleReconciler) dispatch(ctx context.Context, s *agentorcav1alpha1.AgentSchedule, tenant *agentorcav1alpha1.TenantConfig,
+	dest *agentorcav1alpha1.ScheduleNotify, destErr error, jobs []notifyJob) {
+	if len(jobs) == 0 || (destErr == nil && !r.canDeliver(dest)) {
 		return
 	}
 	log := logf.FromContext(ctx)
-	ch, _, err := r.resolveChannel(ctx, s, tenant)
+	var deliver deliverFunc
+	err := destErr
+	if err == nil {
+		deliver, _, err = r.resolveDestination(ctx, dest, tenant)
+	}
 	if err != nil {
 		log.Info("not sending a notification", "schedule", s.Name, "reason", err.Error())
 		if r.Recorder != nil {
@@ -208,7 +314,7 @@ func (r *AgentScheduleReconciler) dispatch(ctx context.Context, s *agentorcav1al
 	bg := context.WithoutCancel(ctx)
 	r.notifyWG.Go(func() {
 		for _, j := range jobs {
-			if err := r.Notifier.Send(bg, ch, j.msg); err != nil {
+			if err := deliver(bg, j.msg); err != nil {
 				// The error is already free of Secret values.
 				log.Info("notification failed", "schedule", sc.Name, "event", j.event, "run", j.msg.Run, "error", err.Error())
 				if r.Recorder != nil {

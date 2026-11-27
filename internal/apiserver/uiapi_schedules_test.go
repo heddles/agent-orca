@@ -237,6 +237,40 @@ func TestRunNowCreatesARunStartedByThePersonAndAudits(t *testing.T) {
 	}
 }
 
+// Run now asks for a report only when the schedule has somewhere to send one.
+func TestRunNowAsksForTheRunToBeReported(t *testing.T) {
+	for name, tc := range map[string]struct {
+		notify *agentorcav1alpha1.ScheduleNotify
+		want   string
+		on     string
+	}{
+		"no destination":  {},
+		"default outcome": {&agentorcav1alpha1.ScheduleNotify{Channel: "ops"}, schedule.ReportRequested, `"reportOn":["Failed"]`},
+		"both outcomes": {&agentorcav1alpha1.ScheduleNotify{Channel: "ops", On: []string{"Succeeded", "Failed"}},
+			schedule.ReportRequested, `"reportOn":["Succeeded","Failed"]`},
+		"only schedule events": {&agentorcav1alpha1.ScheduleNotify{Channel: "ops", On: []string{"BreakerOpen"}}, "", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newWriteFixture(t, uiSchedule(func(s *agentorcav1alpha1.AgentSchedule) {
+				if tc.notify != nil {
+					s.Spec.Result = &agentorcav1alpha1.ScheduleResult{Notify: tc.notify}
+				}
+			}), schedAgentObj())
+			rec := f.act(f.as(tenancy.RoleRunner), http.MethodPost, schedPath+"/run")
+			var runs agentorcav1alpha1.AgentRunList
+			if err := f.c.List(context.Background(), &runs, client.InNamespace(sharedNS)); err != nil || len(runs.Items) != 1 {
+				t.Fatalf("run = %d %s %v", rec.Code, rec.Body, err)
+			}
+			if got := runs.Items[0].Annotations[schedule.AnnotationReport]; got != tc.want {
+				t.Errorf("report annotation = %q, want %q", got, tc.want)
+			}
+			if body := rec.Body.String(); tc.on == "" && strings.Contains(body, "reportOn") || !strings.Contains(body, tc.on) {
+				t.Errorf("response = %s", body)
+			}
+		})
+	}
+}
+
 func TestRunNowRespectsQuotasAndTheAllowlist(t *testing.T) {
 	busy := &agentorcav1alpha1.AgentRun{
 		ObjectMeta: metav1.ObjectMeta{Name: "busy", Namespace: sharedNS, Labels: map[string]string{schedule.LabelSchedule: "other", tenancy.LabelTenantID: isoA}},

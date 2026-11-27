@@ -186,6 +186,9 @@ type UIServer struct {
 	// scheduleMinInterval is the minimum interval the schedule preview reports
 	// against (see SetScheduleMinInterval).
 	scheduleMinInterval time.Duration
+	// destinations replaces pgStore as the store of chosen report destinations
+	// (tests).
+	destinations destinationStore
 }
 
 // nsListOpts returns a ListOption slice scoped to ns, or empty (all namespaces) when ns is "".

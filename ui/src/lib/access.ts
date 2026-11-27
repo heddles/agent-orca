@@ -61,3 +61,8 @@ export function canGradeEvals(roles: Roles): boolean {
 export function canAdminEvals(roles: Roles): boolean {
   return roles === null || roles.includes('admin')
 }
+
+/** Whether the caller may change where a schedule's reports go (the admin role). */
+export function canRouteReports(roles: Roles): boolean {
+  return roles === null || roles.includes('admin')
+}
