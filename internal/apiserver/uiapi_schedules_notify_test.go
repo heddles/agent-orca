@@ -19,7 +19,7 @@ func TestScheduleReportDestinationNeedsAdmin(t *testing.T) {
 		return `{"metadata":{"name":"` + name + `","namespace":"shared"},"spec":{"agentRef":"helper","schedule":"0 8 * * *","input":"x","budget":{"maxUSD":"1"}` + result + `}}`
 	}
 	slack := `,"result":{"notify":{"slack":{"app":"orca-bot","channelID":"C0REPORTS"},"on":["Failed","Succeeded"],"includeOutput":true}}`
-	for _, result := range []string{slack, `,"result":{"notify":{"channel":"ops"}}`} {
+	for _, result := range []string{slack, `,"result":{"notify":{"channel":"team-ops"}}`} {
 		if rec := f.do(f.as(tenancy.RoleBuilder), http.MethodPost, path, create("s", result)); rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "admin") {
 			t.Fatalf("builder chose a destination: %d %s", rec.Code, rec.Body)
 		}
@@ -45,7 +45,7 @@ func TestScheduleReportDestinationNeedsAdmin(t *testing.T) {
 	for what, result := range map[string]string{
 		"another channel":     strings.Replace(slack, "C0REPORTS", "C0EVERYONE", 1),
 		"another app":         strings.Replace(slack, "orca-bot", "other", 1),
-		"to a tenant channel": `,"result":{"notify":{"channel":"ops"}}`,
+		"to a tenant channel": `,"result":{"notify":{"channel":"team-ops"}}`,
 		"output on or off":    strings.Replace(slack, `"includeOutput":true`, `"includeOutput":false`, 1),
 		"removed":             "",
 	} {
@@ -67,7 +67,7 @@ func TestScheduleReportDestinationNeedsAdmin(t *testing.T) {
 func TestDuplicatingAScheduleCopiesTheDestinationForAdminsOnly(t *testing.T) {
 	git := uiSchedule(func(s *agentorcav1alpha1.AgentSchedule) {
 		s.Annotations = map[string]string{tenancy.AnnotationOwner: tenancy.OwnerGit}
-		s.Spec.Result = &agentorcav1alpha1.ScheduleResult{Notify: &agentorcav1alpha1.ScheduleNotify{Channel: "ops", IncludeOutput: true}}
+		s.Spec.Result = &agentorcav1alpha1.ScheduleResult{Notify: &agentorcav1alpha1.ScheduleNotify{Channel: "team-ops", IncludeOutput: true}}
 	})
 	f := newWriteFixture(t, git, schedAgentObj())
 	for name, role := range map[string]tenancy.Role{"by-builder": tenancy.RoleBuilder, "by-admin": tenancy.RoleAdmin} {
@@ -79,7 +79,7 @@ func TestDuplicatingAScheduleCopiesTheDestinationForAdminsOnly(t *testing.T) {
 	if r := f.sched("by-builder").Spec.Result; r != nil {
 		t.Errorf("a builder's copy kept the destination: %+v", r.Notify)
 	}
-	if r := f.sched("by-admin").Spec.Result; r == nil || r.Notify == nil || r.Notify.Channel != "ops" {
+	if r := f.sched("by-admin").Spec.Result; r == nil || r.Notify == nil || r.Notify.Channel != "team-ops" {
 		t.Errorf("an admin's copy lost the destination: %+v", r)
 	}
 }

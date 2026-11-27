@@ -296,7 +296,7 @@ describe('SchedulesView', () => {
     expect(calls.some((x) => x.url.startsWith('/api/chat-apps'))).toBe(false)
   })
 
-  it('says on the card and in the editor that a Git-managed destination is changed in Git, even to an admin', async () => {
+  it('says on the card and in the editor that a destination comes from Git, and keeps the editor read-only even for an admin', async () => {
     mockGetMe.mockResolvedValue(ADMIN)
     list = [summary({ ownership: { owner: 'git', editable: false, handoff: { pending: false } } as ScheduleSummary['ownership'], notify: { channel: 'home-slack', problem: 'the Secret of channel "home-slack" was not found' } })]
     const git = stored('git')
@@ -305,13 +305,66 @@ describe('SchedulesView', () => {
     setup()
     const c = await card()
     expect(within(c).getByText(/the notification channel home-slack/)).toBeInTheDocument()
-    expect(within(c).getByText(/set in Git, change it there/)).toBeInTheDocument()
+    expect(within(c).getByText(/set in Git/)).toBeInTheDocument()
     expect(within(c).getByText(/Messages cannot be sent: the Secret/)).toBeInTheDocument()
     await userEvent.click(within(c).getByRole('button', { name: 'View' }))
     const d = await screen.findByRole('dialog')
-    expect(within(d).getByText(/can only be changed in Git/)).toBeInTheDocument()
+    expect(within(d).getByText(/What is shown here is what Git says/)).toBeInTheDocument()
     expect(within(d).getByLabelText('Also send a message to')).toBeDisabled()
     expect(calls.some((x) => x.url.startsWith('/api/chat-apps'))).toBe(false)
+  })
+
+  const gitRow = (notify: ScheduleSummary['notify']) =>
+    summary({ ownership: { owner: 'git', editable: false, handoff: { pending: false } } as ScheduleSummary['ownership'], notify })
+
+  it('an admin picks another channel for a Git-managed schedule by name, without touching the schedule', async () => {
+    mockGetMe.mockResolvedValue(ADMIN)
+    list = [gitRow({ channel: 'home-slack' })]
+    routes['GET /api/chat-apps$'] = { body: [{ id: 'inb_1', name: 'orca-bot', kind: 'slack', canListPlaces: true }] }
+    routes['GET /api/chat-apps/inb_1/places'] = { body: [{ id: 'C0REPORTS', name: '#team-reports', member: true }] }
+    routes['PUT /api/schedules/team-a/weekday-digest/destination'] = { body: { status: 'saved' } }
+    setup()
+    await userEvent.click(within(await card()).getByRole('button', { name: 'Change channel' }))
+    const d = await screen.findByRole('dialog')
+    expect(within(d).queryByRole('button', { name: 'Reset to Git' })).toBeNull()
+    await userEvent.click(within(d).getByRole('button', { name: 'Save channel' }))
+    expect(await within(d).findByText(/Choose a channel \(its ID|Choose the Slack app and channel/)).toBeInTheDocument()
+    expect(calls.some((x) => x.method === 'PUT')).toBe(false)
+    await userEvent.selectOptions(await within(d).findByRole('combobox', { name: 'Slack channel' }), 'C0REPORTS')
+    await userEvent.click(within(d).getByRole('button', { name: 'Save channel' }))
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('now sends its messages to #team-reports'))
+    const writes = calls.filter((x) => x.method !== 'GET')
+    expect(writes).toEqual([{ method: 'PUT', url: '/api/schedules/team-a/weekday-digest/destination', body: { app: 'orca-bot', channelID: 'C0REPORTS', channelName: '#team-reports' } }])
+  })
+
+  it('shows a channel chosen here next to what Git says, resets it, and says why a save was refused', async () => {
+    mockGetMe.mockResolvedValue(ADMIN)
+    list = [gitRow({ slack: { app: 'orca-bot', channelID: 'C0REPORTS', channelName: '#team-reports' }, override: { setBy: 'ada', setAt: '2026-11-26T00:00:00Z', git: { channel: 'home-slack' } } })]
+    routes['PUT /destination'] = { status: 422, body: { error: 'the chat app "orca-bot" is turned off' } }
+    routes['DELETE /destination'] = { body: { status: 'reset' } }
+    setup()
+    const c = await card()
+    expect(within(c).getByText(/changed here by ada\. Git says the notification channel home-slack\./)).toBeInTheDocument()
+    await userEvent.click(within(c).getByRole('button', { name: 'Change channel' }))
+    const d = await screen.findByRole('dialog')
+    await userEvent.click(within(d).getByRole('button', { name: 'Save channel' }))
+    expect(await within(d).findByText(/is turned off/)).toBeInTheDocument()
+    await userEvent.click(within(d).getByRole('button', { name: 'Reset to Git' }))
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('where Git says again'))
+    expect(calls.some((x) => x.method === 'DELETE' && x.url.endsWith('/destination'))).toBe(true)
+  })
+
+  it('offers Change channel only to an admin, and only for a Git-managed schedule that sends messages', async () => {
+    for (const [who, row] of [[BUILDER, gitRow({ channel: 'home-slack' })], [ADMIN, gitRow(undefined)], [ADMIN, summary({ notify: { channel: 'ops' } })]] as const) {
+      mockGetMe.mockResolvedValue(who)
+      list = [row]
+      const view = setup()
+      const c = await card()
+      await waitFor(() => expect(mockGetMe).toHaveBeenCalled())
+      await new Promise((r) => setTimeout(r, 20))
+      expect(within(c).queryByRole('button', { name: 'Change channel' })).toBeNull()
+      view.unmount()
+    }
   })
 
   it('a viewer does not ask for channels', async () => {

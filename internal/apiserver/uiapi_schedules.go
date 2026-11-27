@@ -18,6 +18,7 @@ package apiserver
 
 import (
 	"fmt"
+	"log/slog"
 	"net/http"
 	"slices"
 	"sort"
@@ -51,6 +52,7 @@ import (
 //	POST /api/schedules/{ns}/{name}/suspend     runner; UI-owned schedules only
 //	POST /api/schedules/{ns}/{name}/resume      runner; also clears a Degraded breaker
 //	POST /api/schedules/{ns}/{name}/run         runner; "Run now", same quotas
+//	PUT, DELETE /api/schedules/{ns}/{name}/destination  admin: see uiapi_schedule_destination.go
 //	GET  /api/notification-channels             builder; channel names and types, read-only
 
 // Kind names and route words used more than once.
@@ -133,6 +135,20 @@ type scheduleNotifyView struct {
 	Slack   *agentorcav1alpha1.ScheduleSlackTarget `json:"slack,omitempty"`
 	// Problem is why messages cannot be sent there, when they cannot.
 	Problem string `json:"problem,omitempty"`
+	// Override says the destination above was chosen in the UI; Git is then
+	// what the schedule's own spec says.
+	Override *scheduleOverrideView `json:"override,omitempty"`
+}
+
+type scheduleOverrideView struct {
+	SetBy string               `json:"setBy"`
+	SetAt string               `json:"setAt"`
+	Git   scheduleNotifyTarget `json:"git"`
+}
+
+type scheduleNotifyTarget struct {
+	Channel string                                 `json:"channel,omitempty"`
+	Slack   *agentorcav1alpha1.ScheduleSlackTarget `json:"slack,omitempty"`
 }
 
 func notifyViewOf(sc *agentorcav1alpha1.AgentSchedule) *scheduleNotifyView {
@@ -299,10 +315,16 @@ func (s *UIServer) handleListSchedules(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	chosen, chosenErr := s.chosenDestinations(r.Context())
+	if chosenErr != nil {
+		slog.Error("listing chosen schedule destinations", "err", chosenErr)
+	}
 	out := make([]scheduleSummary, 0, len(list.Items))
 	for i := range list.Items {
 		sc := &list.Items[i]
-		out = append(out, s.summarize(r, sc, children[sc.Namespace+"/"+sc.Name]))
+		sum := s.summarize(r, sc, children[sc.Namespace+"/"+sc.Name])
+		s.applyChosenDestination(r.Context(), sc, sum.Notify, chosen, chosenErr)
+		out = append(out, sum)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Namespace != out[j].Namespace {
@@ -329,7 +351,14 @@ func (s *UIServer) handleScheduleAction(w http.ResponseWriter, r *http.Request) 
 	if action == schedActionRuns {
 		want = http.MethodGet
 	}
-	if action != schedActionRuns && action != "suspend" && action != "resume" && action != actionRun {
+	if action == schedActionDestination {
+		if r.Method == http.MethodDelete {
+			want = http.MethodDelete
+		} else {
+			want = http.MethodPut
+		}
+	}
+	if action != schedActionRuns && action != "suspend" && action != "resume" && action != actionRun && action != schedActionDestination {
 		http.NotFound(w, r)
 		return
 	}
@@ -355,6 +384,8 @@ func (s *UIServer) handleScheduleAction(w http.ResponseWriter, r *http.Request) 
 		s.setSuspend(w, r, &sc, false)
 	case actionRun:
 		s.runScheduleNow(w, r, &sc)
+	case schedActionDestination:
+		s.handleScheduleDestination(w, r, &sc)
 	}
 }
 

@@ -9,7 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Scheduled reports can be posted to a Slack channel through a connected chat app: `spec.result.notify.slack` (app and channel ID), with a channel picker in the UI, so no webhook is needed for each channel. See [Result notifications](docs/schedules.md#result-notifications). Needs the new AgentSchedule CRD.
-- The Schedules page shows where each schedule sends its messages, why when they cannot be sent, and for a schedule managed in Git that the destination is changed there.
+- **Change channel** on a schedule managed in Git: an admin can send its reports to another Slack channel from the UI. Only the destination is replaced; it is stored in the database, survives Git syncs, shows next to what Git says, and can be reset. Needs database migration 0028. See [Changing the channel of a schedule managed in Git](docs/schedules.md#changing-the-channel-of-a-schedule-managed-in-git).
+- The Schedules page shows where each schedule sends its messages, why when they cannot be sent, and whether the destination comes from Git or was changed in the UI.
 
 ### Changed
 - **Only an admin can change where a schedule sends messages** (`result.notify`, including the events and `includeOutput`) in the UI and its API; builders could before. A builder can still edit the rest of a schedule, and a copy a builder makes has no destination. Schedules written from Git or straight to Kubernetes are unaffected.

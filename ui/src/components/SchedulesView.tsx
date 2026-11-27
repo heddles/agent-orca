@@ -30,7 +30,7 @@ import { stringifyYAML } from '../lib/yaml'
 import { Field, field } from './BuilderParts'
 import { CopyButton } from './AgentTriggers'
 import { lastResultText, ScheduleStateChip } from './ScheduleParts'
-import { DestinationFields, DestinationLine, SLACK_CHANNEL_ID, VIA_SLACK, type DestinationForm } from './ScheduleDestination'
+import { ChangeChannelDialog, DestinationFields, DestinationLine, VIA_SLACK, destinationText, slackProblem, type DestinationForm } from './ScheduleDestination'
 
 export function SchedulesView() {
   const { namespace } = useNamespace()
@@ -43,6 +43,7 @@ export function SchedulesView() {
   const [editing, setEditing] = useState<{ ns: string; name: string } | 'new' | null>(null)
   const [deleting, setDeleting] = useState<ScheduleSummary | null>(null)
   const [open, setOpen] = useState('')
+  const [routing, setRouting] = useState<ScheduleSummary | null>(null)
 
   const load = useCallback(() => {
     let live = true
@@ -110,6 +111,9 @@ export function SchedulesView() {
                   <DSButton size="sm" variant="primary" onClick={() => act(() => resumeSchedule(r.namespace, r.name), `${r.name} will run at its next time.`)}>Start again</DSButton>
                 )}
                 <DSButton size="sm" variant="secondary" onClick={() => act(() => runScheduleNow(r.namespace, r.name), `Started a run of ${r.name}.`)}>Run now</DSButton>
+                {admin && git && r.targetKind === 'agent' && r.notify && (
+                  <DSButton size="sm" variant="secondary" onClick={() => setRouting(r)}>Change channel</DSButton>
+                )}
                 <DSButton size="sm" variant="ghost" onClick={() => setOpen(open === key ? '' : key)} aria-expanded={open === key}>
                   {open === key ? 'Hide history' : 'History'}
                 </DSButton>
@@ -124,11 +128,17 @@ export function SchedulesView() {
         })}
       </ul>
 
+      {routing && (
+        <ChangeChannelDialog schedule={routing} onClose={() => setRouting(null)}
+          onSaved={(msg) => { setRouting(null); setNotice(msg); load() }} />
+      )}
+
       {editing && (
         <ScheduleDialog
           target={editing}
           builder={builder}
           admin={admin}
+          summary={editing === 'new' ? undefined : rows.find((r) => r.namespace === editing.ns && r.name === editing.name)}
           onClose={() => setEditing(null)}
           onSaved={(msg) => { setEditing(null); setNotice(msg); load() }}
         />
@@ -254,17 +264,18 @@ export function formProblems(f: FormState, existing: boolean): Record<string, st
   for (const [k, v] of [['maxPerRun', f.maxPerRun], ['maxPerDay', f.maxPerDay], ['maxPerMonth', f.maxPerMonth]] as const) {
     if (v && (!MONEY.test(v) || Number(v) <= 0)) p[k] = 'Enter an amount in dollars, such as 1.50.'
   }
-  if (f.notifyChannel === VIA_SLACK && (!f.slackApp || !SLACK_CHANNEL_ID.test(f.slackChannelID))) p.slack = f.slackApp ? 'Choose a channel (its ID looks like C0123456789).' : 'Choose the Slack app and channel.'
+  if (f.notifyChannel === VIA_SLACK && slackProblem(f)) p.slack = slackProblem(f)
   if (f.notifyChannel && f.notifyOn.length === 0) p.notifyOn = 'Choose at least one thing to be told about.'
   else if (f.notifyChannel && f.notifyOutput && !f.notifyOn.some((e) => e === 'Succeeded' || e === 'Failed')) p.notifyOutput = 'Only a finished run has output: also choose "A run fails" or "A run succeeds".'
   if (!f.maxPerRun && !f.maxPerDay && !f.maxPerMonth) p.maxPerRun = 'Set a spend limit: a schedule that runs by itself needs one.'
   return p
 }
 
-function ScheduleDialog({ target, builder, admin, onClose, onSaved }: {
+function ScheduleDialog({ target, builder, admin, summary, onClose, onSaved }: {
   target: { ns: string; name: string } | 'new'
   builder: boolean
   admin: boolean
+  summary?: ScheduleSummary
   onClose: () => void
   onSaved: (message: string) => void
 }) {
@@ -455,7 +466,8 @@ function ScheduleDialog({ target, builder, admin, onClose, onSaved }: {
 
           <h3 style={s.h3}>Send the result to</h3>
           <p style={s.muted}>The result is always kept on the run, which you can open from the history. A channel gets a short message as well.</p>
-          {git && <p role="status" style={s.warn}>This schedule is managed in Git, so where its reports go can only be changed in Git: edit <code>spec.result.notify</code> there.</p>}
+          {git && <p role="status" style={s.warn}>This schedule is managed in Git. What is shown here is what Git says (<code>spec.result.notify</code>). To send its messages to another Slack channel without changing Git, an admin can use Change channel on the schedule list.</p>}
+          {git && summary?.notify?.override && <p style={s.warn}>A channel chosen here is in force: messages go to {destinationText(summary.notify)}.</p>}
           {!git && !admin && <p style={s.muted}>Only an admin can change where reports go and what they include.</p>}
           <fieldset disabled={!canRoute} aria-label="Report destination" style={s.fieldset}>
             <DestinationFields form={form} channels={channels} editable={canRoute} error={errors.slack} onChange={setDestination} />

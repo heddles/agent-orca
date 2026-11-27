@@ -57,6 +57,8 @@ export interface ScheduleNotifyView {
   slack?: SlackTarget
   /** Why messages cannot be sent there, when they cannot. */
   problem?: string
+  /** Set when the destination above was chosen here in place of the one in Git. */
+  override?: { setBy: string; setAt: string; git: { channel?: string; slack?: SlackTarget } }
 }
 
 export interface SchedulePreview {
@@ -103,6 +105,13 @@ export async function listScheduleRuns(namespace: string, name: string, before =
 }
 
 const action = (ns: string, name: string, what: string) => `/api/schedules/${enc(ns)}/${enc(name)}/${what}`
+/** Sends the reports of a Git-managed schedule to a channel chosen here (admin). The schedule itself is not changed. */
+export async function chooseDestination(ns: string, name: string, to: SlackTarget): Promise<void> {
+  const res = await apiFetch(action(ns, name, 'destination'), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(to) })
+  if (!res.ok) throw await failure(res)
+}
+/** Goes back to the destination in Git (admin). */
+export const resetDestination = (ns: string, name: string) => call<{ status: string }>(action(ns, name, 'destination'), 'DELETE')
 export const suspendSchedule = (ns: string, name: string) => call<{ status: string }>(action(ns, name, 'suspend'), 'POST')
 export const resumeSchedule = (ns: string, name: string) => call<{ status: string }>(action(ns, name, 'resume'), 'POST')
 export const runScheduleNow = (ns: string, name: string) =>

@@ -530,6 +530,10 @@ func main() {
 	if pgStore != nil {
 		scheduleAudit = pgStore.AsPlatform()
 	}
+	var scheduleDestinations controller.DestinationStore
+	if pgStore != nil {
+		scheduleDestinations = pgStore.AsPlatform()
+	}
 	schedules := &controller.AgentScheduleReconciler{
 		Client: mgr.GetClient(), Scheme: mgr.GetScheme(),
 		StateStore:             stateStore,
@@ -539,6 +543,9 @@ func main() {
 		// the UI address the approval messages use.
 		Notifier: &notify.Sender{},
 		UIURL:    os.Getenv("APPROVALS_UI_URL"),
+		// Channels chosen in the UI for schedules managed outside it.
+		Destinations: scheduleDestinations,
+		OwnDetect:    tenancy.DetectOptionsFromEnv(),
 	}
 	if err := schedules.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "AgentSchedule")
