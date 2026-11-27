@@ -143,13 +143,13 @@ func (s *UIServer) createWidgetKey(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "this agent is a template: make your own copy first", http.StatusConflict)
 		return
 	}
-	published, err := s.agentPublished(r.Context(), agent.Namespace, agent.Name)
+	deployed, err := s.agentDeployed(r.Context(), agent.Namespace, agent.Name)
 	if err != nil {
 		jsonError(w, "checking the agent failed", http.StatusInternalServerError)
 		return
 	}
-	if !published {
-		jsonError(w, "publish the agent before adding a widget key: the widget chats through its deployment", http.StatusConflict)
+	if !deployed {
+		jsonError(w, "the widget chats through a deployment: add an AgentDeployment for this agent before adding a widget key", http.StatusConflict)
 		return
 	}
 	if req.RateLimitPerMin == 0 {

@@ -14,6 +14,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- An agent no longer needs an AgentDeployment to be **published**. An agent that is
+  not built in the UI (applied from Git, for example) is published when the model
+  selector, tools and knowledge bases it names exist, so it can have webhook
+  triggers, channels and chat app routes. Agents built in the UI stay drafts until
+  published. Chat and the chat widget still need a deployment. **After upgrading,
+  such agents accept triggers and channels that were refused before, and deleting
+  their deployment no longer stops messages from starting them.** See
+  [Published agents](docs/inbound-channels.md#published-agents).
 - A scheduled report through a **Slack chat app** now carries all of the run's
   output, formatted for Slack and split into several messages, instead of the
   first 2000 characters in a code block. Reports to a tenant channel keep the

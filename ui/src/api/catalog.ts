@@ -14,10 +14,11 @@ export interface CatalogEntry {
   description: string
   exampleInputs: string[]
   maintainer: string
-  /** True when an AgentDeployment runs the agent. */
+  /** True when the agent may be started: it has a deployment, or it is not built in the UI and its spec can run. */
   published: boolean
+  notPublishedReason?: string
   deployment?: string
-  /** A published agent can be chatted with. */
+  /** True when the agent has a deployment, which chat and the chat widget need. */
   conversational: boolean
   template: boolean
   templateGroup?: string

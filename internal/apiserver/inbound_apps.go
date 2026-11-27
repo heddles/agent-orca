@@ -277,13 +277,13 @@ func (s *UIServer) routeAgent(w http.ResponseWriter, r *http.Request, ns, name s
 		jsonError(w, "this agent is a template: make your own copy first", http.StatusConflict)
 		return false
 	}
-	published, err := s.agentPublished(r.Context(), agent.Namespace, agent.Name)
+	reason, err := s.notPublishedReason(r.Context(), agent)
 	if err != nil {
 		jsonError(w, "checking the agent failed", http.StatusInternalServerError)
 		return false
 	}
-	if !published {
-		jsonError(w, "publish the agent before adding it to a chat app", http.StatusConflict)
+	if reason != "" {
+		jsonError(w, "the agent is not published, so a chat app route cannot be added. "+reason, http.StatusConflict)
 		return false
 	}
 	return true

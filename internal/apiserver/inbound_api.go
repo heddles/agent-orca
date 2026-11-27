@@ -352,13 +352,13 @@ func (s *UIServer) createInbound(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "this agent is a template: make your own copy first", http.StatusConflict)
 		return
 	}
-	published, err := s.agentPublished(r.Context(), agent.Namespace, agent.Name)
+	reason, err := s.notPublishedReason(r.Context(), agent)
 	if err != nil {
 		jsonError(w, "checking the agent failed", http.StatusInternalServerError)
 		return
 	}
-	if !published {
-		jsonError(w, "publish the agent before adding a channel", http.StatusConflict)
+	if reason != "" {
+		jsonError(w, "the agent is not published, so a channel cannot be added. "+reason, http.StatusConflict)
 		return
 	}
 	if !s.checkInboundConfig(w, req.Kind, req.Config) {
