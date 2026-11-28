@@ -313,6 +313,17 @@ func (s *UIServer) handleFleet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var tools agentorcav1alpha1.ToolList
+	if err := listCRDsMultiNamespace(ctx, s.crdClient, &tools, ns); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	have, err := s.listAgentRefs(ctx, ns, tools.Items)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
 	live := make([]fleetRun, 0, len(runs.Items))
 	agentOfRun := make(map[string]string, len(runs.Items))
 	for i := range runs.Items {
@@ -350,9 +361,10 @@ func (s *UIServer) handleFleet(w http.ResponseWriter, r *http.Request) {
 		a := &agents.Items[i]
 		key := a.Namespace + "/" + a.Name
 		dep := depByAgent[key]
+		reason, _ := s.unpublishedReason(a, dep != nil, have.lookup(a.Namespace))
 		row := fleetRow{
 			Name: a.Name, Namespace: a.Namespace, Maintainer: agentMaintainer(a),
-			Published: dep != nil, Owner: s.fleetOwner(a), Health: fleetHealthOf(a, dep),
+			Published: reason == "", Owner: s.fleetOwner(a), Health: fleetHealthOf(a, dep),
 			PendingApprovals: pending[key],
 			Spend: fleetBudget{
 				AgentBudgetUSD:  scaleBudget(perDay[a.Namespace+"/"+a.Spec.ModelSelectorRef], days),

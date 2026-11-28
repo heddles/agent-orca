@@ -74,11 +74,11 @@ func (b *InboundBridge) Launch(ctx context.Context, r inbound.LaunchRequest) (in
 		agent.Labels[LabelTemplate] == templateMarker {
 		return gone("the agent is not available to the tenant")
 	}
-	published, err := s.agentPublished(ctx, agent.Namespace, agent.Name)
+	reason, err := s.notPublishedReason(ctx, &agent)
 	if err != nil {
 		return inbound.RunRef{}, err
 	}
-	if !published {
+	if reason != "" {
 		return gone("the agent is not published")
 	}
 	if qerr, ok := enforceQuotas(ctx, s.crdClient, s.externalAuth.RateLimiter(), identity).(*QuotaError); ok && qerr != nil {

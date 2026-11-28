@@ -177,10 +177,12 @@ type catalogEntry struct {
 	// Maintainer is the team named by the maintainer annotation, else the tenant name,
 	// else "Platform" for a platform-shared agent.
 	Maintainer string `json:"maintainer"`
-	// Published is true when an AgentDeployment runs the agent.
-	Published  bool   `json:"published"`
-	Deployment string `json:"deployment,omitempty"`
-	// Conversational is true for a published agent, which can be chatted with.
+	// Published is true when the agent may be started: see agent_published.go.
+	Published bool `json:"published"`
+	// NotPublishedReason says why it is not.
+	NotPublishedReason string `json:"notPublishedReason,omitempty"`
+	Deployment         string `json:"deployment,omitempty"`
+	// Conversational is true for an agent with a deployment, which can be chatted with.
 	Conversational bool     `json:"conversational"`
 	Template       bool     `json:"template"`
 	TemplateGroup  string   `json:"templateGroup,omitempty"`
@@ -231,6 +233,12 @@ func (s *UIServer) handleCatalog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	have, err := s.listAgentRefs(ctx, ns, tools.Items)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
 	depByAgent := map[string]*agentorcav1alpha1.AgentDeployment{}
 	for i := range deployments.Items {
 		d := &deployments.Items[i]
@@ -273,8 +281,10 @@ func (s *UIServer) handleCatalog(w http.ResponseWriter, r *http.Request) {
 		if e.ExampleInputs == nil {
 			e.ExampleInputs = []string{}
 		}
-		if d := depByAgent[key]; d != nil {
-			e.Published = true
+		d := depByAgent[key]
+		reason, _ := s.unpublishedReason(a, d != nil, have.lookup(a.Namespace))
+		e.Published, e.NotPublishedReason = reason == "", reason
+		if d != nil {
 			e.Deployment = d.Name
 			e.Conversational = true
 		}

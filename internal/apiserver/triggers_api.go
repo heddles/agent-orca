@@ -25,9 +25,6 @@ import (
 	"strings"
 	"time"
 
-	"sigs.k8s.io/controller-runtime/pkg/client"
-
-	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
 	"github.com/heddles/agent-orca/internal/postgresql"
 	"github.com/heddles/agent-orca/internal/tenancy"
 )
@@ -159,13 +156,13 @@ func (s *UIServer) createTrigger(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "this agent is a template: make your own copy first", http.StatusConflict)
 		return
 	}
-	published, err := s.agentPublished(r.Context(), agent.Namespace, agent.Name)
+	reason, err := s.notPublishedReason(r.Context(), agent)
 	if err != nil {
 		jsonError(w, "checking the agent failed", http.StatusInternalServerError)
 		return
 	}
-	if !published {
-		jsonError(w, "publish the agent before adding a trigger", http.StatusConflict)
+	if reason != "" {
+		jsonError(w, "the agent is not published, so a trigger cannot be added. "+reason, http.StatusConflict)
 		return
 	}
 	if req.RateLimitPerMin == 0 {
@@ -190,20 +187,6 @@ func (s *UIServer) createTrigger(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(triggerCreated{Trigger: t, Secret: secret, HookPath: "/hooks/" + t.ID})
-}
-
-// agentPublished is true when an AgentDeployment in ns runs the agent.
-func (s *UIServer) agentPublished(ctx context.Context, ns, agent string) (bool, error) {
-	var deps agentorcav1alpha1.AgentDeploymentList
-	if err := s.crdClient.List(ctx, &deps, client.InNamespace(ns)); err != nil {
-		return false, err
-	}
-	for i := range deps.Items {
-		if deps.Items[i].Spec.AgentRef == agent {
-			return true, nil
-		}
-	}
-	return false, nil
 }
 
 func (s *UIServer) listTriggers(w http.ResponseWriter, r *http.Request) {

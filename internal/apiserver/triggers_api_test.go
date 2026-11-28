@@ -150,12 +150,19 @@ func hookAgent(ns, name string, labels map[string]string) *agentorcav1alpha1.Age
 	return &agentorcav1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Labels: l}}
 }
 
+// uiDraft marks an agent as built in the UI, which stays unpublished until it
+// has a deployment.
+func uiDraft(a *agentorcav1alpha1.Agent) *agentorcav1alpha1.Agent {
+	a.Annotations = map[string]string{tenancy.AnnotationOwner: tenancy.OwnerUI}
+	return a
+}
+
 func newHookFixture(t *testing.T) *hookFixture {
 	t.Helper()
 	isoMode(t, tenancy.ModeEnforce)
 	cl := fake.NewClientBuilder().WithScheme(adminScheme(t)).WithObjects(
 		hookAgent("shared", "support", nil),
-		hookAgent("shared", "draft", nil),
+		uiDraft(hookAgent("shared", "draft", nil)),
 		hookAgent("shared", "tmpl", map[string]string{LabelTemplate: templateMarker}),
 		&agentorcav1alpha1.AgentDeployment{ObjectMeta: metav1.ObjectMeta{Name: "support-dep", Namespace: "shared", Labels: map[string]string{tenancy.LabelTenantID: isoA}}, Spec: agentorcav1alpha1.AgentDeploymentSpec{AgentRef: "support"}},
 		&agentorcav1alpha1.AgentDeployment{ObjectMeta: metav1.ObjectMeta{Name: "tmpl-dep", Namespace: "shared"}, Spec: agentorcav1alpha1.AgentDeploymentSpec{AgentRef: "tmpl"}},

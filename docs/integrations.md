@@ -6,7 +6,7 @@ All need the PostgreSQL store (the tables `triggers`, migration `0018`, `widget_
 
 ## Webhook triggers
 
-A builder adds a trigger to a **published** agent (an agent with an AgentDeployment) on the agent page, tab **Triggers**, or with the API:
+A builder adds a trigger to a **published** agent (see [Published agents](inbound-channels.md#published-agents)) on the agent page, tab **Triggers**, or with the API:
 
 | Call | Role | Audited |
 |---|---|---|
@@ -203,7 +203,7 @@ Slack, Mattermost, Microsoft Teams, Google Chat and Webex are adapters of the sa
 
 ## Chat widget
 
-A builder adds a **widget key** to a **published** conversational agent (tab **Chat widget** on the agent page, or the API) and pastes the snippet it shows on the pages that may use it:
+A builder adds a **widget key** to an agent that has an **AgentDeployment**, which the widget chats through (tab **Chat widget** on the agent page, or the API) and pastes the snippet it shows on the pages that may use it:
 
 ```html
 <script src="https://<host>/widget/v1.js" data-key="wgt_..." async></script>

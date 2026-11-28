@@ -1,6 +1,7 @@
 /**
  * AgentPage — one agent: what it does, a run form generated from its input
  * schema, and for published agents the chat, webhook triggers, channels such as email and the chat widget on further tabs.
+ * Chat and the widget talk to a running deployment, so without one those two tabs say so.
  */
 import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { Link } from 'react-router'
@@ -187,6 +188,7 @@ export function AgentPage({ namespace, name, tab, onTabChange, onNavigateToRun }
   const active = published && (tab === 'chat' || tab === 'triggers' || tab === 'channels' || tab === 'widget') ? tab : 'run'
   const tabs = [{ key: 'run', label: 'Run' }, ...(published ? [{ key: 'chat', label: 'Chat' }, { key: 'triggers', label: 'Triggers' }, { key: 'channels', label: 'Channels' }, { key: 'widget', label: 'Chat widget' }] : [])]
   const examples = manifest.example_inputs ?? entry?.exampleInputs ?? []
+  const needsDeployment = !entry?.conversational && (active === 'chat' || active === 'widget')
 
   return (
     <Page>
@@ -209,6 +211,7 @@ export function AgentPage({ namespace, name, tab, onTabChange, onNavigateToRun }
           </DSChip>
         )}
       </div>
+      {entry && !published && entry.notPublishedReason && <p style={s.reason}>{entry.notPublishedReason}</p>}
       <div style={{ padding: '8px 24px 0' }}>
         <DSTabBar tabs={tabs} active={active} onChange={onTabChange} />
       </div>
@@ -227,6 +230,14 @@ export function AgentPage({ namespace, name, tab, onTabChange, onNavigateToRun }
               />
             </div>
           </Section>
+        </div>
+      ) : needsDeployment ? (
+        <div role="tabpanel" id={`${active}-panel`} aria-label={active === 'chat' ? 'Chat' : 'Chat widget'}>
+          <EmptyState icon={ICON.agent} title={active === 'chat' ? 'Chat needs a deployment' : 'The chat widget needs a deployment'}>
+            A deployment keeps a copy of the agent running to hold a conversation, and this agent has none. Runs, schedules,
+            triggers and channels work without one. To add it, create an AgentDeployment for this agent wherever the agent is
+            managed, such as its Git repository.
+          </EmptyState>
         </div>
       ) : active === 'triggers' ? (
         <div role="tabpanel" id="triggers-panel" aria-label="Triggers">
@@ -257,6 +268,7 @@ function firstLine(text: string): string {
 const s: Record<string, CSSProperties> = {
   form: { display: 'flex', flexDirection: 'column', gap: 14 },
   meta: { display: 'flex', gap: 8, flexWrap: 'wrap', padding: '0 24px' },
+  reason: { margin: 0, padding: '6px 24px 0', fontSize: 12, color: ds.textSecondary },
   field: { display: 'flex', flexDirection: 'column', gap: 4 },
   label: { fontSize: 12, fontWeight: 600, color: ds.textPrimary },
   help: { margin: 0, fontSize: 12, color: ds.textSecondary },

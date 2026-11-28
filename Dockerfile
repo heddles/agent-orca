@@ -20,6 +20,7 @@ RUN go mod download
 COPY api/v1alpha1/ api/v1alpha1/
 COPY cmd/*.go cmd/
 COPY internal/acpfs/ internal/acpfs/
+COPY internal/agentrefs/ internal/agentrefs/
 COPY internal/apiserver/ internal/apiserver/
 COPY internal/checkpoint/ internal/checkpoint/
 COPY internal/connections/ internal/connections/

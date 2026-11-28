@@ -4,6 +4,22 @@ An inbound channel lets people (or systems) start a run of one **published** age
 
 This page is the contract for an adapter, the security model, and what is not built.
 
+## Published agents
+
+A **published** agent is one that people and systems may start: it can have webhook triggers, channels and a place in a shared chat app.
+
+| Agent | Published when |
+| --- | --- |
+| It has an `AgentDeployment` | Always. |
+| No deployment, and not built in the UI (applied from Git or by hand) | Its spec can run: its `ModelSelector`, every `Tool` that is not built in, and every `KnowledgeBase` it names exist in its namespace. |
+| No deployment, built in the UI | Not yet: it is a draft until its builder publishes it, which is where an [evaluation gate](evaluations.md) applies. |
+
+A template is never published. The agent page says why an agent is not. The check is only that the referenced objects exist, not that the model or a tool is reachable.
+
+**Chat** and the **chat widget** also need a deployment, because they talk to its running pods.
+
+For an agent without a deployment, there is no unpublish step: to stop messages from starting it, disable or delete its triggers, channels and chat app routes. Builders can add these to any published agent in their namespaces, including agents whose tools can change things, so check an agent's tools and approval rules before adding it.
+
 ## Shape
 
 ```
