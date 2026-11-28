@@ -52,6 +52,9 @@ type Settings struct {
 	PollSeconds int `json:"pollSeconds,omitempty"`
 	// NewThreadPerMessage turns threading off: every message starts a new run.
 	NewThreadPerMessage bool `json:"newThreadPerMessage,omitempty"`
+	// AutoPlaces are the places of a shared app where a message that names no
+	// agent goes to the one that fits it ("" is direct messages).
+	AutoPlaces []string `json:"autoPlaces,omitempty"`
 	// Adapter is the adapter's own settings.
 	Adapter json.RawMessage `json:"adapter,omitempty"`
 }

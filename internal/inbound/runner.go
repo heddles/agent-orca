@@ -288,7 +288,11 @@ func (p *Pipeline) deliver(ctx context.Context, m postgresql.InboundMessage) {
 	case state.Waiting:
 		// The run asks the person something: the question is the reply, and the
 		// person's next message in the thread answers it (Handle).
-		p.reply(ctx, scope, sc, m, rkey, rt, Result{Text: state.Question, Notice: true}, ProgressQuestion)
+		question := state.Question
+		if state.Picked {
+			question = pickedNote(state.Agent, question)
+		}
+		p.reply(ctx, scope, sc, m, rkey, rt, Result{Text: question, Notice: true}, ProgressQuestion)
 		return
 	case !state.Done:
 		if p.now().Sub(m.ReceivedAt) > orDur(p.ReplyTimeout, 2*time.Hour) {
@@ -306,6 +310,8 @@ func (p *Pipeline) deliver(ctx context.Context, m postgresql.InboundMessage) {
 	case strings.TrimSpace(state.Output) == "", runoutput.LooksLikeStream(state.Output):
 		// Raw provider frames are never an answer to a person.
 		res, end = Result{Text: "The agent finished without an answer.", Notice: true}, ProgressFailed
+	case state.Picked:
+		res.Text = pickedNote(state.Agent, res.Text)
 	}
 	p.reply(ctx, scope, sc, m, rkey, rt, res, end)
 }

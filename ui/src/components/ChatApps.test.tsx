@@ -10,6 +10,7 @@ vi.mock('../lib/access', () => ({
 }))
 const apps = {
   listChatApps: vi.fn(), createChatApp: vi.fn(), saveAgentRoute: vi.fn(), removeAgentRoute: vi.fn(), setDefaultAgent: vi.fn(), listPlatformPlaces: vi.fn(),
+  setAutoPlace: vi.fn(),
 }
 vi.mock('../api/chatApps', async () => ({
   ...(await vi.importActual<typeof import('../api/chatApps')>('../api/chatApps')),
@@ -18,6 +19,7 @@ vi.mock('../api/chatApps', async () => ({
   saveAgentRoute: (...a: unknown[]) => apps.saveAgentRoute(...a),
   removeAgentRoute: (...a: unknown[]) => apps.removeAgentRoute(...a),
   setDefaultAgent: (...a: unknown[]) => apps.setDefaultAgent(...a),
+  setAutoPlace: (...a: unknown[]) => apps.setAutoPlace(...a),
   listPlatformPlaces: (...a: unknown[]) => apps.listPlatformPlaces(...a),
 }))
 const KIND = { kind: 'slack', descriptor: { title: 'Slack' }, capabilities: { modes: ['direct', 'mention'] }, testable: true, receives: true } as unknown as InboundKind
@@ -52,6 +54,7 @@ beforeEach(() => {
   apps.listChatApps.mockResolvedValue([APP])
   apps.saveAgentRoute.mockResolvedValue(APP)
   apps.setDefaultAgent.mockResolvedValue(APP)
+  apps.setAutoPlace.mockResolvedValue(APP)
 })
 
 const renderAgent = () => render(<AgentChatApps namespace="ns" name="ops-lead" kinds={[KIND]} />)
@@ -151,5 +154,27 @@ describe('ChatApps', () => {
     render(<ChatApps />)
     await userEvent.click(await screen.findByRole('button', { name: 'Disconnect' }))
     expect(screen.getByText(/Every agent stops answering in it \(2 now\)/)).toBeInTheDocument()
+  })
+})
+
+describe('picking automatically', () => {
+  it('lets an administrator turn it on where several agents answer', async () => {
+    apps.listChatApps.mockResolvedValue([withSecond])
+    render(<ChatApps />)
+    const box = await screen.findByRole('checkbox', { name: 'Pick the agent automatically in #home' })
+    // One agent leaves nothing to pick.
+    expect(screen.queryByRole('checkbox', { name: 'Pick the agent automatically in Direct messages' })).not.toBeInTheDocument()
+    await userEvent.click(box)
+    await waitFor(() => expect(apps.setAutoPlace).toHaveBeenCalledWith('inb_app', 'C1', true))
+  })
+
+  it('shows others where it is on, and what the default is then for', async () => {
+    mockRoles.mockReturnValue(['viewer'])
+    apps.listChatApps.mockResolvedValue([{ ...withSecond, autoPlaces: ['c1'] }])
+    render(<ChatApps />)
+    const table = await screen.findByRole('table', { name: 'Who answers where in Home' })
+    expect(within(table).getByText('Yes')).toBeInTheDocument()
+    expect(within(table).queryByRole('checkbox')).not.toBeInTheDocument()
+    expect(screen.getByText(/The default takes it when none clearly does/)).toBeInTheDocument()
   })
 })

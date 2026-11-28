@@ -101,21 +101,29 @@ func addressed(text, agent string) (rest string, ok bool) {
 	return rest, true
 }
 
-// route picks the agent for a message among those that answer where it was
+// How a message came to its agent.
+type routedBy int
+
+const (
+	routedNowhere routedBy = iota
+	routedByName
+	routedByThread
+	routedByDefault
+)
+
+// route picks the agent for a message among in, those that answer where it was
 // written: the one it names; else, in a thread, the one that answered there
 // last; else the place's default. threadAgent is asked only when it is needed.
-// It reports false when no agent answers there.
-func route(routes []postgresql.InboundRoute, m Message, threadAgent func() (ns, agent string)) (postgresql.InboundRoute, string, bool) {
-	in := candidates(routes, m)
+func route(in []candidate, m Message, threadAgent func() (ns, agent string)) (postgresql.InboundRoute, string, routedBy) {
 	if len(in) == 0 {
-		return postgresql.InboundRoute{}, m.Text, false
+		return postgresql.InboundRoute{}, m.Text, routedNowhere
 	}
 	// With agents of the same name in two namespaces the default one wins.
 	for _, wantDefault := range []bool{true, false} {
 		for _, c := range in {
 			if c.isDefault == wantDefault {
 				if rest, ok := addressed(m.Text, c.route.Agent); ok {
-					return c.route, rest, true
+					return c.route, rest, routedByName
 				}
 			}
 		}
@@ -123,34 +131,36 @@ func route(routes []postgresql.InboundRoute, m Message, threadAgent func() (ns, 
 	if ns, agent := threadAgent(); agent != "" {
 		for _, c := range in {
 			if c.route.Namespace == ns && c.route.Agent == agent {
-				return c.route, m.Text, true
+				return c.route, m.Text, routedByThread
 			}
 		}
 	}
-	for _, c := range in {
-		if c.isDefault {
-			return c.route, m.Text, true
-		}
+	if r, ok := defaultOf(in); ok {
+		return r, m.Text, routedByDefault
 	}
-	return postgresql.InboundRoute{}, m.Text, false
+	return postgresql.InboundRoute{}, m.Text, routedNowhere
 }
 
 // routeMessage turns a shared connection into the one for the agent that
 // answers m, and takes the agent's name off the text. why is a ledger reason
-// when no agent answers. A connection of one agent is returned unchanged.
-func (p *Pipeline) routeMessage(ctx context.Context, c Connection, m *Message, threadKey string) (out Connection, why string, err error) {
+// when no agent answers. A connection of one agent is returned unchanged. In an
+// automatic place, a message with no agent of its own is returned with the
+// candidates to pick among, and the connection unchanged.
+func (p *Pipeline) routeMessage(ctx context.Context, c Connection, m *Message, threadKey string) (
+	out Connection, why string, toPick []candidate, err error) {
 	if !c.shared() {
-		return c, "", nil
+		return c, "", nil, nil
 	}
 	if p.Routes == nil {
-		return c, refusedNoAgent, nil
+		return c, refusedNoAgent, nil, nil
 	}
 	scope := postgresql.WithTenant(ctx, c.TenantID)
 	routes, err := p.Routes.ListInboundRoutes(scope, c.ID)
 	if err != nil {
-		return c, "", err
+		return c, "", nil, err
 	}
-	r, text, ok := route(routes, *m, func() (string, string) {
+	in := candidates(routes, *m)
+	r, text, by := route(in, *m, func() (string, string) {
 		if threadKey == "" {
 			return "", ""
 		}
@@ -164,11 +174,14 @@ func (p *Pipeline) routeMessage(ctx context.Context, c Connection, m *Message, t
 		}
 		return ns, st.Agent
 	})
-	if !ok {
-		return c, refusedNoAgent, nil
+	if len(in) > 0 && (by == routedByDefault || by == routedNowhere) && c.Settings.autoAt(*m) {
+		return c, "", in, nil
+	}
+	if by == routedNowhere {
+		return c, refusedNoAgent, nil, nil
 	}
 	m.Text = text
-	return c.as(r), "", nil
+	return c.as(r), "", nil, nil
 }
 
 // priorRun is the run a message in a thread follows on from: the thread's latest.
@@ -192,13 +205,25 @@ func (p *Pipeline) priorRun(ctx context.Context, c Connection, threadKey string)
 }
 
 // admit routes a message and checks it against the lists of whoever answers it.
-// why is the ledger reason when it is refused.
-func (p *Pipeline) admit(ctx context.Context, c Connection, m *Message, caps Capabilities, threadKey string) (Connection, string, error) {
-	routed, why, err := p.routeMessage(ctx, c, m, threadKey)
+// why is the ledger reason when it is refused. When toPick is not empty an agent
+// is still to be picked among them; the sender may ask each of them.
+func (p *Pipeline) admit(ctx context.Context, c Connection, m *Message, caps Capabilities, threadKey string) (
+	out Connection, why string, toPick []candidate, err error) {
+	routed, why, toPick, err := p.routeMessage(ctx, c, m, threadKey)
 	if err != nil || why != "" {
-		return routed, why, err
+		return routed, why, nil, err
 	}
-	return routed, routed.Settings.Refusal(caps, *m), nil
+	if len(toPick) == 0 {
+		return routed, routed.Settings.Refusal(caps, *m), nil, nil
+	}
+	switch allowed, refusal := askable(c, toPick, caps, *m); len(allowed) {
+	case 0:
+		return c, refusal, nil, nil
+	case 1:
+		return c.as(allowed[0].route), "", nil, nil
+	default:
+		return c, "", allowed, nil
+	}
 }
 
 // routeOfRun is the connection as the agent of a run sees it, for what is said

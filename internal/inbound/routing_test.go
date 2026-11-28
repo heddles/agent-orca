@@ -56,7 +56,9 @@ func TestRoute(t *testing.T) {
 		{"no channel at all", "", "hi", ModeMention, none, "", "hi"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			r, rest, ok := route(testRoutes(), Message{Channel: tc.channel, Text: tc.text, Mode: tc.mode}, tc.thread)
+			m := Message{Channel: tc.channel, Text: tc.text, Mode: tc.mode}
+			r, rest, by := route(candidates(testRoutes(), m), m, tc.thread)
+			ok := by != routedNowhere
 			if r.Agent != tc.agent || rest != tc.rest || ok != (tc.agent != "") {
 				t.Errorf("route = %q %q %v, want %q %q", r.Agent, rest, ok, tc.agent, tc.rest)
 			}

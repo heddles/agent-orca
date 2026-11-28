@@ -1,6 +1,7 @@
-/** Who answers where in a shared chat app, and (for administrators) who answers by default. */
+/** Who answers where in a shared chat app, and (for administrators) who answers by default and
+ * which places pick the agent from what a message asks. */
 import { useState, type CSSProperties } from 'react'
-import { placesOf, setDefaultAgent, type ChatApp } from '../api/chatApps'
+import { picksAutomatically, placesOf, setAutoPlace, setDefaultAgent, type ChatApp } from '../api/chatApps'
 import { describeInboundError } from '../api/inbound'
 import { canAdminEvals, useRoles } from '../lib/access'
 import { ds } from '../lib/designSystem'
@@ -13,13 +14,16 @@ export function WhoAnswers({ app, onChanged }: { app: ChatApp; onChanged: () => 
   const places = placesOf(app)
   const key = (a: { namespace: string; agent: string }) => `${a.namespace}/${a.agent}`
 
-  const change = async (place: string, value: string) => {
-    const [ns, agent] = value.split('/')
+  const save = async (what: () => Promise<unknown>) => {
     setBusy(true)
     setError('')
-    try { await setDefaultAgent(app.id, place, ns, agent); onChanged() }
+    try { await what(); onChanged() }
     catch (e) { setError(describeInboundError(e)) }
     finally { setBusy(false) }
+  }
+  const change = (place: string, value: string) => {
+    const [ns, agent] = value.split('/')
+    return save(() => setDefaultAgent(app.id, place, ns, agent))
   }
 
   if (places.length === 0) {
@@ -28,7 +32,10 @@ export function WhoAnswers({ app, onChanged }: { app: ChatApp; onChanged: () => 
   return (
     <div style={{ overflowX: 'auto' }}>
       <table style={s.table} aria-label={`Who answers where in ${app.name}`}>
-        <thead><tr><th style={s.th}>Place</th><th style={s.th}>Answers by default</th><th style={s.th}>Also answers when named</th></tr></thead>
+        <thead><tr>
+          <th style={s.th}>Place</th><th style={s.th}>Answers by default</th><th style={s.th}>Also answers when named</th>
+          <th style={s.th}>Pick automatically</th>
+        </tr></thead>
         <tbody>
           {places.map((p) => {
             const def = p.agents.find((a) => a.default)
@@ -46,6 +53,13 @@ export function WhoAnswers({ app, onChanged }: { app: ChatApp; onChanged: () => 
                   ) : (def?.agent ?? 'Nobody')}
                 </td>
                 <td style={s.td}>{others.map((a) => a.agent).join(', ') || '—'}</td>
+                <td style={s.td}>
+                  {admin && (p.agents.length > 1 || picksAutomatically(app, p.id)) ? (
+                    <input type="checkbox" aria-label={`Pick the agent automatically in ${p.label}`} disabled={busy}
+                      checked={picksAutomatically(app, p.id)}
+                      onChange={(e) => { const auto = e.target.checked; void save(() => setAutoPlace(app.id, p.id, auto)) }} />
+                  ) : (picksAutomatically(app, p.id) ? 'Yes' : 'No')}
+                </td>
               </tr>
             )
           })}
@@ -57,6 +71,13 @@ export function WhoAnswers({ app, onChanged }: { app: ChatApp; onChanged: () => 
         else are not answered.
         {!admin && ' Only an administrator can change who answers by default.'}
       </p>
+      {places.some((p) => picksAutomatically(app, p.id)) && (
+        <p style={s.quiet}>
+          Where agents are picked automatically, a message that names no agent and is not a reply in a thread goes to the
+          one that fits it, among those the sender may ask. The default takes it when none clearly does, or while
+          automatic routing is unavailable.
+        </p>
+      )}
       {error && <p role="alert" style={field.error}>{error}</p>}
     </div>
   )

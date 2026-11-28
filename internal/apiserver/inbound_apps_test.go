@@ -265,7 +265,7 @@ func TestChatApps_PairingFromAnAgentAddsThePersonAndPlaceToItsRoute(t *testing.T
 	list := evalDecode[[]chatAppView](t, f.api(builder, http.MethodGet, "/api/chat-apps", ""))
 	var second postgresql.InboundRoute
 	for _, r := range list[0].Routes {
-		if r.Agent == "second" {
+		if r.Agent == secondAgent {
 			second = r
 		}
 	}
