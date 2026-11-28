@@ -1,0 +1,115 @@
+coder-agent	add a --json flag to the list command and cover it with a test
+coder-agent	the unit tests in pkg/parser are failing after the last merge, make them pass
+coder-agent	refactor the retry loop in the client into its own function
+coder-agent	bump the typescript version in the web app and fix whatever breaks
+coder-agent	implement pagination for the users endpoint
+coder-agent	https://github.com/example/widgets needs a health check handler, please write it
+coder-agent	rename Config.Timeout to Config.RequestTimeout everywhere
+coder-agent	write a small Go helper that deduplicates a slice and add tests
+coder-agent	our linter is complaining about unused params, clean that up
+coder-agent	add input validation to the signup form in the react app
+codebase-expert	why does this panic with nil map assignment? here's the stack trace
+codebase-expert	can you explain what this regex in our router is doing
+codebase-expert	I'm pasting a diff, does the locking look right to you?
+codebase-expert	what's the difference between these two implementations I copied below
+codebase-expert	getting 'context deadline exceeded' from this snippet, what's going on
+codebase-expert	walk me through how this recursive function terminates
+codebase-expert	is there a race condition in the code I just pasted?
+codebase-expert	this TypeScript generic gives error TS2345 and I don't understand why
+codebase-expert	help me understand why my goroutine never exits, code below
+codebase-expert	which of these two approaches is easier to maintain, and why
+document-summarizer	give me the gist of this meeting transcript
+document-summarizer	can you shorten this 40 page report into a few bullets
+document-summarizer	tl;dr of the attached policy document
+document-summarizer	summarize this email thread for my manager
+document-summarizer	boil this article down to three lines
+document-summarizer	I need an executive summary of the following contract text
+document-summarizer	what are the main points in these release notes
+document-summarizer	condense this customer interview into key takeaways
+document-summarizer	make this whitepaper digestible for a non-technical audience
+document-summarizer	recap the postmortem below in one paragraph
+financial-analysis	how would a two month closure of the Suez canal move crude prices over three years
+financial-analysis	model the knock-on effects of an export ban on wheat
+financial-analysis	what happens to fertilizer costs if natural gas doubles
+financial-analysis	scenario: a major copper mine strike. trace the market impact
+financial-analysis	if OPEC cuts output by 2 million barrels, who wins and loses over 5 years
+financial-analysis	assess how new tariffs on steel ripple into auto manufacturing
+financial-analysis	lithium supply glut, what does that do to battery makers and miners
+financial-analysis	give me bull and bear cases for gold if rates fall sharply
+financial-analysis	a drought hits Brazil, what does it mean for coffee and sugar markets
+financial-analysis	how exposed are airlines to a jet fuel spike
+on-call-triage	the checkout service is returning 503s and my pager just went off
+on-call-triage	CPU at 100% on all api pods since 10 minutes ago, what do I do first
+on-call-triage	database replication lag alert is firing, severity?
+on-call-triage	latency p99 jumped to 8s after the deploy
+on-call-triage	disk almost full on the postgres primary, help
+on-call-triage	we're seeing OOMKilled restarts in production right now
+on-call-triage	got woken up by KubeNodeNotReady, where do I start
+on-call-triage	error rate on payments is 12% and climbing
+on-call-triage	certificate expiry alert for the ingress, how urgent is this
+on-call-triage	queue depth keeps growing and consumers look stuck, incident?
+research-assistant	what are the trade-offs between event sourcing and CRUD for an audit heavy system
+research-assistant	research the current options for self hosted vector databases
+research-assistant	how does the EU AI Act affect companies deploying chatbots
+research-assistant	compare approaches to zero downtime schema migrations
+research-assistant	is there evidence that code review reduces defect rates
+research-assistant	put together a brief on solid state battery maturity
+research-assistant	what should we know before adopting WebAssembly on the server
+research-assistant	investigate why teams move away from microservices
+research-assistant	give me a thorough overview of passkeys and their limitations
+research-assistant	what are the main arguments for and against four day work weeks
+security-alert-triage	user jdoe logged in from a Tor exit node and then downloaded 3GB
+security-alert-triage	suspicious beaconing from 10.0.4.12 to an unknown external IP
+security-alert-triage	a service account just did an interactive login at 3am
+security-alert-triage	EDR flagged powershell encoded command on a finance laptop
+security-alert-triage	impossible travel alert for asmith, London then Singapore in an hour
+security-alert-triage	someone added themselves to the domain admins group
+security-alert-triage	multiple failed logins followed by a success from 185.220.101.4
+security-alert-triage	is this phishing report worth escalating, the sender asked for MFA codes
+security-alert-triage	guardduty says an EC2 instance is talking to a crypto mining pool
+security-alert-triage	score the risk of this SIEM alert about mass file deletion by an intern account
+factory-planner	read issue #214 and turn it into acceptance criteria
+factory-planner	plan out the work for the ticket about export to CSV before anyone writes code
+factory-planner	what would done look like for issue 88
+factory-architect	design how we'd add multi region support to this repo: which files change and what the interfaces look like
+factory-architect	given these acceptance criteria, propose the technical design and call out risks
+factory-architect	which existing patterns should the rate limiter change follow
+factory-programmer	implement the approved design on branch factory/issue-214, commit and push
+factory-programmer	the design is signed off, build it on the work branch and run the tests
+factory-programmer	pick up the work branch, make the change per the architect and git push
+factory-reviewer	review the change on branch factory/issue-214 against the ticket criteria
+factory-reviewer	independently check whether this branch actually meets each acceptance criterion
+factory-reviewer	do a code review of the pushed work branch and give a verdict
+factory-security-reviewer	check this branch for injection or leaked secrets before we ship
+factory-security-reviewer	does the diff widen any RBAC permissions or add risky dependencies
+factory-security-reviewer	security review the committed change
+factory-ci-fixer	the PR's checks are red, get the build green
+factory-ci-fixer	CI is failing on the pull request, fix one round and push
+factory-ci-fixer	keep an eye on the pipeline for PR 57 and repair what breaks
+factory-adversary	find a reason PR 57 should not merge
+factory-adversary	try to poke holes in this pull request, assume the tests are gaming the criteria
+factory-adversary	red team the approved PR before it goes in
+factory-merger	merge PR 57, it's approved at sha 4f2a9c
+factory-merger	squash merge the approved pull request if all checks pass
+factory-merger	land the PR now
+factory-publisher	publishing was approved, open the pull request for the work branch
+factory-publisher	create the PR for factory/issue-214 and comment the link on the issue
+factory-publisher	open a pull request that closes #214 with the test evidence
+none	what's a good recipe for dinner tonight
+none	book me a flight to Denver next Tuesday
+none	tell me a joke
+none	hey how are you
+none	what time is it in Tokyo
+none	draft a birthday message for my coworker
+none	translate 'where is the train station' into Japanese
+none	recommend a movie
+none	what's 17 percent of 2340
+none	order more coffee for the office kitchen
+none	can you reschedule my dentist appointment
+none	write a haiku about autumn
+none	thanks, that's all
+none	help me plan a workout routine
+none	who won the game last night
+none	ok
+none	asdf test
+none	how do I fold a fitted sheet

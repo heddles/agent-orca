@@ -1,0 +1,16 @@
+coder-agent	Writes and changes code in a repository: features, bug fixes, refactors, dependency bumps and tests, for Go and TypeScript.
+codebase-expert	Answers questions about code you paste: explains behaviour, errors, diffs and stack traces. Does not change a repository.
+document-summarizer	Summarises documents, transcripts, email threads, reports and articles.
+financial-analysis	Analyses how events and shocks move commodity and financial markets over years.
+on-call-triage	Helps the on-call engineer in the first minutes of a production incident or operational alert (outages, errors, latency, capacity).
+research-assistant	Researches an open question and writes a structured brief with trade-offs and evidence.
+security-alert-triage	Triages security alerts: suspicious logins, malware, intrusions, phishing; scores risk.
+factory-planner	Turns a repository issue into acceptance criteria and a work plan. Writes no code.
+factory-architect	Writes the technical design for a ticket: files to change, interfaces, risks. Writes no code.
+factory-programmer	Implements an approved design on the work branch, runs tests, commits and pushes.
+factory-reviewer	Independently reviews a pushed branch against the ticket criteria and gives a verdict.
+factory-security-reviewer	Security review of a code change: injection, secrets, authorization, RBAC, dependencies.
+factory-ci-fixer	Gets a pull request's failing CI checks to pass.
+factory-adversary	Adversarial review of a pull request: looks for any reason it must not merge.
+factory-merger	Merges an approved pull request after verifying checks and the approved commit.
+factory-publisher	Opens the pull request for an approved work branch and links it on the issue.
