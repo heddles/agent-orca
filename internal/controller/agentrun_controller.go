@@ -1601,6 +1601,12 @@ func agentRunEnv(run *agentorcav1alpha1.AgentRun, agent *agentorcav1alpha1.Agent
 	if agent.Spec.Runtime.InputMode != "http" {
 		agentEnv = append(agentEnv, corev1.EnvVar{Name: "AGENTORC_INPUT", Value: run.Spec.Input})
 	}
+	// The previous turn of the conversation (a chat thread's latest run). The
+	// router reloads that turn's history itself; this is for agents that keep
+	// their own, such as a CLI harness resuming its session from a volume.
+	if run.Spec.PriorRunRef != "" {
+		agentEnv = append(agentEnv, corev1.EnvVar{Name: "AGENTORC_PRIOR_RUN_ID", Value: run.Spec.PriorRunRef})
+	}
 	if wf, ok := run.Labels["agentorca.io/workflow"]; ok && wf != "" {
 		agentEnv = append(agentEnv, corev1.EnvVar{Name: "AGENTORC_WORKFLOW_NAME", Value: wf})
 	}

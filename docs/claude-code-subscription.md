@@ -81,6 +81,36 @@ output.
 The run's model is the one the CLI reports: the operator records it as a routing decision with provider
 `claude-code`, so the UI shows it as the run's model instead of the model selector's unused candidates.
 
+## Resume the conversation
+
+Each run is a new sandbox, so by default the CLI starts every chat message with no memory of the
+thread. The router's own conversation history does not help: the CLI never calls the router. To
+carry the thread forward, keep the CLI's session files on a [class volume](openshell-sandbox.md#class-volumes)
+and resume them:
+
+1. A PersistentVolumeClaim with the gateway's admission labels, mounted by the class, say at
+   `/var/lib/agent`.
+2. In the Agent's command, point the CLI's state at the volume and record which session each run
+   used. A run in a thread gets the previous run's name in `AGENTORC_PRIOR_RUN_ID`:
+
+```sh
+export CLAUDE_CONFIG_DIR=/var/lib/agent/claude
+runs=/var/lib/agent/runs; mkdir -p "$runs" "$CLAUDE_CONFIG_DIR"
+session=""
+if [ -n "${AGENTORC_PRIOR_RUN_ID:-}" ] && [ -f "$runs/$AGENTORC_PRIOR_RUN_ID" ]; then
+  session=$(cat "$runs/$AGENTORC_PRIOR_RUN_ID")
+fi
+if [ -n "$session" ]; then set -- --resume "$session"
+else session=$(cat /proc/sys/kernel/random/uuid); set -- --session-id "$session"; fi
+printf %s "$session" > "$runs/$AGENTORC_RUN_ID"
+printf '%s' "$task" | claude -p "$@" --output-format stream-json --verbose ...
+```
+
+Keep the working directory the same in every run: the CLI files sessions by directory. Only a
+thread's **succeeded** runs are continued (see [threading](inbound-channels.md#what-the-core-does-in-order)), so a turn
+that failed starts the next message afresh. Files in the sandbox other than the volume, such as
+clones, are still gone: keep those on the volume too if the agent should find them.
+
 ## What you can track
 
 **What the agent did (`harness` events).** The sandbox supervisor reports network connections only. It emits

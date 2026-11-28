@@ -498,6 +498,63 @@ spec:
                       type: string
                   type: object
                 type: array
+              volumes:
+                description: |-
+                  Volumes are PersistentVolumeClaims mounted into every sandbox of the
+                  class, so files outlive a run: a CLI's session history, a package cache,
+                  cloned repositories. Each mount path is also opened in the sandbox's
+                  filesystem policy (read-only or read-write as the mount is). Only a
+                  class can mount a volume: the class is cluster-scoped, so only cluster
+                  admins decide what a sandbox may keep. The claim must exist in the
+                  gateway's sandbox namespace and carry the gateway's resource-admission
+                  labels (by default openshell.ai/sandbox-attachable: "true" and
+                  openshell.ai/sandbox-attachable-workspace: <workspace>). Every run of
+                  every Agent of the class shares the claim, and runs may overlap: keep
+                  what each writes apart (a directory per conversation). Needs the
+                  gateway's drivers.kubernetes.allowDriverConfig.
+                items:
+                  description: SandboxVolume mounts a PersistentVolumeClaim into a
+                    class's sandboxes.
+                  properties:
+                    claimName:
+                      description: ClaimName is the PersistentVolumeClaim, in the
+                        gateway's sandbox namespace.
+                      pattern: ^[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?$
+                      type: string
+                    mountPath:
+                      description: |-
+                        MountPath is where the volume appears in the sandbox: an absolute path
+                        outside /sandbox, without a trailing slash.
+                      maxLength: 256
+                      pattern: ^/.*[^/]$
+                      type: string
+                    name:
+                      description: Name identifies the volume within the class.
+                      pattern: ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$
+                      type: string
+                    readOnly:
+                      description: ReadOnly mounts the volume read-only.
+                      type: boolean
+                    subPath:
+                      description: SubPath mounts one directory of the volume instead
+                        of its root.
+                      maxLength: 256
+                      pattern: ^[^/]
+                      type: string
+                  required:
+                  - claimName
+                  - mountPath
+                  - name
+                  type: object
+                  x-kubernetes-validations:
+                  - message: 'mountPath must be outside /sandbox: a mount there replaces
+                      the sandbox''s own workspace'
+                    rule: self.mountPath != '/sandbox' && !self.mountPath.startsWith('/sandbox/')
+                maxItems: 8
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
             type: object
         type: object
     served: true

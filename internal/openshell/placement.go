@@ -20,15 +20,22 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+
+	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
 )
 
 // Placement chooses the nodes sandbox pods run on. It is operator-wide
 // configuration (chart value openshell.placement), not part of the Agent: a
 // toleration can admit a sandbox to any tainted node, including the control
 // plane, so only cluster admins set it.
+//
+// It also carries the volumes of the sandbox's class (see ApplyClass), which
+// reach the gateway the same way. They are never read from the operator-wide
+// setting: a mount is granted by a class only.
 //
 // The gateway applies it only with drivers.kubernetes.allowDriverConfig=true;
 // otherwise it rejects every sandbox that sets it.
@@ -37,12 +44,27 @@ type Placement struct {
 	Tolerations       []corev1.Toleration `json:"tolerations,omitempty"`
 	RuntimeClassName  string              `json:"runtimeClassName,omitempty"`
 	PriorityClassName string              `json:"priorityClassName,omitempty"`
+
+	Volumes []agentorcav1alpha1.SandboxVolume `json:"-"`
 }
 
-// IsZero reports whether the placement sets nothing.
+// IsZero reports whether the placement chooses no nodes. Volumes do not count:
+// a class with volumes but no node settings keeps the operator's placement.
 func (p Placement) IsZero() bool {
 	return len(p.NodeSelector) == 0 && len(p.Tolerations) == 0 &&
 		p.RuntimeClassName == "" && p.PriorityClassName == ""
+}
+
+// mergeVolumes adds the volumes of add to base. A name already in base keeps
+// base's volume, so the first class applied wins.
+func mergeVolumes(base, add []agentorcav1alpha1.SandboxVolume) []agentorcav1alpha1.SandboxVolume {
+	out := slices.Clone(base)
+	for _, v := range add {
+		if !slices.ContainsFunc(out, func(o agentorcav1alpha1.SandboxVolume) bool { return o.Name == v.Name }) {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // PlacementFromEnv reads the placement from OPENSHELL_SANDBOX_PLACEMENT, a JSON
@@ -61,11 +83,32 @@ func PlacementFromEnv() (Placement, error) {
 
 // driverConfig renders the placement as the Kubernetes driver's config. The
 // driver reads snake_case pod fields and passes tolerations to the pod spec
-// as-is. Nil when the placement is empty, so gateways without
-// allowDriverConfig keep accepting sandboxes.
+// as-is. Nil when the placement is empty and there are no volumes, so gateways
+// without allowDriverConfig keep accepting sandboxes.
 func (p Placement) driverConfig() map[string]any {
-	if p.IsZero() {
+	if p.IsZero() && len(p.Volumes) == 0 {
 		return nil
+	}
+	k8s := map[string]any{}
+	if len(p.Volumes) > 0 {
+		volumes := make([]any, 0, len(p.Volumes))
+		mounts := make([]any, 0, len(p.Volumes))
+		for _, v := range p.Volumes {
+			volumes = append(volumes, map[string]any{
+				"name":                    v.Name,
+				"persistent_volume_claim": map[string]any{"claim_name": v.ClaimName, "read_only": v.ReadOnly},
+			})
+			mount := map[string]any{"name": v.Name, "mount_path": v.MountPath, "read_only": v.ReadOnly}
+			if v.SubPath != "" {
+				mount["sub_path"] = v.SubPath
+			}
+			mounts = append(mounts, mount)
+		}
+		k8s["volumes"] = volumes
+		k8s["containers"] = map[string]any{"agent": map[string]any{"volume_mounts": mounts}}
+	}
+	if p.IsZero() {
+		return map[string]any{"kubernetes": k8s}
 	}
 	pod := map[string]any{}
 	if len(p.NodeSelector) > 0 {
@@ -84,7 +127,8 @@ func (p Placement) driverConfig() map[string]any {
 	if p.PriorityClassName != "" {
 		pod["priority_class_name"] = p.PriorityClassName
 	}
-	return map[string]any{"kubernetes": map[string]any{"pod": pod}}
+	k8s["pod"] = pod
+	return map[string]any{"kubernetes": k8s}
 }
 
 // templateResources renders the agent's resource requirements in the shape

@@ -96,6 +96,52 @@ type SandboxClassSpec struct {
 	// +listMapKey=name
 	// +kubebuilder:validation:MaxItems=16
 	Credentials []SandboxCredential `json:"credentials,omitempty"`
+
+	// Volumes are PersistentVolumeClaims mounted into every sandbox of the
+	// class, so files outlive a run: a CLI's session history, a package cache,
+	// cloned repositories. Each mount path is also opened in the sandbox's
+	// filesystem policy (read-only or read-write as the mount is). Only a
+	// class can mount a volume: the class is cluster-scoped, so only cluster
+	// admins decide what a sandbox may keep. The claim must exist in the
+	// gateway's sandbox namespace and carry the gateway's resource-admission
+	// labels (by default openshell.ai/sandbox-attachable: "true" and
+	// openshell.ai/sandbox-attachable-workspace: <workspace>). Every run of
+	// every Agent of the class shares the claim, and runs may overlap: keep
+	// what each writes apart (a directory per conversation). Needs the
+	// gateway's drivers.kubernetes.allowDriverConfig.
+	// +optional
+	// +listType=map
+	// +listMapKey=name
+	// +kubebuilder:validation:MaxItems=8
+	Volumes []SandboxVolume `json:"volumes,omitempty"`
+}
+
+// SandboxVolume mounts a PersistentVolumeClaim into a class's sandboxes.
+// +kubebuilder:validation:XValidation:rule="self.mountPath != '/sandbox' && !self.mountPath.startsWith('/sandbox/')",message="mountPath must be outside /sandbox: a mount there replaces the sandbox's own workspace"
+type SandboxVolume struct {
+	// Name identifies the volume within the class.
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$`
+	Name string `json:"name"`
+
+	// ClaimName is the PersistentVolumeClaim, in the gateway's sandbox namespace.
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?$`
+	ClaimName string `json:"claimName"`
+
+	// MountPath is where the volume appears in the sandbox: an absolute path
+	// outside /sandbox, without a trailing slash.
+	// +kubebuilder:validation:Pattern=`^/.*[^/]$`
+	// +kubebuilder:validation:MaxLength=256
+	MountPath string `json:"mountPath"`
+
+	// SubPath mounts one directory of the volume instead of its root.
+	// +optional
+	// +kubebuilder:validation:Pattern=`^[^/]`
+	// +kubebuilder:validation:MaxLength=256
+	SubPath string `json:"subPath,omitempty"`
+
+	// ReadOnly mounts the volume read-only.
+	// +optional
+	ReadOnly bool `json:"readOnly,omitempty"`
 }
 
 // SandboxCredential is a secret a sandbox can use but never see.

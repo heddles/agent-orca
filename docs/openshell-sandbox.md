@@ -149,6 +149,7 @@ The Agent's own sandbox settings are added to the class's, never narrowing it:
 | Placement | The class's when it sets any, else the operator's `openshell.placement`. Agents can't set placement. |
 | `credentials` | Only the class has them; every sandbox of the class gets all of them. An Agent or workflow can't add, remove or widen one. See [class credentials](#class-credentials). |
 | `runtime.sandbox.github` | Unioned with the class's `githubApp` credentials: all repositories, and push if either pushes. |
+| `volumes` | Only the class has them. See [class volumes](#class-volumes). |
 
 A run fails with a clear reason if its class doesn't exist or doesn't select the run's
 namespace. Admission checks the same.
@@ -244,6 +245,42 @@ They apply to the agent's own sandbox (`runtime.sandbox.classRef`), to the
 workflow sandboxes. `secretRef` credentials are not wired into workflow-owned sandboxes yet.
 Examples: [`sandboxclass-coder.yaml`](../config/samples/sandboxclass-coder.yaml) (GitHub) and
 [`sandboxclass-credentials.yaml`](../config/samples/sandboxclass-credentials.yaml) (an API token).
+
+### Class volumes
+
+A sandbox's files go when its run ends. To keep some, mount a PersistentVolumeClaim into every
+sandbox of a class, for example a CLI's session history so the next turn of a chat can resume it:
+
+```yaml
+apiVersion: agentorca.agentorca.io/v1alpha1
+kind: SandboxClass
+metadata: {name: assistant}
+spec:
+  volumes:
+    - name: state
+      claimName: assistant-state
+      mountPath: /var/lib/agent    # outside /sandbox
+      # subPath: claude            # one directory of the claim
+      # readOnly: true
+```
+
+- The claim must be in the gateway's sandbox namespace (`drivers.kubernetes.namespace`) and
+  carry the gateway's resource-admission labels. With the default policy those are
+  `openshell.ai/sandbox-attachable: "true"` and
+  `openshell.ai/sandbox-attachable-workspace: <workspace>` (the operator's `OPENSHELL_WORKSPACE`,
+  `default` unless set). A claim without them is refused when the sandbox is created.
+- The gateway needs `drivers.kubernetes.allowDriverConfig`, as for [placement](#placement).
+- Each mount path is added to the sandbox's filesystem policy, read-write unless the volume is
+  `readOnly`. Mount paths must be outside `/sandbox`: a mount there replaces the sandbox's own
+  workspace.
+- Only a class can mount a volume. The class is cluster-scoped, so cluster admins decide what
+  sandboxes may keep; Agents and the operator-wide placement cannot add one.
+- Every run of every Agent of the class gets the same claim, and runs can overlap. Keep what each
+  writes apart, for example one directory per conversation. A `ReadWriteOnce` claim also pins
+  every such sandbox to the node it is bound to.
+- A run whose prior turn is known (a chat thread's next message) gets that run's name in
+  `AGENTORC_PRIOR_RUN_ID`, so it can find what the previous turn saved. See
+  [resuming a Claude Code session](claude-code-subscription.md#resume-the-conversation).
 
 ### Network decisions in the run trace
 

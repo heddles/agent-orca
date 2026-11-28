@@ -149,6 +149,7 @@ func BuildSpec(in SpecInput) *osv1.SandboxSpec {
 		ApplyClassCredentials(policy, in.ClassCredentials, rt.Sandbox.Egress)
 	}
 	ApplyGitAccess(policy, in.Git)
+	applyVolumePaths(policy, in.Placement.Volumes)
 	return &osv1.SandboxSpec{
 		Template: &osv1.SandboxTemplate{
 			Image:        rt.OCIRef,
@@ -160,6 +161,28 @@ func BuildSpec(in SpecInput) *osv1.SandboxSpec {
 		RestartPolicy: osv1.SandboxRestartNever,
 		Providers:     in.Providers,
 		Policy:        policy,
+	}
+}
+
+// applyVolumePaths opens each volume's mount path to the sandbox's filesystem
+// policy, read-only or read-write as it is mounted: without it the mount is
+// there but the sandbox cannot use it.
+func applyVolumePaths(policy *osv1.SandboxPolicy, volumes []agentorcav1alpha1.SandboxVolume) {
+	if len(volumes) == 0 {
+		return
+	}
+	if policy.Filesystem == nil {
+		policy.Filesystem = &osv1.FilesystemPolicy{IncludeWorkdir: true}
+	}
+	fs := policy.Filesystem
+	for _, v := range volumes {
+		list := &fs.ReadWrite
+		if v.ReadOnly {
+			list = &fs.ReadOnly
+		}
+		if !slices.Contains(*list, v.MountPath) {
+			*list = append(*list, v.MountPath)
+		}
 	}
 }
 
