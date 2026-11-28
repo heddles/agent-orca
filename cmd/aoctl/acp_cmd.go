@@ -76,7 +76,9 @@ Zed launches this process as an External Agent subprocess: it sends JSON-RPC
 requests on stdin and reads responses + server-to-client notifications on stdout.
 All logging is written to stderr so it never corrupts the JSON-RPC stream.
 
-The agent name is pinned at launch because ACP v1 is single-agent-per-server.
+With --agent <name> every thread goes to that agent. With --agent auto the
+server picks an agent from a thread's first message, and the editor's agent menu
+chooses a particular one instead.
 
 This is the command to put in your editor's agent_servers config. Use
 'aoctl acp setup --editor zed' to write that config for you.
@@ -85,7 +87,8 @@ This is the command to put in your editor's agent_servers config. Use
 			return s.runACPServe()
 		},
 	}
-	serve.Flags().StringVar(&s.agent, "agent", "", "agent-orca agent to serve (required)")
+	serve.Flags().StringVar(&s.agent, "agent", "",
+		`agent-orca agent to serve, or "auto" for one picked per thread (required)`)
 	_ = serve.MarkFlagRequired("agent")
 	serve.Flags().StringSliceVar(&s.fsRoots, "fs-roots", nil,
 		"extra workspace root directories the agent may read/write, on top of the session cwd "+
@@ -116,7 +119,8 @@ auto-detects settings.json changes).
 	}
 	setup.Flags().StringVar(&s.editor, "editor", "", "editor to configure (required; e.g. zed)")
 	_ = setup.MarkFlagRequired("editor")
-	setup.Flags().StringVar(&s.agent, "agent", "", "agent-orca agent name to expose (if omitted, picks interactively)")
+	setup.Flags().StringVar(&s.agent, "agent", "",
+		`agent to expose, or "auto" (if omitted: auto when the server offers it, else pick interactively)`)
 
 	acp.AddCommand(serve, setup)
 	return acp
@@ -206,7 +210,20 @@ func (s *settings) runACPSetup() error {
 func (s *settings) setupZed(agentName string) error {
 	c := s.client()
 
-	// If no agent was supplied, try to list + prompt interactively.
+	// With none supplied, automatic routing is the default where the server
+	// offers it.
+	if agentName == "" {
+		switch routing, err := c.GetRouting(context.Background()); {
+		case err == nil && routing.Auto && !routing.has(autoAgent):
+			agentName = autoAgent
+			_, _ = fmt.Fprintln(s.out, "Using automatic routing, which picks an agent for each thread. "+
+				"Pass --agent <name> to use one agent only.")
+		case err == nil && !routing.Auto:
+			_, _ = fmt.Fprintf(s.out, "Not using automatic routing: %s.\n", routing.Reason)
+		}
+	}
+
+	// Otherwise try to list + prompt interactively.
 	if agentName == "" {
 		if s.isTerminal == nil || !s.isTerminal() {
 			return errors.New("--agent is required when not running in a terminal")
@@ -276,12 +293,17 @@ func (s *settings) setupZed(agentName string) error {
 		env["AOCTL_TOKEN"] = s.token
 	}
 
+	entry := agentName
+	if agentName == autoAgent {
+		entry = zedAutoName
+	}
+
 	// Merge or overwrite the agent_servers entry for this agent.
 	agentServers, _ := settings["agent_servers"].(map[string]any)
 	if agentServers == nil {
 		agentServers = map[string]any{}
 	}
-	agentServers[agentName] = map[string]any{
+	agentServers[entry] = map[string]any{
 		"type":    "custom",
 		"command": "aoctl",
 		"args":    []string{"acp", "serve", "--agent", agentName},
@@ -303,7 +325,7 @@ func (s *settings) setupZed(agentName string) error {
 	}
 
 	_, _ = fmt.Fprintf(s.out, "Configured Zed external agent %q → `aoctl acp serve --agent %s`\n",
-		agentName, agentName)
+		entry, agentName)
 	_, _ = fmt.Fprintf(s.out, "Wrote settings to %s\n", path)
 	_, _ = io.WriteString(s.out,
 		"No need to restart Zed — it detects the change automatically. "+

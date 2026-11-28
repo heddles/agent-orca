@@ -118,7 +118,7 @@ func fsDiffWriteTurn(t *testing.T, tb *fsTestBridge, toolName, content string) a
 	tb.bridge.handleTraceEvent(acpTraceEvent{Type: "toolCall", Name: toolName, BackendType: "builtin"}, fsTestSessionID)
 	tb.bridge.serveFSRequest(context.Background(), fsTestSessionID, "run-1", acpfsRelayRequest{
 		ID: "req-1", Method: acpMethodFSWrite, Params: params,
-	}, tb.bridge.fsPolicy())
+	}, tb.bridge.fsPolicy(fsTestSessionID))
 	tb.api.responseRecorded(t)
 	tb.bridge.handleTraceEvent(acpTraceEvent{
 		Type: "toolResult", Name: toolName, BackendType: "builtin", Result: `{"written":true}`,

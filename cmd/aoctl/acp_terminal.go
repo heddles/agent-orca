@@ -150,21 +150,33 @@ func refuse(code int, format string, args ...any) error {
 	return &terminalRefusal{code: code, message: fmt.Sprintf(format, args...)}
 }
 
-// terminalPolicy returns the agent's terminal policy if this bridge can serve
-// it: the agent has local_exec, the editor offers a terminal and the user has
-// not turned it off. nil otherwise.
-func (b *acpBridge) terminalPolicy() *ACPTerminalPolicy {
+// terminalOffered is whether this computer takes commands at all: the editor
+// offers a terminal and the user has not turned it off.
+func (b *acpBridge) terminalOffered() bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.terminalDisabled || !b.editorTerminal {
-		return nil
-	}
-	return b.manifest.Terminal
+	return !b.terminalDisabled && b.editorTerminal
 }
 
-// runCapabilities is what the bridge offers to do for a run it starts.
-func (b *acpBridge) runCapabilities() *ACPRunClientCapabilities {
-	return &ACPRunClientCapabilities{Terminal: b.terminalPolicy() != nil}
+// terminalPolicy returns the terminal policy of the session's agent if this
+// bridge can serve it: the agent has local_exec and commands are taken here.
+// nil otherwise.
+func (b *acpBridge) terminalPolicy(sessionID string) *ACPTerminalPolicy {
+	if !b.terminalOffered() {
+		return nil
+	}
+	_, man := b.agentOf(sessionID)
+	return man.Terminal
+}
+
+// runCapabilities is what the bridge offers to do for a run it starts. A routed
+// run's agent is not known yet; the server only marks a run whose agent has a
+// terminal.
+func (b *acpBridge) runCapabilities(sessionID string) *ACPRunClientCapabilities {
+	if b.isRouted() {
+		return &ACPRunClientCapabilities{Terminal: b.terminalOffered()}
+	}
+	return &ACPRunClientCapabilities{Terminal: b.terminalPolicy(sessionID) != nil}
 }
 
 // claimTerminalRequest reports whether this is the first time the session sees
@@ -233,7 +245,7 @@ func (b *acpBridge) serveTerminalRequest(ctx context.Context, sessionID, runID s
 }
 
 func (b *acpBridge) runTerminalRequest(ctx context.Context, sessionID string, fr acpfsRelayRequest) (*terminalRunResult, error) { //nolint:lll
-	policy := b.terminalPolicy()
+	policy := b.terminalPolicy(sessionID)
 	if policy == nil {
 		return nil, refuse(-32002, "the user's computer is not accepting commands from this agent")
 	}
@@ -257,7 +269,7 @@ func (b *acpBridge) runTerminalRequest(ctx context.Context, sessionID string, fr
 		Title:         commandTitle(p.Command),
 		Kind:          acpToolKindExecute,
 		Status:        acpToolStatusPending,
-		Content:       []acpToolCallContent{textContent(b.commandPrompt(p.Command, dir, timeout))},
+		Content:       []acpToolCallContent{textContent(b.commandPrompt(sessionID, p.Command, dir, timeout))},
 	}
 	b.notifyToolCall(sessionID, call)
 
@@ -496,7 +508,8 @@ func commandTitle(command string) string {
 // commandPrompt shows the whole command and where it will run. The code fence
 // is longer than any run of backticks inside, so the command cannot end it and
 // add text of its own to the prompt.
-func (b *acpBridge) commandPrompt(command, dir string, timeout time.Duration) string {
+func (b *acpBridge) commandPrompt(sessionID, command, dir string, timeout time.Duration) string {
+	agent, _ := b.agentOf(sessionID)
 	longest, run := 0, 0
 	for _, r := range command {
 		if r == '`' {
@@ -508,7 +521,7 @@ func (b *acpBridge) commandPrompt(command, dir string, timeout time.Duration) st
 	}
 	fence := strings.Repeat("`", max(3, longest+1))
 	return fmt.Sprintf("Agent %q wants to run this on your computer, with your permissions:\n\n%ssh\n%s\n%s\n\n"+
-		"In: %s\nStopped after: %s", b.agentName, fence, command, fence, dir, timeout)
+		"In: %s\nStopped after: %s", agent, fence, command, fence, dir, timeout)
 }
 
 // outputTail keeps the last limit bytes, whatever the editor sent, without

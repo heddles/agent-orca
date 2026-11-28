@@ -645,6 +645,8 @@ type ACPRunResponse struct {
 	Status     string `json:"status"`
 	CreatedAt  string `json:"created_at"`
 	FinishedAt string `json:"finished_at,omitempty"`
+	// Routing is set when the run asked for "auto".
+	Routing *ACPRoutingInfo `json:"routing,omitempty"`
 }
 
 // CreateAgentRun creates a new run for an agent via the ACP API.
@@ -672,6 +674,9 @@ func (c *Client) CreateAgentRun(ctx context.Context, agentName string, req ACPRu
 		var acpErr struct {
 			Code    string `json:"code"`
 			Message string `json:"message"`
+			Data    struct {
+				Agents []string `json:"agents"`
+			} `json:"data"`
 		}
 		_ = json.Unmarshal(respBody, &acpErr)
 		detail := strings.TrimSpace(string(respBody))
@@ -683,7 +688,10 @@ func (c *Client) CreateAgentRun(ctx context.Context, agentName string, req ACPRu
 			hint = "\nHint: the server expects ACP-format input (messages with parts). " +
 				"Run `aoctl agents describe " + agentName + "` to see the expected input schema."
 		}
-		return ACPRunResponse{}, fmt.Errorf("create agent run %q failed (HTTP %d): %s%s", agentName, resp.StatusCode, detail, hint) //nolint:lll
+		return ACPRunResponse{}, &acpAPIError{
+			Status: resp.StatusCode, Code: acpErr.Code, Message: acpErr.Message, Agents: acpErr.Data.Agents,
+			text: fmt.Sprintf("create agent run %q failed (HTTP %d): %s%s", agentName, resp.StatusCode, detail, hint),
+		}
 	}
 	var out ACPRunResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {

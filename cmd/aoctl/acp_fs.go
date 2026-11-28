@@ -73,8 +73,11 @@ type fsBridgeOptions struct {
 // unavailable relay (501: the operator was started without a state store) ends
 // polling quietly — the pod side surfaces a clear error instead of timing out.
 func (b *acpBridge) watchFSSession(ctx context.Context, sessionID string) {
-	fsPolicy := b.fsPolicy()
-	if fsPolicy == nil && b.terminalPolicy() == nil {
+	fsPolicy := b.fsPolicy(sessionID)
+	if fsPolicy == nil && b.terminalPolicy(sessionID) == nil {
+		if b.isRouted() {
+			return // this thread's agent has no access to this computer
+		}
 		// The manifest is cached from initialize: a bridge process started
 		// before the agent gained spec.filesystem never polls, and pod-side fs
 		// calls sit pending until the router's fs timeout. Make that visible.
@@ -138,15 +141,10 @@ func (b *acpBridge) watchFSSession(ctx context.Context, sessionID string) {
 	}
 }
 
-// fsPolicy resolves the fs policy from the cached agent manifest; nil means
-// the agent has no filesystem surface.
-func (b *acpBridge) fsPolicy() *ACPFSPolicy {
-	b.mu.Lock()
-	man := b.manifest
-	b.mu.Unlock()
-	if man.Filesystem == nil {
-		return nil
-	}
+// fsPolicy resolves the fs policy from the manifest of the session's agent;
+// nil means the agent has no filesystem surface.
+func (b *acpBridge) fsPolicy(sessionID string) *ACPFSPolicy {
+	_, man := b.agentOf(sessionID)
 	return man.Filesystem
 }
 
@@ -325,7 +323,8 @@ func (b *acpBridge) serveFSWrite(
 		if remember && b.sessionWritesAllowed(sessionID) {
 			// The user already approved a write in this session — auto-allow.
 		} else {
-			approved, err := b.fsApproveWrite(ctx, sessionID, b.agentName, abs, len(p.Content))
+			agent, _ := b.agentOf(sessionID)
+			approved, err := b.fsApproveWrite(ctx, sessionID, agent, abs, len(p.Content))
 			if err != nil {
 				// The prompt itself failed (editor without elicitation support,
 				// transport error, timeout): distinct from a user decline so the
