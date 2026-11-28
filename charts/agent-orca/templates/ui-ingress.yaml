@@ -97,6 +97,15 @@ spec:
                 name: {{ include "agent-orca.fullname" . }}-internal-api
                 port:
                   number: 8000
+          # ACP API: whether a run may name the agent "auto", and what could be
+          # named. `aoctl acp serve --agent auto` asks it first.
+          - path: /routing
+            pathType: Exact
+            backend:
+              service:
+                name: {{ include "agent-orca.fullname" . }}-internal-api
+                port:
+                  number: 8000
           # ACP API: session management (/session/{id}).
           - path: /session/
             pathType: Prefix
