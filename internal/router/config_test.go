@@ -17,6 +17,7 @@ limitations under the License.
 package router
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -102,5 +103,75 @@ func TestConfigFromEnv_CompactionRatioDefault(t *testing.T) {
 	}
 	if cfg.ContextCompactionRatio != 0.5 {
 		t.Errorf("default ContextCompactionRatio = %v, want 0.5", cfg.ContextCompactionRatio)
+	}
+}
+
+// TestConfigFromEnv_RetainOnEveryTurnIsHonoured is the regression for
+// ConfigFromEnv coercing retainOnEveryTurn: false back to true, which made the
+// flag — and the streaming retain gate that reads it — unreachable through
+// normal configuration. An explicit false must survive verbatim; an omitted
+// key defaults to true (the CRD default).
+func TestConfigFromEnv_RetainOnEveryTurnIsHonoured(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		body string
+		want bool
+	}{
+		{name: "explicit false stays false", body: `{"runName":"r","hindsight":{"enabled":true,"retainOnEveryTurn":false}}`, want: false},
+		{name: "explicit true stays true", body: `{"runName":"r","hindsight":{"enabled":true,"retainOnEveryTurn":true}}`, want: true},
+		{name: "omitted defaults to true", body: `{"runName":"r","hindsight":{"enabled":true}}`, want: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			writeRouterConfig(t, tt.body)
+			t.Setenv("HINDSIGHT_API_KEY", "")
+			cfg, err := ConfigFromEnv()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Hindsight.RetainOnEveryTurn != tt.want {
+				t.Errorf("RetainOnEveryTurn = %v, want %v", cfg.Hindsight.RetainOnEveryTurn, tt.want)
+			}
+		})
+	}
+}
+
+// TestHindsightRetainOnEveryTurnIsMarshaled is the regression for the operator
+// path: the controllers serialize router.Config into the router ConfigMap with
+// json.Marshal. With omitempty on RetainOnEveryTurn, an Agent that set
+// retainOnEveryTurn: false produced a config with the key absent, the router's
+// default turned it back on, and the per-turn retain gate never closed. The key
+// must always be present so an explicit false survives the round trip.
+func TestHindsightRetainOnEveryTurnIsMarshaled(t *testing.T) {
+	for _, want := range []bool{true, false} {
+		t.Run(fmt.Sprintf("retain=%v", want), func(t *testing.T) {
+			// This is the operator's path: marshal the struct, write it, and let
+			// the router read it back.
+			cfg := Config{RunName: "r", Hindsight: HindsightConfig{Enabled: true, RetainOnEveryTurn: want}}
+			data, err := json.Marshal(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var raw map[string]json.RawMessage
+			if err := json.Unmarshal(data, &raw); err != nil {
+				t.Fatal(err)
+			}
+			var h map[string]json.RawMessage
+			if err := json.Unmarshal(raw["hindsight"], &h); err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := h["retainOnEveryTurn"]; !ok {
+				t.Fatalf("hindsight.retainOnEveryTurn omitted from marshaled config: %s", data)
+			}
+
+			writeRouterConfig(t, string(data))
+			t.Setenv("HINDSIGHT_API_KEY", "")
+			got, err := ConfigFromEnv()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Hindsight.RetainOnEveryTurn != want {
+				t.Errorf("round-tripped RetainOnEveryTurn = %v, want %v", got.Hindsight.RetainOnEveryTurn, want)
+			}
+		})
 	}
 }
