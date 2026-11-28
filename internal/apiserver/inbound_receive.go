@@ -99,6 +99,9 @@ func (b *InboundBridge) Launch(ctx context.Context, r inbound.LaunchRequest) (in
 		},
 		Spec: agentorcav1alpha1.AgentRunSpec{AgentRef: agent.Name, Input: r.Input, PriorRunRef: b.continuable(ctx, r, identity)},
 	}
+	if r.Routing != "" {
+		run.Annotations[AnnotationDispatch] = r.Routing
+	}
 	tenancy.Stamp(run, r.TenantID)
 	if err := s.crdClient.Create(ctx, run); err != nil {
 		return inbound.RunRef{}, err
@@ -133,7 +136,7 @@ func (b *InboundBridge) RunState(ctx context.Context, ns, name string) (inbound.
 		}
 		return inbound.RunState{}, err
 	}
-	st := inbound.RunState{Found: true, Agent: run.Spec.AgentRef, Parent: run.Spec.ParentRunRef}
+	st := inbound.RunState{Found: true, Agent: run.Spec.AgentRef, Parent: run.Spec.ParentRunRef, Picked: routingOf(&run) != nil}
 	switch run.Status.Phase {
 	case agentorcav1alpha1.AgentRunPhaseSucceeded:
 		st.Done, st.Succeeded, st.Output = true, true, b.s.runAnswer(ctx, &run)

@@ -77,6 +77,9 @@ const defaultNamespace = "default"
 //
 // Set --ui-auth-enabled=false for local development where the proxy is not running.
 type UIServer struct {
+	// dispatcher picks the agent where a person did not name one; nil leaves
+	// that unavailable.
+	dispatcher      AgentDispatcher
 	crdClient       client.Client
 	k8s             kubernetes.Interface
 	checkpoint      checkpoint.Store

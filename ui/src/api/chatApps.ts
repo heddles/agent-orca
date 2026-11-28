@@ -31,6 +31,8 @@ export interface ChatApp extends InboundConnection {
   /** Who has paired with the app, so they can be picked by name. */
   people: AppPerson[]
   canListPlaces: boolean
+  /** Places where a message that names no agent goes to the one that fits it. */
+  autoPlaces?: string[]
 }
 
 /** A channel as the platform lists it. */
@@ -57,6 +59,10 @@ export const saveAgentRoute = (app: string, r: AppRoute) =>
 export const removeAgentRoute = (app: string, ns: string, agent: string) => send<ChatApp>(route(app, ns, agent), 'DELETE')
 export const setDefaultAgent = (app: string, place: string, namespace: string, agent: string) =>
   send<ChatApp>(`/api/chat-apps/${enc(app)}/default`, 'PUT', { place, namespace, agent })
+export const setAutoPlace = (app: string, place: string, auto: boolean) =>
+  send<ChatApp>(`/api/chat-apps/${enc(app)}/auto`, 'PUT', { place, auto })
+export const picksAutomatically = (app: ChatApp, place: string) =>
+  (app.autoPlaces ?? []).some((p) => p.toLowerCase() === place.toLowerCase())
 export const listPlatformPlaces = (app: string) => send<PlatformPlace[]>(`/api/chat-apps/${enc(app)}/places`)
 
 export const placeLabel = (p: AppPlace) => (p.id === '' ? 'Direct messages' : p.name || p.id)

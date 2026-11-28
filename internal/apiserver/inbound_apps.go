@@ -24,6 +24,7 @@ package apiserver
 //	PUT    /api/chat-apps/{id}/agents/{ns}/{agent}  builder, audited: where an agent answers and for whom
 //	DELETE /api/chat-apps/{id}/agents/{ns}/{agent}  builder, audited
 //	PUT    /api/chat-apps/{id}/default              admin, audited: which agent answers unnamed messages in a place
+//	PUT    /api/chat-apps/{id}/auto                 admin, audited: whether a place picks the agent for them
 //	GET    /api/chat-apps/{id}/places               builder: the platform's channels, by name
 //
 // The app itself (credentials, test, enable, delete, workspace pairing) uses the
@@ -70,6 +71,8 @@ type chatAppView struct {
 	inboundView
 	Routes []postgresql.InboundRoute `json:"routes"`
 	People []person                  `json:"people"`
+	// AutoPlaces pick the agent for a message that names none.
+	AutoPlaces []string `json:"autoPlaces"`
 	// CanListPlaces: channels can be picked by name.
 	CanListPlaces bool `json:"canListPlaces"`
 }
@@ -120,6 +123,7 @@ func (s *UIServer) registerChatAppRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/chat-apps", s.handleChatApps)
 	mux.HandleFunc("/api/chat-apps/{id}/agents/{ns}/{agent}", s.handleChatAppAgent)
 	mux.HandleFunc("/api/chat-apps/{id}/default", s.handleChatAppDefault)
+	mux.HandleFunc("/api/chat-apps/{id}/auto", s.handleChatAppAuto)
 	mux.HandleFunc("/api/chat-apps/{id}/places", s.handleChatAppPlaces)
 }
 
@@ -131,7 +135,8 @@ func (s *UIServer) routeSource() routeStore {
 }
 
 func (s *UIServer) chatAppViewOf(ctx context.Context, c postgresql.InboundConnection) (chatAppView, error) {
-	v := chatAppView{inboundView: s.inboundViewOf(c), Routes: []postgresql.InboundRoute{}, People: knownPeople(c.Config)}
+	v := chatAppView{inboundView: s.inboundViewOf(c), Routes: []postgresql.InboundRoute{}, People: knownPeople(c.Config),
+		AutoPlaces: autoPlaces(c.Config)}
 	if a, ok := s.inboundPipe.Registry.Get(c.Kind); ok {
 		_, v.CanListPlaces = a.(inbound.Directory)
 	}
@@ -256,7 +261,8 @@ func (s *UIServer) createChatApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.recordAudit(w, r, auditEventFor(postgresql.AuditCreate, kindInbound, "", "", c.ID, fmt.Sprintf("connected %s chat app %q", c.Kind, c.Name)))
-	v := chatAppView{inboundView: s.inboundViewOf(c), Routes: []postgresql.InboundRoute{}, People: []person{}}
+	v := chatAppView{inboundView: s.inboundViewOf(c), Routes: []postgresql.InboundRoute{}, People: []person{},
+		AutoPlaces: []string{}}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(v)
@@ -438,6 +444,101 @@ func (s *UIServer) handleChatAppDefault(w http.ResponseWriter, r *http.Request) 
 	s.recordAudit(w, r, auditEventFor(postgresql.AuditUpdate, kindInbound, req.Namespace, req.Agent, c.ID,
 		fmt.Sprintf("made agent %s the default for %s in chat app %q", req.Agent, where, c.Name)))
 	s.writeChatApp(w, r, c)
+}
+
+func autoPlaces(config json.RawMessage) []string {
+	var c struct {
+		AutoPlaces []string `json:"autoPlaces"`
+	}
+	_ = json.Unmarshal(config, &c)
+	if c.AutoPlaces == nil {
+		return []string{}
+	}
+	return c.AutoPlaces
+}
+
+// setAutoPlace turns picking on or off for a place in a shared app's config.
+func setAutoPlace(config json.RawMessage, place string, auto bool) (json.RawMessage, error) {
+	var whole map[string]json.RawMessage
+	if len(config) > 0 {
+		if err := json.Unmarshal(config, &whole); err != nil {
+			return nil, err
+		}
+	}
+	if whole == nil {
+		whole = map[string]json.RawMessage{}
+	}
+	places := slices.DeleteFunc(autoPlaces(config), func(p string) bool { return strings.EqualFold(p, place) })
+	if auto {
+		places = append(places, place)
+	}
+	b, err := json.Marshal(places)
+	if err != nil {
+		return nil, err
+	}
+	whole["autoPlaces"] = b
+	return json.Marshal(whole)
+}
+
+// handleChatAppAuto sets whether a place, direct messages included, picks the
+// agent for a message that names none. Only an administrator may: it changes
+// who answers everyone who writes there.
+func (s *UIServer) handleChatAppAuto(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	c, ok := s.chatApp(w, r, tenancy.RoleAdmin)
+	if !ok {
+		return
+	}
+	var req struct {
+		Place string `json:"place"`
+		Auto  bool   `json:"auto"`
+	}
+	if !readJSONBody(w, r, maxInboundBody, &req) {
+		return
+	}
+	// Turning it off needs no agent there: one that is gone must not leave it on.
+	if req.Auto {
+		routes, err := s.routeSource().ListInboundRoutes(pgScope(r.Context()), c.ID)
+		if err != nil {
+			inboundFail(w, "reading the routes", err)
+			return
+		}
+		if !slices.ContainsFunc(routes, func(x postgresql.InboundRoute) bool {
+			return namespaceAllowed(r.Context(), x.Namespace) &&
+				slices.ContainsFunc(x.Places, func(p postgresql.InboundPlace) bool { return strings.EqualFold(p.ID, req.Place) })
+		}) {
+			jsonError(w, "no agent answers there", http.StatusNotFound)
+			return
+		}
+	}
+	config, err := setAutoPlace(c.Config, req.Place, req.Auto)
+	if err != nil {
+		jsonError(w, "saving failed", http.StatusInternalServerError)
+		return
+	}
+	store, ok := s.inboundPreflight(w, r, tenancy.RoleAdmin)
+	if !ok {
+		return
+	}
+	next, err := store.UpdateInboundConnection(pgScope(r.Context()), c.ID, postgresql.InboundPatch{Config: &config})
+	if err != nil {
+		inboundFail(w, "saving", err)
+		return
+	}
+	where := "direct messages"
+	if req.Place != postgresql.DirectPlace {
+		where = "channel " + req.Place
+	}
+	verb := "stopped picking agents automatically"
+	if req.Auto {
+		verb = "started picking agents automatically"
+	}
+	s.recordAudit(w, r, auditEventFor(postgresql.AuditUpdate, kindInbound, "", "", c.ID,
+		fmt.Sprintf("%s in %s in chat app %q", verb, where, c.Name)))
+	s.writeChatApp(w, r, next)
 }
 
 func (s *UIServer) handleChatAppPlaces(w http.ResponseWriter, r *http.Request) {

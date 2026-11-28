@@ -177,6 +177,7 @@ const REFUSALS: Record<string, string> = {
   sender_rate: 'one sender reached the hourly limit',
   workspace_mismatch: 'it came from a different workspace than this channel’s',
   no_agent_here: 'no agent answers in that place',
+  agent_undecided: 'no agent could be picked, so the sender was asked to name one',
 }
 
 /** A refusal reason code in plain words; an unknown code is shown as it is. */

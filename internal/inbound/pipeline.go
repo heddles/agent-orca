@@ -61,6 +61,8 @@ type LaunchRequest struct {
 	// one. The launcher drops it if it is not a finished run of the same agent
 	// and tenant.
 	PriorRun string
+	// Routing is how the agent was picked, when it was (Picked.Routing).
+	Routing string
 }
 
 // RunRef names a run.
@@ -103,6 +105,8 @@ type RunState struct {
 	Continued bool
 	// Agent is the agent the run is of.
 	Agent string
+	// Picked: the agent was picked for the message that started the run.
+	Picked bool
 }
 
 // RunReader reads a run.
@@ -155,6 +159,9 @@ type Pipeline struct {
 	// Routes lists the agents of a shared chat app; without it such an app
 	// answers nothing.
 	Routes RouteStore
+	// Picker picks agents in a shared app's automatic places; without it their
+	// default answers.
+	Picker Picker
 	// Credentials opens the credentials entered in the UI for a connection.
 	Credentials func(c postgresql.InboundConnection) (map[string][]byte, error)
 	Now         func() time.Time
@@ -260,7 +267,7 @@ func (p *Pipeline) Handle(ctx context.Context, c Connection, m Message, recvErr 
 	}
 	// On a shared app the message picks the agent, and everything below is
 	// checked against that agent's lists.
-	c, why, err := p.admit(ctx, c, &m, caps, row.ThreadKey)
+	c, why, toPick, err := p.admit(ctx, c, &m, caps, row.ThreadKey)
 	if err != nil {
 		return OutcomeFailed, fmt.Errorf("routing the message: %w", err)
 	}
@@ -282,9 +289,15 @@ func (p *Pipeline) Handle(ctx context.Context, c Connection, m Message, recvErr 
 		return finish(OutcomeThrottled, postgresql.InboundRejected, "sender_rate", postgresql.InboundStatus{Rejected: 1})
 	}
 
+	c, routing, why := p.pickRoute(ctx, c, m, toPick)
+	if why != "" {
+		return finish(OutcomeRejected, postgresql.InboundRejected, why, postgresql.InboundStatus{Rejected: 1})
+	}
+	settings = c.Settings
+
 	req := LaunchRequest{
 		TenantID: c.TenantID, Namespace: c.Namespace, Agent: c.Agent, ConnectionID: c.ID, Kind: c.Kind,
-		Input: FormatInput(m),
+		Input: FormatInput(m), Routing: routing,
 	}
 	if caps.Threads && !settings.NewThreadPerMessage && row.ThreadKey != "" {
 		req.PriorRun = p.priorRun(ctx, c, row.ThreadKey)

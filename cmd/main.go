@@ -892,6 +892,7 @@ func main() {
 		os.Exit(1)
 	}
 	uiAPI := apiserver.NewUIServer(k8sClient, mgr.GetClient(), stateConfig.Backend != "", stateStore, uiAuthEnabled, externalAuth, pgStore, alertManager) //nolint:lll
+	uiAPI.SetDispatcher(dispatcher)
 	uiAPI.SetOwnership(ownershipDetect, tenancy.HandoffTTLFromEnv())
 	uiAPI.SetScheduleMinInterval(scheduleMinInterval)
 	uiAPI.SetRevisionsKeep(apiserver.RevisionsKeepFromEnv())
@@ -1272,6 +1273,7 @@ func addInboundChannels(
 	pipe := &inbound.Pipeline{
 		Store: pgStore.AsPlatform(), Launcher: bridge, Runs: bridge, Resumer: bridge, Registry: reg, Limiter: limiter,
 		Secrets: bridge.ReadSecret, Credentials: bridge.OpenCredentials, Routes: pgStore.AsPlatform(),
+		Picker: bridge,
 	}
 	pipe.Approvals = pgStore.AsPlatform()
 	// A tool call that waits for an approver is also asked in the thread of the
