@@ -18,6 +18,8 @@ package apiserver
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -729,7 +731,7 @@ func (s *ACPServer) handleAgentRun(w http.ResponseWriter, r *http.Request, tenan
 	slog.Info("ACP agent run created", "run", run.Name, "agent", agent.Name, "tenant", tenantName)
 
 	// Advance the session checkpoint so the next ACP turn chains context.
-	s.updateSessionCheckpoint(r.Context(), sessionID, run.Name)
+	s.updateSessionCheckpoint(r.Context(), sessionID, run)
 
 	resp := ACPRun{
 		AgentName: agent.Name,
@@ -865,26 +867,39 @@ func (s *ACPServer) enrichACPRunForWarmPods(ctx context.Context, run *agentorcav
 	// Chain to the prior run in this session so the warm pod's model-router
 	// loads the prior conversation checkpoint.
 	if s.checkpoint != nil {
-		if cp, err := sessionStore(ctx, s.checkpoint).Load(ctx, sessionID); err == nil && cp != nil {
+		if cp, err := sessionStore(ctx, s.checkpoint).Load(ctx, chainKey(ctx, run, sessionID)); err == nil && cp != nil {
 			run.Spec.PriorRunRef = cp.LastRunRef
 		}
 	}
 }
 
-// updateSessionCheckpoint advances the session's LastRunRef to the new run name
-// so the next ACP turn in the same session chains to it.
-func (s *ACPServer) updateSessionCheckpoint(ctx context.Context, sessionID, runName string) {
+// chainKey is what a session's chain of runs is stored under. A session ID is
+// chosen by the client, so it does not identify a conversation by itself: the
+// same ID from another person, or for another agent, must not continue this one.
+func chainKey(ctx context.Context, run *agentorcav1alpha1.AgentRun, sessionID string) string {
+	user := ""
+	if t, ok := TenantFromContext(ctx); ok && t != nil {
+		user = t.UserID
+	}
+	sum := sha256.Sum256([]byte(strings.Join([]string{run.Namespace, run.Spec.AgentRef, user, sessionID}, "\x00")))
+	return "acp:" + hex.EncodeToString(sum[:])
+}
+
+// updateSessionCheckpoint advances the session's LastRunRef to the new run, so
+// the next turn of the same person with the same agent chains to it.
+func (s *ACPServer) updateSessionCheckpoint(ctx context.Context, sessionID string, run *agentorcav1alpha1.AgentRun) {
 	if sessionID == "" || s.checkpoint == nil {
 		return
 	}
-	cp, _ := sessionStore(ctx, s.checkpoint).Load(ctx, sessionID)
+	key := chainKey(ctx, run, sessionID)
+	cp, _ := sessionStore(ctx, s.checkpoint).Load(ctx, key)
 	if cp == nil {
-		cp = &agentorcav1alpha1.Checkpoint{SessionID: sessionID}
+		cp = &agentorcav1alpha1.Checkpoint{SessionID: key}
 	}
-	cp.LastRunRef = runName
+	cp.LastRunRef = run.Name
 	cp.Version++
 	if _, err := sessionStore(ctx, s.checkpoint).Save(ctx, cp); err != nil {
-		slog.Warn("failed to update ACP session checkpoint", "session", sessionID, "run", runName, "err", err)
+		slog.Warn("failed to update ACP session checkpoint", "session", sessionID, "run", run.Name, "err", err)
 	}
 }
 
@@ -998,7 +1013,7 @@ func (s *ACPServer) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 	slog.Info("ACP run created", "run", run.Name, "agent", req.AgentName, "tenant", tenant.TenantName)
 
 	// Advance the session checkpoint so the next ACP turn chains context.
-	s.updateSessionCheckpoint(r.Context(), sessionID, run.Name)
+	s.updateSessionCheckpoint(r.Context(), sessionID, run)
 
 	// Return ACP run object with RFC3339 timestamp per spec
 	resp := ACPRun{
@@ -1525,7 +1540,7 @@ func (s *ACPServer) resumeACPRun(w http.ResponseWriter, r *http.Request, run *ag
 
 	// Advance the session checkpoint so the next turn chains to the continuation.
 	sessionID := run.Labels["agentorca.io/session"]
-	s.updateSessionCheckpoint(r.Context(), sessionID, continuation.Name)
+	s.updateSessionCheckpoint(r.Context(), sessionID, continuation)
 
 	slog.Info("ACP run resumed via continuation", "original", run.Name, "continuation", continuation.Name)
 

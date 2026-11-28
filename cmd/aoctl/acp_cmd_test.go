@@ -29,6 +29,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"k8s.io/apimachinery/pkg/util/validation"
 )
 
 // Shared test fixtures: the bearer token used across the ACP tests and a
@@ -561,5 +563,18 @@ func TestACPSetup_Zed_NormalizesACPEndpoint(t *testing.T) {
 	// The ACP endpoint should be normalized to host root, not http://.../agents.
 	if env["AOCTL_ACP_ENDPOINT"] != testAgentOrcaHost {
 		t.Errorf("expected normalized AOCTL_ACP_ENDPOINT http://agent-orca.local, got %v", env["AOCTL_ACP_ENDPOINT"])
+	}
+}
+
+// The server keeps history under the session ID, so two bridge processes must
+// never name a conversation alike.
+func TestNewSessionIDDoesNotRepeat(t *testing.T) {
+	seen := map[string]bool{}
+	for range 100 {
+		id := newSessionID()
+		if seen[id] || len(id) < 20 || len(validation.IsValidLabelValue(id)) > 0 {
+			t.Fatalf("session ID %q repeats, is short, or is not a label value", id)
+		}
+		seen[id] = true
 	}
 }

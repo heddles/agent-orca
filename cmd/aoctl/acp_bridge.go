@@ -18,12 +18,12 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -129,7 +129,6 @@ type acpBridge struct {
 
 	mu       sync.Mutex
 	sessions map[string]*acpSession
-	seq      atomic.Int64
 }
 
 func newACPBridge(srv *acpStdioServer, client *Client, agentName string) *acpBridge { //nolint:unparam
@@ -304,7 +303,7 @@ func handleSessionNew(_ context.Context, b *acpBridge, req jsonrpcRequest) (any,
 	}
 	sessionID := p.SessionID
 	if sessionID == "" {
-		sessionID = b.nextSessionID()
+		sessionID = newSessionID()
 		b.srv.logf("acp: session/new without sessionId — generated %q\n", sessionID)
 	}
 	// Update the session record in place: Zed may re-send session/new for a
@@ -332,7 +331,7 @@ func handleSessionPrompt(ctx context.Context, b *acpBridge, req jsonrpcRequest) 
 	}
 	sessionID := p.SessionID
 	if sessionID == "" {
-		sessionID = b.nextSessionID()
+		sessionID = newSessionID()
 	}
 
 	// Translate ACP content blocks -> agent-orca input, reusing the same
@@ -1220,21 +1219,9 @@ func (b *acpBridge) forgetSession(sessionID, runID string) {
 	}
 }
 
-func (b *acpBridge) nextSessionID() string {
-	n := b.seq.Add(1)
-	return "zed-" + sessionIDEscaped(n)
-}
-
-// sessionIDEscaped produces a short, URL-safe id without adding crypto deps.
-func sessionIDEscaped(n int64) string {
-	const hex = "0123456789abcdef"
-	if n == 0 {
-		return "0"
-	}
-	b := make([]byte, 0, 16)
-	for n > 0 {
-		b = append([]byte{hex[n&0xf]}, b...)
-		n >>= 4
-	}
-	return string(b)
+// newSessionID names a new conversation. The server keeps a conversation's
+// history under this name, so it must not repeat between bridge processes: each
+// editor window and restart starts one. It is also a valid label value.
+func newSessionID() string {
+	return "zed-" + strings.ToLower(rand.Text())
 }
