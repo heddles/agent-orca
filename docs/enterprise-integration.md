@@ -56,6 +56,12 @@ curl -s -X POST http://agent-orca:8084/v1/tasks \
   }'
 ```
 
+`agent` can be `"auto"` to have one [picked from the input](agent-routing.md).
+The response, and later reads of the task, then name the agent and carry
+`routing`: the method, the confidence and the agents considered. When none can be
+picked the answer is `422` with code `agent_undecided` and the `agents` you may
+name. `400 auto_unavailable` means routing is not on for the tenant.
+
 Response:
 
 ```json

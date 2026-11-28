@@ -106,6 +106,15 @@ One bot, several agents. An **administrator** connects the app once (Settings, C
 
 If no agent answers in the place the message is refused (`no_agent_here`). Everything after this is checked against the chosen agent's lists: the allow-list, who may approve, and the run itself. A message carries on, answers or approves an earlier run in the thread **only if that run is of the same agent**: naming another agent never gives its approvers a say over this one's tool calls. So if a thread has moved to another agent while a call still waits, decide it in the console, or name the agent whose run was last in the thread.
 
+### Automatic places
+
+An administrator can set a place, a channel or direct messages, to **pick automatically** (Settings, Chat apps). There, a message that names no agent and is not in a thread of an agent in that place goes to the one that [fits what it asks](agent-routing.md). Naming an agent and replying in a thread work as above.
+
+- Only agents in the place **that the sender may ask**, and that are published, are in the running. If the sender may ask just one, it answers.
+- The pick comes after the rate limits.
+- The place's default takes the message when no agent is clearly meant, and whenever routing is off or fails. With no default the sender may ask, they are asked to start the message with a name.
+- The first answer says which agent was picked. All direct messages with a bot are one thread, so a pick there lasts until another agent is named.
+
 **Defaults.** The first agent added to a place is its default; adding another changes nothing for people already writing there. Only an administrator can move a default, direct messages included. When the default agent is removed from a place, the agent that has been there longest takes over.
 
 **Roles.** Connecting, credentials, testing, disabling and disconnecting an app: admin. Adding, changing and removing an agent's route: builder, for a published agent in a namespace of theirs. Moving a default: admin. Reading: viewer.

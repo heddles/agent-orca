@@ -93,6 +93,7 @@ jobs:
             --set operator.image.tag=e2e \
             --set ui.image.repository=agent-orca-ui \
             --set ui.image.tag=e2e \
+            --set decision.enabled=false \
             --wait --timeout 300s
 
       - name: Port-forward UI

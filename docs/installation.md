@@ -57,6 +57,7 @@ ones you gave no key, so its logs show authentication errors for them.
 |---|---|
 | agent-orca operator and web UI | In `agent-orca-system`. UI sign-in with OIDC is off |
 | Redis | Checkpoints, spend and token streams |
+| orca-decide | Picks an agent for [requests that name none](agent-routing.md), on CPU. `decision.enabled: false` leaves it out |
 | CloudNativePG and PostgreSQL | Run archive and approvals |
 | Model providers and selectors | From `charts/model-providers`, using your keys |
 | Ollama | Local `nomic-embed-text` embeddings for [RAG](rag.md) |

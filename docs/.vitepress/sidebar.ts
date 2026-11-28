@@ -16,7 +16,7 @@ const groups: { text: string; pages: string[] }[] = [
   {
     text: 'Building agents',
     pages: [
-      'crds', 'agent-images', 'agentworkflow', 'rag', 'context-management',
+      'crds', 'agent-images', 'agent-routing', 'agentworkflow', 'rag', 'context-management',
       'revisions', 'schedules', 'evaluations', 'switchyard-routing',
       'coder-agent', 'claude-code-subscription',
     ],

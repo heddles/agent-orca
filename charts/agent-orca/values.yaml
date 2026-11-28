@@ -287,16 +287,16 @@ redis:
       memory: 512Mi
 
 # orca-decide: a small model on CPU that picks an agent for a request which names
-# none. Nothing leaves the cluster. It is off by default until an API or editor
-# can send such a request; enabling it now deploys the service and has the
-# operator keep it ready. Tenants configure routing in TenantConfig
-# spec.dispatch.
+# none (docs/agent-routing.md). Nothing leaves the cluster. While it is deployed,
+# automatic routing is on for every tenant; a tenant turns it off, or has one of
+# its own models decide, in TenantConfig spec.dispatch. With enabled: false only
+# tenants that decide with a model have automatic routing.
 #
 # On two cores of a 2015 x86 CPU a decision took about 14 ms for a short request
 # and 45 ms (p95 55 ms) for a long one, and both containers together used about
 # 110 MiB on the benchmark (hack/dispatch-eval/bench).
 decision:
-  enabled: false
+  enabled: true
   replicas: 1
   image:
     repository: ghcr.io/heddles/agent-orca/orca-decide
@@ -331,7 +331,7 @@ decision:
     threads: 2
     resources:
       requests:
-        cpu: 500m
+        cpu: 250m
         memory: 192Mi
       limits:
         cpu: "2"

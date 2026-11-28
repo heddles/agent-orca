@@ -246,7 +246,7 @@ against agent-orca's ACP API, then streams results back.
 
 | Command | Description |
 |---|---|
-| `aoctl acp serve --agent <name>` | Run the stdio JSON-RPC bridge (invoked by the editor as a subprocess) |
+| `aoctl acp serve --agent <name>\|auto` | Run the stdio JSON-RPC bridge (invoked by the editor as a subprocess) |
 | `aoctl acp setup --editor zed [--agent <name>]` | Write a Zed `agent_servers` entry that launches the bridge |
 
 #### `aoctl acp serve`
@@ -256,8 +256,9 @@ subprocess, sends JSON-RPC 2.0 requests on stdin, and reads responses +
 server→client notifications on stdout. All logging goes to stderr so it never
 corrupts the JSON-RPC stream. The process exits when stdin closes.
 
-Because ACP v1 is single-agent-per-server, `--agent` pins which agent-orca
-agent this bridge instance represents. The bearer token is read from the saved
+`--agent <name>` sends every thread to that agent. `--agent auto` is one editor
+entry for every agent you may run: see [Automatic routing](#automatic-routing).
+The bearer token is read from the saved
 config (`~/.aoctl/config.json`), so run `aoctl login` first.
 
 For OIDC sessions that captured a refresh token, `serve` keeps the token valid
@@ -276,6 +277,20 @@ aoctl acp serve --agent support-bot
 
 # Or let Zed manage the lifecycle by adding it to agent_servers (see below)
 ```
+
+#### Automatic routing
+
+With `--agent auto`, each thread has a choice of agent in the editor's agent
+menu, with **Auto** first. On Auto, [Agent Orca picks](agent-routing.md) from the
+thread's first message, says who has the thread, and keeps it there. Choosing an
+agent in the menu moves the thread to it. An agent does not see what another
+agent said in the thread. If none can be picked, the thread asks you to choose.
+
+Each thread is held to the file and terminal access of its own agent. Approvals
+you gave one agent, such as "always allow this command", do not carry to another.
+The editor is told the bridge can read and write files, because some agent might.
+
+This needs an Agent Orca server with automatic routing on for your tenant.
 
 The bridge handles the core ACP methods: `initialize`, `session/new`,
 `session/prompt` (streaming token chunks + plan/cancel), `session/cancel`, and
@@ -332,14 +347,15 @@ A command is not limited to the workspace the way file access is. See
 
 `setup` writes a Zed `agent_servers` entry to `~/.config/zed/settings.json`
 (or `$XDG_CONFIG_HOME/zed/settings.json` on Linux, `%APPDATA%\Zed\settings.json`
-on Windows). If `--agent` is omitted, the available agents are listed and you
-pick one interactively.
+on Windows). If `--agent` is omitted, `setup` configures automatic routing, as
+**Agent Orca**, when the server offers it. Otherwise it lists the available
+agents and you pick one.
 
 ```bash
 # Configure a specific agent
 aoctl acp setup --editor zed --agent support-bot
 
-# Interactive: lists agents and prompts
+# Automatic routing where available, else a list to pick from
 aoctl acp setup --editor zed
 ```
 
