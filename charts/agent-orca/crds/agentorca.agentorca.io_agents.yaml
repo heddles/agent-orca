@@ -345,6 +345,50 @@ spec:
                       More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                     type: object
                 type: object
+              routing:
+                description: |-
+                  Routing improves how this agent is picked for a request that names no
+                  agent. It is optional: without it the routing card is built from the
+                  agent's system prompt, tools and knowledge bases. An agent labelled
+                  `agentorca.io/dispatch: "false"` is never picked.
+                properties:
+                  aliases:
+                    description: Aliases are other names people use for this agent.
+                    items:
+                      maxLength: 63
+                      type: string
+                    maxItems: 10
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  description:
+                    description: |-
+                      Description says in a sentence or two what requests this agent is for.
+                      It replaces the system prompt in the routing card.
+                    maxLength: 1000
+                    type: string
+                  examples:
+                    description: |-
+                      Examples are requests this agent should take, written as a user would
+                      send them. They improve the local decider more than anything else here;
+                      a card read by a model carries only the first few.
+                    items:
+                      maxLength: 300
+                      type: string
+                    maxItems: 50
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  useWhen:
+                    description: |-
+                      UseWhen lists the kinds of requests this agent is for, one kind per item,
+                      such as "a pod is crash looping". Each is compared with a request on its
+                      own, which picks the right agent more often than one long description.
+                    items:
+                      maxLength: 300
+                      type: string
+                    maxItems: 20
+                    type: array
+                    x-kubernetes-list-type: atomic
+                type: object
               runtime:
                 description: Runtime defines the OCI image used to run the agent process.
                 properties:
@@ -841,6 +885,17 @@ spec:
                   connected account for every run of the agent. It is recorded at publish time
                   and not looked up at runtime, so "the maintainer left" is a visible state.
                 type: string
+              routing:
+                description: |-
+                  Routing is set while the agent may be picked for a request that names no
+                  agent. It is empty for an agent that opted out.
+                properties:
+                  card:
+                    description: |-
+                      Card is the text a decision is made on. The operator rebuilds it when the
+                      agent, its tools or its knowledge bases change.
+                    type: string
+                type: object
               serviceAccountName:
                 description: ServiceAccountName is the name of the stable SA managed
                   by the operator.
