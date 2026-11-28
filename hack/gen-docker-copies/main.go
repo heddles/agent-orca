@@ -73,6 +73,7 @@ var targets = []target{
 	{"Dockerfile", "./cmd"},
 	{"cmd/model-router/Dockerfile", "./cmd/model-router"},
 	{"cmd/oauth-proxy/Dockerfile", "./cmd/oauth-proxy"},
+	{"cmd/orca-decide/Dockerfile", "./cmd/orca-decide"},
 	{"Dockerfile.mcp-ingester", "./cmd/mcp-ingester"},
 	{"Dockerfile.ui-proxy", "./cmd/ui-proxy"},
 	{"Dockerfile.dev-sandbox", "./cmd/coder-agent"},

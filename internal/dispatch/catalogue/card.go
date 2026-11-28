@@ -24,6 +24,7 @@ import (
 	"unicode/utf8"
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
+	"github.com/heddles/agent-orca/internal/dispatch/decision"
 )
 
 // OptOutLabel set to "false" keeps an agent from ever being picked.
@@ -91,6 +92,32 @@ func Card(agent *agentorcav1alpha1.Agent, related Related) string {
 		}
 	}
 	return clipBytes(b.String(), maxCardBytes)
+}
+
+// Texts is the agent in the pieces a decider that matches text works from: what
+// the agent is (its card without "use when" lines and examples), one
+// description per "use when" line, and its examples.
+func Texts(agent *agentorcav1alpha1.Agent, related Related) decision.OptionTexts {
+	routing := agent.Spec.Routing
+	if routing == nil {
+		routing = &agentorcav1alpha1.AgentRoutingSpec{}
+	}
+	base := agent.DeepCopy()
+	if base.Spec.Routing != nil {
+		base.Spec.Routing.UseWhen, base.Spec.Routing.Examples = nil, nil
+	}
+	out := decision.OptionTexts{Descriptions: []string{clipBytes(Card(base, related), decision.MaxTextBytes)}}
+	for _, line := range routing.UseWhen {
+		if line = oneLine(line); line != "" && len(out.Descriptions) < decision.MaxDescriptions {
+			out.Descriptions = append(out.Descriptions, clipBytes(agent.Name+": "+line, decision.MaxTextBytes))
+		}
+	}
+	for _, example := range routing.Examples {
+		if example = oneLine(example); example != "" && len(out.Examples) < decision.MaxExamples {
+			out.Examples = append(out.Examples, clipBytes(example, decision.MaxTextBytes))
+		}
+	}
+	return out
 }
 
 // KnowledgeBaseNames are the knowledge bases the agent refers to. The structured

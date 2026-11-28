@@ -1,6 +1,7 @@
 package catalogue
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -70,6 +71,31 @@ func TestACardListsUseWhenLinesAndOnlyTheFirstExamples(t *testing.T) {
 	want := "net-chat: Network problems.\nUse when: dns fails; a service is unreachable\nExample requests: 1; 2; 3; 4; 5"
 	if got != want {
 		t.Errorf("got %q", got)
+	}
+}
+
+func TestTextsKeepEachPieceApart(t *testing.T) {
+	long := strings.Repeat("é", 300)
+	a := agent(agentorcav1alpha1.AgentSpec{Routing: &agentorcav1alpha1.AgentRoutingSpec{
+		Description: "Network problems.", Aliases: []string{"netops"},
+		UseWhen: []string{"dns\nfails", " "}, Examples: []string{"why is it slow", long},
+	}})
+	got := Texts(a, Related{})
+	want := decision.OptionTexts{
+		Descriptions: []string{"net-chat: Network problems.\nAlso called: netops", "net-chat: dns fails"},
+		Examples:     []string{"why is it slow", long},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got  %q\nwant %q", got, want)
+	}
+	if len(a.Spec.Routing.UseWhen) != 2 {
+		t.Error("the agent was modified")
+	}
+	// The pieces are valid in a request, whatever the agent declares.
+	q := decision.Question{Type: decision.TypeChoice, Criteria: map[string]string{"a": Card(a, Related{})},
+		Texts: map[string]decision.OptionTexts{"a": got}}
+	if err := (decision.Request{State: "x", Questions: map[string]decision.Question{"q": q}}).Validate(); err != nil {
+		t.Error(err)
 	}
 }
 

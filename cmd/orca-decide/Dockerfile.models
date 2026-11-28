@@ -1,0 +1,17 @@
+# syntax=docker/dockerfile:1
+# The weights orca-decide's llama.cpp server loads, as an image so that a cluster
+# with no route to the internet can run it. The chart copies /models into the
+# pod when it starts. Weights are never committed to Git.
+FROM --platform=$BUILDPLATFORM busybox:1.37 AS fetch
+# gte-small (https://huggingface.co/thenlper/gte-small, MIT licence), converted to
+# GGUF by the llama.cpp project. hack/dispatch-eval/bench measured this file.
+ADD --checksum=sha256:945a2da32e7bfb2cdb3a3fde50bc40c5d103db84fedc078adf415f3bb10f2ed0 \
+    https://huggingface.co/ggml-org/gte-small-Q8_0-GGUF/resolve/1dc93210ef4edf1a611523c8d17544c47564275b/gte-small-q8_0.gguf \
+    /models/gte-small-q8.gguf
+COPY cmd/orca-decide/MODEL_LICENSE /models/LICENSE
+# A downloaded file is readable by its owner only, and the pod runs as another.
+RUN chmod 0755 /models && chmod 0444 /models/*
+
+FROM busybox:1.37
+COPY --from=fetch /models /models
+USER 65532:65532
