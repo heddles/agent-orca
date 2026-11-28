@@ -34,6 +34,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
+	"github.com/heddles/agent-orca/internal/dispatch"
 	"github.com/heddles/agent-orca/internal/security"
 	"github.com/heddles/agent-orca/internal/state"
 	"github.com/heddles/agent-orca/internal/tenancy"
@@ -49,6 +50,8 @@ type ExternalAPIServer struct {
 	hasStore  bool
 	// feedback stores ratings of routing; nil refuses them.
 	feedback feedbackStore
+	// dispatcher picks the agent of a task that asks for "auto"; nil refuses it.
+	dispatcher AgentDispatcher
 
 	// rateLimiter enforces per-tenant submission rate limits. nil disables it.
 	rateLimiter *RateLimiter
@@ -74,6 +77,9 @@ func NewExternalAPIServer(k8s kubernetes.Interface, crdClient client.Client, aut
 	s.isAdminSA = s.defaultIsAdminSA
 	return s
 }
+
+// SetDispatcher lets a task ask for its agent to be picked.
+func (s *ExternalAPIServer) SetDispatcher(d AgentDispatcher) { s.dispatcher = d }
 
 // adminNamespace is the namespace where TenantConfig CRs and their client
 // secrets live (defaults to the operator's own namespace).
@@ -218,6 +224,7 @@ func selfTenantOp(method, p string) (tenant string, capability adminCapability, 
 
 // TaskSubmission is the request body for POST /v1/tasks.
 type TaskSubmission struct {
+	// Agent names the agent, or is "auto" to have one picked.
 	Agent    string            `json:"agent"`
 	Input    string            `json:"input"`
 	Timeout  string            `json:"timeout,omitempty"`
@@ -251,6 +258,8 @@ type TaskResponse struct {
 	CompletedAt string            `json:"completedAt,omitempty"`
 	Metadata    map[string]string `json:"metadata,omitempty"`
 	Links       *TaskLinks        `json:"links,omitempty"`
+	// Routing is set when the task asked for "auto": how Agent was picked.
+	Routing *RoutingInfo `json:"routing,omitempty"`
 }
 
 // TaskLinks provides HATEOAS-style links for task navigation.
@@ -331,20 +340,24 @@ func (s *ExternalAPIServer) createTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check if the tenant is allowed to invoke this agent.
-	if !tenantCanAccessAgent(tenant, req.Agent) {
-		http.Error(w, fmt.Sprintf(`{"error":"agent %q is not allowed for this tenant"}`, req.Agent), http.StatusForbidden)
-		return
-	}
+	auto := asksForAuto(r.Context(), s.crdClient, tenant, req.Agent)
+	var agent *agentorcav1alpha1.Agent
+	if !auto {
+		// Check if the tenant is allowed to invoke this agent.
+		if !tenantCanAccessAgent(tenant, req.Agent) {
+			http.Error(w, fmt.Sprintf(`{"error":"agent %q is not allowed for this tenant"}`, req.Agent), http.StatusForbidden)
+			return
+		}
 
-	// Resolve the agent to the namespace it actually lives in — which must be one
-	// of the tenant's authorized namespaces (allowedNamespaces). This directs the
-	// run to the agent's own namespace rather than assuming a single tenant
-	// namespace, so a tenant spanning multiple namespaces can reach any agent.
-	agent, err := findAgentInNamespaces(r.Context(), s.crdClient, tenant, req.Agent)
-	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"agent %q not found in any authorized namespace"}`, req.Agent), http.StatusNotFound)
-		return
+		// Resolve the agent to the namespace it actually lives in — which must be
+		// one of the tenant's authorized namespaces (allowedNamespaces). This
+		// directs the run to the agent's own namespace rather than assuming a
+		// single tenant namespace, so a tenant spanning multiple namespaces can
+		// reach any agent.
+		if agent, err = findAgentInNamespaces(r.Context(), s.crdClient, tenant, req.Agent); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"agent %q not found in any authorized namespace"}`, req.Agent), http.StatusNotFound)
+			return
+		}
 	}
 
 	// Enforce tenant quotas (rate limit, concurrent runs, daily budget) before
@@ -361,6 +374,18 @@ func (s *ExternalAPIServer) createTask(w http.ResponseWriter, r *http.Request) {
 	if quotaErr != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"admission failed: %s"}`, quotaErr), http.StatusInternalServerError)
 		return
+	}
+
+	// Picking comes after the quotas: it costs something too.
+	var routing *RoutingInfo
+	if auto {
+		agent, routing, err = pickAgent(r.Context(), s.crdClient, s.dispatcher,
+			dispatch.Request{Tenant: dispatchTenant(tenant), Text: req.Input, Source: sourceAPI})
+		if err != nil {
+			writeDispatchError(w, err)
+			return
+		}
+		req.Agent = agent.Name
 	}
 
 	// Build the AgentRun CR.
@@ -394,6 +419,8 @@ func (s *ExternalAPIServer) createTask(w http.ResponseWriter, r *http.Request) {
 			run.Annotations["agentorca.io/meta-"+k] = v
 		}
 	}
+
+	markDispatched(run, routing)
 
 	// Set timeout.
 	if req.Timeout != "" {
@@ -436,6 +463,7 @@ func (s *ExternalAPIServer) createTask(w http.ResponseWriter, r *http.Request) {
 		Status:    string(agentorcav1alpha1.AgentRunPhasePending),
 		CreatedAt: run.CreationTimestamp.Format(time.RFC3339),
 		Metadata:  req.Metadata,
+		Routing:   routing,
 		Links: &TaskLinks{
 			Self:   "/v1/tasks/" + run.Name,
 			Stream: "/v1/tasks/" + run.Name + "/stream",
@@ -721,6 +749,7 @@ func (s *ExternalAPIServer) runToTaskResponse(run *agentorcav1alpha1.AgentRun) T
 		Status:   string(run.Status.Phase),
 		Output:   outputOf(context.Background(), s.store, run),
 		SpendUSD: run.Status.SpendUSD,
+		Routing:  routingOf(run),
 		Links: &TaskLinks{
 			Self:   "/v1/tasks/" + run.Name,
 			Stream: "/v1/tasks/" + run.Name + "/stream",

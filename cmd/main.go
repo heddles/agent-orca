@@ -886,6 +886,11 @@ func main() {
 	}
 
 	// Start the UI API server (port 8083) for the React frontend.
+	dispatcher, err := addDispatch(mgr, pgStore)
+	if err != nil {
+		setupLog.Error(err, "Unable to start agent dispatch")
+		os.Exit(1)
+	}
 	uiAPI := apiserver.NewUIServer(k8sClient, mgr.GetClient(), stateConfig.Backend != "", stateStore, uiAuthEnabled, externalAuth, pgStore, alertManager) //nolint:lll
 	uiAPI.SetOwnership(ownershipDetect, tenancy.HandoffTTLFromEnv())
 	uiAPI.SetScheduleMinInterval(scheduleMinInterval)
@@ -944,16 +949,9 @@ func main() {
 		}
 	}()
 
-	// Agent dispatch picks the agent for a request that names none. No entry
-	// point sends it requests yet; until then the operator only keeps the local
-	// decision service warm.
-	if err := addDispatch(mgr, pgStore); err != nil {
-		setupLog.Error(err, "Unable to start agent dispatch")
-		os.Exit(1)
-	}
-
 	// Start the external API server (port 8084) for enterprise integrations.
 	externalAPI := apiserver.NewExternalAPIServer(k8sClient, mgr.GetClient(), externalAuth, stateConfig.Backend != "", stateStore) //nolint:lll
+	externalAPI.SetDispatcher(dispatcher)
 	if pgStore != nil {
 		externalAPI.WithFeedbackStore(pgStore)
 	}
@@ -977,6 +975,7 @@ func main() {
 
 	// Start the ACP API server (port 8000) for ACP-compatible clients.
 	acpAPI := apiserver.NewACPServer(k8sClient, mgr.GetClient(), externalAuth, stateStore)
+	acpAPI.SetDispatcher(dispatcher)
 	if fsRelay != nil {
 		acpAPI.SetFilesystemRelay(fsRelay)
 	}
@@ -1235,10 +1234,11 @@ func inboundChannelsDisabled() bool {
 	return strings.EqualFold(strings.TrimSpace(os.Getenv("INBOUND_CHANNELS_DISABLED")), "true")
 }
 
-// addDispatch builds the agent dispatcher and adds its upkeep. DECIDE_URL
-// (chart value decision.enabled) is the cluster's orca-decide; without it only
-// tenants that decide with a ModelSelector have automatic routing.
-func addDispatch(mgr ctrl.Manager, pgStore *postgresql.Store) error {
+// addDispatch builds the agent dispatcher, which picks the agent for a request
+// that names none, and adds its upkeep. DECIDE_URL (chart value
+// decision.enabled) is the cluster's orca-decide; without it only tenants that
+// decide with a ModelSelector have automatic routing.
+func addDispatch(mgr ctrl.Manager, pgStore *postgresql.Store) (*dispatch.Dispatcher, error) {
 	d := &dispatch.Dispatcher{Client: mgr.GetClient(), Providers: judge.KubeResolver{Reader: mgr.GetClient()}}
 	if url := strings.TrimSpace(os.Getenv("DECIDE_URL")); url != "" {
 		d.Local = decision.Client{BaseURL: url}
@@ -1248,9 +1248,9 @@ func addDispatch(mgr ctrl.Manager, pgStore *postgresql.Store) error {
 		d.Records, pruner = pgStore, pgStore.AsPlatform()
 	}
 	if d.Local == nil && pruner == nil {
-		return nil
+		return d, nil
 	}
-	return mgr.Add(d.Upkeep(pruner))
+	return d, mgr.Add(d.Upkeep(pruner))
 }
 
 // addInboundChannels registers the channel adapters, gives the UI server the

@@ -68,7 +68,13 @@ type ACPServer struct {
 
 	// rateLimiter enforces per-tenant submission rate limits. nil disables it.
 	rateLimiter *RateLimiter
+
+	// dispatcher picks the agent of a run that asks for "auto"; nil refuses it.
+	dispatcher AgentDispatcher
 }
+
+// SetDispatcher lets a run ask for its agent to be picked.
+func (s *ACPServer) SetDispatcher(d AgentDispatcher) { s.dispatcher = d }
 
 // NewACPServer creates a new ACP server.
 func NewACPServer(k8s kubernetes.Interface, crdClient client.Client, auth *ExternalAuth, store state.Store) *ACPServer {
@@ -101,6 +107,7 @@ func (s *ACPServer) Handler() http.Handler {
 	mux.HandleFunc("/ping", s.handlePing)
 	mux.HandleFunc("/agents", s.handleListAgents)
 	mux.HandleFunc("/agents/", s.handleAgentRoutes)
+	mux.HandleFunc("/routing", s.handleRouting)
 	mux.HandleFunc("/runs", s.handleCreateRun)
 	mux.HandleFunc("/runs/", s.handleRunByID)
 	mux.HandleFunc("/session/", s.handleGetSession)
@@ -265,6 +272,9 @@ type ACPRun struct {
 	Error        *ACPErr          `json:"error,omitempty"`
 	CreatedAt    string           `json:"created_at"`
 	FinishedAt   string           `json:"finished_at,omitempty"`
+	// Routing is set on the answer to a run that asked for "auto": how
+	// AgentName was picked. It is an agent-orca extension.
+	Routing *RoutingInfo `json:"routing,omitempty"`
 	// ContinuationRunRef is the name of a follow-up AgentRun created when a
 	// waiting run is resumed with a clarify answer (see resumeACPRun). Clients
 	// should poll this run instead of the original.
@@ -556,6 +566,15 @@ func (s *ACPServer) handleAgentRoutes(w http.ResponseWriter, r *http.Request) {
 		sub = parts[1]
 	}
 
+	if sub == "run" && asksForAuto(r.Context(), s.crdClient, tenant, name) {
+		if r.Method != http.MethodPost {
+			writeACPError(w, "invalid_input", "POST required", http.StatusMethodNotAllowed)
+			return
+		}
+		s.handleAgentRun(w, r, tenant, nil)
+		return
+	}
+
 	// Check if tenant is allowed to access this agent
 	if !tenantCanAccessAgent(tenant, name) {
 		writeACPError(w, "unauthorized", "agent not allowed for tenant", http.StatusForbidden)
@@ -641,7 +660,8 @@ type ACPAgentRunRequest struct {
 // around the ACP POST /runs flow.
 //
 // tenant may be nil (a UI session with no tenant identity); the run is then
-// created without tenant labels, as the other UI writes are.
+// created without tenant labels, as the other UI writes are. A nil agent means
+// the caller, who then has a tenant, asked for one to be picked.
 func (s *ACPServer) handleAgentRun(w http.ResponseWriter, r *http.Request, tenant *TenantIdentity, agent *agentorcav1alpha1.Agent) {
 	if !requireRunnerACP(w, r) {
 		return
@@ -690,6 +710,14 @@ func (s *ACPServer) handleAgentRun(w http.ResponseWriter, r *http.Request, tenan
 	// Determine session ID
 	sessionID := req.SessionID
 
+	var routing *RoutingInfo
+	if agent == nil {
+		if agent, routing, err = s.pickSessionAgent(r.Context(), tenant, inputText, sessionID); err != nil {
+			writeACPDispatchError(w, err)
+			return
+		}
+	}
+
 	// Create AgentRun CR
 	run := &agentorcav1alpha1.AgentRun{
 		ObjectMeta: metav1.ObjectMeta{
@@ -718,6 +746,7 @@ func (s *ACPServer) handleAgentRun(w http.ResponseWriter, r *http.Request, tenan
 	if sessionID != "" {
 		run.Labels["agentorca.io/session-id"] = sessionID
 	}
+	markDispatched(run, routing)
 	// Enable warm-pod claiming + context chaining.
 	s.enrichACPRunForWarmPods(r.Context(), run, agent.Name, sessionID)
 	markLocalTerminal(run, req.ClientCapabilities, agent)
@@ -739,6 +768,7 @@ func (s *ACPServer) handleAgentRun(w http.ResponseWriter, r *http.Request, tenan
 		RunID:     run.Name,
 		Status:    ACPRunCreated,
 		CreatedAt: run.CreationTimestamp.Format(time.RFC3339),
+		Routing:   routing,
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -891,6 +921,7 @@ func (s *ACPServer) updateSessionCheckpoint(ctx context.Context, sessionID strin
 	if sessionID == "" || s.checkpoint == nil {
 		return
 	}
+	s.rememberSessionAgent(ctx, sessionID, run)
 	key := chainKey(ctx, run, sessionID)
 	cp, _ := sessionStore(ctx, s.checkpoint).Load(ctx, key)
 	if cp == nil {
@@ -941,17 +972,20 @@ func (s *ACPServer) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check if tenant is allowed to access this agent
-	if !tenantCanAccessAgent(tenant, req.AgentName) {
-		writeACPError(w, "unauthorized", "agent not allowed for tenant", http.StatusForbidden)
-		return
-	}
+	auto := asksForAuto(r.Context(), s.crdClient, tenant, req.AgentName)
+	var agent *agentorcav1alpha1.Agent
+	if !auto {
+		// Check if tenant is allowed to access this agent
+		if !tenantCanAccessAgent(tenant, req.AgentName) {
+			writeACPError(w, "unauthorized", "agent not allowed for tenant", http.StatusForbidden)
+			return
+		}
 
-	// Resolve the agent to the namespace it actually lives in (authorized).
-	agent, err := findAgentInNamespaces(r.Context(), s.crdClient, tenant, req.AgentName)
-	if err != nil {
-		writeACPError(w, "not_found", fmt.Sprintf("agent %q not found", req.AgentName), http.StatusNotFound)
-		return
+		// Resolve the agent to the namespace it actually lives in (authorized).
+		if agent, err = findAgentInNamespaces(r.Context(), s.crdClient, tenant, req.AgentName); err != nil {
+			writeACPError(w, "not_found", fmt.Sprintf("agent %q not found", req.AgentName), http.StatusNotFound)
+			return
+		}
 	}
 
 	// Enforce tenant quotas (rate limit, concurrent runs, daily budget).
@@ -980,6 +1014,15 @@ func (s *ACPServer) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 		sessionID = req.Session.ID
 	}
 
+	var routing *RoutingInfo
+	if auto {
+		if agent, routing, err = s.pickSessionAgent(r.Context(), tenant, inputText, sessionID); err != nil {
+			writeACPDispatchError(w, err)
+			return
+		}
+		req.AgentName = agent.Name
+	}
+
 	// Create AgentRun CR
 	run := &agentorcav1alpha1.AgentRun{
 		ObjectMeta: metav1.ObjectMeta{
@@ -999,6 +1042,7 @@ func (s *ACPServer) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 	if sessionID != "" {
 		run.Labels["agentorca.io/session-id"] = sessionID
 	}
+	markDispatched(run, routing)
 	// Enable warm-pod claiming + context chaining via the deployment that owns
 	// this agent. Falls back to one-shot pod path if no deployment exists.
 	s.enrichACPRunForWarmPods(r.Context(), run, req.AgentName, sessionID)
@@ -1022,6 +1066,7 @@ func (s *ACPServer) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 		RunID:     run.Name,
 		Status:    ACPRunCreated,
 		CreatedAt: run.CreationTimestamp.Format(time.RFC3339),
+		Routing:   routing,
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
