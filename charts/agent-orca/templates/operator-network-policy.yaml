@@ -106,7 +106,7 @@ spec:
           protocol: TCP
         - port: 53
           protocol: UDP
-    {{- if .Values.decision.enabled }}
+    {{- if (.Values.decision).enabled }}
     # orca-decide, which agent dispatch asks.
     - to:
         - podSelector:

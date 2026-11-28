@@ -1,4 +1,4 @@
-{{- if .Values.decision.enabled }}
+{{- if (.Values.decision).enabled }}
 {{- $name := printf "%s-decide" (include "agent-orca.fullname" .) }}
 # orca-decide: the local decision model that picks an agent for a request which
 # names none. It is not a platform peer (no agentorca.io/scope label): agent runs

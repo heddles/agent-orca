@@ -197,6 +197,25 @@ The lower-level ACP endpoint for creating runs. Accepts `agent_name`, `input`,
 `session_id`, `session`, and `mode` fields. The `POST /agents/{name}/run`
 endpoint is the recommended UX-friendly alternative.
 
+## Automatic routing
+
+Name the agent `auto` (`agent_name`, or `POST /agents/auto/run`) to have one
+[picked from the input](agent-routing.md). The response names it in
+`agent_name`, with `routing` saying how it was picked. A later `auto` run with
+the same `session_id`, by the same user, stays with the session's agent.
+
+| Status | Code | Meaning |
+|---|---|---|
+| 400 | `auto_unavailable` | Routing is not on for the tenant |
+| 404 | `no_agents` | There is no agent that can be picked |
+| 422 | `agent_undecided` | None could be picked; `data.agents` lists the ones you may name |
+
+`GET /routing` returns `auto` (whether runs may name it), `reason` when they may
+not, and `agents`, the ones you may name. These are agent-orca extensions to ACP.
+
+A session's conversation history carries only to later runs of the same user with
+the same agent.
+
 ## GET /runs/{run_id}
 
 Get the status and output of a run.
