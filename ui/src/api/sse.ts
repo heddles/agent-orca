@@ -330,7 +330,17 @@ export interface RoutingEventInfo {
   createdAt?: string
 }
 
+/** How a run's agent was picked, when the request named none. */
+export interface RunRouting {
+  method: 'sticky' | 'only' | 'decided' | 'fallback'
+  reason?: string
+  /** The router's confidence in its first choice, which after a fallback is not the run's agent. */
+  confidence?: number
+  considered?: Array<{ agent: string; probability: number }>
+}
+
 export interface AgentRunDetail {
+  routing?: RunRouting
   name: string
   namespace: string
   agentRef: string

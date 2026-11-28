@@ -89,6 +89,7 @@ func (s *UIServer) registerAgentRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/catalog", s.handleCatalog)
 	mux.HandleFunc("/api/my/runs", s.handleMyRuns)
 	s.registerFleetRoutes(mux)
+	s.registerRoutingRoutes(mux)
 	mux.HandleFunc("/api/agents/", s.handleAgentAction)
 }
 

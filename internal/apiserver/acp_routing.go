@@ -106,7 +106,11 @@ func (s *ACPServer) rememberSessionAgent(ctx context.Context, sessionID string, 
 // agent for as long as the caller may run it.
 func (s *ACPServer) pickSessionAgent(ctx context.Context, tenant *TenantIdentity, text, sessionID string) (
 	*agentorcav1alpha1.Agent, *RoutingInfo, error) {
-	req := dispatch.Request{Tenant: dispatchTenant(tenant), Text: text, Source: sourceACP}
+	req := dispatch.Request{Tenant: dispatchTenant(tenant), Source: sourceACP}
+	if s.dispatchAs != nil {
+		req = *s.dispatchAs
+	}
+	req.Text = text
 	if sessionID != "" && s.checkpoint != nil {
 		cp, err := sessionStore(ctx, s.checkpoint).Load(ctx, sessionAgentKey(ctx, sessionID))
 		if err != nil {

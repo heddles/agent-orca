@@ -20,6 +20,7 @@ import {
 } from '../api/sse'
 import { STREAM_EVENT_TYPE } from '../contracts/events'
 import { StatusBadge } from './StatusBadge'
+import { RoutedNote } from './RoutedNote'
 import { RunRequest } from './RunRequest'
 import { channelLabel, parseRunInput, runTitle } from '../lib/runText'
 import { agentDetailsPath } from '../lib/routes'
@@ -422,6 +423,10 @@ export function RunView({
             />
           )}
 
+          {detail?.routing && (
+            <RoutedNote agent={detail.agentRef} namespace={namespace} routing={detail.routing} input={detail.input}
+              onNavigateToRun={onNavigateToRun} />
+          )}
           {detail?.input && <RunRequest input={detail.input} />}
         </div>
       )}
