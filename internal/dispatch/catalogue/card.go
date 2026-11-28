@@ -27,8 +27,13 @@ import (
 	"github.com/heddles/agent-orca/internal/dispatch/decision"
 )
 
-// OptOutLabel set to "false" keeps an agent from ever being picked.
-const OptOutLabel = "agentorca.io/dispatch"
+const (
+	// OptOutLabel set to "false" keeps an agent from ever being picked.
+	OptOutLabel = "agentorca.io/dispatch"
+	// TemplateLabel set to "true" marks a template, which is copied and never
+	// run in place.
+	TemplateLabel = "agentorca.io/template"
+)
 
 const (
 	// promptRunes is how much of a system prompt a card carries. The decider
@@ -47,7 +52,8 @@ const (
 
 // Routable reports whether the agent may be picked.
 func Routable(agent *agentorcav1alpha1.Agent) bool {
-	return !strings.EqualFold(strings.TrimSpace(agent.Labels[OptOutLabel]), "false")
+	return agent.Labels[TemplateLabel] != "true" &&
+		!strings.EqualFold(strings.TrimSpace(agent.Labels[OptOutLabel]), "false")
 }
 
 // Related are the objects an agent refers to that say what it can do. Entries the

@@ -44,8 +44,15 @@ func TestMigrationsAreOrderedAndNamed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Numbers held by a change that is still in review. Migrate applies whatever a
+	// database has not run, whatever its number, so either change may merge first.
+	// Remove an entry once its migration is here.
+	reserved := map[int]bool{28: true} // schedule destinations, PR #287
 	want := 1
 	for _, m := range all {
+		if m.Version != want && reserved[want] {
+			want++
+		}
 		if m.Version != want {
 			t.Errorf("migration %s has version %d, want %d: versions must be 1..n without gaps", m.Name, m.Version, want)
 		}

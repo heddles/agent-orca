@@ -57,6 +57,8 @@ import (
 	"github.com/heddles/agent-orca/internal/apiserver"
 	"github.com/heddles/agent-orca/internal/connections"
 	"github.com/heddles/agent-orca/internal/controller"
+	"github.com/heddles/agent-orca/internal/dispatch"
+	"github.com/heddles/agent-orca/internal/dispatch/decision"
 	"github.com/heddles/agent-orca/internal/evals/judge"
 	evalrunner "github.com/heddles/agent-orca/internal/evals/runner"
 	"github.com/heddles/agent-orca/internal/githubapp"
@@ -942,6 +944,14 @@ func main() {
 		}
 	}()
 
+	// Agent dispatch picks the agent for a request that names none. No entry
+	// point sends it requests yet; until then the operator only keeps the local
+	// decision service warm.
+	if err := addDispatch(mgr, pgStore); err != nil {
+		setupLog.Error(err, "Unable to start agent dispatch")
+		os.Exit(1)
+	}
+
 	// Start the external API server (port 8084) for enterprise integrations.
 	externalAPI := apiserver.NewExternalAPIServer(k8sClient, mgr.GetClient(), externalAuth, stateConfig.Backend != "", stateStore) //nolint:lll
 	if pgStore != nil {
@@ -1223,6 +1233,24 @@ func connectionIdleExpiryFromEnv() time.Duration {
 // connection is created.
 func inboundChannelsDisabled() bool {
 	return strings.EqualFold(strings.TrimSpace(os.Getenv("INBOUND_CHANNELS_DISABLED")), "true")
+}
+
+// addDispatch builds the agent dispatcher and adds its upkeep. DECIDE_URL
+// (chart value decision.enabled) is the cluster's orca-decide; without it only
+// tenants that decide with a ModelSelector have automatic routing.
+func addDispatch(mgr ctrl.Manager, pgStore *postgresql.Store) error {
+	d := &dispatch.Dispatcher{Client: mgr.GetClient(), Providers: judge.KubeResolver{Reader: mgr.GetClient()}}
+	if url := strings.TrimSpace(os.Getenv("DECIDE_URL")); url != "" {
+		d.Local = decision.Client{BaseURL: url}
+	}
+	var pruner dispatch.Pruner
+	if pgStore != nil {
+		d.Records, pruner = pgStore, pgStore.AsPlatform()
+	}
+	if d.Local == nil && pruner == nil {
+		return nil
+	}
+	return mgr.Add(d.Upkeep(pruner))
 }
 
 // addInboundChannels registers the channel adapters, gives the UI server the

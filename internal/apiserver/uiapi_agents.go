@@ -12,6 +12,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
+	"github.com/heddles/agent-orca/internal/dispatch/catalogue"
 	"github.com/heddles/agent-orca/internal/postgresql"
 	"github.com/heddles/agent-orca/internal/schedule"
 	"github.com/heddles/agent-orca/internal/tenancy"
@@ -34,7 +35,7 @@ const (
 	AnnotationCreatedBy = "agentorca.io/created-by"
 
 	// LabelTemplate marks an Agent as a template: "true".
-	LabelTemplate = "agentorca.io/template"
+	LabelTemplate = catalogue.TemplateLabel
 	// templateMarker is the LabelTemplate value of a template.
 	templateMarker = "true"
 
