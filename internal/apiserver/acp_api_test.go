@@ -825,6 +825,53 @@ func TestACPCreateRun_PriorRunRefChains(t *testing.T) {
 	}
 }
 
+// A session ID is the client's choice, so on its own it must not continue a
+// conversation: only the same person with the same agent does.
+func TestACPSessionChainIsPerPersonAndAgent(t *testing.T) {
+	objs := make([]client.Object, 0, 4)
+	for _, name := range []string{"chain-a", "chain-b"} {
+		objs = append(objs,
+			&agentorcav1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "tenant-acme"}},
+			&agentorcav1alpha1.AgentDeployment{
+				ObjectMeta: metav1.ObjectMeta{Name: "dep-" + name, Namespace: "tenant-acme"},
+				Spec:       agentorcav1alpha1.AgentDeploymentSpec{AgentRef: name},
+			})
+	}
+	s := newACPServer(t, objs...)
+
+	// start creates a run in session "zed-1" and returns it and what it continues.
+	start := func(user, agent string) (string, string) {
+		t.Helper()
+		tenant := testTenant()
+		tenant.UserID = user
+		body := `{"agent_name":"` + agent + `","session_id":"zed-1",` +
+			`"input":[{"role":"user","parts":[{"content_type":"text/plain","content":"hi"}]}]}`
+		rec := httptest.NewRecorder()
+		s.withTenant(tenant).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/runs", strings.NewReader(body)))
+		var resp ACPRun
+		if rec.Code != http.StatusCreated || json.Unmarshal(rec.Body.Bytes(), &resp) != nil {
+			t.Fatalf("creating a run: %d %s", rec.Code, rec.Body.String())
+		}
+		var run agentorcav1alpha1.AgentRun
+		if err := s.crdClient.Get(context.Background(),
+			types.NamespacedName{Name: resp.RunID, Namespace: "tenant-acme"}, &run); err != nil {
+			t.Fatal(err)
+		}
+		return run.Name, run.Spec.PriorRunRef
+	}
+
+	first, _ := start("ann", "chain-a")
+	if _, prior := start("bob", "chain-a"); prior != "" {
+		t.Errorf("another person continued %q", prior)
+	}
+	if _, prior := start("ann", "chain-b"); prior != "" {
+		t.Errorf("another agent continued %q", prior)
+	}
+	if _, prior := start("ann", "chain-a"); prior != first {
+		t.Errorf("the same person and agent continued %q, want %q", prior, first)
+	}
+}
+
 // TestACPPresumeRun_CreatesContinuation verifies that resuming a WaitingForInput
 // run creates a continuation run (not in-place patch) and marks the original Succeeded.
 func TestACPPresumeRun_CreatesContinuation(t *testing.T) {
