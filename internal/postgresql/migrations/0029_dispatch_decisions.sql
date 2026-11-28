@@ -1,4 +1,4 @@
--- 0028: agent dispatch decisions. One row for each time an agent was picked (or
+-- 0029: agent dispatch decisions. One row for each time an agent was picked (or
 -- could not be) for a request that named none: what was chosen, how, what else
 -- was considered, and what a model call cost.
 --
