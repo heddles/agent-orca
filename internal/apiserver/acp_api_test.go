@@ -78,6 +78,7 @@ func (s *ACPServer) withTenant(tenant *TenantIdentity) http.Handler {
 	mux.HandleFunc("/ping", s.handlePing)
 	mux.HandleFunc("/agents", s.handleListAgents)
 	mux.HandleFunc("/agents/", s.handleAgentRoutes)
+	mux.HandleFunc("/routing", s.handleRouting)
 	mux.HandleFunc("/runs", s.handleCreateRun)
 	mux.HandleFunc("/runs/", s.handleRunByID)
 	mux.HandleFunc("/session/", s.handleGetSession)

@@ -85,12 +85,13 @@ components:
       required: [agent, input]
       description: |
         Body for `POST /v1/tasks`. `agent` is the Agent name in the tenant namespace
-        (must be in the tenant's `allowedAgents` list). `metadata` is echoed back and
+        (must be in the tenant's `allowedAgents` list), or "auto" to have one
+        picked from `input` among the agents the tenant may run. `metadata` is echoed back and
         stored as annotations; `correlationId` is promoted to a label for tracing.
       properties:
         agent:
           type: string
-          description: Name of the Agent CRD to invoke.
+          description: Name of the Agent CRD to invoke, or "auto".
         input:
           type: string
           description: Task description passed to the agent.
@@ -148,6 +149,37 @@ components:
             type: string
         links:
           $ref: '#/components/schemas/TaskLinks'
+        routing:
+          $ref: '#/components/schemas/RoutingInfo'
+    RoutingInfo:
+      type: object
+      description: >-
+        How the agent was picked, for a request that asked for "auto".
+      required: [method]
+      properties:
+        method:
+          type: string
+          enum: [sticky, only, decided, fallback]
+          description: >-
+            sticky kept the conversation's agent; only had one agent to pick;
+            decided took the router's pick; fallback used a default agent.
+        reason:
+          type: string
+          enum: [low_confidence, no_answer, decider_error, too_many_agents, empty_request, no_default]
+        confidence:
+          type: number
+          description: >-
+            The router's confidence in its own first choice. After a fallback
+            that is not the agent that got the request.
+        considered:
+          type: array
+          items:
+            type: object
+            properties:
+              agent: { type: string }
+              probability: { type: number }
+        escalated: { type: boolean }
+        decisionId: { type: string }
     TaskListResponse:
       type: object
       properties:
@@ -273,6 +305,18 @@ paths:
               schema:
                 $ref: '#/components/schemas/TaskResponse'
         '400':
+          description: >-
+            Bad request, or "auto" is not available to the tenant
+            (code auto_unavailable).
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+        '404':
+          description: >-
+            Agent not found, or "auto" had no agent to pick (code no_agents).
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+        '422':
+          description: >-
+            "auto" could not pick an agent (code agent_undecided). `agents`
+            lists the ones the caller may name.
           content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
         '402':
           description: Tenant daily budget exceeded.

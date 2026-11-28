@@ -148,6 +148,54 @@ components:
       properties: { required: { type: string } }
     ACPErr:
       $ref: '#/components/schemas/Error'
+    RoutingInfo:
+      type: object
+      description: >-
+        How the agent was picked, for a request that asked for "auto".
+      required: [method]
+      properties:
+        method:
+          type: string
+          enum: [sticky, only, decided, fallback]
+          description: >-
+            sticky kept the conversation's agent; only had one agent to pick;
+            decided took the router's pick; fallback used a default agent.
+        reason:
+          type: string
+          enum: [low_confidence, no_answer, decider_error, too_many_agents, empty_request, no_default]
+        confidence:
+          type: number
+          description: >-
+            The router's confidence in its own first choice. After a fallback
+            that is not the agent that got the request.
+        considered:
+          type: array
+          items:
+            type: object
+            properties:
+              agent: { type: string }
+              probability: { type: number }
+        escalated: { type: boolean }
+        decisionId: { type: string }
+    ACPRouting:
+      type: object
+      required: [auto, agents]
+      properties:
+        auto:
+          type: boolean
+          description: Whether a run may name the agent "auto".
+        reason:
+          type: string
+          description: Why not, when auto is false.
+        agents:
+          type: array
+          description: The agents the caller could name.
+          items:
+            type: object
+            required: [name]
+            properties:
+              name: { type: string }
+              description: { type: string }
     ACPRun:
       type: object
       required: [agent_name, run_id, status, created_at]
@@ -163,11 +211,16 @@ components:
         error: { $ref: '#/components/schemas/ACPErr' }
         created_at: { type: string, format: date-time }
         finished_at: { type: string, format: date-time, nullable: true }
+        routing: { $ref: '#/components/schemas/RoutingInfo' }
     ACPRunCreateRequest:
       type: object
       required: [agent_name, input]
       properties:
-        agent_name: { type: string }
+        agent_name:
+          type: string
+          description: >-
+            The agent, or "auto" to have one picked from the input. With a
+            session_id, an auto run stays with the session's agent.
         input:
           type: array
           items: { $ref: '#/components/schemas/ACPMessage' }
@@ -225,6 +278,15 @@ paths:
       responses:
         '200':
           content: { application/json: { schema: { $ref: '#/components/schemas/ACPAgentsListResponse' } } }
+  /routing:
+    get:
+      tags: [agents]
+      summary: Whether runs may ask for "auto", and the agents the caller could name
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          content: { application/json: { schema: { $ref: '#/components/schemas/ACPRouting' } } }
   /agents/{name}:
     get:
       tags: [agents]
@@ -255,8 +317,20 @@ paths:
       responses:
         '201':
           content: { application/json: { schema: { $ref: '#/components/schemas/ACPRun' } } }
+        '400':
+          description: >-
+            Bad request, or "auto" is not available to the tenant
+            (code auto_unavailable).
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
         '404':
-          description: Agent not found / not allowed.
+          description: >-
+            Agent not found / not allowed, or "auto" had no agent to pick
+            (code no_agents).
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+        '422':
+          description: >-
+            "auto" could not pick an agent (code agent_undecided). data.agents
+            lists the ones the caller may name.
           content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
   /runs/{run_id}:
     get:
