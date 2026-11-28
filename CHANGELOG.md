@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Tenant `allowedAgents`: an empty list now allows every agent on every API.** With no agents listed (omitted or `[]`), a tenant may use every agent in its allowed namespaces; with agents listed, only those. Before, the External Task API refused every agent for `[]` while the ACP API and scheduled runs allowed them all, and the field's description said `[]` allowed none. If you relied on `[]` to refuse all agents on the External Task API, it no longer does; it never did on the ACP API or schedules.
 
 ### Added
+- [Class volumes](docs/openshell-sandbox.md#class-volumes): a SandboxClass can mount PersistentVolumeClaims (`spec.volumes`) into its sandboxes, so files outlive a run; the mount paths are opened in the sandbox's filesystem policy. The claims need the gateway's resource-admission labels and `allowDriverConfig`. Needs the new CRDs.
+- Runs that continue a conversation get the previous run's name in `AGENTORC_PRIOR_RUN_ID`, so an agent that keeps its own history, such as Claude Code in a sandbox, can [resume it](docs/claude-code-subscription.md#resume-the-conversation).
 - [Local terminal](docs/local-terminal.md): an Agent with `spec.terminal` gets a `local_exec` tool that runs commands on the user's computer, in their editor's terminal, through `aoctl acp serve`. The user approves every command. Runs not started from an editor with a terminal are refused at once. `--no-terminal` turns it off on a computer. Needs the new `aoctl` as well as the new operator, model-router and CRDs.
 - A public documentation site at https://docs.agentorca.org, built from `docs/` and published with each release. See [Documentation site](docs/development.md#documentation-site).
 

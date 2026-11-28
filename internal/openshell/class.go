@@ -97,8 +97,10 @@ func ApplyClass(agent *agentorcav1alpha1.Agent, class *agentorcav1alpha1.Sandbox
 			PriorityClassName: c.PriorityClassName,
 		}
 		if !classPlacement.IsZero() {
+			classPlacement.Volumes = placement.Volumes
 			placement = classPlacement
 		}
+		placement.Volumes = mergeVolumes(placement.Volumes, c.Volumes)
 	}
 	presetNames = append(presetNames, sb.EgressPresets...)
 	for _, p := range presetNames {
