@@ -38,13 +38,46 @@ func TestValidate(t *testing.T) {
 		"empty key": func(r *Request) {
 			r.Questions = map[string]Question{"q": {Type: TypeChoice, Criteria: map[string]string{"": "x"}}}
 		},
-		"huge criterion": func(r *Request) { r.Questions["agent"].Criteria["a/triage"] = strings.Repeat("a", MaxCriterionBytes+1) },
+		"huge criterion":                func(r *Request) { r.Questions["agent"].Criteria["a/triage"] = strings.Repeat("a", MaxCriterionBytes+1) },
+		"texts for an unoffered option": withTexts("b/admin", OptionTexts{Descriptions: []string{"x"}}),
+		"empty text":                    withTexts("a/triage", OptionTexts{Examples: []string{""}}),
+		"huge text":                     withTexts("a/triage", OptionTexts{Examples: []string{strings.Repeat("a", MaxTextBytes+1)}}),
+		"too many descriptions":         withTexts("a/triage", OptionTexts{Descriptions: repeat("x", MaxDescriptions+1)}),
+		"too many examples":             withTexts("a/triage", OptionTexts{Examples: repeat("x", MaxExamples+1)}),
 	} {
 		r := request()
 		mutate(&r)
 		if err := r.Validate(); !errors.Is(err, ErrInvalidRequest) {
 			t.Errorf("%s: got %v", name, err)
 		}
+	}
+}
+
+func repeat(s string, n int) []string {
+	out := make([]string, n)
+	for i := range out {
+		out[i] = s
+	}
+	return out
+}
+
+func withTexts(key string, texts OptionTexts) func(*Request) {
+	return func(r *Request) {
+		q := r.Questions["agent"]
+		q.Texts = map[string]OptionTexts{key: texts}
+		r.Questions["agent"] = q
+	}
+}
+
+func TestTextsAreBoundedOverTheWholeRequest(t *testing.T) {
+	q := Question{Type: TypeChoice, Criteria: map[string]string{}, Texts: map[string]OptionTexts{}}
+	for i := range MaxOptions {
+		k := strings.Repeat("k", i+1)
+		q.Criteria[k] = ""
+		q.Texts[k] = OptionTexts{Examples: repeat(strings.Repeat("a", MaxTextBytes), MaxExamples)}
+	}
+	if err := (Request{State: "x", Questions: map[string]Question{"q": q}}).Validate(); !errors.Is(err, ErrInvalidRequest) {
+		t.Errorf("got %v", err)
 	}
 }
 

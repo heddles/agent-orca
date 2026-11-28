@@ -286,6 +286,57 @@ redis:
       cpu: 500m
       memory: 512Mi
 
+# orca-decide: a small model on CPU that picks an agent for a request which names
+# none. Nothing leaves the cluster. It is off by default until the operator calls
+# it; enabling it now only deploys the service.
+#
+# On two cores of a 2015 x86 CPU a decision took about 14 ms for a short request
+# and 45 ms (p95 55 ms) for a long one, and both containers together used about
+# 110 MiB on the benchmark (hack/dispatch-eval/bench).
+decision:
+  enabled: false
+  replicas: 1
+  image:
+    repository: ghcr.io/heddles/agent-orca/orca-decide
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  # The model weights (gte-small, MIT licence), as an image so that no download
+  # happens at run time.
+  models:
+    image:
+      repository: ghcr.io/heddles/agent-orca/decide-models
+      tag: "latest"
+      pullPolicy: IfNotPresent
+  # How many tokens of a request are read, up to 512. 128 is at most 2 points
+  # more accurate than 64 on long requests when agents have examples, and takes
+  # about twice as long.
+  requestTokens: 64
+  resources:
+    requests:
+      cpu: 100m
+      memory: 64Mi
+    limits:
+      cpu: "1"
+      memory: 384Mi
+  # The embedding server beside orca-decide.
+  llamaCpp:
+    # Pinned by digest: the vectors were checked against a reference with this
+    # build.
+    image: ghcr.io/ggml-org/llama.cpp@sha256:535b0b2eb8e184668698ebe8204f86ed5e57825965fc5b81b9992c556822e6b9
+    pullPolicy: IfNotPresent
+    # Keep equal to the CPU limit. 4 threads and CPUs cut a long request from
+    # 45 ms to 25 ms on the CPU above.
+    threads: 2
+    resources:
+      requests:
+        cpu: 500m
+        memory: 192Mi
+      limits:
+        cpu: "2"
+        memory: 384Mi
+  nodeSelector: {}
+  tolerations: []
+
 # Tetragon eBPF enforcement (optional). Set to false if Tetragon is not installed.
 tetragon:
   enabled: false

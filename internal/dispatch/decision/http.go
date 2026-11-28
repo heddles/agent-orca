@@ -35,7 +35,7 @@ const Path = "/v1/decisions"
 const (
 	// maxBodyBytes bounds a request or response body. It leaves room for the
 	// largest valid request, JSON escaping included.
-	maxBodyBytes = 4 << 20
+	maxBodyBytes = 6 << 20
 
 	// DefaultTimeout bounds a call to a decision service. A request waits on
 	// this before it can start, so it is short.

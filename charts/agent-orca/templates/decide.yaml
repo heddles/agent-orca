@@ -1,0 +1,176 @@
+{{- if .Values.decision.enabled }}
+{{- $name := printf "%s-decide" (include "agent-orca.fullname" .) }}
+# orca-decide: the local decision model that picks an agent for a request which
+# names none. It is not a platform peer (no agentorca.io/scope label): agent runs
+# must not reach it.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agent-orca.labels" . | nindent 4 }}
+    app.kubernetes.io/component: decide
+spec:
+  replicas: {{ .Values.decision.replicas }}
+  selector:
+    matchLabels:
+      {{- include "agent-orca.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: decide
+  template:
+    metadata:
+      labels:
+        {{- include "agent-orca.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: decide
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # The weights come as an image, so nothing is downloaded when a pod starts.
+      initContainers:
+        - name: models
+          image: "{{ .Values.decision.models.image.repository }}:{{ .Values.decision.models.image.tag }}"
+          imagePullPolicy: {{ .Values.decision.models.image.pullPolicy }}
+          command: ["cp", "/models/gte-small-q8.gguf", "/weights/"]
+          volumeMounts:
+            - name: weights
+              mountPath: /weights
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { cpu: 500m, memory: 128Mi }
+          securityContext: &restricted
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      containers:
+        - name: orca-decide
+          image: "{{ .Values.decision.image.repository }}:{{ .Values.decision.image.tag }}"
+          imagePullPolicy: {{ .Values.decision.image.pullPolicy }}
+          args:
+            - --listen=:8080
+            - --llama-url=http://127.0.0.1:8081
+            - --request-tokens={{ .Values.decision.requestTokens }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+          # Ready only once the embedding server has loaded the model.
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.decision.resources | nindent 12 }}
+          securityContext: *restricted
+        # Listens inside the pod only.
+        - name: llama
+          image: {{ .Values.decision.llamaCpp.image | quote }}
+          imagePullPolicy: {{ .Values.decision.llamaCpp.pullPolicy }}
+          args:
+            - -m
+            - /weights/gte-small-q8.gguf
+            - -t
+            - {{ .Values.decision.llamaCpp.threads | quote }}
+            # The default 8 GiB prompt cache outgrows the memory limit.
+            - --cache-ram
+            - "0"
+            - --embedding
+            - --pooling
+            - mean
+            - -c
+            - "512"
+            - -b
+            - "512"
+            - -ub
+            - "512"
+            - -np
+            - "1"
+            - --host
+            - "127.0.0.1"
+            - --port
+            - "8081"
+          resources:
+            {{- toYaml .Values.decision.llamaCpp.resources | nindent 12 }}
+          securityContext: *restricted
+          volumeMounts:
+            - name: weights
+              mountPath: /weights
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: weights
+          emptyDir:
+            sizeLimit: 200Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+      {{- with .Values.decision.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.decision.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agent-orca.labels" . | nindent 4 }}
+    app.kubernetes.io/component: decide
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "agent-orca.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: decide
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
+---
+# Requests carry agent descriptions and what users ask, and the API has no
+# authentication: only the operator may call it, and it calls nothing.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agent-orca.labels" . | nindent 4 }}
+    app.kubernetes.io/component: decide
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "agent-orca.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: decide
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "agent-orca.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: operator
+      ports:
+        - port: 8080
+          protocol: TCP
+  egress: []
+{{- end }}

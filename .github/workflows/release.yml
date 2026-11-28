@@ -59,6 +59,10 @@ jobs:
             dockerfile: Dockerfile.go.openai-reference
           - name: dev-sandbox
             dockerfile: Dockerfile.dev-sandbox
+          - name: orca-decide
+            dockerfile: cmd/orca-decide/Dockerfile
+          - name: decide-models
+            dockerfile: cmd/orca-decide/Dockerfile.models
     steps:
       - uses: actions/checkout@v7
         with:
@@ -223,7 +227,7 @@ jobs:
             echo "helm install agent-orca ${CHART_REPO}/agent-orca --version ${TAG#v} -n agent-orca-system --create-namespace"
             echo '```'
             echo
-            echo "Images: \`${IMAGE_REPO}/{operator,model-router,mcp-ingester,ui-proxy,openai-reference,dev-sandbox}:${TAG}\`"
+            echo "Images: \`${IMAGE_REPO}/{operator,model-router,mcp-ingester,ui-proxy,openai-reference,dev-sandbox,orca-decide,decide-models}:${TAG}\`"
           } > notes.md
 
           if gh release view "$TAG" >/dev/null 2>&1; then

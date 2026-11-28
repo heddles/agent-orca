@@ -152,6 +152,25 @@ massive), and with at least 10 it matched or beat them on all three. So
 orca-decide uses examples only when every candidate has at least 5, and weights
 each candidate equally.
 
+## The service end to end (`replay.py`)
+
+The test rows sent to orca-decide, with llama.cpp beside it (read-only root,
+384 MiB limit each, 2 + 1 M5 cores). With requests cut to 128 tokens, every
+"routed at precision" figure for 0, 5 and 20 examples equalled the offline table
+above. At the default of 64 only k8s changed:
+
+| examples per agent | k8s | clinc | massive |
+|---|---|---|---|
+| none | 1 at 100 | 26 at 97 | 31 at 97 |
+| 5 | 17 at 90 | 24 at 97 | 38 at 99 |
+| 20 | 39 at 95 | 54 at 93 | 72 at 95 |
+
+Together the two containers used about 110 MiB. Preparing a new set of agents
+took 0.1 to 0.9 s for the short sets and up to 9.7 s for 10 k8s agents with 20
+examples each of up to 1200 bytes, longer than the client's 3 s timeout.
+Preparation carries on after a caller gives up. The card and example limits are
+the service's own, so the replay trims the k8s texts to them.
+
 ## Limits
 
 - No public set of real requests labelled by agent was found. The closest, a
@@ -185,6 +204,7 @@ their own directories, mount them read-only, and run with `python -I`.
 | hosted judge (needs `OPENROUTER_API_KEY`; the full run cost $1.87) and its analysis | `judge.py`, `score_judge.py` |
 | cascade, cold start | `cascade.py`, `cold_start.py` |
 | llama.cpp fidelity, fixed settings | `check_runtime.py`, `defaults.py` |
+| the running service | `replay.py` |
 
 The Kubernetes issues were fetched from the GitHub search API (single `sig/`
 label, created after 2022-01-01, flaky and failing-test reports excluded, newest

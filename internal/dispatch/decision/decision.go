@@ -50,6 +50,11 @@ const (
 	MaxOptions        = 128
 	MaxCriterionBytes = 4 << 10
 	MaxKeyBytes       = 253 + 1 + 253 // namespace/name
+	// Limits on Question.Texts: per option, per text, and over a request.
+	MaxDescriptions   = 24
+	MaxExamples       = 50
+	MaxTextBytes      = 1200 // 300 characters of any script
+	MaxTotalTextBytes = 2 << 20
 )
 
 // Question is one thing to decide about the state.
@@ -58,6 +63,18 @@ type Question struct {
 	Instructions string `json:"instructions,omitempty"`
 	// Criteria describes each option of a choice, by option key.
 	Criteria map[string]string `json:"criteria,omitempty"`
+	// Texts optionally gives options of a choice as separate pieces, for a
+	// decider that matches pieces rather than reading a description. Its keys
+	// are keys of Criteria. A decider may use Criteria alone.
+	Texts map[string]OptionTexts `json:"texts,omitempty"`
+}
+
+// OptionTexts is one option in pieces.
+type OptionTexts struct {
+	// Descriptions each describe something the option is for.
+	Descriptions []string `json:"descriptions,omitempty"`
+	// Examples are inputs that belong to the option.
+	Examples []string `json:"examples,omitempty"`
 }
 
 // Request asks Questions, by ID, about State.
@@ -99,6 +116,8 @@ type Response struct {
 	Model    string            `json:"model,omitempty"`
 	Answers  map[string]Answer `json:"answers"`
 	Usage    Usage             `json:"usage"`
+	// Escalated says an Escalating decider took an answer from its second.
+	Escalated bool `json:"escalated,omitempty"`
 }
 
 // Decider answers decision requests. On error the Response still carries the
@@ -128,7 +147,27 @@ func (r Request) Validate() error {
 	case len(r.Questions) > MaxQuestions:
 		return invalid("more than %d questions", MaxQuestions)
 	}
+	textBytes := 0
 	for id, q := range r.Questions {
+		for k, texts := range q.Texts {
+			if _, offered := q.Criteria[k]; !offered {
+				return invalid("question %q has texts for an option it does not offer", id)
+			}
+			if len(texts.Descriptions) > MaxDescriptions || len(texts.Examples) > MaxExamples {
+				return invalid("an option of question %q has more than %d descriptions or %d examples", id, MaxDescriptions, MaxExamples)
+			}
+			for _, list := range [][]string{texts.Descriptions, texts.Examples} {
+				for _, t := range list {
+					if t == "" || len(t) > MaxTextBytes || !utf8.ValidString(t) {
+						return invalid("an option of question %q has an empty, oversized or invalid text", id)
+					}
+					textBytes += len(t)
+				}
+			}
+		}
+		if textBytes > MaxTotalTextBytes {
+			return invalid("the options' texts are over %d bytes", MaxTotalTextBytes)
+		}
 		if q.Type == "" {
 			return invalid("question %q has no type", id)
 		}
