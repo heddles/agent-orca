@@ -139,8 +139,19 @@ type AgentRoutingSpec struct {
 	// +optional
 	Description string `json:"description,omitempty"`
 
-	// Examples are requests this agent should take.
-	// +kubebuilder:validation:MaxItems=10
+	// UseWhen lists the kinds of requests this agent is for, one kind per item,
+	// such as "a pod is crash looping". Each is compared with a request on its
+	// own, which picks the right agent more often than one long description.
+	// +kubebuilder:validation:MaxItems=20
+	// +kubebuilder:validation:items:MaxLength=300
+	// +listType=atomic
+	// +optional
+	UseWhen []string `json:"useWhen,omitempty"`
+
+	// Examples are requests this agent should take, written as a user would
+	// send them. They improve the local decider more than anything else here;
+	// a card read by a model carries only the first few.
+	// +kubebuilder:validation:MaxItems=50
 	// +kubebuilder:validation:items:MaxLength=300
 	// +listType=atomic
 	// +optional

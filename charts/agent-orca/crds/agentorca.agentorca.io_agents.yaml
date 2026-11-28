@@ -367,11 +367,25 @@ spec:
                     maxLength: 1000
                     type: string
                   examples:
-                    description: Examples are requests this agent should take.
+                    description: |-
+                      Examples are requests this agent should take, written as a user would
+                      send them. They improve the local decider more than anything else here;
+                      a card read by a model carries only the first few.
                     items:
                       maxLength: 300
                       type: string
-                    maxItems: 10
+                    maxItems: 50
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  useWhen:
+                    description: |-
+                      UseWhen lists the kinds of requests this agent is for, one kind per item,
+                      such as "a pod is crash looping". Each is compared with a request on its
+                      own, which picks the right agent more often than one long description.
+                    items:
+                      maxLength: 300
+                      type: string
+                    maxItems: 20
                     type: array
                     x-kubernetes-list-type: atomic
                 type: object

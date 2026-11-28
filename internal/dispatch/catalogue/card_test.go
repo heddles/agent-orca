@@ -60,6 +60,19 @@ func TestADescriptionReplacesWhatIsDerived(t *testing.T) {
 	}
 }
 
+func TestACardListsUseWhenLinesAndOnlyTheFirstExamples(t *testing.T) {
+	got := Card(agent(agentorcav1alpha1.AgentSpec{
+		Routing: &agentorcav1alpha1.AgentRoutingSpec{
+			Description: "Network problems.", UseWhen: []string{"dns fails", "a service\nis unreachable"},
+			Examples: []string{"1", "2", "3", "4", "5", "6"},
+		},
+	}), Related{})
+	want := "net-chat: Network problems.\nUse when: dns fails; a service is unreachable\nExample requests: 1; 2; 3; 4; 5"
+	if got != want {
+		t.Errorf("got %q", got)
+	}
+}
+
 func TestExamplesAloneKeepThePrompt(t *testing.T) {
 	got := Card(agent(agentorcav1alpha1.AgentSpec{
 		SystemPrompt: "Network.", Routing: &agentorcav1alpha1.AgentRoutingSpec{Examples: []string{"dns fails"}},

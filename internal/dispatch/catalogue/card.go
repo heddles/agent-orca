@@ -36,6 +36,10 @@ const (
 	maxTools    = 20
 	maxKBs      = 10
 	partRunes   = 160
+	// maxCardExamples is how many examples a card carries. A model reads every
+	// candidate's card on every decision, so they cost on each one. The local
+	// decider is given all of them separately.
+	maxCardExamples = 5
 	// maxCardBytes keeps a card inside decision.MaxCriterionBytes.
 	maxCardBytes = 4000
 )
@@ -53,9 +57,9 @@ type Related struct {
 }
 
 // Card is the text a decision about the agent is made on. With a description in
-// spec.routing it is the name and that description, plus any aliases and
-// examples. Without one it is built from the opening of the system prompt, the
-// tools and the knowledge bases.
+// spec.routing it is the name and that description, plus any "use when" lines,
+// aliases and the first examples. Without one it is built from the opening of
+// the system prompt, the tools and the knowledge bases.
 func Card(agent *agentorcav1alpha1.Agent, related Related) string {
 	routing := agent.Spec.Routing
 	if routing == nil {
@@ -69,10 +73,13 @@ func Card(agent *agentorcav1alpha1.Agent, related Related) string {
 	} else if prompt := oneLine(agent.Spec.SystemPrompt); prompt != "" {
 		b.WriteString(": " + clip(prompt, promptRunes))
 	}
+	if list := join(routing.UseWhen, "; "); list != "" {
+		b.WriteString("\nUse when: " + list)
+	}
 	if list := join(routing.Aliases, ", "); list != "" {
 		b.WriteString("\nAlso called: " + list)
 	}
-	if list := join(routing.Examples, "; "); list != "" {
+	if list := join(routing.Examples[:min(len(routing.Examples), maxCardExamples)], "; "); list != "" {
 		b.WriteString("\nExample requests: " + list)
 	}
 	if description == "" {
