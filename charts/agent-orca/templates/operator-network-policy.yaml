@@ -106,6 +106,17 @@ spec:
           protocol: TCP
         - port: 53
           protocol: UDP
+    {{- if .Values.decision.enabled }}
+    # orca-decide, which agent dispatch asks.
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "agent-orca.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: decide
+      ports:
+        - port: 8080
+          protocol: TCP
+    {{- end }}
     {{- if .Values.openshell.enabled }}
     # OpenShell gateway gRPC API, for sandboxed agents.
     - to:
