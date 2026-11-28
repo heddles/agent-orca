@@ -85,6 +85,74 @@ type TenantConfigSpec struct {
 	// only lists the channel names.
 	// +optional
 	Notifications *TenantNotifications `json:"notifications,omitempty"`
+
+	// Dispatch controls how an agent is picked for a request that names none
+	// ("auto"). Omit it and automatic routing is on, using the cluster's local
+	// decision service when one is deployed.
+	// +optional
+	Dispatch *TenantDispatch `json:"dispatch,omitempty"`
+}
+
+// Deciders of TenantDispatch.
+const (
+	// DispatchDeciderLocal is the cluster's own decision service (orca-decide).
+	DispatchDeciderLocal = "local"
+	// DispatchDeciderModelSelector is one of the tenant's ModelSelectors.
+	DispatchDeciderModelSelector = "modelSelector"
+)
+
+// TenantDispatch is how the tenant's requests that name no agent are routed. A
+// request only ever goes to an agent its caller may already run.
+// +kubebuilder:validation:XValidation:rule="!((has(self.decider) && self.decider == 'modelSelector') || (has(self.escalate) && self.escalate)) || has(self.modelSelectorRef)",message="modelSelectorRef is required when decider is modelSelector or escalate is true"
+type TenantDispatch struct {
+	// Enabled turns automatic routing on or off for the tenant. Default true.
+	// +optional
+	Enabled *bool `json:"enabled,omitempty"`
+
+	// Decider picks the agent. "local" is the cluster's decision service:
+	// nothing leaves the cluster. "modelSelector" asks a model of
+	// modelSelectorRef, with the tenant's own providers, credentials and budget;
+	// the request and the agents' descriptions are sent to that provider.
+	// +kubebuilder:validation:Enum=local;modelSelector
+	// +kubebuilder:default=local
+	// +optional
+	Decider string `json:"decider,omitempty"`
+
+	// ModelSelectorRef is the ModelSelector asked by the modelSelector decider,
+	// or by escalate.
+	// +optional
+	ModelSelectorRef *DispatchModelSelectorRef `json:"modelSelectorRef,omitempty"`
+
+	// Escalate, with the local decider, also asks modelSelectorRef when the
+	// local one is unsure, before falling back to the default agent. Those
+	// requests are sent to that provider and cost money. Default false.
+	// +optional
+	Escalate bool `json:"escalate,omitempty"`
+
+	// DefaultAgent takes every request the decider is not sure about. A tenant
+	// should set it: without it, an unsure request goes to the best candidate
+	// only if that scores at least 50 percent, and is otherwise refused.
+	// +kubebuilder:validation:MaxLength=253
+	// +optional
+	DefaultAgent string `json:"defaultAgent,omitempty"`
+
+	// MinConfidencePercent is how sure the decider must be for its pick to be
+	// taken. Default 80.
+	// +kubebuilder:validation:Minimum=50
+	// +kubebuilder:validation:Maximum=100
+	// +optional
+	MinConfidencePercent *int32 `json:"minConfidencePercent,omitempty"`
+}
+
+// DispatchModelSelectorRef names a ModelSelector.
+type DispatchModelSelectorRef struct {
+	// Name of the ModelSelector.
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+	// Namespace of the ModelSelector. Defaults to the tenant's first allowed
+	// namespace.
+	// +optional
+	Namespace string `json:"namespace,omitempty"`
 }
 
 // Notification channel types.

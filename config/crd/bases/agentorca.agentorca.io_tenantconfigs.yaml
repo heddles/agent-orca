@@ -92,6 +92,71 @@ spec:
                   BudgetPerDayUSD is the maximum daily spend in USD for this tenant.
                   Enforced across all runs in the allowed namespaces attributed to this tenant.
                 type: string
+              dispatch:
+                description: |-
+                  Dispatch controls how an agent is picked for a request that names none
+                  ("auto"). Omit it and automatic routing is on, using the cluster's local
+                  decision service when one is deployed.
+                properties:
+                  decider:
+                    default: local
+                    description: |-
+                      Decider picks the agent. "local" is the cluster's decision service:
+                      nothing leaves the cluster. "modelSelector" asks a model of
+                      modelSelectorRef, with the tenant's own providers, credentials and budget;
+                      the request and the agents' descriptions are sent to that provider.
+                    enum:
+                    - local
+                    - modelSelector
+                    type: string
+                  defaultAgent:
+                    description: |-
+                      DefaultAgent takes every request the decider is not sure about. A tenant
+                      should set it: without it, an unsure request goes to the best candidate
+                      only if that scores at least 50 percent, and is otherwise refused.
+                    maxLength: 253
+                    type: string
+                  enabled:
+                    description: Enabled turns automatic routing on or off for the
+                      tenant. Default true.
+                    type: boolean
+                  escalate:
+                    description: |-
+                      Escalate, with the local decider, also asks modelSelectorRef when the
+                      local one is unsure, before falling back to the default agent. Those
+                      requests are sent to that provider and cost money. Default false.
+                    type: boolean
+                  minConfidencePercent:
+                    description: |-
+                      MinConfidencePercent is how sure the decider must be for its pick to be
+                      taken. Default 80.
+                    format: int32
+                    maximum: 100
+                    minimum: 50
+                    type: integer
+                  modelSelectorRef:
+                    description: |-
+                      ModelSelectorRef is the ModelSelector asked by the modelSelector decider,
+                      or by escalate.
+                    properties:
+                      name:
+                        description: Name of the ModelSelector.
+                        minLength: 1
+                        type: string
+                      namespace:
+                        description: |-
+                          Namespace of the ModelSelector. Defaults to the tenant's first allowed
+                          namespace.
+                        type: string
+                    required:
+                    - name
+                    type: object
+                type: object
+                x-kubernetes-validations:
+                - message: modelSelectorRef is required when decider is modelSelector
+                    or escalate is true
+                  rule: '!((has(self.decider) && self.decider == ''modelSelector'')
+                    || (has(self.escalate) && self.escalate)) || has(self.modelSelectorRef)'
               federated:
                 description: |-
                   Federated configures trust for an external OIDC identity provider.

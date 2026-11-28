@@ -136,4 +136,8 @@ func TestRoutable(t *testing.T) {
 	if Routable(a) {
 		t.Error("the opt-out label was ignored")
 	}
+	a.Labels = map[string]string{TemplateLabel: "true"}
+	if Routable(a) {
+		t.Error("a template is never run in place")
+	}
 }

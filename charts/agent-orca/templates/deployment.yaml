@@ -95,6 +95,11 @@ spec:
               value: {{ join "," (.Values.operator.platformNamespaces | default (list .Release.Namespace)) | quote }}
             - name: ALLOW_LEGACY_TENANT_TOKENS
               value: {{ .Values.operator.allowLegacyTenantTokens | toString | quote }}
+            {{- if .Values.decision.enabled }}
+            # The local decision service agent dispatch asks.
+            - name: DECIDE_URL
+              value: "http://{{ include "agent-orca.fullname" . }}-decide.{{ .Release.Namespace }}.svc:8080"
+            {{- end }}
             - name: MACHINE_DEFAULT_ROLE
               value: {{ .Values.operator.machineDefaultRole | default "runner" | quote }}
             - name: AGENTORCA_STATE_TENANT_PREFIX

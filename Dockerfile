@@ -24,8 +24,10 @@ COPY internal/apiserver/ internal/apiserver/
 COPY internal/checkpoint/ internal/checkpoint/
 COPY internal/connections/ internal/connections/
 COPY internal/controller/ internal/controller/
+COPY internal/dispatch/*.go internal/dispatch/
 COPY internal/dispatch/catalogue/ internal/dispatch/catalogue/
 COPY internal/dispatch/decision/ internal/dispatch/decision/
+COPY internal/dispatch/llmdecider/ internal/dispatch/llmdecider/
 COPY internal/egress/ internal/egress/
 COPY internal/evals/calibrate/ internal/evals/calibrate/
 COPY internal/evals/compare/ internal/evals/compare/
