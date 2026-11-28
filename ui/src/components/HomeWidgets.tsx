@@ -8,6 +8,7 @@ import { useCallback, useEffect, useState, type CSSProperties } from 'react'
 import { Link, useNavigate } from 'react-router'
 import { getAgentManifest, getCatalog, type AgentManifest, type CatalogEntry } from '../api/catalog'
 import { getFleet, type Fleet, type FleetHealthStatus } from '../api/fleet'
+import { getRouting, type Routing } from '../api/routing'
 import { listSchedules, type ScheduleSummary } from '../api/schedules'
 import { getRun, getRunHistoryDetail, listRuns, type AgentRunSummary } from '../api/sse'
 import { DESIGN, ds } from '../lib/designSystem'
@@ -16,6 +17,7 @@ import { useNamespace } from '../lib/namespace'
 import { plainPreview, runTitle } from '../lib/runText'
 import { timeAgo } from '../lib/time'
 import { RunForm } from './AgentPage'
+import { AutoAsk } from './AutoAsk'
 import { RequiredConnections, useInvokerIdentities, useOwnerNeedsReconnect, useRequiredConnections } from './RequiredConnections'
 import { OutputCard } from './OutputCard'
 import { StatusBadge } from './StatusBadge'
@@ -56,25 +58,36 @@ function when(iso: string): string {
 
 // ── Ask an agent ─────────────────────────────────────────────────────────────
 
+/** The choice that has the platform pick. It cannot be an agent's "namespace/name". */
+const AUTO = 'auto'
+
 export function AskWidget() {
   const { namespace } = useNamespace()
   const { data, error } = usePolled<CatalogEntry[]>(useCallback(() => getCatalog(namespace), [namespace]), 120000)
+  // Without an answer, or where routing is off, a person picks the agent.
+  const routing = usePolled<Routing>(
+    useCallback(() => getRouting(namespace).catch((): Routing => ({ auto: false, hasDefault: false })), [namespace]),
+    120000,
+  ).data
   const [chosen, setChosen] = useState('')
   const agents = (data ?? []).filter((a) => !a.template)
     .sort((a, b) => Number(b.published) - Number(a.published) || a.name.localeCompare(b.name))
   const agent = agents.find((a) => `${a.namespace}/${a.name}` === chosen) ?? agents[0]
 
+  if (routing === null) return <Status data={null} error={null} what="agents" />
   if (!agent) {
     return data === null || error
       ? <Status data={data} error={error} what="agents" />
       : <p style={w.quiet}>There are no agents to ask yet. <Link to={ROUTES.agents} style={w.link}>Browse agents</Link></p>
   }
-  const id = `${agent.namespace}/${agent.name}`
+  const auto = routing.auto && (chosen === '' || chosen === AUTO)
+  const id = auto ? AUTO : `${agent.namespace}/${agent.name}`
   return (
     <div style={w.stack}>
       <label style={w.pick}>
         Agent
         <select value={id} onChange={(e) => setChosen(e.target.value)} style={w.select}>
+          {routing.auto && <option value={AUTO}>Let Agent Orca choose</option>}
           {agents.map((a) => (
             <option key={`${a.namespace}/${a.name}`} value={`${a.namespace}/${a.name}`}>
               {a.name}{agents.some((o) => o !== a && o.name === a.name) ? ` (${a.namespace})` : ''}
@@ -82,7 +95,9 @@ export function AskWidget() {
           ))}
         </select>
       </label>
-      <AskForm key={id} namespace={agent.namespace} name={agent.name} fallbackExamples={agent.exampleInputs} />
+      {auto
+        ? <AutoAsk namespace={namespace} routing={routing} />
+        : <AskForm key={id} namespace={agent.namespace} name={agent.name} fallbackExamples={agent.exampleInputs} />}
     </div>
   )
 }

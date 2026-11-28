@@ -535,9 +535,12 @@ func (s *UIServer) handleRunOrStream(w http.ResponseWriter, r *http.Request) {
 		Schedule     string `json:"schedule,omitempty"`
 		Trigger      string `json:"trigger,omitempty"`
 		ScheduledFor string `json:"scheduledFor,omitempty"`
+		// Routing is how the agent was picked, for a run whose request named none.
+		Routing *RoutingInfo `json:"routing,omitempty"`
 	}
 
 	detail := runDetail{
+		Routing:               routingOf(&run),
 		Name:                  run.Name,
 		Namespace:             run.Namespace,
 		AgentRef:              run.Spec.AgentRef,

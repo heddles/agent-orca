@@ -38,6 +38,7 @@ import (
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
 	"github.com/heddles/agent-orca/internal/acpfs"
 	"github.com/heddles/agent-orca/internal/checkpoint"
+	"github.com/heddles/agent-orca/internal/dispatch"
 	"github.com/heddles/agent-orca/internal/security"
 	"github.com/heddles/agent-orca/internal/state"
 	"github.com/heddles/agent-orca/internal/tenancy"
@@ -71,6 +72,9 @@ type ACPServer struct {
 
 	// dispatcher picks the agent of a run that asks for "auto"; nil refuses it.
 	dispatcher AgentDispatcher
+	// dispatchAs is what to ask the dispatcher when the caller is not an ACP
+	// client: the UI sets who is asking and what may be picked.
+	dispatchAs *dispatch.Request
 }
 
 // SetDispatcher lets a run ask for its agent to be picked.
@@ -273,8 +277,10 @@ type ACPRun struct {
 	CreatedAt    string           `json:"created_at"`
 	FinishedAt   string           `json:"finished_at,omitempty"`
 	// Routing is set on the answer to a run that asked for "auto": how
-	// AgentName was picked. It is an agent-orca extension.
-	Routing *RoutingInfo `json:"routing,omitempty"`
+	// AgentName was picked, and Namespace is where the run is. Both are
+	// agent-orca extensions.
+	Routing   *RoutingInfo `json:"routing,omitempty"`
+	Namespace string       `json:"namespace,omitempty"`
 	// ContinuationRunRef is the name of a follow-up AgentRun created when a
 	// waiting run is resumed with a clarify answer (see resumeACPRun). Clients
 	// should poll this run instead of the original.
@@ -769,6 +775,7 @@ func (s *ACPServer) handleAgentRun(w http.ResponseWriter, r *http.Request, tenan
 		Status:    ACPRunCreated,
 		CreatedAt: run.CreationTimestamp.Format(time.RFC3339),
 		Routing:   routing,
+		Namespace: agent.Namespace,
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)

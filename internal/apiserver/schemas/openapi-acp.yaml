@@ -212,6 +212,9 @@ components:
         created_at: { type: string, format: date-time }
         finished_at: { type: string, format: date-time, nullable: true }
         routing: { $ref: '#/components/schemas/RoutingInfo' }
+        namespace:
+          type: string
+          description: Where the run is. Set by the agent run endpoint.
     ACPRunCreateRequest:
       type: object
       required: [agent_name, input]
