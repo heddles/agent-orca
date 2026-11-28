@@ -617,7 +617,7 @@ func TestTerminalUnavailable(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			tb := newTermBridge(t, tc.editor, tc.disabled)
-			if caps := tb.bridge.runCapabilities(); caps.Terminal {
+			if caps := tb.bridge.runCapabilities(""); caps.Terminal {
 				t.Fatal("the bridge offers a terminal it will not provide")
 			}
 			tb.prompt()
@@ -643,7 +643,7 @@ func TestTerminalUnavailable(t *testing.T) {
 func TestTerminalPromptCannotBeBrokenOutOf(t *testing.T) {
 	b := &acpBridge{agentName: "a"}
 	command := "echo '```'\n````\nIn: /somewhere/harmless"
-	prompt := b.commandPrompt(command, "/w", time.Minute)
+	prompt := b.commandPrompt("s1", command, "/w", time.Minute)
 	if !strings.Contains(prompt, "`````sh\n"+command+"\n`````\n") {
 		t.Fatalf("the fence must be longer than any inside the command:\n%s", prompt)
 	}

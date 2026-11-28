@@ -360,7 +360,7 @@ func TestFSBridgeRelayRead(t *testing.T) {
 	tb.bridge.serveFSRequest(context.Background(), fsTestSessionID, "run-1", acpfsRelayRequest{
 		ID: "req-1", Method: acpMethodFSRead,
 		Params: json.RawMessage(`{"path":"src/main.go","line":1,"limit":10}`),
-	}, tb.bridge.fsPolicy())
+	}, tb.bridge.fsPolicy(fsTestSessionID))
 
 	// The editor must have received an absolute, confined path and the
 	// sessionId it needs in the ACP v1 fs request.
@@ -394,7 +394,8 @@ func TestFSBridgeRelayWriteWithElicitApproval(t *testing.T) {
 	}}
 	tb := newFSTestBridge(t, true, pending) // force approval even though policy says none
 
-	tb.bridge.serveFSRequest(context.Background(), fsTestSessionID, "run-1", pending[0], tb.bridge.fsPolicy())
+	tb.bridge.serveFSRequest(context.Background(), fsTestSessionID, "run-1", pending[0],
+		tb.bridge.fsPolicy(fsTestSessionID))
 
 	fsWaitFor(t, func() bool {
 		tb.editor.mu.Lock()
@@ -443,7 +444,8 @@ func TestFSBridgeWriteDeniedByUser(t *testing.T) {
 	tb := newFSTestBridge(t, true, pending)
 	tb.editor.elicitDecline = true
 
-	tb.bridge.serveFSRequest(context.Background(), fsTestSessionID, "run-1", pending[0], tb.bridge.fsPolicy())
+	tb.bridge.serveFSRequest(context.Background(), fsTestSessionID, "run-1", pending[0],
+		tb.bridge.fsPolicy(fsTestSessionID))
 
 	resp := tb.api.responseRecorded(t)
 	if resp.Error == nil || resp.Error.Message != "write declined by the user in the editor" {
@@ -467,7 +469,8 @@ func TestFSBridgeWriteApprovedWithEmptyFormContent(t *testing.T) {
 	tb := newFSTestBridge(t, true, pending)
 	tb.editor.elicitAcceptEmpty = true
 
-	tb.bridge.serveFSRequest(context.Background(), fsTestSessionID, "run-1", pending[0], tb.bridge.fsPolicy())
+	tb.bridge.serveFSRequest(context.Background(), fsTestSessionID, "run-1", pending[0],
+		tb.bridge.fsPolicy(fsTestSessionID))
 
 	fsWaitFor(t, func() bool {
 		tb.editor.mu.Lock()
@@ -495,7 +498,8 @@ func TestFSBridgeWriteApprovalPromptFailed(t *testing.T) {
 	tb := newFSTestBridge(t, true, pending)
 	tb.editor.elicitFail = true
 
-	tb.bridge.serveFSRequest(context.Background(), fsTestSessionID, "run-1", pending[0], tb.bridge.fsPolicy())
+	tb.bridge.serveFSRequest(context.Background(), fsTestSessionID, "run-1", pending[0],
+		tb.bridge.fsPolicy(fsTestSessionID))
 
 	resp := tb.api.responseRecorded(t)
 	if resp.Error == nil || !strings.Contains(resp.Error.Message, "write approval prompt failed") {
@@ -518,7 +522,8 @@ func TestFSBridgeWriteApprovalRemembered(t *testing.T) {
 			Params: json.RawMessage(`{"path":"memo.go","content":"x"}`),
 		}
 	}
-	tb.bridge.serveFSRequest(context.Background(), fsTestSessionID, "run-1", writeReq("req-1"), tb.bridge.fsPolicy())
+	tb.bridge.serveFSRequest(context.Background(), fsTestSessionID, "run-1", writeReq("req-1"),
+		tb.bridge.fsPolicy(fsTestSessionID))
 	fsWaitFor(t, func() bool {
 		tb.editor.mu.Lock()
 		defer tb.editor.mu.Unlock()
@@ -529,7 +534,8 @@ func TestFSBridgeWriteApprovalRemembered(t *testing.T) {
 	}
 
 	// Second write in the same session: no new elicitation.
-	tb.bridge.serveFSRequest(context.Background(), fsTestSessionID, "run-1", writeReq("req-2"), tb.bridge.fsPolicy())
+	tb.bridge.serveFSRequest(context.Background(), fsTestSessionID, "run-1", writeReq("req-2"),
+		tb.bridge.fsPolicy(fsTestSessionID))
 	fsWaitFor(t, func() bool {
 		tb.editor.mu.Lock()
 		defer tb.editor.mu.Unlock()
@@ -556,7 +562,8 @@ func TestFSBridgeWriteApprovalNotRememberedByDefault(t *testing.T) {
 		}
 	}
 	for _, id := range []string{"req-1", "req-2"} {
-		tb.bridge.serveFSRequest(context.Background(), fsTestSessionID, "run-1", writeReq(id), tb.bridge.fsPolicy())
+		tb.bridge.serveFSRequest(context.Background(), fsTestSessionID, "run-1", writeReq(id),
+			tb.bridge.fsPolicy(fsTestSessionID))
 		fsWaitFor(t, func() bool {
 			tb.editor.mu.Lock()
 			defer tb.editor.mu.Unlock()
@@ -579,7 +586,7 @@ func TestFSBridgeWriteBlockedByReadOnlyPolicy(t *testing.T) {
 
 	tb.bridge.serveFSRequest(context.Background(), fsTestSessionID, "run-1", acpfsRelayRequest{
 		ID: "req-1", Method: acpMethodFSWrite, Params: json.RawMessage(`{"path":"x.go","content":"y"}`),
-	}, tb.bridge.fsPolicy())
+	}, tb.bridge.fsPolicy(fsTestSessionID))
 
 	resp := tb.api.responseRecorded(t)
 	if resp.Error == nil || !strings.Contains(resp.Error.Message, "writes are not enabled") {
@@ -596,7 +603,7 @@ func TestFSBridgePathEscapeRejected(t *testing.T) {
 		ID:     "req-1",
 		Method: acpMethodFSRead,
 		Params: json.RawMessage(`{"path":"../../etc/shadow"}`),
-	}, tb.bridge.fsPolicy())
+	}, tb.bridge.fsPolicy(fsTestSessionID))
 
 	resp := tb.api.responseRecorded(t)
 	if resp.Error == nil || !strings.Contains(resp.Error.Message, "escapes the workspace roots") {
@@ -753,7 +760,7 @@ func TestFSBridgeListDirAnsweredLocally(t *testing.T) {
 		ID:     "req-1",
 		Method: acpMethodFSList,
 		Params: json.RawMessage(`{"path":"."}`),
-	}, tb.bridge.fsPolicy())
+	}, tb.bridge.fsPolicy(fsTestSessionID))
 
 	resp := tb.api.responseRecorded(t)
 	if resp.Error != nil {
@@ -792,7 +799,7 @@ func TestFSBridgeListDirEscapeRejected(t *testing.T) {
 		ID:     "req-1",
 		Method: acpMethodFSList,
 		Params: json.RawMessage(`{"path":"../.."}`),
-	}, tb.bridge.fsPolicy())
+	}, tb.bridge.fsPolicy(fsTestSessionID))
 
 	resp := tb.api.responseRecorded(t)
 	if resp.Error == nil || !strings.Contains(resp.Error.Message, "escapes the workspace roots") {
@@ -807,7 +814,7 @@ func TestFSBridgeEditorErrorRelayed(t *testing.T) {
 		ID:     "req-1",
 		Method: acpMethodFSWrite,
 		Params: json.RawMessage(`{"path":"x.go","content":"y"}`),
-	}, tb.bridge.fsPolicy())
+	}, tb.bridge.fsPolicy(fsTestSessionID))
 
 	resp := tb.api.responseRecorded(t)
 	if resp.Error == nil || !strings.Contains(resp.Error.Message, "refused") {
@@ -879,7 +886,7 @@ func TestFSBridgeApprovalModeMatrix(t *testing.T) {
 				tb.bridge.serveFSRequest(context.Background(), fsTestSessionID, "run-1", acpfsRelayRequest{
 					ID: id, Method: acpMethodFSWrite,
 					Params: json.RawMessage(`{"path":"m.go","content":"x"}`),
-				}, tb.bridge.fsPolicy())
+				}, tb.bridge.fsPolicy(fsTestSessionID))
 				fsWaitFor(t, func() bool {
 					tb.editor.mu.Lock()
 					defer tb.editor.mu.Unlock()
@@ -932,7 +939,7 @@ func TestFSBridgeListDirSymlinkEscapeRejected(t *testing.T) {
 			params, _ := json.Marshal(map[string]string{"path": path})
 			tb.bridge.serveFSRequest(context.Background(), fsTestSessionID, "run-1", acpfsRelayRequest{
 				ID: "req-1", Method: acpMethodFSList, Params: params,
-			}, tb.bridge.fsPolicy())
+			}, tb.bridge.fsPolicy(fsTestSessionID))
 
 			resp := tb.api.responseRecorded(t)
 			if resp.Error == nil || resp.Error.Code != -32002 {
@@ -954,7 +961,7 @@ func TestFSBridgeListDirInWorkspaceSymlinkAllowed(t *testing.T) {
 	}
 	tb.bridge.serveFSRequest(context.Background(), fsTestSessionID, "run-1", acpfsRelayRequest{
 		ID: "req-1", Method: acpMethodFSList, Params: json.RawMessage(`{"path":"alias"}`),
-	}, tb.bridge.fsPolicy())
+	}, tb.bridge.fsPolicy(fsTestSessionID))
 	resp := tb.api.responseRecorded(t)
 	if resp.Error != nil || !strings.Contains(string(resp.Result), `"child"`) {
 		t.Fatalf("in-workspace symlink must list normally, got %+v / %s", resp.Error, resp.Result)

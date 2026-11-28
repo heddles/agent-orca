@@ -307,6 +307,9 @@ type acpSessionNewParams struct {
 // acpSessionNewResponse is the result of a session/new request.
 type acpSessionNewResponse struct {
 	SessionID string `json:"sessionId"`
+	// A routed bridge offers the thread's choice of agent, in both forms.
+	ConfigOptions []acpConfigOption `json:"configOptions,omitempty"`
+	Modes         *acpModeState     `json:"modes,omitempty"`
 }
 
 // acpInitializeParams is the params of an initialize request.

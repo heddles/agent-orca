@@ -84,6 +84,11 @@ type acpSession struct {
 	traceToolSeq     int
 	pendingTraceTool map[string]string
 
+	// Routed mode only. Choice is the agent the user chose for the thread, ""
+	// for auto; Agent is who had its last run, and manifest what that one may do.
+	Choice, Agent string
+	manifest      ACPAgentManifest
+
 	// turn identifies the live session/prompt turn. registerRun bumps it;
 	// releaseRun only clears Cancel for its own turn. Matching on RunID is not
 	// enough: a superseding prompt can resume the SAME run (tryResumeAwaiting),
@@ -119,6 +124,10 @@ type acpBridge struct {
 	client    *Client
 	agentName string
 	manifest  ACPAgentManifest
+	// routed is `--agent auto`: each session has its own agent, chosen among
+	// routing's. Guarded by mu.
+	routed  bool
+	routing ACPRouting
 	// fsOpts carries the workstation-side fs policy knobs (--fs-roots,
 	// --fs-require-approval).
 	fsOpts fsBridgeOptions
@@ -196,6 +205,9 @@ var requestHandlers = map[string]requestHandler{
 	"session/list":   handleSessionList,
 	"session/close":  handleSessionClose,
 	"session/delete": handleSessionDelete,
+
+	"session/set_config_option": handleSetConfigOption,
+	"session/set_mode":          handleSetMode,
 }
 
 // --- initialize ---
@@ -208,12 +220,23 @@ func handleInitialize(ctx context.Context, b *acpBridge, req jsonrpcRequest) (an
 	if len(req.Params) > 0 {
 		_ = json.Unmarshal(req.Params, &p)
 	}
+	routed := false
+	if b.agentName == autoAgent {
+		var err error
+		if routed, err = b.startRouting(ctx); err != nil {
+			return nil, fmt.Errorf("automatic routing via ACP API (%s): %w", b.client.ACP, err)
+		}
+	}
 	// Eagerly fetch the agent manifest so run creation is informed by the real
-	// agent, and so we can validate the agent name up front.
-	man, err := b.client.GetAgentManifest(ctx, b.agentName)
-	if err != nil {
-		return nil, fmt.Errorf("fetching agent manifest for %q via ACP API (%s): %w — "+
-			"ensure --acp-endpoint points to the agent-orca ACP API host root", b.agentName, b.client.ACP, err)
+	// agent, and so we can validate the agent name up front. A routed bridge
+	// loads each thread's when an agent takes it.
+	var man ACPAgentManifest
+	if !routed {
+		var err error
+		if man, err = b.client.GetAgentManifest(ctx, b.agentName); err != nil {
+			return nil, fmt.Errorf("fetching agent manifest for %q via ACP API (%s): %w — "+
+				"ensure --acp-endpoint points to the agent-orca ACP API host root", b.agentName, b.client.ACP, err)
+		}
 	}
 	var caps struct {
 		Terminal bool `json:"terminal"`
@@ -252,6 +275,12 @@ func handleInitialize(ctx context.Context, b *acpBridge, req jsonrpcRequest) (an
 		fsCaps.ReadTextFile = true
 		fsCaps.WriteTextFile = man.Filesystem.Mode == "readWrite"
 	}
+	name := "agent-orca: " + b.agentName
+	if routed {
+		// Any of the agents may have a thread; each is held to its own policy.
+		fsCaps = acpFSCaps{ReadTextFile: true, WriteTextFile: true}
+		name = zedAutoName
+	}
 	return acpInitializeResponse{
 		ProtocolVersion: version,
 		AgentCapabilities: acpAgentCaps{
@@ -272,7 +301,7 @@ func handleInitialize(ctx context.Context, b *acpBridge, req jsonrpcRequest) (an
 			Auth: map[string]any{},
 		},
 		AgentInfo: acpImplementation{
-			Name:    "agent-orca: " + b.agentName,
+			Name:    name,
 			Version: acpBridgeVersion,
 		},
 		AuthMethods: []any{}, // pre-authenticated via aoctl login
@@ -287,7 +316,7 @@ func handleAuthenticate(_ context.Context, _ *acpBridge, _ jsonrpcRequest) (any,
 
 // --- session/new ---
 
-func handleSessionNew(_ context.Context, b *acpBridge, req jsonrpcRequest) (any, error) {
+func handleSessionNew(ctx context.Context, b *acpBridge, req jsonrpcRequest) (any, error) {
 	var p acpSessionNewParams
 	if len(req.Params) > 0 {
 		if err := json.Unmarshal(req.Params, &p); err != nil {
@@ -318,7 +347,12 @@ func handleSessionNew(_ context.Context, b *acpBridge, req jsonrpcRequest) (any,
 	}
 	sess.Cwd = p.Cwd
 	b.mu.Unlock()
-	return acpSessionNewResponse{SessionID: sessionID}, nil
+	resp := acpSessionNewResponse{SessionID: sessionID}
+	if b.isRouted() {
+		b.refreshRouting(ctx)
+		resp.ConfigOptions, resp.Modes = b.sessionChoices(sessionID)
+	}
+	return resp, nil
 }
 
 // --- session/prompt (the core run+stream flow) ---
@@ -341,19 +375,29 @@ func handleSessionPrompt(ctx context.Context, b *acpBridge, req jsonrpcRequest) 
 	// declined the elicitation form and is now answering in a new prompt),
 	// resume that run with the user's input instead of starting fresh.
 	var runID string
-	if existingID, ok := b.tryResumeAwaiting(ctx, sessionID, p.Prompt); ok {
-		runID = existingID
-	} else {
-		run, err := b.client.CreateAgentRun(ctx, b.agentName, ACPRunRequest{
+	resumed := false
+	if b.mayResume(sessionID) {
+		runID, resumed = b.tryResumeAwaiting(ctx, sessionID, p.Prompt)
+	}
+	if !resumed {
+		run, err := b.client.CreateAgentRun(ctx, b.chosenAgent(sessionID), ACPRunRequest{
 			Input:              toAgentOrcaInput(p.Prompt),
 			SessionID:          sessionID,
-			ClientCapabilities: b.runCapabilities(),
+			ClientCapabilities: b.runCapabilities(sessionID),
 		})
+		if note, ok := undecidedNote(err); ok {
+			b.emitMessageChunk(sessionID, "route_"+sessionID, note, nil)
+			b.srv.respond(req.ID, acpPromptResponse{StopReason: acpStopReasonEndTurn})
+			return promptHandled{}, nil
+		}
 		if err != nil {
 			b.srv.respondErr(req.ID, -32001, "create run: "+err.Error())
 			return promptHandled{}, nil
 		}
 		runID = run.RunID
+		if b.isRouted() {
+			b.takeAgent(ctx, sessionID, runID, run.AgentName, run.Routing)
+		}
 	}
 
 	// Register a cancellable context so session/cancel can abort a live turn.
@@ -1033,7 +1077,7 @@ func (b *acpBridge) handleAwaitingRun(
 	}
 
 	answer, _ := elicit.Content["answer"].(string)
-	continuationID, err := b.client.ResumeRun(ctx, runID, answer, b.runCapabilities())
+	continuationID, err := b.client.ResumeRun(ctx, runID, answer, b.runCapabilities(sessionID))
 	if err != nil {
 		b.srv.logf("acp: resume run %s: %v\n", runID, err)
 		return "", false
@@ -1071,7 +1115,7 @@ func (b *acpBridge) tryResumeAwaiting(ctx context.Context, sessionID string, pro
 	}
 	answer := strings.Join(parts, "\n")
 
-	continuationID, err := b.client.ResumeRun(ctx, sess.RunID, answer, b.runCapabilities())
+	continuationID, err := b.client.ResumeRun(ctx, sess.RunID, answer, b.runCapabilities(sessionID))
 	if err != nil {
 		b.srv.logf("acp: resume awaiting run %s: %v\n", sess.RunID, err)
 		return "", false
