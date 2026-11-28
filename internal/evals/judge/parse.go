@@ -216,3 +216,14 @@ func ParsePair(reply string) (PairVerdict, error) {
 // one code fence, and prose around it is refused. Other callers that read
 // structured output from a model (the builder's draft) use it.
 func UnwrapObject(reply string) ([]byte, error) { return unwrap(reply) }
+
+// DecodeObject reads a model's reply as the one JSON object it must be, into v,
+// refusing prose around it, unknown fields, duplicate keys and a second value.
+// Other callers that ask a model for a decision use it.
+func DecodeObject(reply string, v any) error {
+	raw, err := unwrap(reply)
+	if err != nil {
+		return err
+	}
+	return decodeStrict(raw, v)
+}
