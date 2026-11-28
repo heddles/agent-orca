@@ -22,6 +22,7 @@ import (
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -30,6 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	agentorcav1alpha1 "github.com/heddles/agent-orca/api/v1alpha1"
+	"github.com/heddles/agent-orca/internal/dispatch/catalogue"
 	"github.com/heddles/agent-orca/internal/security"
 	"github.com/heddles/agent-orca/internal/tenancy"
 )
@@ -111,13 +113,20 @@ func (r *AgentReconciler) reconcileManagedSA(ctx context.Context, agent *agentor
 	return r.Patch(ctx, &existing, patch)
 }
 
-// setStatus patches AgentStatus with the SA name and detected cloud provider.
+// setStatus patches AgentStatus with the SA name, the detected cloud provider
+// and the routing card.
 func (r *AgentReconciler) setStatus(ctx context.Context, agent *agentorcav1alpha1.Agent, saName string) (ctrl.Result, error) {
+	routing, err := r.routingStatus(ctx, agent)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
 	if agent.Status.ServiceAccountName == saName &&
-		agent.Status.CloudProviderDetected == string(r.CloudProvider) {
+		agent.Status.CloudProviderDetected == string(r.CloudProvider) &&
+		equality.Semantic.DeepEqual(agent.Status.Routing, routing) {
 		return ctrl.Result{}, nil
 	}
 	patch := client.MergeFrom(agent.DeepCopy())
+	agent.Status.Routing = routing
 	agent.Status.ServiceAccountName = saName
 	agent.Status.CloudProviderDetected = string(r.CloudProvider)
 	if err := r.Status().Patch(ctx, agent, patch); err != nil {
@@ -146,6 +155,8 @@ func (r *AgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&agentorcav1alpha1.Agent{}).
 		Owns(&corev1.ServiceAccount{}).
+		Watches(&agentorcav1alpha1.Tool{}, r.agentsReferring(func(a *agentorcav1alpha1.Agent) []string { return a.Spec.Tools })).
+		Watches(&agentorcav1alpha1.KnowledgeBase{}, r.agentsReferring(catalogue.KnowledgeBaseNames)).
 		Named("agent").
 		Complete(r)
 }

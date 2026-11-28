@@ -24,6 +24,7 @@ COPY internal/apiserver/ internal/apiserver/
 COPY internal/checkpoint/ internal/checkpoint/
 COPY internal/connections/ internal/connections/
 COPY internal/controller/ internal/controller/
+COPY internal/dispatch/catalogue/ internal/dispatch/catalogue/
 COPY internal/egress/ internal/egress/
 COPY internal/evals/calibrate/ internal/evals/calibrate/
 COPY internal/evals/compare/ internal/evals/compare/

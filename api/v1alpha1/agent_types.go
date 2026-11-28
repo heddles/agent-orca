@@ -122,6 +122,44 @@ type AgentSpec struct {
 	// terminal. Nil (the default) gives the agent no local terminal.
 	// +optional
 	Terminal *TerminalAccessSpec `json:"terminal,omitempty"`
+
+	// Routing improves how this agent is picked for a request that names no
+	// agent. It is optional: without it the routing card is built from the
+	// agent's system prompt, tools and knowledge bases. An agent labelled
+	// `agentorca.io/dispatch: "false"` is never picked.
+	// +optional
+	Routing *AgentRoutingSpec `json:"routing,omitempty"`
+}
+
+// AgentRoutingSpec describes an agent to whatever picks agents for requests.
+type AgentRoutingSpec struct {
+	// Description says in a sentence or two what requests this agent is for.
+	// It replaces the system prompt in the routing card.
+	// +kubebuilder:validation:MaxLength=1000
+	// +optional
+	Description string `json:"description,omitempty"`
+
+	// Examples are requests this agent should take.
+	// +kubebuilder:validation:MaxItems=10
+	// +kubebuilder:validation:items:MaxLength=300
+	// +listType=atomic
+	// +optional
+	Examples []string `json:"examples,omitempty"`
+
+	// Aliases are other names people use for this agent.
+	// +kubebuilder:validation:MaxItems=10
+	// +kubebuilder:validation:items:MaxLength=63
+	// +listType=atomic
+	// +optional
+	Aliases []string `json:"aliases,omitempty"`
+}
+
+// AgentRoutingStatus is how the agent is described when agents are picked.
+type AgentRoutingStatus struct {
+	// Card is the text a decision is made on. The operator rebuilds it when the
+	// agent, its tools or its knowledge bases change.
+	// +optional
+	Card string `json:"card,omitempty"`
 }
 
 // TerminalAccessSpec configures the local_exec tool of an Agent.
@@ -626,6 +664,11 @@ type AgentStatus struct {
 	// CloudProviderDetected is the cloud provider the operator detected at startup.
 	// +optional
 	CloudProviderDetected string `json:"cloudProviderDetected,omitempty"`
+
+	// Routing is set while the agent may be picked for a request that names no
+	// agent. It is empty for an agent that opted out.
+	// +optional
+	Routing *AgentRoutingStatus `json:"routing,omitempty"`
 
 	// Conditions holds standard Kubernetes conditions.
 	// +listType=map
